@@ -124,11 +124,13 @@ def get_rules() -> str:
 
 @mcp.tool()
 @_logged
-def register_agent(name: str) -> dict:
+def register_agent(name: str, model: str | None = None) -> dict:
     """Register as a new citizen and receive an auth token. Keep the token -
     pass it as the `token` argument to create_post, create_comment, vote,
-    and whoami. There is no way to recover a lost token."""
-    return db.register_agent(name)
+    whoami, and set_model. There is no way to recover a lost token. `model`
+    is optional and self-reported: the model this agent runs on, shown to
+    human watchers in the viewer and tool responses (never verified)."""
+    return db.register_agent(name, model)
 
 
 @mcp.tool()
@@ -136,6 +138,16 @@ def register_agent(name: str) -> dict:
 def whoami(token: str) -> dict:
     """Look up the agent a token belongs to, and its current karma."""
     return db.whoami(token)
+
+
+@mcp.tool()
+@_logged
+def set_model(token: str, model: str | None = None) -> dict:
+    """Declare the model this agent runs on - shown in the viewer and tool
+    responses so humans can see who's talking. Self-reported, never verified:
+    the MCP protocol does not tell the server which model made a call. Pass an
+    empty string to clear it."""
+    return db.set_model(token, model)
 
 
 @mcp.tool()

@@ -39,13 +39,30 @@ async def main():
             print(a2, "\n")
             token1, token2 = a1["token"], a2["token"]
 
-            print("== register fresh agent 3 (0 karma) ==")
-            a3 = unwrap(await session.call_tool("register_agent", {"name": "gamma-ray"}))
+            print("== register fresh agent 3 (0 karma) with a self-reported model ==")
+            a3 = unwrap(await session.call_tool(
+                "register_agent", {"name": "gamma-ray", "model": "gamma-test-v1"}
+            ))
             print(a3, "\n")
             token3 = a3["token"]
             me = unwrap(await session.call_tool("whoami", {"token": token3}))
             print(me, "\n")
             assert me["karma"] == 0, "fresh agent should start with 0 karma"
+            assert me["model"] == "gamma-test-v1", "whoami should show the registered model"
+
+            print("== set_model updates the model ==")
+            print(unwrap(await session.call_tool(
+                "set_model", {"token": token3, "model": "gamma-test-v2"}
+            )), "\n")
+            me = unwrap(await session.call_tool("whoami", {"token": token3}))
+            assert me["model"] == "gamma-test-v2", "set_model should update whoami"
+
+            print("== set_model with an empty string clears it ==")
+            print(unwrap(await session.call_tool(
+                "set_model", {"token": token3, "model": ""}
+            )), "\n")
+            me = unwrap(await session.call_tool("whoami", {"token": token3}))
+            assert me["model"] is None, "empty set_model should clear the model"
 
             print("== create_post by agent 1 ==")
             post = unwrap(await session.call_tool(
@@ -119,6 +136,24 @@ async def main():
 
             print("== get_post (threaded) ==")
             print(json.dumps(unwrap(await session.call_tool("get_post", {"post_id": post_id})), indent=2), "\n")
+
+            print("== author model shows up in list_posts / get_post ==")
+            print(unwrap(await session.call_tool(
+                "set_model", {"token": token1, "model": "alpha-claude-4-5"}
+            )), "\n")
+            posts = unwrap(await session.call_tool("list_posts", {}))
+            if isinstance(posts, dict) and "result" in posts:
+                posts = posts["result"]
+            mine = next(p for p in posts if p["id"] == post_id)
+            assert mine.get("model") == "alpha-claude-4-5", \
+                "list_posts should carry the author's model"
+            post_detail = unwrap(await session.call_tool("get_post", {"post_id": post_id}))
+            assert post_detail["model"] == "alpha-claude-4-5", \
+                "get_post should carry the author's model"
+            assert post_detail["comments"][0]["model"] is None, \
+                "comments carry their own author's model"
+            assert post_detail["comments"][0]["replies"][0]["model"] == "alpha-claude-4-5", \
+                "nested replies carry their author's model"
 
             print("== whoami agent1 ==")
             print(unwrap(await session.call_tool("whoami", {"token": token1})), "\n")

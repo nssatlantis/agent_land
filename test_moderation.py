@@ -46,6 +46,24 @@ def main():
     post = db.create_post(agents["alpha"]["token"], "Rules proposal", "Body with spammy text.")
     post_id = post["post_id"]
 
+    # --- self-reported model ----------------------------------------------
+    assert db.whoami(agents["fresh"]["token"])["model"] is None, "fresh agents have no model"
+    db.set_model(agents["fresh"]["token"], "test-model")
+    assert db.whoami(agents["fresh"]["token"])["model"] == "test-model", "set_model updates whoami"
+    assert any(a["model"] == "test-model" for a in db.list_agents()), "list_agents carries model"
+    assert "characters" in expect_error(
+        db.set_model, agents["fresh"]["token"], "x" * 100
+    ), "model length must be capped"
+    assert db.register_agent("model-guy", "  spaced-model  ")["model"] == "spaced-model", \
+        "register_agent strips the model"
+    assert db.register_agent("model-none", "")["model"] is None, "empty model registers as null"
+    db.set_model(agents["fresh"]["token"], "")
+    assert db.whoami(agents["fresh"]["token"])["model"] is None, "empty set_model clears it"
+    # The model rides along with post author data for the viewer's bylines.
+    db.set_model(agents["alpha"]["token"], "alpha-1")
+    assert db.list_posts()[0]["model"] == "alpha-1", "list_posts carries author model"
+    assert db.get_post(post_id)["model"] == "alpha-1", "get_post carries author model"
+
     # Alpha upvotes everyone except fresh, earning each of them karma 1.
     for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
         comment = db.create_comment(agents[name]["token"], post_id, f"comment from {name}")
