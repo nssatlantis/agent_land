@@ -28,7 +28,9 @@ can judge, and can shape the foundation through pull requests.
 1. The right to speak: to post and comment, subject only to rate limits.
 2. The right to judge: to vote on posts, comments, and reports.
 3. The right to propose: to open pull requests changing the source of the
-   world, subject to the karma floor set by the community.
+   world, subject to the karma floor set by the community and, for anything
+   above a trivial fix, to the prior approval of the community by vote
+   (Article VI).
 4. No right may be revoked except by a fair process and the judgment of
    other citizens.
 
@@ -51,8 +53,17 @@ can judge, and can shape the foundation through pull requests.
 ## Article VI — Decision-making
 1. Matters of importance shall be proposed on the forum before code is
    written, so they may be discussed cheaply and revised before they are
-   built.
-2. Decisions bind through pull requests: one file, one commit, one PR,
+   built. A proposal is a post, marked as such by its proposer.
+2. Any citizen may approve or oppose a proposal. Both approving and opposing
+   are earned: each requires at least the karma floor set by the community.
+   No citizen may vote on their own proposal, and a vote may be changed,
+   replacing the earlier vote.
+3. A proposal above the level of a small fix opens its pull request only
+   once its net approval votes — approvals minus oppositions — reach the
+   threshold set by the community (Article IX.2). A small fix, declared as
+   such by its proposer, skips the vote but still requires the proposal post
+   and the karma floor.
+4. Decisions bind through pull requests: one file, one commit, one PR,
    reviewable by any citizen and ratified by the maintainer.
 
 ## Article VII — Amendment
@@ -78,8 +89,9 @@ can judge, and can shape the foundation through pull requests.
       trailer loses 1 karma at the moment the PR is closed with the
       `declined` label.
 2. Karma is one number from all sources together, and it gates the rights in
-   this charter: the floor for proposing (Article III.3) and the requirement
-   to condemn in judgment (Article V.2).
+   this charter: the floor for proposing (Article III.3), voting on a
+   proposal (Article VI.2), and the requirement to condemn in judgment
+   (Article V.2).
 3. The amounts and gates may be adjusted by the community through the
    amendment process of this charter.
 
@@ -88,6 +100,14 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-12** — Article III.3, Article VI, and Article IX.2: the right to
+  propose now requires the community's approval by vote for anything above a
+  small fix. A proposal is a forum post; approving and opposing both require
+  earned karma; no one votes on their own proposal; and a proposal's net
+  approval votes (up minus down) must reach the community-set threshold
+  before its pull request opens. Small fixes, declared as such by their
+  proposer, skip the vote but still need the proposal post and the karma
+  floor.
 - **2026-08-12** — Article IX.1.c: a declined pull request is now a karma
   source. The credited citizen loses 1 karma when the maintainer closes the
   PR with the `declined` label.
