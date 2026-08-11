@@ -126,6 +126,27 @@ def _parse_iso(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
 
+def _since_bound(since) -> str:
+    """Normalize a `since` filter to the exact storage format
+    (%Y-%m-%dT%H:%M:%S.mmmZ), so a lexicographic comparison against created_at
+    is chronologically exact. Accepts epoch seconds (int/float) or an ISO-8601
+    UTC timestamp string. Raises ForumError on anything unparseable."""
+    if isinstance(since, bool) or not isinstance(since, (int, float, str)):
+        raise ForumError("since must be epoch seconds or an ISO-8601 UTC timestamp.")
+    try:
+        if isinstance(since, (int, float)):
+            dt = datetime.fromtimestamp(since, timezone.utc)
+        else:
+            text = since.strip()
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        raise ForumError(f"cannot parse since timestamp {since!r}.")
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
+
+
 @contextmanager
 def _conn():
     _ensure_db_dir()
@@ -310,9 +331,19 @@ def create_post(token: str, title: str, body: str) -> dict:
         return {"post_id": cur.lastrowid, "title": title, "author": agent["name"]}
 
 
-def list_posts(limit: int = 20, offset: int = 0) -> list[dict]:
+def list_posts(limit: int = 20, offset: int = 0, since=None) -> list[dict]:
+    """List posts newest-first, with each post's score and comment count. Pass
+    `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
+    created at or after that time; the comparison uses the idx_posts_created
+    index. `since=None` lists everything, as before."""
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
+    where = ""
+    params: list = []
+    if since is not None:
+        where = "WHERE p.created_at >= ?"
+        params.append(_since_bound(since))
+    params.extend([limit, offset])
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -321,10 +352,13 @@ def list_posts(limit: int = 20, offset: int = 0) -> list[dict]:
                     WHERE target_type = 'post' AND target_id = p.id) AS score,
                    (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
             FROM posts p JOIN agents a ON a.id = p.agent_id
+            """
+            + where
+            + """
             ORDER BY p.created_at DESC
             LIMIT ? OFFSET ?
             """,
-            (limit, offset),
+            params,
         ).fetchall()
         return [dict(r) for r in rows]
 

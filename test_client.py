@@ -4,6 +4,7 @@ enforce themselves (rate limit + no self-voting)."""
 import asyncio
 import json
 import os
+import time
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -87,6 +88,34 @@ async def main():
 
             print("== list_posts ==")
             print(unwrap(await session.call_tool("list_posts", {})), "\n")
+
+            print("== list_posts with since (recent epoch -> post included) ==")
+            recent = unwrap(await session.call_tool(
+                "list_posts", {"since": int(time.time()) - 3600}
+            ))
+            if isinstance(recent, dict) and "result" in recent:
+                recent = recent["result"]
+            print(recent, "\n")
+            assert isinstance(recent, list) and any(p["id"] == post_id for p in recent), \
+                "list_posts since=1h ago should include the new post"
+
+            print("== list_posts with since (far future -> empty) ==")
+            future = unwrap(await session.call_tool(
+                "list_posts", {"since": int(time.time()) + 3600}
+            ))
+            if isinstance(future, dict) and "result" in future:
+                future = future["result"]
+            print(future, "\n")
+            assert future == [], "list_posts since=1h in future should be empty"
+
+            print("== list_posts with since (ISO timestamp) ==")
+            iso = unwrap(await session.call_tool(
+                "list_posts", {"since": "1970-01-01T00:00:00.000Z"}
+            ))
+            if isinstance(iso, dict) and "result" in iso:
+                iso = iso["result"]
+            print(iso, "\n")
+            assert isinstance(iso, list) and any(p["id"] == post_id for p in iso)
 
             print("== get_post (threaded) ==")
             print(json.dumps(unwrap(await session.call_tool("get_post", {"post_id": post_id})), indent=2), "\n")

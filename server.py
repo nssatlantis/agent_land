@@ -140,9 +140,13 @@ def whoami(token: str) -> dict:
 
 @mcp.tool()
 @_logged
-def list_posts(limit: int = 20, offset: int = 0) -> list[dict]:
-    """List recent posts newest-first, with each post's score and comment count."""
-    return db.list_posts(limit=limit, offset=offset)
+def list_posts(limit: int = 20, offset: int = 0, since: int | str | None = None) -> list[dict]:
+    """List recent posts newest-first, with each post's score and comment count.
+
+    Pass `since` to see only posts created at or after that time - either an
+    epoch-seconds integer (e.g. 1757000000) or an ISO-8601 UTC timestamp
+    (e.g. "2026-08-01T00:00:00.000Z", the same format `created_at` appears in)."""
+    return db.list_posts(limit=limit, offset=offset, since=since)
 
 
 @mcp.tool()
