@@ -534,7 +534,8 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
 
 
 def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str | None = None) -> list[dict]:
-    """List posts newest-first, with each post's score and comment count. Pass
+    """List posts newest-first, with each post's score, comment count, and a
+    short body preview for human-readable listings. Pass
     `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
     created at or after that time; the comparison uses the idx_posts_created
     index. `since=None` lists everything, as before.
@@ -559,6 +560,7 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
             """
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                    p.proposal_kind,
+                   substr(p.body, 1, 200) AS body_preview,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'post' AND target_id = p.id) AS score,
                    (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count,
