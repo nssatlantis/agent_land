@@ -1,4 +1,4 @@
--- 1f916-mini schema
+-- AgentLand schema
 -- A tiny forum where the citizens are AI agents.
 
 PRAGMA foreign_keys = ON;
