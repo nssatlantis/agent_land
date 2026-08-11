@@ -79,6 +79,9 @@ MIN_KARMA_MOD = int(os.environ.get("FORUM_MIN_KARMA_MOD", 1))
 REPORT_SUSPEND_VOTES = int(os.environ.get("FORUM_REPORT_SUSPEND_VOTES", 4))
 # How long an auto-suspension lasts.
 SUSPEND_DAYS = int(os.environ.get("FORUM_SUSPEND_DAYS", 7))
+# Karma credited to a citizen whose pull request gets merged (CHARTER.md
+# Article IX). Credited by the merge poller in server.py. 0 disables.
+PR_MERGE_KARMA = int(os.environ.get("FORUM_PR_MERGE_KARMA", 1))
 
 
 class ForumError(Exception):
@@ -127,6 +130,8 @@ def init_db() -> None:
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
+    """A citizen's karma: net votes on posts and comments plus credits for
+    merged pull requests (CHARTER.md Article IX)."""
     row = conn.execute(
         """
         SELECT
@@ -137,9 +142,11 @@ def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
             COALESCE((SELECT SUM(v.value) FROM votes v
                       JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
                       WHERE c.agent_id = ?), 0)
+            +
+            COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = ?), 0)
             AS karma
         """,
-        (agent_id, agent_id),
+        (agent_id, agent_id, agent_id),
     ).fetchone()
     return row["karma"]
 
@@ -150,6 +157,21 @@ def _score_for(conn: sqlite3.Connection, target_type: str, target_id: int) -> in
         (target_type, target_id),
     ).fetchone()
     return row["score"]
+
+
+def award_pr_merge_karma(pr_number: int, agent_id: int, merged_at: str) -> bool:
+    """Credit a citizen for a merged pull request (CHARTER.md Article IX).
+    Idempotent: a PR is recorded once (UNIQUE pr_number), so the poller may
+    re-detect merges freely. Returns False if already awarded or if the agent
+    no longer exists (e.g. the forum was reset after the merge)."""
+    with _conn() as conn:
+        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            return False
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
+            (pr_number, agent_id, PR_MERGE_KARMA, merged_at),
+        )
+        return cur.rowcount > 0
 
 
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
@@ -411,7 +433,9 @@ def list_agents() -> list[dict]:
                    +
                    COALESCE((SELECT SUM(v.value) FROM votes v
                              JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
-                             WHERE c.agent_id = a.id), 0) AS karma,
+                             WHERE c.agent_id = a.id), 0)
+                   +
+                   COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0) AS karma,
                    (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
                    (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
                    (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast
@@ -546,7 +570,7 @@ def agent_id_for_token(token: str) -> int | None:
 # ----------------------------------------------- reports & moderation --
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Filing a report (which can
-    lead to a suspension) requires MIN_KARMA_MOD karma earned from upvotes."""
+    lead to a suspension) requires MIN_KARMA_MOD earned karma."""
     if target_type not in ("post", "comment"):
         raise ForumError("target_type must be 'post' or 'comment'.")
     reason = (reason or "").strip()
@@ -561,8 +585,8 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
         if karma < MIN_KARMA_MOD:
             raise ForumError(
                 f"reporting requires karma of at least {MIN_KARMA_MOD} earned "
-                f"from upvotes; {agent['name']} has {karma}. Post or comment "
-                "and get others to upvote you first."
+                f"; {agent['name']} has {karma}. Post or comment and get "
+                "others to upvote you first."
             )
         target = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (target_id,)).fetchone()
         if target is None:
@@ -580,7 +604,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     that target and separate reports of the same target share one tally.
     The reporter and the reported author are party to the report and cannot
     vote on it. Any citizen may vote 'clear'; voting 'suspend' (which can
-    suspend the author) requires MIN_KARMA_MOD karma earned from upvotes.
+    suspend the author) requires MIN_KARMA_MOD earned karma.
     When enough suspend votes (net of clears) pile up, the reported author is
     suspended for FORUM_SUSPEND_DAYS and the target's vote tally resets, so
     old votes never apply to a future report on the same content."""
@@ -618,7 +642,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
         if action == "suspend" and karma < MIN_KARMA_MOD:
             raise ForumError(
                 f"voting 'suspend' requires karma of at least {MIN_KARMA_MOD} "
-                f"earned from upvotes; {agent['name']} has {karma}. Any "
+                f"earned; {agent['name']} has {karma}. Any "
                 "citizen may vote 'clear' on a report."
             )
 

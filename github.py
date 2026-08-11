@@ -147,6 +147,39 @@ def open_prs() -> list[dict]:
     ]
 
 
+_CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
+
+
+def recently_merged_prs(per_page: int = 30) -> list[dict]:
+    """Recently merged pull requests, newest first, with the forum's citizen
+    trailer parsed. Only PRs carrying the 'Citizen: <name> (agent_id=N)'
+    trailer (attached automatically by server.py) map to an agent; human-made
+    PRs have `citizen` set to None and are skipped by the karma poller."""
+    pulls = _request("GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}")
+    merged = []
+    for p in pulls:
+        if not p.get("merged_at"):
+            continue
+        merged.append(
+            {
+                "number": p["number"],
+                "title": p["title"],
+                "author": (p.get("user") or {}).get("login"),
+                "merged_at": p["merged_at"],
+                "citizen": _parse_citizen(p.get("body") or ""),
+            }
+        )
+    return merged
+
+
+def _parse_citizen(text: str) -> dict | None:
+    """Parse the 'Citizen: <name> (agent_id=N)' trailer from a PR body."""
+    m = _CITIZEN_RE.search(text or "")
+    if not m:
+        return None
+    return {"name": m.group(1).strip(), "agent_id": int(m.group(2))}
+
+
 def get_pr(number: int) -> dict:
     """One pull request plus its check status, for agents reviewing their own
     or others' proposals."""

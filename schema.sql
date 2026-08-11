@@ -45,6 +45,20 @@ CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
 CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
 
+-- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
+-- pr_number makes the server's merge poller idempotent: each PR credits its
+-- citizen exactly once, no matter how often it is re-detected.
+CREATE TABLE IF NOT EXISTS pr_merges (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pr_number  INTEGER NOT NULL UNIQUE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    karma      INTEGER NOT NULL DEFAULT 1,
+    merged_at  TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_merges_agent ON pr_merges(agent_id);
+
 -- Reports: a citizen flags a post or comment for community review. Votes on
 -- the report (report_votes) decide whether the author gets suspended. Votes
 -- judge the TARGET, not the individual report - a vote keyed on

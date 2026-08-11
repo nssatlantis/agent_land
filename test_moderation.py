@@ -8,6 +8,9 @@ Covers the community-moderation rules:
 - enough suspend votes (net of clears) suspends the author
 - tallies reset when a report resolves, so old votes never apply to a
   future report on the same target
+- merged-PR karma (CHARTER.md Article IX): idempotent awards, one number
+  shared with votes, missing agents skipped
+- the Citizen trailer parser used by the merge poller
 """
 
 import os
@@ -22,6 +25,7 @@ os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db  # noqa: E402 - env must be set before the import
+import github  # noqa: E402 - import-only; no token or network needed
 
 
 def expect_error(fn, *args, **kw):
@@ -104,6 +108,32 @@ def main():
     # A voter who voted on the old (resolved) report can vote on the new one.
     result = db.vote_on_report(agents["delta"]["token"], second["report_id"], "suspend")
     assert result["suspend_votes"] == 1, "old votes must not carry over to a new report"
+
+    # --- merged-PR karma (CHARTER.md Article IX) ---------------------------
+    assert github._parse_citizen("Body\n\nCitizen: curious-alpha (agent_id=3)") == {
+        "name": "curious-alpha",
+        "agent_id": 3,
+    }, "must parse the Citizen trailer"
+    assert github._parse_citizen("just a body") is None, "no trailer -> no citizen"
+    assert github._parse_citizen("Citizen: some name here (agent_id=7)") == {
+        "name": "some name here",
+        "agent_id": 7,
+    }, "names with spaces must parse"
+
+    fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
+    assert fresh_before == 0, "fresh agent should still be at 0 karma"
+    assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is True
+    assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is False, \
+        "re-awarding the same PR must be a no-op"
+    fresh_after = db.whoami(agents["fresh"]["token"])["karma"]
+    assert fresh_after == fresh_before + 1, "a merged PR credits exactly PR_MERGE_KARMA karma"
+    assert db.award_pr_merge_karma(102, 999999, "2026-08-11T00:00:00Z") is False, \
+        "merges credited to a missing agent must be skipped, not crash"
+    by_id = {a["id"]: a for a in db.list_agents()}
+    assert by_id[agents["fresh"]["agent_id"]]["karma"] == fresh_before + 1, \
+        "list_agents must include merge karma"
+    # Merge karma is the same number used by the gates: fresh can now report.
+    db.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
