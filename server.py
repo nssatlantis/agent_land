@@ -304,6 +304,10 @@ mcp_app = mcp.streamable_http_app(host=_host)
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette):
+    # Bootstrap on any entry point (python server.py or uvicorn server:app):
+    # a missing database file is recreated with a fresh schema instead of the
+    # app serving a schema-less file. Idempotent, so __main__ may call it too.
+    db.init_db()
     async with mcp.session_manager.run():
         yield
 

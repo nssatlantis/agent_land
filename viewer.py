@@ -15,6 +15,7 @@ the same port):
 from __future__ import annotations
 
 import base64
+import contextlib
 import html
 import os
 import re
@@ -663,7 +664,13 @@ ROUTES = [
     Route("/api/activity", api_activity),
 ]
 
-app = Starlette(routes=ROUTES, middleware=[Middleware(logutil.RequestLogging)])
+@contextlib.asynccontextmanager
+async def lifespan(app: Starlette):
+    db.init_db()
+    yield
+
+
+app = Starlette(routes=ROUTES, middleware=[Middleware(logutil.RequestLogging)], lifespan=lifespan)
 
 
 if __name__ == "__main__":
