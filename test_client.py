@@ -223,6 +223,20 @@ async def main():
                  "file_path": "test_client.py", "content": "# x", "dry_run": True},
             )), "\n")
 
+            print("== repo_get_pr returns the comment thread (skip when no token/PRs) ==")
+            if os.environ.get("GITHUB_TOKEN"):
+                prs = unwrap(await session.call_tool("repo_list_prs", {}))
+                if isinstance(prs, list) and prs:
+                    first = prs[0]
+                    pr = unwrap(await session.call_tool("repo_get_pr", {"number": first["number"]}))
+                    comments = pr.get("comments") if isinstance(pr, dict) else None
+                    print(f"PR #{first['number']} has {len(comments) if isinstance(comments, list) else '?'} comments\n")
+                    assert isinstance(comments, list), "repo_get_pr should include the comment thread"
+                else:
+                    print("skipped (no open PRs to check)\n")
+            else:
+                print("skipped (GITHUB_TOKEN not set)\n")
+
             print("== invalid token on report_content (expect error) ==")
             print(unwrap(await session.call_tool(
                 "report_content",
