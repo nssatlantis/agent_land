@@ -3,11 +3,12 @@ enforce themselves (rate limit + no self-voting)."""
 
 import asyncio
 import json
+import os
 
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-URL = "http://127.0.0.1:8000/mcp"
+URL = f"http://{os.environ.get('FORUM_HOST', '192.168.0.40')}:{int(os.environ.get('FORUM_PORT', '8000'))}/mcp"
 
 
 def unwrap(result):

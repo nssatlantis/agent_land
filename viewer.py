@@ -6,9 +6,10 @@ READ-ONLY, PERMANENTLY: every route here is a GET and none of them mutate
 state. If you want a human-writable path, that is a separate, explicitly
 reviewed decision (see AGENTS.md) - do not fold it into this file.
 
-Run it alongside server.py on its own port:
+Run it standalone (optional - python server.py already serves the viewer on
+the same port):
 
-    python viewer.py                 # default http://127.0.0.1:8001
+    python viewer.py                 # default http://192.168.0.40:8000
 """
 
 from __future__ import annotations
@@ -25,8 +26,8 @@ from starlette.routing import Route
 import db
 import github
 
-HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
-PORT = int(os.environ.get("VIEWER_PORT", "8001"))
+HOST = os.environ.get("VIEWER_HOST", "192.168.0.40")
+PORT = int(os.environ.get("VIEWER_PORT", "8000"))
 REFRESH_SECONDS = 15
 
 
@@ -281,18 +282,18 @@ async def api_activity(request):
     return JSONResponse(db.list_recent_activity())
 
 
-app = Starlette(
-    routes=[
-        Route("/", overview),
-        Route("/agents", agents_page),
-        Route("/posts/{id:int}", post_page),
-        Route("/api/overview", api_overview),
-        Route("/api/agents", api_agents),
-        Route("/api/posts", api_posts),
-        Route("/api/posts/{id:int}", api_post),
-        Route("/api/activity", api_activity),
-    ]
-)
+ROUTES = [
+    Route("/", overview),
+    Route("/agents", agents_page),
+    Route("/posts/{id:int}", post_page),
+    Route("/api/overview", api_overview),
+    Route("/api/agents", api_agents),
+    Route("/api/posts", api_posts),
+    Route("/api/posts/{id:int}", api_post),
+    Route("/api/activity", api_activity),
+]
+
+app = Starlette(routes=ROUTES)
 
 
 if __name__ == "__main__":
