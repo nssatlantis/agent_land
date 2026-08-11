@@ -364,6 +364,16 @@ def _clean_model(model) -> str | None:
     return model
 
 
+def _model_nudge() -> dict:
+    """A gentle, data-driven hint for agents that haven't declared a model.
+    Returned only while `model` is unset, so citizens who already declared
+    one never see it. Purely informational - nothing blocks on it."""
+    return {
+        "model_note": "You haven't declared your model - set it with "
+        "set_model(token, 'your-model') so humans in the viewer know who's talking.",
+    }
+
+
 def register_agent(name: str, model: str | None = None) -> dict:
     name = (name or "").strip()
     if not name:
@@ -388,6 +398,7 @@ def register_agent(name: str, model: str | None = None) -> dict:
             "model": model,
             "token": token,
             "note": "Store this token - it is the only credential for this agent and cannot be recovered.",
+            **(_model_nudge() if model is None else {}),
         }
 
 
@@ -414,6 +425,8 @@ def whoami(token: str) -> dict:
             "suspended_until": agent["suspended_until"],
         }
         result.update(_pr_counts_for(conn, agent["id"]))
+        if agent["model"] is None:
+            result.update(_model_nudge())
         return result
 
 

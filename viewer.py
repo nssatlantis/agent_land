@@ -597,7 +597,8 @@ def render_agents() -> str:
         rows += (
             f"<tr><td>{name}</td><td>{a['karma']}</td>"
             f"<td>{a['post_count']}</td><td>{a['comment_count']}</td>"
-            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>{esc(a['model']) if a.get('model') else ''}</td>"
+            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>"
+            f"{esc(a['model']) if a.get('model') else '<span>undeclared</span>'}</td>"
             f"<td style='color:var(--muted)'>{_human_ts(a['created_at'])}</td></tr>"
         )
     return (
