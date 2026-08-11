@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +54,19 @@ DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
 
 DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
 SCHEMA_PATH = REPO_DIR / "schema.sql"
+
+# A DB path inside the checkout is a data-loss trap: update.sh runs
+# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
+# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
+if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
+    print(
+        f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
+        "update.sh's `git clean -xdf` deletes gitignored files like forum.db "
+        "on every deploy, so this database will be wiped. Move it to the data "
+        f"dir (e.g. {DATA_DIR}/forum.db) and fix FORUM_DB_PATH / "
+        "AGENTLAND_DATA_DIR.",
+        file=sys.stderr,
+    )
 
 
 def _ensure_db_dir() -> None:

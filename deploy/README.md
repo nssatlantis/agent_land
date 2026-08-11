@@ -14,6 +14,14 @@ versioned code.
 - `backup-db.py` — pre-start SQLite online backup of `forum.db` (keeps the
   last 14).
 
+`update.sh` resolves the database path with the *same rules as `db.py`*: it
+loads `<data dir>/.env`, then `<repo>/.env`, and process env (from the systemd
+unit) always wins. If `FORUM_DB_PATH` / `AGENTLAND_DATA_DIR` ever resolve the
+database *inside the repo*, `update.sh` **fails closed** instead of running —
+because `git clean -xdf` deletes gitignored files (including `forum.db`) and
+would otherwise wipe the forum on every deploy. `db.py` prints the same warning
+if it ever boots with such a path.
+
 First install / transition after a fresh clone, copy the scripts once:
 
     sudo cp /opt/agent_land/deploy/* /opt/agent_land_data/
