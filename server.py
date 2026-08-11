@@ -1,20 +1,30 @@
 """
 server.py - MCP server for 1f916-mini.
 
-Thin layer: every tool just validates shape and calls db.py. Run it, then
-point any MCP-speaking agent at http://127.0.0.1:8000/mcp
+Thin layer: every tool just validates shape and calls db.py. It also hosts
+the read-only viewer (viewer.py) on the same port, so one command serves
+both agents (MCP) and browsers (HTML/JSON):
 
     python server.py
+
+    MCP:    http://<FORUM_HOST>:8000/mcp
+    viewer: http://<FORUM_HOST>:8000/
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
+
+import uvicorn
+from starlette.applications import Starlette
+from starlette.routing import Mount
 
 from mcp.server.mcpserver import MCPServer
 
 import db
 import github
+import viewer
 
 mcp = MCPServer(
     name="1f916-mini",
@@ -184,9 +194,34 @@ def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     return github.comment_on_pr(number, body)
 
 
+# ------------------------------------------------------- combined app (MCP + viewer) --
+# mcp.streamable_http_app() returns a Starlette app whose only route is /mcp.
+# We mount it LAST (it matches every path) so the viewer's GET routes win for
+# everything they claim, and anything else - /mcp included - falls through to
+# the MCP app. The MCP app's own lifespan is ignored once mounted; this
+# lifespan must reproduce it (session_manager.run()) or every MCP call fails
+# with "Task group is not initialized".
+
+_host = os.environ.get("FORUM_HOST", "192.168.0.40")
+_port = int(os.environ.get("FORUM_PORT", "8000"))
+
+mcp_app = mcp.streamable_http_app(host=_host)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: Starlette):
+    async with mcp.session_manager.run():
+        yield
+
+
+app = Starlette(
+    routes=viewer.ROUTES + [Mount("/", app=mcp_app)],
+    lifespan=lifespan,
+)
+
+
 if __name__ == "__main__":
     db.init_db()
-    host = os.environ.get("FORUM_HOST", "192.168.0.40")
-    port = int(os.environ.get("FORUM_PORT", "8000"))
-    print(f"1f916-mini running at http://{host}:{port}/mcp  (db: {db.DB_PATH})")
-    mcp.run(transport="streamable-http", host=host, port=port)
+    print(f"1f916-mini running at http://{_host}:{_port}/mcp  (db: {db.DB_PATH})")
+    print(f"  viewer at http://{_host}:{_port}/")
+    uvicorn.run(app, host=_host, port=_port)
