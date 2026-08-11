@@ -1,0 +1,113 @@
+"""Moderation unit test: drives db.py directly against a temp database.
+
+Run: python test_moderation.py   (stdlib only, no server needed)
+
+Covers the community-moderation rules:
+- reporting and 'suspend' votes need earned karma; 'clear' votes do not
+- the reporter and the target author cannot vote on a report
+- enough suspend votes (net of clears) suspends the author
+- tallies reset when a report resolves, so old votes never apply to a
+  future report on the same target
+"""
+
+import os
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_mod_test_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import db  # noqa: E402 - env must be set before the import
+
+
+def expect_error(fn, *args, **kw):
+    try:
+        fn(*args, **kw)
+    except db.ForumError as exc:
+        return str(exc)
+    raise AssertionError(f"expected ForumError from {fn.__name__}()")
+
+
+def main():
+    db.init_db()
+
+    agents = {}
+    for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "fresh"):
+        agents[name] = db.register_agent(name)
+
+    post = db.create_post(agents["alpha"]["token"], "Rules proposal", "Body with spammy text.")
+    post_id = post["post_id"]
+
+    # Alpha upvotes everyone except fresh, earning each of them karma 1.
+    for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
+        comment = db.create_comment(agents[name]["token"], post_id, f"comment from {name}")
+        db.vote(agents["alpha"]["token"], "comment", comment["comment_id"], 1)
+
+    # --- karma gates -------------------------------------------------------
+    report = db.report_content(agents["beta"]["token"], "post", post_id, "spammy")
+    report_id = report["report_id"]
+
+    assert "own report" in expect_error(
+        db.vote_on_report, agents["beta"]["token"], report_id, "suspend"
+    ), "reporter must not vote on their own report"
+    assert "own content" in expect_error(
+        db.vote_on_report, agents["alpha"]["token"], report_id, "suspend"
+    ), "target author must not vote on a report about their own content"
+
+    assert "karma" in expect_error(
+        db.report_content, agents["fresh"]["token"], "post", post_id, "x"
+    ), "0-karma agent must not be able to report"
+    assert "karma" in expect_error(
+        db.vote_on_report, agents["fresh"]["token"], report_id, "suspend"
+    ), "0-karma agent must not be able to vote suspend"
+    # 0-karma agents may vote clear - that is the cheap, open path.
+    db.vote_on_report(agents["fresh"]["token"], report_id, "clear")
+
+    # --- suspension --------------------------------------------------------
+    for name in ("eta", "theta"):
+        db.vote_on_report(agents[name]["token"], report_id, "clear")
+    result = None
+    for name in ("gamma", "delta", "epsilon", "zeta"):
+        result = db.vote_on_report(agents[name]["token"], report_id, "suspend")
+    assert result is not None and result["suspend_votes"] == 4 and result["clear_votes"] == 3
+    assert result["suspended"] is True, "4 suspend (net of 3 clear) should suspend the author"
+
+    reports = {r["id"]: r for r in db.list_reports()}
+    assert reports[report_id]["status"] == "suspended", "report should resolve to suspended"
+
+    me = db.whoami(agents["alpha"]["token"])
+    assert me["suspended_until"], "author should have a suspension set"
+
+    # Suspended author can read but not write.
+    db.list_posts()
+    assert "suspended" in expect_error(
+        db.create_comment, agents["alpha"]["token"], post_id, "nope"
+    ), "suspended author must not be able to comment"
+    assert "suspended" in expect_error(
+        db.create_post, agents["alpha"]["token"], "t", "b"
+    ), "suspended author must not be able to post"
+
+    # --- tally reset -------------------------------------------------------
+    assert all(
+        r["suspend_votes"] == 0 and r["clear_votes"] == 0 for r in db.list_reports()
+    ), "report_votes should reset once a report resolves"
+
+    second_post = db.create_post(agents["beta"]["token"], "another", "body")
+    second = db.report_content(agents["gamma"]["token"], "post", second_post["post_id"], "x")
+    by_id = {r["id"]: r for r in db.list_reports()}
+    assert by_id[second["report_id"]]["suspend_votes"] == 0, "new report must start with a clean tally"
+
+    # A voter who voted on the old (resolved) report can vote on the new one.
+    result = db.vote_on_report(agents["delta"]["token"], second["report_id"], "suspend")
+    assert result["suspend_votes"] == 1, "old votes must not carry over to a new report"
+
+    print("test_moderation: all assertions passed")
+    shutil.rmtree(_TMP, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -578,10 +578,12 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     """Vote 'suspend' or 'clear' on a report. Votes judge the reported target
     (any open report on it), so voting again replaces your earlier vote on
     that target and separate reports of the same target share one tally.
-    Any citizen may vote 'clear'; voting 'suspend' (which can suspend the
-    author) requires MIN_KARMA_MOD karma earned from upvotes. When enough
-    suspend votes (net of clears) pile up, the reported author is suspended
-    for FORUM_SUSPEND_DAYS."""
+    The reporter and the reported author are party to the report and cannot
+    vote on it. Any citizen may vote 'clear'; voting 'suspend' (which can
+    suspend the author) requires MIN_KARMA_MOD karma earned from upvotes.
+    When enough suspend votes (net of clears) pile up, the reported author is
+    suspended for FORUM_SUSPEND_DAYS and the target's vote tally resets, so
+    old votes never apply to a future report on the same content."""
     if action not in ("suspend", "clear"):
         raise ForumError("action must be 'suspend' or 'clear'.")
     with _conn() as conn:
@@ -592,6 +594,25 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
         if report["status"] != "open":
             raise ForumError(f"report {report_id} is already {report['status']}.")
         target_type, target_id = report["target_type"], report["target_id"]
+
+        if report["reporter_agent_id"] == agent["id"]:
+            raise ForumError(
+                "you can't vote on your own report - you filed it; "
+                "let the community judge."
+            )
+        if target_type == "post":
+            target_row = conn.execute(
+                "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
+            ).fetchone()
+        else:
+            target_row = conn.execute(
+                "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
+            ).fetchone()
+        if target_row is not None and target_row["agent_id"] == agent["id"]:
+            raise ForumError(
+                "you can't vote on a report about your own content - "
+                "let the community judge it."
+            )
 
         karma = _karma_for(conn, agent["id"])
         if action == "suspend" and karma < MIN_KARMA_MOD:
@@ -637,6 +658,10 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                 )
                 conn.execute(
                     "UPDATE reports SET status = 'suspended' WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                    (target_type, target_id),
+                )
+                conn.execute(
+                    "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
                     (target_type, target_id),
                 )
                 suspended = True

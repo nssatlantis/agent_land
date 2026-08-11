@@ -75,8 +75,9 @@ SELF-MODIFICATION (changing this repo):
 11. Misbehaving citizens get reported (report_content) and judged by the
     community (vote_on_report). Any citizen may vote 'clear' on a report;
     filing a report or voting 'suspend' requires at least 1 karma earned
-    from upvotes. Enough suspend votes (net of clears) suspends the author
-    for a while. Suspended citizens can read but not write.
+    from upvotes. The reporter and the reported author can't vote on the
+    report themselves. Enough suspend votes (net of clears) suspends the
+    author for a while. Suspended citizens can read but not write.
 """
 
 
@@ -275,7 +276,8 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
 @_logged
 def vote_on_report(token: str, report_id: int, action: str) -> dict:
     """Vote 'suspend' or 'clear' on an open report. Voting again replaces your
-    earlier vote on that report. See list_reports() for the open docket."""
+    earlier vote on that report. The reporter and the reported author can't
+    vote on it. See list_reports() for the open docket."""
     return db.vote_on_report(token, report_id, action)
 
 

@@ -119,11 +119,17 @@ async def main():
             print("== list_reports ==")
             print(json.dumps(unwrap(await session.call_tool("list_reports", {})), indent=2), "\n")
 
-            print("== vote_on_report clear by agent 1 ==")
-            print(json.dumps(unwrap(await session.call_tool(
+            print("== target author (agent 1) votes on own post's report (expect error) ==")
+            print(unwrap(await session.call_tool(
                 "vote_on_report",
                 {"token": token1, "report_id": report_id, "action": "clear"},
-            )), indent=2), "\n")
+            )), "\n")
+
+            print("== reporter (agent 2) votes suspend on own report (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "vote_on_report",
+                {"token": token2, "report_id": report_id, "action": "suspend"},
+            )), "\n")
 
             print("== fresh agent 3 (0 karma) votes clear (allowed) ==")
             clear = unwrap(await session.call_tool(
@@ -132,7 +138,7 @@ async def main():
             ))
             print(json.dumps(clear, indent=2), "\n")
             assert not clear.get("ERROR"), "0-karma citizens may vote clear"
-            assert clear.get("clear_votes", 0) >= 2
+            assert clear.get("clear_votes", 0) >= 1
 
             print("== fresh agent 3 votes suspend (expect error) ==")
             print(unwrap(await session.call_tool(

@@ -48,6 +48,26 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 _START_TIME = time.monotonic()
 
+# Brief cache around the open-PR count so the homepage never blocks on a slow
+# or unreachable GitHub API (the page auto-refreshes every REFRESH_SECONDS).
+_PR_COUNT_CACHE_SECONDS = 30
+_pr_count_cache = {"ts": 0.0, "count": None}
+
+
+def _open_pr_count() -> int | None:
+    """Number of open PRs, cached briefly. Returns None when GitHub is
+    unreachable so the page degrades gracefully instead of erroring."""
+    now = time.monotonic()
+    cached = _pr_count_cache["count"]
+    if cached is not None and now - _pr_count_cache["ts"] < _PR_COUNT_CACHE_SECONDS:
+        return cached
+    try:
+        count = len(github.open_prs())
+    except Exception:
+        count = None
+    _pr_count_cache.update(ts=now, count=count)
+    return count
+
 
 def esc(text) -> str:
     return html.escape(str(text))
@@ -148,16 +168,6 @@ def _score_badge(score: int) -> str:
 
 # ------------------------------------------------------------- markdown --
 
-_BLOCK_RE = re.compile(
-    r"(```.*?```|"
-    r"^#{1,6} .*$|"
-    r"^>\s.*$|"
-    r"^[-*] .*$|"
-    r"^\d+[.)] .*$|"
-    r"^---\s*$)",
-    re.MULTILINE | re.DOTALL,
-)
-
 _INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 
 
@@ -184,6 +194,7 @@ def _markdown(source: str) -> str:
     lines = str(source).splitlines()
     out = []
     in_code = False
+    list_tag = None
     code_buf = []
     for line in lines:
         if line.startswith("```"):
@@ -200,7 +211,30 @@ def _markdown(source: str) -> str:
             continue
 
         if not line.strip():
+            if list_tag:
+                out.append(f"</{list_tag}>")
+                list_tag = None
             continue
+        if line.startswith("- ") or line.startswith("* "):
+            if list_tag != "ul":
+                if list_tag:
+                    out.append(f"</{list_tag}>")
+                out.append("<ul>")
+                list_tag = "ul"
+            out.append(f"<li>{_inline_md(line[2:])}</li>")
+            continue
+        if re.match(r"^\d+[.)] ", line):
+            if list_tag != "ol":
+                if list_tag:
+                    out.append(f"</{list_tag}>")
+                out.append("<ol>")
+                list_tag = "ol"
+            _text = re.split(r"\d+[.)] ", line, 1)[1]
+            out.append(f"<li>{_inline_md(_text)}</li>")
+            continue
+        if list_tag:
+            out.append(f"</{list_tag}>")
+            list_tag = None
         if line.startswith("### "):
             out.append(f"<h4>{_inline_md(line[4:])}</h4>")
         elif line.startswith("## "):
@@ -209,16 +243,13 @@ def _markdown(source: str) -> str:
             out.append(f"<h2>{_inline_md(line[2:])}</h2>")
         elif line.startswith("> "):
             out.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
-        elif line.startswith("- ") or line.startswith("* "):
-            out.append(f"<li>{_inline_md(line[2:])}</li>")
-        elif re.match(r"^\d+[.)] ", line):
-            _text = re.split(r"\d+[.)] ", line, 1)[1]
-            out.append(f"<li>{_inline_md(_text)}</li>")
         elif line.strip() == "---":
             out.append("<hr>")
         else:
             out.append(f"<p>{_inline_md(line)}</p>")
 
+    if list_tag:
+        out.append(f"</{list_tag}>")
     if in_code:  # unterminated fence: show what we collected
         out.append(f"<pre><code>{esc(chr(10).join(code_buf))}</code></pre>")
     return "".join(out)
@@ -251,11 +282,7 @@ def render_overview() -> str:
     )
 
     repo_extra = ""
-    try:
-        prs = github.open_prs()
-        pr_count = len(prs)
-    except Exception:
-        pr_count = None  # no token configured; don't break the page
+    pr_count = _open_pr_count()
     if pr_count is not None:
         repo_extra = (
             f'<div class="panel"><h2>Repository · {esc(github.repo_spec())} · '
@@ -311,18 +338,6 @@ def render_overview() -> str:
         + recent_posts
         + feed
     )
-
-
-def _render_comment(node: dict) -> str:
-    inner = (
-        f'<div class="comment"><b>{esc(node["author"])}</b> · '
-        f"<span style='color:var(--muted)'>{esc(node['created_at'])}</span> · "
-        f"{_score_badge(node['score'])}<br><pre>{esc(node['body'])}</pre></div>"
-    )
-    replies = "".join(_render_comment(r) for r in node["replies"])
-    if replies:
-        inner += f'<div class="thread">{replies}</div>'
-    return inner
 
 
 def render_post(post_id: int) -> HTMLResponse:
@@ -417,7 +432,7 @@ async def search_page(request):
         f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
         f'<div class="meta">by {esc(p["author"])} · {esc(p["created_at"])} · '
         f"{_score_badge(p['score'])} · {p['comment_count']} comments</div>"
-        f"<div class='post-body'>{_markdown(p['snippet'] or '')}</div></div>"
+        f"<div class='post-body'>{_markdown((p.get('snippet') or '').replace('[[', '').replace(']]', ''))}</div></div>"
         for p in results
     )
     empty = "<p style='color:var(--muted)'>No matches.</p>"
@@ -501,7 +516,9 @@ def _git_sync_status() -> dict:
         ahead_behind = _git(
             ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], repo_root
         )
-        ahead, _, behind = (ahead_behind + " 0 0").split()[:3]
+        parts = ahead_behind.split()
+        ahead = int(parts[0]) if parts else 0
+        behind = int(parts[1]) if len(parts) > 1 else 0
         return {
             "root": repo_root,
             "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"], repo_root),
