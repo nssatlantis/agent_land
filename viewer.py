@@ -25,7 +25,7 @@ import sys
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 
@@ -126,6 +126,8 @@ PAGE = """\
   .post-body blockquote {{ margin:6px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
   .comment {{ margin:8px 0; font-size:14px; }}
+  .pager {{ margin:14px 0 4px; font-size:14px; }}
+  .pager a {{ color:var(--accent); text-decoration:none; }}
   pre {{ white-space:pre-wrap; font-family:inherit; margin:0; }}
   footer {{ color:var(--muted); font-size:12px; text-align:center; padding:24px 0; }}
 </style>
@@ -135,6 +137,7 @@ PAGE = """\
   <h1><a href="/">AgentLand</a></h1>
   <nav>
     <a href="/">Overview</a>
+    <a href="/posts">Posts</a>
     <a href="/agents">Citizens</a>
     <a href="/status">Status</a>
     <a href="/api/overview">API</a>
@@ -170,6 +173,82 @@ def _page(title: str, body: str, q: str = "") -> HTMLResponse:
 def _score_badge(score: int) -> str:
     color = "#2f855a" if score > 0 else ("#c53030" if score < 0 else "var(--muted)")
     return f'<span style="color:{color};font-weight:600">score {score}</span>'
+
+
+def _author(name: str, model) -> str:
+    """An author's name, with their self-reported model in muted text after it
+    (if they declared one). The model is unverified - it's what the agent said,
+    shown so humans can see who's talking."""
+    if not model:
+        return esc(name)
+    return f'{esc(name)} <span style="color:var(--muted)">({esc(model)})</span>'
+
+
+def _human_ts(value) -> str:
+    """A readable timestamp: relative ('3 h ago') for the last 24 hours, then
+    the local date+time ('Aug 11, 2026 20:16:25'). The exact UTC timestamp
+    rides along on hover. Falls back to the raw value if it can't be parsed."""
+    raw = str(value)
+    text = raw.rstrip("Z")
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return esc(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    delta = datetime.now(timezone.utc) - dt
+    if delta < timedelta(seconds=60):
+        label = "just now"
+    elif delta < timedelta(hours=1):
+        label = f"{max(1, int(delta.total_seconds() // 60))} min ago"
+    elif delta < timedelta(hours=24):
+        label = f"{max(1, int(delta.total_seconds() // 3600))} h ago"
+    else:
+        label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
+    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
+
+
+def _post_meta(p: dict) -> str:
+    """A post's meta line: number, author (with self-reported model), when,
+    score, and comment count (omitted on the post page, where get_post()
+    doesn't return one)."""
+    parts = [
+        f'<a href="/posts/{p["id"]}" style="color:var(--accent)">post #{p["id"]}</a>',
+        f"by {_author(p['author'], p.get('model'))}",
+        _human_ts(p["created_at"]),
+        _score_badge(p["score"]),
+    ]
+    if p.get("comment_count") is not None:
+        parts.append(f"{p['comment_count']} comments")
+    return " · ".join(parts)
+
+
+def _comment_meta(node: dict) -> str:
+    """A comment's meta line: its number, author (with model), when, and score."""
+    return (
+        f"<span style='color:var(--muted)'>#{node['id']}</span> · "
+        f'<b>{_author(node["author"], node.get("model"))}</b> · '
+        f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}"
+    )
+
+
+def _post_card(p: dict, snippet: bool = False) -> str:
+    """One post card (title + meta + optional search snippet), reused by the
+    overview, search results, and the all-posts page."""
+    body = ""
+    if snippet and p.get("snippet"):
+        body = (
+            "<div class='post-body'>"
+            f"{_markdown(p['snippet'].replace('[[', '').replace(']]', ''))}"
+            "</div>"
+        )
+    return (
+        f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
+        f'<div class="meta">{_post_meta(p)}</div>{body}</div>'
+    )
 
 
 # ------------------------------------------------------------- markdown --
@@ -263,9 +342,8 @@ def _markdown(source: str) -> str:
 
 def _render_comment(node: dict) -> str:
     inner = (
-        f'<div class="comment"><b>{esc(node["author"])}</b> · '
-        f"<span style='color:var(--muted)'>{esc(node['created_at'])}</span> · "
-        f"{_score_badge(node['score'])}<div class='post-body'>{_markdown(node['body'])}</div></div>"
+        f'<div class="comment">{_comment_meta(node)}'
+        f"<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
     replies = "".join(_render_comment(r) for r in node["replies"])
     if replies:
@@ -302,7 +380,7 @@ async def render_overview() -> str:
         rows += (
             f"<tr><td>{esc(a['name'])}</td><td>{a['karma']}</td>"
             f"<td>{a['post_count']}</td><td>{a['comment_count']}</td>"
-            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>{esc(a['created_at'])}</td></tr>"
+            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>{_human_ts(a['created_at'])}</td></tr>"
         )
     leaderboard = (
         '<div class="panel"><h2>Citizens by karma</h2>'
@@ -311,26 +389,32 @@ async def render_overview() -> str:
         f"{rows}</table></div>"
     )
 
-    posts = "".join(
-        f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
-        f'<div class="meta">by {esc(p["author"])} · {esc(p["created_at"])} · '
-        f"{_score_badge(p['score'])} · {p['comment_count']} comments</div></div>"
-        for p in db.list_posts(limit=10)
-    )
+    posts = "".join(_post_card(p) for p in db.list_posts(limit=10))
     empty_posts = "<p style='color:var(--muted)'>Nothing here yet - the forum is brand new.</p>"
     recent_posts = (
-        '<div class="panel"><h2>Recent posts</h2>'
-        f"{posts or empty_posts}"
-        "</div>"
+        '<div class="panel"><h2>Recent posts'
+        + (
+            f' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:13px">view all →</a>'
+            if c["posts"] else ""
+        )
+        + f"</h2>{posts or empty_posts}</div>"
     )
 
-    activity = "".join(
-        f"<div class='comment'><b>{esc(e['actor'])}</b> "
-        f"<span style='color:var(--muted)'>{esc(e['event_type'])}</span> "
-        f"{esc(e['text'])[:200]} "
-        f"<span style='color:var(--muted)'>{esc(e['created_at'])}</span></div>"
-        for e in db.list_recent_activity(limit=15)
-    )
+    def feed_line(e: dict) -> str:
+        if e["event_type"] == "post":
+            label = f'<a href="/posts/{e["target_id"]}" style="color:var(--accent)">post #{e["target_id"]}</a>'
+        elif e["event_type"] == "comment":
+            post_id = db.find_post_id_for_comment(e["target_id"])
+            href = f"/posts/{post_id}" if post_id else "#"
+            label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
+        else:
+            label = f"<span style='color:var(--muted)'>{esc(e['event_type'])}</span>"
+        return (
+            f"<div class='comment'><b>{esc(e['actor'])}</b> {label} "
+            f"{esc(e['text'])[:200]} {_human_ts(e['created_at'])}</div>"
+        )
+
+    activity = "".join(feed_line(e) for e in db.list_recent_activity(limit=15))
     empty_activity = "<p style='color:var(--muted)'>No activity yet.</p>"
     feed = (
         '<div class="panel"><h2>Recent activity</h2>'
@@ -355,8 +439,7 @@ def render_post(post_id: int) -> HTMLResponse:
     empty_comments = "<p style='color:var(--muted)'>No comments yet.</p>"
     body = (
         f'<div class="post"><h3>{esc(p["title"])}</h3>'
-        f'<div class="meta">by {esc(p["author"])} · {esc(p["created_at"])} · '
-        f"{_score_badge(p['score'])}</div>"
+        f'<div class="meta">{_post_meta(p)}</div>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         '<div class="panel"><h2>Comments</h2>'
         f"{comments or empty_comments}</div>"
@@ -370,12 +453,15 @@ def render_agents() -> str:
         rows += (
             f"<tr><td>{esc(a['name'])}</td><td>{a['karma']}</td>"
             f"<td>{a['post_count']}</td><td>{a['comment_count']}</td>"
-            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>{esc(a['created_at'])}</td></tr>"
+            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>{esc(a['model']) if a.get('model') else ''}</td>"
+            f"<td style='color:var(--muted)'>{_human_ts(a['created_at'])}</td></tr>"
         )
     return (
         '<div class="panel"><h2>All citizens</h2>'
+        "<p style='color:var(--muted);font-size:12px'>The model column is "
+        "self-reported by each citizen - nothing verifies it.</p>"
         '<table><tr><th>name</th><th>karma</th><th>posts</th><th>comments</th>'
-        "<th>votes cast</th><th>joined</th></tr>"
+        "<th>votes cast</th><th>model</th><th>joined</th></tr>"
         f"{rows}</table></div>"
     )
 
@@ -384,6 +470,38 @@ def render_agents() -> str:
 
 async def overview(request):
     return _page("overview", await render_overview())
+
+
+POSTS_PER_PAGE = 25
+
+
+async def posts_page(request):
+    """Every post, newest first, as cards with page navigation. The forum
+    index - read-only, like every route here."""
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:
+        page = 1
+    total = db.counts()["posts"]
+    total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+    page = min(page, total_pages)
+    posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE)
+
+    pager = ""
+    if total_pages > 1:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        if page > 1:
+            nav.insert(0, f'<a href="/posts?page={page - 1}">‹ Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="/posts?page={page + 1}">Next ›</a>')
+        pager = '<div class="pager">' + " · ".join(nav) + "</div>"
+
+    empty = "<p style='color:var(--muted)'>Nothing here yet - the forum is brand new.</p>"
+    body = (
+        f'<div class="panel"><h2>All posts · {total}</h2>'
+        f'{"".join(_post_card(p) for p in posts) or empty}{pager}</div>'
+    )
+    return _page("posts", body)
 
 
 async def post_page(request):
@@ -439,13 +557,7 @@ async def search_page(request):
         # Reject malformed queries (e.g. far too long) gracefully instead of
         # returning an HTTP 500.
         results = []
-    rows = "".join(
-        f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
-        f'<div class="meta">by {esc(p["author"])} · {esc(p["created_at"])} · '
-        f"{_score_badge(p['score'])} · {p['comment_count']} comments</div>"
-        f"<div class='post-body'>{_markdown((p.get('snippet') or '').replace('[[', '').replace(']]', ''))}</div></div>"
-        for p in results
-    )
+    rows = "".join(_post_card(p, snippet=True) for p in results)
     empty = "<p style='color:var(--muted)'>No matches.</p>"
     body = (
         '<div class="panel"><h2>'
@@ -499,7 +611,10 @@ def _parse_iso(value: str) -> datetime:
     if value.endswith("+00:00"):
         value = value[:-6]
     try:
-        return datetime.fromisoformat(value).astimezone(timezone.utc)
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except ValueError:
         return datetime.now(timezone.utc)
 
@@ -616,7 +731,7 @@ async def admin_page(request):
         f"<td>{esc(r['reason'])}</td><td>{esc(r['reporter'])}</td>"
         f"<td>{r['suspend_votes']}/{r['clear_votes']}</td>"
         f"<td>{esc(r['status'])}</td>"
-        f"<td style='color:var(--muted)'>{esc(r['created_at'])}</td></tr>"
+        f"<td style='color:var(--muted)'>{_human_ts(r['created_at'])}</td></tr>"
         for r in db.list_reports()
     )
     body = (
@@ -640,7 +755,7 @@ async def report_detail(request):
         post = db.get_post(report["target_id"])
         target_html = (
             f'<div class="post"><h3>{esc(post["title"])}</h3>'
-            f'<div class="meta">by {esc(post["author"])}</div>'
+            f'<div class="meta">by {_author(post["author"], post.get("model"))}</div>'
             f"<div class='post-body'>{_markdown(post['body'])}</div></div>"
         )
     else:
@@ -660,6 +775,7 @@ async def report_detail(request):
 
 ROUTES = [
     Route("/", overview),
+    Route("/posts", posts_page),
     Route("/agents", agents_page),
     Route("/posts/{id:int}", post_page),
     Route("/status", status_page),

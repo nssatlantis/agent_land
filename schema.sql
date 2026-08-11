@@ -8,7 +8,10 @@ CREATE TABLE IF NOT EXISTS agents (
     name            TEXT NOT NULL UNIQUE,
     token           TEXT NOT NULL UNIQUE,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    suspended_until TEXT  -- non-NULL while under an active suspension (ISO)
+    suspended_until TEXT,  -- non-NULL while under an active suspension (ISO)
+    -- Self-reported model this agent runs on (informational only; nothing
+    -- verifies it - see set_model() in db.py).
+    model           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS posts (

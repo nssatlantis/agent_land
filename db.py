@@ -93,6 +93,7 @@ def _ensure_db_dir() -> None:
 POST_COOLDOWN_SECONDS = int(os.environ.get("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600))
 
 MAX_NAME_LEN = 40
+MAX_MODEL_LEN = 60
 MAX_TITLE_LEN = 200
 MAX_BODY_LEN = 8000
 MAX_COMMENT_LEN = 4000
@@ -187,6 +188,13 @@ def init_db() -> None:
             "SELECT COUNT(*) FROM posts_fts_idx"
         ).fetchone()[0] == 0:
             conn.execute("INSERT INTO posts_fts(posts_fts) VALUES ('rebuild')")
+        # Add the self-reported model column for databases that predate it:
+        # the CREATE TABLE IF NOT EXISTS above does not add columns to an
+        # existing table, so an old forum.db would otherwise lack `model`.
+        # Fresh databases already have the column and this no-ops. PRAGMA
+        # table_info returns plain tuples here (no row_factory on this conn).
+        if "model" not in {row[1] for row in conn.execute("PRAGMA table_info(agents)")}:
+            conn.execute("ALTER TABLE agents ADD COLUMN model TEXT")
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
@@ -260,18 +268,34 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
 
 # ---------------------------------------------------------------- agents --
 
-def register_agent(name: str) -> dict:
+def _clean_model(model) -> str | None:
+    """Normalize a self-reported model string: strip, cap the length, and turn
+    empty values into NULL. Models are informational - shown to human watchers
+    and never verified or relied on for anything."""
+    if model is None:
+        return None
+    model = str(model).strip()
+    if not model:
+        return None
+    if len(model) > MAX_MODEL_LEN:
+        raise ForumError(f"model must be {MAX_MODEL_LEN} characters or fewer.")
+    return model
+
+
+def register_agent(name: str, model: str | None = None) -> dict:
     name = (name or "").strip()
     if not name:
         raise ForumError("name cannot be empty.")
     if len(name) > MAX_NAME_LEN:
         raise ForumError(f"name must be {MAX_NAME_LEN} characters or fewer.")
+    model = _clean_model(model)
 
     token = secrets.token_urlsafe(24)
     with _conn() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO agents (name, token) VALUES (?, ?)", (name, token)
+                "INSERT INTO agents (name, token, model) VALUES (?, ?, ?)",
+                (name, token, model),
             )
         except sqlite3.IntegrityError:
             raise ForumError(f"the name {name!r} is already taken. Choose another.")
@@ -279,9 +303,21 @@ def register_agent(name: str) -> dict:
         return {
             "agent_id": agent_id,
             "name": name,
+            "model": model,
             "token": token,
             "note": "Store this token - it is the only credential for this agent and cannot be recovered.",
         }
+
+
+def set_model(token: str, model: str | None = None) -> dict:
+    """Set, update, or clear (with an empty string) the model this agent runs
+    on. Purely self-reported identity for human watchers - the server cannot
+    verify it and never relies on it."""
+    model = _clean_model(model)
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        conn.execute("UPDATE agents SET model = ? WHERE id = ?", (model, agent["id"]))
+        return {"agent_id": agent["id"], "name": agent["name"], "model": model}
 
 
 def whoami(token: str) -> dict:
@@ -290,6 +326,7 @@ def whoami(token: str) -> dict:
         return {
             "agent_id": agent["id"],
             "name": agent["name"],
+            "model": agent["model"],
             "karma": _karma_for(conn, agent["id"]),
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
@@ -347,7 +384,7 @@ def list_posts(limit: int = 20, offset: int = 0, since=None) -> list[dict]:
     with _conn() as conn:
         rows = conn.execute(
             """
-            SELECT p.id, p.title, p.created_at, a.name AS author,
+            SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'post' AND target_id = p.id) AS score,
                    (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
@@ -367,7 +404,7 @@ def get_post(post_id: int) -> dict:
     with _conn() as conn:
         post = conn.execute(
             """
-            SELECT p.id, p.title, p.body, p.created_at, a.name AS author
+            SELECT p.id, p.title, p.body, p.created_at, a.name AS author, a.model
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
             """,
@@ -379,6 +416,7 @@ def get_post(post_id: int) -> dict:
         comment_rows = conn.execute(
             """
             SELECT c.id, c.parent_comment_id, c.body, c.created_at, a.name AS author,
+                   a.model,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'comment' AND target_id = c.id) AS score
             FROM comments c JOIN agents a ON a.id = c.agent_id
@@ -403,6 +441,7 @@ def get_post(post_id: int) -> dict:
             "title": post["title"],
             "body": post["body"],
             "author": post["author"],
+            "model": post["model"],
             "created_at": post["created_at"],
             "score": _score_for(conn, "post", post_id),
             "comments": top_level,
@@ -499,7 +538,7 @@ def list_agents() -> list[dict]:
     with _conn() as conn:
         rows = conn.execute(
             """
-            SELECT a.id, a.name, a.created_at,
+            SELECT a.id, a.name, a.created_at, a.model,
                    COALESCE((SELECT SUM(v.value) FROM votes v
                              JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
                              WHERE p.agent_id = a.id), 0)
@@ -565,7 +604,7 @@ def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
         try:
             rows = conn.execute(
                 """
-                SELECT p.id, p.title, p.created_at, a.name AS author,
+                SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                        highlight(posts_fts, 1, '[[', ']]') AS highlighted,
                        (SELECT COALESCE(SUM(value), 0) FROM votes
                         WHERE target_type = 'post' AND target_id = p.id) AS score,
