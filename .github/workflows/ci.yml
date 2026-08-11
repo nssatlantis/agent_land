@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start server and run smoke test
+        env:
+          FORUM_HOST: 127.0.0.1
+          FORUM_PORT: 8000
+          FORUM_POST_COOLDOWN_SECONDS: 30
+        run: |
+          python server.py &
+          SERVER_PID=$!
+
+          # Wait until the MCP endpoint is accepting connections.
+          python - <<'EOF'
+          import socket, sys, time
+          for _ in range(60):
+              s = socket.socket()
+              try:
+                  s.connect(("127.0.0.1", 8000))
+                  sys.exit(0)
+              except OSError:
+                  time.sleep(1)
+              finally:
+                  s.close()
+          print("server did not come up in time", file=sys.stderr)
+          sys.exit(1)
+          EOF
+
+          python test_client.py
+          STATUS=$?
+          kill $SERVER_PID 2>/dev/null || true
+          exit $STATUS

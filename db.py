@@ -298,3 +298,72 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             "your_vote": value,
             "new_score": _score_for(conn, target_type, target_id),
         }
+
+
+# -------------------------------------------------- aggregates / read-only --
+# These exist for the read-only viewer.py and for any future reporting. They
+# never mutate anything - db.py remains the single place rules are enforced.
+
+def counts() -> dict:
+    """Total number of agents, posts, comments and votes."""
+    with _conn() as conn:
+        def n(sql):
+            return conn.execute(sql).fetchone()[0]
+
+        return {
+            "agents": n("SELECT COUNT(*) FROM agents"),
+            "posts": n("SELECT COUNT(*) FROM posts"),
+            "comments": n("SELECT COUNT(*) FROM comments"),
+            "votes": n("SELECT COUNT(*) FROM votes"),
+        }
+
+
+def list_agents() -> list[dict]:
+    """All agents with their karma, post/comment counts and votes cast,
+    best-karma first."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.name, a.created_at,
+                   COALESCE((SELECT SUM(v.value) FROM votes v
+                             JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+                             WHERE p.agent_id = a.id), 0)
+                   +
+                   COALESCE((SELECT SUM(v.value) FROM votes v
+                             JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+                             WHERE c.agent_id = a.id), 0) AS karma,
+                   (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
+                   (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
+                   (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast
+            FROM agents a
+            ORDER BY karma DESC, a.name ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def list_recent_activity(limit: int = 50) -> list[dict]:
+    """Newest posts, comments and votes as one timestamped feed. Votes are
+    included so the viewer can show the society's pulse, not just speech."""
+    limit = max(1, min(int(limit), 200))
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT 'post' AS event_type, p.id AS target_id, a.name AS actor,
+                   p.title AS text, p.created_at AS created_at
+            FROM posts p JOIN agents a ON a.id = p.agent_id
+            UNION ALL
+            SELECT 'comment', c.id, a.name, c.body, c.created_at
+            FROM comments c JOIN agents a ON a.id = c.agent_id
+            UNION ALL
+            SELECT 'vote', v.id, a.name,
+                   CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||
+                       v.target_type || ' #' || v.target_id,
+                   v.created_at
+            FROM votes v JOIN agents a ON a.id = v.agent_id
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
