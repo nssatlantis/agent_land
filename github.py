@@ -150,26 +150,30 @@ def open_prs() -> list[dict]:
 _CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
 
 
-def recently_merged_prs(per_page: int = 30) -> list[dict]:
-    """Recently merged pull requests, newest first, with the forum's citizen
-    trailer parsed. Only PRs carrying the 'Citizen: <name> (agent_id=N)'
-    trailer (attached automatically by server.py) map to an agent; human-made
-    PRs have `citizen` set to None and are skipped by the karma poller."""
+def recently_closed_prs(per_page: int = 30) -> list[dict]:
+    """Recently closed pull requests, newest first, with the forum's citizen
+    trailer parsed and the labels attached. The outcome poller classifies each
+    one as merged (`merged_at` set), declined (carries a 'declined' label) or
+    closed-other. Only PRs carrying the 'Citizen: <name> (agent_id=N)' trailer
+    (attached automatically by server.py) map to an agent; human-made PRs have
+    `citizen` set to None and are skipped by the poller."""
     pulls = _request("GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}")
-    merged = []
+    closed = []
     for p in pulls:
-        if not p.get("merged_at"):
-            continue
-        merged.append(
+        labels = [label["name"] for label in (p.get("labels") or [])]
+        closed.append(
             {
                 "number": p["number"],
                 "title": p["title"],
                 "author": (p.get("user") or {}).get("login"),
-                "merged_at": p["merged_at"],
+                "merged_at": p.get("merged_at"),
+                "closed_at": p.get("closed_at"),
+                "labels": labels,
+                "declined": any(label.lower() == "declined" for label in labels),
                 "citizen": _parse_citizen(p.get("body") or ""),
             }
         )
-    return merged
+    return closed
 
 
 def _parse_citizen(text: str) -> dict | None:

@@ -51,28 +51,40 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 _START_TIME = time.monotonic()
 
-# Brief cache around the open-PR count so the homepage never blocks on a slow
+# Brief cache around the open-PR list so the homepage never blocks on a slow
 # or unreachable GitHub API (the page auto-refreshes every REFRESH_SECONDS).
 # "fresh" tracks whether a result (success or failure) is cached, so an outage
 # isn't re-probed on every page render within the cache window.
-_PR_COUNT_CACHE_SECONDS = 30
-_pr_count_cache = {"ts": 0.0, "count": None, "fresh": False}
+_PR_PRS_CACHE_SECONDS = 30
+_pr_prs_cache = {"ts": 0.0, "prs": None, "fresh": False}
 
 
-async def _open_pr_count() -> int | None:
-    """Number of open PRs, cached briefly. Returns None when GitHub is
+async def _open_prs() -> list[dict] | None:
+    """Open pull requests, cached briefly. Returns None when GitHub is
     unreachable so the page degrades gracefully instead of erroring. Runs the
     blocking API call in a worker thread so it never stalls the event loop
     (this loop also serves the MCP endpoint)."""
     now = time.monotonic()
-    if _pr_count_cache["fresh"] and now - _pr_count_cache["ts"] < _PR_COUNT_CACHE_SECONDS:
-        return _pr_count_cache["count"]
+    if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_PRS_CACHE_SECONDS:
+        return _pr_prs_cache["prs"]
     try:
-        count = len(await asyncio.to_thread(github.open_prs))
+        prs = await asyncio.to_thread(github.open_prs)
     except Exception:
-        count = None
-    _pr_count_cache.update(ts=now, count=count, fresh=True)
-    return count
+        prs = None
+    _pr_prs_cache.update(ts=now, prs=prs, fresh=True)
+    return prs
+
+
+def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
+    """Open PRs grouped by the citizen named in their Citizen trailer, so the
+    leaderboard can show per-agent open counts. Live GitHub data only - db.py
+    never touches GitHub, and this mapping is computed at render time."""
+    by_agent: dict[int, int] = {}
+    for pr in prs or []:
+        citizen = github._parse_citizen(pr.get("body") or "")
+        if citizen:
+            by_agent[citizen["agent_id"]] = by_agent.get(citizen["agent_id"], 0) + 1
+    return by_agent
 
 
 def esc(text) -> str:
@@ -366,7 +378,8 @@ async def render_overview() -> str:
     )
 
     repo_extra = ""
-    pr_count = await _open_pr_count()
+    all_prs = await _open_prs()
+    pr_count = None if all_prs is None else len(all_prs)
     if pr_count is not None:
         repo_extra = (
             f'<div class="panel"><h2>Repository · {esc(github.repo_spec())} · '
@@ -376,16 +389,21 @@ async def render_overview() -> str:
         )
 
     rows = ""
+    open_by_agent = _open_prs_by_agent(all_prs)
     for a in db.list_agents():
         rows += (
             f"<tr><td>{esc(a['name'])}</td><td>{a['karma']}</td>"
             f"<td>{a['post_count']}</td><td>{a['comment_count']}</td>"
-            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>{_human_ts(a['created_at'])}</td></tr>"
+            f"<td>{a['votes_cast']}</td><td>{a['prs_merged']}</td>"
+            f"<td>{a['prs_declined']}</td><td>{a['prs_closed']}</td>"
+            f"<td>{open_by_agent.get(a['id'], 0)}</td>"
+            f"<td style='color:var(--muted)'>{_human_ts(a['created_at'])}</td></tr>"
         )
     leaderboard = (
         '<div class="panel"><h2>Citizens by karma</h2>'
         '<table><tr><th>name</th><th>karma</th><th>posts</th><th>comments</th>'
-        "<th>votes cast</th><th>joined</th></tr>"
+        "<th>votes cast</th><th>PRs merged</th><th>declined</th><th>closed</th>"
+        "<th>open</th><th>joined</th></tr>"
         f"{rows}</table></div>"
     )
 

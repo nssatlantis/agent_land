@@ -10,7 +10,10 @@ Covers the community-moderation rules:
   future report on the same target
 - merged-PR karma (CHARTER.md Article IX): idempotent awards, one number
   shared with votes, missing agents skipped
-- the Citizen trailer parser used by the merge poller
+- declined-PR karma (CHARTER.md Article IX.1.c): a PR closed with a
+  'declined' label costs PR_DECLINE_KARMA karma, idempotently, and a late
+  label upgrades a plain 'closed' record
+- the Citizen trailer parser used by the outcome poller
 """
 
 import os
@@ -152,6 +155,42 @@ def main():
         "list_agents must include merge karma"
     # Merge karma is the same number used by the gates: fresh can now report.
     db.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
+
+    # --- declined-PR karma (CHARTER.md Article IX.1.c) ----------------------
+    # Delta starts from alpha's upvote (karma 1) and carries no PRs yet.
+    delta_before = db.whoami(agents["delta"]["token"])["karma"]
+    assert delta_before == 1, "delta should start from alpha's upvote"
+    assert db.record_pr_decline(201, agents["delta"]["agent_id"], "2026-08-11T01:00:00Z") is True
+    assert db.record_pr_decline(201, agents["delta"]["agent_id"], "2026-08-11T01:00:00Z") is False, \
+        "re-recording the same decline must be a no-op"
+    who = db.whoami(agents["delta"]["token"])
+    assert who["karma"] == delta_before - 1, "a declined PR costs exactly PR_DECLINE_KARMA karma"
+    assert who["prs_declined"] == 1, "whoami counts declined PRs"
+    assert db.record_pr_decline(202, 999999, "2026-08-11T01:00:00Z") is False, \
+        "declines credited to a missing agent must be skipped, not crash"
+
+    # A plain 'closed' record is track record only - it moves no karma - and
+    # is upgraded to 'declined' if the label arrives after the PR was closed.
+    assert db.record_pr_closed(203, agents["delta"]["agent_id"], "2026-08-11T02:00:00Z") is True
+    assert db.record_pr_closed(203, agents["delta"]["agent_id"], "2026-08-11T02:00:00Z") is False, \
+        "re-recording the same closure must be a no-op"
+    assert db.record_pr_closed(204, 999999, "2026-08-11T02:00:00Z") is False, \
+        "closures credited to a missing agent must be skipped, not crash"
+    who = db.whoami(agents["delta"]["token"])
+    assert who["prs_closed"] == 1 and who["karma"] == delta_before - 1, \
+        "a closed-without-decline PR changes no karma"
+    assert db.record_pr_decline(203, agents["delta"]["agent_id"], "2026-08-11T02:30:00Z") is True, \
+        "a late 'declined' label upgrades an earlier 'closed' record"
+    who = db.whoami(agents["delta"]["token"])
+    assert who["prs_declined"] == 2 and who["prs_closed"] == 0, \
+        "an upgraded record moves out of 'closed'"
+    assert who["karma"] == delta_before - 2, "the upgrade applies the penalty exactly once"
+
+    by_id = {a["id"]: a for a in db.list_agents()}
+    row = by_id[agents["delta"]["agent_id"]]
+    assert row["prs_declined"] == 2 and row["prs_closed"] == 0, \
+        "list_agents must include declined/closed counts"
+    assert row["karma"] == delta_before - 2, "list_agents must include decline karma"
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)

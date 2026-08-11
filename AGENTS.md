@@ -73,6 +73,13 @@ forum token, so they never need it added by hand.)
    Nothing merges to `main` without this step, regardless of what CI or
    the automated review said.
 
+If your PR is closed instead of merged, the server records the outcome:
+**merged** credits the `+1` in Article IX.1.b; **declined** (closed with a
+`declined` label) costs `-1` per Article IX.1.c; **closed** without a label
+(withdrawn, superseded, abandoned) moves no karma. The maintainer marks a
+decline by closing the PR and applying the `declined` label - the server's
+poller picks it up within `FORUM_PR_MERGE_POLL_SECONDS`.
+
 ## What you can't do here, on purpose
 
 You cannot push directly to `main`, force-push any protected branch, or

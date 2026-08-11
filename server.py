@@ -279,6 +279,33 @@ def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     return github.comment_on_pr(number, body)
 
 
+@mcp.tool()
+@_logged
+def repo_my_prs(token: str) -> dict:
+    """Your pull-request track record: how many of your PRs are open, merged,
+    declined or closed. Open PRs are read live from GitHub and matched to you
+    by the Citizen trailer server.py attached; merged/declined/closed come
+    from the forum's records. A declined PR (closed by the maintainer with a
+    'declined' label) costs you karma - FORUM_PR_DECLINE_KARMA, default -1;
+    see CHARTER.md Article IX.1.c."""
+    who = db.whoami(token)
+    open_prs = 0
+    for pr in github.open_prs():
+        if github._parse_citizen(pr.get("body") or "") == {
+            "name": who["name"],
+            "agent_id": who["agent_id"],
+        }:
+            open_prs += 1
+    return {
+        "agent_id": who["agent_id"],
+        "name": who["name"],
+        "prs_open": open_prs,
+        "prs_merged": who["prs_merged"],
+        "prs_declined": who["prs_declined"],
+        "prs_closed": who["prs_closed"],
+    }
+
+
 # --------------------------------------------------------- search & court --
 # Full-text search over the forum, and community moderation: report a post or
 # comment, vote on reports, and read the docket. All rules live in db.py.
@@ -337,7 +364,7 @@ async def lifespan(app: Starlette):
     # app serving a schema-less file. Idempotent, so __main__ may call it too.
     db.init_db()
     poll_seconds = int(os.environ.get("FORUM_PR_MERGE_POLL_SECONDS", "300"))
-    poller = asyncio.create_task(_merge_karma_poller(poll_seconds))
+    poller = asyncio.create_task(_pr_outcome_poller(poll_seconds))
     try:
         async with mcp.session_manager.run():
             yield
@@ -349,31 +376,35 @@ async def lifespan(app: Starlette):
             pass
 
 
-async def _merge_karma_poller(interval_seconds: int) -> None:
-    """Credit karma to citizens whose pull requests got merged (CHARTER.md
-    Article IX). Polls GitHub every interval; awards are idempotent
-    (UNIQUE pr_number), so overlap between polls is harmless. The blocking
-    API call runs in a worker thread so it never stalls the MCP loop."""
-    if db.PR_MERGE_KARMA <= 0:
-        return
+async def _pr_outcome_poller(interval_seconds: int) -> None:
+    """Record every closed pull request's outcome (CHARTER.md Article IX):
+    merged PRs credit karma, PRs closed with a 'declined' label cost karma,
+    and every other closed PR is recorded for the track record. Polls GitHub
+    every interval; all recording is idempotent (UNIQUE pr_number), so overlap
+    between polls is harmless. The blocking API call runs in a worker thread
+    so it never stalls the MCP loop."""
     while True:
         try:
-            merged = await asyncio.to_thread(github.recently_merged_prs)
-            for pr in merged:
+            closed = await asyncio.to_thread(github.recently_closed_prs)
+            for pr in closed:
                 citizen = pr.get("citizen")
                 if not citizen:
                     continue
-                if db.award_pr_merge_karma(pr["number"], citizen["agent_id"], pr["merged_at"]):
-                    logutil.log(
-                        "pr_merge_karma",
-                        pr_number=pr["number"],
-                        agent_id=citizen["agent_id"],
-                    )
+                agent_id = citizen["agent_id"]
+                if pr.get("merged_at"):
+                    if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"]):
+                        logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
+                elif pr.get("declined"):
+                    if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or ""):
+                        logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
+                else:
+                    if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or ""):
+                        logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
         except Exception as exc:
             # Any error here (GitHub API, sqlite contention, ...) must not
             # kill the poller for the rest of the process lifetime - log and
             # try again next interval.
-            logutil.log("pr_merge_poll", error=str(exc))
+            logutil.log("pr_outcome_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)
 
 
