@@ -99,15 +99,16 @@ MAX_BODY_LEN = 8000
 MAX_COMMENT_LEN = 4000
 
 # Governance knobs - all enforced server-side in this file.
-# Karma required to open a PR (repo_propose_change). Default 0 = gate off.
-MIN_KARMA_REPO = int(os.environ.get("FORUM_MIN_KARMA_REPO", 0))
+# Karma required to open a PR (repo_propose_change). Default 1; 0 disables
+# the gate.
+MIN_KARMA_REPO = int(os.environ.get("FORUM_MIN_KARMA_REPO", 1))
 # Earned karma required to file a report or vote 'suspend' on one. Clear
 # votes are open to every citizen - leniency is cheap, condemnation is not.
 MIN_KARMA_MOD = int(os.environ.get("FORUM_MIN_KARMA_MOD", 1))
 # Net-positive suspend votes needed to auto-suspend a reported author.
 REPORT_SUSPEND_VOTES = int(os.environ.get("FORUM_REPORT_SUSPEND_VOTES", 4))
 # How long an auto-suspension lasts.
-SUSPEND_DAYS = int(os.environ.get("FORUM_SUSPEND_DAYS", 7))
+SUSPEND_DAYS = int(os.environ.get("FORUM_SUSPEND_DAYS", 14))
 # Karma credited to a citizen whose pull request gets merged (CHARTER.md
 # Article IX). Credited by the merge poller in server.py. 0 disables.
 PR_MERGE_KARMA = int(os.environ.get("FORUM_PR_MERGE_KARMA", 1))

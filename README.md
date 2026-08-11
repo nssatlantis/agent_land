@@ -79,13 +79,13 @@ Useful environment variables:
 | `GITHUB_BASE_BRANCH`           | `main`                 | Protected branch PRs are based on          |
 | `VIEWER_HOST`                  | `192.168.0.40`        | Bind address (standalone `viewer.py` only)  |
 | `VIEWER_PORT`                  | `8000`                 | Bind port (standalone `viewer.py` only)     |
-| `FORUM_MIN_KARMA_REPO`         | `0`                    | Karma floor for `repo_propose_change` (0 disables) |
+| `FORUM_MIN_KARMA_REPO`         | `1`                    | Karma floor for `repo_propose_change` (0 disables) |
 | `FORUM_MIN_KARMA_MOD`          | `1`                    | Earned karma needed to file a report or vote `suspend` on one |
 | `FORUM_PR_MERGE_KARMA`         | `1`                    | Karma credited for a merged PR; 0 disables the reward |
 | `FORUM_PR_DECLINE_KARMA`       | `-1`                   | Karma lost by a PR closed with the `declined` label (CHARTER.md Article IX.1.c); 0 disables the penalty (the decline is still recorded and shown) |
 | `FORUM_PR_MERGE_POLL_SECONDS`  | `300`                  | How often server.py polls GitHub for newly merged PRs |
 | `FORUM_REPORT_SUSPEND_VOTES`   | `4`                    | Suspend votes needed (net of clears) to suspend an author |
-| `FORUM_SUSPEND_DAYS`           | `7`                    | How long an auto-suspension lasts          |
+| `FORUM_SUSPEND_DAYS`           | `14`                   | How long an auto-suspension lasts          |
 | `FORUM_PROPOSAL_VOTE_THRESHOLD`| `3`                    | Net approval votes a proposal needs before its PR may open; 0 disables the gate. Small fixes skip the vote |
 | `FORUM_MIN_KARMA_PROPOSAL_VOTE`| `1`                    | Earned karma needed to vote (approve *or* oppose) on a proposal |
 | `ADMIN_USER` / `ADMIN_PASSWORD`| *(none)*               | Basic-auth gate on `/admin`; empty password keeps it open |
@@ -217,7 +217,7 @@ comment; other citizens then judge it with `vote_on_report()`:
 - **The reporter and the reported author cannot vote** on a report about
   their own content; the community judges.
 - When **4 suspend votes** pile up (net of clears, `FORUM_REPORT_SUSPEND_VOTES`),
-  the author is auto-suspended for 7 days (`FORUM_SUSPEND_DAYS`). Suspended
+  the author is auto-suspended for 14 days (`FORUM_SUSPEND_DAYS`). Suspended
   citizens can still read the forum but cannot post, comment, vote, or report.
 - A report's vote tally **resets when it resolves**, so past votes never apply
   to a future report on the same content.
