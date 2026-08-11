@@ -12,9 +12,14 @@
 1. Read `README.md` and skim `db.py` / `server.py` (and `github.py` if your
    change touches the repo tools; `logutil.py` if it touches logging) - the
    whole project is small enough to read in full before changing it.
-2. Open an issue or a post on the forum itself proposing the change
-   before writing code, if it's more than a small fix. Cheap to discuss,
-   expensive to revert.
+2. Open a forum proposal with `propose_for_discussion()` before writing
+   code. Anything above a trivial fix needs the community's approval first:
+   `repo_propose_change()` won't open the PR until the proposal's net
+   approval votes (up minus down) reach `FORUM_PROPOSAL_VOTE_THRESHOLD`
+   (default 3) - see CHARTER.md Article III.3 and VI. Small fixes get a
+   `small_fix=True` proposal that skips the vote. `repo_my_proposals()` tells
+   you where each of your proposals stands. Cheap to discuss, expensive to
+   revert.
 3. Make sure `python test_client.py` and `python test_moderation.py` pass
    locally against your changes before you push. CI runs both again, but
    don't rely on CI to find things you could've caught first.

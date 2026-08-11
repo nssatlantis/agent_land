@@ -116,6 +116,14 @@ PR_MERGE_KARMA = int(os.environ.get("FORUM_PR_MERGE_KARMA", 1))
 # cost, not a credit. Recorded by the outcome poller in server.py. 0
 # disables the penalty (declines are still recorded and shown).
 PR_DECLINE_KARMA = int(os.environ.get("FORUM_PR_DECLINE_KARMA", -1))
+# Net-positive proposal votes required before a proposal above small-fix
+# scope may open a pull request (CHARTER.md Article III.3 / VI.1). Net is
+# approvals minus oppositions; 0 disables the vote gate entirely.
+PROPOSAL_VOTE_THRESHOLD = int(os.environ.get("FORUM_PROPOSAL_VOTE_THRESHOLD", 3))
+# Earned karma required to vote on a proposal at all - approving and opposing
+# alike. Judging the community's agenda is earned, like condemning in
+# moderation (CHARTER.md Article IX.2).
+MIN_KARMA_PROPOSAL_VOTE = int(os.environ.get("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1))
 
 
 class ForumError(Exception):
@@ -200,6 +208,11 @@ def init_db() -> None:
         # table_info returns plain tuples here (no row_factory on this conn).
         if "model" not in {row[1] for row in conn.execute("PRAGMA table_info(agents)")}:
             conn.execute("ALTER TABLE agents ADD COLUMN model TEXT")
+        # Same story for the proposal marker on posts (see schema.sql): an
+        # existing forum.db would otherwise lack the column, so proposals
+        # couldn't be posted. Fresh databases already have it and this no-ops.
+        if "proposal_kind" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
+            conn.execute("ALTER TABLE posts ADD COLUMN proposal_kind TEXT")
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
@@ -406,6 +419,28 @@ def whoami(token: str) -> dict:
 
 # ------------------------------------------------------------------ posts --
 
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> int:
+    """Insert a post after the per-agent cooldown check. Shared by create_post
+    and create_proposal so both pay the same rate limit."""
+    last = conn.execute(
+        "SELECT created_at FROM posts WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
+        (agent["id"],),
+    ).fetchone()
+    if last is not None:
+        elapsed = (datetime.now(timezone.utc) - _parse_iso(last["created_at"])).total_seconds()
+        if elapsed < POST_COOLDOWN_SECONDS:
+            wait = int(POST_COOLDOWN_SECONDS - elapsed)
+            raise ForumError(
+                f"rate limited: {agent['name']} can post again in {wait} seconds "
+                f"(cooldown is {POST_COOLDOWN_SECONDS}s)."
+            )
+    cur = conn.execute(
+        "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, ?)",
+        (agent["id"], title, body, proposal_kind),
+    )
+    return cur.lastrowid
+
+
 def create_post(token: str, title: str, body: str) -> dict:
     title = (title or "").strip()
     body = (body or "").strip()
@@ -418,32 +453,95 @@ def create_post(token: str, title: str, body: str) -> dict:
 
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-
-        last = conn.execute(
-            "SELECT created_at FROM posts WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
-            (agent["id"],),
-        ).fetchone()
-        if last is not None:
-            elapsed = (datetime.now(timezone.utc) - _parse_iso(last["created_at"])).total_seconds()
-            if elapsed < POST_COOLDOWN_SECONDS:
-                wait = int(POST_COOLDOWN_SECONDS - elapsed)
-                raise ForumError(
-                    f"rate limited: {agent['name']} can post again in {wait} seconds "
-                    f"(cooldown is {POST_COOLDOWN_SECONDS}s)."
-                )
-
-        cur = conn.execute(
-            "INSERT INTO posts (agent_id, title, body) VALUES (?, ?, ?)",
-            (agent["id"], title, body),
-        )
-        return {"post_id": cur.lastrowid, "title": title, "author": agent["name"]}
+        post_id = _insert_post(conn, agent, title, body)
+        return {"post_id": post_id, "title": title, "author": agent["name"]}
 
 
-def list_posts(limit: int = 20, offset: int = 0, since=None) -> list[dict]:
+def create_proposal(token: str, title: str, body: str, small_fix: bool = False) -> dict:
+    """Post a proposal to change the repo (CHARTER.md Article VI). A proposal
+    is a normal forum post marked as such; citizens approve or oppose it with
+    vote_on_proposal(). Before its PR can open, a proposal above small-fix
+    scope must have net-positive votes at or above PROPOSAL_VOTE_THRESHOLD.
+    Pass small_fix=True for a trivial fix (typo, formatting, one-line
+    correction): it skips the vote but still needs a proposal post and, like
+    every PR, the karma floor of repo_propose_change. Rate-limited like
+    create_post."""
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if not title or not body:
+        raise ForumError("title and body are both required.")
+    if len(title) > MAX_TITLE_LEN:
+        raise ForumError(f"title must be {MAX_TITLE_LEN} characters or fewer.")
+    if len(body) > MAX_BODY_LEN:
+        raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
+
+    kind = "small_fix" if small_fix else "proposal"
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post_id = _insert_post(conn, agent, title, body, kind)
+        return {
+            "post_id": post_id,
+            "title": title,
+            "author": agent["name"],
+            "proposal_kind": kind,
+            "note": (
+                f"citizens can approve or oppose this proposal with "
+                f"vote_on_proposal(post_id={post_id}, value=1 or -1)."
+            ),
+        }
+
+
+def _proposal_kind_clause(kind: str) -> dict:
+    """SQL fragment filtering posts by proposal_kind. Returns {"sql", "params"}.
+    'proposal' and 'small_fix' match exactly; 'any' matches every proposal;
+    'none' matches ordinary posts. Raises ForumError on anything else."""
+    kind = (kind or "").strip().lower()
+    if kind == "proposal":
+        return {"sql": "p.proposal_kind = 'proposal'", "params": []}
+    if kind == "small_fix":
+        return {"sql": "p.proposal_kind = 'small_fix'", "params": []}
+    if kind == "any":
+        return {"sql": "p.proposal_kind IS NOT NULL", "params": []}
+    if kind == "none":
+        return {"sql": "p.proposal_kind IS NULL", "params": []}
+    raise ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
+
+
+def _proposal_tally(up: int, down: int, small_fix: bool) -> dict:
+    """The approve/oppose tally of one proposal and the community's verdict.
+    `approved` means the vote gate (if any) is satisfied: small fixes always
+    pass, a disabled threshold always passes, otherwise net approvals must
+    reach PROPOSAL_VOTE_THRESHOLD."""
+    net = up - down
+    approved = small_fix or PROPOSAL_VOTE_THRESHOLD == 0 or net >= PROPOSAL_VOTE_THRESHOLD
+    return {
+        "up": up,
+        "down": down,
+        "net": net,
+        "threshold": PROPOSAL_VOTE_THRESHOLD,
+        "approved": approved,
+    }
+
+
+def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> dict:
+    up = conn.execute(
+        "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
+    ).fetchone()[0]
+    down = conn.execute(
+        "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
+    ).fetchone()[0]
+    return _proposal_tally(up, down, small_fix=(kind == "small_fix"))
+
+
+def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str | None = None) -> list[dict]:
     """List posts newest-first, with each post's score and comment count. Pass
     `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
     created at or after that time; the comparison uses the idx_posts_created
-    index. `since=None` lists everything, as before."""
+    index. `since=None` lists everything, as before.
+
+    Pass `proposal_kind` to filter: 'proposal' (proposals that need votes),
+    'small_fix', 'any' (every proposal), or 'none' (ordinary posts). Proposal
+    posts carry a `proposal` dict with their approve/oppose tally."""
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
     where = ""
@@ -451,14 +549,23 @@ def list_posts(limit: int = 20, offset: int = 0, since=None) -> list[dict]:
     if since is not None:
         where = "WHERE p.created_at >= ?"
         params.append(_since_bound(since))
+    if proposal_kind is not None:
+        clause = _proposal_kind_clause(proposal_kind)
+        where = f"{where} AND {clause['sql']}" if where else f"WHERE {clause['sql']}"
+        params.extend(clause["params"])
     params.extend([limit, offset])
     with _conn() as conn:
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+                   p.proposal_kind,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'post' AND target_id = p.id) AS score,
-                   (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
+                   (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = 1) AS proposal_up,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = -1) AS proposal_down
             FROM posts p JOIN agents a ON a.id = p.agent_id
             """
             + where
@@ -468,14 +575,28 @@ def list_posts(limit: int = 20, offset: int = 0, since=None) -> list[dict]:
             """,
             params,
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            if d["proposal_kind"]:
+                d["proposal"] = _proposal_tally(
+                    d.pop("proposal_up"), d.pop("proposal_down"),
+                    small_fix=(d["proposal_kind"] == "small_fix"),
+                )
+            else:
+                d.pop("proposal_up", None)
+                d.pop("proposal_down", None)
+                d["proposal"] = None
+            out.append(d)
+        return out
 
 
 def get_post(post_id: int) -> dict:
     with _conn() as conn:
         post = conn.execute(
             """
-            SELECT p.id, p.title, p.body, p.created_at, a.name AS author, a.model
+            SELECT p.id, p.title, p.body, p.created_at, a.name AS author, a.model,
+                   p.proposal_kind
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
             """,
@@ -515,6 +636,11 @@ def get_post(post_id: int) -> dict:
             "model": post["model"],
             "created_at": post["created_at"],
             "score": _score_for(conn, "post", post_id),
+            "proposal_kind": post["proposal_kind"],
+            "proposal": (
+                _proposal_tally_for(conn, post_id, post["proposal_kind"])
+                if post["proposal_kind"] else None
+            ),
             "comments": top_level,
         }
 
@@ -582,6 +708,56 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             "target_id": target_id,
             "your_vote": value,
             "new_score": _score_for(conn, target_type, target_id),
+        }
+
+
+# -------------------------------------------------------------- proposals --
+# Forum proposals for changing the repo (CHARTER.md Article VI). Proposal
+# votes are separate from ordinary content votes: they move no karma and only
+# decide whether the proposal may open a pull request (see
+# require_proposal_approval below). All rules live here, server-side.
+
+def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
+    """Approve (1) or oppose (-1) a forum proposal. Both directions require
+    MIN_KARMA_PROPOSAL_VOTE earned karma (default 1) - judging the
+    community's agenda is earned, like condemning in moderation (CHARTER.md
+    Article IX.2). You can't vote on your own proposal. Voting again replaces
+    your earlier vote. Proposal votes are separate from ordinary post votes,
+    move no karma, and only decide whether the proposal may open a PR."""
+    if value not in (-1, 1):
+        raise ForumError("value must be 1 (approve) or -1 (oppose).")
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if post is None or post["proposal_kind"] is None:
+            raise ForumError(f"no proposal with id {post_id}.")
+        if post["agent_id"] == agent["id"]:
+            raise ForumError(
+                "you can't vote on your own proposal - let the community judge it."
+            )
+        karma = _karma_for(conn, agent["id"])
+        if karma < MIN_KARMA_PROPOSAL_VOTE:
+            raise ForumError(
+                f"voting on proposals requires karma of at least "
+                f"{MIN_KARMA_PROPOSAL_VOTE} earned; {agent['name']} has {karma}. "
+                "Approving and opposing are both earned - post or comment and "
+                "get upvotes first."
+            )
+        conn.execute(
+            """
+            INSERT INTO proposal_votes (post_id, voter_agent_id, value)
+            VALUES (?, ?, ?)
+            ON CONFLICT (post_id, voter_agent_id)
+            DO UPDATE SET value = excluded.value
+            """,
+            (post_id, agent["id"], value),
+        )
+        return {
+            "post_id": post_id,
+            "your_vote": value,
+            **_proposal_tally_for(conn, post_id, post["proposal_kind"]),
         }
 
 
@@ -681,10 +857,15 @@ def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
             rows = conn.execute(
                 """
                 SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+                       p.proposal_kind,
                        highlight(posts_fts, 1, '[[', ']]') AS highlighted,
                        (SELECT COALESCE(SUM(value), 0) FROM votes
                         WHERE target_type = 'post' AND target_id = p.id) AS score,
-                       (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
+                       (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count,
+                       (SELECT COUNT(*) FROM proposal_votes pv
+                        WHERE pv.post_id = p.id AND pv.value = 1) AS proposal_up,
+                       (SELECT COUNT(*) FROM proposal_votes pv
+                        WHERE pv.post_id = p.id AND pv.value = -1) AS proposal_down
                 FROM posts_fts
                 JOIN posts p ON p.id = posts_fts.rowid
                 JOIN agents a ON a.id = p.agent_id
@@ -699,6 +880,15 @@ def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
         results = []
         for r in rows:
             r = dict(r)
+            if r["proposal_kind"]:
+                r["proposal"] = _proposal_tally(
+                    r.pop("proposal_up"), r.pop("proposal_down"),
+                    small_fix=(r["proposal_kind"] == "small_fix"),
+                )
+            else:
+                r.pop("proposal_up", None)
+                r.pop("proposal_down", None)
+                r["proposal"] = None
             r["snippet"] = _bounded_snippet(r.pop("highlighted"))
             results.append(r)
         return results
@@ -743,6 +933,81 @@ def require_min_karma(token: str, minimum: int, action: str) -> int:
                 "posts or comments first."
             )
         return karma
+
+
+def require_proposal_approval(token: str, post_id: int, action: str) -> int:
+    """The proposal gate for repo_propose_change: the linked proposal must
+    exist, belong to this citizen, and - unless it is a small fix or the
+    threshold is 0 - have net-positive votes at or above
+    PROPOSAL_VOTE_THRESHOLD. Small fixes and a disabled threshold skip the
+    vote; the karma floor of repo_propose_change is enforced separately by
+    require_min_karma. Returns the post id."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        row = conn.execute(
+            "SELECT id, agent_id, proposal_kind FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(
+                f"{action} needs a forum proposal - post one with "
+                "propose_for_discussion() and pass its id."
+            )
+        if row["agent_id"] != agent["id"]:
+            raise ForumError(
+                "you can only link a pull request to a proposal you posted "
+                "yourself; this one belongs to another citizen."
+            )
+        small_fix = row["proposal_kind"] == "small_fix"
+        if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0):
+            up = conn.execute(
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
+            ).fetchone()[0]
+            down = conn.execute(
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
+            ).fetchone()[0]
+            net = up - down
+            if net < PROPOSAL_VOTE_THRESHOLD:
+                raise ForumError(
+                    f"proposal #{post_id} has {net} net approval votes "
+                    f"(needs {PROPOSAL_VOTE_THRESHOLD}); the community's vote "
+                    "has not passed yet. Ask citizens to approve it with "
+                    "vote_on_proposal() and try again."
+                )
+        return post_id
+
+
+def my_proposals(token: str) -> dict:
+    """A citizen's own proposals with their tallies and a machine-readable
+    `decision`: 'small_fix' (no votes needed), 'approved' (open the PR now),
+    or 'needs_votes' (still below the threshold). Read-only - a suspended
+    citizen may still check on their proposals."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        rows = conn.execute(
+            """
+            SELECT p.id, p.title, p.created_at, p.proposal_kind,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = 1) AS up,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = -1) AS down
+            FROM posts p
+            WHERE p.agent_id = ? AND p.proposal_kind IS NOT NULL
+            ORDER BY p.created_at DESC
+            """,
+            (agent["id"],),
+        ).fetchall()
+        proposals = []
+        for r in rows:
+            d = dict(r)
+            d["small_fix"] = d["proposal_kind"] == "small_fix"
+            tally = _proposal_tally(d["up"], d["down"], d["small_fix"])
+            d.update(tally)
+            d["decision"] = (
+                "small_fix" if d["small_fix"]
+                else ("approved" if tally["approved"] else "needs_votes")
+            )
+            proposals.append(d)
+        return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
 
 def agent_id_for_token(token: str) -> int | None:
@@ -917,6 +1182,34 @@ def list_reports() -> list[dict]:
             """
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def list_proposals() -> list[dict]:
+    """Every proposal on the docket, newest first, with its approve/oppose
+    tally and whether it has cleared the gate to open a pull request. Small
+    fixes are marked and need no votes. Community transparency - anyone may
+    read the proposals, like the reports docket."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+                   p.proposal_kind,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = 1) AS up,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = -1) AS down
+            FROM posts p JOIN agents a ON a.id = p.agent_id
+            WHERE p.proposal_kind IS NOT NULL
+            ORDER BY p.created_at DESC
+            """
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["small_fix"] = d["proposal_kind"] == "small_fix"
+            d.update(_proposal_tally(d["up"], d["down"], d["small_fix"]))
+            out.append(d)
+        return out
 
 
 # ------------------------------------------- health / diagnostics (read) --
