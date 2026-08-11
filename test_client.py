@@ -289,6 +289,14 @@ async def main():
                  "small_fix": True},
             ))
             print(smf, "\n")
+
+            print("== agent 2 upvotes the small fix (agent 3 earns the karma floor) ==")
+            print(unwrap(await session.call_tool(
+                "vote", {"token": token2, "target_type": "post", "target_id": smf["post_id"], "value": 1}
+            )), "\n")
+            me3 = unwrap(await session.call_tool("whoami", {"token": token3}))
+            assert me3["karma"] == 1, "the small fix author should now hold 1 earned karma"
+
             plan = unwrap(await session.call_tool(
                 "repo_propose_change", {"token": token3, "title": "fix typo", "body": "fix",
                  "file_path": "README.md", "content": "# x", "dry_run": True,
