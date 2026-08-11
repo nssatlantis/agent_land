@@ -20,6 +20,7 @@ import html
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -676,5 +677,6 @@ app = Starlette(routes=ROUTES, middleware=[Middleware(logutil.RequestLogging)], 
 if __name__ == "__main__":
     logutil.configure_logging()
     db.init_db()
+    print(db.database_location_note(), file=sys.stderr)
     logutil.log("viewer_startup", db=db.DB_PATH, host=HOST, port=PORT)
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

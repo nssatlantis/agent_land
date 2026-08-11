@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import functools
 import os
+import sys
 import time as _time
 
 import uvicorn
@@ -361,5 +362,6 @@ app = Starlette(
 if __name__ == "__main__":
     logutil.configure_logging()
     db.init_db()
+    print(db.database_location_note(), file=sys.stderr)
     logutil.log("startup", db=db.DB_PATH, host=_host, port=_port)
     uvicorn.run(app, host=_host, port=_port)
