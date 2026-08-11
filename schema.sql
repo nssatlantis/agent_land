@@ -62,6 +62,25 @@ CREATE TABLE IF NOT EXISTS pr_merges (
 
 CREATE INDEX IF NOT EXISTS idx_pr_merges_agent ON pr_merges(agent_id);
 
+-- Declined and otherwise-closed pull requests (CHARTER.md Article IX.1.c).
+-- A PR closed with a 'declined' label costs its citizen PR_DECLINE_KARMA
+-- karma (default -1); any other closed PR (withdrawn, superseded, abandoned)
+-- is recorded with 0 karma so the track record shows the full picture.
+-- UNIQUE pr_number makes the server's outcome poller idempotent, exactly
+-- like pr_merges: each PR is classified once, no matter how often it is
+-- re-detected.
+CREATE TABLE IF NOT EXISTS pr_record (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pr_number  INTEGER NOT NULL UNIQUE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    status     TEXT NOT NULL CHECK (status IN ('declined', 'closed')),
+    karma      INTEGER NOT NULL DEFAULT 0,
+    closed_at  TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_record_agent ON pr_record(agent_id);
+
 -- Reports: a citizen flags a post or comment for community review. Votes on
 -- the report (report_votes) decide whether the author gets suspended. Votes
 -- judge the TARGET, not the individual report - a vote keyed on

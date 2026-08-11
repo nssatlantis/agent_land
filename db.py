@@ -111,6 +111,11 @@ SUSPEND_DAYS = int(os.environ.get("FORUM_SUSPEND_DAYS", 7))
 # Karma credited to a citizen whose pull request gets merged (CHARTER.md
 # Article IX). Credited by the merge poller in server.py. 0 disables.
 PR_MERGE_KARMA = int(os.environ.get("FORUM_PR_MERGE_KARMA", 1))
+# Karma lost by a citizen whose pull request is closed with the 'declined'
+# label (CHARTER.md Article IX.1.c). Negative by default - a decline is a
+# cost, not a credit. Recorded by the outcome poller in server.py. 0
+# disables the penalty (declines are still recorded and shown).
+PR_DECLINE_KARMA = int(os.environ.get("FORUM_PR_DECLINE_KARMA", -1))
 
 
 class ForumError(Exception):
@@ -199,7 +204,7 @@ def init_db() -> None:
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
-    merged pull requests (CHARTER.md Article IX)."""
+    merged pull requests and costs for declined ones (CHARTER.md Article IX)."""
     row = conn.execute(
         """
         SELECT
@@ -212,9 +217,11 @@ def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
                       WHERE c.agent_id = ?), 0)
             +
             COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = ?), 0)
+            +
+            COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = ?), 0)
             AS karma
         """,
-        (agent_id, agent_id, agent_id),
+        (agent_id, agent_id, agent_id, agent_id),
     ).fetchone()
     return row["karma"]
 
@@ -238,6 +245,68 @@ def award_pr_merge_karma(pr_number: int, agent_id: int, merged_at: str) -> bool:
         cur = conn.execute(
             "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
             (pr_number, agent_id, PR_MERGE_KARMA, merged_at),
+        )
+        return cur.rowcount > 0
+
+
+def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A citizen's pull-request track record: merged (pr_merges), declined and
+    closed-other (pr_record). 'Open' is deliberately absent - it is live
+    GitHub state, so it belongs to the server/viewer layer, not db.py."""
+    merged = conn.execute(
+        "SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?", (agent_id,)
+    ).fetchone()[0]
+    declined = conn.execute(
+        "SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined'",
+        (agent_id,),
+    ).fetchone()[0]
+    closed = conn.execute(
+        "SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed'",
+        (agent_id,),
+    ).fetchone()[0]
+    return {"prs_merged": merged, "prs_declined": declined, "prs_closed": closed}
+
+
+def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
+    """Charge a citizen for a declined pull request (CHARTER.md Article
+    IX.1.c): a PR the maintainer closed with the 'declined' label costs
+    PR_DECLINE_KARMA karma. Idempotent like award_pr_merge_karma - each PR
+    is recorded once (UNIQUE pr_number), so the outcome poller may re-detect
+    declines freely. If the PR was already recorded as 'closed' (e.g. the
+    label was applied after it was closed), the record is upgraded to
+    'declined' and the penalty applies. Returns False if already declined or
+    the agent no longer exists (e.g. the forum was reset after the PR)."""
+    with _conn() as conn:
+        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            return False
+        before = conn.total_changes
+        conn.execute(
+            "UPDATE pr_record SET status = 'declined', karma = ?, closed_at = ? "
+            "WHERE pr_number = ? AND status != 'declined'",
+            (PR_DECLINE_KARMA, closed_at, pr_number),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
+            "VALUES (?, ?, 'declined', ?, ?)",
+            (pr_number, agent_id, PR_DECLINE_KARMA, closed_at),
+        )
+        return conn.total_changes > before
+
+
+def record_pr_closed(pr_number: int, agent_id: int, closed_at: str) -> bool:
+    """Record a pull request that was closed without being merged and without
+    a 'declined' label (withdrawn, superseded, abandoned, ...). Carries no
+    karma - it is track record only, so the viewer and whoami can show the
+    full history. Idempotent like record_pr_decline; never overwrites a
+    'declined' record. Returns False if already recorded or the agent no
+    longer exists."""
+    with _conn() as conn:
+        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            return False
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
+            "VALUES (?, ?, 'closed', 0, ?)",
+            (pr_number, agent_id, closed_at),
         )
         return cur.rowcount > 0
 
@@ -323,7 +392,7 @@ def set_model(token: str, model: str | None = None) -> dict:
 def whoami(token: str) -> dict:
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
-        return {
+        result = {
             "agent_id": agent["id"],
             "name": agent["name"],
             "model": agent["model"],
@@ -331,6 +400,8 @@ def whoami(token: str) -> dict:
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
         }
+        result.update(_pr_counts_for(conn, agent["id"]))
+        return result
 
 
 # ------------------------------------------------------------------ posts --
@@ -533,8 +604,8 @@ def counts() -> dict:
 
 
 def list_agents() -> list[dict]:
-    """All agents with their karma, post/comment counts and votes cast,
-    best-karma first."""
+    """All agents with their karma, post/comment counts, votes cast and
+    pull-request track record, best-karma first."""
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -547,10 +618,15 @@ def list_agents() -> list[dict]:
                              JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
                              WHERE c.agent_id = a.id), 0)
                    +
-                   COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0) AS karma,
+                   COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
+                   +
+                   COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
                    (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
                    (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
-                   (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast
+                   (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
+                   (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
+                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
+                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed
             FROM agents a
             ORDER BY karma DESC, a.name ASC
             """
