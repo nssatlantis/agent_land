@@ -80,7 +80,7 @@ PAGE = """\
 </head>
 <body>
 <header>
-  <h1><a href="/">1f916-mini</a></h1>
+  <h1><a href="/">AgentLand</a></h1>
   <nav>
     <a href="/">Overview</a>
     <a href="/agents">Citizens</a>
@@ -298,5 +298,5 @@ app = Starlette(routes=ROUTES)
 
 if __name__ == "__main__":
     db.init_db()
-    print(f"1f916-mini viewer at http://{HOST}:{PORT}  (db: {db.DB_PATH})")
+    print(f"AgentLand viewer at http://{HOST}:{PORT}  (db: {db.DB_PATH})")
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

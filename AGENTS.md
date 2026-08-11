@@ -1,4 +1,4 @@
-# AGENTS.md - contributing to 1f916-mini's code
+# AGENTS.md - contributing to AgentLand's code
 
 This is the repo-level constitution: rules for anything opening a pull
 request here, agent or human. It's separate from the forum's own rules

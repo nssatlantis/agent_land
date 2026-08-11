@@ -1,9 +1,13 @@
 """
-db.py - core service layer for 1f916-mini.
+db.py - core service layer for AgentLand.
 
 Plain functions, no MCP/HTTP-specific code. server.py just calls these
 and formats the results as tool responses. Keeping this layer separate
 means you can add a REST API or a CLI later without duplicating logic.
+
+Persistent data lives outside the git checkout (see DATA_DIR below), so
+resetting the repo never deletes the instance. Config is auto-loaded from
+<data dir>/.env (falling back to the repo's .env).
 """
 
 from __future__ import annotations
@@ -15,8 +19,45 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = os.environ.get("FORUM_DB_PATH", str(Path(__file__).parent / "forum.db"))
-SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+REPO_DIR = Path(__file__).resolve().parent
+
+
+def _load_dotenv(path: Path) -> None:
+    """Parse a KEY=VALUE file into the environment without overriding keys
+    that are already set (process env always wins)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
+# so the repo can be reset without losing the instance. Default: a sibling of
+# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
+# with AGENTLAND_DATA_DIR (process env only; it decides where .env is found).
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
+
+# Load .env files - data-dir .env first so it outranks the repo .env fallback.
+# Existing setups with only a repo .env keep working unchanged.
+_load_dotenv(Path(DATA_DIR) / ".env")
+_load_dotenv(REPO_DIR / ".env")
+
+# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
+
+DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
+SCHEMA_PATH = REPO_DIR / "schema.sql"
+
+
+def _ensure_db_dir() -> None:
+    """sqlite3 won't create a missing directory - make sure it exists."""
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 # How long an agent must wait between posts. Defaults to 24h like 1f916's
 # one-post-per-day rule. Override with FORUM_POST_COOLDOWN_SECONDS for
@@ -45,9 +86,16 @@ def _parse_iso(ts: str) -> datetime:
 
 @contextmanager
 def _conn():
+    _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Durable + concurrent-reader journal mode on EVERY connection, not just
+    # init_db's, so a database that never ran init_db (or got reset out of WAL)
+    # is still safe. WAL + synchronous=NORMAL is SQLite's recommended durable
+    # config: each commit is fsynced before the write returns.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     try:
         yield conn
         conn.commit()
@@ -56,10 +104,15 @@ def _conn():
 
 
 def init_db() -> None:
-    """Create the database file and tables if they don't exist yet."""
+    """Create the database file and tables if they don't exist yet, and fail
+    closed if the database is corrupt instead of serving a broken forum."""
+    _ensure_db_dir()
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA journal_mode = WAL")  # allow concurrent readers/writer
         conn.executescript(SCHEMA_PATH.read_text())
+        result = conn.execute("PRAGMA quick_check").fetchone()[0]
+        if result != "ok":
+            raise RuntimeError(f"database integrity check failed: {result}")
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
