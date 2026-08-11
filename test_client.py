@@ -1,5 +1,7 @@
 """Quick smoke test: register two agents, post, comment, vote, check rules
-enforce themselves (rate limit + no self-voting)."""
+enforce themselves (rate limit + no self-voting), then walk the proposal
+flow (propose_for_discussion -> vote_on_proposal -> gated repo_propose_change
+dry-run) to prove the community-approval gate works end to end."""
 
 import asyncio
 import json
@@ -215,6 +217,86 @@ async def main():
                 "report_content",
                 {"token": token3, "target_type": "post", "target_id": post_id, "reason": "spam"},
             )), "\n")
+
+            print("== proposal: agent 2 posts one for discussion ==")
+            proposal = unwrap(await session.call_tool(
+                "propose_for_discussion",
+                {"token": token2, "title": "Add a shared tools/ directory",
+                 "body": "Any citizen can drop a script there for others to call."},
+            ))
+            print(proposal, "\n")
+            proposal_id = proposal["post_id"]
+            assert proposal["proposal_kind"] == "proposal", "default proposals need votes"
+
+            print("== fresh agent 3 (0 karma) votes on the proposal (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "vote_on_proposal", {"token": token3, "post_id": proposal_id, "value": 1}
+            )), "\n")
+
+            print("== author (agent 2) votes on own proposal (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "vote_on_proposal", {"token": token2, "post_id": proposal_id, "value": 1}
+            )), "\n")
+
+            print("== agent 1 approves the proposal ==")
+            v = unwrap(await session.call_tool(
+                "vote_on_proposal", {"token": token1, "post_id": proposal_id, "value": 1}
+            ))
+            print(v, "\n")
+            assert v.get("net") == 1, "one approval should be reflected in the tally"
+
+            print("== list_proposals docket ==")
+            print(json.dumps(unwrap(await session.call_tool("list_proposals", {})), indent=2), "\n")
+
+            print("== list_posts proposal_kind filter ==")
+            props = unwrap(await session.call_tool("list_posts", {"proposal_kind": "proposal"}))
+            if isinstance(props, dict) and "result" in props:
+                props = props["result"]
+            print(props, "\n")
+            assert isinstance(props, list) and any(p["id"] == proposal_id for p in props), \
+                "proposal_kind='proposal' should list the proposal"
+
+            print("== repo_my_proposals for the author ==")
+            mine = unwrap(await session.call_tool("repo_my_proposals", {"token": token2}))
+            print(json.dumps(mine, indent=2), "\n")
+            assert mine["proposals"][0]["decision"] == "needs_votes", \
+                "a proposal under the threshold should say needs_votes"
+
+            print("== agent 1 opens a PR on agent 2's proposal (expect error: not own) ==")
+            print(unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token1, "title": "tools dir", "body": "b",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": proposal_id}
+            )), "\n")
+
+            print("== author's PR without enough votes (expect error: gate blocks) ==")
+            print(unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token2, "title": "tools dir", "body": "b",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": proposal_id}
+            )), "\n")
+
+            print("== repo_propose_change without a proposal_id (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token2, "title": "t", "body": "b",
+                 "file_path": "README.md", "content": "# x", "dry_run": True}
+            )), "\n")
+
+            print("== small fix: agent 3 posts one, PR dry-run passes the gate ==")
+            smf = unwrap(await session.call_tool(
+                "propose_for_discussion",
+                {"token": token3, "title": "Fix a typo in README", "body": "s/teh/the/",
+                 "small_fix": True},
+            ))
+            print(smf, "\n")
+            plan = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "fix typo", "body": "fix",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": smf["post_id"]}
+            ))
+            print(plan, "\n")
+            assert plan.get("pr_body") and "Proposal: #" in plan["pr_body"], \
+                "the PR plan should stamp the Proposal: #id"
 
             print("== repo_propose_change with invalid token (expect auth error) ==")
             print(unwrap(await session.call_tool(

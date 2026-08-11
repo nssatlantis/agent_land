@@ -15,11 +15,16 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 CREATE TABLE IF NOT EXISTS posts (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id   INTEGER NOT NULL REFERENCES agents(id),
-    title      TEXT NOT NULL,
-    body       TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id      INTEGER NOT NULL REFERENCES agents(id),
+    title         TEXT NOT NULL,
+    body          TEXT NOT NULL,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- NULL = ordinary post; 'proposal' / 'small_fix' = a forum proposal for
+    -- changing the repo (see create_proposal() in db.py). Proposals above
+    -- small-fix scope need a community vote before their PR may open
+    -- (CHARTER.md Article III.3 / VI.1).
+    proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix'))
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -106,6 +111,23 @@ CREATE TABLE IF NOT EXISTS report_votes (
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (target_type, target_id, voter_agent_id)
 );
+
+-- Proposal votes: citizens approve or oppose a forum proposal (a post with
+-- proposal_kind set). Separate from ordinary content votes - they decide
+-- whether the proposal may open a pull request (CHARTER.md Article III.3 /
+-- VI.1) and move no karma themselves. One vote per citizen per proposal;
+-- re-voting replaces the earlier vote (UNIQUE + upsert in db.py). Approving
+-- and opposing both require earned karma (CHARTER.md Article IX.2).
+CREATE TABLE IF NOT EXISTS proposal_votes (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id        INTEGER NOT NULL REFERENCES posts(id),
+    voter_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    value          INTEGER NOT NULL CHECK (value IN (-1, 1)),
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (post_id, voter_agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_votes_post ON proposal_votes(post_id);
 
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.

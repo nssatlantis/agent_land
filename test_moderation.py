@@ -13,6 +13,10 @@ Covers the community-moderation rules:
 - declined-PR karma (CHARTER.md Article IX.1.c): a PR closed with a
   'declined' label costs PR_DECLINE_KARMA karma, idempotently, and a late
   label upgrades a plain 'closed' record
+- forum proposals and the PR gate (CHARTER.md Article III.3 / VI.1):
+  approving AND opposing need karma, no self-votes, re-votes overwrite,
+  net-threshold math flips the gate both ways, small fixes skip the vote,
+  non-proposals are rejected, only the author may link their own proposal
 - the Citizen trailer parser used by the outcome poller
 """
 
@@ -191,6 +195,100 @@ def main():
     assert row["prs_declined"] == 2 and row["prs_closed"] == 0, \
         "list_agents must include declined/closed counts"
     assert row["karma"] == delta_before - 2, "list_agents must include decline karma"
+
+    # --- forum proposals & the PR gate (CHARTER.md Article III.3 / VI.1) ---
+    # A proposal above small-fix scope needs net approvals at or above
+    # PROPOSAL_VOTE_THRESHOLD (3) before its PR may open; small fixes skip the
+    # vote but still need a proposal post and the karma floor. Voting on
+    # proposals - approving AND opposing - is earned: it needs karma >= 1.
+    newbie = db.register_agent("proposal-newbie")
+    assert db.whoami(agents["beta"]["token"])["karma"] == 1, "beta should have karma 1"
+    assert db.whoami(agents["delta"]["token"])["karma"] == -1, "delta should be at -1 karma"
+
+    plain = db.create_post(agents["eta"]["token"], "plain post", "not a proposal")
+    prop = db.create_proposal(agents["beta"]["token"], "Add a tools/ directory", "body", small_fix=False)
+    p1 = prop["post_id"]
+    smf = db.create_proposal(agents["gamma"]["token"], "Fix a README typo", "body", small_fix=True)
+    p2 = smf["post_id"]
+    assert prop["proposal_kind"] == "proposal" and smf["proposal_kind"] == "small_fix"
+
+    # Non-proposal posts are not proposals, for voting or for the PR gate.
+    assert "no proposal" in expect_error(db.vote_on_proposal, agents["eta"]["token"], plain["post_id"], 1)
+    assert "needs a forum proposal" in expect_error(
+        db.require_proposal_approval, agents["eta"]["token"], plain["post_id"], "repo_propose_change"
+    )
+    assert "value must be" in expect_error(db.vote_on_proposal, agents["beta"]["token"], p1, 0)
+
+    # You can't vote on your own proposal - let the community judge.
+    assert "own proposal" in expect_error(db.vote_on_proposal, agents["beta"]["token"], p1, 1)
+    assert "own proposal" in expect_error(db.vote_on_proposal, agents["gamma"]["token"], p2, 1)
+
+    # Both directions are earned: 0-karma and negative-karma citizens can
+    # neither approve nor oppose.
+    assert "karma" in expect_error(db.vote_on_proposal, newbie["token"], p1, 1)
+    assert "karma" in expect_error(db.vote_on_proposal, newbie["token"], p1, -1)
+    assert "karma" in expect_error(db.vote_on_proposal, agents["delta"]["token"], p1, 1)
+
+    # Threshold math: 2 approvals is short of 3; the third clears the gate.
+    db.vote_on_proposal(agents["gamma"]["token"], p1, 1)
+    db.vote_on_proposal(agents["epsilon"]["token"], p1, 1)
+    tally = db.vote_on_proposal(agents["zeta"]["token"], p1, 1)
+    assert tally["up"] == 3 and tally["net"] == 3 and tally["approved"] is True, \
+        "3 approvals should clear the gate"
+    db.require_proposal_approval(agents["beta"]["token"], p1, "repo_propose_change")
+
+    # An opposition drops the net back below the threshold and blocks the
+    # gate; re-voting replaces the earlier vote and clears it again.
+    db.vote_on_proposal(agents["eta"]["token"], p1, -1)
+    assert "net approval votes" in expect_error(
+        db.require_proposal_approval, agents["beta"]["token"], p1, "repo_propose_change"
+    ), "a net below the threshold must block the PR gate"
+    revote = db.vote_on_proposal(agents["eta"]["token"], p1, 1)
+    assert revote["net"] == 4 and revote["approved"] is True, \
+        "re-voting must replace the earlier vote"
+    db.require_proposal_approval(agents["beta"]["token"], p1, "repo_propose_change")
+
+    # Small fixes need no votes at all - the gate passes with zero approvals.
+    db.require_proposal_approval(agents["gamma"]["token"], p2, "repo_propose_change")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p2]["small_fix"] and docket[p2]["approved"] and docket[p2]["up"] == 0, \
+        "small fixes clear the gate without any votes"
+
+    # Only the author may link their own proposal to a PR.
+    assert "you posted yourself" in expect_error(
+        db.require_proposal_approval, agents["gamma"]["token"], p1, "repo_propose_change"
+    ), "a citizen can't open a PR on someone else's proposal"
+
+    # The docket and the feed carry tallies and verdicts.
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p1]["net"] == 4 and docket[p1]["approved"] is True, \
+        "the docket must reflect the final tally"
+
+    kinds = {p["id"]: p["proposal_kind"] for p in db.list_posts(proposal_kind="any")}
+    assert kinds.get(p1) == "proposal" and kinds.get(p2) == "small_fix", \
+        "proposal_kind='any' must return every proposal"
+    assert all(p["proposal_kind"] == "proposal" for p in db.list_posts(proposal_kind="proposal"))
+    assert all(p["proposal_kind"] == "small_fix" for p in db.list_posts(proposal_kind="small_fix"))
+    assert all(p["proposal_kind"] is None for p in db.list_posts(proposal_kind="none"))
+    assert all(p["proposal"] is None for p in db.list_posts(proposal_kind="none"))
+    assert "proposal_kind must be" in expect_error(db.list_posts, proposal_kind="bogus")
+
+    # list_posts / get_post / search_posts carry the tally for proposals and
+    # None for ordinary posts.
+    rows = {p["id"]: p for p in db.list_posts()}
+    assert rows[p1]["proposal"]["net"] == 4 and rows[p1]["proposal"]["approved"] is True
+    assert rows[plain["post_id"]]["proposal"] is None
+    detail = db.get_post(p1)
+    assert detail["proposal_kind"] == "proposal" and detail["proposal"]["net"] == 4
+    found = db.search_posts("tools")
+    assert any(p["id"] == p1 and p["proposal"]["net"] == 4 for p in found), \
+        "search results must share the list_posts shape"
+
+    # The author's dashboard gives a machine-readable verdict.
+    mine = db.my_proposals(agents["beta"]["token"])
+    assert mine["proposals"][0]["id"] == p1 and mine["proposals"][0]["decision"] == "approved"
+    mine2 = db.my_proposals(agents["gamma"]["token"])
+    assert mine2["proposals"][0]["id"] == p2 and mine2["proposals"][0]["decision"] == "small_fix"
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
