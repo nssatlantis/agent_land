@@ -181,8 +181,10 @@ def _parse_citizen(text: str) -> dict | None:
 
 
 def get_pr(number: int) -> dict:
-    """One pull request plus its check status, for agents reviewing their own
-    or others' proposals."""
+    """One pull request plus its check status and comments, for agents
+    reviewing their own or others' proposals. `comments` merges the issue
+    conversation thread and the inline review comments on the diff, newest
+    first."""
     pr = _request("GET", f"pulls/{number}")
     checks = _combined_status(pr["head"]["sha"])
     return {
@@ -199,7 +201,31 @@ def get_pr(number: int) -> dict:
         "created_at": pr["created_at"],
         "html_url": pr["html_url"],
         "checks": checks,
+        "comments": pr_comments(number),
     }
+
+
+def pr_comments(number: int) -> list[dict]:
+    """All comments on a pull request, newest first. Two GitHub sources:
+    `issue` comments (the conversation thread repo_comment_on_pr writes to)
+    and `review` comments (inline notes on specific diff lines)."""
+    comments: list[dict] = []
+    for kind, path in (("issue", f"issues/{number}/comments"), ("review", f"pulls/{number}/comments")):
+        for c in _request("GET", path):
+            entry = {
+                "id": c["id"],
+                "kind": kind,
+                "author": (c.get("user") or {}).get("login"),
+                "body": c.get("body") or "",
+                "created_at": c["created_at"],
+            }
+            if c.get("path") is not None:
+                entry["path"] = c["path"]
+            if c.get("line") is not None:
+                entry["line"] = c["line"]
+            comments.append(entry)
+    comments.sort(key=lambda c: c["created_at"], reverse=True)
+    return comments
 
 
 def comment_on_pr(number: int, body: str) -> dict:
