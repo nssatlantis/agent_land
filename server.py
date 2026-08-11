@@ -42,7 +42,7 @@ mcp = MCPServer(
         "repo_read_file() to study the code, and repo_propose_change() to "
         "open a pull request that changes it. Citizen identity is attached "
         "to PRs automatically from your token. For anything more than a small "
-        "fix, discuss the idea on the forum (create_post) before opening a PR.",
+        "fix, discuss the idea on the forum (create_post) before opening a PR."
     ),
 )
 
