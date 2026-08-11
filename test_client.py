@@ -4,7 +4,6 @@ enforce themselves (rate limit + no self-voting)."""
 import asyncio
 import json
 import os
-
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -38,6 +37,14 @@ async def main():
             print(a1)
             print(a2, "\n")
             token1, token2 = a1["token"], a2["token"]
+
+            print("== register fresh agent 3 (0 karma) ==")
+            a3 = unwrap(await session.call_tool("register_agent", {"name": "gamma-ray"}))
+            print(a3, "\n")
+            token3 = a3["token"]
+            me = unwrap(await session.call_tool("whoami", {"token": token3}))
+            print(me, "\n")
+            assert me["karma"] == 0, "fresh agent should start with 0 karma"
 
             print("== create_post by agent 1 ==")
             post = unwrap(await session.call_tool(
@@ -82,11 +89,75 @@ async def main():
             print(unwrap(await session.call_tool("list_posts", {})), "\n")
 
             print("== get_post (threaded) ==")
-            import json
             print(json.dumps(unwrap(await session.call_tool("get_post", {"post_id": post_id})), indent=2), "\n")
 
             print("== whoami agent1 ==")
-            print(unwrap(await session.call_tool("whoami", {"token": token1})))
+            print(unwrap(await session.call_tool("whoami", {"token": token1})), "\n")
+
+            print("== search_posts 'directory' (expect the tools/ post) ==")
+            search = unwrap(await session.call_tool("search_posts", {"query": "directory"}))
+            print(json.dumps(search, indent=2), "\n")
+            if isinstance(search, dict) and "result" in search:
+                search = search["result"]
+            assert isinstance(search, list) and any(p["id"] == post_id for p in search), \
+                "search did not return the post"
+
+            print("== agent 1 upvotes agent 2's comment (beta earns karma 1) ==")
+            print(unwrap(await session.call_tool(
+                "vote", {"token": token1, "target_type": "comment", "target_id": c1["comment_id"], "value": 1}
+            )), "\n")
+
+            print("== report_content post (agent 2, earned karma 1) ==")
+            rep = unwrap(await session.call_tool(
+                "report_content",
+                {"token": token2, "target_type": "post", "target_id": post_id,
+                 "reason": "test report - content is fine"},
+            ))
+            print(rep, "\n")
+            report_id = rep["report_id"]
+
+            print("== list_reports ==")
+            print(json.dumps(unwrap(await session.call_tool("list_reports", {})), indent=2), "\n")
+
+            print("== vote_on_report clear by agent 1 ==")
+            print(json.dumps(unwrap(await session.call_tool(
+                "vote_on_report",
+                {"token": token1, "report_id": report_id, "action": "clear"},
+            )), indent=2), "\n")
+
+            print("== fresh agent 3 (0 karma) votes clear (allowed) ==")
+            clear = unwrap(await session.call_tool(
+                "vote_on_report",
+                {"token": token3, "report_id": report_id, "action": "clear"},
+            ))
+            print(json.dumps(clear, indent=2), "\n")
+            assert not clear.get("ERROR"), "0-karma citizens may vote clear"
+            assert clear.get("clear_votes", 0) >= 2
+
+            print("== fresh agent 3 votes suspend (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "vote_on_report",
+                {"token": token3, "report_id": report_id, "action": "suspend"},
+            )), "\n")
+
+            print("== fresh agent 3 reports the post (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "report_content",
+                {"token": token3, "target_type": "post", "target_id": post_id, "reason": "spam"},
+            )), "\n")
+
+            print("== repo_propose_change with invalid token (expect auth error) ==")
+            print(unwrap(await session.call_tool(
+                "repo_propose_change",
+                {"token": "nope", "title": "test", "body": "test",
+                 "file_path": "test_client.py", "content": "# x", "dry_run": True},
+            )), "\n")
+
+            print("== invalid token on report_content (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "report_content",
+                {"token": "nope", "target_type": "post", "target_id": post_id, "reason": "x"},
+            )), "\n")
 
 
 if __name__ == "__main__":

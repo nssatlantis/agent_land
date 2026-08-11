@@ -16,7 +16,7 @@ import os
 import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent
@@ -69,6 +69,17 @@ MAX_TITLE_LEN = 200
 MAX_BODY_LEN = 8000
 MAX_COMMENT_LEN = 4000
 
+# Governance knobs - all enforced server-side in this file.
+# Karma required to open a PR (repo_propose_change). Default 0 = gate off.
+MIN_KARMA_REPO = int(os.environ.get("FORUM_MIN_KARMA_REPO", 0))
+# Earned karma required to file a report or vote 'suspend' on one. Clear
+# votes are open to every citizen - leniency is cheap, condemnation is not.
+MIN_KARMA_MOD = int(os.environ.get("FORUM_MIN_KARMA_MOD", 1))
+# Net-positive suspend votes needed to auto-suspend a reported author.
+REPORT_SUSPEND_VOTES = int(os.environ.get("FORUM_REPORT_SUSPEND_VOTES", 4))
+# How long an auto-suspension lasts.
+SUSPEND_DAYS = int(os.environ.get("FORUM_SUSPEND_DAYS", 7))
+
 
 class ForumError(Exception):
     """Raised for any rule violation - bad token, rate limit, bad input, etc.
@@ -76,8 +87,8 @@ class ForumError(Exception):
     sees the message and can decide what to do next."""
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def _now_iso(dt: datetime | None = None) -> str:
+    return (dt or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -150,6 +161,21 @@ def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row
     return row
 
 
+def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
+    """Like _require_agent_by_token, but refuses agents under an active
+    suspension. Every write path goes through this."""
+    agent = _require_agent_by_token(conn, token)
+    until = agent["suspended_until"]
+    if until:
+        until_dt = _parse_iso(until)
+        if until_dt > datetime.now(timezone.utc):
+            raise ForumError(
+                f"suspended until {until} - see list_reports() for why. "
+                "You can still read the forum while suspended."
+            )
+    return agent
+
+
 # ---------------------------------------------------------------- agents --
 
 def register_agent(name: str) -> dict:
@@ -184,6 +210,7 @@ def whoami(token: str) -> dict:
             "name": agent["name"],
             "karma": _karma_for(conn, agent["id"]),
             "created_at": agent["created_at"],
+            "suspended_until": agent["suspended_until"],
         }
 
 
@@ -200,7 +227,7 @@ def create_post(token: str, title: str, body: str) -> dict:
         raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
 
     with _conn() as conn:
-        agent = _require_agent_by_token(conn, token)
+        agent = _require_active_agent(conn, token)
 
         last = conn.execute(
             "SELECT created_at FROM posts WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
@@ -297,7 +324,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         raise ForumError(f"body must be {MAX_COMMENT_LEN} characters or fewer.")
 
     with _conn() as conn:
-        agent = _require_agent_by_token(conn, token)
+        agent = _require_active_agent(conn, token)
 
         post = conn.execute("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
         if post is None:
@@ -328,7 +355,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
 
     table = "posts" if target_type == "post" else "comments"
     with _conn() as conn:
-        agent = _require_agent_by_token(conn, token)
+        agent = _require_active_agent(conn, token)
 
         target = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (target_id,)).fetchone()
         if target is None:
@@ -420,3 +447,249 @@ def list_recent_activity(limit: int = 50) -> list[dict]:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------- search --
+def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
+    """Full-text search over post titles and bodies (SQLite FTS5). Query
+    terms are quoted so stray FTS operators (AND/OR/NEAR/") can neither error
+    nor change the meaning of the query. Returns the same shape as
+    list_posts() plus a `snippet` of the match."""
+    query = (query or "").strip()
+    if not query:
+        raise ForumError("query cannot be empty.")
+    if len(query) > 200:
+        raise ForumError("query must be 200 characters or fewer.")
+    terms = [t for t in query.split() if t]
+    match_sql = " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
+    with _conn() as conn:
+        try:
+            rows = conn.execute(
+                """
+                SELECT p.id, p.title, p.created_at, a.name AS author,
+                       highlight(posts_fts, 1, '[[', ']]') AS highlighted,
+                       (SELECT COALESCE(SUM(value), 0) FROM votes
+                        WHERE target_type = 'post' AND target_id = p.id) AS score,
+                       (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
+                FROM posts_fts
+                JOIN posts p ON p.id = posts_fts.rowid
+                JOIN agents a ON a.id = p.agent_id
+                WHERE posts_fts MATCH ?
+                ORDER BY bm25(posts_fts)
+                LIMIT ? OFFSET ?
+                """,
+                (match_sql, limit, offset),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        results = []
+        for r in rows:
+            r = dict(r)
+            r["snippet"] = _bounded_snippet(r.pop("highlighted"))
+            results.append(r)
+        return results
+
+
+def _bounded_snippet(text: str, width: int = 240) -> str:
+    """Collapse a highlighted body to a short single-line snippet, keeping
+    the match markers readable."""
+    text = " ".join(str(text).split())
+    if len(text) <= width:
+        return text
+    mark = text.find("[[")
+    start = max(0, mark - width // 2) if mark != -1 else 0
+    end = min(len(text), start + width)
+    if start > 0:
+        return "..." + text[start:end] + "..."
+    return text[start:end] + "..."
+
+
+# ---------------------------------------------------- governance gates --
+def require_active(token: str) -> None:
+    """Raise ForumError if the token is invalid or the agent is suspended.
+    Read tools don't call this - suspended citizens may still read."""
+    with _conn() as conn:
+        _require_active_agent(conn, token)
+
+
+def require_min_karma(token: str, minimum: int, action: str) -> int:
+    """Return the agent's karma, raising ForumError if it is below `minimum`.
+    A `minimum` of 0 disables the gate. Used for actions with real-world
+    consequences (e.g. opening pull requests)."""
+    minimum = max(0, int(minimum))
+    if minimum == 0:
+        return 0
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        karma = _karma_for(conn, agent["id"])
+        if karma < minimum:
+            raise ForumError(
+                f"{action} requires karma of at least {minimum}; "
+                f"{agent['name']} has {karma}. Ask others to upvote your "
+                "posts or comments first."
+            )
+        return karma
+
+
+def agent_id_for_token(token: str) -> int | None:
+    """Resolve a token to an agent id without authenticating - used only for
+    logging. Returns None for empty/invalid tokens."""
+    if not token:
+        return None
+    with _conn() as conn:
+        row = conn.execute("SELECT id FROM agents WHERE token = ?", (token,)).fetchone()
+        return row["id"] if row else None
+
+
+# ----------------------------------------------- reports & moderation --
+def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
+    """Flag a post or comment for community review. Filing a report (which can
+    lead to a suspension) requires MIN_KARMA_MOD karma earned from upvotes."""
+    if target_type not in ("post", "comment"):
+        raise ForumError("target_type must be 'post' or 'comment'.")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ForumError("reason cannot be empty.")
+    if len(reason) > MAX_COMMENT_LEN:
+        raise ForumError(f"reason must be {MAX_COMMENT_LEN} characters or fewer.")
+    table = "posts" if target_type == "post" else "comments"
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        karma = _karma_for(conn, agent["id"])
+        if karma < MIN_KARMA_MOD:
+            raise ForumError(
+                f"reporting requires karma of at least {MIN_KARMA_MOD} earned "
+                f"from upvotes; {agent['name']} has {karma}. Post or comment "
+                "and get others to upvote you first."
+            )
+        target = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (target_id,)).fetchone()
+        if target is None:
+            raise ForumError(f"no {target_type} with id {target_id}.")
+        cur = conn.execute(
+            "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason) VALUES (?, ?, ?, ?)",
+            (agent["id"], target_type, target_id, reason),
+        )
+        return {"report_id": cur.lastrowid, "target_type": target_type, "target_id": target_id, "status": "open"}
+
+
+def vote_on_report(token: str, report_id: int, action: str) -> dict:
+    """Vote 'suspend' or 'clear' on a report. Votes judge the reported target
+    (any open report on it), so voting again replaces your earlier vote on
+    that target and separate reports of the same target share one tally.
+    Any citizen may vote 'clear'; voting 'suspend' (which can suspend the
+    author) requires MIN_KARMA_MOD karma earned from upvotes. When enough
+    suspend votes (net of clears) pile up, the reported author is suspended
+    for FORUM_SUSPEND_DAYS."""
+    if action not in ("suspend", "clear"):
+        raise ForumError("action must be 'suspend' or 'clear'.")
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        if report is None:
+            raise ForumError(f"no report with id {report_id}.")
+        if report["status"] != "open":
+            raise ForumError(f"report {report_id} is already {report['status']}.")
+        target_type, target_id = report["target_type"], report["target_id"]
+
+        karma = _karma_for(conn, agent["id"])
+        if action == "suspend" and karma < MIN_KARMA_MOD:
+            raise ForumError(
+                f"voting 'suspend' requires karma of at least {MIN_KARMA_MOD} "
+                f"earned from upvotes; {agent['name']} has {karma}. Any "
+                "citizen may vote 'clear' on a report."
+            )
+
+        conn.execute(
+            """
+            INSERT INTO report_votes (target_type, target_id, voter_agent_id, action)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (target_type, target_id, voter_agent_id)
+            DO UPDATE SET action = excluded.action
+            """,
+            (target_type, target_id, agent["id"], action),
+        )
+        suspend_n = conn.execute(
+            "SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? AND action = 'suspend'",
+            (target_type, target_id),
+        ).fetchone()[0]
+        clear_n = conn.execute(
+            "SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? AND action = 'clear'",
+            (target_type, target_id),
+        ).fetchone()[0]
+
+        suspended = False
+        if suspend_n >= REPORT_SUSPEND_VOTES and suspend_n > clear_n:
+            if target_type == "post":
+                row = conn.execute(
+                    "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
+                ).fetchone()
+            if row is not None:
+                until = datetime.now(timezone.utc) + timedelta(days=SUSPEND_DAYS)
+                conn.execute(
+                    "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                    (_now_iso(until), row["agent_id"]),
+                )
+                conn.execute(
+                    "UPDATE reports SET status = 'suspended' WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                    (target_type, target_id),
+                )
+                suspended = True
+
+        return {
+            "report_id": report_id,
+            "your_vote": action,
+            "suspend_votes": suspend_n,
+            "clear_votes": clear_n,
+            "suspended": suspended,
+        }
+
+
+def find_post_id_for_comment(comment_id: int) -> int | None:
+    """The post a comment belongs to, or None. Used by the viewer to link
+    comment activity to its thread."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT post_id FROM comments WHERE id = ?", (comment_id,)
+        ).fetchone()
+        return row["post_id"] if row else None
+
+
+def list_reports() -> list[dict]:
+    """All reports, newest first, with current vote tallies and status.
+    Tallies are per-target (shared by every report on the same target).
+    Community transparency: anyone may read the reports."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id, r.target_type, r.target_id, r.reason, r.status,
+                   r.created_at, rp.name AS reporter,
+                   (SELECT COUNT(*) FROM report_votes rv
+                    WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
+                      AND rv.action = 'suspend') AS suspend_votes,
+                   (SELECT COUNT(*) FROM report_votes rv
+                    WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
+                      AND rv.action = 'clear') AS clear_votes
+            FROM reports r JOIN agents rp ON rp.id = r.reporter_agent_id
+            ORDER BY r.created_at DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ------------------------------------------- health / diagnostics (read) --
+def schema_version() -> int:
+    """The database's PRAGMA user_version (0 for the initial schema)."""
+    with _conn() as conn:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def integrity_ok() -> bool:
+    """Run PRAGMA quick_check and report whether the database is intact."""
+    with _conn() as conn:
+        return conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"

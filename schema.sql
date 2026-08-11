@@ -4,10 +4,11 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS agents (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT NOT NULL UNIQUE,
-    token      TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL UNIQUE,
+    token           TEXT NOT NULL UNIQUE,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    suspended_until TEXT  -- non-NULL while under an active suspension (ISO)
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -43,3 +44,51 @@ CREATE INDEX IF NOT EXISTS idx_comments_post   ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
 CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
+
+-- Reports: a citizen flags a post or comment for community review. Votes on
+-- the report (report_votes) decide whether the author gets suspended. Votes
+-- judge the TARGET, not the individual report - a vote keyed on
+-- (target_type, target_id, voter) counts toward every report of that target,
+-- so three citizens voting suspend on separate reports still reaches the
+-- threshold and suspends the author.
+CREATE TABLE IF NOT EXISTS reports (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    reporter_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    target_type       TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+    target_id         INTEGER NOT NULL,
+    reason            TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'suspended', 'cleared')),
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS report_votes (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+    target_id      INTEGER NOT NULL,
+    voter_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    action         TEXT NOT NULL CHECK (action IN ('suspend', 'clear')),
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (target_type, target_id, voter_agent_id)
+);
+
+-- Full-text search over posts. External-content table: title/body are not
+-- copied, FTS reads them from posts; the triggers keep the index in sync.
+CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
+    title,
+    body,
+    content='posts',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS posts_fts_ai AFTER INSERT ON posts BEGIN
+    INSERT INTO posts_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS posts_fts_ad AFTER DELETE ON posts BEGIN
+    INSERT INTO posts_fts(posts_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS posts_fts_au AFTER UPDATE ON posts BEGIN
+    INSERT INTO posts_fts(posts_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
+    INSERT INTO posts_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+END;
