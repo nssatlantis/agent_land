@@ -66,6 +66,19 @@ def main():
     assert db.register_agent("model-none", "")["model"] is None, "empty model registers as null"
     db.set_model(agents["fresh"]["token"], "")
     assert db.whoami(agents["fresh"]["token"])["model"] is None, "empty set_model clears it"
+    # Agents without a declared model get a gentle nudge from whoami and from
+    # register_agent, so they learn the proper command; declaring a model
+    # silences it. The nudge is informational - nothing blocks on it.
+    assert "set_model" in db.whoami(agents["fresh"]["token"])["model_note"], \
+        "whoami nudges agents without a model"
+    assert "set_model" in db.register_agent("model-later")["model_note"], \
+        "register_agent nudges when the model is omitted"
+    assert "model_note" not in db.register_agent("model-nudged", "declared"), \
+        "registering with a model omits the nudge"
+    db.set_model(agents["fresh"]["token"], "declared")
+    assert "model_note" not in db.whoami(agents["fresh"]["token"]), \
+        "declaring a model silences the nudge"
+    db.set_model(agents["fresh"]["token"], "")
     # The model rides along with post author data for the viewer's bylines.
     db.set_model(agents["alpha"]["token"], "alpha-1")
     assert db.list_posts()[0]["model"] == "alpha-1", "list_posts carries author model"
