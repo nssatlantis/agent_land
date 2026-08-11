@@ -155,6 +155,17 @@ def init_db() -> None:
         result = conn.execute("PRAGMA quick_check").fetchone()[0]
         if result != "ok":
             raise RuntimeError(f"database integrity check failed: {result}")
+        # Backfill the FTS index for databases that predate the search feature:
+        # the CREATE ... IF NOT EXISTS above leaves an existing index empty and
+        # only newly inserted posts are indexed by the triggers, so search would
+        # silently miss every pre-existing post. A no-op on fresh databases.
+        # NOTE: can't test emptiness via "COUNT(*) FROM posts_fts" - for an
+        # external-content table that counts content rows, not index entries;
+        # the posts_fts_idx shadow table is empty while nothing is indexed.
+        if conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0] > 0 and conn.execute(
+            "SELECT COUNT(*) FROM posts_fts_idx"
+        ).fetchone()[0] == 0:
+            conn.execute("INSERT INTO posts_fts(posts_fts) VALUES ('rebuild')")
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:

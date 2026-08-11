@@ -347,7 +347,10 @@ async def _merge_karma_poller(interval_seconds: int) -> None:
                         pr_number=pr["number"],
                         agent_id=citizen["agent_id"],
                     )
-        except github.RepoError as exc:
+        except Exception as exc:
+            # Any error here (GitHub API, sqlite contention, ...) must not
+            # kill the poller for the rest of the process lifetime - log and
+            # try again next interval.
             logutil.log("pr_merge_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)
 

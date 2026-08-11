@@ -13,7 +13,7 @@ Two hard rules live here, server-side, so every caller goes through them:
 
 Requires a GITHUB_TOKEN. Use a fine-grained PAT scoped to just this repo
 (Contents read/write + Pull requests read/write + Metadata read) - see
-GITHUB_SETUP.md.
+README.md and .env.example.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def _request(method: str, path: str, body: dict | None = None, ok_404: bool = Fa
     if not GITHUB_TOKEN:
         raise RepoError(
             "GITHUB_TOKEN is not set. Add it to your environment (see .env.example "
-            "and GITHUB_SETUP.md) before using the repo tools."
+            "and README.md) before using the repo tools."
         )
     url = f"{API_ROOT}/repos/{GITHUB_REPO}/{path}"
     data = None

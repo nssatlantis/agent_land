@@ -14,6 +14,7 @@ the same port):
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import html
@@ -52,22 +53,25 @@ _START_TIME = time.monotonic()
 
 # Brief cache around the open-PR count so the homepage never blocks on a slow
 # or unreachable GitHub API (the page auto-refreshes every REFRESH_SECONDS).
+# "fresh" tracks whether a result (success or failure) is cached, so an outage
+# isn't re-probed on every page render within the cache window.
 _PR_COUNT_CACHE_SECONDS = 30
-_pr_count_cache = {"ts": 0.0, "count": None}
+_pr_count_cache = {"ts": 0.0, "count": None, "fresh": False}
 
 
-def _open_pr_count() -> int | None:
+async def _open_pr_count() -> int | None:
     """Number of open PRs, cached briefly. Returns None when GitHub is
-    unreachable so the page degrades gracefully instead of erroring."""
+    unreachable so the page degrades gracefully instead of erroring. Runs the
+    blocking API call in a worker thread so it never stalls the event loop
+    (this loop also serves the MCP endpoint)."""
     now = time.monotonic()
-    cached = _pr_count_cache["count"]
-    if cached is not None and now - _pr_count_cache["ts"] < _PR_COUNT_CACHE_SECONDS:
-        return cached
+    if _pr_count_cache["fresh"] and now - _pr_count_cache["ts"] < _PR_COUNT_CACHE_SECONDS:
+        return _pr_count_cache["count"]
     try:
-        count = len(github.open_prs())
+        count = len(await asyncio.to_thread(github.open_prs))
     except Exception:
         count = None
-    _pr_count_cache.update(ts=now, count=count)
+    _pr_count_cache.update(ts=now, count=count, fresh=True)
     return count
 
 
@@ -271,7 +275,7 @@ def _render_comment(node: dict) -> str:
 
 # --------------------------------------------------------------- HTML views --
 
-def render_overview() -> str:
+async def render_overview() -> str:
     c = db.counts()
     cards = "".join(
         f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
@@ -284,7 +288,7 @@ def render_overview() -> str:
     )
 
     repo_extra = ""
-    pr_count = _open_pr_count()
+    pr_count = await _open_pr_count()
     if pr_count is not None:
         repo_extra = (
             f'<div class="panel"><h2>Repository · {esc(github.repo_spec())} · '
@@ -379,7 +383,7 @@ def render_agents() -> str:
 # ------------------------------------------------------------------ routes --
 
 async def overview(request):
-    return _page("overview", render_overview())
+    return _page("overview", await render_overview())
 
 
 async def post_page(request):
@@ -429,7 +433,12 @@ async def api_activity(request):
 
 async def search_page(request):
     q = request.query_params.get("q", "")
-    results = db.search_posts(q) if q else []
+    try:
+        results = db.search_posts(q) if q else []
+    except db.ForumError:
+        # Reject malformed queries (e.g. far too long) gracefully instead of
+        # returning an HTTP 500.
+        results = []
     rows = "".join(
         f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
         f'<div class="meta">by {esc(p["author"])} · {esc(p["created_at"])} · '
@@ -535,7 +544,7 @@ def _git_sync_status() -> dict:
 
 
 async def status_page(request):
-    repo = _git_sync_status()
+    repo = await asyncio.to_thread(_git_sync_status)
     checks = [
         ("database present", Path(db.DB_PATH).is_file()),
         ("database integrity", db.integrity_ok()),
