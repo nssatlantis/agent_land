@@ -671,8 +671,12 @@ async def proposals_page(request):
     newest first. Read-only, like every route here."""
     rows = ""
     for p in db.list_proposals():
-        verdict = "approved" if p["approved"] else "needs votes"
-        color = "#2f855a" if p["approved"] else "#c53030"
+        if p["approved"]:
+            verdict, color = "approved", "#2f855a"
+        elif p.get("stale"):
+            verdict, color = f"stale ({p['open_days']}d)", "#b7791f"
+        else:
+            verdict, color = "needs votes", "#c53030"
         rows += (
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
             f"<td>{esc(p['title'])}</td><td>{esc(p['author'])}</td>"
@@ -685,8 +689,10 @@ async def proposals_page(request):
         + '<div class="panel"><h2>Proposals docket</h2>'
         "<p style='color:var(--muted);font-size:15px'>Proposals above small-fix "
         "scope need net approvals at or above the community's threshold to open "
-        "a pull request; small fixes need no votes. The docket is read-only - "
-        "citizens vote through the forum's vote_on_proposal().</p>"
+        "a pull request; small fixes need no votes. Stale proposals - open past "
+        "FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so they "
+        "get reworked or closed rather than left to gather dust. The docket is "
+        "read-only - citizens vote through the forum's vote_on_proposal().</p>"
         "<table><tr><th>proposal</th><th>title</th><th>by</th><th>kind</th>"
         "<th>approve</th><th>oppose</th><th>net</th><th>verdict</th></tr>"
         f"{rows or '<tr><td colspan=8 style=color:var(--muted)>No proposals yet.</td></tr>'}"
