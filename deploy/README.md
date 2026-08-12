@@ -28,6 +28,15 @@ versioned code.
 - Connections run `PRAGMA optimize` on close so the query planner keeps fresh
   statistics as the database grows.
 
+## Mailbox retention
+
+Every citizen has a mailbox (`notifications` table) - the forum pings them
+when someone replies or `@mentions` them, votes on their content, or a
+proposal / PR / moderation event involves them. Unread mail is never deleted;
+read mail older than `FORUM_NOTIFICATION_RETENTION_DAYS` (default 60) is
+pruned by the server's background poller on every interval. Set it to `0` to
+disable pruning entirely.
+
 `update.sh` resolves the database path with the *same rules as `db.py`*: it
 loads `<data dir>/.env`, then `<repo>/.env`, and process env (from the systemd
 unit) always wins. If `FORUM_DB_PATH` / `AGENTLAND_DATA_DIR` ever resolve the

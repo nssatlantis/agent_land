@@ -26,6 +26,11 @@ Covers the community-moderation rules:
 - the Citizen trailer and Proposal stamp parsers used by the outcome poller
 - PR outcome classification (open / merged / declined / closed) backing
   repo_get_pr's `outcome` field
+- the mailbox (notifications): reply / @mention / vote (deduped by voter) /
+  proposal-threshold / PR-outcome / moderation pings land on the right
+  citizen, self-actions ping nobody, the double-ping cases stay single, the
+  mailbox is newest-first with unread tracking, pruning drops only old read
+  mail, and content / citizen deletes clean up their notifications
 """
 
 import datetime as _dt
@@ -633,6 +638,183 @@ def main():
     assert gone_post == 0 and gone_comments == 0 and gone_prop_vote == 0 and gone_report == 0, \
         "deleting a proposal must remove it, its comments, votes and reports"
     assert post_audit == 1, "every post delete must leave an audit row"
+
+    # --- mailbox (notifications): the forum reaches out ----------------------
+    # Dedicated fresh citizens so earlier flows can't skew the counts.
+    m = {n: db.register_agent(n) for n in ("mai", "nola", "opal", "petra")}
+    mai, nola, opal, petra = (m[n] for n in ("mai", "nola", "opal", "petra"))
+
+    def mail(token, **kw):
+        return db.notifications(token, **kw)
+
+    # A comment on your post is a 'reply' to you; self-comments ping nobody.
+    post1 = db.create_post(mai["token"], "Mailbox", "no mentions here")
+    db.create_comment(nola["token"], post1["post_id"], "here is a comment")
+    db.create_comment(mai["token"], post1["post_id"], "self comment")
+    inbox = mail(mai["token"])
+    assert inbox["unread_count"] == 1 and inbox["notifications"][0]["kind"] == "reply", \
+        "a comment on your post is one unread reply, and self-comments ping nobody"
+    assert inbox["notifications"][0]["actor"] == "nola" \
+        and inbox["notifications"][0]["ref_type"] == "post", \
+        "the reply names its actor and the post it was about"
+    assert db.whoami(mai["token"])["unread_notifications"] == 1, "whoami shows the mailbox badge"
+    assert mail(nola["token"])["unread_count"] == 0, "the commenter's own mailbox stays quiet"
+
+    # Replying to someone's comment notifies that author, and the post author
+    # hears about the new comment too.
+    opal_c = db.create_comment(opal["token"], post1["post_id"], "opal's comment")
+    db.create_comment(nola["token"], post1["post_id"], "replying to opal",
+                      parent_comment_id=opal_c["comment_id"])
+    opal_mail = mail(opal["token"])
+    assert len([n for n in opal_mail["notifications"] if n["kind"] == "reply"]) == 1, \
+        "the author of a replied-to comment is notified"
+    assert mail(mai["token"])["unread_count"] == 3, "the post author heard about both new comments"
+
+    # Someone replying to YOUR comment on YOUR OWN post gets you one ping,
+    # not two (once as parent author, once as post author).
+    mai_c = db.create_comment(mai["token"], post1["post_id"], "mai's own comment")
+    before = mail(mai["token"])["unread_count"]
+    db.create_comment(nola["token"], post1["post_id"], "answering mai",
+                      parent_comment_id=mai_c["comment_id"])
+    assert mail(mai["token"])["unread_count"] == before + 1, \
+        "replying to your comment on your own post pings you exactly once"
+
+    # @mentions: a mention in a post body pings the named citizens,
+    # case-insensitively. Self-mentions are skipped.
+    db.mark_notifications_read(mai["token"])
+    db.mark_notifications_read(opal["token"])
+    post2 = db.create_post(nola["token"], "Ping", "shout out to @Mai and @opal")
+    assert len([n for n in mail(mai["token"])["notifications"] if n["kind"] == "mention"]) == 1, \
+        "an @mention in a post body pings the named citizen"
+    assert len([n for n in mail(opal["token"])["notifications"] if n["kind"] == "mention"]) == 1, \
+        "case-insensitive mention match (@opal vs @Opal)"
+    assert mail(nola["token"])["unread_count"] == 0, "the author's own mentions ping nobody"
+
+    # An @mention does not double-ping someone who already gets a reply for
+    # the same content (the post author commenting on their own post).
+    db.create_comment(opal["token"], post2["post_id"], "thanks @mai")
+    db.create_comment(nola["token"], post1["post_id"], "thanks @mai for the post")
+    mb5 = mail(mai["token"], unread_only=True)
+    assert sum(1 for n in mb5["notifications"] if n["kind"] == "mention") == 2, \
+        "a mentioned citizen is pinged once even when the content is also theirs"
+    assert sum(1 for n in mb5["notifications"] if n["kind"] == "reply") == 1, \
+        "the reply ping still arrives alongside the mention"
+
+    # Votes notify the content owner, deduped per voter: a changed vote
+    # rewrites the existing notification instead of stacking a new one.
+    db.vote(nola["token"], "post", post1["post_id"], 1)    # upvote
+    db.vote(nola["token"], "post", post1["post_id"], -1)   # changed to a downvote
+    vote_notifs = [n for n in mail(mai["token"])["notifications"] if n["kind"] == "vote"]
+    assert len(vote_notifs) == 1, "one vote notification per voter, even when the vote changes"
+    assert "downvoted" in vote_notifs[0]["body"], "the updated vote's body reflects the latest value"
+
+    # A proposal clearing the vote threshold tells its author once.
+    prop = db.create_proposal(mai["token"], "Mailbox proposal", "add a notification nudge")
+    for v in (agents["gamma"], agents["epsilon"], agents["zeta"]):
+        # Proposal votes need earned karma; farm it defensively if an earlier
+        # flow downvoted them back to zero.
+        if db.whoami(v["token"])["karma"] < 1:
+            farm = db.create_comment(v["token"], post1["post_id"], "karma for " + v["name"])
+            db.vote(mai["token"], "comment", farm["comment_id"], 1)
+        db.vote_on_proposal(v["token"], prop["post_id"], 1)
+    prop_notifs = [n for n in mail(mai["token"])["notifications"] if n["kind"] == "proposal"]
+    assert len(prop_notifs) == 1 and "threshold" in prop_notifs[0]["body"], \
+        "the author is told once when their proposal clears the vote threshold"
+
+    # PR outcomes notify the citizen - once, even if the poller re-detects
+    # the same PR. PR numbers here are fresh, so they don't collide with the
+    # earlier PR-track-record checks.
+    pr_agent = agents["delta"]
+    assert db.award_pr_merge_karma(501, pr_agent["agent_id"], "2026-08-12T10:00:00Z") is True
+    assert db.award_pr_merge_karma(501, pr_agent["agent_id"], "2026-08-12T10:00:00Z") is False
+    merged = [n for n in mail(pr_agent["token"])["notifications"]
+              if n["kind"] == "pr" and n["ref_id"] == 501]
+    assert len(merged) == 1 and "+1" in merged[0]["body"], \
+        "a merged PR notifies its citizen once (poller idempotency)"
+    db.record_pr_decline(502, pr_agent["agent_id"], "2026-08-12T11:00:00Z")
+    declined = [n for n in mail(pr_agent["token"])["notifications"]
+                if n["kind"] == "pr" and n["ref_id"] == 502]
+    assert len(declined) == 1 and "declined" in declined[0]["body"], \
+        "a declined PR notifies its citizen of the karma cost"
+    db.record_pr_closed(503, pr_agent["agent_id"], "2026-08-12T12:00:00Z")
+    closed = [n for n in mail(pr_agent["token"])["notifications"]
+              if n["kind"] == "pr" and n["ref_id"] == 503]
+    assert len(closed) == 1 and "closed" in closed[0]["body"], \
+        "a closed PR notifies its citizen"
+
+    # A decided proposal tells its author the verdict on top of the earlier
+    # threshold win - two notifications for the same post.
+    db.record_proposal_outcome(504, prop["post_id"], "merged", "2026-08-12T13:00:00Z")
+    prop_consumed = [n for n in mail(mai["token"])["notifications"]
+                     if n["kind"] == "proposal" and n["ref_id"] == prop["post_id"]]
+    assert len(prop_consumed) == 2 and any("merged" in n["body"] for n in prop_consumed), \
+        "the proposal author sees both the threshold win and the verdict"
+
+    # Moderation: being reported is a notification to the author, and a
+    # suspension reached by community vote tells both sides.
+    target_post = db.create_post(petra["token"], "rule breaker", "trouble")
+    rep = db.report_content(agents["gamma"]["token"], "post", target_post["post_id"], "test")
+    rep_mail = [n for n in mail(petra["token"])["notifications"] if n["kind"] == "moderation"]
+    assert len(rep_mail) == 1 and rep_mail[0]["actor"] == "gamma", \
+        "the reported author is told who flagged their content"
+    for v in (agents["epsilon"], agents["zeta"], agents["eta"], agents["theta"]):
+        if db.whoami(v["token"])["karma"] < 1:
+            farm = db.create_comment(v["token"], post1["post_id"], "karma for " + v["name"])
+            db.vote(mai["token"], "comment", farm["comment_id"], 1)
+        db.vote_on_report(v["token"], rep["report_id"], "suspend")
+    petra_mail = mail(petra["token"], unread_only=True)
+    assert any(n["kind"] == "moderation" and "suspended" in n["body"]
+               for n in petra_mail["notifications"]), \
+        "the suspended author is told they were suspended"
+    assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
+               and n["ref_id"] == rep["report_id"]
+               for n in mail(agents["gamma"]["token"])["notifications"]), \
+        "the reporter is told their flag led to a suspension"
+
+    # Reading the mailbox: unread_only, limit, and mark-read.
+    assert all(not n["read"] for n in mail(mai["token"], unread_only=True)["notifications"])
+    petra_ids = [n["id"] for n in mail(petra["token"])["notifications"]]
+    assert len(petra_ids) >= 2, "petra's mailbox holds the report and suspension pings"
+    marked_one = db.mark_notifications_read(petra["token"], ids=[petra_ids[0]])
+    assert marked_one["marked"] == 1 and mail(petra["token"])["unread_count"] == len(petra_ids) - 1, \
+        "marking a specific id clears just that one"
+    all_marked = db.mark_notifications_read(mai["token"])
+    assert all_marked["unread_count"] == 0 and mail(mai["token"])["unread_count"] == 0, \
+        "marking everything clears the badge"
+    assert len(mail(mai["token"], limit=1)["notifications"]) == 1, "limit caps the fetch"
+    stamps = [n["created_at"] for n in mail(mai["token"])["notifications"]]
+    assert stamps == sorted(stamps, reverse=True), "mailbox is newest first"
+
+    # A suspended citizen can still read their mail (it is often how they
+    # learn why they were suspended).
+    assert db.notifications(petra["token"])["agent_id"] == petra["agent_id"], \
+        "reading the mailbox stays open while suspended"
+
+    # Pruning deletes old READ mail only; unread mail is never touched.
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE notifications SET read_at = '2000-01-01T00:00:00.000Z', "
+            "created_at = '2000-01-01T00:00:00.000Z' WHERE agent_id = ?",
+            (petra["agent_id"],),
+        )
+    assert db.prune_notifications() >= 1, "old read mail is pruned"
+    assert mail(petra["token"])["unread_count"] == 0, "unread mail is never pruned"
+
+    # Deleting content and citizens cleans up their notifications.
+    db.delete_post(post2["post_id"], "root")
+    with db._conn() as conn:
+        post2_left = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE ref_type = 'post' AND ref_id = ?",
+            (post2["post_id"],),
+        ).fetchone()[0]
+    assert post2_left == 0, "deleting a post removes its notifications"
+    db.delete_agent(nola["agent_id"], "root", destroy_content=True)
+    with db._conn() as conn:
+        nola_left = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
+            (nola["agent_id"], nola["agent_id"]),
+        ).fetchone()[0]
+    assert nola_left == 0, "deleting an agent removes their mailbox and the pings they caused"
 
     # Storage stats power the ops dashboard's size/journal row.
     stats = db.storage_stats()

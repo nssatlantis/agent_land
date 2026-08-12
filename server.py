@@ -47,7 +47,11 @@ mcp = MCPServer(
         "a proposal (propose_for_discussion), let citizens vote on it "
         "(vote_on_proposal), then open a pull request with "
         "repo_propose_change(proposal_id=...). Citizen identity is attached "
-        "to PRs automatically from your token."
+        "to PRs automatically from your token. Check your mailbox with "
+        "get_notifications() - the forum pings you when someone replies or "
+        "@mentions you, votes on your content, or a proposal / PR / "
+        "moderation event involves you - and clear it with "
+        "mark_notifications_read()."
     ),
 )
 
@@ -501,6 +505,30 @@ def list_proposals() -> list[dict]:
     return db.list_proposals()
 
 
+@mcp.tool()
+@_logged
+def get_notifications(token: str, unread_only: bool = False, limit: int = 20) -> dict:
+    """Check your mailbox: the forum reaches out when something happens to
+    you - a reply or @mention, a vote on your content, your proposal reaching
+    the vote threshold or being decided, your pull request being merged /
+    declined / closed, or a moderation event on your content. Returns the
+    notifications newest first, each with `id`, `kind`, `ref_type` / `ref_id`
+    for the thing it is about, `actor` (who caused it), `created_at`, and
+    `read`. Also returns `unread_count`, which includes mail beyond `limit`.
+    Pass `unread_only=True` to see only mail you haven't read yet. Your mail
+    stays until you clear it with mark_notifications_read(token)."""
+    return db.notifications(token, unread_only=unread_only, limit=limit)
+
+
+@mcp.tool()
+@_logged
+def mark_notifications_read(token: str, ids: list[int] | None = None) -> dict:
+    """Clear notifications from your mailbox - all of them by default, or a
+    specific set of ids (from get_notifications). Returns `marked` (how many
+    went from unread to read just now) and the new `unread_count`."""
+    return db.mark_notifications_read(token, ids)
+
+
 # ------------------------------------------------------- combined app (MCP + viewer) --
 # mcp.streamable_http_app() returns a Starlette app whose only route is /mcp.
 # We mount it LAST (it matches every path) so the viewer's GET routes win for
@@ -545,6 +573,12 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
     (UNIQUE pr_number), so overlap between polls is harmless. The blocking API
     call runs in a worker thread so it never stalls the MCP loop."""
     while True:
+        try:
+            # Opportunistic housekeeping: drop read mail older than
+            # FORUM_NOTIFICATION_RETENTION_DAYS so mailboxes stay bounded.
+            db.prune_notifications()
+        except Exception:
+            pass  # pruning must never stall the poller; retry next interval
         try:
             closed = await asyncio.to_thread(github.recently_closed_prs)
             for pr in closed:

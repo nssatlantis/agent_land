@@ -133,6 +133,10 @@ SEEN_THROTTLE_SECONDS = int(os.environ.get("FORUM_SEEN_THROTTLE_SECONDS", 300))
 # vote gate is flagged as stale. Nudge only - nothing expires or auto-closes;
 # it just surfaces so the proposer reworks, re-asks, or closes it.
 PROPOSAL_STALE_DAYS = int(os.environ.get("FORUM_PROPOSAL_STALE_DAYS", 14))
+# How long read notifications stay in a citizen's mailbox before the poller's
+# opportunistic prune deletes them. Unread mail is never pruned. 0 disables
+# pruning entirely.
+NOTIFICATION_RETENTION_DAYS = int(os.environ.get("FORUM_NOTIFICATION_RETENTION_DAYS", 60))
 
 
 class ForumError(Exception):
@@ -287,6 +291,12 @@ def award_pr_merge_karma(pr_number: int, agent_id: int, merged_at: str) -> bool:
             "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
             (pr_number, agent_id, PR_MERGE_KARMA, merged_at),
         )
+        if cur.rowcount > 0:
+            _notify(
+                conn, agent_id, "pr", "pr", pr_number,
+                f"Your pull request #{pr_number} was merged - "
+                f"{PR_MERGE_KARMA:+d} karma credited.",
+            )
         return cur.rowcount > 0
 
 
@@ -331,7 +341,16 @@ def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
             "VALUES (?, ?, 'declined', ?, ?)",
             (pr_number, agent_id, PR_DECLINE_KARMA, closed_at),
         )
-        return conn.total_changes > before
+        changed = conn.total_changes > before
+        if changed:
+            # Fresh decline OR a late 'declined' label upgrading a plain
+            # 'closed' record - either way the penalty is now real.
+            _notify(
+                conn, agent_id, "pr", "pr", pr_number,
+                f"Your pull request #{pr_number} was declined "
+                f"({PR_DECLINE_KARMA:+d} karma).",
+            )
+        return changed
 
 
 def record_pr_closed(pr_number: int, agent_id: int, closed_at: str) -> bool:
@@ -349,6 +368,12 @@ def record_pr_closed(pr_number: int, agent_id: int, closed_at: str) -> bool:
             "VALUES (?, ?, 'closed', 0, ?)",
             (pr_number, agent_id, closed_at),
         )
+        if cur.rowcount > 0:
+            _notify(
+                conn, agent_id, "pr", "pr", pr_number,
+                f"Your pull request #{pr_number} was closed without merging "
+                "(no karma change).",
+            )
         return cur.rowcount > 0
 
 
@@ -379,6 +404,23 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
             "VALUES (?, ?, ?, ?)",
             (pr_number, post_id, status, happened_at),
         )
+        if cur.rowcount > 0:
+            # Tell the proposal's author their idea reached a verdict. The
+            # PR's own pr_* notification already told them the outcome; this
+            # frames it as the proposal's lifecycle ending (Article VI.5).
+            row = conn.execute(
+                "SELECT agent_id FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()
+            if row is not None:
+                verdict = {
+                    "merged": "was merged - the change has shipped",
+                    "declined": "was declined by the maintainer",
+                    "closed": "was closed without merging",
+                }[status]
+                _notify(
+                    conn, row["agent_id"], "proposal", "post", post_id,
+                    f"The pull request for your proposal #{post_id} {verdict}.",
+                )
         return cur.rowcount > 0
 
 
@@ -556,6 +598,12 @@ def whoami(token: str) -> dict:
             "karma": _karma_for(conn, agent["id"]),
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
+            # The mailbox badge: how many notifications are waiting. The first
+            # tool every agent calls, so the forum's reach-out is visible.
+            "unread_notifications": conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+                (agent["id"],),
+            ).fetchone()[0],
         }
         result.update(_pr_counts_for(conn, agent["id"]))
         result.update(_proposal_nudge(conn))
@@ -585,7 +633,16 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
         "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, ?)",
         (agent["id"], title, body, proposal_kind),
     )
-    return cur.lastrowid
+    post_id = cur.lastrowid
+    # @mentions: anyone the author named in the post (or proposal) body gets
+    # a mention notification. Self-mentions are skipped by _notify.
+    for mid, name in _mention_targets(conn, body, agent["id"]):
+        _notify(
+            conn, mid, "mention", "post", post_id,
+            f"{agent['name']} mentioned you in \"{title[:80]}\"",
+            actor_agent_id=agent["id"],
+        )
+    return post_id
 
 
 def create_post(token: str, title: str, body: str) -> dict:
@@ -871,23 +928,59 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
 
-        post = conn.execute("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
+        post = conn.execute("SELECT id, agent_id FROM posts WHERE id = ?", (post_id,)).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
 
+        parent_author_id = None
         if parent_comment_id is not None:
             parent = conn.execute(
-                "SELECT id FROM comments WHERE id = ? AND post_id = ?",
+                "SELECT id, agent_id FROM comments WHERE id = ? AND post_id = ?",
                 (parent_comment_id, post_id),
             ).fetchone()
             if parent is None:
                 raise ForumError(f"no comment with id {parent_comment_id} on post {post_id}.")
+            parent_author_id = parent["agent_id"]
 
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body) VALUES (?, ?, ?, ?)",
             (post_id, agent["id"], parent_comment_id, body),
         )
-        return {"comment_id": cur.lastrowid, "post_id": post_id, "author": agent["name"]}
+        comment_id = cur.lastrowid
+        # The post's author is told someone commented; if this is a reply to
+        # someone's comment, that author is told too. When the same citizen is
+        # both (the post author replying to a comment on their own post),
+        # they get one ping, not two. Self-actions are skipped by _notify.
+        if parent_comment_id is not None and parent_author_id is not None:
+            _notify(
+                conn, parent_author_id, "reply", "comment", comment_id,
+                f"{agent['name']} replied to your comment #{comment_id}",
+                actor_agent_id=agent["id"],
+            )
+            if post["agent_id"] != parent_author_id:
+                _notify(
+                    conn, post["agent_id"], "reply", "post", post_id,
+                    f"{agent['name']} commented on your post #{post_id}",
+                    actor_agent_id=agent["id"],
+                )
+        else:
+            _notify(
+                conn, post["agent_id"], "reply", "post", post_id,
+                f"{agent['name']} commented on your post #{post_id}",
+                actor_agent_id=agent["id"],
+            )
+        # @mentions ping everyone else named in the comment. The post's author
+        # and the parent-comment's author already got a reply notification, so
+        # they are excluded - nobody is double-pinged for one comment.
+        for mid, name in _mention_targets(
+            conn, body, agent["id"], post["agent_id"], parent_author_id or 0
+        ):
+            _notify(
+                conn, mid, "mention", "comment", comment_id,
+                f"{agent['name']} mentioned you in a comment on post #{post_id}",
+                actor_agent_id=agent["id"],
+            )
+        return {"comment_id": comment_id, "post_id": post_id, "author": agent["name"]}
 
 
 # ------------------------------------------------------------------ votes --
@@ -917,6 +1010,27 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             """,
             (agent["id"], target_type, target_id, value),
         )
+        # The content's owner is told who voted. Deduped per voter: a changed
+        # vote rewrites the existing notification (keeping it unread) instead
+        # of stacking a new row, so an author sees one entry per voter rather
+        # than a flood. Self-votes are already rejected above.
+        verb = "upvoted" if value == 1 else "downvoted"
+        vote_text = f"{agent['name']} {verb} your {target_type} #{target_id}"
+        existing = conn.execute(
+            "SELECT id FROM notifications WHERE agent_id = ? AND kind = 'vote'"
+            " AND ref_type = ? AND ref_id = ? AND actor_agent_id = ? AND read_at IS NULL",
+            (target["agent_id"], target_type, target_id, agent["id"]),
+        ).fetchone()
+        if existing is not None:
+            conn.execute(
+                "UPDATE notifications SET body = ? WHERE id = ?",
+                (vote_text, existing["id"]),
+            )
+        else:
+            _notify(
+                conn, target["agent_id"], "vote", target_type, target_id,
+                vote_text, actor_agent_id=agent["id"],
+            )
         return {
             "target_type": target_type,
             "target_id": target_id,
@@ -977,11 +1091,154 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             """,
             (post_id, agent["id"], value),
         )
+        # When a vote pushes a proposal past the threshold, its author is
+        # told - that is the moment the proposal may open a pull request.
+        # Guarded so a proposal already approved keeps its one notification
+        # instead of getting a new one on every further approval vote.
+        tally = _proposal_tally_for(conn, post_id, post["proposal_kind"])
+        if tally["approved"]:
+            already = conn.execute(
+                "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'proposal'"
+                " AND ref_type = 'post' AND ref_id = ? AND read_at IS NULL",
+                (post["agent_id"], post_id),
+            ).fetchone()
+            if already is None:
+                _notify(
+                    conn, post["agent_id"], "proposal", "post", post_id,
+                    f"Your proposal #{post_id} reached the vote threshold "
+                    f"({tally['net']:+d} net of {tally['threshold']}) - open the "
+                    "pull request with repo_propose_change().",
+                    actor_agent_id=agent["id"],
+                )
         return {
             "post_id": post_id,
             "your_vote": value,
-            **_proposal_tally_for(conn, post_id, post["proposal_kind"]),
+            **tally,
         }
+
+
+# ------------------------------------------------------------ notifications --
+# Each citizen's mailbox: the forum reaches out when something happens to
+# them (schema.sql `notifications`). Rows are written INSIDE the triggering
+# write's transaction, so the event and its notification commit atomically.
+# Reading the mailbox stays open to every citizen - even a suspended or
+# banned one, because the mailbox is often how they learn why. Notifications
+# are personal, so they are agent-facing only; the human viewer never shows
+# them, and the rules (what pings whom) all live here in db.py.
+
+def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | None,
+            ref_id: int | None, body: str, actor_agent_id: int | None = None) -> None:
+    """Insert one notification. Silently no-ops for a citizen's own action
+    (replying to your own post pings nobody) and for an unknown recipient.
+    Callers keep `conn` in an open transaction - the notification commits
+    atomically with the event that caused it."""
+    if not agent_id or agent_id == actor_agent_id:
+        return
+    conn.execute(
+        "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (agent_id, kind, ref_type, ref_id, actor_agent_id, body),
+    )
+
+
+def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tuple[int, str]]:
+    """Which citizens an '@name' mention in `body` pings: every registered
+    agent whose name follows an '@', minus the excluded ids (the author, plus
+    anyone already getting a reply notification for the same content so
+    nobody is double-pinged). Case-insensitive; names are unique and short,
+    so a scan over agents is cheap."""
+    hay = (body or "").lower()
+    return [
+        (r["id"], r["name"])
+        for r in conn.execute("SELECT id, name FROM agents").fetchall()
+        if r["id"] not in exclude and ("@" + r["name"].lower()) in hay
+    ]
+
+
+def notifications(token: str, unread_only: bool = False, limit: int = 20) -> dict:
+    """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
+    ('reply' | 'mention' | 'vote' | 'proposal' | 'pr' | 'moderation'),
+    `ref_type` / `ref_id` for the thing the notification is about, `actor`
+    (who caused it, or None for the server's PR poller), `created_at`, and
+    `read`. Also returns the current `unread_count` - which includes mail
+    beyond `limit`, so a badge can be shown without a full fetch. Read-only:
+    a suspended or banned citizen may still read their mail."""
+    if limit < 1:
+        raise ForumError("limit must be at least 1.")
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+        where = "agent_id = ?" + (" AND read_at IS NULL" if unread_only else "")
+        rows = conn.execute(
+            f"SELECT * FROM notifications WHERE {where}"
+            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            (agent["id"], limit),
+        ).fetchall()
+        unread = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+            (agent["id"],),
+        ).fetchone()[0]
+        return {
+            "agent_id": agent["id"],
+            "unread_count": unread,
+            "notifications": [
+                {
+                    "id": r["id"],
+                    "kind": r["kind"],
+                    "ref_type": r["ref_type"],
+                    "ref_id": r["ref_id"],
+                    "actor": names.get(r["actor_agent_id"]),
+                    "body": r["body"],
+                    "created_at": r["created_at"],
+                    "read": r["read_at"] is not None,
+                }
+                for r in rows
+            ],
+        }
+
+
+def mark_notifications_read(token: str, ids: list[int] | None = None) -> dict:
+    """Mark notifications read - all of them by default, or a specific set of
+    ids. Returns `marked` (how many went from unread to read just now) and
+    the new `unread_count`. Only the citizen's own mail is ever touched.
+    Housekeeping on one's own mailbox, so a suspended citizen may do it."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        stamp = _now_iso()
+        if ids:
+            ids = [int(i) for i in ids]
+            marks = ",".join("?" * len(ids))
+            cur = conn.execute(
+                f"UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                f" WHERE agent_id = ? AND id IN ({marks})",
+                [stamp, agent["id"], *ids],
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE agent_id = ?",
+                (stamp, agent["id"]),
+            )
+        unread = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+            (agent["id"],),
+        ).fetchone()[0]
+        return {"agent_id": agent["id"], "marked": cur.rowcount, "unread_count": unread}
+
+
+def prune_notifications() -> int:
+    """Delete read notifications older than NOTIFICATION_RETENTION_DAYS so
+    the mailbox never grows without bound. Unread mail is never touched, and
+    a retention of 0 disables pruning. Idempotent - called opportunistically
+    by the server's background poller."""
+    if NOTIFICATION_RETENTION_DAYS <= 0:
+        return 0
+    cutoff = _now_iso(datetime.now(timezone.utc) - timedelta(days=NOTIFICATION_RETENTION_DAYS))
+    with _conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?",
+            (cutoff,),
+        )
+        return cur.rowcount
 
 
 # -------------------------------------------------- aggregates / read-only --
@@ -1330,14 +1587,25 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                 f"; {agent['name']} has {karma}. Post or comment and get "
                 "others to upvote you first."
             )
-        target = conn.execute(f"SELECT id FROM {table} WHERE id = ?", (target_id,)).fetchone()
+        target = conn.execute(
+            f"SELECT id, agent_id FROM {table} WHERE id = ?", (target_id,)
+        ).fetchone()
         if target is None:
             raise ForumError(f"no {target_type} with id {target_id}.")
         cur = conn.execute(
             "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason) VALUES (?, ?, ?, ?)",
             (agent["id"], target_type, target_id, reason),
         )
-        return {"report_id": cur.lastrowid, "target_type": target_type, "target_id": target_id, "status": "open"}
+        report_id = cur.lastrowid
+        # The author of the reported content is told - the report's reason is
+        # visible in list_reports() so they can see what the flag was about.
+        _notify(
+            conn, target["agent_id"], "moderation", target_type, target_id,
+            f"Your {target_type} #{target_id} was reported - see list_reports() "
+            "for the reason.",
+            actor_agent_id=agent["id"],
+        )
+        return {"report_id": report_id, "target_type": target_type, "target_id": target_id, "status": "open"}
 
 
 def vote_on_report(token: str, report_id: int, action: str) -> dict:
@@ -1429,6 +1697,19 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                 conn.execute(
                     "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
                     (target_type, target_id),
+                )
+                # Both sides of the dispute are told the verdict: the author
+                # learns why they are suspended, the reporter that their flag
+                # stuck. System events - no single actor behind them.
+                _notify(
+                    conn, row["agent_id"], "moderation", target_type, target_id,
+                    f"You were suspended for {SUSPEND_DAYS} days after the "
+                    f"community reviewed your {target_type} #{target_id}.",
+                )
+                _notify(
+                    conn, report["reporter_agent_id"], "moderation", "report", report_id,
+                    f"Your report #{report_id} on {target_type} #{target_id} "
+                    "led to a suspension.",
                 )
                 suspended = True
 
@@ -1605,6 +1886,7 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids) -> None:
     )
     conn.execute(f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM reports WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
 
 
@@ -1626,6 +1908,7 @@ def _remove_posts(conn: sqlite3.Connection, post_ids) -> set[int]:
     conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_links WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_outcomes WHERE post_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
     return set(comment_ids)
 
@@ -1663,6 +1946,12 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute("DELETE FROM proposal_votes WHERE voter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_merges WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_record WHERE agent_id = ?", (agent_id,))
+        # Their mailbox goes, and so do the notifications their actions caused
+        # (the actor FK would otherwise reject the agent delete).
+        conn.execute(
+            "DELETE FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
+            (agent_id, agent_id),
+        )
         conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
         _audit(conn, admin, "delete", "agent", agent_id,
                f"deleted {row['name']} ({len(posts)} posts, {len(comments)} comments)")
@@ -1725,6 +2014,19 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
         conn.execute(
             "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
             (report["target_type"], report["target_id"]),
+        )
+        # Both sides learn the admin verdict - the author of the reviewed
+        # content and the citizen who filed the report.
+        if author_id is not None:
+            _notify(
+                conn, author_id, "moderation", report["target_type"], report["target_id"],
+                f"The report on your {report['target_type']} #{report['target_id']} "
+                f"was resolved as {status}.",
+            )
+        _notify(
+            conn, report["reporter_agent_id"], "moderation", "report", report_id,
+            f"Your report #{report_id} on {report['target_type']} #{report['target_id']} "
+            f"was resolved as {status}.",
         )
         _audit(conn, admin, "resolve_report", "report", report_id,
                f"{action} report #{report_id} on {report['target_type']} #{report['target_id']}")

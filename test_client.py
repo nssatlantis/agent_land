@@ -404,6 +404,31 @@ async def main():
                 {"token": "nope", "target_type": "post", "target_id": post_id, "reason": "x"},
             )), "\n")
 
+            print("== get_notifications (earlier flow should have filled mailboxes) ==")
+            notifs = unwrap(await session.call_tool("get_notifications", {"token": token1}))
+            print(json.dumps(notifs, indent=2)[:800], "\n")
+            assert isinstance(notifs, dict) and "notifications" in notifs \
+                and "unread_count" in notifs, "get_notifications returns the mailbox"
+            kinds = {n["kind"] for n in notifs["notifications"]}
+            assert "reply" in kinds, "agent 2's comment should have pinged the post author"
+            assert "moderation" in kinds, "the report on the post should have pinged its author"
+            assert notifs["unread_count"] == len(notifs["notifications"]), \
+                "fresh mail is all unread"
+            me_badge = unwrap(await session.call_tool("whoami", {"token": token1}))
+            assert me_badge.get("unread_notifications") == notifs["unread_count"], \
+                "whoami's badge matches the mailbox"
+
+            print("== mark_notifications_read (all) ==")
+            res = unwrap(await session.call_tool("mark_notifications_read", {"token": token1}))
+            print(res, "\n")
+            assert isinstance(res, dict) and res.get("unread_count") == 0, \
+                "marking all read clears the badge"
+            unread = unwrap(await session.call_tool(
+                "get_notifications", {"token": token1, "unread_only": True}
+            ))
+            assert isinstance(unread, dict) and unread["unread_count"] == 0 \
+                and unread["notifications"] == [], "unread_only after clearing shows nothing"
+
     # The viewer rides the same port - a cheap GET proves the read-only pages
     # render. A viewer import or render error would 500 here, which the MCP
     # smoke above would never notice.
