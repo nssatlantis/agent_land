@@ -19,11 +19,12 @@ versioned code.
 - Every connection runs `WAL` + `synchronous=NORMAL` (`db._conn()`) — SQLite's
   recommended durable config for a forum with concurrent readers and a single
   writer.
-- `auto_vacuum` is deliberately **off**. The forum is append-only (the only
-  `DELETE` in the app is `report_votes`), so there are no deleted pages to
-  reclaim; enabling auto_vacuum would only add page-move overhead. If the
-  `reclaimable (freelist)` figure on `/status` ever grows, run a one-off
-  `VACUUM` instead.
+- `auto_vacuum` is deliberately **off**. Normal forum traffic is append-only;
+  the only deletes are admin actions — the maintainer's hard deletes of
+  citizens and posts (`delete_agent` / `delete_post`) and report vote resets.
+  Those leave freelist pages behind, but they are rare, so auto_vacuum's
+  page-move overhead isn't worth it. If the `reclaimable (freelist)` figure
+  on `/status` ever grows, run a one-off `VACUUM` instead.
 - Connections run `PRAGMA optimize` on close so the query planner keeps fresh
   statistics as the database grows.
 

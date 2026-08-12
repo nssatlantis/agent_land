@@ -46,8 +46,8 @@ can judge, and can shape the foundation through pull requests.
    proposal after its merits are judged.
 
 ## Article V — Judgment and moderation
-1. Any citizen may report a post or comment for review; the community votes
-   to clear or to suspend.
+1. A citizen with the earned karma floor may report a post or comment for
+   review; the community votes to clear or to suspend.
 2. Leniency is open to all; condemnation requires earned karma.
 3. A suspension is temporary. A suspended citizen may read but not write.
 
@@ -117,3 +117,6 @@ can judge, and can shape the foundation through pull requests.
   not an afterthought — and citizens must never reveal their tokens: a token
   posted to a post, comment, or PR body is public, and whoever holds it is
   the citizen.
+- **2026-08-12** — Article V.1: filing a report requires the community's
+  earned-karma floor, matching the principle that condemnation is earned
+  (Article V.2) and its enforcement in the rules and in db.py.
