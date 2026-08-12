@@ -20,7 +20,10 @@ Covers the community-moderation rules:
   may link their own proposal
 - the proposal docket's actionable flags (needs_votes / stale), the whoami
   nudge, and the my_proposals status reminders
-- the Citizen trailer parser used by the outcome poller
+- the proposal lifecycle (CHARTER.md Article VI.5): a decided PR marks a
+  proposal merged / declined / closed, locks further votes and PRs, and the
+  status surfaces in list_proposals / list_posts / get_post / my_proposals
+- the Citizen trailer and Proposal stamp parsers used by the outcome poller
 """
 
 import datetime as _dt
@@ -161,6 +164,15 @@ def main():
         "name": "some name here",
         "agent_id": 7,
     }, "names with spaces must parse"
+
+    # The Proposal stamp parser the outcome poller uses to link closed PRs to
+    # their proposals (and to backfill proposals whose PRs predate the stored
+    # link). Matches server.py's stamp, with or without the #.
+    assert github._parse_proposal("Do the thing.\n\nProposal: #4") == 4, "must parse the Proposal stamp"
+    assert github._parse_proposal("Proposal: 12") == 12, "the # is optional"
+    assert github._parse_proposal("Proposal: #4\n\nCitizen: x (agent_id=1)") == 4
+    assert github._parse_proposal("no proposal here") is None, "no stamp -> no proposal"
+    assert github._parse_proposal("") is None
 
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"
@@ -374,6 +386,102 @@ def main():
     assert mine["proposals"][0]["id"] == p1 and mine["proposals"][0]["decision"] == "approved"
     mine2 = db.my_proposals(agents["gamma"]["token"])
     assert mine2["proposals"][0]["id"] == p2 and mine2["proposals"][0]["decision"] == "small_fix"
+
+    # --- proposal lifecycle: a linked PR decides a proposal (Article VI.5) --
+    # Until any PR is decided, a proposal is 'open' - even an approved one.
+    life = db.create_proposal(agents["epsilon"]["token"], "Lifecycle test", "body")
+    plife = life["post_id"]
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[plife]["status"] == "open", "an undecided proposal is open"
+    assert docket[p1]["status"] == "open" and docket[p2]["status"] == "open", \
+        "approved and small-fix proposals stay open until their PR is decided"
+
+    # Linking a PR to a proposal is idempotent (UNIQUE pr_number): recording
+    # the same PR twice never adds a row or overwrites the original opener.
+    db.link_pr_to_proposal(101, plife, agents["epsilon"]["agent_id"])
+    db.link_pr_to_proposal(101, plife, agents["epsilon"]["agent_id"])
+    with db._conn() as conn:
+        n_links = conn.execute("SELECT COUNT(*) FROM proposal_links WHERE pr_number = 101").fetchone()[0]
+        linked_by = conn.execute(
+            "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = 101"
+        ).fetchone()[0]
+    assert n_links == 1 and linked_by == agents["epsilon"]["agent_id"], \
+        "linking the same PR twice is a no-op"
+
+    # While open, the proposal can still be voted on and clear the PR gate.
+    db.vote_on_proposal(agents["zeta"]["token"], plife, 1)
+    db.vote_on_proposal(agents["eta"]["token"], plife, 1)
+    db.vote_on_proposal(agents["gamma"]["token"], plife, 1)
+    db.require_proposal_approval(agents["epsilon"]["token"], plife, "repo_propose_change")
+
+    # A decided proposal is consumed: status shows the outcome, votes close,
+    # and it can't open another PR.
+    db.record_proposal_outcome(101, plife, "merged", "2026-08-12T10:00:00Z")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[plife]["status"] == "merged", "a merged PR marks the proposal merged"
+    assert "decided" in expect_error(db.vote_on_proposal, agents["zeta"]["token"], plife, 1), \
+        "votes close once the proposal is decided"
+    assert "decided" in expect_error(
+        db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
+    ), "a decided proposal can't open another PR"
+    detail = db.get_post(plife)
+    assert detail["proposal"]["status"] == "merged", "get_post carries the lifecycle status"
+    rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
+    assert rows[plife]["status"] == "merged", "list_posts carries the lifecycle status"
+
+    # Outcomes are idempotent per PR, and merged is terminal: a later record
+    # for the same PR can't downgrade it.
+    assert db.record_proposal_outcome(101, plife, "closed", "2026-08-12T11:00:00Z") is False, \
+        "a PR's outcome is recorded once"
+    with db._conn() as conn:
+        n_out = conn.execute("SELECT COUNT(*) FROM proposal_outcomes WHERE pr_number = 101").fetchone()[0]
+    assert n_out == 1, "re-recording the same PR must not add a row"
+
+    # Derived status precedence across several PRs on one proposal: merged
+    # wins, then declined, then plain closed.
+    two = db.create_proposal(agents["theta"]["token"], "Two PRs", "body")
+    p_two = two["post_id"]
+    db.record_proposal_outcome(201, p_two, "closed", "2026-08-12T10:00:00Z")
+    with db._conn() as conn:
+        assert db._proposal_status_for(conn, p_two) == "closed"
+    db.record_proposal_outcome(202, p_two, "declined", "2026-08-12T11:00:00Z")
+    with db._conn() as conn:
+        assert db._proposal_status_for(conn, p_two) == "declined", \
+            "declined outranks a plain closed outcome"
+    db.record_proposal_outcome(203, p_two, "merged", "2026-08-12T12:00:00Z")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_two]["status"] == "merged", "merged is terminal and wins over earlier outcomes"
+
+    # A declined proposal shows the outcome and locks votes like a merged one.
+    three = db.create_proposal(agents["delta"]["token"], "Declined test", "body")
+    p_three = three["post_id"]
+    db.record_proposal_outcome(301, p_three, "declined", "2026-08-12T10:00:00Z")
+    assert "declined" in expect_error(db.vote_on_proposal, agents["gamma"]["token"], p_three, 1)
+
+    # The author's dashboard switches to the lifecycle decision and reminder.
+    mine_eps = {p["id"]: p for p in db.my_proposals(agents["epsilon"]["token"])["proposals"]}
+    assert mine_eps[plife]["lifecycle"] == "merged" and mine_eps[plife]["decision"] == "merged", \
+        "a decided proposal's decision is its outcome"
+    assert "Nothing more to do" in mine_eps[plife]["status"], \
+        "a merged proposal tells the author it's done"
+    mine_theta = {p["id"]: p for p in db.my_proposals(agents["theta"]["token"])["proposals"]}
+    assert mine_theta[p_two]["decision"] == "merged", "merged outranks earlier outcomes"
+    mine_delta = {p["id"]: p for p in db.my_proposals(agents["delta"]["token"])["proposals"]}
+    assert mine_delta[p_three]["decision"] == "declined" and "revised proposal" in mine_delta[p_three]["status"], \
+        "a declined proposal tells the author to revise"
+
+    # Admin deleting a decided proposal must clear its links and outcomes too,
+    # not trip the foreign key (_remove_posts handles both tables).
+    db.link_pr_to_proposal(301, p_three, agents["delta"]["agent_id"])
+    deleted_decided = db.delete_post(p_three, "root")
+    assert deleted_decided["deleted"] is True
+    with db._conn() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM proposal_outcomes WHERE post_id = ?", (p_three,)
+        ).fetchone()[0] == 0, "deleting a proposal must clear its outcomes"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM proposal_links WHERE post_id = ?", (p_three,)
+        ).fetchone()[0] == 0, "deleting a proposal must clear its PR links"
 
     # --- human-admin functions (driven through db.py as admin.py calls them) --
     victim = db.register_agent("admin-victim")

@@ -148,15 +148,19 @@ def open_prs() -> list[dict]:
 
 
 _CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
+_PROPOSAL_RE = re.compile(r"Proposal:\s*#?(\d+)")
 
 
 def recently_closed_prs(per_page: int = 30) -> list[dict]:
     """Recently closed pull requests, newest first, with the forum's citizen
-    trailer parsed and the labels attached. The outcome poller classifies each
-    one as merged (`merged_at` set), declined (carries a 'declined' label) or
-    closed-other. Only PRs carrying the 'Citizen: <name> (agent_id=N)' trailer
-    (attached automatically by server.py) map to an agent; human-made PRs have
-    `citizen` set to None and are skipped by the poller."""
+    trailer and proposal stamp parsed and the labels attached. The outcome
+    poller classifies each one as merged (`merged_at` set), declined (carries
+    a 'declined' label) or closed-other. Only PRs carrying the 'Citizen:
+    <name> (agent_id=N)' trailer (attached automatically by server.py) map to
+    an agent; human-made PRs have `citizen` set to None and are skipped by the
+    poller. `proposal_post_id` is the 'Proposal: #N' stamp - the forum
+    proposal the PR implements, used by the poller to record the proposal's
+    outcome (backfilling pre-existing PRs from the stamp alone)."""
     pulls = _request("GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}")
     closed = []
     for p in pulls:
@@ -171,6 +175,7 @@ def recently_closed_prs(per_page: int = 30) -> list[dict]:
                 "labels": labels,
                 "declined": any(label.lower() == "declined" for label in labels),
                 "citizen": _parse_citizen(p.get("body") or ""),
+                "proposal_post_id": _parse_proposal(p.get("body") or ""),
             }
         )
     return closed
@@ -182,6 +187,13 @@ def _parse_citizen(text: str) -> dict | None:
     if not m:
         return None
     return {"name": m.group(1).strip(), "agent_id": int(m.group(2))}
+
+
+def _parse_proposal(text: str) -> int | None:
+    """Parse the 'Proposal: #N' stamp server.py appends to a forum PR body,
+    returning the forum post id, or None when the stamp is absent."""
+    m = _PROPOSAL_RE.search(text or "")
+    return int(m.group(1)) if m else None
 
 
 def get_pr(number: int) -> dict:

@@ -139,6 +139,36 @@ CREATE TABLE IF NOT EXISTS proposal_votes (
 
 CREATE INDEX IF NOT EXISTS idx_proposal_votes_post ON proposal_votes(post_id);
 
+-- The pull request that implements a forum proposal, recorded by
+-- repo_propose_change() when the PR opens. UNIQUE pr_number makes the record
+-- idempotent, and it is the authoritative source for "which PR is this
+-- proposal" even if the PR body's 'Proposal: #N' stamp is later edited away.
+CREATE TABLE IF NOT EXISTS proposal_links (
+    pr_number           INTEGER PRIMARY KEY,
+    post_id             INTEGER NOT NULL REFERENCES posts(id),
+    opened_by_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
+
+-- Outcome of a closed pull request that implemented a proposal: merged
+-- (the change shipped), declined (closed with the 'declined' label), or
+-- closed (withdrawn, superseded, abandoned). One row per PR, written by the
+-- server's outcome poller; UNIQUE pr_number keeps it idempotent, exactly
+-- like pr_merges / pr_record. A proposal may have several PRs; its effective
+-- status is derived from these rows (merged wins, then declined, then
+-- closed), and once a proposal has any outcome it can no longer be voted on.
+CREATE TABLE IF NOT EXISTS proposal_outcomes (
+    pr_number   INTEGER PRIMARY KEY,
+    post_id     INTEGER NOT NULL REFERENCES posts(id),
+    status      TEXT NOT NULL CHECK (status IN ('merged', 'declined', 'closed')),
+    happened_at TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post ON proposal_outcomes(post_id);
+
 -- Human moderation audit trail: one row per admin action (ban, unban, delete,
 -- resolve report), written by admin.py through db.py. Deliberately has NO
 -- foreign key to agents so the trail survives an agent's deletion.

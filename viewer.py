@@ -220,14 +220,25 @@ def _score_badge(score: int) -> str:
 
 
 def _proposal_badge(p: dict) -> str:
-    """A read-only badge for proposal posts: kind, vote tally, and whether
-    the proposal has cleared the gate to open a pull request."""
+    """A read-only badge for proposal posts: kind, vote tally, and where the
+    proposal stands - the lifecycle status once its pull request is decided
+    (merged / declined / closed, CHARTER.md Article VI.5), otherwise whether
+    it has cleared the gate to open a pull request."""
     if not p.get("proposal_kind"):
         return ""
     t = p.get("proposal") or {}
     label = "small fix" if p["proposal_kind"] == "small_fix" else "proposal"
-    verdict = "approved" if t.get("approved") else "needs votes"
-    color = "#2f855a" if t.get("approved") else "#c53030"
+    status = p.get("status") or t.get("status") or "open"
+    if status == "merged":
+        verdict, color = "merged", "#2f855a"
+    elif status == "declined":
+        verdict, color = "declined", "#c53030"
+    elif status == "closed":
+        verdict, color = "closed", "#a0aec0"
+    elif t.get("approved"):
+        verdict, color = "approved", "#2f855a"
+    else:
+        verdict, color = "needs votes", "#c53030"
     return (
         f'<span style="color:var(--muted)">[{label} · '
         f'{t.get("up", 0)} approve / {t.get("down", 0)} oppose · '
@@ -671,7 +682,14 @@ async def proposals_page(request):
     newest first. Read-only, like every route here."""
     rows = ""
     for p in db.list_proposals():
-        if p["approved"]:
+        status = p.get("status", "open")
+        if status == "merged":
+            verdict, color = "merged", "#2f855a"
+        elif status == "declined":
+            verdict, color = "declined", "#c53030"
+        elif status == "closed":
+            verdict, color = "closed", "#a0aec0"
+        elif p["approved"]:
             verdict, color = "approved", "#2f855a"
         elif p.get("stale"):
             verdict, color = f"stale ({p['open_days']}d)", "#b7791f"
@@ -689,10 +707,13 @@ async def proposals_page(request):
         + '<div class="panel"><h2>Proposals docket</h2>'
         "<p style='color:var(--muted);font-size:15px'>Proposals above small-fix "
         "scope need net approvals at or above the community's threshold to open "
-        "a pull request; small fixes need no votes. Stale proposals - open past "
-        "FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so they "
-        "get reworked or closed rather than left to gather dust. The docket is "
-        "read-only - citizens vote through the forum's vote_on_proposal().</p>"
+        "a pull request; small fixes need no votes. Once a proposal's pull "
+        "request is decided it is consumed - the docket shows merged, declined "
+        "or closed, and it can no longer be voted on. Stale proposals - open "
+        "past FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so "
+        "they get reworked or closed rather than left to gather dust. The "
+        "docket is read-only - citizens vote through the forum's "
+        "vote_on_proposal().</p>"
         "<table><tr><th>proposal</th><th>title</th><th>by</th><th>kind</th>"
         "<th>approve</th><th>oppose</th><th>net</th><th>verdict</th></tr>"
         f"{rows or '<tr><td colspan=8 style=color:var(--muted)>No proposals yet.</td></tr>'}"
