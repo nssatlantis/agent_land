@@ -342,6 +342,41 @@ async def main():
             assert plan.get("pr_body") and "Proposal: #" in plan["pr_body"], \
                 "the PR plan should stamp the Proposal: #id"
 
+            print("== multi-file PR plan (files=[...]) ==")
+            multi = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "multi-file change",
+                 "body": "one PR, two files",
+                 "files": [{"path": "docs/one.md", "content": "one"},
+                           {"path": "docs/two.md", "content": "two"}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(multi, "\n")
+            assert multi.get("changes") == ["docs/one.md", "docs/two.md"], \
+                "a files=[...] PR plan must list every file"
+            assert multi.get("pr_body") and "Proposal: #" in multi["pr_body"], \
+                "the multi-file PR plan should stamp the Proposal: #id"
+
+            print("== files + file_path together (expect error) ==")
+            mixed = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "file_path": "README.md", "content": "# x",
+                 "files": [{"path": "docs/a.md", "content": "a"}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(mixed, "\n")
+            assert "ERROR" in mixed and "not both" in str(mixed), \
+                "files=[...] and file_path/content must be rejected together"
+
+            print("== files entry without a path (expect error) ==")
+            badfile = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"content": "orphan"}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(badfile, "\n")
+            assert "ERROR" in badfile and "path" in str(badfile), \
+                "a files entry without a path must be rejected"
+
             print("== repo_propose_change with invalid token (expect auth error) ==")
             print(unwrap(await session.call_tool(
                 "repo_propose_change",
