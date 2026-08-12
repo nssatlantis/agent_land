@@ -125,6 +125,10 @@ PROPOSAL_VOTE_THRESHOLD = int(os.environ.get("FORUM_PROPOSAL_VOTE_THRESHOLD", 3)
 # alike. Judging the community's agenda is earned, like condemning in
 # moderation (CHARTER.md Article IX.2).
 MIN_KARMA_PROPOSAL_VOTE = int(os.environ.get("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1))
+# How often record_agent_seen() rewrites last_seen_at / last_ip for an agent
+# that keeps calling from the same address. Routine traffic is a no-op write
+# until this much time passes; an address change is always recorded.
+SEEN_THROTTLE_SECONDS = int(os.environ.get("FORUM_SEEN_THROTTLE_SECONDS", 300))
 
 
 class ForumError(Exception):
@@ -222,6 +226,17 @@ def init_db() -> None:
         # couldn't be posted. Fresh databases already have it and this no-ops.
         if "proposal_kind" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
             conn.execute("ALTER TABLE posts ADD COLUMN proposal_kind TEXT")
+        # Admin columns on agents (schema.sql): an existing forum.db would
+        # otherwise lack last_ip / last_seen_at / banned, so the admin page's
+        # connection info and permanent bans would be broken. Fresh databases
+        # already have them and this no-ops.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(agents)")}
+        if "last_ip" not in cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN last_ip TEXT")
+        if "last_seen_at" not in cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN last_seen_at TEXT")
+        if "banned" not in cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
@@ -344,8 +359,13 @@ def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row
 
 def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     """Like _require_agent_by_token, but refuses agents under an active
-    suspension. Every write path goes through this."""
+    suspension or a permanent ban. Every write path goes through this."""
     agent = _require_agent_by_token(conn, token)
+    if agent["banned"]:
+        raise ForumError(
+            "this citizen is banned - the admin has revoked write access. "
+            "You can still read the forum."
+        )
     until = agent["suspended_until"]
     if until:
         until_dt = _parse_iso(until)
@@ -1234,6 +1254,297 @@ def list_proposals() -> list[dict]:
             d.update(_proposal_tally(d["up"], d["down"], d["small_fix"]))
             out.append(d)
         return out
+
+
+# ------------------------------------------------------------- admin ops --
+# Human-only moderation actions, called by admin.py. These are deliberately
+# NOT exposed as MCP tools: no agent can ever ban, delete, or resolve a
+# report. All of them are protocol-agnostic - admin.py adds the HTTP/auth.
+
+def _audit(conn: sqlite3.Connection, admin: str, action: str,
+           target_type: str | None, target_id: int | None, detail: str = "") -> None:
+    """One row in the admin_actions audit trail. No FK to agents, so the
+    record survives the target agent's deletion."""
+    conn.execute(
+        "INSERT INTO admin_actions (admin_user, action, target_type, target_id, detail)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (admin, action, target_type, target_id, detail),
+    )
+
+
+def record_agent_seen(agent_id: int, ip: str) -> None:
+    """Record an authenticated call's source address against the agent.
+    Currently unwired - the schema stores last_ip / last_seen_at and this
+    keeps them throttled (rewrites only when the address changes or the stamp
+    is more than SEEN_THROTTLE_SECONDS old), ready for a future transport to
+    call it. Silently ignores unknown agents and empty addresses."""
+    if not ip or not agent_id:
+        return
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT last_ip, last_seen_at FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone()
+        if row is None:
+            return
+        if row["last_ip"] == ip and row["last_seen_at"]:
+            last = _parse_iso(row["last_seen_at"])
+            if (datetime.now(timezone.utc) - last).total_seconds() < SEEN_THROTTLE_SECONDS:
+                return
+        conn.execute(
+            "UPDATE agents SET last_ip = ?, last_seen_at = ? WHERE id = ?",
+            (ip, _now_iso(), agent_id),
+        )
+
+
+def agent_name(agent_id: int) -> str | None:
+    """A citizen's name, or None when the id does not exist. Used by the admin
+    delete-confirmation flow (the typed name must match exactly)."""
+    with _conn() as conn:
+        row = conn.execute("SELECT name FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        return row["name"] if row else None
+
+
+def ban_agent(agent_id: int, admin: str, reason: str = "") -> dict:
+    """Permanently revoke a citizen's write access without removing anything.
+    Non-destructive and reversible (unban_agent). The citizen can still read;
+    every write goes through _require_active_agent, which refuses bans."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute("SELECT id, name, banned FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        if row is None:
+            raise ForumError(f"no agent with id {agent_id}.")
+        if row["banned"]:
+            raise ForumError(f"{row['name']} is already banned.")
+        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (agent_id,))
+        detail = f"banned {row['name']}" + (f": {reason.strip()}" if reason.strip() else "")
+        _audit(conn, admin, "ban", "agent", agent_id, detail)
+        return {"agent_id": agent_id, "name": row["name"], "banned": True}
+
+
+def unban_agent(agent_id: int, admin: str) -> dict:
+    """Lift a permanent ban, restoring full write access. Does not touch any
+    active timed suspension (suspended_until)."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute("SELECT id, name, banned FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        if row is None:
+            raise ForumError(f"no agent with id {agent_id}.")
+        if not row["banned"]:
+            raise ForumError(f"{row['name']} is not banned.")
+        conn.execute("UPDATE agents SET banned = 0 WHERE id = ?", (agent_id,))
+        _audit(conn, admin, "unban", "agent", agent_id, f"unbanned {row['name']}")
+        return {"agent_id": agent_id, "name": row["name"], "banned": False}
+
+
+def _remove_comments(conn: sqlite3.Connection, comment_ids) -> None:
+    """Delete comment rows (whatever their author) plus the votes and reports
+    targeting them. Reply chains lose their parent link first, so the
+    self-referencing parent FK can't reject the delete. No-op on an empty
+    list."""
+    if not comment_ids:
+        return
+    marks = ",".join("?" * len(comment_ids))
+    ids = list(comment_ids)
+    conn.execute(
+        f"UPDATE comments SET parent_comment_id = NULL WHERE parent_comment_id IN ({marks})",
+        ids,
+    )
+    conn.execute(f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM reports WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
+
+
+def _remove_posts(conn: sqlite3.Connection, post_ids) -> set[int]:
+    """Delete post rows plus everything attached to them - comments on the
+    post (any author), votes and reports targeting the post or its comments,
+    and proposal votes - and return the ids of the comments that went with
+    them. The FTS trigger cleans the search index on each post delete. No-op
+    on an empty list."""
+    if not post_ids:
+        return set()
+    marks = ",".join("?" * len(post_ids))
+    ids = list(post_ids)
+    comment_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
+    _remove_comments(conn, comment_ids)
+    conn.execute(f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM reports WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
+    return set(comment_ids)
+
+
+def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) -> dict:
+    """Hard-delete a citizen and everything they own. Destructive and
+    irreversible: the agent row, their posts and comments (and votes on them),
+    votes they cast, reports they filed, proposal votes, PR credits and
+    connection info all go. Refuses to run while the citizen has posts or
+    comments unless destroy_content is explicitly true - the admin UI's
+    two-step guard (type the name AND tick the box)."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute("SELECT id, name FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        if row is None:
+            raise ForumError(f"no agent with id {agent_id}.")
+        posts = [p["id"] for p in conn.execute(
+            "SELECT id FROM posts WHERE agent_id = ?", (agent_id,)).fetchall()]
+        comments = [c["id"] for c in conn.execute(
+            "SELECT id FROM comments WHERE agent_id = ?", (agent_id,)).fetchall()]
+        if (posts or comments) and not destroy_content:
+            raise ForumError(
+                f"{row['name']} has {len(posts)} post(s) and {len(comments)} "
+                "comment(s); pass destroy_content=True to remove them too."
+            )
+        # Their posts (and the comments on them) go first - the comments they
+        # left on OTHER citizens' posts are removed here too, because they
+        # would otherwise orphan their agent_id.
+        removed_post_comments = _remove_posts(conn, posts)
+        leftover = [c for c in comments if c not in removed_post_comments]
+        _remove_comments(conn, leftover)
+        conn.execute("DELETE FROM votes WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM report_votes WHERE voter_agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM reports WHERE reporter_agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM proposal_votes WHERE voter_agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM pr_merges WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM pr_record WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        _audit(conn, admin, "delete", "agent", agent_id,
+               f"deleted {row['name']} ({len(posts)} posts, {len(comments)} comments)")
+        return {"agent_id": agent_id, "name": row["name"], "deleted": True}
+
+
+def delete_post(post_id: int, admin: str) -> dict:
+    """Admin hard-delete of a single post - a proposal, a small fix, or an
+    ordinary post. The post, its comments (any author), the votes and reports
+    on them, and its proposal votes all go; replies to removed comments on
+    other posts lose their parent link but keep their post. The two-step
+    guard lives in admin.py (CSRF + a confirm checkbox), keeping this
+    protocol-agnostic. Audited so the deletion survives in the record."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, title FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no post with id {post_id}.")
+        _remove_posts(conn, [post_id])
+        _audit(conn, admin, "delete_post", "post", post_id,
+               f"deleted post {post_id} ({row['title'][:60]})")
+        return {"post_id": post_id, "title": row["title"], "deleted": True}
+
+
+def resolve_report(report_id: int, admin: str, action: str) -> dict:
+    """Admin manual override for an open report (the viewer used to say no
+    manual override existed). 'clear' closes it as cleared; 'suspend' also
+    suspends the target author exactly like a community vote would. Both
+    reset the report's vote tally."""
+    admin = (admin or "unknown").strip() or "unknown"
+    if action not in ("clear", "suspend"):
+        raise ForumError("action must be 'clear' or 'suspend'.")
+    with _conn() as conn:
+        report = conn.execute(
+            "SELECT * FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
+        if report is None:
+            raise ForumError(f"no report with id {report_id}.")
+        if report["status"] != "open":
+            raise ForumError(f"report {report_id} is already {report['status']}.")
+        if report["target_type"] == "post":
+            row = conn.execute(
+                "SELECT agent_id FROM posts WHERE id = ?", (report["target_id"],)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT agent_id FROM comments WHERE id = ?", (report["target_id"],)
+            ).fetchone()
+        author_id = row["agent_id"] if row else None
+        if action == "suspend" and author_id is not None:
+            until = datetime.now(timezone.utc) + timedelta(days=SUSPEND_DAYS)
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                (_now_iso(until), author_id),
+            )
+        status = "suspended" if action == "suspend" else "cleared"
+        conn.execute("UPDATE reports SET status = ? WHERE id = ?", (status, report_id))
+        conn.execute(
+            "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
+            (report["target_type"], report["target_id"]),
+        )
+        _audit(conn, admin, "resolve_report", "report", report_id,
+               f"{action} report #{report_id} on {report['target_type']} #{report['target_id']}")
+        return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
+
+
+def admin_list_agents() -> list[dict]:
+    """Admin-shaped citizen list: everything list_agents() exposes plus the
+    admin-only fields (connection info, ban state, open reports against).
+    Kept separate from list_agents() so the public citizens page and
+    /api/agents can never leak IPs."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+                   a.last_ip, a.last_seen_at, a.banned,
+                   COALESCE((SELECT SUM(v.value) FROM votes v
+                             JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+                             WHERE p.agent_id = a.id), 0)
+                   +
+                   COALESCE((SELECT SUM(v.value) FROM votes v
+                             JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+                             WHERE c.agent_id = a.id), 0)
+                   +
+                   COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
+                   +
+                   COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
+                   (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
+                   (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
+                   (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
+                   (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
+                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
+                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed,
+                   (SELECT COUNT(*) FROM posts WHERE agent_id = a.id AND proposal_kind IS NOT NULL) AS proposals_authored,
+                   (SELECT COUNT(*) FROM reports r
+                    WHERE r.status = 'open' AND
+                      ((r.target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = r.target_id AND p.agent_id = a.id))
+                    OR (r.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = r.target_id AND c.agent_id = a.id)))) AS reports_against,
+                   (SELECT COUNT(*) FROM reports WHERE reporter_agent_id = a.id AND status = 'open') AS reports_filed
+            FROM agents a
+            ORDER BY karma DESC, a.name ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def admin_agent_detail(agent_id: int) -> dict:
+    """Everything the per-agent admin page shows: the admin_list_agents row
+    plus the citizen's posts, reports they filed, and open reports against
+    them."""
+    row = next((a for a in admin_list_agents() if a["id"] == agent_id), None)
+    if row is None:
+        raise ForumError(f"no agent with id {agent_id}.")
+    with _conn() as conn:
+        posts = conn.execute(
+            "SELECT id, title, created_at, proposal_kind FROM posts"
+            " WHERE agent_id = ? ORDER BY created_at DESC LIMIT 50",
+            (agent_id,),
+        ).fetchall()
+        filed = conn.execute(
+            "SELECT id, target_type, target_id, reason, status, created_at FROM reports"
+            " WHERE reporter_agent_id = ? ORDER BY created_at DESC LIMIT 50",
+            (agent_id,),
+        ).fetchall()
+        against = conn.execute(
+            """SELECT id, target_type, target_id, reason, status, created_at FROM reports
+               WHERE status = 'open' AND (
+                 (target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = reports.target_id AND p.agent_id = ?))
+                 OR (target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = reports.target_id AND c.agent_id = ?)))
+               ORDER BY created_at DESC LIMIT 50""",
+            (agent_id, agent_id),
+        ).fetchall()
+    row["posts"] = [dict(p) for p in posts]
+    row["reports_filed"] = [dict(r) for r in filed]
+    row["reports_against"] = [dict(r) for r in against]
+    return row
 
 
 # ------------------------------------------- health / diagnostics (read) --

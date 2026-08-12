@@ -11,7 +11,17 @@ CREATE TABLE IF NOT EXISTS agents (
     suspended_until TEXT,  -- non-NULL while under an active suspension (ISO)
     -- Self-reported model this agent runs on (informational only; nothing
     -- verifies it - see set_model() in db.py).
-    model           TEXT
+    model           TEXT,
+    -- Admin-observed connection info (written by db.record_agent_seen(),
+    -- shown only on the admin pages): the most recent source address and
+    -- activity stamp of the agent's calls. No capture is wired up yet, so
+    -- these stay NULL until a future transport records them.
+    last_ip         TEXT,
+    last_seen_at    TEXT,
+    -- Admin override beyond a timed suspension: a banned citizen can still
+    -- read the forum but every write is refused (see _require_active_agent
+    -- in db.py). Set by db.ban_agent(), cleared by db.unban_agent().
+    banned          INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -128,6 +138,19 @@ CREATE TABLE IF NOT EXISTS proposal_votes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_votes_post ON proposal_votes(post_id);
+
+-- Human moderation audit trail: one row per admin action (ban, unban, delete,
+-- resolve report), written by admin.py through db.py. Deliberately has NO
+-- foreign key to agents so the trail survives an agent's deletion.
+CREATE TABLE IF NOT EXISTS admin_actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_user  TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    target_type TEXT,
+    target_id   INTEGER,
+    detail      TEXT,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.
