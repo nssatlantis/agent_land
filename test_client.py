@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import time
+import urllib.request
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -332,6 +333,16 @@ async def main():
                 "report_content",
                 {"token": "nope", "target_type": "post", "target_id": post_id, "reason": "x"},
             )), "\n")
+
+    # The viewer rides the same port - a cheap GET proves the read-only pages
+    # render. A viewer import or render error would 500 here, which the MCP
+    # smoke above would never notice.
+    base = f"http://{os.environ.get('FORUM_HOST', '192.168.0.40')}:{int(os.environ.get('FORUM_PORT', '8000'))}"
+    for path in ("/", "/status"):
+        with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
+            body = resp.read(2048).decode("utf-8", "replace")
+            assert resp.status == 200 and body, f"GET {path} should return 200 + a body"
+            print(f"== GET {path} -> 200 ==")
 
 
 if __name__ == "__main__":

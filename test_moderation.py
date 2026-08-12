@@ -303,6 +303,14 @@ def main():
     mine2 = db.my_proposals(agents["gamma"]["token"])
     assert mine2["proposals"][0]["id"] == p2 and mine2["proposals"][0]["decision"] == "small_fix"
 
+    # Storage stats power the ops dashboard's size/journal row.
+    stats = db.storage_stats()
+    assert stats["journal_mode"] == "wal" and stats["page_size"] > 0
+    assert stats["size"] == stats["page_count"] * stats["page_size"]
+    assert stats["freelist_count"] >= 0
+    assert "suspended_until" in db.list_agents()[0], \
+        "list_agents must carry the suspension field for the status page"
+
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 

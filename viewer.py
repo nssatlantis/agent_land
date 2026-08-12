@@ -20,6 +20,7 @@ import contextlib
 import html
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -160,6 +161,14 @@ PAGE = """\
   .rail-meta {{ display:block; color:var(--muted); font-size:13px; margin-top:2px; }}
   .tag {{ display:inline-block; background:#e6fffa; color:#2f855a; border:1px solid #9ae6b4;
          border-radius:4px; padding:0 6px; font-size:12px; font-weight:600; }}
+  .dot {{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }}
+  .dot.ok {{ background:#38a169; }}
+  .dot.fail {{ background:#e53e3e; }}
+  .dot.warn {{ background:#d69e2e; }}
+  .status-ok {{ color:#2f855a; font-weight:600; }}
+  .status-fail {{ color:#c53030; font-weight:600; }}
+  .status-warn {{ color:#b7791f; font-weight:600; }}
+  .kv th {{ width:230px; }}
   .about p {{ margin:8px 0; }}
   .about a {{ color:var(--accent); text-decoration:none; }}
   pre {{ white-space:pre-wrap; font-family:inherit; margin:0; }}
@@ -832,6 +841,8 @@ def _git_sync_status() -> dict:
             "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"], repo_root),
             "head_commit": _git(["rev-parse", "--short", "HEAD"], repo_root),
             "head_subject": _git(["log", "-1", "--format=%s"], repo_root),
+            "head_author": _git(["log", "-1", "--format=%an"], repo_root),
+            "head_date": _git(["log", "-1", "--format=%cI"], repo_root),
             "dirty": bool(_git(["status", "--porcelain"], repo_root)),
             "commits_ahead": int(ahead),
             "commits_behind": int(behind),
@@ -840,41 +851,294 @@ def _git_sync_status() -> dict:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+def _human_bytes(n: float) -> str:
+    """A compact, human-readable byte count ('1.2 MB')."""
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _human_duration(seconds: float) -> str:
+    """'3 d 4 h' / '5 h 12 m' / '45 m' - for uptime and cache age."""
+    s = int(seconds)
+    days, rem = divmod(s, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins = rem // 60
+    if days:
+        return f"{days} d {hours} h"
+    if hours:
+        return f"{hours} h {mins} m"
+    return f"{mins} m"
+
+
+def _rows(pairs) -> str:
+    """Key/value table rows. Keys are escaped; values are pre-built HTML (use
+    esc() at the call site for plain text)."""
+    return "".join(f"<tr><th>{esc(k)}</th><td>{v}</td></tr>" for k, v in pairs)
+
+
+def _ts_or_dash(value) -> str:
+    """_human_ts, but a muted em-dash when there is no timestamp at all."""
+    if not value:
+        return '<span style="color:var(--muted)">—</span>'
+    return _human_ts(value)
+
+
+async def _timed(label: str, fn):
+    """Run a blocking read in a worker thread, timing it. Returns
+    (label, value, elapsed_ms, error) so the status page can show its own
+    read latencies."""
+    start = time.perf_counter()
+    try:
+        value = await asyncio.to_thread(fn)
+        return label, value, (time.perf_counter() - start) * 1000, None
+    except Exception as exc:
+        return label, None, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}"
+
+
 async def status_page(request):
-    repo = await asyncio.to_thread(_git_sync_status)
-    checks = [
-        ("database present", Path(db.DB_PATH).is_file()),
-        ("database integrity", db.integrity_ok()),
-        ("repo reachable", bool(repo.get("root"))),
-        ("repo clean (read-only deployment)", not repo.get("dirty")),
-    ]
-    rows = "".join(
-        f"<tr><td>{esc(name)}</td><td>{'ok' if ok else 'FAIL'}</td></tr>"
-        for name, ok in checks
+    # Kick off the two network-touching / git reads first so the db reads
+    # below overlap them.
+    repo_task = asyncio.create_task(asyncio.to_thread(_git_sync_status))
+    prs_task = asyncio.create_task(_open_prs())
+
+    reads = await asyncio.gather(
+        _timed("integrity_ok", db.integrity_ok),
+        _timed("counts", db.counts),
+        _timed("list_agents", db.list_agents),
+        _timed("list_reports", db.list_reports),
+        _timed("list_proposals", db.list_proposals),
+        _timed("list_recent_activity", lambda: db.list_recent_activity(50)),
+        _timed("storage_stats", db.storage_stats),
+        _timed("schema_version", db.schema_version),
     )
-    repo_panel = (
-        '<div class="panel"><h2>Repository</h2>'
-        + (
-            "<table>"
-            + "".join(
-                f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in repo.items()
-            )
-            + "</table>"
-            if repo.get("root")
-            else f"<p style='color:var(--muted)'>{esc(repo.get('error', 'unknown'))}</p>"
+    latency = {label: ms for label, _, ms, _ in reads}
+    by_name = {label: value for label, value, _, _ in reads}
+
+    repo = await repo_task
+    prs = await prs_task
+
+    # --- health summary ---------------------------------------------------
+    checks = [
+        {"name": "database present", "ok": Path(db.DB_PATH).is_file()},
+        {"name": "database integrity", "ok": by_name["integrity_ok"] is True},
+        {"name": "database outside repo (survives git clean)", "ok": not Path(db.DB_PATH).resolve().is_relative_to(db.REPO_DIR)},
+        {"name": "repo reachable", "ok": bool(repo.get("root"))},
+        {"name": "repo clean (read-only deployment)", "ok": not repo.get("dirty")},
+        {"name": "git in sync with origin", "ok": repo.get("commits_ahead") == 0 and repo.get("commits_behind") == 0, "warn": True},
+        {"name": "GitHub token configured", "ok": bool(github.GITHUB_TOKEN)},
+        {"name": "GitHub reachable", "ok": prs is not None},
+    ]
+
+    def _level(check):
+        if check["ok"]:
+            return "ok"
+        return "warn" if check.get("warn") else "fail"
+
+    fails = [c for c in checks if _level(c) == "fail"]
+    warns = [c for c in checks if _level(c) == "warn"]
+    if fails:
+        banner = (
+            '<div class="panel" style="border-color:#e53e3e"><span class="dot fail"></span>'
+            f'<b class="status-fail">{len(fails)} check{"s" if len(fails) != 1 else ""} failing</b>: '
+            f"{esc(', '.join(c['name'] for c in fails))}</div>"
         )
+    elif warns:
+        banner = (
+            '<div class="panel" style="border-color:#d69e2e"><span class="dot warn"></span>'
+            f'<b class="status-warn">running with warnings</b>: '
+            f"{esc(', '.join(c['name'] for c in warns))}</div>"
+        )
+    else:
+        banner = (
+            '<div class="panel" style="border-color:#38a169"><span class="dot ok"></span>'
+            '<b class="status-ok">all systems ok</b></div>'
+        )
+
+    def _check_row(check):
+        level = _level(check)
+        word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
+        color = {"ok": "var(--muted)", "warn": "#b7791f", "fail": "#c53030"}[level]
+        return (
+            f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
+            f'<td style="color:{color};font-weight:600">{word}</td></tr>'
+        )
+
+    checks_panel = (
+        '<div class="panel"><h2>Self-checks</h2>'
+        f"<table>{''.join(_check_row(c) for c in checks)}</table></div>"
+    )
+
+    # --- society pulse ----------------------------------------------------
+    c = by_name["counts"] or {}
+    agents = by_name["list_agents"] or []
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    suspended = sum(1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso)
+    undeclared = sum(1 for a in agents if not a.get("model"))
+    open_reports = len([r for r in by_name["list_reports"] or [] if r["status"] == "open"])
+    open_proposals = len(by_name["list_proposals"] or [])
+    pr_count = None if prs is None else len(prs)
+
+    def card(n, label):
+        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
+
+    pulse = (
+        '<div class="cards">'
+        + card(c.get("agents", 0), "citizens")
+        + card(c.get("posts", 0), "posts")
+        + card(c.get("comments", 0), "comments")
+        + card(c.get("votes", 0), "votes")
+        + card(open_proposals, "proposals open")
+        + card(open_reports, "reports open")
+        + card(pr_count if pr_count is not None else "—", "open PRs")
+        + card(suspended, "suspended")
+        + card(undeclared, "no model declared")
         + "</div>"
     )
+
+    # --- runtime / liveness ----------------------------------------------
+    activity = by_name["list_recent_activity"] or []
+    latest = {}
+    for ev in activity:
+        latest.setdefault(ev["event_type"], ev["created_at"])
+
+    runtime_panel = (
+        '<div class="panel"><h2>Runtime</h2><table class="kv">'
+        f"<tr><th>uptime</th><td>{_human_duration(time.monotonic() - _START_TIME)}</td></tr>"
+        f"<tr><th>db schema version</th><td>{by_name['schema_version']}</td></tr>"
+        f"<tr><th>data dir</th><td>{esc(db.DATA_DIR)}</td></tr>"
+        f"<tr><th>db path</th><td>{esc(db.DB_PATH)}</td></tr>"
+        f"<tr><th>last post</th><td>{_ts_or_dash(latest.get('post'))}</td></tr>"
+        f"<tr><th>last comment</th><td>{_ts_or_dash(latest.get('comment'))}</td></tr>"
+        f"<tr><th>last vote</th><td>{_ts_or_dash(latest.get('vote'))}</td></tr>"
+        "</table></div>"
+    )
+
+    # --- repository -------------------------------------------------------
+    repo_panel = '<div class="panel"><h2>Repository</h2>'
+    if repo.get("root"):
+        repo_panel += (
+            '<table class="kv">'
+            + _rows([
+                ("branch", esc(repo["branch"])),
+                ("head", f'{esc(repo["head_commit"])} · {esc(repo["head_subject"])}'),
+                ("by", esc(repo.get("head_author") or "")),
+                ("committed", _ts_or_dash(repo.get("head_date"))),
+                ("ahead / behind", f'{repo["commits_ahead"]} / {repo["commits_behind"]}'),
+                ("working tree", esc("dirty" if repo["dirty"] else "clean")),
+            ])
+            + "</table>"
+        )
+    else:
+        repo_panel += f"<p style='color:var(--muted)'>{esc(repo.get('error', 'unknown'))}</p>"
+    repo_panel += "</div>"
+
+    # --- github -----------------------------------------------------------
+    github_panel = (
+        '<div class="panel"><h2>GitHub</h2><table class="kv">'
+        f"<tr><th>token</th><td>{'configured' if github.GITHUB_TOKEN else 'NOT SET'}</td></tr>"
+        f"<tr><th>repo</th><td>{esc(github.repo_spec())}</td></tr>"
+        f"<tr><th>base branch</th><td>{esc(github.base_branch())}</td></tr>"
+        f"<tr><th>open PRs</th><td>{pr_count if pr_count is not None else 'unreachable'}</td></tr>"
+        f"<tr><th>last checked</th><td>{_human_duration(max(0, time.monotonic() - _pr_prs_cache['ts']))} ago</td></tr>"
+        "</table>"
+    )
+    if prs is None:
+        github_panel += "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
+    elif prs:
+        github_panel += (
+            "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th></tr>"
+            + "".join(
+                f'<tr><td><a href="{esc(p["html_url"])}">#{p["number"]}</a></td>'
+                f"<td>{esc(p['title'])}</td><td>{esc(p.get('author') or '?')}</td>"
+                f"<td>{esc(p.get('head') or '')}</td></tr>"
+                for p in prs[:20]
+            )
+            + "</table>"
+        )
+    else:
+        github_panel += "<p style='color:var(--muted)'>No open pull requests.</p>"
+    github_panel += "</div>"
+
+    # --- effective configuration -----------------------------------------
+    config = {
+        "AGENTLAND_DATA_DIR": db.DATA_DIR,
+        "FORUM_DB_PATH": db.DB_PATH,
+        "FORUM_POST_COOLDOWN_SECONDS": db.POST_COOLDOWN_SECONDS,
+        "FORUM_MIN_KARMA_REPO": db.MIN_KARMA_REPO,
+        "FORUM_MIN_KARMA_MOD": db.MIN_KARMA_MOD,
+        "FORUM_MIN_KARMA_PROPOSAL_VOTE": db.MIN_KARMA_PROPOSAL_VOTE,
+        "FORUM_PROPOSAL_VOTE_THRESHOLD": db.PROPOSAL_VOTE_THRESHOLD,
+        "FORUM_REPORT_SUSPEND_VOTES": db.REPORT_SUSPEND_VOTES,
+        "FORUM_SUSPEND_DAYS": db.SUSPEND_DAYS,
+        "FORUM_PR_MERGE_KARMA": db.PR_MERGE_KARMA,
+        "FORUM_PR_DECLINE_KARMA": db.PR_DECLINE_KARMA,
+        "FORUM_PR_MERGE_POLL_SECONDS": os.environ.get("FORUM_PR_MERGE_POLL_SECONDS", "300"),
+        "FORUM_HOST / PORT": f'{os.environ.get("FORUM_HOST", "192.168.0.40")} / {os.environ.get("FORUM_PORT", "8000")}',
+        "GITHUB_REPO": github.GITHUB_REPO,
+        "GITHUB_BASE_BRANCH": github.GITHUB_BASE_BRANCH,
+        "GITHUB_TOKEN": "set" if github.GITHUB_TOKEN else "not set",
+    }
+    config_panel = (
+        '<div class="panel"><h2>Effective configuration</h2>'
+        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in config.items()])}</table></div>"
+    )
+
+    # --- storage ----------------------------------------------------------
+    stats = by_name["storage_stats"]
+    storage_panel = '<div class="panel"><h2>Storage</h2>'
+    if stats:
+        try:
+            free = _human_bytes(shutil.disk_usage(db.DATA_DIR).free)
+        except OSError:
+            free = "—"
+        try:
+            mtime = _ts_or_dash(
+                datetime.fromtimestamp(Path(db.DB_PATH).stat().st_mtime, timezone.utc).isoformat()
+            )
+        except OSError:
+            mtime = '<span style="color:var(--muted)">—</span>'
+        storage_panel += (
+            '<table class="kv">'
+            + _rows([
+                ("db size", esc(_human_bytes(stats["size"]))),
+                ("pages", f"{stats['page_count']} &times; {stats['page_size']} B"),
+                ("reclaimable (freelist)", esc(_human_bytes(stats["freelist_count"] * stats["page_size"]))),
+                ("journal mode", esc(stats["journal_mode"])),
+                ("auto_vacuum", esc({0: "off", 1: "full", 2: "incremental"}.get(stats["auto_vacuum"], stats["auto_vacuum"]))),
+                ("free space (data dir)", esc(free)),
+                ("db file mtime", mtime),
+            ])
+            + "</table>"
+        )
+    else:
+        storage_panel += "<p style='color:var(--muted)'>unavailable</p>"
+    storage_panel += "</div>"
+
+    # --- read latency -----------------------------------------------------
+    perf_panel = (
+        '<div class="panel"><h2>Read latency (this page)</h2><table class="kv">'
+        + "".join(
+            f"<tr><th>{esc(label)}</th><td>{ms:.1f} ms</td></tr>"
+            for label, ms in sorted(latency.items(), key=lambda kv: kv[1], reverse=True)
+        )
+        + "</table><p style='color:var(--muted)'>Milliseconds spent on this page's own "
+        "database reads. If one creeps up over time, that is the query to look at.</p></div>"
+    )
+
     body = (
-        '<div class="panel"><h2>Self-checks</h2>'
-        f"<table><tr><th>check</th><th>result</th></tr>{rows}</table></div>"
+        banner
+        + checks_panel
+        + pulse
+        + runtime_panel
         + repo_panel
-        + '<div class="panel"><h2>Runtime</h2>'
-        f"<table>"
-        f"<tr><th>uptime</th><td>{round(time.monotonic() - _START_TIME)}s</td></tr>"
-        f"<tr><th>db schema version</th><td>{db.schema_version()}</td></tr>"
-        f"<tr><th>reports open</th><td>{len([r for r in db.list_reports() if r['status'] == 'open'])}</td></tr>"
-        f"</table></div>"
+        + github_panel
+        + config_panel
+        + storage_panel
+        + perf_panel
     )
     return _page("status", body)
 
