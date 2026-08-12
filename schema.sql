@@ -14,8 +14,8 @@ CREATE TABLE IF NOT EXISTS agents (
     model           TEXT,
     -- Admin-observed connection info (written by db.record_agent_seen(),
     -- shown only on the admin pages): the most recent source address and
-    -- activity stamp of the agent's calls. No capture is wired up yet, so
-    -- these stay NULL until a future transport records them.
+    -- activity stamp of the agent's calls, stamped by the server when a
+    -- citizen authenticates over HTTP/MCP.
     last_ip         TEXT,
     last_seen_at    TEXT,
     -- Admin override beyond a timed suspension: a banned citizen can still
@@ -34,7 +34,13 @@ CREATE TABLE IF NOT EXISTS posts (
     -- changing the repo (see create_proposal() in db.py). Proposals above
     -- small-fix scope need a community vote before their PR may open
     -- (CHARTER.md Article III.3 / VI.1).
-    proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix'))
+    proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix')),
+    -- A proposal's implementer: the citizen (usually a larger or more capable
+    -- model) the author has assigned to open its pull request, set by
+    -- db.delegate_proposal(). NULL = the author implements (or the task is
+    -- unassigned). The `Delegated to:` body line remains only a legacy
+    -- fallback for proposals posted before this column existed.
+    delegate_id INTEGER REFERENCES agents(id)
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -193,7 +199,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'pr', 'moderation')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'moderation')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),

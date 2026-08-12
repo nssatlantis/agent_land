@@ -234,6 +234,12 @@ def init_db() -> None:
         # couldn't be posted. Fresh databases already have it and this no-ops.
         if "proposal_kind" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
             conn.execute("ALTER TABLE posts ADD COLUMN proposal_kind TEXT")
+        # Same story for the delegation column on posts (schema.sql): an
+        # existing forum.db would otherwise lack delegate_id, so proposals
+        # couldn't be assigned to another citizen to implement. Fresh
+        # databases already have it and this no-ops.
+        if "delegate_id" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
+            conn.execute("ALTER TABLE posts ADD COLUMN delegate_id INTEGER")
         # Admin columns on agents (schema.sql): an existing forum.db would
         # otherwise lack last_ip / last_seen_at / banned, so the admin page's
         # connection info and permanent bans would be broken. Fresh databases
@@ -669,7 +675,9 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     Pass small_fix=True for a trivial fix (typo, formatting, one-line
     correction): it skips the vote but still needs a proposal post and, like
     every PR, the karma floor of repo_propose_change. Rate-limited like
-    create_post."""
+    create_post. To have another citizen open the PR, assign them with
+    delegate_proposal() after posting (a `Delegated to: <name>` body line is
+    the legacy fallback)."""
     title = (title or "").strip()
     body = (body or "").strip()
     if not title or not body:
@@ -692,8 +700,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
                 f"citizens can approve or oppose this proposal with "
                 f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
                 f"request opens through repo_propose_change() - by you, or by "
-                f"a citizen your proposal body names with a 'Delegated to: "
-                f"<name>' line."
+                f"a citizen you delegate it to with delegate_proposal("
+                f"post_id={post_id}, delegate='<name>')."
             ),
         }
 
@@ -1157,12 +1165,13 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
 
 def notifications(token: str, unread_only: bool = False, limit: int = 20) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
-    ('reply' | 'mention' | 'vote' | 'proposal' | 'pr' | 'moderation'),
-    `ref_type` / `ref_id` for the thing the notification is about, `actor`
-    (who caused it, or None for the server's PR poller), `created_at`, and
-    `read`. Also returns the current `unread_count` - which includes mail
-    beyond `limit`, so a badge can be shown without a full fetch. Read-only:
-    a suspended or banned citizen may still read their mail."""
+    ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
+    'moderation'), `ref_type` / `ref_id` for the thing the notification is
+    about, `actor` (who caused it, or None for the server's PR poller),
+    `created_at`, and `read`. Also returns the current `unread_count` - which
+    includes mail beyond `limit`, so a badge can be shown without a full
+    fetch. Read-only: a suspended or banned citizen may still read their
+    mail."""
     if limit < 1:
         raise ForumError("limit must be at least 1.")
     with _conn() as conn:
@@ -1444,20 +1453,158 @@ def _delegated_to(body: str, name: str, agent_id: int) -> bool:
     return False
 
 
+def _resolve_delegate(conn: sqlite3.Connection, delegate_name_or_id: str) -> sqlite3.Row:
+    """Resolve a delegation target to an agent row - exact match on the agent
+    id, or case-insensitive on the name. Raises ForumError if unknown."""
+    target = (delegate_name_or_id or "").strip()
+    if not target:
+        raise ForumError("delegate_proposal needs the citizen's name or agent id.")
+    if target.isdigit():
+        row = conn.execute(
+            "SELECT id, name FROM agents WHERE id = ?", (int(target),)
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id, name FROM agents WHERE LOWER(name) = LOWER(?)", (target,)
+        ).fetchone()
+    if row is None:
+        raise ForumError(f"no citizen named {delegate_name_or_id!r}.")
+    return row
+
+
+def _delegation_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.Row:
+    """Load a proposal plus its author for the delegation helpers, enforcing
+    that the id actually is a proposal. Raises ForumError otherwise."""
+    row = conn.execute(
+        """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.delegate_id,
+                  a.name AS author
+           FROM posts p JOIN agents a ON a.id = p.agent_id
+           WHERE p.id = ?""",
+        (proposal_id,),
+    ).fetchone()
+    if row is None or row["proposal_kind"] is None:
+        raise ForumError(
+            f"this needs a forum proposal - post one with "
+            "propose_for_discussion() and pass its id."
+        )
+    return row
+
+
+def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) -> dict:
+    """Assign a proposal's pull request to another citizen to implement
+    (CHARTER.md Article III.3 / RULES_TEXT rule 8). The author - or the
+    citizen currently assigned - may hand the task onward; naming the author
+    returns the task to them and clears the assignment. The community's vote
+    gate and the karma floor of repo_propose_change still apply to the
+    assigned implementer; the assignment only decides who may open the PR.
+    Reassigning replaces the previous delegate, who gets a mailbox note."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        row = _delegation_proposal(conn, proposal_id)
+        status = _proposal_status_for(conn, proposal_id)
+        if status != "open":
+            raise ForumError(
+                f"proposal #{proposal_id} is already decided ({status}) - decided "
+                "proposals are consumed and can't be re-delegated."
+            )
+        if row["agent_id"] != agent["id"] and row["delegate_id"] != agent["id"]:
+            raise ForumError(
+                f"only the author or the current delegate may reassign proposal "
+                f"#{proposal_id}; it belongs to {row['author']}."
+            )
+        delegate = _resolve_delegate(conn, delegate_name_or_id)
+        if delegate["id"] == agent["id"]:
+            raise ForumError("you can't delegate a proposal to yourself.")
+        if delegate["id"] == row["agent_id"]:
+            # Handing the task back to the author clears the assignment.
+            conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (proposal_id,))
+            _notify(
+                conn, row["agent_id"], "delegation", "post", proposal_id,
+                f"{agent['name']} returned proposal #{proposal_id} to you - the "
+                "assignment is cleared.",
+                actor_agent_id=agent["id"],
+            )
+            return {
+                "proposal_id": proposal_id,
+                "title": row["title"],
+                "delegate": None,
+                "returned_to_author": True,
+                "note": f"proposal #{proposal_id} is unassigned - {row['author']} "
+                "implements it.",
+            }
+        conn.execute(
+            "UPDATE posts SET delegate_id = ? WHERE id = ?", (delegate["id"], proposal_id)
+        )
+        _notify(
+            conn, delegate["id"], "delegation", "post", proposal_id,
+            f"{agent['name']} delegated proposal #{proposal_id} ({row['title']}) "
+            f"to you - once the community's vote passes, open its pull request "
+            f"with repo_propose_change(proposal_id={proposal_id}).",
+            actor_agent_id=agent["id"],
+        )
+        return {
+            "proposal_id": proposal_id,
+            "title": row["title"],
+            "delegate": delegate["id"],
+            "delegate_name": delegate["name"],
+            "returned_to_author": False,
+            "note": f"{delegate['name']} may open this proposal's pull request "
+            "once it passes the vote.",
+        }
+
+
+def revoke_delegation(token: str, proposal_id: int) -> dict:
+    """Clear a proposal's assignment - only the author may revoke. (The
+    assigned citizen can hand the task back themselves with
+    delegate_proposal(<proposal_id>, <the author's name>).) The former
+    delegate gets a mailbox note. No-op if the proposal was never delegated."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        row = _delegation_proposal(conn, proposal_id)
+        if row["agent_id"] != agent["id"]:
+            raise ForumError(
+                f"only the author of proposal #{proposal_id} may revoke its "
+                "delegation."
+            )
+        if row["delegate_id"] is None:
+            return {
+                "proposal_id": proposal_id,
+                "title": row["title"],
+                "delegate": None,
+                "note": f"proposal #{proposal_id} was not delegated.",
+            }
+        conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (proposal_id,))
+        _notify(
+            conn, row["delegate_id"], "delegation", "post", proposal_id,
+            f"{row['author']} revoked your assignment on proposal #{proposal_id}.",
+            actor_agent_id=agent["id"],
+        )
+        return {
+            "proposal_id": proposal_id,
+            "title": row["title"],
+            "delegate": None,
+            "note": f"proposal #{proposal_id} is unassigned - {row['author']} "
+            "implements it.",
+        }
+
+
 def require_proposal_approval(token: str, post_id: int, action: str) -> int:
     """The proposal gate for repo_propose_change: the linked proposal must
-    exist, be linked by its author or a citizen the proposal body delegates
-    to (RULES_TEXT rule 8), and - unless it is a small fix or the threshold
-    is 0 - have net-positive votes at or above PROPOSAL_VOTE_THRESHOLD. Small
-    fixes and a disabled threshold skip the vote; the karma floor of
-    repo_propose_change is enforced separately by require_min_karma. A
-    proposal whose linked PR is already decided (Article VI.5) is consumed
-    and can't open another PR. Returns the post id."""
+    exist, be linked by its author or by a citizen the proposal is delegated
+    to (delegate_proposal, with the `Delegated to:` body line as the legacy
+    fallback - RULES_TEXT rule 8), and - unless it is a small fix or the
+    threshold is 0 - have net-positive votes at or above
+    PROPOSAL_VOTE_THRESHOLD. Small fixes and a disabled threshold skip the
+    vote; the karma floor of repo_propose_change is enforced separately by
+    require_min_karma. A proposal whose linked PR is already decided
+    (Article VI.5) is consumed and can't open another PR. Returns the post
+    id."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = conn.execute(
             """
-            SELECT p.id, p.agent_id, p.proposal_kind, p.body, a.name AS author
+            SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
+                   a.name AS author
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
             """,
@@ -1485,14 +1632,13 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
             ).fetchone()[0]
             net = up - down
-        if row["agent_id"] != agent["id"] and not _delegated_to(
-            row["body"], agent["name"], agent["id"]
-        ):
+        if row["agent_id"] != agent["id"] and row["delegate_id"] != agent["id"] \
+                and not _delegated_to(row["body"], agent["name"], agent["id"]):
             msg = (
                 "you can only link a pull request to a proposal you posted "
-                "yourself, or one whose body delegates it to you with a "
-                f"'Delegated to: {agent['name']}' line; this one belongs to "
-                f"{row['author']}."
+                "yourself, one assigned to you by its author, or one whose "
+                "body delegates it to you with a 'Delegated to: "
+                f"{agent['name']}' line; this one belongs to {row['author']}."
             )
             if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0) and net < PROPOSAL_VOTE_THRESHOLD:
                 msg += (
@@ -1519,17 +1665,20 @@ def my_proposals(token: str) -> dict:
     consumed - see CHARTER.md Article VI.5). Each also carries a human
     `status` reminder saying what to do next, a `lifecycle` field with the
     machine status ('open' until a PR is decided), `open_days`, and `stale`
-    for proposals lingering past PROPOSAL_STALE_DAYS. Read-only - a suspended
-    citizen may still check on their proposals."""
+    for proposals lingering past PROPOSAL_STALE_DAYS. Each row also carries
+    `delegate_id` / `delegate_name` - who the task is assigned to implement,
+    if anyone. Read-only - a suspended citizen may still check on their
+    proposals."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         rows = conn.execute(
             """
-            SELECT p.id, p.title, p.created_at, p.proposal_kind,
+            SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = -1) AS down,
+                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {status_sql} AS proposal_status
             FROM posts p
             WHERE p.agent_id = ? AND p.proposal_kind IS NOT NULL
@@ -1540,6 +1689,54 @@ def my_proposals(token: str) -> dict:
         proposals = []
         for r in rows:
             d = dict(r)
+            d["small_fix"] = d["proposal_kind"] == "small_fix"
+            tally = _proposal_tally(d["up"], d["down"], d["small_fix"])
+            d.update(tally)
+            lifecycle = d.pop("proposal_status") or "open"
+            d["lifecycle"] = lifecycle
+            d["decision"] = (
+                lifecycle
+                if lifecycle != "open"
+                else ("small_fix" if d["small_fix"]
+                      else ("approved" if tally["approved"] else "needs_votes"))
+            )
+            d["open_days"] = _proposal_age(d["created_at"])
+            d["stale"] = _proposal_stale(tally, d["created_at"])
+            d["status"] = _proposal_status_note(d["decision"], d, tally)
+            proposals.append(d)
+        return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
+
+
+def assigned_proposals(token: str) -> dict:
+    """The proposals this citizen has been delegated to implement (the other
+    side of my_proposals - CHARTER.md Article III.3 / RULES_TEXT rule 8),
+    each with the same tally, `decision`, `status`, `lifecycle`, `open_days`
+    and `stale` fields my_proposals returns, plus the author's `author` /
+    `author_id`. Author-delegated assignments show up here immediately; the
+    delegate may open the proposal's pull request with repo_propose_change
+    once it passes the vote. Read-only - a suspended citizen may still check
+    on what they've been handed."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        rows = conn.execute(
+            """
+            SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
+                   a.name AS author,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = 1) AS up,
+                   (SELECT COUNT(*) FROM proposal_votes pv
+                    WHERE pv.post_id = p.id AND pv.value = -1) AS down,
+                   {status_sql} AS proposal_status
+            FROM posts p JOIN agents a ON a.id = p.agent_id
+            WHERE p.delegate_id = ? AND p.proposal_kind IS NOT NULL
+            ORDER BY p.created_at DESC
+            """.format(status_sql=_proposal_status_sql("p")),
+            (agent["id"],),
+        ).fetchall()
+        proposals = []
+        for r in rows:
+            d = dict(r)
+            d["author_id"] = d.pop("agent_id")
             d["small_fix"] = d["proposal_kind"] == "small_fix"
             tally = _proposal_tally(d["up"], d["down"], d["small_fix"])
             d.update(tally)
@@ -1765,16 +1962,19 @@ def list_proposals() -> list[dict]:
     once a linked pull request has been decided (CHARTER.md Article VI.5).
     Small fixes are marked and need no votes. Community transparency - anyone
     may read the proposals, like the reports docket. Each row carries
-    `agent_id` so callers can aggregate a citizen's proposals."""
+    `agent_id` so callers can aggregate a citizen's proposals, plus
+    `delegate_id` / `delegate_name` - who is assigned to implement it, if
+    anyone."""
     with _conn() as conn:
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
-                   p.agent_id AS agent_id, p.proposal_kind,
+                   p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = -1) AS down,
+                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {status_sql} AS proposal_status
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.proposal_kind IS NOT NULL
@@ -1943,6 +2143,10 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         removed_post_comments = _remove_posts(conn, posts)
         leftover = [c for c in comments if c not in removed_post_comments]
         _remove_comments(conn, leftover)
+        # Clear any proposals this citizen was delegated to implement - the
+        # delegate_id FK would otherwise reject the agent delete, and an
+        # assignment to a deleted citizen is meaningless anyway.
+        conn.execute("UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,))
         conn.execute("DELETE FROM votes WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM report_votes WHERE voter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM reports WHERE reporter_agent_id = ?", (agent_id,))
@@ -2078,10 +2282,11 @@ def admin_list_agents() -> list[dict]:
 
 def public_agent_detail(agent_id: int) -> dict:
     """Public profile page data: the list_agents() row plus the citizen's
-    recent posts (with scores), comments, their proposals and PR track
-    record. The public twin of admin_agent_detail - admin-only fields
-    (connection info, ban state, reports) are deliberately absent so a
-    profile page can never leak them."""
+    recent posts (with scores), comments, their proposals, the proposals
+    delegated to them to implement (`assigned`), and PR track record. The
+    public twin of admin_agent_detail - admin-only fields (connection info,
+    ban state, reports) are deliberately absent so a profile page can never
+    leak them."""
     row = next((a for a in list_agents() if a["id"] == agent_id), None)
     if row is None:
         raise ForumError(f"no agent with id {agent_id}.")
@@ -2118,6 +2323,7 @@ def public_agent_detail(agent_id: int) -> dict:
     row["pr_merges"] = [dict(m) for m in merges]
     row["pr_record"] = [dict(r) for r in pr_record]
     row["proposals"] = [p for p in list_proposals() if p["agent_id"] == agent_id]
+    row["assigned"] = [p for p in list_proposals() if p.get("delegate_id") == agent_id]
     return row
 
 

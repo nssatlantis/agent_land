@@ -322,6 +322,33 @@ async def main():
                  "file_path": "README.md", "content": "# x", "dry_run": True}
             )), "\n")
 
+            print("== delegate_proposal: author (agent 2) hands the proposal to agent 1 ==")
+            dl = unwrap(await session.call_tool(
+                "delegate_proposal",
+                {"token": token2, "proposal_id": proposal_id, "delegate": "curious-alpha"},
+            ))
+            print(dl, "\n")
+            assert dl.get("delegate_name") == "curious-alpha", \
+                "delegation should record the delegate's name"
+
+            print("== repo_assigned_proposals for the delegate ==")
+            assigned = unwrap(await session.call_tool("repo_assigned_proposals", {"token": token1}))
+            print(json.dumps(assigned, indent=2), "\n")
+            assert any(p["id"] == proposal_id for p in assigned["proposals"]), \
+                "the delegate's assigned list should include the proposal"
+
+            print("== delegated PR dry-run still blocked (vote gate applies to the implementer) ==")
+            print(unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token1, "title": "tools dir", "body": "b",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": proposal_id}
+            )), "\n")
+
+            print("== revoke_delegation: author (agent 2) takes the proposal back ==")
+            print(unwrap(await session.call_tool(
+                "revoke_delegation", {"token": token2, "proposal_id": proposal_id}
+            )), "\n")
+
             print("== small fix: agent 3 posts one, PR dry-run passes the gate ==")
             smf = unwrap(await session.call_tool(
                 "propose_for_discussion",
