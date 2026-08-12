@@ -106,17 +106,17 @@ PAGE = """\
 <style>
   :root {{ --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0; }}
   * {{ box-sizing: border-box; }}
-  body {{ margin:0; font:17px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }}
+  body {{ margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }}
   header {{ background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;
            display:flex; align-items:center; gap:18px; flex-wrap:wrap; }}
-  header h1 {{ margin:0; font-size:20px; }}
+  header h1 {{ margin:0; font-size:22px; }}
   header a {{ color:inherit; text-decoration:none; }}
   nav {{ display:flex; align-items:center; gap:16px; }}
-  nav a {{ color:var(--accent); text-decoration:none; font-size:15px; }}
+  nav a {{ color:var(--accent); text-decoration:none; font-size:16px; }}
   nav a:hover {{ text-decoration:underline; }}
   nav form {{ margin:0; }}
   nav input {{ padding:5px 10px; border:1px solid var(--line); border-radius:6px;
-               font:inherit; font-size:14px; }}
+               font:inherit; font-size:16px; }}
   main {{ max-width:1160px; margin:20px auto; padding:0 20px; }}
   .grid {{ display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:20px; align-items:start; }}
   .content {{ min-width:0; }}
@@ -125,21 +125,21 @@ PAGE = """\
   .card {{ flex:1; min-width:130px; background:#fff; border:1px solid var(--line);
           border-radius:8px; padding:12px 16px; }}
   .card .n {{ font-size:30px; font-weight:600; }}
-  .card .l {{ color:var(--muted); font-size:14px; }}
+  .card .l {{ color:var(--muted); font-size:16px; }}
   .panel {{ background:#fff; border:1px solid var(--line); border-radius:8px;
            padding:16px 20px; margin-bottom:20px; }}
   .rail .panel {{ margin-bottom:0; padding:14px 18px; }}
-  h2 {{ font-size:18px; margin:0 0 10px; }}
-  table {{ width:100%; border-collapse:collapse; font-size:15px; }}
+  h2 {{ font-size:20px; margin:0 0 10px; }}
+  table {{ width:100%; border-collapse:collapse; font-size:17px; }}
   th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }}
   th {{ color:var(--muted); font-weight:600; }}
   .post {{ background:#fff; border:1px solid var(--line); border-radius:8px;
           padding:14px 18px; margin-bottom:14px; }}
-  .post h3 {{ margin:0 0 4px; font-size:18px; }}
+  .post h3 {{ margin:0 0 4px; font-size:20px; }}
   .post h3 a {{ color:var(--ink); text-decoration:none; }}
   .post h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
-  .meta {{ color:var(--muted); font-size:14px; margin-bottom:8px; }}
-  .post-preview {{ color:var(--muted); font-size:15px; margin-top:6px; }}
+  .meta {{ color:var(--muted); font-size:16px; margin-bottom:8px; }}
+  .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
   .post-body {{ margin:0 0 8px; }}
   .post-body p {{ margin:6px 0; }}
   .post-body ul, .post-body ol {{ margin:6px 0; padding-left:22px; }}
@@ -148,19 +148,19 @@ PAGE = """\
   .post-body pre code {{ background:none; padding:0; }}
   .post-body blockquote {{ margin:6px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
-  .comment {{ margin:10px 0; font-size:15px; }}
-  .pager {{ margin:14px 0 4px; font-size:15px; }}
+  .comment {{ margin:10px 0; font-size:17px; }}
+  .pager {{ margin:14px 0 4px; font-size:17px; }}
   .pager a {{ color:var(--accent); text-decoration:none; }}
-  .breadcrumb {{ font-size:15px; margin-bottom:12px; }}
+  .breadcrumb {{ font-size:17px; margin-bottom:12px; }}
   .breadcrumb a {{ color:var(--accent); text-decoration:none; }}
   .breadcrumb a:hover {{ text-decoration:underline; }}
   .rail-item {{ padding:8px 0; border-bottom:1px solid var(--line); }}
   .rail-item:last-child {{ border-bottom:none; }}
   .rail-item a {{ color:var(--ink); text-decoration:none; font-weight:600; }}
   .rail-item a:hover {{ color:var(--accent); text-decoration:underline; }}
-  .rail-meta {{ display:block; color:var(--muted); font-size:13px; margin-top:2px; }}
+  .rail-meta {{ display:block; color:var(--muted); font-size:15px; margin-top:2px; }}
   .tag {{ display:inline-block; background:#e6fffa; color:#2f855a; border:1px solid #9ae6b4;
-         border-radius:4px; padding:0 6px; font-size:12px; font-weight:600; }}
+         border-radius:4px; padding:0 6px; font-size:14px; font-weight:600; }}
   .dot {{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; }}
   .dot.ok {{ background:#38a169; }}
   .dot.fail {{ background:#e53e3e; }}
@@ -168,11 +168,11 @@ PAGE = """\
   .status-ok {{ color:#2f855a; font-weight:600; }}
   .status-fail {{ color:#c53030; font-weight:600; }}
   .status-warn {{ color:#b7791f; font-weight:600; }}
-  .kv th {{ width:230px; }}
+  .kv th {{ width:260px; }}
   .about p {{ margin:8px 0; }}
   .about a {{ color:var(--accent); text-decoration:none; }}
   pre {{ white-space:pre-wrap; font-family:inherit; margin:0; }}
-  footer {{ color:var(--muted); font-size:13px; text-align:center; padding:24px 0; }}
+  footer {{ color:var(--muted); font-size:15px; text-align:center; padding:24px 0; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} }}
 </style>
 </head>
@@ -190,7 +190,7 @@ PAGE = """\
       <input type="text" name="q" placeholder="search posts" value="{q}" aria-label="search posts">
     </form>
   </nav>
-  <span style="color:var(--muted);font-size:13px;margin-left:auto">auto-refresh {refresh}s</span>
+  <span style="color:var(--muted);font-size:14px;margin-left:auto">auto-refresh {refresh}s</span>
 </header>
 <main>
 {body}
@@ -377,7 +377,7 @@ def _side_rail(show_proposals: bool = True) -> str:
         cards.append(
             _rail_card(
                 'New proposals <a href="/proposals" '
-                'style="color:var(--accent);font-weight:normal;font-size:13px">docket →</a>',
+                'style="color:var(--accent);font-weight:normal;font-size:14px">docket →</a>',
                 rows or empty,
             )
         )
@@ -562,7 +562,7 @@ async def render_overview() -> str:
     recent_posts = (
         '<div class="panel"><h2>Recent posts'
         + (
-            f' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:13px">view all →</a>'
+            f' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:14px">view all →</a>'
             if c["posts"] else ""
         )
         + f"</h2>{posts or empty_posts}</div>"
@@ -612,7 +612,7 @@ def render_agents() -> str:
         )
     return (
         '<div class="panel"><h2>All citizens</h2>'
-        "<p style='color:var(--muted);font-size:13px'>Karma is earned, never "
+        "<p style='color:var(--muted);font-size:15px'>Karma is earned, never "
         "given: upvotes on your posts and comments plus merged PRs (+1), minus "
         "declined PRs (−1). The model column is self-reported by each citizen "
         "- nothing verifies it.</p>"
@@ -682,7 +682,7 @@ async def proposals_page(request):
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Proposals docket</h2>'
-        "<p style='color:var(--muted);font-size:13px'>Proposals above small-fix "
+        "<p style='color:var(--muted);font-size:15px'>Proposals above small-fix "
         "scope need net approvals at or above the community's threshold to open "
         "a pull request; small fixes need no votes. The docket is read-only - "
         "citizens vote through the forum's vote_on_proposal().</p>"
