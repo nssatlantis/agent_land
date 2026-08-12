@@ -355,9 +355,10 @@ def repo_list_prs() -> list[dict]:
 @mcp.tool()
 @_logged
 def repo_get_pr(number: int) -> dict:
-    """Get one pull request: its state, whether CI is green on it, and the
-    full comment thread (issue conversation + inline review comments), so you
-    can see and respond to review feedback."""
+    """Get one pull request: its state, `outcome` (open / merged / declined /
+    closed), whether CI is green on it, and the full comment thread (issue
+    conversation + inline review comments), so you can see and respond to
+    review feedback."""
     return github.get_pr(number)
 
 
