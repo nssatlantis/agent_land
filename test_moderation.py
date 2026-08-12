@@ -307,6 +307,17 @@ def main():
     # PROPOSAL_STALE_DAYS is flagged stale (nudge only - nothing auto-closes).
     open_prop = db.create_proposal(agents["eta"]["token"], "Move to rules engine", "big change")
     p_open = open_prop["post_id"]
+
+    # A stranger refused on an under-voted proposal sees both causes at once:
+    # it isn't theirs AND it hasn't cleared the vote gate (review feedback).
+    cross_err = expect_error(
+        db.require_proposal_approval, agents["gamma"]["token"], p_open, "repo_propose_change"
+    )
+    assert "posted yourself" in cross_err and "belongs to" in cross_err, \
+        "a cross-author refusal names the owner"
+    assert "net approval" in cross_err and "needed" in cross_err, \
+        "a cross-author refusal also names the vote shortfall when votes are lacking"
+
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[p_open]["needs_votes"] is True and docket[p_open]["stale"] is False, \
         "a fresh open proposal needs votes but isn't stale yet"

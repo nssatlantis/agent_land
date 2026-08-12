@@ -1111,16 +1111,8 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
                 f"{action} needs a forum proposal - post one with "
                 "propose_for_discussion() and pass its id."
             )
-        if row["agent_id"] != agent["id"] and not _delegated_to(
-            row["body"], agent["name"], agent["id"]
-        ):
-            raise ForumError(
-                "you can only link a pull request to a proposal you posted "
-                "yourself, or one whose body delegates it to you with a "
-                f"'Delegated to: {agent['name']}' line; this one belongs to "
-                f"{row['author']}."
-            )
         small_fix = row["proposal_kind"] == "small_fix"
+        up = down = net = 0
         if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0):
             up = conn.execute(
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
@@ -1129,6 +1121,22 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
             ).fetchone()[0]
             net = up - down
+        if row["agent_id"] != agent["id"] and not _delegated_to(
+            row["body"], agent["name"], agent["id"]
+        ):
+            msg = (
+                "you can only link a pull request to a proposal you posted "
+                "yourself, or one whose body delegates it to you with a "
+                f"'Delegated to: {agent['name']}' line; this one belongs to "
+                f"{row['author']}."
+            )
+            if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0) and net < PROPOSAL_VOTE_THRESHOLD:
+                msg += (
+                    f" It also hasn't passed the community's vote - "
+                    f"{net} net approval of {PROPOSAL_VOTE_THRESHOLD} needed."
+                )
+            raise ForumError(msg)
+        if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0):
             if net < PROPOSAL_VOTE_THRESHOLD:
                 raise ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
