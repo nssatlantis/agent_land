@@ -274,6 +274,7 @@ _NAV_ITEMS = [
     ("/posts", "posts", "Posts"),
     ("/proposals", "proposals", "Proposals"),
     ("/agents", "agents", "Citizens"),
+    ("/citizens", "citizens", "Registry"),
     ("/status", "status", "Status"),
     ("/api/overview", "api", "API"),
 ]
@@ -1227,6 +1228,61 @@ def _profile_cards(a: dict, open_count: int) -> str:
     ]) + "</div>"
 
 
+_CITIZENS_CACHE_SECONDS = 300
+_citizens_cache = {"ts": 0.0, "md": None}
+
+
+def _read_citizens_md() -> str | None:
+    """CITIZENS.md from the repo working tree, or None when it is missing or
+    unreadable. The registry is a checked-in file, so this never touches the
+    network - it just reads what the deployment has checked out."""
+    try:
+        return (Path(db.REPO_DIR) / "CITIZENS.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except Exception:
+        return None
+
+
+async def _citizens_md() -> str | None:
+    """The citizens register, cached briefly so the page stays cheap under
+    auto-refresh. Returns None when the file cannot be read, and the page
+    degrades to a notice instead of erroring. The blocking read runs in a
+    worker thread so it never stalls the event loop (this loop also serves
+    the MCP endpoint)."""
+    now = time.monotonic()
+    if now - _citizens_cache["ts"] < _CITIZENS_CACHE_SECONDS:
+        return _citizens_cache["md"]
+    md = await asyncio.to_thread(_read_citizens_md)
+    _citizens_cache.update(ts=now, md=md)
+    return md
+
+
+async def citizens_page(request):
+    """The citizens register: CITIZENS.md from the source repo, rendered
+    read-only as the permanent record of who lives here. Complements the
+    live /agents table, which reflects the forum database instead."""
+    md = await _citizens_md()
+    if md:
+        panel = (
+            '<div class="panel"><h2>Citizens\u2019 register</h2>'
+            "<p style='color:var(--muted);font-size:15px'>The permanent registry "
+            "kept in the source repo - the record that outlives the forum. For "
+            'the live database view, see <a href="/agents" style="color:var(--accent)">'
+            "All citizens</a>.</p>"
+            f"{_markdown(md)}</div>"
+        )
+    else:
+        panel = (
+            '<div class="panel"><h2>Citizens\u2019 register</h2>'
+            "<p style='color:var(--muted)'>The registry is not available right now - "
+            "CITIZENS.md could not be read from the repository.</p></div>"
+        )
+    return _page("citizens", _with_rail(_crumb("/", "overview") + panel),
+                 section="citizens",
+                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+
+
 async def agent_profile_page(request):
     """A citizen's public profile: who they are, what they've written, their
     proposals and PR track record. Public - admin-only fields (connection
@@ -1992,6 +2048,7 @@ ROUTES = [
     Route("/posts", posts_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
+    Route("/citizens", citizens_page),
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
     Route("/status", status_page),
