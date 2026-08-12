@@ -59,6 +59,14 @@ _START_TIME = time.monotonic()
 _PR_PRS_CACHE_SECONDS = 30
 _pr_prs_cache = {"ts": 0.0, "prs": None, "fresh": False}
 
+# The Repository panel's ahead/behind is only as truthful as its last `git
+# fetch`. We fetch origin/main on a short TTL so the numbers reflect GitHub
+# within a minute (the page auto-refreshes every REFRESH_SECONDS, but one fetch
+# per window is plenty). "ok" records whether the last fetch succeeded; a failed
+# fetch keeps the previous refs but marks the panel stale instead of pretending.
+_GIT_FETCH_CACHE_SECONDS = 60
+_git_fetch_cache = {"ts": 0.0, "ok": False}
+
 
 async def _open_prs() -> list[dict] | None:
     """Open pull requests, cached briefly. Returns None when GitHub is
@@ -821,17 +829,43 @@ def _git(args: list[str], cwd: str) -> str:
     return result.stdout.strip()
 
 
+def _git_ok(args: list[str], cwd: str) -> bool:
+    """Run a git command and report whether it exited 0 (success). stdout is
+    discarded - use for ref-writes like `git fetch` where failure must be
+    detected, not swallowed into an empty string."""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def _git_sync_status() -> dict:
     """Read-only sync of the working tree (when not in the container itself):
-    git status, last commit, and how far the local branch is ahead/behind its
-    upstream. Never mutates anything - a pure read. Deliberately kept as a
-    thin status view; the container runs the server as the single writer."""
+    git status, last commit, and how far the local branch is ahead/behind
+    origin/main. Never mutates the working tree - the only write is a brief,
+    cached `git fetch` of the remote-tracking ref, so the numbers reflect
+    GitHub instead of the last deploy's fetch. Deliberately kept as a thin
+    status view; the container runs the server as the single writer."""
     try:
         repo_root = _git(["rev-parse", "--show-toplevel"], str(db.REPO_DIR))
         if not repo_root:
             return {"error": "not a git repository"}
+        # Refresh origin/main on a short TTL. Ahead/behind is compared against
+        # this ref explicitly (not @{upstream}), so an unset upstream can't
+        # silently degrade to a permanent "0 / 0".
+        now = time.monotonic()
+        if now - _git_fetch_cache["ts"] >= _GIT_FETCH_CACHE_SECONDS:
+            ok = _git_ok(["fetch", "origin", "main"], repo_root)
+            _git_fetch_cache.update(ts=now, ok=ok)
         ahead_behind = _git(
-            ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], repo_root
+            ["rev-list", "--left-right", "--count", "HEAD...origin/main"], repo_root
         )
         parts = ahead_behind.split()
         ahead = int(parts[0]) if parts else 0
@@ -846,6 +880,8 @@ def _git_sync_status() -> dict:
             "dirty": bool(_git(["status", "--porcelain"], repo_root)),
             "commits_ahead": int(ahead),
             "commits_behind": int(behind),
+            "stale": not _git_fetch_cache["ok"],
+            "last_fetch": _git_fetch_cache["ts"],
         }
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -1020,6 +1056,14 @@ async def status_page(request):
     # --- repository -------------------------------------------------------
     repo_panel = '<div class="panel"><h2>Repository</h2>'
     if repo.get("root"):
+        ahead_behind = f'{repo["commits_ahead"]} / {repo["commits_behind"]}'
+        if repo.get("stale"):
+            ahead_behind += ' <span style="color:var(--muted)">(stale)</span>'
+        last_fetch = repo.get("last_fetch") or 0
+        last_fetch_label = (
+            _human_duration(max(0, time.monotonic() - last_fetch)) + " ago"
+            if last_fetch else '<span style="color:var(--muted)">—</span>'
+        )
         repo_panel += (
             '<table class="kv">'
             + _rows([
@@ -1027,7 +1071,8 @@ async def status_page(request):
                 ("head", f'{esc(repo["head_commit"])} · {esc(repo["head_subject"])}'),
                 ("by", esc(repo.get("head_author") or "")),
                 ("committed", _ts_or_dash(repo.get("head_date"))),
-                ("ahead / behind", f'{repo["commits_ahead"]} / {repo["commits_behind"]}'),
+                ("ahead / behind", ahead_behind),
+                ("last fetch", last_fetch_label),
                 ("working tree", esc("dirty" if repo["dirty"] else "clean")),
             ])
             + "</table>"
