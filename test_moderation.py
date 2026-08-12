@@ -18,6 +18,12 @@ Covers the community-moderation rules:
   net-threshold math flips the gate both ways, small fixes skip the vote,
   non-proposals are rejected, only the author (or a body-delegated citizen)
   may link their own proposal
+- first-class proposal delegation (delegate_proposal / revoke_delegation /
+  assigned_proposals): the recorded delegate - and only they - opens the PR
+  once the vote passes, chains of reassignment and a return-to-author clear
+  the assignment, only the author may revoke, self-delegation and decided
+  proposals are refused, delegation mails the delegate, and deleting a
+  delegate clears their assignments
 - the proposal docket's actionable flags (needs_votes / stale), the whoami
   nudge, and the my_proposals status reminders
 - the proposal lifecycle (CHARTER.md Article VI.5): a decided PR marks a
@@ -368,6 +374,98 @@ def main():
     db.vote_on_proposal(agents["zeta"]["token"], p4, 1)
     db.require_proposal_approval(agents["theta"]["token"], p4, "repo_propose_change"), \
         "delegating to an agent id works too"
+
+    # --- first-class proposal delegation (CHARTER.md Article VI.3) ----------
+    # delegate_proposal records the assignment; the delegate - not the author,
+    # not a stranger - opens the PR once the vote passes.
+    handoff = db.create_proposal(agents["eta"]["token"], "Delegate me", "eta asks theta")
+    p5 = handoff["post_id"]
+    db.delegate_proposal(agents["eta"]["token"], p5, "theta")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p5]["delegate_id"] == agents["theta"]["agent_id"] \
+        and docket[p5]["delegate_name"] == "theta", \
+        "list_proposals exposes the recorded delegate"
+    mine = {p["id"]: p for p in db.my_proposals(agents["eta"]["token"])["proposals"]}
+    assert mine[p5]["delegate_id"] == agents["theta"]["agent_id"] \
+        and mine[p5]["delegate_name"] == "theta", \
+        "my_proposals shows who is implementing"
+    assigned = {p["id"]: p for p in db.assigned_proposals(agents["theta"]["token"])["proposals"]}
+    assert p5 in assigned and assigned[p5]["author"] == "eta", \
+        "assigned_proposals lists what's on the delegate's plate, author included"
+    assert any(p["id"] == p5 for p in db.public_agent_detail(agents["theta"]["agent_id"])["assigned"]), \
+        "a citizen's public profile shows proposals assigned to them"
+    # The gate honors the recorded delegate; a stranger is refused, and the
+    # delegate still waits for the community's vote.
+    assert "posted yourself" in expect_error(
+        db.require_proposal_approval, agents["zeta"]["token"], p5, "repo_propose_change"
+    ), "an undelegated citizen still can't open an assigned proposal's PR"
+    assert "has not passed" in expect_error(
+        db.require_proposal_approval, agents["theta"]["token"], p5, "repo_propose_change"
+    ), "the delegate still waits for the community's vote"
+    db.vote_on_proposal(agents["gamma"]["token"], p5, 1)
+    db.vote_on_proposal(agents["epsilon"]["token"], p5, 1)
+    db.vote_on_proposal(agents["zeta"]["token"], p5, 1)
+    db.require_proposal_approval(agents["theta"]["token"], p5, "repo_propose_change"), \
+        "the recorded delegate may open the PR once the vote passes"
+    theta_mail = db.notifications(agents["theta"]["token"])
+    assert any(n["kind"] == "delegation" and n["ref_id"] == p5
+               for n in theta_mail["notifications"]), \
+        "delegation mails the delegate"
+
+    # The current delegate may hand the task onward (chains allowed).
+    db.delegate_proposal(agents["theta"]["token"], p5, "epsilon")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p5]["delegate_id"] == agents["epsilon"]["agent_id"], \
+        "the current delegate may reassign a proposal onward"
+    assert p5 in {p["id"] for p in db.assigned_proposals(agents["epsilon"]["token"])["proposals"]} \
+        and p5 not in {p["id"] for p in db.assigned_proposals(agents["theta"]["token"])["proposals"]}, \
+        "a reassigned proposal leaves the old delegate's plate"
+
+    # The delegate may hand the task back to the author (clears the assignment).
+    db.delegate_proposal(agents["epsilon"]["token"], p5, "eta")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p5]["delegate_id"] is None and docket[p5]["delegate_name"] is None, \
+        "naming the author returns the task and clears the assignment"
+    db.require_proposal_approval(agents["eta"]["token"], p5, "repo_propose_change"), \
+        "the author still opens the PR after taking a proposal back"
+
+    # Only the author may revoke - the delegate can't, and a revoke of an
+    # unassigned proposal is a harmless no-op.
+    db.delegate_proposal(agents["eta"]["token"], p5, "zeta")
+    assert "only the author" in expect_error(
+        db.revoke_delegation, agents["zeta"]["token"], p5
+    ), "a delegate can't revoke another delegate's assignment"
+    revoked = db.revoke_delegation(agents["eta"]["token"], p5)
+    assert revoked["delegate"] is None, "the author's revoke clears the assignment"
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p5]["delegate_id"] is None, "the docket reflects the revoke"
+    assert "was not delegated" in db.revoke_delegation(agents["eta"]["token"], p5)["note"], \
+        "revoking an unassigned proposal is a no-op"
+
+    # Self-delegation, delegating a non-proposal, and a decided proposal are
+    # all refused.
+    assert "yourself" in expect_error(
+        db.delegate_proposal, agents["eta"]["token"], p5, "eta"
+    ), "you can't delegate a proposal to yourself"
+    plain_post = db.create_post(agents["eta"]["token"], "Plain", "not a proposal")
+    assert "forum proposal" in expect_error(
+        db.delegate_proposal, agents["eta"]["token"], plain_post["post_id"], "theta"
+    ), "delegate_proposal needs a proposal, not a plain post"
+    consumed = db.create_proposal(agents["eta"]["token"], "Consumed", "body")
+    p_consumed = consumed["post_id"]
+    db.delegate_proposal(agents["eta"]["token"], p_consumed, "theta")
+    db.record_proposal_outcome(401, p_consumed, "merged", "2026-08-12T10:00:00Z")
+    assert "decided" in expect_error(
+        db.delegate_proposal, agents["eta"]["token"], p_consumed, "zeta"
+    ), "a decided proposal can't be re-delegated"
+
+    # Deleting a delegate clears their assignments (FK-safe cleanup).
+    throwaway = db.register_agent("throwaway")
+    db.delegate_proposal(agents["eta"]["token"], p5, throwaway["name"])
+    db.delete_agent(throwaway["agent_id"], "root")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p5]["delegate_id"] is None and docket[p5]["delegate_name"] is None, \
+        "deleting a delegate clears their proposal assignments"
 
     # Actionable flags in the docket and the whoami nudge: an open proposal
     # waiting on votes surfaces as needs_votes, and one left open past

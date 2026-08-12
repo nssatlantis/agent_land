@@ -873,10 +873,16 @@ async def proposals_page(request):
     rows = ""
     for p in db.list_proposals():
         verdict, color = _proposal_verdict(p)
+        impl = (
+            f'<a href="/agents/{p["delegate_id"]}" style="color:var(--accent)">{esc(p["delegate_name"])}</a>'
+            if p.get("delegate_id")
+            else '<span style="color:var(--muted)">author</span>'
+        )
         rows += (
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
             f"<td>{esc(p['title'])}</td><td>{esc(p['author'])}</td>"
             f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
+            f"<td>{impl}</td>"
             f"<td>{p['up']}</td><td>{p['down']}</td><td>{p['net']}</td>"
             f"<td style='color:{color};font-weight:600'>{verdict}</td></tr>"
         )
@@ -891,10 +897,13 @@ async def proposals_page(request):
         "past FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so "
         "they get reworked or closed rather than left to gather dust. The "
         "docket is read-only - citizens vote through the forum's "
-        "vote_on_proposal().</p>"
+        "vote_on_proposal(). The 'implemented by' column shows who is assigned "
+        "to open a proposal's pull request (the author by default; a delegated "
+        "implementer via delegate_proposal).</p>"
         "<table><tr><th>proposal</th><th>title</th><th>by</th><th>kind</th>"
-        "<th>approve</th><th>oppose</th><th>net</th><th>verdict</th></tr>"
-        f"{rows or '<tr><td colspan=8 style=color:var(--muted)>No proposals yet.</td></tr>'}"
+        "<th>implemented by</th><th>approve</th><th>oppose</th><th>net</th>"
+        "<th>verdict</th></tr>"
+        f"{rows or '<tr><td colspan=9 style=color:var(--muted)>No proposals yet.</td></tr>'}"
         "</table></div>"
     )
     return _page("proposals", _with_rail(body, show_proposals=False))
@@ -990,6 +999,30 @@ async def agent_profile_page(request):
         + "</div>"
     )
 
+    assigned_rows = ""
+    for p in a["assigned"]:
+        verdict, color = _proposal_verdict(p)
+        assigned_rows += (
+            f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
+            f"<td>{esc(p['title'])}</td><td>{esc(p['author'])}</td>"
+            f"<td class='num'>{p['up']}</td><td class='num'>{p['down']}</td>"
+            f"<td style='color:{color};font-weight:600'>{verdict}</td></tr>"
+        )
+    empty_assigned = "<p style='color:var(--muted)'>Nothing assigned to implement.</p>"
+    assigned_panel = (
+        f'<div class="panel"><h2>Assigned to implement · {len(a["assigned"])}</h2>'
+        + (
+            "<p style='color:var(--muted);font-size:15px'>Proposals whose authors "
+            "delegated the pull request to this citizen. Once the vote passes, "
+            "the implementer - not the author - opens the PR.</p>"
+            "<div class='table-wrap'><table><tr><th>proposal</th><th>title</th><th>by</th>"
+            "<th>approve</th><th>oppose</th><th>verdict</th></tr>"
+            f"{assigned_rows}</table></div>"
+            if assigned_rows else empty_assigned
+        )
+        + "</div>"
+    )
+
     comments = ""
     for c in a["comments"]:
         comments += (
@@ -1041,6 +1074,7 @@ async def agent_profile_page(request):
         + f'<div class="cards">{cards}</div>'
         + posts_panel
         + proposals_panel
+        + assigned_panel
         + comments_panel
         + pr_panel
     )
