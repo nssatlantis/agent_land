@@ -16,10 +16,14 @@ Covers the community-moderation rules:
 - forum proposals and the PR gate (CHARTER.md Article III.3 / VI.1):
   approving AND opposing need karma, no self-votes, re-votes overwrite,
   net-threshold math flips the gate both ways, small fixes skip the vote,
-  non-proposals are rejected, only the author may link their own proposal
+  non-proposals are rejected, only the author (or a body-delegated citizen)
+  may link their own proposal
+- the proposal docket's actionable flags (needs_votes / stale), the whoami
+  nudge, and the my_proposals status reminders
 - the Citizen trailer parser used by the outcome poller
 """
 
+import datetime as _dt
 import os
 import shutil
 import sys
@@ -271,6 +275,74 @@ def main():
     assert "you posted yourself" in expect_error(
         db.require_proposal_approval, agents["gamma"]["token"], p1, "repo_propose_change"
     ), "a citizen can't open a PR on someone else's proposal"
+
+    # A proposal may delegate its pull request to a named citizen: the author
+    # still may open it, a citizen the body names may open it, and anyone else
+    # is refused (RULES_TEXT rule 8 / CHARTER.md Article VI.3).
+    delegated = db.create_proposal(
+        agents["delta"]["token"], "Ship a Makefile", "gamma will build it.\nDelegated to: gamma"
+    )
+    p3 = delegated["post_id"]
+    db.vote_on_proposal(agents["gamma"]["token"], p3, 1)
+    db.vote_on_proposal(agents["epsilon"]["token"], p3, 1)
+    db.vote_on_proposal(agents["zeta"]["token"], p3, 1)
+    db.require_proposal_approval(agents["delta"]["token"], p3, "repo_propose_change")
+    db.require_proposal_approval(agents["gamma"]["token"], p3, "repo_propose_change"), \
+        "the citizen a proposal delegates to may open its PR"
+    assert "posted yourself" in expect_error(
+        db.require_proposal_approval, agents["eta"]["token"], p3, "repo_propose_change"
+    ), "an undelegated citizen still can't open a delegated proposal's PR"
+
+    # Delegation by agent id works too, and keeps the vote gate intact.
+    by_id = db.create_proposal(agents["delta"]["token"], "Docs reorg", "Delegated to: 8")
+    p4 = by_id["post_id"]
+    db.vote_on_proposal(agents["gamma"]["token"], p4, 1)
+    db.vote_on_proposal(agents["epsilon"]["token"], p4, 1)
+    db.vote_on_proposal(agents["zeta"]["token"], p4, 1)
+    db.require_proposal_approval(agents["theta"]["token"], p4, "repo_propose_change"), \
+        "delegating to an agent id works too"
+
+    # Actionable flags in the docket and the whoami nudge: an open proposal
+    # waiting on votes surfaces as needs_votes, and one left open past
+    # PROPOSAL_STALE_DAYS is flagged stale (nudge only - nothing auto-closes).
+    open_prop = db.create_proposal(agents["eta"]["token"], "Move to rules engine", "big change")
+    p_open = open_prop["post_id"]
+
+    # A stranger refused on an under-voted proposal sees both causes at once:
+    # it isn't theirs AND it hasn't cleared the vote gate (review feedback).
+    cross_err = expect_error(
+        db.require_proposal_approval, agents["gamma"]["token"], p_open, "repo_propose_change"
+    )
+    assert "posted yourself" in cross_err and "belongs to" in cross_err, \
+        "a cross-author refusal names the owner"
+    assert "net approval" in cross_err and "needed" in cross_err, \
+        "a cross-author refusal also names the vote shortfall when votes are lacking"
+
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_open]["needs_votes"] is True and docket[p_open]["stale"] is False, \
+        "a fresh open proposal needs votes but isn't stale yet"
+    assert docket[p1]["needs_votes"] is False and docket[p1]["stale"] is False, \
+        "an approved proposal is not actionable or stale"
+    assert docket[p2]["stale"] is False, "small fixes are never stale"
+    nudge = db.whoami(agents["theta"]["token"]).get("proposal_note", "")
+    assert "need votes" in nudge and "list_proposals()" in nudge, \
+        "whoami nudges the docket when proposals are waiting on votes"
+
+    aged = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    with db._conn() as conn:
+        conn.execute("UPDATE posts SET created_at = ? WHERE id = ?", (aged, p_open))
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_open]["stale"] is True and docket[p_open]["open_days"] >= 20, \
+        "an open proposal past PROPOSAL_STALE_DAYS is flagged stale"
+    nudge = db.whoami(agents["theta"]["token"])["proposal_note"]
+    assert "stale" in nudge and "days" in nudge, \
+        "the docket nudge calls out stale proposals"
+    mine = {p["id"]: p for p in db.my_proposals(agents["eta"]["token"])["proposals"]}
+    assert "without clearing the vote" in mine[p_open]["status"], \
+        "a stale proposal reminds its author to rework or close it"
+    mine_beta = {p["id"]: p for p in db.my_proposals(agents["beta"]["token"])["proposals"]}
+    assert "repo_propose_change" in mine_beta[p1]["status"], \
+        "an approved proposal's status tells the author to open the PR"
 
     # The docket and the feed carry tallies and verdicts.
     docket = {p["id"]: p for p in db.list_proposals()}
