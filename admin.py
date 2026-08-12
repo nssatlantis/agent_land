@@ -219,7 +219,8 @@ def _render_citizens(request) -> str:
     return (
         '<div class="panel"><h2>Citizens</h2>'
         "<p style='color:var(--muted);font-size:15px'>Connection info is "
-        "admin-only; nothing is recorded yet, so these stay blank.</p>"
+        "admin-only: IP and last-seen are recorded whenever a citizen calls "
+        "in over HTTP/MCP, and shown only here - never on the public pages.</p>"
         "<table><tr><th>name</th><th>karma</th><th>posts</th><th>comments</th>"
         "<th>reports</th><th>last IP</th><th>last seen</th><th>actions</th></tr>"
         f"{rows}</table></div>"

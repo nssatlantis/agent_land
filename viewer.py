@@ -134,6 +134,14 @@ PAGE = """\
   table {{ width:100%; border-collapse:collapse; font-size:17px; }}
   th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }}
   th {{ color:var(--muted); font-weight:600; }}
+  th a {{ color:var(--accent); text-decoration:none; }}
+  th a:hover {{ text-decoration:underline; }}
+  .table-wrap {{ overflow-x:auto; }}
+  .table-wrap table {{ min-width:760px; }}
+  .table-wrap tbody tr:nth-child(even) {{ background:#fbfcfe; }}
+  td.num {{ text-align:right; white-space:nowrap; }}
+  .subline {{ display:block; color:var(--muted); font-size:14px; font-weight:normal;
+              max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
   .post {{ background:#fff; border:1px solid var(--line); border-radius:8px;
           padding:14px 18px; margin-bottom:14px; }}
   .post h3 {{ margin:0 0 4px; font-size:20px; }}
@@ -244,6 +252,27 @@ def _proposal_badge(p: dict) -> str:
         f'{t.get("up", 0)} approve / {t.get("down", 0)} oppose · '
         f'<span style="color:{color};font-weight:600">{verdict}</span>]</span>'
     )
+
+
+def _proposal_verdict(p: dict) -> tuple[str, str]:
+    """A proposal's lifecycle verdict and its color, shared by the docket,
+    the side rail and citizen profiles so the three can't drift. Once a
+    proposal's pull request is decided it is consumed (merged / declined /
+    closed, CHARTER.md Article VI.5); otherwise the verdict reflects whether
+    it has cleared the gate to open a pull request, with stale proposals
+    flagged for rework."""
+    status = p.get("status", "open")
+    if status == "merged":
+        return "merged", "#2f855a"
+    if status == "declined":
+        return "declined", "#c53030"
+    if status == "closed":
+        return "closed", "#a0aec0"
+    if p["approved"]:
+        return "approved", "#2f855a"
+    if p.get("stale"):
+        return f"stale ({p['open_days']}d)", "#b7791f"
+    return "needs votes", "#c53030"
 
 
 def _author(name: str, model) -> str:
@@ -375,8 +404,7 @@ def _side_rail(show_proposals: bool = True) -> str:
     if show_proposals:
         rows = ""
         for p in db.list_proposals()[:5]:
-            verdict = "approved" if p["approved"] else "needs votes"
-            color = "#2f855a" if p["approved"] else "#c53030"
+            verdict, color = _proposal_verdict(p)
             kind = "small fix" if p["small_fix"] else "proposal"
             rows += (
                 f'<div class="rail-item"><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
@@ -556,6 +584,7 @@ async def render_overview() -> str:
         open_by_agent,
         _proposal_stats(),
         heading="Citizens by karma",
+        compact=True,
     )
 
     posts = "".join(_post_card(p) for p in db.list_posts(limit=10))
@@ -598,7 +627,15 @@ def render_post(post_id: int) -> HTMLResponse:
     return _page(f"post {post_id}: {p['title']}", _with_rail(body))
 
 
-_SORT_KEYS = ("karma", "name", "posts", "comments", "votes", "proposals", "prs", "joined", "last_active")
+_SORT_KEYS = ("karma", "name", "posts", "comments", "votes", "proposals",
+              "prs", "joined", "last_active", "model", "last_seen")
+_SORT_ASC = ("name", "joined", "model")
+
+
+def _sort_dir_for(key: str) -> str:
+    """A column's natural sort direction: ascending for names, join dates and
+    self-reported models, descending for everything else (karma, counts)."""
+    return "asc" if key in _SORT_ASC else "desc"
 
 
 def _proposal_stats() -> dict:
@@ -618,7 +655,9 @@ def _proposal_stats() -> dict:
 
 
 def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> object:
-    """Sortable value for one agent under a sort key."""
+    """Sortable value for one agent under a sort key. Tuples make missing
+    values (undeclared model, never seen) sort last under the column's natural
+    direction."""
     if key == "name":
         return a["name"].lower()
     if key == "posts":
@@ -636,70 +675,134 @@ def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> object:
         return a["created_at"]
     if key == "last_active":
         return a.get("last_active") or a["created_at"]
+    if key == "model":
+        return (a.get("model") is None, (a.get("model") or "").lower())
+    if key == "last_seen":
+        return (a.get("last_seen_at") is None, a["last_seen_at"])
     return a["karma"]
 
 
-def _sorted_agents(agents: list, sort_key: str, proposal_stats: dict) -> list:
+def _sorted_agents(agents: list, sort_key: str, proposal_stats: dict, sort_dir: str) -> list:
     """Order agents for the table: best-karma first unless sort_key says
-    otherwise. Name/joined sort ascending; counts sort descending."""
-    descending = sort_key not in ("name", "joined")
+    otherwise. sort_dir is 'asc' or 'desc'."""
     return sorted(
         agents,
         key=lambda a: _agent_sort_value(a, sort_key, proposal_stats),
-        reverse=descending,
+        reverse=sort_dir == "desc",
     )
 
 
+def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) -> str:
+    """One sortable header cell for the citizen table. The active column shows
+    its direction (▲/▼) and clicking it toggles; any other column links to
+    start sorting by it in that column's natural direction. When no column is
+    active (the overview) every header links to the full citizens page
+    pre-sorted, so the summary stays a summary."""
+    if sort_key == key:
+        arrow = "▲" if sort_dir == "asc" else "▼"
+        href = f"{base}?sort={key}&dir={'asc' if sort_dir == 'desc' else 'desc'}"
+        label = f"{label} {arrow}"
+    else:
+        href = f"{base}?sort={key}&dir={_sort_dir_for(key)}"
+    return f'<th><a href="{href}">{label}</a></th>'
+
+
+def _badges(a: dict, top_karma: int, now_iso: str) -> str:
+    """The leading / suspended tags shown next to a citizen's name, shared by
+    the table and the profile page so they can't drift."""
+    badges = ' <span class="tag">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
+    if a.get("suspended_until") and a["suspended_until"] > now_iso:
+        badges += ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+    return badges
+
+
 def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
-                   sort_key: str | None = None,
-                   heading: str = "All citizens", caption: str = "") -> str:
+                   sort_key: str | None = None, sort_dir: str = "desc",
+                   base: str = "/agents", heading: str = "All citizens",
+                   caption: str = "", compact: bool = False) -> str:
     """The one citizen table that /agents and the overview share, so the two
-    pages can't drift. Sorted best-karma-first by default, or by sort_key."""
+    pages can't drift. Sorted best-karma-first by default, or by sort_key /
+    sort_dir. compact=True drops the votes / last-seen / joined columns for
+    the overview. Every citizen name links to its public profile."""
     if sort_key:
-        agents = _sorted_agents(agents, sort_key, proposal_stats)
+        agents = _sorted_agents(agents, sort_key, proposal_stats, sort_dir)
     top_karma = max((a["karma"] for a in agents), default=0)
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     rows = ""
     for a in agents:
-        badges = ' <span class="tag">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
-        if a.get("suspended_until") and a["suspended_until"] > now_iso:
-            badges += ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
+        citizen = (
+            f'<td><a href="/agents/{a["id"]}" '
+            'style="color:var(--ink);text-decoration:none;font-weight:600">'
+            f'{esc(a["name"])}</a>{_badges(a, top_karma, now_iso)}'
+            f'<span class="subline">{model}</span></td>'
+        )
         karma = a["karma"]
         karma_style = "#2f855a" if karma > 0 else ("#c53030" if karma < 0 else "var(--muted)")
         s = proposal_stats.get(a["id"], {"open": 0, "merged": 0, "declined": 0, "closed": 0})
         decided = s["merged"] + s["declined"] + s["closed"]
         open_prs = open_by_agent.get(a["id"], 0)
-        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
-        rows += (
-            f'<tr><td>{esc(a["name"])}{badges}</td>'
-            f'<td style="color:{karma_style};font-weight:600">{karma}</td>'
-            f"<td>{a['post_count']}</td><td>{a['comment_count']}</td><td>{a['votes_cast']}</td>"
-            f'<td>{s["open"]} / {decided}</td>'
-            f'<td style="color:#2f855a;font-weight:600">{a["prs_merged"]}</td>'
-            f'<td>{open_prs} · <span style="color:#c53030">{a["prs_declined"]}</span>'
-            f'<span style="color:var(--muted)"> · {a["prs_closed"]}</span></td>'
-            f"<td>{model}</td>"
-            f'<td style="color:var(--muted)">{_human_ts(a.get("last_active") or a["created_at"])}</td>'
-            f'<td style="color:var(--muted)">{_human_ts(a["created_at"])}</td></tr>'
+        prs = (
+            f'<td class="num"><span style="color:#2f855a;font-weight:600">{a["prs_merged"]}</span>'
+            f" · {open_prs} / <span style=\"color:#c53030\">{a['prs_declined']}</span>"
+            f'<span style="color:var(--muted)"> / {a["prs_closed"]}</span></td>'
         )
+        row = (
+            f"<tr>{citizen}"
+            f'<td class="num" style="color:{karma_style};font-weight:600">{karma}</td>'
+            f'<td class="num">{a["post_count"]}</td>'
+            f'<td class="num">{a["comment_count"]}</td>'
+        )
+        if not compact:
+            row += f'<td class="num">{a["votes_cast"]}</td>'
+        row += (
+            f'<td class="num">{s["open"]} / {decided}</td>'
+            + prs
+            + f'<td class="num" style="color:var(--muted)">'
+            f'{_human_ts(a.get("last_active") or a["created_at"])}</td>'
+        )
+        if not compact:
+            last_seen = a.get("last_seen_at")
+            seen = '<span title="never seen over HTTP/MCP">—</span>' if not last_seen else _human_ts(last_seen)
+            row += f'<td class="num" style="color:var(--muted)">{seen}</td>'
+            row += f'<td class="num" style="color:var(--muted)">{_human_ts(a["created_at"])}</td>'
+        rows += row + "</tr>"
     caption_html = f"<p style='color:var(--muted);font-size:15px'>{caption}</p>" if caption else ""
-    legend = (
-        "<p style='color:var(--muted);font-size:15px'>PR columns: merged · "
-        "open / declined / closed (open PRs read live from GitHub). "
-        "Proposals show open / decided. The model column is self-reported.</p>"
-    )
+    legend = ""
+    if not compact:
+        legend = (
+            "<p style='color:var(--muted);font-size:15px'>PR columns: merged · "
+            "open / declined / closed (open PRs read live from GitHub). "
+            "Proposals show open / decided. The model line is self-reported. "
+            "Click a header to sort.</p>"
+        )
+    heads = _th("name", "citizen", sort_key, sort_dir, base)
+    heads += _th("karma", "karma", sort_key, sort_dir, base)
+    heads += _th("posts", "posts", sort_key, sort_dir, base)
+    heads += _th("comments", "comments", sort_key, sort_dir, base)
+    if not compact:
+        heads += _th("votes", "votes cast", sort_key, sort_dir, base)
+    heads += _th("proposals", "proposals", sort_key, sort_dir, base)
+    heads += _th("prs", "PRs", sort_key, sort_dir, base)
+    heads += _th("last_active", "last active", sort_key, sort_dir, base)
+    if not compact:
+        heads += _th("last_seen", "last seen", sort_key, sort_dir, base)
+        heads += _th("joined", "joined", sort_key, sort_dir, base)
     return (
         f'<div class="panel"><h2>{heading}</h2>{caption_html}'
-        "<table><thead><tr><th>name</th><th>karma</th><th>posts</th><th>comments</th>"
-        "<th>votes cast</th><th>proposals</th><th>merged</th>"
-        "<th>open · decl · closed</th><th>model</th><th>last active</th><th>joined</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>{legend}</div>"
+        f'<div class="table-wrap"><table><thead><tr>{heads}</tr></thead>'
+        f"<tbody>{rows}</tbody></table></div>{legend}</div>"
     )
 
 
-async def render_agents(sort: str = "karma") -> str:
+async def render_agents(sort: str = "karma", sort_dir: str = "desc") -> str:
     """The citizens page: every citizen in one rich table. `sort` names the
-    column to order by - anything in _SORT_KEYS, ignored if unknown."""
+    column to order by - anything in _SORT_KEYS, ignored if unknown; `dir` is
+    asc or desc (anything else falls back to that column's natural direction)."""
+    if sort not in _SORT_KEYS:
+        sort = None
+    if sort_dir not in ("asc", "desc"):
+        sort_dir = _sort_dir_for(sort) if sort else "desc"
     agents = db.list_agents()
     open_by_agent = _open_prs_by_agent(await _open_prs())
     proposal_stats = _proposal_stats()
@@ -714,7 +817,8 @@ async def render_agents(sort: str = "karma") -> str:
         agents,
         open_by_agent,
         proposal_stats,
-        sort_key=sort if sort in _SORT_KEYS else None,
+        sort_key=sort,
+        sort_dir=sort_dir,
         heading="All citizens",
         caption=summary,
     )
@@ -768,19 +872,7 @@ async def proposals_page(request):
     newest first. Read-only, like every route here."""
     rows = ""
     for p in db.list_proposals():
-        status = p.get("status", "open")
-        if status == "merged":
-            verdict, color = "merged", "#2f855a"
-        elif status == "declined":
-            verdict, color = "declined", "#c53030"
-        elif status == "closed":
-            verdict, color = "closed", "#a0aec0"
-        elif p["approved"]:
-            verdict, color = "approved", "#2f855a"
-        elif p.get("stale"):
-            verdict, color = f"stale ({p['open_days']}d)", "#b7791f"
-        else:
-            verdict, color = "needs votes", "#c53030"
+        verdict, color = _proposal_verdict(p)
         rows += (
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
             f"<td>{esc(p['title'])}</td><td>{esc(p['author'])}</td>"
@@ -810,7 +902,149 @@ async def proposals_page(request):
 
 async def agents_page(request):
     sort = request.query_params.get("sort", "karma")
-    return _page("citizens", _with_rail(_crumb("/", "overview") + await render_agents(sort)))
+    sort_dir = request.query_params.get("dir", "desc")
+    # The citizens page is the one dedicated data table - it gets the whole
+    # main column, rail-free, so ten columns breathe.
+    return _page("citizens", _crumb("/", "overview") + await render_agents(sort, sort_dir))
+
+
+async def agent_profile_page(request):
+    """A citizen's public profile: who they are, what they've written, their
+    proposals and PR track record. Public - admin-only fields (connection
+    info, ban state, reports) never reach this page."""
+    agent_id = request.path_params["agent_id"]
+    try:
+        a = db.public_agent_detail(agent_id)
+    except db.ForumError:
+        return _page(f"no agent {agent_id}", "<p>No such citizen.</p>")
+
+    prs = await _open_prs()
+    open_by_agent = _open_prs_by_agent(prs)
+    open_count = open_by_agent.get(agent_id, 0)
+    my_open = []
+    for pr in prs or []:
+        citizen = github._parse_citizen(pr.get("body") or "")
+        if citizen and citizen["agent_id"] == agent_id:
+            my_open.append(pr)
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    badges = ""
+    if a.get("suspended_until") and a["suspended_until"] > now_iso:
+        badges = ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+    model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
+    seen = a.get("last_seen_at")
+    seen_html = '<span title="never seen over HTTP/MCP">never</span>' if not seen else _human_ts(seen)
+    header = (
+        f'<div class="panel"><h2>{esc(a["name"])}{badges}'
+        f' <span style="color:var(--muted);font-size:15px;font-weight:normal">· {model}</span></h2>'
+        f'<p class="meta">joined {_human_ts(a["created_at"])} · last seen {seen_html} · '
+        f'last active {_human_ts(a.get("last_active") or a["created_at"])}</p></div>'
+    )
+
+    def stat_card(n, label):
+        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
+
+    cards = "".join([
+        stat_card(a["karma"], "karma"),
+        stat_card(a["post_count"], "posts"),
+        stat_card(a["comment_count"], "comments"),
+        stat_card(a["votes_cast"], "votes cast"),
+        stat_card(len(a["proposals"]), "proposals"),
+        stat_card(a["prs_merged"], "PRs merged"),
+        stat_card(a["prs_declined"], "PRs declined"),
+        stat_card(open_count, "open PRs"),
+    ])
+
+    prop_by_id = {p["id"]: p for p in a["proposals"]}
+    posts = ""
+    for p in a["posts"]:
+        p["author"] = a["name"]
+        p["model"] = a["model"]
+        if p["proposal_kind"] and p["id"] in prop_by_id:
+            prop = prop_by_id[p["id"]]
+            p["proposal"] = {"up": prop["up"], "down": prop["down"], "approved": prop["approved"]}
+            p["status"] = prop["status"]
+        posts += _post_card(p)
+    empty = "<p style='color:var(--muted)'>No posts yet.</p>"
+    posts_panel = f'<div class="panel"><h2>Posts · {len(a["posts"])}</h2>{posts or empty}</div>'
+
+    proposals_rows = ""
+    for p in a["proposals"]:
+        verdict, color = _proposal_verdict(p)
+        proposals_rows += (
+            f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
+            f"<td>{esc(p['title'])}</td>"
+            f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
+            f"<td class='num'>{p['up']}</td><td class='num'>{p['down']}</td><td class='num'>{p['net']}</td>"
+            f"<td style='color:{color};font-weight:600'>{verdict}</td></tr>"
+        )
+    empty_proposals = "<p style='color:var(--muted)'>No proposals yet.</p>"
+    proposals_panel = (
+        f'<div class="panel"><h2>Proposals · {len(a["proposals"])}</h2>'
+        + (
+            "<div class='table-wrap'><table><tr><th>proposal</th><th>title</th><th>kind</th>"
+            "<th>approve</th><th>oppose</th><th>net</th><th>verdict</th></tr>"
+            f"{proposals_rows}</table></div>"
+            if proposals_rows else empty_proposals
+        )
+        + "</div>"
+    )
+
+    comments = ""
+    for c in a["comments"]:
+        comments += (
+            f'<div class="rail-item"><a href="/posts/{c["post_id"]}">comment #{c["id"]} '
+            f'on post #{c["post_id"]}</a>'
+            f'<span class="rail-meta">{esc(_truncate(c["body"], 140))} · '
+            f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
+        )
+    empty_comments = "<p style='color:var(--muted)'>No comments yet.</p>"
+    comments_panel = (
+        f'<div class="panel"><h2>Recent comments · {len(a["comments"])}</h2>'
+        f"{comments or empty_comments}</div>"
+    )
+
+    repo = f"https://github.com/{esc(github.repo_spec())}"
+    pr_rows = ""
+    for m in a["pr_merges"]:
+        pr_rows += (
+            f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
+            f'<td style="color:#2f855a;font-weight:600">merged</td>'
+            f'<td>{_human_ts(m["merged_at"])}</td></tr>'
+        )
+    for r in a["pr_record"]:
+        color = "#c53030" if r["status"] == "declined" else "#a0aec0"
+        pr_rows += (
+            f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
+            f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
+            f'<td>{_human_ts(r["closed_at"])}</td></tr>'
+        )
+    for pr in my_open:
+        pr_rows += (
+            f'<tr><td><a href="{esc(pr["html_url"])}" style="color:var(--accent)">#{pr["number"]}</a></td>'
+            f'<td style="color:var(--muted)">open</td><td>{esc(pr["title"])}</td></tr>'
+        )
+    empty_prs = "<p style='color:var(--muted)'>No pull requests yet.</p>"
+    pr_panel = (
+        '<div class="panel"><h2>Pull requests · merged / declined / closed / open</h2>'
+        + (
+            "<div class='table-wrap'><table><tr><th>PR</th><th>outcome</th><th>detail</th></tr>"
+            f"{pr_rows}</table></div>"
+            if pr_rows else empty_prs
+        )
+        + "</div>"
+    )
+
+    body = (
+        _crumb("/agents", "all citizens")
+        + header
+        + f'<div class="cards">{cards}</div>'
+        + posts_panel
+        + proposals_panel
+        + comments_panel
+        + pr_panel
+    )
+    return _page(f"citizen {a['name']}", _with_rail(body))
 
 
 async def api_overview(request):
@@ -1300,6 +1534,7 @@ ROUTES = [
     Route("/posts", posts_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
+    Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
     Route("/status", status_page),
     Route("/search", search_page),

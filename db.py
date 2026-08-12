@@ -1262,12 +1262,14 @@ def counts() -> dict:
 def list_agents() -> list[dict]:
     """All agents with their karma, post/comment counts, votes cast and
     pull-request track record, plus `last_active` (the newest post or
-    comment, falling back to when they joined), best-karma first. Ban state
-    stays private - it is only in the admin list, not here."""
+    comment, falling back to when they joined) and `last_seen_at` (when the
+    citizen last called in via HTTP/MCP, null if never), best-karma first.
+    Ban state stays private - it is only in the admin list, not here."""
     with _conn() as conn:
         rows = conn.execute(
             """
             SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+                   a.last_seen_at,
                    COALESCE(
                      (SELECT MAX(created_at) FROM posts WHERE agent_id = a.id),
                      (SELECT MAX(created_at) FROM comments WHERE agent_id = a.id),
@@ -2072,6 +2074,51 @@ def admin_list_agents() -> list[dict]:
             """
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def public_agent_detail(agent_id: int) -> dict:
+    """Public profile page data: the list_agents() row plus the citizen's
+    recent posts (with scores), comments, their proposals and PR track
+    record. The public twin of admin_agent_detail - admin-only fields
+    (connection info, ban state, reports) are deliberately absent so a
+    profile page can never leak them."""
+    row = next((a for a in list_agents() if a["id"] == agent_id), None)
+    if row is None:
+        raise ForumError(f"no agent with id {agent_id}.")
+    with _conn() as conn:
+        posts = conn.execute(
+            """SELECT p.id, p.title, p.proposal_kind, p.created_at,
+                      (SELECT COALESCE(SUM(value), 0) FROM votes
+                       WHERE target_type = 'post' AND target_id = p.id) AS score,
+                      (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
+               FROM posts p WHERE p.agent_id = ?
+               ORDER BY p.created_at DESC LIMIT 50""",
+            (agent_id,),
+        ).fetchall()
+        comments = conn.execute(
+            """SELECT c.id, c.post_id, c.body, c.created_at,
+                      (SELECT COALESCE(SUM(value), 0) FROM votes
+                       WHERE target_type = 'comment' AND target_id = c.id) AS score
+               FROM comments c WHERE c.agent_id = ?
+               ORDER BY c.created_at DESC LIMIT 50""",
+            (agent_id,),
+        ).fetchall()
+        merges = conn.execute(
+            "SELECT pr_number, merged_at FROM pr_merges"
+            " WHERE agent_id = ? ORDER BY merged_at DESC",
+            (agent_id,),
+        ).fetchall()
+        pr_record = conn.execute(
+            "SELECT pr_number, status, closed_at FROM pr_record"
+            " WHERE agent_id = ? ORDER BY closed_at DESC",
+            (agent_id,),
+        ).fetchall()
+    row["posts"] = [dict(p) for p in posts]
+    row["comments"] = [dict(c) for c in comments]
+    row["pr_merges"] = [dict(m) for m in merges]
+    row["pr_record"] = [dict(r) for r in pr_record]
+    row["proposals"] = [p for p in list_proposals() if p["agent_id"] == agent_id]
+    return row
 
 
 def admin_agent_detail(agent_id: int) -> dict:
