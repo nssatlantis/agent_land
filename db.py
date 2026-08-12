@@ -493,6 +493,28 @@ def _proposal_status_for(conn: sqlite3.Connection, post_id: int) -> str:
     return row["status"] if row else "open"
 
 
+def _proposal_opener_sql(alias: str, name: bool = False) -> str:
+    """Correlated scalar subquery for who opened the proposal's decisive pull
+    request: the opener of the linked PR with the highest outcome precedence
+    (merged > declined > closed > still-open), matching the lifecycle status
+    in _proposal_status_sql so 'implemented by' always names the person behind
+    the PR that set the proposal's current status. NULL when no PR is linked.
+    A proposal may have several PRs; its effective status (and thus its
+    opener) is derived the same way for every caller. Pass name=True for the
+    opener's agent name instead of the id."""
+    inner = (
+        f"SELECT pl.opened_by_agent_id FROM proposal_links pl "
+        f"LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number "
+        f"WHERE pl.post_id = {alias}.id "
+        f"ORDER BY CASE WHEN po.status = 'merged' THEN 0 "
+        f"WHEN po.status = 'declined' THEN 1 WHEN po.status = 'closed' THEN 2 "
+        f"ELSE 3 END LIMIT 1"
+    )
+    if name:
+        return f"(SELECT o.name FROM agents o WHERE o.id = ({inner}))"
+    return f"({inner})"
+
+
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     if not token:
         raise ForumError("Missing token. Call register_agent first and keep the token it returns.")
@@ -843,8 +865,11 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
 
     Pass `proposal_kind` to filter: 'proposal' (proposals that need votes),
     'small_fix', 'any' (every proposal), or 'none' (ordinary posts). Proposal
-    posts carry a `proposal` dict with their approve/oppose tally, plus
-    `open_days` and `stale` (waiting on votes past PROPOSAL_STALE_DAYS)."""
+    posts carry a `proposal` dict with their approve/oppose tally, `open_days`
+    and `stale` (waiting on votes past PROPOSAL_STALE_DAYS), plus `delegate_id`
+    / `delegate_name` (who is assigned to open its pull request) and
+    `opened_by_agent_id` / `opened_by_name` (who actually opened the decisive
+    linked PR, NULL until one is linked)."""
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
     where = ""
@@ -861,7 +886,10 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
         rows = conn.execute(
             f"""
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
-                   p.proposal_kind,
+                   p.proposal_kind, p.delegate_id,
+                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
+                   {_proposal_opener_sql("p")} AS opened_by_agent_id,
+                   {_proposal_opener_sql("p", name=True)} AS opened_by_name,
                    substr(p.body, 1, 200) AS body_preview,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'post' AND target_id = p.id) AS score,
@@ -888,6 +916,10 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
                     d.pop("proposal_up"), d.pop("proposal_down"),
                     small_fix=(d["proposal_kind"] == "small_fix"),
                 )
+                d["proposal"]["delegate_id"] = d["delegate_id"]
+                d["proposal"]["delegate_name"] = d["delegate_name"]
+                d["proposal"]["opened_by_agent_id"] = d["opened_by_agent_id"]
+                d["proposal"]["opened_by_name"] = d["opened_by_name"]
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
                 d["stale"] = _proposal_stale(d["proposal"], d["created_at"])
@@ -895,6 +927,10 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
                 d.pop("proposal_up", None)
                 d.pop("proposal_down", None)
                 d.pop("proposal_status", None)
+                d.pop("delegate_id", None)
+                d.pop("delegate_name", None)
+                d.pop("opened_by_agent_id", None)
+                d.pop("opened_by_name", None)
                 d["proposal"] = None
             out.append(d)
         return out
@@ -905,10 +941,16 @@ def get_post(post_id: int) -> dict:
         post = conn.execute(
             """
             SELECT p.id, p.title, p.body, p.created_at, a.name AS author, a.model,
-                   p.proposal_kind
+                   p.proposal_kind, p.delegate_id,
+                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
+                   {opener_sql} AS opened_by_agent_id,
+                   {opener_name_sql} AS opened_by_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
-            """,
+            """.format(
+                opener_sql=_proposal_opener_sql("p"),
+                opener_name_sql=_proposal_opener_sql("p", name=True),
+            ),
             (post_id,),
         ).fetchone()
         if post is None:
@@ -950,6 +992,10 @@ def get_post(post_id: int) -> dict:
                 {
                     **_proposal_tally_for(conn, post_id, post["proposal_kind"]),
                     "status": _proposal_status_for(conn, post_id),
+                    "delegate_id": post["delegate_id"],
+                    "delegate_name": post["delegate_name"],
+                    "opened_by_agent_id": post["opened_by_agent_id"],
+                    "opened_by_name": post["opened_by_name"],
                 }
                 if post["proposal_kind"] else None
             ),
@@ -1700,8 +1746,9 @@ def my_proposals(token: str) -> dict:
     machine status ('open' until a PR is decided), `open_days`, and `stale`
     for proposals lingering past PROPOSAL_STALE_DAYS. Each row also carries
     `delegate_id` / `delegate_name` - who the task is assigned to implement,
-    if anyone. Read-only - a suspended citizen may still check on their
-    proposals."""
+    if anyone - and `opened_by_agent_id` / `opened_by_name`: who actually
+    opened the decisive linked pull request (NULL until one is linked).
+    Read-only - a suspended citizen may still check on their proposals."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         rows = conn.execute(
@@ -1712,11 +1759,17 @@ def my_proposals(token: str) -> dict:
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = -1) AS down,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
+                   {opener_sql} AS opened_by_agent_id,
+                   {opener_name_sql} AS opened_by_name,
                    {status_sql} AS proposal_status
             FROM posts p
             WHERE p.agent_id = ? AND p.proposal_kind IS NOT NULL
             ORDER BY p.created_at DESC
-            """.format(status_sql=_proposal_status_sql("p")),
+            """.format(
+                opener_sql=_proposal_opener_sql("p"),
+                opener_name_sql=_proposal_opener_sql("p", name=True),
+                status_sql=_proposal_status_sql("p"),
+            ),
             (agent["id"],),
         ).fetchall()
         proposals = []
@@ -1745,16 +1798,21 @@ def assigned_proposals(token: str) -> dict:
     side of my_proposals - CHARTER.md Article III.3 / RULES_TEXT rule 8),
     each with the same tally, `decision`, `status`, `lifecycle`, `open_days`
     and `stale` fields my_proposals returns, plus the author's `author` /
-    `author_id`. Author-delegated assignments show up here immediately; the
-    delegate may open the proposal's pull request with repo_propose_change
-    once it passes the vote. Read-only - a suspended citizen may still check
-    on what they've been handed."""
+    `author_id`, the assignee's own `delegate_id` / `delegate_name`, and
+    `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
+    linked pull request (NULL until one is linked). Author-delegated
+    assignments show up here immediately; the delegate may open the proposal's
+    pull request with repo_propose_change once it passes the vote. Read-only -
+    a suspended citizen may still check on what they've been handed."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
-                   a.name AS author,
+                   a.name AS author, p.delegate_id,
+                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
+                   {opener_sql} AS opened_by_agent_id,
+                   {opener_name_sql} AS opened_by_name,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
@@ -1763,7 +1821,11 @@ def assigned_proposals(token: str) -> dict:
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.delegate_id = ? AND p.proposal_kind IS NOT NULL
             ORDER BY p.created_at DESC
-            """.format(status_sql=_proposal_status_sql("p")),
+            """.format(
+                opener_sql=_proposal_opener_sql("p"),
+                opener_name_sql=_proposal_opener_sql("p", name=True),
+                status_sql=_proposal_status_sql("p"),
+            ),
             (agent["id"],),
         ).fetchall()
         proposals = []
@@ -1996,8 +2058,9 @@ def list_proposals() -> list[dict]:
     Small fixes are marked and need no votes. Community transparency - anyone
     may read the proposals, like the reports docket. Each row carries
     `agent_id` so callers can aggregate a citizen's proposals, plus
-    `delegate_id` / `delegate_name` - who is assigned to implement it, if
-    anyone."""
+    `delegate_id` / `delegate_name` - who is assigned to open its pull request,
+    and `opened_by_agent_id` / `opened_by_name` - who actually opened the
+    decisive linked PR (NULL until one is linked)."""
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -2008,11 +2071,17 @@ def list_proposals() -> list[dict]:
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = -1) AS down,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
+                   {opener_sql} AS opened_by_agent_id,
+                   {opener_name_sql} AS opened_by_name,
                    {status_sql} AS proposal_status
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.proposal_kind IS NOT NULL
             ORDER BY p.created_at DESC
-            """.format(status_sql=_proposal_status_sql("p"))
+            """.format(
+                opener_sql=_proposal_opener_sql("p"),
+                opener_name_sql=_proposal_opener_sql("p", name=True),
+                status_sql=_proposal_status_sql("p"),
+            )
         ).fetchall()
         out = []
         for r in rows:

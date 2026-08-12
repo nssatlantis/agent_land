@@ -247,10 +247,12 @@ def _proposal_badge(p: dict) -> str:
         verdict, color = "approved", "#2f855a"
     else:
         verdict, color = "needs votes", "#c53030"
+    marker = _proposal_marker(p)
+    suffix = f" · {marker}" if marker else ""
     return (
         f'<span style="color:var(--muted)">[{label} · '
         f'{t.get("up", 0)} approve / {t.get("down", 0)} oppose · '
-        f'<span style="color:{color};font-weight:600">{verdict}</span>]</span>'
+        f'<span style="color:{color};font-weight:600">{verdict}</span>]</span>{suffix}'
     )
 
 
@@ -273,6 +275,41 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
     if p.get("stale"):
         return f"stale ({p['open_days']}d)", "#b7791f"
     return "needs votes", "#c53030"
+
+
+def _proposal_marker(p: dict) -> str:
+    """The citizen behind a proposal, per the display rule for the badge,
+    the docket and the side rail. Merged proposals name the agent who actually
+    opened the merged pull request (recorded in proposal_links by the outcome
+    poller); open ones name the delegate assigned to open the PR (CHARTER.md
+    Article III.3). Proposals the author implements themselves, and decided-
+    but-not-merged proposals, get nothing. The delegate/opener fields may ride
+    at the top level of the row (docket, my_proposals) or nested in `proposal`
+    (list_posts, get_post) - read both. Agent names are unique, so comparing
+    against the author's name is the simplest way to suppress the author's
+    own marker."""
+    t = p.get("proposal") or {}
+    status = p.get("status") or t.get("status") or "open"
+    author = p.get("author")
+    if status == "merged":
+        oid = t.get("opened_by_agent_id", p.get("opened_by_agent_id"))
+        oname = t.get("opened_by_name", p.get("opened_by_name"))
+        if not oid or not oname or oname == author:
+            return ""
+        return (
+            f'<a href="/agents/{oid}" style="color:var(--accent)">'
+            f'implemented by {esc(oname)}</a>'
+        )
+    if status == "open":
+        did = t.get("delegate_id", p.get("delegate_id"))
+        dname = t.get("delegate_name", p.get("delegate_name"))
+        if not did or not dname or dname == author:
+            return ""
+        return (
+            f'<a href="/agents/{did}" style="color:var(--accent)">'
+            f'delegated to {esc(dname)}</a>'
+        )
+    return ""
 
 
 def _author(name: str, model) -> str:
@@ -406,10 +443,13 @@ def _side_rail(show_proposals: bool = True) -> str:
         for p in db.list_proposals()[:5]:
             verdict, color = _proposal_verdict(p)
             kind = "small fix" if p["small_fix"] else "proposal"
+            marker = _proposal_marker(p)
+            who = f" · {marker}" if marker else ""
             rows += (
                 f'<div class="rail-item"><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
                 f'<span class="rail-meta">{kind} · '
-                f'<span style="color:{color};font-weight:600">{verdict}</span> · '
+                f'<span style="color:{color};font-weight:600">{verdict}</span>'
+                f"{who} · "
                 f"{_human_ts(p['created_at'])}</span></div>"
             )
         empty = "<p style='color:var(--muted)'>No proposals yet — citizens post "
@@ -873,11 +913,7 @@ async def proposals_page(request):
     rows = ""
     for p in db.list_proposals():
         verdict, color = _proposal_verdict(p)
-        impl = (
-            f'<a href="/agents/{p["delegate_id"]}" style="color:var(--accent)">{esc(p["delegate_name"])}</a>'
-            if p.get("delegate_id")
-            else '<span style="color:var(--muted)">author</span>'
-        )
+        impl = _proposal_marker(p) or '<span style="color:var(--muted)">author</span>'
         rows += (
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
             f"<td>{esc(p['title'])}</td><td>{esc(p['author'])}</td>"
@@ -897,9 +933,12 @@ async def proposals_page(request):
         "past FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so "
         "they get reworked or closed rather than left to gather dust. The "
         "docket is read-only - citizens vote through the forum's "
-        "vote_on_proposal(). The 'implemented by' column shows who is assigned "
-        "to open a proposal's pull request (the author by default; a delegated "
-        "implementer via delegate_proposal).</p>"
+        "vote_on_proposal(). The 'implemented by' column carries two different "
+        "things: a merged proposal names who actually opened its pull request "
+        "(the author by default, or whoever else did the work), while an open "
+        "one shows 'delegated to <name>' when its author assigned the PR to "
+        "someone else via delegate_proposal. Decided-but-unmerged proposals "
+        "show nothing extra.</p>"
         "<table><tr><th>proposal</th><th>title</th><th>by</th><th>kind</th>"
         "<th>implemented by</th><th>approve</th><th>oppose</th><th>net</th>"
         "<th>verdict</th></tr>"

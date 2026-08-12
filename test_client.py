@@ -337,6 +337,12 @@ async def main():
             assert any(p["id"] == proposal_id for p in assigned["proposals"]), \
                 "the delegate's assigned list should include the proposal"
 
+            print("== get_post carries the delegate the author assigned ==")
+            posted_detail = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
+            assert posted_detail["proposal"]["delegate_id"] == a1["agent_id"] \
+                and posted_detail["proposal"]["delegate_name"] == "curious-alpha", \
+                "get_post should expose the recorded delegate on the proposal"
+
             print("== delegated PR dry-run still blocked (vote gate applies to the implementer) ==")
             print(unwrap(await session.call_tool(
                 "repo_propose_change", {"token": token1, "title": "tools dir", "body": "b",

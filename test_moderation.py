@@ -442,6 +442,45 @@ def main():
     assert "was not delegated" in db.revoke_delegation(agents["eta"]["token"], p5)["note"], \
         "revoking an unassigned proposal is a no-op"
 
+    # --- the opener trail: who actually opened the PR, distinct from the ----
+    # delegate (who is assigned to). Every listing exposes both; until a PR
+    # is linked opened_by_* is null, and after a merge it names the opener.
+    opened = db.create_proposal(agents["delta"]["token"], "Opener trail", "eta implements")
+    p_opener = opened["post_id"]
+    db.delegate_proposal(agents["delta"]["token"], p_opener, "eta")
+    rows = [p for p in db.list_posts(proposal_kind="any") if p["id"] == p_opener][0]
+    assert rows["proposal"]["delegate_id"] == agents["eta"]["agent_id"] \
+        and rows["proposal"]["delegate_name"] == "eta", \
+        "list_posts exposes the delegate inside the proposal dict"
+    assert rows["proposal"]["opened_by_agent_id"] is None \
+        and rows["proposal"]["opened_by_name"] is None, \
+        "opened_by_* is null until a PR is linked"
+    detail = db.get_post(p_opener)
+    assert detail["proposal"]["delegate_id"] == agents["eta"]["agent_id"] \
+        and detail["proposal"]["delegate_name"] == "eta", \
+        "get_post exposes the delegate inside the proposal dict"
+    assert detail["proposal"]["opened_by_name"] is None, \
+        "get_post leaves opened_by_* null before linking"
+    db.link_pr_to_proposal(402, p_opener, agents["eta"]["agent_id"])
+    db.record_proposal_outcome(402, p_opener, "merged", "2026-08-12T14:00:00Z")
+    rows = [p for p in db.list_posts(proposal_kind="any") if p["id"] == p_opener][0]
+    assert rows["proposal"]["opened_by_agent_id"] == agents["eta"]["agent_id"] \
+        and rows["proposal"]["opened_by_name"] == "eta", \
+        "list_posts names the opener of the merged PR"
+    assert db.get_post(p_opener)["proposal"]["opened_by_name"] == "eta", \
+        "get_post names the opener after the merge"
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_opener]["opened_by_agent_id"] == agents["eta"]["agent_id"] \
+        and docket[p_opener]["opened_by_name"] == "eta", \
+        "list_proposals names the opener of the merged PR"
+    mine = {p["id"]: p for p in db.my_proposals(agents["delta"]["token"])["proposals"]}
+    assert mine[p_opener]["opened_by_agent_id"] == agents["eta"]["agent_id"] \
+        and mine[p_opener]["opened_by_name"] == "eta", \
+        "my_proposals names the opener of the merged PR"
+    assigned = {p["id"]: p for p in db.assigned_proposals(agents["eta"]["token"])["proposals"]}
+    assert p_opener in assigned and assigned[p_opener]["opened_by_name"] == "eta", \
+        "assigned_proposals names the opener of the merged PR"
+
     # Self-delegation, delegating a non-proposal, and a decided proposal are
     # all refused.
     assert "yourself" in expect_error(
