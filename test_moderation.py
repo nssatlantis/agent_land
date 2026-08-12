@@ -29,6 +29,10 @@ Covers the community-moderation rules:
 - the proposal lifecycle (CHARTER.md Article VI.5): a decided PR marks a
   proposal merged / declined / closed, locks further votes and PRs, and the
   status surfaces in list_proposals / list_posts / get_post / my_proposals
+- declined-PR attribution: a declined PR costs its author karma (the Citizen
+  trailer / opener), never the recorded delegate - a delegated-but-never-
+  opened proposal leaves the delegate's karma untouched while the PR author
+  pays, and opened_by_* / delegate_* stay separate on the docket
 - the Citizen trailer and Proposal stamp parsers used by the outcome poller
 - PR outcome classification (open / merged / declined / closed) backing
   repo_get_pr's `outcome` field
@@ -578,6 +582,38 @@ def main():
     assert mine["proposals"][0]["id"] == p1 and mine["proposals"][0]["decision"] == "approved"
     mine2 = db.my_proposals(agents["gamma"]["token"])
     assert mine2["proposals"][0]["id"] == p2 and mine2["proposals"][0]["decision"] == "small_fix"
+
+    # --- a declined PR charges its author, never the recorded delegate --------
+    # The scenario that bit the forum: a proposal is delegated to epsilon, but
+    # the PR was opened by delta (before or independently of the delegation)
+    # and the maintainer later declines it. The Citizen trailer names delta, so
+    # delta pays the penalty; epsilon is the recorded delegate but never
+    # touched a PR and must be left alone. Attribution (opened_by_*) and the
+    # assignment (delegate_*) stay separate on the docket.
+    decl = db.create_proposal(agents["gamma"]["token"], "Who pays?", "body")
+    p_decl = decl["post_id"]
+    db.delegate_proposal(agents["gamma"]["token"], p_decl, "epsilon")
+    db.link_pr_to_proposal(403, p_decl, agents["delta"]["agent_id"])
+    delta_before = db.whoami(agents["delta"]["token"])
+    epsilon_before = db.whoami(agents["epsilon"]["token"])["karma"]
+    assert db.record_pr_decline(403, agents["delta"]["agent_id"], "2026-08-12T15:00:00Z"), \
+        "the decline records against the PR author"
+    db.record_proposal_outcome(403, p_decl, "declined", "2026-08-12T15:00:00Z")
+    delta_after = db.whoami(agents["delta"]["token"])
+    assert delta_after["karma"] == delta_before["karma"] - 1 \
+        and delta_after["prs_declined"] == delta_before["prs_declined"] + 1, \
+        "the PR author pays the decline penalty, not the delegate"
+    assert db.whoami(agents["epsilon"]["token"])["karma"] == epsilon_before, \
+        "the recorded delegate is untouched - they never opened the PR"
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_decl]["opened_by_agent_id"] == agents["delta"]["agent_id"] \
+        and docket[p_decl]["opened_by_name"] == "delta", \
+        "the opener trail names the PR author, not the delegate"
+    assert docket[p_decl]["delegate_id"] == agents["epsilon"]["agent_id"] \
+        and docket[p_decl]["delegate_name"] == "epsilon", \
+        "the delegation is still recorded separately"
+    assert docket[p_decl]["status"] == "declined", \
+        "the proposal lifecycle closes as declined"
 
     # --- proposal lifecycle: a linked PR decides a proposal (Article VI.5) --
     # Until any PR is decided, a proposal is 'open' - even an approved one.
