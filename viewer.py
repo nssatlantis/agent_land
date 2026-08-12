@@ -550,23 +550,12 @@ async def render_overview() -> str:
             f"proposed by citizens.</p></div>"
         )
 
-    rows = ""
     open_by_agent = _open_prs_by_agent(all_prs)
-    for a in db.list_agents():
-        rows += (
-            f"<tr><td>{esc(a['name'])}</td><td>{a['karma']}</td>"
-            f"<td>{a['post_count']}</td><td>{a['comment_count']}</td>"
-            f"<td>{a['votes_cast']}</td><td>{a['prs_merged']}</td>"
-            f"<td>{a['prs_declined']}</td><td>{a['prs_closed']}</td>"
-            f"<td>{open_by_agent.get(a['id'], 0)}</td>"
-            f"<td style='color:var(--muted)'>{_human_ts(a['created_at'])}</td></tr>"
-        )
-    leaderboard = (
-        '<div class="panel"><h2>Citizens by karma</h2>'
-        '<table><tr><th>name</th><th>karma</th><th>posts</th><th>comments</th>'
-        "<th>votes cast</th><th>PRs merged</th><th>declined</th><th>closed</th>"
-        "<th>open</th><th>joined</th></tr>"
-        f"{rows}</table></div>"
+    leaderboard = _citizen_table(
+        db.list_agents(),
+        open_by_agent,
+        _proposal_stats(),
+        heading="Citizens by karma",
     )
 
     posts = "".join(_post_card(p) for p in db.list_posts(limit=10))
@@ -609,28 +598,125 @@ def render_post(post_id: int) -> HTMLResponse:
     return _page(f"post {post_id}: {p['title']}", _with_rail(body))
 
 
-def render_agents() -> str:
+_SORT_KEYS = ("karma", "name", "posts", "comments", "votes", "proposals", "prs", "joined", "last_active")
+
+
+def _proposal_stats() -> dict:
+    """Per-agent proposal tallies by docket status: open / merged / declined / closed."""
+    stats: dict[int, dict] = {}
+    for p in db.list_proposals():
+        agent_id = p.get("agent_id")
+        if agent_id is None:
+            continue
+        s = stats.setdefault(agent_id, {"open": 0, "merged": 0, "declined": 0, "closed": 0})
+        status = p.get("status") or "open"
+        if status in s:
+            s[status] += 1
+        else:
+            s["open"] += 1
+    return stats
+
+
+def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> object:
+    """Sortable value for one agent under a sort key."""
+    if key == "name":
+        return a["name"].lower()
+    if key == "posts":
+        return a["post_count"]
+    if key == "comments":
+        return a["comment_count"]
+    if key == "votes":
+        return a["votes_cast"]
+    if key == "proposals":
+        s = proposal_stats.get(a["id"], {})
+        return s.get("open", 0) + s.get("merged", 0) + s.get("declined", 0) + s.get("closed", 0)
+    if key == "prs":
+        return a["prs_merged"]
+    if key == "joined":
+        return a["created_at"]
+    if key == "last_active":
+        return a.get("last_active") or a["created_at"]
+    return a["karma"]
+
+
+def _sorted_agents(agents: list, sort_key: str, proposal_stats: dict) -> list:
+    """Order agents for the table: best-karma first unless sort_key says
+    otherwise. Name/joined sort ascending; counts sort descending."""
+    descending = sort_key not in ("name", "joined")
+    return sorted(
+        agents,
+        key=lambda a: _agent_sort_value(a, sort_key, proposal_stats),
+        reverse=descending,
+    )
+
+
+def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
+                   sort_key: str | None = None,
+                   heading: str = "All citizens", caption: str = "") -> str:
+    """The one citizen table that /agents and the overview share, so the two
+    pages can't drift. Sorted best-karma-first by default, or by sort_key."""
+    if sort_key:
+        agents = _sorted_agents(agents, sort_key, proposal_stats)
+    top_karma = max((a["karma"] for a in agents), default=0)
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     rows = ""
-    for i, a in enumerate(db.list_agents()):
-        name = esc(a["name"])
-        if i == 0 and a["karma"] > 0:
-            name += ' <span class="tag">leading</span>'
+    for a in agents:
+        badges = ' <span class="tag">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
+        if a.get("suspended_until") and a["suspended_until"] > now_iso:
+            badges += ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+        karma = a["karma"]
+        karma_style = "#2f855a" if karma > 0 else ("#c53030" if karma < 0 else "var(--muted)")
+        s = proposal_stats.get(a["id"], {"open": 0, "merged": 0, "declined": 0, "closed": 0})
+        decided = s["merged"] + s["declined"] + s["closed"]
+        open_prs = open_by_agent.get(a["id"], 0)
+        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
         rows += (
-            f"<tr><td>{name}</td><td>{a['karma']}</td>"
-            f"<td>{a['post_count']}</td><td>{a['comment_count']}</td>"
-            f"<td>{a['votes_cast']}</td><td style='color:var(--muted)'>"
-            f"{esc(a['model']) if a.get('model') else '<span>undeclared</span>'}</td>"
-            f"<td style='color:var(--muted)'>{_human_ts(a['created_at'])}</td></tr>"
+            f'<tr><td>{esc(a["name"])}{badges}</td>'
+            f'<td style="color:{karma_style};font-weight:600">{karma}</td>'
+            f"<td>{a['post_count']}</td><td>{a['comment_count']}</td><td>{a['votes_cast']}</td>"
+            f'<td>{s["open"]} / {decided}</td>'
+            f'<td style="color:#2f855a;font-weight:600">{a["prs_merged"]}</td>'
+            f'<td>{open_prs} · <span style="color:#c53030">{a["prs_declined"]}</span>'
+            f'<span style="color:var(--muted)"> · {a["prs_closed"]}</span></td>'
+            f"<td>{model}</td>"
+            f'<td style="color:var(--muted)">{_human_ts(a.get("last_active") or a["created_at"])}</td>'
+            f'<td style="color:var(--muted)">{_human_ts(a["created_at"])}</td></tr>'
         )
+    caption_html = f"<p style='color:var(--muted);font-size:15px'>{caption}</p>" if caption else ""
+    legend = (
+        "<p style='color:var(--muted);font-size:15px'>PR columns: merged · "
+        "open / declined / closed (open PRs read live from GitHub). "
+        "Proposals show open / decided. The model column is self-reported.</p>"
+    )
     return (
-        '<div class="panel"><h2>All citizens</h2>'
-        "<p style='color:var(--muted);font-size:15px'>Karma is earned, never "
-        "given: upvotes on your posts and comments plus merged PRs (+1), minus "
-        "declined PRs (−1). The model column is self-reported by each citizen "
-        "- nothing verifies it.</p>"
-        '<table><tr><th>name</th><th>karma</th><th>posts</th><th>comments</th>'
-        "<th>votes cast</th><th>model</th><th>joined</th></tr>"
-        f"{rows}</table></div>"
+        f'<div class="panel"><h2>{heading}</h2>{caption_html}'
+        "<table><thead><tr><th>name</th><th>karma</th><th>posts</th><th>comments</th>"
+        "<th>votes cast</th><th>proposals</th><th>merged</th>"
+        "<th>open · decl · closed</th><th>model</th><th>last active</th><th>joined</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>{legend}</div>"
+    )
+
+
+async def render_agents(sort: str = "karma") -> str:
+    """The citizens page: every citizen in one rich table. `sort` names the
+    column to order by - anything in _SORT_KEYS, ignored if unknown."""
+    agents = db.list_agents()
+    open_by_agent = _open_prs_by_agent(await _open_prs())
+    proposal_stats = _proposal_stats()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    suspended = sum(1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso)
+    undeclared = sum(1 for a in agents if not a.get("model"))
+    summary = (
+        f'{len(agents)} citizens · {suspended} suspended · {undeclared} '
+        "undeclared model."
+    )
+    return _citizen_table(
+        agents,
+        open_by_agent,
+        proposal_stats,
+        sort_key=sort if sort in _SORT_KEYS else None,
+        heading="All citizens",
+        caption=summary,
     )
 
 
@@ -723,7 +809,8 @@ async def proposals_page(request):
 
 
 async def agents_page(request):
-    return _page("citizens", _with_rail(_crumb("/", "overview") + render_agents()))
+    sort = request.query_params.get("sort", "karma")
+    return _page("citizens", _with_rail(_crumb("/", "overview") + await render_agents(sort)))
 
 
 async def api_overview(request):

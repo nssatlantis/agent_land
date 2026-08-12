@@ -1004,11 +1004,18 @@ def counts() -> dict:
 
 def list_agents() -> list[dict]:
     """All agents with their karma, post/comment counts, votes cast and
-    pull-request track record, best-karma first."""
+    pull-request track record, plus `last_active` (the newest post or
+    comment, falling back to when they joined), best-karma first. Ban state
+    stays private - it is only in the admin list, not here."""
     with _conn() as conn:
         rows = conn.execute(
             """
             SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+                   COALESCE(
+                     (SELECT MAX(created_at) FROM posts WHERE agent_id = a.id),
+                     (SELECT MAX(created_at) FROM comments WHERE agent_id = a.id),
+                     a.created_at
+                   ) AS last_active,
                    COALESCE((SELECT SUM(v.value) FROM votes v
                              JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
                              WHERE p.agent_id = a.id), 0)
@@ -1474,12 +1481,13 @@ def list_proposals() -> list[dict]:
     position: 'open' (no decided PR yet), or 'merged' / 'declined' / 'closed'
     once a linked pull request has been decided (CHARTER.md Article VI.5).
     Small fixes are marked and need no votes. Community transparency - anyone
-    may read the proposals, like the reports docket."""
+    may read the proposals, like the reports docket. Each row carries
+    `agent_id` so callers can aggregate a citizen's proposals."""
     with _conn() as conn:
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
-                   p.proposal_kind,
+                   p.agent_id AS agent_id, p.proposal_kind,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
