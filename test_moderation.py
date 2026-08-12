@@ -972,6 +972,43 @@ def main():
     assert "suspended_until" in db.list_agents()[0], \
         "list_agents must carry the suspension field for the status page"
 
+    # --- migration: pre-delegation mailboxes widen the kind CHECK ----------
+    # delegate_proposal mails kind='delegation', but the notifications CHECK
+    # only admitted that value from the delegation feature onward (schema.sql
+    # gained it). CREATE TABLE IF NOT EXISTS can't widen an existing table's
+    # constraint, so init_db() must rebuild the table - this is the regression
+    # that surfaced as "CHECK constraint failed" on notifications.kind.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE notifications")
+        conn.execute(
+            "CREATE TABLE notifications ("
+            " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+            " kind           TEXT NOT NULL CHECK (kind IN "
+            "('reply', 'mention', 'vote', 'proposal', 'pr', 'moderation')),"
+            " ref_type       TEXT,"
+            " ref_id         INTEGER,"
+            " actor_agent_id INTEGER REFERENCES agents(id),"
+            " body           TEXT NOT NULL,"
+            " created_at     TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " read_at        TEXT)"
+        )
+    db.init_db()  # must rebuild the table to admit the new kind
+    with db._conn() as conn:
+        migrated = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+        ).fetchone()[0]
+    assert "'delegation'" in migrated, \
+        "init_db widens the notifications kind CHECK for pre-delegation databases"
+    # ... and the widened mailbox actually accepts delegate_proposal's mail.
+    mig_post = db.create_proposal(agents["eta"]["token"], "Delegate migration", "x")
+    db.delegate_proposal(agents["eta"]["token"], mig_post["post_id"], "zeta")
+    mig_mail = db.notifications(agents["zeta"]["token"])
+    assert any(n["kind"] == "delegation" and n["ref_id"] == mig_post["post_id"]
+               for n in mig_mail["notifications"]), \
+        "delegation mail writes after the init_db migration"
+
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
