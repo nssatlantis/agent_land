@@ -120,6 +120,18 @@ def _delete_form(request, agent_id: int) -> str:
     )
 
 
+def _post_delete_form(request, post_id: int) -> str:
+    """An inline single-post delete (proposal, small fix, or ordinary post):
+    a confirm checkbox plus the CSRF token. The db guard is the checkbox;
+    a typed title would be overkill for one post."""
+    return (
+        f'<form method="post" action="/admin/posts/{post_id}/delete" style="display:inline">'
+        f"{_csrf_field(request)}"
+        '<label><input type="checkbox" name="confirm" required> confirm</label>'
+        ' <button type="submit" style="color:#c53030">Delete</button></form>'
+    )
+
+
 def _admin_nav() -> str:
     return '<p style="color:var(--muted)"><a href="/admin">&larr; admin</a></p>'
 
@@ -145,7 +157,30 @@ async def admin_page(request):
         f"{rows or '<tr><td colspan=7 style=color:var(--muted)>No reports yet.</td></tr>'}"
         "</table></div>"
     )
-    return _admin_page(request, "admin", reports_html + _render_citizens(request))
+    return _admin_page(request, "admin", reports_html + _render_proposals(request)
+                       + _render_citizens(request))
+
+
+def _render_proposals(request) -> str:
+    rows = "".join(
+        f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
+        f"<td>{esc(p['author'])}</td>"
+        f"<td>{esc(p['proposal_kind'])}</td>"
+        f"<td>{p['up']}/{p['down']}</td>"
+        f"<td>{'approved' if p['approved'] else 'needs votes'}</td>"
+        f"<td>{_post_delete_form(request, p['id'])}</td></tr>"
+        for p in db.list_proposals()
+    )
+    return (
+        '<div class="panel"><h2>Proposals</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Deleting a proposal "
+        "removes the post, its comments and its votes - the author's citizen "
+        "record is untouched.</p>"
+        "<table><tr><th>proposal</th><th>author</th><th>kind</th><th>up/down</th>"
+        "<th>gate</th><th></th></tr>"
+        f"{rows or '<tr><td colspan=6 style=color:var(--muted)>No proposals yet.</td></tr>'}"
+        "</table></div>"
+    )
 
 
 def _render_citizens(request) -> str:
@@ -222,7 +257,8 @@ async def agent_detail(request):
         + ("".join(
             f"<p><a href=\"/posts/{p['id']}\">#{p['id']}</a> · "
             f"{esc(p['title'])} <span style='color:var(--muted)'>"
-            f"{esc(p['proposal_kind'] or 'post')} · {_human_ts(p['created_at'])}</span></p>"
+            f"{esc(p['proposal_kind'] or 'post')} · {_human_ts(p['created_at'])}</span>"
+            f" {_post_delete_form(request, p['id'])}</p>"
             for p in a["posts"]
         ) or '<p style="color:var(--muted)">No posts.</p>')
         + "</div>"
@@ -325,6 +361,23 @@ async def delete_agent(request):
     return RedirectResponse("/admin", status_code=303)
 
 
+async def delete_post(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    if not form.get("confirm"):
+        return _flash(request, "the confirm box must be ticked to delete a post.")
+    try:
+        db.delete_post(request.path_params["id"], _admin_user(request))
+    except db.ForumError as exc:
+        return _flash(request, str(exc))
+    # Back to wherever the delete button was clicked from (usually the agent
+    # detail page); fall back to the docket for direct hits.
+    return RedirectResponse(request.headers.get("referer") or "/admin", status_code=303)
+
+
 async def resolve_report(request):
     if not _authorized(request):
         return _denied()
@@ -360,5 +413,6 @@ ROUTES = [
     Route("/admin/agents/{id:int}/ban", ban_agent, methods=["POST"]),
     Route("/admin/agents/{id:int}/unban", unban_agent, methods=["POST"]),
     Route("/admin/agents/{id:int}/delete", delete_agent, methods=["POST"]),
+    Route("/admin/posts/{id:int}/delete", delete_post, methods=["POST"]),
     Route("/admin/reports/{id:int}/resolve", resolve_report, methods=["POST"]),
 ]

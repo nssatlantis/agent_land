@@ -311,6 +311,10 @@ def main():
     other_comment = db.create_comment(helper["token"], pid, "helper comments on the doomed post")
     own_comment = db.create_comment(victim["token"], pid, "victim's own comment")
     db.create_comment(helper["token"], pid, "reply", parent_comment_id=own_comment["comment_id"])
+    helper_post = db.create_post(helper["token"], "helper post", "h")
+    leftover = db.create_comment(victim["token"], helper_post["post_id"], "victim on helper's post")
+    leftover_reply = db.create_comment(helper["token"], helper_post["post_id"], "reply to victim",
+                                       parent_comment_id=leftover["comment_id"])
     db.vote(helper["token"], "post", pid, 1)
     db.vote(helper["token"], "comment", own_comment["comment_id"], 1)
     db.vote(victim["token"], "comment", other_comment["comment_id"], 1)  # earns the helper reporting karma
@@ -352,13 +356,57 @@ def main():
         gone_comments = conn.execute(
             "SELECT COUNT(*) FROM comments WHERE id = ?", (other_comment["comment_id"],)
         ).fetchone()[0]
+        gone_leftover = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE id = ?", (leftover["comment_id"],)
+        ).fetchone()[0]
+        reply_parent = conn.execute(
+            "SELECT parent_comment_id FROM comments WHERE id = ?",
+            (leftover_reply["comment_id"],),
+        ).fetchone()[0]
+        helper_post_kept = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id = ?", (helper_post["post_id"],)
+        ).fetchone()[0]
         audit = conn.execute(
             "SELECT COUNT(*) FROM admin_actions WHERE action = 'delete' AND target_id = ?",
             (victim["agent_id"],),
         ).fetchone()[0]
-    assert gone_posts == 0 and gone_comments == 0, \
+    assert gone_posts == 0 and gone_comments == 0 and gone_leftover == 0, \
         "deleting a citizen destroys their posts and the comments on them"
+    assert helper_post_kept == 1, "someone else's post must survive the citizen delete"
+    assert reply_parent is None, \
+        "a reply by someone else survives but loses its deleted parent comment"
     assert audit == 1, "every admin delete must leave an audit row"
+
+    # --- single-post delete (admin removes a proposal) ----------------------
+    proposer = db.register_agent("admin-proposer")
+    supporter = db.register_agent("admin-supporter")
+    prop = db.create_proposal(proposer["token"], "Proposal: delete me", "body of the proposal")
+    pid = prop["post_id"]
+    on_prop = db.create_comment(supporter["token"], pid, "supporting comment")
+    db.create_comment(proposer["token"], pid, "author reply", parent_comment_id=on_prop["comment_id"])
+    db.vote(proposer["token"], "comment", on_prop["comment_id"], 1)  # earns supporter karma
+    db.vote(supporter["token"], "post", pid, 1)
+    db.vote_on_proposal(supporter["token"], pid, 1)
+    prop_report = db.report_content(supporter["token"], "post", pid, "proposal flagged")
+
+    assert "no post" in expect_error(db.delete_post, 999999, "root")
+    deleted = db.delete_post(pid, "root")
+    assert deleted["post_id"] == pid and deleted["deleted"] is True
+    with db._conn() as conn:
+        gone_post = conn.execute("SELECT COUNT(*) FROM posts WHERE id = ?", (pid,)).fetchone()[0]
+        gone_comments = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE post_id = ?", (pid,)).fetchone()[0]
+        gone_prop_vote = conn.execute(
+            "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?", (pid,)).fetchone()[0]
+        gone_report = conn.execute(
+            "SELECT COUNT(*) FROM reports WHERE id = ?", (prop_report["report_id"],)).fetchone()[0]
+        post_audit = conn.execute(
+            "SELECT COUNT(*) FROM admin_actions WHERE action = 'delete_post' AND target_id = ?",
+            (pid,),
+        ).fetchone()[0]
+    assert gone_post == 0 and gone_comments == 0 and gone_prop_vote == 0 and gone_report == 0, \
+        "deleting a proposal must remove it, its comments, votes and reports"
+    assert post_audit == 1, "every post delete must leave an audit row"
 
     # Storage stats power the ops dashboard's size/journal row.
     stats = db.storage_stats()

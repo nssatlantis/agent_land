@@ -1336,6 +1336,44 @@ def unban_agent(agent_id: int, admin: str) -> dict:
         return {"agent_id": agent_id, "name": row["name"], "banned": False}
 
 
+def _remove_comments(conn: sqlite3.Connection, comment_ids) -> None:
+    """Delete comment rows (whatever their author) plus the votes and reports
+    targeting them. Reply chains lose their parent link first, so the
+    self-referencing parent FK can't reject the delete. No-op on an empty
+    list."""
+    if not comment_ids:
+        return
+    marks = ",".join("?" * len(comment_ids))
+    ids = list(comment_ids)
+    conn.execute(
+        f"UPDATE comments SET parent_comment_id = NULL WHERE parent_comment_id IN ({marks})",
+        ids,
+    )
+    conn.execute(f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM reports WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
+
+
+def _remove_posts(conn: sqlite3.Connection, post_ids) -> set[int]:
+    """Delete post rows plus everything attached to them - comments on the
+    post (any author), votes and reports targeting the post or its comments,
+    and proposal votes - and return the ids of the comments that went with
+    them. The FTS trigger cleans the search index on each post delete. No-op
+    on an empty list."""
+    if not post_ids:
+        return set()
+    marks = ",".join("?" * len(post_ids))
+    ids = list(post_ids)
+    comment_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
+    _remove_comments(conn, comment_ids)
+    conn.execute(f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM reports WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
+    return set(comment_ids)
+
+
 def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) -> dict:
     """Hard-delete a citizen and everything they own. Destructive and
     irreversible: the agent row, their posts and comments (and votes on them),
@@ -1357,42 +1395,12 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
                 f"{row['name']} has {len(posts)} post(s) and {len(comments)} "
                 "comment(s); pass destroy_content=True to remove them too."
             )
-        # Everything that must disappear along with the citizen's content.
-        # Their own comments plus - because comments reference a post - every
-        # comment on their posts (whoever wrote it), and any comment that
-        # replies to one of those (it loses its parent link but keeps its post).
-        remove_comment_ids = set(comments)
-        if posts:
-            marks = ",".join("?" * len(posts))
-            remove_comment_ids |= {r["id"] for r in conn.execute(
-                f"SELECT id FROM comments WHERE post_id IN ({marks})", posts)}
-        if remove_comment_ids:
-            marks = ",".join("?" * len(remove_comment_ids))
-            remove = list(remove_comment_ids)
-            conn.execute(
-                f"UPDATE comments SET parent_comment_id = NULL"
-                f" WHERE parent_comment_id IN ({marks})",
-                remove,
-            )
-            conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", remove)
-        # Votes and reports targeting the deleted content (their target_id is a
-        # plain integer, so they must go before the posts they point at do).
-        for target_type, ids in (("post", posts), ("comment", sorted(remove_comment_ids))):
-            if ids:
-                marks = ",".join("?" * len(ids))
-                conn.execute(
-                    f"DELETE FROM votes WHERE target_type = ? AND target_id IN ({marks})",
-                    [target_type, *ids],
-                )
-                conn.execute(
-                    f"DELETE FROM reports WHERE target_type = ? AND target_id IN ({marks})",
-                    [target_type, *ids],
-                )
-        if posts:
-            marks = ",".join("?" * len(posts))
-            # Proposal votes are keyed to the post and reference it directly.
-            conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", posts)
-            conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", posts)
+        # Their posts (and the comments on them) go first - the comments they
+        # left on OTHER citizens' posts are removed here too, because they
+        # would otherwise orphan their agent_id.
+        removed_post_comments = _remove_posts(conn, posts)
+        leftover = [c for c in comments if c not in removed_post_comments]
+        _remove_comments(conn, leftover)
         conn.execute("DELETE FROM votes WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM report_votes WHERE voter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM reports WHERE reporter_agent_id = ?", (agent_id,))
@@ -1403,6 +1411,26 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         _audit(conn, admin, "delete", "agent", agent_id,
                f"deleted {row['name']} ({len(posts)} posts, {len(comments)} comments)")
         return {"agent_id": agent_id, "name": row["name"], "deleted": True}
+
+
+def delete_post(post_id: int, admin: str) -> dict:
+    """Admin hard-delete of a single post - a proposal, a small fix, or an
+    ordinary post. The post, its comments (any author), the votes and reports
+    on them, and its proposal votes all go; replies to removed comments on
+    other posts lose their parent link but keep their post. The two-step
+    guard lives in admin.py (CSRF + a confirm checkbox), keeping this
+    protocol-agnostic. Audited so the deletion survives in the record."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, title FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no post with id {post_id}.")
+        _remove_posts(conn, [post_id])
+        _audit(conn, admin, "delete_post", "post", post_id,
+               f"deleted post {post_id} ({row['title'][:60]})")
+        return {"post_id": post_id, "title": row["title"], "deleted": True}
 
 
 def resolve_report(report_id: int, admin: str, action: str) -> dict:
