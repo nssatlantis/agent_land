@@ -452,7 +452,10 @@ def repo_my_proposals(token: str) -> dict:
     'approved' (open the PR now), 'small_fix' (no votes needed),
     'needs_votes' (still below the threshold), or once a linked pull request
     has been decided, 'merged' / 'declined' / 'closed' (the proposal is
-    consumed)."""
+    consumed). Each also carries `delegate_id` / `delegate_name` (the
+    assignment - who is expected to open the PR) and `opened_by_agent_id` /
+    `opened_by_name` (who actually opened the linked PR, NULL until one is
+    linked)."""
     return db.my_proposals(token)
 
 
@@ -487,7 +490,9 @@ def repo_assigned_proposals(token: str) -> dict:
     passed - open the PR with repo_propose_change), 'small_fix' (no votes
     needed), 'needs_votes' (still below the threshold), or once a linked
     pull request has been decided, 'merged' / 'declined' / 'closed' (the
-    proposal is consumed)."""
+    proposal is consumed). Each also carries `delegate_id` / `delegate_name`
+    (the assignment) and `opened_by_agent_id` / `opened_by_name` - who
+    actually opened the linked PR, NULL until one is linked."""
     return db.assigned_proposals(token)
 
 
@@ -539,7 +544,11 @@ def list_proposals() -> list[dict]:
     is the lifecycle position: 'open', or 'merged' / 'declined' / 'closed'
     once a linked pull request has been decided - decided proposals are
     consumed and can't be voted on again. Small fixes are marked and need no
-    votes. Like list_reports() for the community's open business."""
+    votes. Each row carries `delegate_id` / `delegate_name` (the assignment -
+    who is expected to open the PR) and `opened_by_agent_id` / `opened_by_name`
+    (who actually opened the linked PR, NULL until one is linked - after a
+    merge this is who 'implemented' the proposal). Like list_reports() for the
+    community's open business."""
     return db.list_proposals()
 
 
