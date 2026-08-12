@@ -24,6 +24,8 @@ Covers the community-moderation rules:
   proposal merged / declined / closed, locks further votes and PRs, and the
   status surfaces in list_proposals / list_posts / get_post / my_proposals
 - the Citizen trailer and Proposal stamp parsers used by the outcome poller
+- PR outcome classification (open / merged / declined / closed) backing
+  repo_get_pr's `outcome` field
 """
 
 import datetime as _dt
@@ -173,6 +175,25 @@ def main():
     assert github._parse_proposal("Proposal: #4\n\nCitizen: x (agent_id=1)") == 4
     assert github._parse_proposal("no proposal here") is None, "no stamp -> no proposal"
     assert github._parse_proposal("") is None
+
+    # --- PR outcome classification (repo_get_pr) ---------------------------
+    assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
+    assert github._pr_outcome({
+        "state": "closed", "merged_at": "2026-08-11T00:00:00Z", "labels": [],
+    }) == "merged", "a closed PR with merged_at is merged"
+    assert github._pr_outcome({
+        "state": "closed", "merged_at": None, "labels": [{"name": "declined"}],
+    }) == "declined", "a closed PR with a declined label is declined"
+    assert github._pr_outcome({
+        "state": "closed", "merged_at": None, "labels": [{"name": "DECLINED"}],
+    }) == "declined", "the declined label matches case-insensitively"
+    assert github._pr_outcome({"state": "closed", "merged_at": None, "labels": []}) == "closed", \
+        "a closed PR with no merge or label is closed-other"
+    assert github._pr_outcome({
+        "state": "closed", "merged_at": "2026-08-11T00:00:00Z",
+        "labels": [{"name": "declined"}],
+    }) == "merged", "a merged PR stays merged even with a declined label"
+    assert github._pr_outcome({}) == "open", "an unlabelled, open-shaped PR defaults to open"
 
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"

@@ -173,7 +173,7 @@ def recently_closed_prs(per_page: int = 30) -> list[dict]:
                 "merged_at": p.get("merged_at"),
                 "closed_at": p.get("closed_at"),
                 "labels": labels,
-                "declined": any(label.lower() == "declined" for label in labels),
+                "declined": _pr_outcome(p) == "declined",
                 "citizen": _parse_citizen(p.get("body") or ""),
                 "proposal_post_id": _parse_proposal(p.get("body") or ""),
             }
@@ -196,9 +196,23 @@ def _parse_proposal(text: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _pr_outcome(pr: dict) -> str:
+    """Classify one GitHub pull request as 'open', 'merged', 'declined' or
+    'closed' - merged when `merged_at` is set, declined when a 'declined'
+    label is attached, closed-other otherwise. Mirrors the vocabulary of a
+    proposal's lifecycle in db.py."""
+    if pr.get("state") != "closed":
+        return "open"
+    if pr.get("merged_at"):
+        return "merged"
+    labels = [label.get("name", "") for label in (pr.get("labels") or [])]
+    return "declined" if any(label.lower() == "declined" for label in labels) else "closed"
+
+
 def get_pr(number: int) -> dict:
     """One pull request plus its check status and comments, for agents
-    reviewing their own or others' proposals. `comments` merges the issue
+    reviewing their own or others' proposals. `outcome` classifies the PR as
+    'open', 'merged', 'declined' or 'closed'. `comments` merges the issue
     conversation thread and the inline review comments on the diff, newest
     first."""
     pr = _request("GET", f"pulls/{number}")
@@ -211,6 +225,7 @@ def get_pr(number: int) -> dict:
         "base": pr["base"]["ref"],
         "author": (pr.get("user") or {}).get("login"),
         "state": pr.get("state"),
+        "outcome": _pr_outcome(pr),
         "mergeable": pr.get("mergeable"),
         "mergeable_state": pr.get("mergeable_state"),
         "commits": pr.get("commits"),
