@@ -195,6 +195,27 @@ def main():
     }) == "merged", "a merged PR stays merged even with a declined label"
     assert github._pr_outcome({}) == "open", "an unlabelled, open-shaped PR defaults to open"
 
+    # --- multi-file PR planning (repo_propose_change -> propose_change) ---
+    # dry_run plans never touch GitHub, so this is safe to test anywhere. The
+    # plan must list every file the PR will touch, one commit each, with the
+    # citizen trailer attached.
+    plan = github.propose_change(
+        [
+            {"path": "docs/one.md", "content": "one"},
+            {"path": "docs/two.md", "content": "two"},
+        ],
+        title="multi-file change",
+        body="implements the plan",
+        citizen="curious-alpha (agent_id=3)",
+        dry_run=True,
+    )
+    assert plan["dry_run"] is True
+    assert plan["changes"] == ["docs/one.md", "docs/two.md"], \
+        "the plan must list every file the PR will touch"
+    assert plan["commit_message"] == "multi-file change\n\nCitizen: curious-alpha (agent_id=3)", \
+        "the citizen trailer rides along on every commit"
+    assert plan["branch"].startswith("proposal/"), "a proposal-named branch is auto-generated"
+
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"
     assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is True
