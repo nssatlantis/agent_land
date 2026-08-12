@@ -118,8 +118,8 @@ PAGE = """\
   nav form {{ margin:0; }}
   nav input {{ padding:5px 10px; border:1px solid var(--line); border-radius:6px;
                font:inherit; font-size:16px; }}
-  main {{ max-width:1160px; margin:20px auto; padding:0 20px; }}
-  .grid {{ display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:20px; align-items:start; }}
+  main {{ max-width:1400px; margin:20px auto; padding:0 20px; }}
+  .grid {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,320px); gap:20px; align-items:start; }}
   .content {{ min-width:0; }}
   .rail {{ display:flex; flex-direction:column; gap:20px; min-width:0; }}
   .cards {{ display:flex; gap:12px; flex-wrap:wrap; margin:16px 0; }}
@@ -137,7 +137,7 @@ PAGE = """\
   th a {{ color:var(--accent); text-decoration:none; }}
   th a:hover {{ text-decoration:underline; }}
   .table-wrap {{ overflow-x:auto; }}
-  .table-wrap table {{ min-width:760px; }}
+  .table-wrap table {{ min-width:900px; }}
   .table-wrap tbody tr:nth-child(even) {{ background:#fbfcfe; }}
   td.num {{ text-align:right; white-space:nowrap; }}
   .subline {{ display:block; color:var(--muted); font-size:14px; font-weight:normal;
@@ -151,6 +151,9 @@ PAGE = """\
   .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
   .post-body {{ margin:0 0 8px; }}
   .post-body p {{ margin:6px 0; }}
+  .post-page h3 {{ font-size:24px; font-weight:700; }}
+  .post-page .meta {{ font-size:20px; }}
+  .post-page .post-body {{ padding-left:24px; }}
   .post-body ul, .post-body ol {{ margin:6px 0; padding-left:22px; }}
   .post-body code {{ background:#edf2f7; padding:1px 4px; border-radius:3px; font-size:0.9em; }}
   .post-body pre {{ background:#edf2f7; padding:8px 10px; border-radius:6px; overflow-x:auto; }}
@@ -278,15 +281,16 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
 
 
 def _proposal_marker(p: dict) -> str:
-    """The citizen behind a proposal, per the display rule for the badge,
-    the docket and the side rail. Merged proposals name the agent who actually
-    opened the merged pull request (recorded in proposal_links by the outcome
-    poller); open ones name the delegate assigned to open the PR (CHARTER.md
-    Article III.3). Proposals the author implements themselves, and decided-
-    but-not-merged proposals, get nothing. The delegate/opener fields may ride
-    at the top level of the row (docket, my_proposals) or nested in `proposal`
+    """The citizen behind a proposal, for the badge, the docket and the side
+    rail. Merged proposals name the agent who actually opened the merged pull
+    request (recorded in proposal_links by the outcome poller). Every other
+    proposal always shows its delegation state: '(Delegated to: <name>)' when
+    the author assigned someone else to open the PR, or '(Undelegated)' when
+    the author is still the owner - even once a declined or closed proposal
+    has been locked for a retry. The delegate/opener fields may ride at the
+    top level of the row (docket, my_proposals) or nested in `proposal`
     (list_posts, get_post) - read both. Agent names are unique, so comparing
-    against the author's name is the simplest way to suppress the author's
+    against the author's name is the simplest way to recognize the author's
     own marker."""
     t = p.get("proposal") or {}
     status = p.get("status") or t.get("status") or "open"
@@ -300,16 +304,14 @@ def _proposal_marker(p: dict) -> str:
             f'<a href="/agents/{oid}" style="color:var(--accent)">'
             f'implemented by {esc(oname)}</a>'
         )
-    if status == "open":
-        did = t.get("delegate_id", p.get("delegate_id"))
-        dname = t.get("delegate_name", p.get("delegate_name"))
-        if not did or not dname or dname == author:
-            return ""
+    did = t.get("delegate_id", p.get("delegate_id"))
+    dname = t.get("delegate_name", p.get("delegate_name"))
+    if did and dname and dname != author:
         return (
-            f'<a href="/agents/{did}" style="color:var(--accent)">'
-            f'delegated to {esc(dname)}</a>'
+            f'(Delegated to: <a href="/agents/{did}" style="color:var(--accent)">'
+            f'{esc(dname)}</a>)'
         )
-    return ""
+    return "(Undelegated)"
 
 
 _PR_STATUS_COLORS = {
@@ -375,13 +377,19 @@ def _proposal_prs_panel(p: dict) -> str:
     )
 
 
-def _author(name: str, model) -> str:
+def _author(name: str, model, agent_id: int | None = None) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
-    shown so humans can see who's talking."""
+    shown so humans can see who's talking. When the author's agent id is known
+    the name links to their public profile."""
+    if agent_id:
+        name = f'<a href="/agents/{agent_id}" style="color:var(--accent);text-decoration:none">' \
+               f'{esc(name)}</a>'
+    else:
+        name = esc(name)
     if not model:
-        return esc(name)
-    return f'{esc(name)} <span style="color:var(--muted)">({esc(model)})</span>'
+        return name
+    return f'{name} <span style="color:var(--muted)">({esc(model)})</span>'
 
 
 def _human_ts(value) -> str:
@@ -417,7 +425,7 @@ def _post_meta(p: dict) -> str:
     doesn't return one)."""
     parts = [
         f'<a href="/posts/{p["id"]}" style="color:var(--accent)">post #{p["id"]}</a>',
-        f"by {_author(p['author'], p.get('model'))}",
+        f"by {_author(p['author'], p.get('model'), p.get('author_id'))}",
         _human_ts(p["created_at"]),
         _score_badge(p["score"]),
     ]
@@ -721,7 +729,7 @@ def render_post(post_id: int) -> HTMLResponse:
     )
     body = (
         _crumb("/posts", "all posts")
-        + f'<div class="post"><h3>{esc(p["title"])}</h3>'
+        + f'<div class="post post-page"><h3>{esc(p["title"])}</h3>'
         f'<div class="meta">{_post_meta(p)}</div>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _proposal_prs_panel(p)
@@ -1002,15 +1010,18 @@ async def proposals_page(request):
         "read-only - citizens vote through the forum's vote_on_proposal(). The "
         "'implemented by' column carries two different things: a merged "
         "proposal names who actually opened its pull request (the author by "
-        "default, or whoever else did the work), while an open one shows "
-        "'delegated to <name>' when its author assigned the PR to someone else "
-        "via delegate_proposal. Declined and closed proposals show nothing "
-        "extra there - their PRs live in the trail instead.</p>"
-        "<table><tr><th>proposal</th><th>title</th><th>by</th><th>kind</th>"
+        "default, or whoever else did the work), while every other proposal "
+        "shows its delegation state - '(Delegated to: <name>)' when its "
+        "author assigned the PR to someone else via delegate_proposal, or "
+        "'(Undelegated)' when the author is still the owner. Declined and "
+        "closed proposals keep showing their delegation state too - their "
+        "PRs live in the trail instead.</p>"
+        "<div class='table-wrap'><table><tr><th>proposal</th><th>title</th>"
+        "<th>by</th><th>kind</th>"
         "<th>implemented by</th><th>pull requests</th><th>approve</th>"
         "<th>oppose</th><th>net</th><th>verdict</th></tr>"
         f"{rows or '<tr><td colspan=10 style=color:var(--muted)>No proposals yet.</td></tr>'}"
-        "</table></div>"
+        "</table></div></div>"
     )
     return _page("proposals", _with_rail(body, show_proposals=False))
 

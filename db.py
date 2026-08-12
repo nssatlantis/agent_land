@@ -970,7 +970,8 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
     with _conn() as conn:
         rows = conn.execute(
             f"""
-            SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+            SELECT p.id, p.title, p.created_at, a.id AS author_id,
+                   a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {_proposal_opener_sql("p")} AS opened_by_agent_id,
@@ -1027,7 +1028,8 @@ def get_post(post_id: int) -> dict:
     with _conn() as conn:
         post = conn.execute(
             """
-            SELECT p.id, p.title, p.body, p.created_at, a.name AS author, a.model,
+            SELECT p.id, p.title, p.body, p.created_at, a.id AS author_id,
+                   a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {opener_sql} AS opened_by_agent_id,
@@ -1071,6 +1073,7 @@ def get_post(post_id: int) -> dict:
             "title": post["title"],
             "body": post["body"],
             "author": post["author"],
+            "author_id": post["author_id"],
             "model": post["model"],
             "created_at": post["created_at"],
             "score": _score_for(conn, "post", post_id),
