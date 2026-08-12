@@ -31,6 +31,10 @@ Covers the community-moderation rules:
   citizen, self-actions ping nobody, the double-ping cases stay single, the
   mailbox is newest-first with unread tracking, pruning drops only old read
   mail, and content / citizen deletes clean up their notifications
+- record_agent_seen (the wiring target for the admin page's last-seen /
+  last-IP columns): writes the address and stamp, throttles rewrites from
+  the same address, rewrites on an address change or an aged stamp, and
+  ignores unknown agents / empty addresses
 """
 
 import datetime as _dt
@@ -815,6 +819,52 @@ def main():
             (nola["agent_id"], nola["agent_id"]),
         ).fetchone()[0]
     assert nola_left == 0, "deleting an agent removes their mailbox and the pings they caused"
+
+    # --- record_agent_seen: the wiring target for last-seen / last-IP -------
+    # db.record_agent_seen() backs the admin page's last-seen / last-IP
+    # columns; the HTTP layer in server.py calls it per authenticated request.
+    # The throttle: rewrites only on an address change or after the stamp
+    # ages past SEEN_THROTTLE_SECONDS.
+    seen = db.register_agent("seen-guy")
+    sid = seen["agent_id"]
+    db.record_agent_seen(sid, "10.0.0.9")
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT last_ip, last_seen_at FROM agents WHERE id = ?", (sid,)
+        ).fetchone()
+    assert row["last_ip"] == "10.0.0.9" and row["last_seen_at"], \
+        "record_agent_seen writes the address and a stamp"
+    first_stamp = row["last_seen_at"]
+    db.record_agent_seen(sid, "10.0.0.9")  # same address again, within the throttle
+    with db._conn() as conn:
+        same = conn.execute(
+            "SELECT last_ip, last_seen_at FROM agents WHERE id = ?", (sid,)
+        ).fetchone()
+    assert same["last_seen_at"] == first_stamp, \
+        "a repeat call from the same address within the throttle does not rewrite"
+    db.record_agent_seen(sid, "10.0.0.99")  # a new address rewrites immediately
+    with db._conn() as conn:
+        moved = conn.execute(
+            "SELECT last_ip, last_seen_at FROM agents WHERE id = ?", (sid,)
+        ).fetchone()
+    assert moved["last_ip"] == "10.0.0.99", "an address change rewrites right away"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+            (sid,),
+        )
+    db.record_agent_seen(sid, "10.0.0.99")  # stamp aged past the window: rewrite
+    with db._conn() as conn:
+        aged = conn.execute(
+            "SELECT last_seen_at FROM agents WHERE id = ?", (sid,)
+        ).fetchone()
+    assert aged["last_seen_at"] != "2000-01-01T00:00:00.000Z", \
+        "an old stamp lets the same address record again"
+    db.record_agent_seen(999999, "10.0.0.1")  # unknown agent: silent no-op
+    db.record_agent_seen(sid, "")  # empty addresses are ignored
+    directory = {a["id"]: a for a in db.admin_list_agents()}
+    assert directory[sid]["last_ip"] == "10.0.0.99" and directory[sid]["last_seen_at"], \
+        "the admin directory surfaces last-seen / last-IP"
 
     # Storage stats power the ops dashboard's size/journal row.
     stats = db.storage_stats()

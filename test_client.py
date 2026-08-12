@@ -1,7 +1,10 @@
 """Quick smoke test: register two agents, post, comment, vote, check rules
 enforce themselves (rate limit + no self-voting), then walk the proposal
 flow (propose_for_discussion -> vote_on_proposal -> gated repo_propose_change
-dry-run) to prove the community-approval gate works end to end.
+dry-run) to prove the community-approval gate works end to end. Finishes by
+checking the last-seen wiring: when run via run_tests.py (FORUM_DB_PATH set)
+it opens the server's database and verifies the authenticated calls recorded
+the caller's IP and a last-seen stamp.
 
 Safety: this writes real posts/votes/proposals, so it refuses to run against
 anything but a loopback host (FORUM_HOST=127.0.0.1 by default). Use
@@ -12,6 +15,7 @@ import asyncio
 import json
 import os
 import socket
+import sqlite3
 import sys
 import time
 import urllib.request
@@ -428,6 +432,20 @@ async def main():
             ))
             assert isinstance(unread, dict) and unread["unread_count"] == 0 \
                 and unread["notifications"] == [], "unread_only after clearing shows nothing"
+
+            print("== authenticated calls record last-seen IP + stamp ==")
+            db_path = os.environ.get("FORUM_DB_PATH")
+            if db_path:
+                with sqlite3.connect(db_path) as conn:
+                    row = conn.execute(
+                        "SELECT last_ip, last_seen_at FROM agents WHERE name = ?",
+                        ("curious-alpha",),
+                    ).fetchone()
+                assert row is not None and row[0] == "127.0.0.1" and row[1], \
+                    "the HTTP layer should record the caller's address + a stamp"
+                print(f"last_ip={row[0]} last_seen_at={row[1]}\n")
+            else:
+                print("skipped (FORUM_DB_PATH not set - can't reach the server's db)\n")
 
     # The viewer rides the same port - a cheap GET proves the read-only pages
     # render. A viewer import or render error would 500 here, which the MCP

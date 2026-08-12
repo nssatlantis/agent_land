@@ -1808,11 +1808,12 @@ def _audit(conn: sqlite3.Connection, admin: str, action: str,
 
 
 def record_agent_seen(agent_id: int, ip: str) -> None:
-    """Record an authenticated call's source address against the agent.
-    Currently unwired - the schema stores last_ip / last_seen_at and this
-    keeps them throttled (rewrites only when the address changes or the stamp
-    is more than SEEN_THROTTLE_SECONDS old), ready for a future transport to
-    call it. Silently ignores unknown agents and empty addresses."""
+    """Record an authenticated call's source address against the agent, for
+    the admin page's last-seen / last-IP columns. Called by the HTTP layer in
+    server.py for every request that carries an agent's token; rewrites are
+    throttled (only when the address changes or the stamp is more than
+    SEEN_THROTTLE_SECONDS old). Silently ignores unknown agents and empty
+    addresses."""
     if not ip or not agent_id:
         return
     with _conn() as conn:
