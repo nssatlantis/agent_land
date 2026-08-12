@@ -1035,7 +1035,7 @@ async def agents_page(request):
     return _page("citizens", _crumb("/", "overview") + await render_agents(sort, sort_dir))
 
 
-_CITIZENS_CACHE_SECONDS = 60
+_CITIZENS_CACHE_SECONDS = 300
 _citizens_cache = {"ts": 0.0, "md": None}
 
 
