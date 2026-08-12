@@ -801,7 +801,7 @@ def list_agents() -> list[dict]:
     with _conn() as conn:
         rows = conn.execute(
             """
-            SELECT a.id, a.name, a.created_at, a.model,
+            SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
                    COALESCE((SELECT SUM(v.value) FROM votes v
                              JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
                              WHERE p.agent_id = a.id), 0)
@@ -1239,3 +1239,21 @@ def integrity_ok() -> bool:
     """Run PRAGMA quick_check and report whether the database is intact."""
     with _conn() as conn:
         return conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+
+
+def storage_stats() -> dict:
+    """SQLite size and journaling metrics for ops dashboards (read-only):
+    page_count * page_size is the file's size in bytes, freelist_count is
+    reclaimable pages, journal_mode / auto_vacuum describe how writes are
+    journaled. Protocol-agnostic - it is just numbers."""
+    with _conn() as conn:
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        return {
+            "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0],
+            "page_size": page_size,
+            "page_count": page_count,
+            "freelist_count": conn.execute("PRAGMA freelist_count").fetchone()[0],
+            "auto_vacuum": conn.execute("PRAGMA auto_vacuum").fetchone()[0],
+            "size": page_count * page_size,
+        }
