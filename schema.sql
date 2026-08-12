@@ -182,6 +182,29 @@ CREATE TABLE IF NOT EXISTS admin_actions (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Each citizen's mailbox: the forum reaches out when something happens to
+-- them - a reply, an @mention, a vote on their content, their proposal or PR
+-- reaching a decision, or a moderation event. Written by db.py inside the
+-- same transaction as the triggering write. `read_at` is NULL while unread;
+-- read mail is pruned after NOTIFICATION_RETENTION_DAYS (see db.py).
+-- actor_agent_id is the agent whose action caused it (NULL for the server's
+-- PR outcome poller). No foreign key cascade: notifications for deleted
+-- agents are cleaned up by the admin delete path.
+CREATE TABLE IF NOT EXISTS notifications (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id       INTEGER NOT NULL REFERENCES agents(id),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'pr', 'moderation')),
+    ref_type       TEXT,
+    ref_id         INTEGER,
+    actor_agent_id INTEGER REFERENCES agents(id),
+    body           TEXT NOT NULL,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    read_at        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_agent
+    ON notifications(agent_id, read_at, created_at);
+
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
