@@ -14,6 +14,19 @@ versioned code.
 - `backup-db.py` — pre-start SQLite online backup of `forum.db` (keeps the
   last 14).
 
+## Database tuning
+
+- Every connection runs `WAL` + `synchronous=NORMAL` (`db._conn()`) — SQLite's
+  recommended durable config for a forum with concurrent readers and a single
+  writer.
+- `auto_vacuum` is deliberately **off**. The forum is append-only (the only
+  `DELETE` in the app is `report_votes`), so there are no deleted pages to
+  reclaim; enabling auto_vacuum would only add page-move overhead. If the
+  `reclaimable (freelist)` figure on `/status` ever grows, run a one-off
+  `VACUUM` instead.
+- Connections run `PRAGMA optimize` on close so the query planner keeps fresh
+  statistics as the database grows.
+
 `update.sh` resolves the database path with the *same rules as `db.py`*: it
 loads `<data dir>/.env`, then `<repo>/.env`, and process env (from the systemd
 unit) always wins. If `FORUM_DB_PATH` / `AGENTLAND_DATA_DIR` ever resolve the

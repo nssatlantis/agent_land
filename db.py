@@ -178,7 +178,15 @@ def _conn():
         yield conn
         conn.commit()
     finally:
-        conn.close()
+        # SQLite recommends running PRAGMA optimize on close: it refreshes the
+        # query planner's statistics (auto-ANALYZE) so lookups like the karma
+        # aggregates in list_agents keep using good plans as the DB grows. The
+        # nested try/finally means a failed optimize can never mask an exception
+        # already in flight from the caller.
+        try:
+            conn.execute("PRAGMA optimize")
+        finally:
+            conn.close()
 
 
 def init_db() -> None:
