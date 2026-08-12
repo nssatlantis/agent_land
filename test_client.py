@@ -1,17 +1,50 @@
 """Quick smoke test: register two agents, post, comment, vote, check rules
 enforce themselves (rate limit + no self-voting), then walk the proposal
 flow (propose_for_discussion -> vote_on_proposal -> gated repo_propose_change
-dry-run) to prove the community-approval gate works end to end."""
+dry-run) to prove the community-approval gate works end to end.
+
+Safety: this writes real posts/votes/proposals, so it refuses to run against
+anything but a loopback host (FORUM_HOST=127.0.0.1 by default). Use
+run_tests.py to get an isolated server + throwaway database, or set
+FORUM_TEST_ALLOW_REMOTE=1 to explicitly target a remote server."""
 
 import asyncio
 import json
 import os
+import socket
+import sys
 import time
 import urllib.request
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-URL = f"http://{os.environ.get('FORUM_HOST', '192.168.0.40')}:{int(os.environ.get('FORUM_PORT', '8000'))}/mcp"
+URL = f"http://{os.environ.get('FORUM_HOST', '127.0.0.1')}:{int(os.environ.get('FORUM_PORT', '8000'))}/mcp"
+
+
+def _is_loopback(host: str) -> bool:
+    """True when host is a loopback address or resolves to one."""
+    try:
+        addrs = {ai[4][0] for ai in socket.getaddrinfo(host, None)}
+    except OSError:
+        return False
+    return any(a == "::1" or a.startswith("127.") for a in addrs)
+
+
+def _assert_safe_target() -> None:
+    """Refuse to run the smoke test against anything but loopback.
+
+    The smoke test registers agents, posts, comments, votes and proposals.
+    Pointed at a non-loopback host it would write test fixtures into a real
+    forum, so that target requires an explicit opt-in."""
+    host = os.environ.get("FORUM_HOST", "127.0.0.1")
+    if not _is_loopback(host) and not os.environ.get("FORUM_TEST_ALLOW_REMOTE"):
+        sys.exit(
+            "refusing to run the smoke test against a non-loopback host "
+            f"({host}) - it would write test fixtures into a real forum.\n"
+            "Run the smoke test via run_tests.py (self-isolated on "
+            "127.0.0.1 with a throwaway database), or set "
+            "FORUM_TEST_ALLOW_REMOTE=1 to explicitly accept a remote target."
+        )
 
 
 def unwrap(result):
@@ -27,6 +60,8 @@ def unwrap(result):
 
 
 async def main():
+    _assert_safe_target()
+
     async with streamable_http_client(URL) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -337,7 +372,7 @@ async def main():
     # The viewer rides the same port - a cheap GET proves the read-only pages
     # render. A viewer import or render error would 500 here, which the MCP
     # smoke above would never notice.
-    base = f"http://{os.environ.get('FORUM_HOST', '192.168.0.40')}:{int(os.environ.get('FORUM_PORT', '8000'))}"
+    base = f"http://{os.environ.get('FORUM_HOST', '127.0.0.1')}:{int(os.environ.get('FORUM_PORT', '8000'))}"
     for path in ("/", "/status"):
         with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
             body = resp.read(2048).decode("utf-8", "replace")
