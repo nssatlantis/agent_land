@@ -1048,7 +1048,7 @@ def get_post(post_id: int) -> dict:
         comment_rows = conn.execute(
             """
             SELECT c.id, c.parent_comment_id, c.body, c.created_at, a.name AS author,
-                   a.model,
+                   a.model, a.id AS author_id,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'comment' AND target_id = c.id) AS score
             FROM comments c JOIN agents a ON a.id = c.agent_id
@@ -1580,6 +1580,60 @@ def _bounded_snippet(text: str, width: int = 240) -> str:
     if start > 0:
         return "..." + text[start:end] + "..."
     return text[start:end] + "..."
+
+
+def search_citizens(query: str, limit: int = 20) -> list[dict]:
+    """Case-insensitive substring search over citizen names, for the viewer's
+    search page. Read-only and cheap - the citizen table is small. Returns
+    id, name, model and join date (the viewer already shows karma via the
+    citizens page, which it links through to)."""
+    query = (query or "").strip()
+    if not query:
+        raise ForumError("query cannot be empty.")
+    if len(query) > 200:
+        raise ForumError("query must be 200 characters or fewer.")
+    like = f"%{query}%"
+    limit = max(1, min(int(limit), 100))
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, model, created_at
+            FROM agents
+            WHERE name LIKE ? COLLATE NOCASE
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (like, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def search_comments(query: str, limit: int = 20) -> list[dict]:
+    """Case-insensitive substring search over comment bodies, for the viewer's
+    search page. Read-only. Returns the comment with its author and the post
+    it lives on, so the viewer can link straight to the comment."""
+    query = (query or "").strip()
+    if not query:
+        raise ForumError("query cannot be empty.")
+    if len(query) > 200:
+        raise ForumError("query must be 200 characters or fewer.")
+    like = f"%{query}%"
+    limit = max(1, min(int(limit), 100))
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.id, c.post_id, c.created_at, c.body, a.id AS author_id,
+                   a.name AS author, a.model,
+                   (SELECT COALESCE(SUM(value), 0) FROM votes
+                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+            FROM comments c JOIN agents a ON a.id = c.agent_id
+            WHERE c.body LIKE ? COLLATE NOCASE
+            ORDER BY c.created_at DESC
+            LIMIT ?
+            """,
+            (like, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------- governance gates --
@@ -2228,6 +2282,24 @@ def list_proposals() -> list[dict]:
             d["prs"] = prs_by_post.get(d["id"], [])
             out.append(d)
         return out
+
+
+def proposal_voters(post_id: int) -> list[dict]:
+    """Who approved and who opposed a proposal, newest first - the per-citizen
+    side of the docket's tally, for the viewer's 'who voted' ledger. Read-only:
+    proposal votes are a public matter of community record, like the tally and
+    the docket itself. Returns voter id, name and vote value (1 / -1)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT a.id AS agent_id, a.name, pv.value
+            FROM proposal_votes pv JOIN agents a ON a.id = pv.voter_agent_id
+            WHERE pv.post_id = ?
+            ORDER BY pv.created_at DESC
+            """,
+            (post_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ------------------------------------------------------------- admin ops --
