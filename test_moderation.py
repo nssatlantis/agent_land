@@ -303,6 +303,63 @@ def main():
     mine2 = db.my_proposals(agents["gamma"]["token"])
     assert mine2["proposals"][0]["id"] == p2 and mine2["proposals"][0]["decision"] == "small_fix"
 
+    # --- human-admin functions (driven through db.py as admin.py calls them) --
+    victim = db.register_agent("admin-victim")
+    helper = db.register_agent("admin-helper")
+    doomed = db.create_post(victim["token"], "doomed", "body of a doomed post")
+    pid = doomed["post_id"]
+    other_comment = db.create_comment(helper["token"], pid, "helper comments on the doomed post")
+    own_comment = db.create_comment(victim["token"], pid, "victim's own comment")
+    db.create_comment(helper["token"], pid, "reply", parent_comment_id=own_comment["comment_id"])
+    db.vote(helper["token"], "post", pid, 1)
+    db.vote(helper["token"], "comment", own_comment["comment_id"], 1)
+    db.vote(victim["token"], "comment", other_comment["comment_id"], 1)  # earns the helper reporting karma
+    report = db.report_content(helper["token"], "post", pid, "test reason")
+    rid = report["report_id"]
+
+    # The admin directory carries ban state and connection fields; the public
+    # list must not leak them.
+    listing = {a["id"]: a for a in db.admin_list_agents()}
+    assert listing[victim["agent_id"]]["banned"] == 0 and listing[victim["agent_id"]]["last_ip"] is None
+    assert "banned" not in db.list_agents()[0], "the public citizens list must not expose ban state"
+    detail = db.admin_agent_detail(victim["agent_id"])
+    assert detail["name"] == "admin-victim" and len(detail["posts"]) == 1
+    assert detail["reports_against"][0]["id"] == rid
+
+    # A banned citizen can still read but every write is refused, reversibly.
+    db.ban_agent(victim["agent_id"], "root", reason="smoke")
+    assert "banned" in expect_error(db.create_post, victim["token"], "x", "y")
+    assert "banned" in expect_error(db.create_comment, victim["token"], pid, "y")
+    db.unban_agent(victim["agent_id"], "root")
+    assert db.create_post(victim["token"], "x", "y")["post_id"] > 0, "unban restores writes"
+
+    # Manual report resolution: a clear closes the report and the docket shows it.
+    db.resolve_report(rid, "root", "clear")
+    assert next(r for r in db.list_reports() if r["id"] == rid)["status"] == "cleared"
+
+    # Deleting refuses while content exists unless destroy_content is set, then
+    # removes the agent, their content, and everyone else's content on it.
+    assert "destroy_content" in expect_error(db.delete_agent, victim["agent_id"], "root")
+    assert "no agent" in expect_error(db.delete_agent, 999999, "root")
+    db.delete_agent(victim["agent_id"], "root", destroy_content=True)
+    assert db.admin_agent_detail and next(
+        (a for a in db.admin_list_agents() if a["id"] == victim["agent_id"]), None
+    ) is None, "deleted agent must vanish from the directory"
+    with db._conn() as conn:
+        gone_posts = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (victim["agent_id"],)
+        ).fetchone()[0]
+        gone_comments = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE id = ?", (other_comment["comment_id"],)
+        ).fetchone()[0]
+        audit = conn.execute(
+            "SELECT COUNT(*) FROM admin_actions WHERE action = 'delete' AND target_id = ?",
+            (victim["agent_id"],),
+        ).fetchone()[0]
+    assert gone_posts == 0 and gone_comments == 0, \
+        "deleting a citizen destroys their posts and the comments on them"
+    assert audit == 1, "every admin delete must leave an audit row"
+
     # Storage stats power the ops dashboard's size/journal row.
     stats = db.storage_stats()
     assert stats["journal_mode"] == "wal" and stats["page_size"] > 0

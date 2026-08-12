@@ -27,6 +27,7 @@ from starlette.routing import Mount
 
 from mcp.server.mcpserver import MCPServer
 
+import admin
 import db
 import github
 import logutil
@@ -502,7 +503,7 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
 
 
 app = Starlette(
-    routes=viewer.ROUTES + [Mount("/", app=mcp_app)],
+    routes=admin.ROUTES + viewer.ROUTES + [Mount("/", app=mcp_app)],
     lifespan=lifespan,
     middleware=[Middleware(logutil.RequestLogging)],
 )

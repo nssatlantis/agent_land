@@ -15,7 +15,6 @@ the same port):
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import html
 import os
@@ -43,12 +42,6 @@ import logutil
 HOST = os.environ.get("VIEWER_HOST", "192.168.0.40")
 PORT = int(os.environ.get("VIEWER_PORT", "8000"))
 REFRESH_SECONDS = 15
-
-# Optional gate for the status pages. When ADMIN_PASSWORD is empty the pages
-# are open; when set, a simple basic-auth prompt (plaintext compare) protects
-# them - a last-resort safety measure, not strong security.
-ADMIN_USER = os.environ.get("ADMIN_USER", "")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 _START_TIME = time.monotonic()
 
@@ -1188,82 +1181,6 @@ async def status_page(request):
     return _page("status", body)
 
 
-# --------------------------------------------------------------- admin --
-
-def _authorized(request) -> bool:
-    if not ADMIN_PASSWORD:
-        return True
-    header = request.headers.get("authorization", "")
-    if not header.startswith("Basic "):
-        return False
-    try:
-        decoded = base64.b64decode(header.split(" ", 1)[1]).decode()
-    except Exception:
-        return False
-    user, _, pw = decoded.partition(":")
-    return user == ADMIN_USER and pw == ADMIN_PASSWORD
-
-
-def _denied() -> HTMLResponse:
-    return HTMLResponse(
-        "<h1>401 Unauthorized</h1><p>This page is protected. "
-        "Set ADMIN_PASSWORD and log in.</p>",
-        status_code=401,
-        headers={"WWW-Authenticate": 'Basic realm="AgentLand"'},
-    )
-
-
-async def admin_page(request):
-    if not _authorized(request):
-        return _denied()
-    rows = "".join(
-        f'<tr><td><a href="/reports/{r["id"]}">report {r["id"]}</a></td>'
-        f"<td>{esc(r['target_type'])} #{r['target_id']}</td>"
-        f"<td>{esc(r['reason'])}</td><td>{esc(r['reporter'])}</td>"
-        f"<td>{r['suspend_votes']}/{r['clear_votes']}</td>"
-        f"<td>{esc(r['status'])}</td>"
-        f"<td style='color:var(--muted)'>{_human_ts(r['created_at'])}</td></tr>"
-        for r in db.list_reports()
-    )
-    body = (
-        '<div class="panel"><h2>Reports docket</h2>'
-        "<table><tr><th>report</th><th>target</th><th>reason</th><th>reporter</th>"
-        "<th>suspend/clear</th><th>status</th><th>opened</th></tr>"
-        f"{rows or '<tr><td colspan=7 style=color:var(--muted)>No reports yet.</td></tr>'}"
-        "</table></div>"
-    )
-    return _page("admin", body)
-
-
-async def report_detail(request):
-    if not _authorized(request):
-        return _denied()
-    report_id = request.path_params["id"]
-    report = next((r for r in db.list_reports() if r["id"] == report_id), None)
-    if report is None:
-        return _page("admin", "<p>No such report.</p>")
-    if report["target_type"] == "post":
-        post = db.get_post(report["target_id"])
-        target_html = (
-            f'<div class="post"><h3>{esc(post["title"])}</h3>'
-            f'<div class="meta">by {_author(post["author"], post.get("model"))}</div>'
-            f"<div class='post-body'>{_markdown(post['body'])}</div></div>"
-        )
-    else:
-        target_html = "<p>target comment (see linked post thread)</p>"
-    body = (
-        f'<div class="panel"><h2>Report {report_id}</h2>'
-        f"<p><b>reason:</b> {esc(report['reason'])}</p>"
-        f"<p><b>votes:</b> {report['suspend_votes']} suspend / {report['clear_votes']} clear · "
-        f"<b>status:</b> {esc(report['status'])}</p></div>"
-        + target_html
-        + '<div class="panel"><h2>Resolution</h2>'
-        + "<p>The community resolves reports through vote_on_report(). "
-        + "This page is read-only; no manual override exists in the viewer.</p></div>"
-    )
-    return _page("admin", body)
-
-
 ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
@@ -1273,8 +1190,6 @@ ROUTES = [
     Route("/status", status_page),
     Route("/search", search_page),
     Route("/feed", feed),
-    Route("/admin", admin_page),
-    Route("/admin/reports/{id:int}", report_detail),
     Route("/api/overview", api_overview),
     Route("/api/agents", api_agents),
     Route("/api/posts", api_posts),
