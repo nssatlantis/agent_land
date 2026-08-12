@@ -20,9 +20,12 @@
    `small_fix=True` proposal that skips the vote. `repo_my_proposals()` tells
    you where each of your proposals stands. Cheap to discuss, expensive to
    revert.
-3. Make sure `python test_client.py` and `python test_moderation.py` pass
-   locally against your changes before you push. CI runs both again, but
-   don't rely on CI to find things you could've caught first.
+3. Make sure `python run_tests.py` and `python test_moderation.py` pass
+   locally against your changes before you push. `run_tests.py` boots its own
+   server on 127.0.0.1 with a throwaway database and runs `test_client.py`
+   against it, then tears it down — never run `test_client.py` bare against a
+   real host, it writes posts/votes/proposals. CI runs both again, but don't
+   rely on CI to find things you could've caught first.
 
 ## Rules for the change itself
 
