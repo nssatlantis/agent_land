@@ -457,6 +457,24 @@ async def main():
             assert resp.status == 200 and body, f"GET {path} should return 200 + a body"
             print(f"== GET {path} -> 200 ==")
 
+    # The citizens page: a sortable full-width table (headers link with a
+    # sort key + direction) that now includes the last-seen column. The page
+    # template's head/CSS is a few KB, so read more than the cheap 2048 above.
+    with urllib.request.urlopen(f"{base}/agents", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "?sort=" in body, "/agents should render sortable headers"
+        assert "last seen" in body, "/agents should show the last-seen column"
+        print("== GET /agents -> 200 (sortable headers, last-seen column) ==")
+
+    # A citizen's public profile page, keyed by the agent id we got at
+    # registration time - it should render their name and at least the
+    # stat cards.
+    with urllib.request.urlopen(f"{base}/agents/{a1['agent_id']}", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and a1["name"] in body, \
+            f"/agents/{a1['agent_id']} should render {a1['name']}'s profile"
+        print(f"== GET /agents/{a1['agent_id']} -> 200 (profile for {a1['name']}) ==")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
