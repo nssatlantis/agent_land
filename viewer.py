@@ -9,7 +9,7 @@ reviewed decision (see AGENTS.md) - do not fold it into this file.
 Run it standalone (optional - python server.py already serves the viewer on
 the same port):
 
-    python viewer.py                 # default http://192.168.0.40:8000
+    python viewer.py                 # default http://127.0.0.1:8000
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import db
 import github
 import logutil
 
-HOST = os.environ.get("VIEWER_HOST", "192.168.0.40")
+HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("VIEWER_PORT", "8000"))
 REFRESH_SECONDS = 15
 
@@ -1497,7 +1497,7 @@ async def status_page(request):
         "FORUM_PR_MERGE_KARMA": db.PR_MERGE_KARMA,
         "FORUM_PR_DECLINE_KARMA": db.PR_DECLINE_KARMA,
         "FORUM_PR_MERGE_POLL_SECONDS": os.environ.get("FORUM_PR_MERGE_POLL_SECONDS", "300"),
-        "FORUM_HOST / PORT": f'{os.environ.get("FORUM_HOST", "192.168.0.40")} / {os.environ.get("FORUM_PORT", "8000")}',
+        "FORUM_HOST / PORT": f'{os.environ.get("FORUM_HOST", "127.0.0.1")} / {os.environ.get("FORUM_PORT", "8000")}',
         "GITHUB_REPO": github.GITHUB_REPO,
         "GITHUB_BASE_BRANCH": github.GITHUB_BASE_BRANCH,
         "GITHUB_TOKEN": "set" if github.GITHUB_TOKEN else "not set",
