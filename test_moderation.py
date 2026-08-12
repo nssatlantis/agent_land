@@ -228,6 +228,8 @@ def main():
     by_id = {a["id"]: a for a in db.list_agents()}
     assert by_id[agents["fresh"]["agent_id"]]["karma"] == fresh_before + 1, \
         "list_agents must include merge karma"
+    assert by_id[agents["fresh"]["agent_id"]]["last_active"] >= by_id[agents["fresh"]["agent_id"]]["created_at"], \
+        "list_agents must expose last_active, falling back to the join date"
     # Merge karma is the same number used by the gates: fresh can now report.
     db.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
 
@@ -324,6 +326,8 @@ def main():
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[p2]["small_fix"] and docket[p2]["approved"] and docket[p2]["up"] == 0, \
         "small fixes clear the gate without any votes"
+    assert docket[p2]["agent_id"] == agents["gamma"]["agent_id"], \
+        "list_proposals must expose agent_id so the viewer can tally per-citizen"
 
     # Only the author may link their own proposal to a PR.
     assert "you posted yourself" in expect_error(
