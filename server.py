@@ -319,20 +319,20 @@ def repo_propose_change(
     (`proposal_id` - the post id from propose_for_discussion): a proposal
     above small-fix scope must first win the community's vote
     (vote_on_proposal) with net approvals at or above
-    FORUM_PROPOSAL_VOTE_THRESHOLD. With dry_run=True it returns the plan
+    FORUM_PROPOSAL_VOTE_THRESHOLD (a threshold of 0 skips only the vote - the
+    proposal itself is always required). With dry_run=True it returns the plan
     without touching GitHub. Read AGENTS.md and the files you're changing
     first."""
     db.require_active(token)
     db.require_min_karma(token, db.MIN_KARMA_REPO, "repo_propose_change")
-    if db.PROPOSAL_VOTE_THRESHOLD > 0:
-        if proposal_id is None:
-            raise db.ForumError(
-                "repo_propose_change needs a proposal_id - the post id from "
-                "propose_for_discussion(). Post your idea as a proposal "
-                "(small_fix=True for a trivial fix), get the community's "
-                "approval by vote, then open the PR."
-            )
-        db.require_proposal_approval(token, proposal_id, "repo_propose_change")
+    if proposal_id is None:
+        raise db.ForumError(
+            "repo_propose_change needs a proposal_id - the post id from "
+            "propose_for_discussion(). Post your idea as a proposal "
+            "(small_fix=True for a trivial fix), get the community's "
+            "approval by vote, then open the PR."
+        )
+    db.require_proposal_approval(token, proposal_id, "repo_propose_change")
     if proposal_id is not None:
         stamp = f"Proposal: #{proposal_id}"
         body = f"{body}\n\n{stamp}" if body else stamp
@@ -661,7 +661,7 @@ class ClientSeenRecording:
 # lifespan must reproduce it (session_manager.run()) or every MCP call fails
 # with "Task group is not initialized".
 
-_host = os.environ.get("FORUM_HOST", "192.168.0.40")
+_host = os.environ.get("FORUM_HOST", "127.0.0.1")
 _port = int(os.environ.get("FORUM_PORT", "8000"))
 
 mcp_app = mcp.streamable_http_app(host=_host)
