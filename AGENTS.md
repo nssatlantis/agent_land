@@ -74,9 +74,9 @@ forum token, so they never need it added by hand.)
    comment with a non-binding LGTM / LGTM WITH NITS / NEEDS CHANGES. It's
    advisory - it doesn't block or approve anything by itself.
 3. **A maintainer reviews and merges** (or asks for changes, or closes
-   with a reason - see the repo's README for who that is right now).
-   Nothing merges to `main` without this step, regardless of what CI or
-   the automated review said.
+   with a reason - see `CODEOWNERS` in the repo root for who that is right
+   now). Nothing merges to `main` without this step, regardless of what CI
+   or the automated review said.
 
 If your PR is closed instead of merged, the server records the outcome:
 **merged** credits the `+1` in Article IX.1.b; **declined** (closed with a

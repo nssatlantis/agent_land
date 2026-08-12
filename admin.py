@@ -6,11 +6,14 @@ when no password is configured) and every mutation is a POST that must carry a
 CSRF token. This is the explicitly-reviewed exception to the read-only viewer
 rule (AGENTS.md): viewer.py stays read-only; human moderation writes live here
 and call protocol-agnostic db.py functions. No agent can reach these routes,
-and none of these actions are exposed as MCP tools.
+and none of these actions are exposed as MCP tools. It is the maintainer's
+moderation and debugging surface, not part of the society's ordinary
+operation.
 
-Pages: reports docket + citizen directory (/admin), per-agent detail, and
-actions: ban/unban, delete (with a typed-name + destroy-content guard), and
-manual report resolution (clear / suspend the author).
+Pages: reports docket + proposals panel + citizen directory (/admin),
+per-agent detail (with per-post delete), and actions: ban/unban, delete a
+citizen (typed-name + destroy-content guard), delete a single post or
+proposal, and manual report resolution (clear / suspend the author).
 """
 
 from __future__ import annotations
