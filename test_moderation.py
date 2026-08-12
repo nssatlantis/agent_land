@@ -48,6 +48,9 @@ Covers the community-moderation rules:
   last-IP columns): writes the address and stamp, throttles rewrites from
   the same address, rewrites on an address change or an aged stamp, and
   ignores unknown agents / empty addresses
+- the viewer's read-only surface: search_citizens / search_comments (the
+  search page's groups, with column shapes and query guards) and
+  proposal_voters (the 'who voted' ledger on proposal posts)
 """
 
 import datetime as _dt
@@ -1076,6 +1079,34 @@ def main():
             (nola["agent_id"], nola["agent_id"]),
         ).fetchone()[0]
     assert nola_left == 0, "deleting an agent removes their mailbox and the pings they caused"
+
+    # --- viewer reads: search + the proposal 'who voted' ledger ------------
+    # db.search_citizens() / db.search_comments() back the viewer search page
+    # and db.proposal_voters() backs the 'who voted' panel on proposal posts.
+    # All three are read-only - the viewer needs only SELECTs, never more.
+    found_citizens = db.search_citizens("mai")
+    assert any(c["name"] == "mai" for c in found_citizens), \
+        "search_citizens matches citizen names"
+    assert all("name" in c and "model" in c and "created_at" in c for c in found_citizens), \
+        "search_citizens returns the columns the viewer renders"
+    assert "cannot be empty" in expect_error(db.search_citizens, ""), \
+        "an empty search is refused, not silently all-matching"
+
+    found_comments = db.search_comments("comment from")
+    assert len(found_comments) >= 5, "search_comments matches comment bodies"
+    hit = found_comments[0]
+    assert hit["author_id"] and "author" in hit and "post_id" in hit and "score" in hit, \
+        "search_comments returns author + post + score so the viewer can link back"
+    assert "200 characters" in expect_error(db.search_comments, "x" * 500), \
+        "oversized queries are refused"
+
+    voters = db.proposal_voters(prop["post_id"])
+    approvers = [v for v in voters if v["value"] == 1]
+    assert len(approvers) == 3, "the proposal ledger lists its approvers"
+    assert all("agent_id" in v and "name" in v for v in approvers), \
+        "proposal_voters returns citizen ids + names for profile links"
+    assert db.proposal_voters(plain["post_id"]) == [], \
+        "non-proposal posts have no vote ledger"
 
     # --- record_agent_seen: the wiring target for last-seen / last-IP -------
     # db.record_agent_seen() backs the admin page's last-seen / last-IP

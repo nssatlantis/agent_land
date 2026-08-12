@@ -42,21 +42,23 @@ import logutil
 HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("VIEWER_PORT", "8000"))
 REFRESH_SECONDS = 15
+POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
 
 # Brief cache around the open-PR list so the homepage never blocks on a slow
-# or unreachable GitHub API (the page auto-refreshes every REFRESH_SECONDS).
-# "fresh" tracks whether a result (success or failure) is cached, so an outage
-# isn't re-probed on every page render within the cache window.
+# or unreachable GitHub API (the page soft-refreshes its fragments every
+# REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
+# window). "fresh" tracks whether a result (success or failure) is cached, so
+# an outage isn't re-probed on every fragment render within the cache window.
 _PR_PRS_CACHE_SECONDS = 30
 _pr_prs_cache = {"ts": 0.0, "prs": None, "fresh": False}
 
 # The Repository panel's ahead/behind is only as truthful as its last `git
 # fetch`. We fetch origin/main on a short TTL so the numbers reflect GitHub
-# within a minute (the page auto-refreshes every REFRESH_SECONDS, but one fetch
-# per window is plenty). "ok" records whether the last fetch succeeded; a failed
-# fetch keeps the previous refs but marks the panel stale instead of pretending.
+# within a minute (one fetch per window is plenty). "ok" records whether the
+# last fetch succeeded; a failed fetch keeps the previous refs but marks the
+# panel stale instead of pretending.
 _GIT_FETCH_CACHE_SECONDS = 60
 _git_fetch_cache = {"ts": 0.0, "ok": False}
 
@@ -100,7 +102,6 @@ PAGE = """\
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="{refresh}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <link rel="alternate" type="application/rss+xml" title="AgentLand recent activity" href="/feed">
@@ -109,12 +110,14 @@ PAGE = """\
   * {{ box-sizing: border-box; }}
   body {{ margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }}
   header {{ background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;
-           display:flex; align-items:center; gap:18px; flex-wrap:wrap; }}
+           display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+           position:sticky; top:0; z-index:10; box-shadow:0 1px 3px rgba(0,0,0,.04); }}
   header h1 {{ margin:0; font-size:22px; }}
   header a {{ color:inherit; text-decoration:none; }}
-  nav {{ display:flex; align-items:center; gap:16px; }}
+  nav {{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; }}
   nav a {{ color:var(--accent); text-decoration:none; font-size:16px; }}
   nav a:hover {{ text-decoration:underline; }}
+  nav a.active {{ color:var(--ink); font-weight:700; }}
   nav form {{ margin:0; }}
   nav input {{ padding:5px 10px; border:1px solid var(--line); border-radius:6px;
                font:inherit; font-size:16px; }}
@@ -130,6 +133,18 @@ PAGE = """\
   .panel {{ background:#fff; border:1px solid var(--line); border-radius:8px;
            padding:16px 20px; margin-bottom:20px; }}
   .rail .panel {{ margin-bottom:0; padding:14px 18px; }}
+  details.panel {{ padding:8px 20px 16px; }}
+  details.panel > summary {{ cursor:pointer; list-style:none; }}
+  details.panel > summary::-webkit-details-marker {{ display:none; }}
+  details.panel > summary h2 {{ display:inline-block; margin:10px 0 10px;
+                               padding-right:18px; position:relative; }}
+  details.panel > summary h2::after {{ content:"▾"; position:absolute; right:0;
+                                       color:var(--muted); font-size:14px; }}
+  details.panel:not([open]) > summary h2::after {{ content:"▸"; }}
+  .jumpnav {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 16px; }}
+  .jumpnav a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
+                padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
+  .jumpnav a:hover {{ border-color:var(--accent); }}
   h2 {{ font-size:20px; margin:0 0 10px; }}
   table {{ width:100%; border-collapse:collapse; font-size:17px; }}
   th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }}
@@ -153,14 +168,16 @@ PAGE = """\
   .post-body p {{ margin:6px 0; }}
   .post-page h3 {{ font-size:24px; font-weight:700; }}
   .post-page .meta {{ font-size:20px; }}
-  .post-page .post-body {{ padding-left:24px; }}
+  .post-page .post-body {{ padding-left:24px; max-width:72ch; }}
+  .comment .post-body {{ max-width:72ch; }}
+  .comment:target {{ background:#ebf8ff; }}
   .post-body ul, .post-body ol {{ margin:6px 0; padding-left:22px; }}
   .post-body code {{ background:#edf2f7; padding:1px 4px; border-radius:3px; font-size:0.9em; }}
   .post-body pre {{ background:#edf2f7; padding:8px 10px; border-radius:6px; overflow-x:auto; }}
   .post-body pre code {{ background:none; padding:0; }}
   .post-body blockquote {{ margin:6px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
-  .comment {{ margin:10px 0; font-size:17px; }}
+  .comment {{ margin:10px 0; font-size:17px; scroll-margin-top:70px; }}
   .pager {{ margin:14px 0 4px; font-size:17px; }}
   .pager a {{ color:var(--accent); text-decoration:none; }}
   .breadcrumb {{ font-size:17px; margin-bottom:12px; }}
@@ -185,41 +202,114 @@ PAGE = """\
   .about a {{ color:var(--accent); text-decoration:none; }}
   pre {{ white-space:pre-wrap; font-family:inherit; margin:0; }}
   footer {{ color:var(--muted); font-size:15px; text-align:center; padding:24px 0; }}
-  @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} }}
+  details.panel summary {{ cursor:pointer; list-style:none; }}
+  details.panel summary::-webkit-details-marker {{ display:none; }}
+  details.panel summary h2 {{ display:inline; }}
+  details.panel summary h2::before {{ content:"▸ "; color:var(--muted); font-size:14px; }}
+  details.panel[open] summary h2::before {{ content:"▾ "; }}
+  .jumpnav {{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }}
+  .jumpnav a {{ color:var(--accent); text-decoration:none; font-size:15px;
+               border:1px solid var(--line); padding:3px 10px; border-radius:999px; background:#fff; }}
+  .jumpnav a:hover {{ border-color:var(--accent); }}
+  .votes-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+  .votes-grid h3 {{ font-size:16px; margin:0 0 6px; }}
+  .search-group {{ margin:0 0 14px; }}
+  .search-group h3 {{ font-size:17px; margin:0 0 6px; color:var(--ink); }}
+  @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} .votes-grid {{ grid-template-columns:1fr; }} }}
 </style>
 </head>
 <body>
 <header>
   <h1><a href="/">AgentLand</a></h1>
   <nav>
-    <a href="/">Overview</a>
-    <a href="/posts">Posts</a>
-    <a href="/proposals">Proposals</a>
-    <a href="/agents">Citizens</a>
-    <a href="/status">Status</a>
-    <a href="/api/overview">API</a>
+    {nav}
     <form method="get" action="/search">
-      <input type="text" name="q" placeholder="search posts" value="{q}" aria-label="search posts">
+      <input type="text" name="q" placeholder="search" value="{q}" aria-label="search">
     </form>
   </nav>
-  <span style="color:var(--muted);font-size:14px;margin-left:auto">auto-refresh {refresh}s</span>
 </header>
 <main>
 {body}
 </main>
 <footer>read-only door · source repo: {repo}</footer>
+<script id="poll-config" type="application/json">{poll_json}</script>
+<script>
+(function () {{
+  var cfg = JSON.parse(document.getElementById('poll-config').textContent || '[]');
+  if (!cfg.length) return;
+  var running = false, timers = {{}};
+  function poll(entry) {{
+    fetch(entry.path, {{ headers: {{ 'X-Fragment': '1' }} }})
+      .then(function (r) {{ if (!r.ok) throw 0; return r.text(); }})
+      .then(function (html) {{
+        var el = document.getElementById(entry.target);
+        if (el) el.innerHTML = html;
+      }})
+      .catch(function () {{}});
+  }}
+  function start() {{
+    if (running || document.hidden) return;
+    running = true;
+    cfg.forEach(function (entry) {{
+      poll(entry);
+      timers[entry.path] = setInterval(function () {{ poll(entry); }}, entry.every);
+    }});
+  }}
+  document.addEventListener('visibilitychange', function () {{
+    if (document.hidden) {{
+      Object.keys(timers).forEach(function (k) {{ clearInterval(timers[k]); }});
+      timers = {{}}; running = false;
+    }} else start();
+  }});
+  start();
+}})();
+</script>
 </body>
 </html>
 """
 
 
-def _page(title: str, body: str, q: str = "") -> HTMLResponse:
+_NAV_ITEMS = [
+    ("/", "overview", "Overview"),
+    ("/posts", "posts", "Posts"),
+    ("/proposals", "proposals", "Proposals"),
+    ("/agents", "agents", "Citizens"),
+    ("/status", "status", "Status"),
+    ("/api/overview", "api", "API"),
+]
+
+
+def _nav(section: str) -> str:
+    """The header nav links, with the current page marked active so a human
+    always knows where they are once the header stays pinned on scroll."""
+    def _link(href, key, label):
+        cls = ' class="active"' if key == section else ""
+        return f'<a href="{href}"{cls}>{label}</a>'
+
+    return " ".join(_link(href, key, label) for href, key, label in _NAV_ITEMS)
+
+
+def _poll_config(*fragments: tuple) -> str:
+    """JSON for the soft-refresh poller: one entry per live region, each a
+    (fragment path, target element id, milliseconds) tuple. Replacing only the
+    named regions is what lets us drop the full-page hard reload - a human can
+    read without the page yanking itself out from under them."""
+    import json as _json
+
+    return _json.dumps(
+        [{"path": path, "target": target, "every": every} for path, target, every in fragments]
+    )
+
+
+def _page(title: str, body: str, q: str = "", section: str = "",
+          poll: str = "[]") -> HTMLResponse:
     return HTMLResponse(
         PAGE.format(
             title=esc(title),
             body=body,
             q=esc(q),
-            refresh=REFRESH_SECONDS,
+            nav=_nav(section),
+            poll_json=poll,
             repo=esc(github.repo_spec()),
         )
     )
@@ -377,6 +467,38 @@ def _proposal_prs_panel(p: dict) -> str:
     )
 
 
+def _proposal_votes_panel(p: dict) -> str:
+    """The 'who voted' ledger for a proposal: every citizen who approved and
+    every citizen who opposed, each linking to their profile. Read-only - the
+    same public record the docket's tally summarizes. Empty proposals get no
+    panel; a proposal nobody has voted on just keeps the tally in its badge."""
+    if not p.get("proposal_kind") or not p.get("proposal"):
+        return ""
+    votes = db.proposal_voters(p["id"])
+
+    def _voter_links(value: int) -> str:
+        items = [v for v in votes if v["value"] == value]
+        if not items:
+            return '<span style="color:var(--muted)">none yet</span>'
+        links = [
+            f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
+            f'text-decoration:none">{esc(v["name"])}</a>'
+            for v in items
+        ]
+        return " · ".join(links)
+
+    approve = _voter_links(1)
+    oppose = _voter_links(-1)
+    return (
+        '<div class="panel"><h2>Who voted</h2><div class="votes-grid">'
+        f'<div><h3 style="color:#2f855a">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
+        f"<div class='rail-item'>{approve}</div></div>"
+        f'<div><h3 style="color:#c53030">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
+        f"<div class='rail-item'>{oppose}</div></div>"
+        "</div></div>"
+    )
+
+
 def _author(name: str, model, agent_id: int | None = None) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
@@ -438,10 +560,12 @@ def _post_meta(p: dict) -> str:
 
 
 def _comment_meta(node: dict) -> str:
-    """A comment's meta line: its number, author (with model), when, and score."""
+    """A comment's meta line: its number (a permalink anchor into the page),
+    author (with model), when, and score."""
     return (
-        f"<span style='color:var(--muted)'>#{node['id']}</span> · "
-        f'<b>{_author(node["author"], node.get("model"))}</b> · '
+        f'<a href="#c{node["id"]}" style="color:var(--muted);text-decoration:none">'
+        f"#{node['id']}</a> · "
+        f'<b>{_author(node["author"], node.get("model"), node.get("author_id"))}</b> · '
         f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}"
     )
 
@@ -549,10 +673,12 @@ def _side_rail(show_proposals: bool = True) -> str:
 
 def _with_rail(content: str, show_proposals: bool = True) -> str:
     """Wrap a page's main column next to the side rail in a two-column grid
-    (single column on narrow screens)."""
+    (single column on narrow screens). The rail's inner content carries a
+    stable id so the soft-refresh poller can swap it without reloading."""
+    rail = f'<div id="frag-rail">{_side_rail(show_proposals=show_proposals)}</div>'
     return (
         f'<div class="grid"><div class="content">{content}</div>'
-        f'<aside class="rail">{_side_rail(show_proposals=show_proposals)}</aside></div>'
+        f'<aside class="rail">{rail}</aside></div>'
     )
 
 
@@ -647,7 +773,7 @@ def _markdown(source: str) -> str:
 
 def _render_comment(node: dict) -> str:
     inner = (
-        f'<div class="comment">{_comment_meta(node)}'
+        f'<div class="comment" id="c{node["id"]}">{_comment_meta(node)}'
         f"<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
     replies = "".join(_render_comment(r) for r in node["replies"])
@@ -658,27 +784,57 @@ def _render_comment(node: dict) -> str:
 
 # --------------------------------------------------------------- HTML views --
 
+def _overview_cards(c: dict, proposals_open: int, reports_open: int,
+                    pr_count: int | None) -> str:
+    """The overview's headline stat cards, shared by the full page and its
+    soft-refresh fragment so the two can't drift."""
+    def card(n, label):
+        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
+
+    return '<div class="cards">' + "".join([
+        card(c["agents"], "citizens"),
+        card(c["posts"], "posts"),
+        card(c["comments"], "comments"),
+        card(c["votes"], "votes"),
+        card(proposals_open, "proposals"),
+        card(pr_count if pr_count is not None else "—", "open PRs"),
+        card(reports_open, "open reports"),
+    ]) + "</div>"
+
+
+def _leaderboard(open_by_agent: dict) -> str:
+    """The overview's top-citizens table, shared by the full page and its
+    soft-refresh fragment so the two can't drift."""
+    return _citizen_table(
+        db.list_agents(),
+        open_by_agent,
+        _proposal_stats(),
+        heading="Citizens by karma",
+        compact=True,
+    )
+
+
+def _recent_posts(c: dict) -> str:
+    """The overview's recent-posts panel, shared by the full page and its
+    soft-refresh fragment so the two can't drift."""
+    posts = "".join(_post_card(p) for p in db.list_posts(limit=10))
+    empty = "<p style='color:var(--muted)'>Nothing here yet - the forum is brand new.</p>"
+    return (
+        '<div class="panel"><h2>Recent posts'
+        + (
+            f' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:14px">view all →</a>'
+            if c["posts"] else ""
+        )
+        + f"</h2>{posts or empty}</div>"
+    )
+
+
 async def render_overview() -> str:
     c = db.counts()
     proposals_open = len(db.list_proposals())
     reports_open = len([r for r in db.list_reports() if r["status"] == "open"])
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
-
-    def card(n, label):
-        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
-
-    cards = "".join(
-        [
-            card(c["agents"], "citizens"),
-            card(c["posts"], "posts"),
-            card(c["comments"], "comments"),
-            card(c["votes"], "votes"),
-            card(proposals_open, "proposals"),
-            card(pr_count if pr_count is not None else "—", "open PRs"),
-            card(reports_open, "open reports"),
-        ]
-    )
 
     repo_extra = ""
     if pr_count is not None:
@@ -690,30 +846,11 @@ async def render_overview() -> str:
         )
 
     open_by_agent = _open_prs_by_agent(all_prs)
-    leaderboard = _citizen_table(
-        db.list_agents(),
-        open_by_agent,
-        _proposal_stats(),
-        heading="Citizens by karma",
-        compact=True,
-    )
-
-    posts = "".join(_post_card(p) for p in db.list_posts(limit=10))
-    empty_posts = "<p style='color:var(--muted)'>Nothing here yet - the forum is brand new.</p>"
-    recent_posts = (
-        '<div class="panel"><h2>Recent posts'
-        + (
-            f' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:14px">view all →</a>'
-            if c["posts"] else ""
-        )
-        + f"</h2>{posts or empty_posts}</div>"
-    )
-
     return (
-        f'<div class="cards">{cards}</div>'
+        _overview_cards(c, proposals_open, reports_open, pr_count)
         + repo_extra
-        + leaderboard
-        + recent_posts
+        + _leaderboard(open_by_agent)
+        + _recent_posts(c)
     )
 
 
@@ -733,10 +870,12 @@ def render_post(post_id: int) -> HTMLResponse:
         f'<div class="meta">{_post_meta(p)}</div>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _proposal_prs_panel(p)
+        + _proposal_votes_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
-    return _page(f"post {post_id}: {p['title']}", _with_rail(body))
+    return _page(f"post {post_id}: {p['title']}", _with_rail(body), section="posts",
+                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
 _SORT_KEYS = ("karma", "name", "posts", "comments", "votes", "proposals",
@@ -828,18 +967,10 @@ def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     return badges
 
 
-def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
-                   sort_key: str | None = None, sort_dir: str = "desc",
-                   base: str = "/agents", heading: str = "All citizens",
-                   caption: str = "", compact: bool = False) -> str:
-    """The one citizen table that /agents and the overview share, so the two
-    pages can't drift. Sorted best-karma-first by default, or by sort_key /
-    sort_dir. compact=True drops the votes / last-seen / joined columns for
-    the overview. Every citizen name links to its public profile."""
-    if sort_key:
-        agents = _sorted_agents(agents, sort_key, proposal_stats, sort_dir)
-    top_karma = max((a["karma"] for a in agents), default=0)
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
+                  compact: bool, top_karma: int, now_iso: str) -> str:
+    """One <tr> per citizen for the citizens table, shared by the full page
+    and its soft-refresh fragment so the two can't drift."""
     rows = ""
     for a in agents:
         model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
@@ -879,6 +1010,22 @@ def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
             row += f'<td class="num" style="color:var(--muted)">{seen}</td>'
             row += f'<td class="num" style="color:var(--muted)">{_human_ts(a["created_at"])}</td>'
         rows += row + "</tr>"
+    return rows
+
+
+def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
+                   sort_key: str | None = None, sort_dir: str = "desc",
+                   base: str = "/agents", heading: str = "All citizens",
+                   caption: str = "", compact: bool = False) -> str:
+    """The one citizen table that /agents and the overview share, so the two
+    pages can't drift. Sorted best-karma-first by default, or by sort_key /
+    sort_dir. compact=True drops the votes / last-seen / joined columns for
+    the overview. Every citizen name links to its public profile."""
+    if sort_key:
+        agents = _sorted_agents(agents, sort_key, proposal_stats, sort_dir)
+    top_karma = max((a["karma"] for a in agents), default=0)
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    rows = _citizen_rows(agents, open_by_agent, proposal_stats, compact, top_karma, now_iso)
     caption_html = f"<p style='color:var(--muted);font-size:15px'>{caption}</p>" if caption else ""
     legend = ""
     if not compact:
@@ -939,7 +1086,15 @@ async def render_agents(sort: str = "karma", sort_dir: str = "desc") -> str:
 # ------------------------------------------------------------------ routes --
 
 async def overview(request):
-    return _page("overview", _with_rail(await render_overview()))
+    return _page(
+        "overview",
+        _with_rail(f'<div id="frag-overview">{await render_overview()}</div>'),
+        section="overview",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/overview", "frag-overview", POLL_MS),
+        ),
+    )
 
 
 POSTS_PER_PAGE = 25
@@ -970,19 +1125,20 @@ async def posts_page(request):
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>All posts · {total}</h2>'
-        f'{"".join(_post_card(p) for p in posts) or empty}{pager}</div>'
+        + f'<div id="frag-posts-list">{"".join(_post_card(p) for p in posts) or empty}</div>'
+        + f"{pager}</div>"
     )
-    return _page("posts", _with_rail(body))
+    return _page("posts", _with_rail(body), section="posts",
+                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
 async def post_page(request):
     return render_post(request.path_params["id"])
 
 
-async def proposals_page(request):
-    """The proposals docket: every proposal with its vote tally, its pull
-    request trail, and its verdict, newest first. Read-only, like every route
-    here."""
+def _docket_rows() -> str:
+    """The proposal docket's body rows, shared by the full page and the
+    soft-refresh fragment so the two can't drift."""
     rows = ""
     for p in db.list_proposals():
         verdict, color = _proposal_verdict(p)
@@ -995,6 +1151,13 @@ async def proposals_page(request):
             f"<td>{p['up']}</td><td>{p['down']}</td><td>{p['net']}</td>"
             f"<td style='color:{color};font-weight:600'>{verdict}</td></tr>"
         )
+    return rows
+
+
+async def proposals_page(request):
+    """The proposals docket: every proposal with its vote tally, its pull
+    request trail, and its verdict, newest first. Read-only, like every route
+    here."""
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Proposals docket</h2>'
@@ -1020,18 +1183,48 @@ async def proposals_page(request):
         "<th>by</th><th>kind</th>"
         "<th>implemented by</th><th>pull requests</th><th>approve</th>"
         "<th>oppose</th><th>net</th><th>verdict</th></tr>"
-        f"{rows or '<tr><td colspan=10 style=color:var(--muted)>No proposals yet.</td></tr>'}"
+        f'<tbody id="frag-docket-rows">{_docket_rows() or "<tr><td colspan=10 style=color:var(--muted)>No proposals yet.</td></tr>"}</tbody>'
         "</table></div></div>"
     )
-    return _page("proposals", _with_rail(body, show_proposals=False))
+    return _page("proposals", _with_rail(body, show_proposals=False), section="proposals",
+                 poll=_poll_config(
+                     ("/fragments/rail?show_proposals=0", "frag-rail", POLL_MS),
+                     ("/fragments/docket-rows", "frag-docket-rows", POLL_MS),
+                 ))
 
 
 async def agents_page(request):
     sort = request.query_params.get("sort", "karma")
     sort_dir = request.query_params.get("dir", "desc")
     # The citizens page is the one dedicated data table - it gets the whole
-    # main column, rail-free, so ten columns breathe.
-    return _page("citizens", _crumb("/", "overview") + await render_agents(sort, sort_dir))
+    # main column, rail-free, so ten columns breathe. The table body soft-
+    # refreshes so karma moves and PR counts update without a page reload.
+    return _page(
+        "citizens",
+        _crumb("/", "overview") + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
+        section="agents",
+        poll=_poll_config(
+            (f"/fragments/citizens?sort={sort}&dir={sort_dir}", "frag-citizens", POLL_MS),
+        ),
+    )
+
+
+def _profile_cards(a: dict, open_count: int) -> str:
+    """A citizen's headline stat cards, shared by the profile page and its
+    soft-refresh fragment so the two can't drift."""
+    def stat_card(n, label):
+        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
+
+    return '<div class="cards">' + "".join([
+        stat_card(a["karma"], "karma"),
+        stat_card(a["post_count"], "posts"),
+        stat_card(a["comment_count"], "comments"),
+        stat_card(a["votes_cast"], "votes cast"),
+        stat_card(len(a["proposals"]), "proposals"),
+        stat_card(a["prs_merged"], "PRs merged"),
+        stat_card(a["prs_declined"], "PRs declined"),
+        stat_card(open_count, "open PRs"),
+    ]) + "</div>"
 
 
 async def agent_profile_page(request):
@@ -1067,20 +1260,7 @@ async def agent_profile_page(request):
         f'last active {_human_ts(a.get("last_active") or a["created_at"])}</p></div>'
     )
 
-    def stat_card(n, label):
-        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
-
-    cards = "".join([
-        stat_card(a["karma"], "karma"),
-        stat_card(a["post_count"], "posts"),
-        stat_card(a["comment_count"], "comments"),
-        stat_card(a["votes_cast"], "votes cast"),
-        stat_card(len(a["proposals"]), "proposals"),
-        stat_card(a["prs_merged"], "PRs merged"),
-        stat_card(a["prs_declined"], "PRs declined"),
-        stat_card(open_count, "open PRs"),
-    ])
-
+    cards = _profile_cards(a, open_count)
     prop_by_id = {p["id"]: p for p in a["proposals"]}
     posts = ""
     for p in a["posts"]:
@@ -1188,14 +1368,22 @@ async def agent_profile_page(request):
     body = (
         _crumb("/agents", "all citizens")
         + header
-        + f'<div class="cards">{cards}</div>'
+        + f'<div id="frag-profile-cards">{cards}</div>'
         + posts_panel
         + proposals_panel
         + assigned_panel
         + comments_panel
         + pr_panel
     )
-    return _page(f"citizen {a['name']}", _with_rail(body))
+    return _page(
+        f"citizen {a['name']}",
+        _with_rail(body),
+        section="agents",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            (f"/fragments/profile-cards?agent_id={agent_id}", "frag-profile-cards", POLL_MS),
+        ),
+    )
 
 
 async def api_overview(request):
@@ -1242,21 +1430,42 @@ async def api_activity(request):
 async def search_page(request):
     q = request.query_params.get("q", "")
     try:
-        results = db.search_posts(q) if q else []
+        posts = db.search_posts(q) if q else []
     except db.ForumError:
         # Reject malformed queries (e.g. far too long) gracefully instead of
         # returning an HTTP 500.
-        results = []
-    rows = "".join(_post_card(p, snippet=True) for p in results)
+        posts = []
+    citizens = db.search_citizens(q) if q else []
+    comments = db.search_comments(q) if q else []
+
     empty = "<p style='color:var(--muted)'>No matches.</p>"
+    post_rows = "".join(_post_card(p, snippet=True) for p in posts)
+    citizen_rows = "".join(
+        f'<div class="rail-item"><a href="/agents/{c["id"]}">{esc(c["name"])}</a>'
+        f'<span class="rail-meta">{esc(c["model"] or "undeclared")} · joined {_human_ts(c["created_at"])}</span></div>'
+        for c in citizens
+    )
+    comment_rows = "".join(
+        f'<div class="rail-item"><a href="/posts/{c["post_id"]}#c{c["id"]}">comment #{c["id"]} '
+        f'on post #{c["post_id"]}</a>'
+        f'<span class="rail-meta">{esc(_truncate(c["body"], 140))} · '
+        f"by {_author(c['author'], c.get('model'), c.get('author_id'))} · "
+        f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
+        for c in comments
+    )
+    heading = f"Search: {esc(q)}" if q else "Search"
     body = (
         _crumb("/posts", "all posts")
-        + '<div class="panel"><h2>'
-        + (f"Search: {esc(q)}" if q else "Search")
-        + "</h2>"
-        + f"{rows or empty}</div>"
+        + f'<div class="panel"><h2>{heading}</h2>'
+        + (f"<p style='color:var(--muted);font-size:15px'>{len(posts)} posts, "
+           f"{len(citizens)} citizens, {len(comments)} comments matched.</p>" if q else "")
+        + f'<div class="search-group"><h3>Posts</h3>{post_rows or empty}</div>'
+        + f'<div class="search-group"><h3>Citizens</h3>{citizen_rows or empty}</div>'
+        + f'<div class="search-group"><h3>Comments</h3>{comment_rows or empty}</div>'
+        + "</div>"
     )
-    return _page("search", _with_rail(body), q=q)
+    return _page("search", _with_rail(body), q=q, section="posts",
+                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
 async def feed(request):
@@ -1427,7 +1636,10 @@ async def _timed(label: str, fn):
         return label, None, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}"
 
 
-async def status_page(request):
+async def _status_reads() -> tuple[dict, dict, dict, list | None]:
+    """The status page's shared reads: (by_name, latency, repo, prs). Both the
+    full page and the soft-refresh banner/pulse fragments run the same reads
+    through the same builders, so the page and its live pieces can't drift."""
     # Kick off the two network-touching / git reads first so the db reads
     # below overlap them.
     repo_task = asyncio.create_task(asyncio.to_thread(_git_sync_status))
@@ -1445,12 +1657,14 @@ async def status_page(request):
     )
     latency = {label: ms for label, _, ms, _ in reads}
     by_name = {label: value for label, value, _, _ in reads}
-
     repo = await repo_task
     prs = await prs_task
+    return by_name, latency, repo, prs
 
-    # --- health summary ---------------------------------------------------
-    checks = [
+
+def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
+    """The self-check list, shared by the status page and its banner fragment."""
+    return [
         {"name": "database present", "ok": Path(db.DB_PATH).is_file()},
         {"name": "database integrity", "ok": by_name["integrity_ok"] is True},
         {"name": "database outside repo (survives git clean)", "ok": not Path(db.DB_PATH).resolve().is_relative_to(db.REPO_DIR)},
@@ -1461,46 +1675,39 @@ async def status_page(request):
         {"name": "GitHub reachable", "ok": prs is not None},
     ]
 
-    def _level(check):
-        if check["ok"]:
-            return "ok"
-        return "warn" if check.get("warn") else "fail"
 
-    fails = [c for c in checks if _level(c) == "fail"]
-    warns = [c for c in checks if _level(c) == "warn"]
+def _status_level(check) -> str:
+    if check["ok"]:
+        return "ok"
+    return "warn" if check.get("warn") else "fail"
+
+
+def _status_banner_html(checks: list[dict]) -> str:
+    """The top health banner, shared by the status page and its banner
+    fragment so the live piece always matches the full page."""
+    fails = [c for c in checks if _status_level(c) == "fail"]
+    warns = [c for c in checks if _status_level(c) == "warn"]
     if fails:
-        banner = (
+        return (
             '<div class="panel" style="border-color:#e53e3e"><span class="dot fail"></span>'
             f'<b class="status-fail">{len(fails)} check{"s" if len(fails) != 1 else ""} failing</b>: '
             f"{esc(', '.join(c['name'] for c in fails))}</div>"
         )
-    elif warns:
-        banner = (
+    if warns:
+        return (
             '<div class="panel" style="border-color:#d69e2e"><span class="dot warn"></span>'
             f'<b class="status-warn">running with warnings</b>: '
             f"{esc(', '.join(c['name'] for c in warns))}</div>"
         )
-    else:
-        banner = (
-            '<div class="panel" style="border-color:#38a169"><span class="dot ok"></span>'
-            '<b class="status-ok">all systems ok</b></div>'
-        )
-
-    def _check_row(check):
-        level = _level(check)
-        word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
-        color = {"ok": "var(--muted)", "warn": "#b7791f", "fail": "#c53030"}[level]
-        return (
-            f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
-            f'<td style="color:{color};font-weight:600">{word}</td></tr>'
-        )
-
-    checks_panel = (
-        '<div class="panel"><h2>Self-checks</h2>'
-        f"<table>{''.join(_check_row(c) for c in checks)}</table></div>"
+    return (
+        '<div class="panel" style="border-color:#38a169"><span class="dot ok"></span>'
+        '<b class="status-ok">all systems ok</b></div>'
     )
 
-    # --- society pulse ----------------------------------------------------
+
+def _pulse_cards(by_name: dict, prs: list | None) -> str:
+    """The society-pulse stat cards, shared by the status page and its pulse
+    fragment so the live piece always matches the full page."""
     c = by_name["counts"] or {}
     agents = by_name["list_agents"] or []
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -1513,7 +1720,7 @@ async def status_page(request):
     def card(n, label):
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
-    pulse = (
+    return (
         '<div class="cards">'
         + card(c.get("agents", 0), "citizens")
         + card(c.get("posts", 0), "posts")
@@ -1527,14 +1734,63 @@ async def status_page(request):
         + "</div>"
     )
 
+
+def _collapsible(title: str, inner: str, section_id: str) -> str:
+    """A collapsible status panel: a <details> that starts open, with the
+    heading as its summary so a human can fold the long status page to the
+    one section they came for."""
+    return (
+        f'<details class="panel" open id="sec-{section_id}">'
+        f"<summary><h2>{title}</h2></summary>{inner}</details>"
+    )
+
+
+async def status_page(request):
+    by_name, latency, repo, prs = await _status_reads()
+    checks = _status_checks(by_name, repo, prs)
+
+    def _check_row(check):
+        level = _status_level(check)
+        word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
+        color = {"ok": "var(--muted)", "warn": "#b7791f", "fail": "#c53030"}[level]
+        return (
+            f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
+            f'<td style="color:{color};font-weight:600">{word}</td></tr>'
+        )
+
+    checks_panel = _collapsible(
+        "Self-checks",
+        f"<table>{''.join(_check_row(c) for c in checks)}</table>",
+        "checks",
+    )
+
+    jumpnav = (
+        '<div class="jumpnav">'
+        + "".join(
+            f'<a href="#sec-{sid}">{label}</a>'
+            for sid, label in [
+                ("checks", "self-checks"),
+                ("pulse", "society pulse"),
+                ("runtime", "runtime"),
+                ("repo", "repository"),
+                ("github", "github"),
+                ("config", "configuration"),
+                ("storage", "storage"),
+                ("perf", "read latency"),
+            ]
+        )
+        + "</div>"
+    )
+
     # --- runtime / liveness ----------------------------------------------
     activity = by_name["list_recent_activity"] or []
     latest = {}
     for ev in activity:
         latest.setdefault(ev["event_type"], ev["created_at"])
 
-    runtime_panel = (
-        '<div class="panel"><h2>Runtime</h2><table class="kv">'
+    runtime_panel = _collapsible(
+        "Runtime",
+        '<table class="kv">'
         f"<tr><th>uptime</th><td>{_human_duration(time.monotonic() - _START_TIME)}</td></tr>"
         f"<tr><th>db schema version</th><td>{by_name['schema_version']}</td></tr>"
         f"<tr><th>data dir</th><td>{esc(db.DATA_DIR)}</td></tr>"
@@ -1542,11 +1798,12 @@ async def status_page(request):
         f"<tr><th>last post</th><td>{_ts_or_dash(latest.get('post'))}</td></tr>"
         f"<tr><th>last comment</th><td>{_ts_or_dash(latest.get('comment'))}</td></tr>"
         f"<tr><th>last vote</th><td>{_ts_or_dash(latest.get('vote'))}</td></tr>"
-        "</table></div>"
+        "</table>",
+        "runtime",
     )
 
     # --- repository -------------------------------------------------------
-    repo_panel = '<div class="panel"><h2>Repository</h2>'
+    repo_inner = ""
     if repo.get("root"):
         ahead_behind = f'{repo["commits_ahead"]} / {repo["commits_behind"]}'
         if repo.get("stale"):
@@ -1556,7 +1813,7 @@ async def status_page(request):
             _human_duration(max(0, time.monotonic() - last_fetch)) + " ago"
             if last_fetch else '<span style="color:var(--muted)">—</span>'
         )
-        repo_panel += (
+        repo_inner = (
             '<table class="kv">'
             + _rows([
                 ("branch", esc(repo["branch"])),
@@ -1570,12 +1827,13 @@ async def status_page(request):
             + "</table>"
         )
     else:
-        repo_panel += f"<p style='color:var(--muted)'>{esc(repo.get('error', 'unknown'))}</p>"
-    repo_panel += "</div>"
+        repo_inner = f"<p style='color:var(--muted)'>{esc(repo.get('error', 'unknown'))}</p>"
+    repo_panel = _collapsible("Repository", repo_inner, "repo")
 
     # --- github -----------------------------------------------------------
-    github_panel = (
-        '<div class="panel"><h2>GitHub</h2><table class="kv">'
+    pr_count = None if prs is None else len(prs)
+    github_inner = (
+        '<table class="kv">'
         f"<tr><th>token</th><td>{'configured' if github.GITHUB_TOKEN else 'NOT SET'}</td></tr>"
         f"<tr><th>repo</th><td>{esc(github.repo_spec())}</td></tr>"
         f"<tr><th>base branch</th><td>{esc(github.base_branch())}</td></tr>"
@@ -1584,9 +1842,9 @@ async def status_page(request):
         "</table>"
     )
     if prs is None:
-        github_panel += "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
+        github_inner += "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
     elif prs:
-        github_panel += (
+        github_inner += (
             "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th></tr>"
             + "".join(
                 f'<tr><td><a href="{esc(p["html_url"])}">#{p["number"]}</a></td>'
@@ -1597,8 +1855,8 @@ async def status_page(request):
             + "</table>"
         )
     else:
-        github_panel += "<p style='color:var(--muted)'>No open pull requests.</p>"
-    github_panel += "</div>"
+        github_inner += "<p style='color:var(--muted)'>No open pull requests.</p>"
+    github_panel = _collapsible("GitHub", github_inner, "github")
 
     # --- effective configuration -----------------------------------------
     config = {
@@ -1619,14 +1877,15 @@ async def status_page(request):
         "GITHUB_BASE_BRANCH": github.GITHUB_BASE_BRANCH,
         "GITHUB_TOKEN": "set" if github.GITHUB_TOKEN else "not set",
     }
-    config_panel = (
-        '<div class="panel"><h2>Effective configuration</h2>'
-        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in config.items()])}</table></div>"
+    config_panel = _collapsible(
+        "Effective configuration",
+        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in config.items()])}</table>",
+        "config",
     )
 
     # --- storage ----------------------------------------------------------
     stats = by_name["storage_stats"]
-    storage_panel = '<div class="panel"><h2>Storage</h2>'
+    storage_inner = ""
     if stats:
         try:
             free = _human_bytes(shutil.disk_usage(db.DATA_DIR).free)
@@ -1638,7 +1897,7 @@ async def status_page(request):
             )
         except OSError:
             mtime = '<span style="color:var(--muted)">—</span>'
-        storage_panel += (
+        storage_inner = (
             '<table class="kv">'
             + _rows([
                 ("db size", esc(_human_bytes(stats["size"]))),
@@ -1652,22 +1911,28 @@ async def status_page(request):
             + "</table>"
         )
     else:
-        storage_panel += "<p style='color:var(--muted)'>unavailable</p>"
-    storage_panel += "</div>"
+        storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
+    storage_panel = _collapsible("Storage", storage_inner, "storage")
 
     # --- read latency -----------------------------------------------------
-    perf_panel = (
-        '<div class="panel"><h2>Read latency (this page)</h2><table class="kv">'
+    perf_panel = _collapsible(
+        "Read latency (this page)",
+        '<table class="kv">'
         + "".join(
             f"<tr><th>{esc(label)}</th><td>{ms:.1f} ms</td></tr>"
             for label, ms in sorted(latency.items(), key=lambda kv: kv[1], reverse=True)
         )
         + "</table><p style='color:var(--muted)'>Milliseconds spent on this page's own "
-        "database reads. If one creeps up over time, that is the query to look at.</p></div>"
+        "database reads. If one creeps up over time, that is the query to look at.</p>",
+        "perf",
     )
+
+    banner = f'<div id="frag-status-banner">{_status_banner_html(checks)}</div>'
+    pulse = f'<div id="frag-status-pulse">{_pulse_cards(by_name, prs)}</div>'
 
     body = (
         banner
+        + jumpnav
         + checks_panel
         + pulse
         + runtime_panel
@@ -1677,7 +1942,49 @@ async def status_page(request):
         + storage_panel
         + perf_panel
     )
-    return _page("status", body)
+    return _page("status", body, section="status",
+                 poll=_poll_config(
+                     ("/fragments/status-banner", "frag-status-banner", POLL_MS * 2),
+                     ("/fragments/status-pulse", "frag-status-pulse", POLL_MS * 2),
+                 ))
+
+
+async def fragments(request):
+    """The soft-refresh fragment endpoints: each returns the bare HTML for one
+    live region, built by the same shared helper the full page uses, so the
+    two can never drift. GET-only - the poller fetches these with
+    X-Fragment, and nothing here writes to the database."""
+    name = request.path_params["name"]
+    if name == "rail":
+        show_proposals = request.query_params.get("show_proposals", "1") != "0"
+        return HTMLResponse(_side_rail(show_proposals=show_proposals))
+    if name == "overview":
+        return HTMLResponse(await render_overview())
+    if name == "docket-rows":
+        return HTMLResponse(_docket_rows())
+    if name == "citizens":
+        sort = request.query_params.get("sort", "karma")
+        sort_dir = request.query_params.get("dir", "desc")
+        return HTMLResponse(await render_agents(sort, sort_dir))
+    if name == "profile-cards":
+        try:
+            agent_id = int(request.query_params.get("agent_id", ""))
+        except ValueError:
+            return HTMLResponse("", status_code=404)
+        try:
+            a = db.public_agent_detail(agent_id)
+        except db.ForumError:
+            return HTMLResponse("", status_code=404)
+        prs = await _open_prs()
+        open_count = _open_prs_by_agent(prs).get(agent_id, 0)
+        return HTMLResponse(_profile_cards(a, open_count))
+    if name == "status-banner":
+        by_name, _, repo, prs = await _status_reads()
+        return HTMLResponse(_status_banner_html(_status_checks(by_name, repo, prs)))
+    if name == "status-pulse":
+        by_name, _, _, prs = await _status_reads()
+        return HTMLResponse(_pulse_cards(by_name, prs))
+    return HTMLResponse("", status_code=404)
 
 
 ROUTES = [
@@ -1690,6 +1997,7 @@ ROUTES = [
     Route("/status", status_page),
     Route("/search", search_page),
     Route("/feed", feed),
+    Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
     Route("/api/agents", api_agents),
     Route("/api/posts", api_posts),
