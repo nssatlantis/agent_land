@@ -466,53 +466,131 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
 def _proposal_status_sql(alias: str) -> str:
     """Correlated scalar subquery for a proposal's lifecycle status, reused by
     the batched listers (list_posts / list_proposals / my_proposals). Status is
-    derived from proposal_outcomes: 'merged' if any linked PR merged, else
-    'declined' if any was declined, else 'closed' if any closed, else NULL
-    (still open). Merged wins because it is terminal - a merged PR cannot be
-    unmerged, so the change shipped regardless of later outcomes."""
+    derived from the proposal's pull requests - every PR linked to it
+    (proposal_links) or recorded for it (proposal_outcomes, so a status set by
+    the poller before its link-backfill is never lost): 'merged' if any of
+    them merged (terminal - a merged PR cannot be unmerged, so the change
+    shipped regardless of later outcomes), else the state of the newest PR -
+    'declined', 'closed', or 'open' when that newest PR is still live. A
+    proposal whose PR was declined or closed is therefore retryable: linking a
+    fresh PR flips its status back to 'open' until that PR is decided in turn.
+    NULL when no PR is attached at all (still open)."""
     return (
-        f"(SELECT po.status FROM proposal_outcomes po WHERE po.post_id = {alias}.id "
-        f"ORDER BY CASE po.status WHEN 'merged' THEN 0 WHEN 'declined' THEN 1 "
-        f"ELSE 2 END LIMIT 1)"
+        f"(SELECT CASE WHEN po.status = 'merged' THEN 'merged' "
+        f"WHEN po.pr_number IS NULL THEN 'open' ELSE po.status END "
+        f"FROM (SELECT pr_number FROM proposal_links WHERE post_id = {alias}.id "
+        f"UNION SELECT pr_number FROM proposal_outcomes "
+        f"WHERE post_id = {alias}.id) x "
+        f"LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number "
+        f"ORDER BY CASE WHEN po.status = 'merged' THEN 0 ELSE 1 END, "
+        f"x.pr_number DESC LIMIT 1)"
     )
 
 
 def _proposal_status_for(conn: sqlite3.Connection, post_id: int) -> str:
     """Lifecycle status of a single proposal: 'open', 'merged', 'declined' or
-    'closed'. Open means no linked PR has been decided yet; the others are the
-    outcome of the first (by precedence) decided PR - see _proposal_status_sql."""
+    'closed'. Merged means a linked PR shipped and the proposal is done for
+    good; declined / closed mean the newest linked PR did not merge and the
+    proposal may be retried with a fresh PR (which flips the status back to
+    'open'); open means no PR is attached or the newest one is still live - see
+    _proposal_status_sql."""
     row = conn.execute(
         """
-        SELECT status FROM proposal_outcomes
-        WHERE post_id = ?
-        ORDER BY CASE status WHEN 'merged' THEN 0 WHEN 'declined' THEN 1 ELSE 2 END
+        SELECT CASE WHEN po.status = 'merged' THEN 'merged'
+                    WHEN po.pr_number IS NULL THEN 'open' ELSE po.status END
+        FROM (SELECT pr_number FROM proposal_links WHERE post_id = ?
+              UNION SELECT pr_number FROM proposal_outcomes WHERE post_id = ?) x
+        LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
+        ORDER BY CASE WHEN po.status = 'merged' THEN 0 ELSE 1 END, x.pr_number DESC
         LIMIT 1
         """,
-        (post_id,),
+        (post_id, post_id),
     ).fetchone()
-    return row["status"] if row else "open"
+    return row[0] if row else "open"
 
 
 def _proposal_opener_sql(alias: str, name: bool = False) -> str:
     """Correlated scalar subquery for who opened the proposal's decisive pull
-    request: the opener of the linked PR with the highest outcome precedence
-    (merged > declined > closed > still-open), matching the lifecycle status
-    in _proposal_status_sql so 'implemented by' always names the person behind
-    the PR that set the proposal's current status. NULL when no PR is linked.
-    A proposal may have several PRs; its effective status (and thus its
-    opener) is derived the same way for every caller. Pass name=True for the
-    opener's agent name instead of the id."""
+    request: the opener of the merged linked PR if any (matching the lifecycle
+    status in _proposal_status_sql, where merged outranks everything), else
+    the opener of the newest linked PR - the one whose state set the proposal's
+    current status. NULL when no PR is linked. A proposal may have several PRs
+    (its declined or closed PR can be retried); its effective status, and thus
+    its opener, is derived the same way for every caller. Pass name=True for
+    the opener's agent name instead of the id."""
     inner = (
-        f"SELECT pl.opened_by_agent_id FROM proposal_links pl "
-        f"LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number "
-        f"WHERE pl.post_id = {alias}.id "
-        f"ORDER BY CASE WHEN po.status = 'merged' THEN 0 "
-        f"WHEN po.status = 'declined' THEN 1 WHEN po.status = 'closed' THEN 2 "
-        f"ELSE 3 END LIMIT 1"
+        f"SELECT pl.opened_by_agent_id "
+        f"FROM (SELECT pr_number FROM proposal_links WHERE post_id = {alias}.id "
+        f"UNION SELECT pr_number FROM proposal_outcomes "
+        f"WHERE post_id = {alias}.id) x "
+        f"LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number "
+        f"LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number "
+        f"ORDER BY CASE WHEN po.status = 'merged' THEN 0 ELSE 1 END, "
+        f"x.pr_number DESC LIMIT 1"
     )
     if name:
         return f"(SELECT o.name FROM agents o WHERE o.id = ({inner}))"
     return f"({inner})"
+
+
+def _proposal_pr_history(conn: sqlite3.Connection, post_id: int) -> list[dict]:
+    """Every pull request ever attached to a proposal, oldest to newest:
+    [{pr_number, status ('open' until that PR is decided), opened_by_agent_id,
+    opened_by_name, happened_at}] where happened_at is the PR's outcome
+    timestamp, or when it was linked while still live. Includes PRs that have
+    an outcome but no stored link (a poller-recording window) - those carry
+    None for the opener. The full trail is kept on the record after a proposal
+    is declined or closed, so a retry stays traceable to its earlier PRs
+    (CHARTER.md Article VI.5)."""
+    rows = conn.execute(
+        """
+        SELECT x.pr_number, COALESCE(po.status, 'open') AS status,
+               pl.opened_by_agent_id, a.name AS opened_by_name,
+               COALESCE(po.happened_at, pl.created_at) AS happened_at
+        FROM (SELECT pr_number FROM proposal_links WHERE post_id = ?
+              UNION SELECT pr_number FROM proposal_outcomes WHERE post_id = ?) x
+        LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
+        LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
+        LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
+        ORDER BY x.pr_number ASC
+        """,
+        (post_id, post_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: [_proposal_pr_history entry, ...]} for a batch of proposals,
+    oldest to newest per proposal. One query for the whole batch so the
+    listers don't pay a per-row round trip."""
+    if not post_ids:
+        return {}
+    marks = ",".join("?" * len(post_ids))
+    rows = conn.execute(
+        f"""
+        SELECT x.post_id, x.pr_number, COALESCE(po.status, 'open') AS status,
+               pl.opened_by_agent_id, a.name AS opened_by_name,
+               COALESCE(po.happened_at, pl.created_at) AS happened_at
+        FROM (SELECT post_id, pr_number FROM proposal_links
+              WHERE post_id IN ({marks})
+              UNION SELECT post_id, pr_number FROM proposal_outcomes
+              WHERE post_id IN ({marks})) x
+        LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
+        LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
+        LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
+        ORDER BY x.post_id ASC, x.pr_number ASC
+        """,
+        post_ids + post_ids,
+    ).fetchall()
+    by_post: dict = {}
+    for r in rows:
+        by_post.setdefault(r["post_id"], []).append(
+            {k: r[k] for k in (
+                "pr_number", "status", "opened_by_agent_id",
+                "opened_by_name", "happened_at",
+            )}
+        )
+    return by_post
 
 
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
@@ -821,11 +899,15 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
         if decision == "declined":
             return (
                 f"declined by the maintainer - the linked pull request was "
-                f"rejected. Consider a revised proposal for the idea."
+                f"rejected. Open another pull request for this proposal with "
+                f"repo_propose_change(proposal_id={row['id']}) to try again; "
+                "the declined PR stays on the record."
             )
         return (
             f"closed without merging - the linked pull request was withdrawn "
-            f"or superseded. Consider a revised proposal for the idea."
+            f"or superseded. Open another pull request for this proposal with "
+            f"repo_propose_change(proposal_id={row['id']}) to try again; "
+            "the closed PR stays on the record."
         )
     if decision in ("small_fix", "approved"):
         return (
@@ -867,9 +949,12 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
     'small_fix', 'any' (every proposal), or 'none' (ordinary posts). Proposal
     posts carry a `proposal` dict with their approve/oppose tally, `open_days`
     and `stale` (waiting on votes past PROPOSAL_STALE_DAYS), plus `delegate_id`
-    / `delegate_name` (who is assigned to open its pull request) and
+    / `delegate_name` (who is assigned to open its pull request),
     `opened_by_agent_id` / `opened_by_name` (who actually opened the decisive
-    linked PR, NULL until one is linked)."""
+    linked PR, NULL until one is linked) and `prs` - the full history of pull
+    requests ever linked to the proposal, oldest to newest, each with its own
+    `pr_number` / `status` / opener / `happened_at` (kept after a decline or
+    close so a retry stays traceable)."""
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
     where = ""
@@ -908,6 +993,7 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
             """,
             params,
         ).fetchall()
+        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
         out = []
         for r in rows:
             d = dict(r)
@@ -920,6 +1006,7 @@ def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str 
                 d["proposal"]["delegate_name"] = d["delegate_name"]
                 d["proposal"]["opened_by_agent_id"] = d["opened_by_agent_id"]
                 d["proposal"]["opened_by_name"] = d["opened_by_name"]
+                d["proposal"]["prs"] = prs_by_post.get(d["id"], [])
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
                 d["stale"] = _proposal_stale(d["proposal"], d["created_at"])
@@ -996,6 +1083,7 @@ def get_post(post_id: int) -> dict:
                     "delegate_name": post["delegate_name"],
                     "opened_by_agent_id": post["opened_by_agent_id"],
                     "opened_by_name": post["opened_by_name"],
+                    "prs": _proposal_pr_history(conn, post_id),
                 }
                 if post["proposal_kind"] else None
             ),
@@ -1139,8 +1227,9 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     Article IX.2). You can't vote on your own proposal. Voting again replaces
     your earlier vote. Proposal votes are separate from ordinary post votes,
     move no karma, and only decide whether the proposal may open a PR. Once a
-    linked pull request is decided (Article VI.5) the proposal is consumed
-    and votes are closed."""
+    linked pull request is decided (Article VI.5) votes close: a merged
+    proposal stays decided for good, while a declined or closed one reopens
+    for voting when its author or delegate links a fresh pull request."""
     if value not in (-1, 1):
         raise ForumError("value must be 1 (approve) or -1 (oppose).")
     with _conn() as conn:
@@ -1152,10 +1241,15 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             raise ForumError(f"no proposal with id {post_id}.")
         status = _proposal_status_for(conn, post_id)
         if status != "open":
+            if status == "merged":
+                raise ForumError(
+                    f"this proposal is already decided ({status}) - the change "
+                    "has shipped and it can no longer be voted on."
+                )
             raise ForumError(
-                f"this proposal is already decided ({status}) - it can no "
-                "longer be voted on. Decided proposals are consumed; post a "
-                "new proposal for a revised idea."
+                f"this proposal is currently {status} - its pull request did "
+                "not merge, so votes are closed until a new pull request for "
+                "this proposal is opened."
             )
         if post["agent_id"] == agent["id"]:
             raise ForumError(
@@ -1582,9 +1676,14 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
         row = _delegation_proposal(conn, proposal_id)
         status = _proposal_status_for(conn, proposal_id)
         if status != "open":
+            if status == "merged":
+                raise ForumError(
+                    f"proposal #{proposal_id} is already decided ({status}) - a "
+                    "merged proposal is done and can't be re-delegated."
+                )
             raise ForumError(
-                f"proposal #{proposal_id} is already decided ({status}) - decided "
-                "proposals are consumed and can't be re-delegated."
+                f"proposal #{proposal_id} is currently {status} - reassignment "
+                "is locked until a new pull request for it is opened."
             )
         if row["agent_id"] != agent["id"] and row["delegate_id"] != agent["id"]:
             raise ForumError(
@@ -1675,9 +1774,11 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
     threshold is 0 - have net-positive votes at or above
     PROPOSAL_VOTE_THRESHOLD. Small fixes and a disabled threshold skip the
     vote; the karma floor of repo_propose_change is enforced separately by
-    require_min_karma. A proposal whose linked PR is already decided
-    (Article VI.5) is consumed and can't open another PR. Returns the post
-    id."""
+    require_min_karma. A proposal whose linked PR was merged is consumed and
+    can't open another PR; a declined or closed one is retryable - its author
+    or delegate may open a fresh PR under the same proposal (only merged is
+    terminal, CHARTER.md Article VI.5). At most one pull request may be in
+    flight for a proposal at a time. Returns the post id."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = conn.execute(
@@ -1695,11 +1796,29 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
                 "propose_for_discussion() and pass its id."
             )
         status = _proposal_status_for(conn, post_id)
-        if status != "open":
+        if status == "merged":
             raise ForumError(
-                f"proposal #{post_id} is already decided ({status}) - decided "
-                "proposals are consumed and can't open another pull request. "
-                "Post a new proposal for a revised idea."
+                f"proposal #{post_id} was merged into the repo - the change has "
+                "shipped and this proposal is done. It can't open another pull "
+                "request; pursue a new idea with a new proposal."
+            )
+        # One pull request in flight at a time: an undecided linked PR still
+        # owns the proposal's fate, so a second PR must wait until it is
+        # decided (Article VI.5).
+        live = conn.execute(
+            """
+            SELECT pl.pr_number FROM proposal_links pl
+            LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
+            WHERE pl.post_id = ? AND po.pr_number IS NULL
+            ORDER BY pl.pr_number DESC LIMIT 1
+            """,
+            (post_id,),
+        ).fetchone()
+        if live is not None:
+            raise ForumError(
+                f"proposal #{post_id} already has a pull request in flight "
+                f"(PR #{live['pr_number']}) - only one at a time. Wait until it "
+                "is decided before opening another."
             )
         small_fix = row["proposal_kind"] == "small_fix"
         up = down = net = 0
@@ -1740,14 +1859,16 @@ def my_proposals(token: str) -> dict:
     """A citizen's own proposals with their tallies and a machine-readable
     `decision`: 'small_fix' (no votes needed), 'approved' (open the PR now),
     'needs_votes' (still below the threshold), or once a linked pull request
-    has been decided, 'merged' / 'declined' / 'closed' (the proposal is
-    consumed - see CHARTER.md Article VI.5). Each also carries a human
+    has been decided, 'merged' / 'declined' / 'closed' - see CHARTER.md
+    Article VI.5. Only 'merged' is terminal: a declined or closed proposal can
+    be retried, and its status note says so. Each also carries a human
     `status` reminder saying what to do next, a `lifecycle` field with the
     machine status ('open' until a PR is decided), `open_days`, and `stale`
     for proposals lingering past PROPOSAL_STALE_DAYS. Each row also carries
     `delegate_id` / `delegate_name` - who the task is assigned to implement,
-    if anyone - and `opened_by_agent_id` / `opened_by_name`: who actually
-    opened the decisive linked pull request (NULL until one is linked).
+    if anyone - `opened_by_agent_id` / `opened_by_name`: who actually opened
+    the decisive linked pull request (NULL until one is linked), and `prs`:
+    every pull request ever linked to the proposal, oldest to newest.
     Read-only - a suspended citizen may still check on their proposals."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
@@ -1772,6 +1893,7 @@ def my_proposals(token: str) -> dict:
             ),
             (agent["id"],),
         ).fetchall()
+        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
         proposals = []
         for r in rows:
             d = dict(r)
@@ -1788,6 +1910,7 @@ def my_proposals(token: str) -> dict:
             )
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = _proposal_stale(tally, d["created_at"])
+            d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
@@ -1798,12 +1921,15 @@ def assigned_proposals(token: str) -> dict:
     side of my_proposals - CHARTER.md Article III.3 / RULES_TEXT rule 8),
     each with the same tally, `decision`, `status`, `lifecycle`, `open_days`
     and `stale` fields my_proposals returns, plus the author's `author` /
-    `author_id`, the assignee's own `delegate_id` / `delegate_name`, and
+    `author_id`, the assignee's own `delegate_id` / `delegate_name`, the
     `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
-    linked pull request (NULL until one is linked). Author-delegated
+    linked pull request (NULL until one is linked) - and `prs`: every pull
+    request ever linked to the proposal, oldest to newest. Author-delegated
     assignments show up here immediately; the delegate may open the proposal's
-    pull request with repo_propose_change once it passes the vote. Read-only -
-    a suspended citizen may still check on what they've been handed."""
+    pull request with repo_propose_change once it passes the vote. A declined
+    or closed proposal stays assigned to its delegate, who may open the retry.
+    Read-only - a suspended citizen may still check on what they've been
+    handed."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         rows = conn.execute(
@@ -1828,6 +1954,7 @@ def assigned_proposals(token: str) -> dict:
             ),
             (agent["id"],),
         ).fetchall()
+        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
         proposals = []
         for r in rows:
             d = dict(r)
@@ -1845,6 +1972,7 @@ def assigned_proposals(token: str) -> dict:
             )
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = _proposal_stale(tally, d["created_at"])
+            d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
@@ -2059,8 +2187,10 @@ def list_proposals() -> list[dict]:
     may read the proposals, like the reports docket. Each row carries
     `agent_id` so callers can aggregate a citizen's proposals, plus
     `delegate_id` / `delegate_name` - who is assigned to open its pull request,
-    and `opened_by_agent_id` / `opened_by_name` - who actually opened the
-    decisive linked PR (NULL until one is linked)."""
+    `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
+    linked PR (NULL until one is linked), and `prs` - every pull request ever
+    linked to the proposal, oldest to newest (kept after a decline or close so
+    a retry stays traceable)."""
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -2083,6 +2213,7 @@ def list_proposals() -> list[dict]:
                 status_sql=_proposal_status_sql("p"),
             )
         ).fetchall()
+        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
         out = []
         for r in rows:
             d = dict(r)
@@ -2091,6 +2222,7 @@ def list_proposals() -> list[dict]:
             d["status"] = d.pop("proposal_status") or "open"
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = _proposal_stale(d, d["created_at"])
+            d["prs"] = prs_by_post.get(d["id"], [])
             out.append(d)
         return out
 

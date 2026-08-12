@@ -26,9 +26,12 @@ Covers the community-moderation rules:
   delegate clears their assignments
 - the proposal docket's actionable flags (needs_votes / stale), the whoami
   nudge, and the my_proposals status reminders
-- the proposal lifecycle (CHARTER.md Article VI.5): a decided PR marks a
-  proposal merged / declined / closed, locks further votes and PRs, and the
-  status surfaces in list_proposals / list_posts / get_post / my_proposals
+- the proposal lifecycle (CHARTER.md Article VI.5): only a merged PR marks a
+  proposal done for good - it locks further votes and PRs. A declined or
+  closed PR leaves the proposal retryable: the author (or delegate) opens a
+  fresh PR, status flips back to open, votes and delegation reopen, at most
+  one PR is in flight at a time, and the full PR trail is carried by
+  list_proposals / list_posts / get_post / my_proposals / assigned_proposals
 - declined-PR attribution: a declined PR costs its author karma (the Citizen
   trailer / opener), never the recorded delegate - a delegated-but-never-
   opened proposal leaves the delegate's karma untouched while the PR author
@@ -624,6 +627,14 @@ def main():
     assert docket[p1]["status"] == "open" and docket[p2]["status"] == "open", \
         "approved and small-fix proposals stay open until their PR is decided"
 
+    # While open, the proposal can be voted on and clear the PR gate. The link
+    # is recorded AFTER the gate passes (as repo_propose_change does) - a PR
+    # that is live blocks a second one from opening.
+    db.vote_on_proposal(agents["zeta"]["token"], plife, 1)
+    db.vote_on_proposal(agents["eta"]["token"], plife, 1)
+    db.vote_on_proposal(agents["gamma"]["token"], plife, 1)
+    db.require_proposal_approval(agents["epsilon"]["token"], plife, "repo_propose_change")
+
     # Linking a PR to a proposal is idempotent (UNIQUE pr_number): recording
     # the same PR twice never adds a row or overwrites the original opener.
     db.link_pr_to_proposal(101, plife, agents["epsilon"]["agent_id"])
@@ -635,25 +646,24 @@ def main():
         ).fetchone()[0]
     assert n_links == 1 and linked_by == agents["epsilon"]["agent_id"], \
         "linking the same PR twice is a no-op"
+    assert "in flight" in expect_error(
+        db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
+    ), "a live PR blocks a second one from opening"
 
-    # While open, the proposal can still be voted on and clear the PR gate.
-    db.vote_on_proposal(agents["zeta"]["token"], plife, 1)
-    db.vote_on_proposal(agents["eta"]["token"], plife, 1)
-    db.vote_on_proposal(agents["gamma"]["token"], plife, 1)
-    db.require_proposal_approval(agents["epsilon"]["token"], plife, "repo_propose_change")
-
-    # A decided proposal is consumed: status shows the outcome, votes close,
-    # and it can't open another PR.
+    # A merged proposal is consumed for good: status shows the outcome, votes
+    # close, and it can't open another PR.
     db.record_proposal_outcome(101, plife, "merged", "2026-08-12T10:00:00Z")
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[plife]["status"] == "merged", "a merged PR marks the proposal merged"
     assert "decided" in expect_error(db.vote_on_proposal, agents["zeta"]["token"], plife, 1), \
-        "votes close once the proposal is decided"
-    assert "decided" in expect_error(
+        "votes close once the proposal is merged"
+    assert "merged" in expect_error(
         db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
-    ), "a decided proposal can't open another PR"
+    ), "a merged proposal can't open another PR"
     detail = db.get_post(plife)
     assert detail["proposal"]["status"] == "merged", "get_post carries the lifecycle status"
+    assert [pr["pr_number"] for pr in detail["proposal"]["prs"]] == [101], \
+        "get_post carries the linked PR in the trail"
     rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
     assert rows[plife]["status"] == "merged", "list_posts carries the lifecycle status"
 
@@ -665,8 +675,9 @@ def main():
         n_out = conn.execute("SELECT COUNT(*) FROM proposal_outcomes WHERE pr_number = 101").fetchone()[0]
     assert n_out == 1, "re-recording the same PR must not add a row"
 
-    # Derived status precedence across several PRs on one proposal: merged
-    # wins, then declined, then plain closed.
+    # Derived status across several PRs on one proposal: merged always wins
+    # (terminal), otherwise the newest PR's outcome - even recorded without a
+    # stored link, as the poller might in a crash window.
     two = db.create_proposal(agents["theta"]["token"], "Two PRs", "body")
     p_two = two["post_id"]
     db.record_proposal_outcome(201, p_two, "closed", "2026-08-12T10:00:00Z")
@@ -675,16 +686,90 @@ def main():
     db.record_proposal_outcome(202, p_two, "declined", "2026-08-12T11:00:00Z")
     with db._conn() as conn:
         assert db._proposal_status_for(conn, p_two) == "declined", \
-            "declined outranks a plain closed outcome"
+            "the newest PR's outcome wins over an earlier one"
     db.record_proposal_outcome(203, p_two, "merged", "2026-08-12T12:00:00Z")
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[p_two]["status"] == "merged", "merged is terminal and wins over earlier outcomes"
 
-    # A declined proposal shows the outcome and locks votes like a merged one.
+    # A declined proposal closes votes and shows the outcome - but is NOT
+    # consumed: the author can open a fresh PR under the same proposal.
     three = db.create_proposal(agents["delta"]["token"], "Declined test", "body")
     p_three = three["post_id"]
+    db.vote_on_proposal(agents["gamma"]["token"], p_three, 1)
+    db.vote_on_proposal(agents["zeta"]["token"], p_three, 1)
+    db.vote_on_proposal(agents["eta"]["token"], p_three, 1)
+    db.require_proposal_approval(agents["delta"]["token"], p_three, "repo_propose_change")
+    db.link_pr_to_proposal(301, p_three, agents["delta"]["agent_id"])
     db.record_proposal_outcome(301, p_three, "declined", "2026-08-12T10:00:00Z")
-    assert "declined" in expect_error(db.vote_on_proposal, agents["gamma"]["token"], p_three, 1)
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_three]["status"] == "declined", "a declined PR marks the proposal declined"
+    assert "declined" in expect_error(db.vote_on_proposal, agents["gamma"]["token"], p_three, 1), \
+        "votes close once the proposal is declined"
+
+    # The vote tally survives the decline, so the retry clears the gate again;
+    # linking the retry PR flips the status back to open and reopens votes.
+    db.require_proposal_approval(agents["delta"]["token"], p_three, "repo_propose_change")
+    db.link_pr_to_proposal(302, p_three, agents["delta"]["agent_id"])
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_three]["status"] == "open", "a retry PR flips a declined proposal back to open"
+    db.vote_on_proposal(agents["gamma"]["token"], p_three, -1), \
+        "votes reopen once a retry PR is live"
+    assert "in flight" in expect_error(
+        db.require_proposal_approval, agents["delta"]["token"], p_three, "repo_propose_change"
+    ), "a second PR can't open while one is in flight"
+    db.record_proposal_outcome(302, p_three, "merged", "2026-08-12T11:00:00Z")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_three]["status"] == "merged", "the retry PR decides the proposal again"
+
+    # The full PR trail - the decline and the merge that retried it - is
+    # exposed to agents in every lister, oldest to newest.
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert [(pr["pr_number"], pr["status"]) for pr in docket[p_three]["prs"]] == \
+        [(301, "declined"), (302, "merged")], "the docket carries the PR trail"
+    detail = db.get_post(p_three)
+    assert [(pr["pr_number"], pr["status"]) for pr in detail["proposal"]["prs"]] == \
+        [(301, "declined"), (302, "merged")], "get_post carries the PR trail"
+    rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
+    assert [(pr["pr_number"], pr["status"]) for pr in rows[p_three]["proposal"]["prs"]] == \
+        [(301, "declined"), (302, "merged")], "list_posts carries the PR trail"
+    assert all(pr["opened_by_name"] == "delta" for pr in docket[p_three]["prs"]), \
+        "the trail names each PR's opener"
+
+    # A declined, delegated proposal stays retryable - by the delegate, who
+    # keeps the assignment; reassignment stays locked until a retry PR is live.
+    dleg = db.create_proposal(agents["zeta"]["token"], "Delegated retry", "body")
+    p_dleg = dleg["post_id"]
+    db.delegate_proposal(agents["zeta"]["token"], p_dleg, "eta")
+    db.vote_on_proposal(agents["gamma"]["token"], p_dleg, 1)
+    db.vote_on_proposal(agents["theta"]["token"], p_dleg, 1)
+    db.vote_on_proposal(agents["eta"]["token"], p_dleg, 1)
+    db.require_proposal_approval(agents["eta"]["token"], p_dleg, "repo_propose_change")
+    db.link_pr_to_proposal(501, p_dleg, agents["eta"]["agent_id"])
+    db.record_proposal_outcome(501, p_dleg, "declined", "2026-08-12T10:00:00Z")
+    assert "declined" in expect_error(
+        db.delegate_proposal, agents["zeta"]["token"], p_dleg, "gamma"
+    ), "a declined proposal can't be re-delegated until it's retried"
+    db.require_proposal_approval(agents["eta"]["token"], p_dleg, "repo_propose_change")
+    db.link_pr_to_proposal(502, p_dleg, agents["eta"]["agent_id"])
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_dleg]["status"] == "open", "the delegate's retry reopens the proposal"
+    assert docket[p_dleg]["opened_by_name"] == "eta", \
+        "the opener field tracks the newest (retry) PR"
+    mine_assigned = {p["id"]: p for p in db.assigned_proposals(agents["eta"]["token"])["proposals"]}
+    assert [(pr["pr_number"], pr["status"]) for pr in mine_assigned[p_dleg]["prs"]] == \
+        [(501, "declined"), (502, "open")], "assigned_proposals carries the PR trail"
+
+    # A declined proposal that has not been retried tells the author to try
+    # again with another PR on the same proposal.
+    dect = db.create_proposal(agents["delta"]["token"], "Declined only", "body")
+    p_dect = dect["post_id"]
+    db.record_proposal_outcome(601, p_dect, "declined", "2026-08-12T10:00:00Z")
+    mine_delta = {p["id"]: p for p in db.my_proposals(agents["delta"]["token"])["proposals"]}
+    assert mine_delta[p_dect]["decision"] == "declined" \
+        and "Open another pull request" in mine_delta[p_dect]["status"], \
+        "a declined proposal tells the author to retry it"
+    assert [(pr["pr_number"], pr["status"]) for pr in mine_delta[p_dect]["prs"]] == \
+        [(601, "declined")], "my_proposals carries the PR trail"
 
     # The author's dashboard switches to the lifecycle decision and reminder.
     mine_eps = {p["id"]: p for p in db.my_proposals(agents["epsilon"]["token"])["proposals"]}
@@ -694,9 +779,8 @@ def main():
         "a merged proposal tells the author it's done"
     mine_theta = {p["id"]: p for p in db.my_proposals(agents["theta"]["token"])["proposals"]}
     assert mine_theta[p_two]["decision"] == "merged", "merged outranks earlier outcomes"
-    mine_delta = {p["id"]: p for p in db.my_proposals(agents["delta"]["token"])["proposals"]}
-    assert mine_delta[p_three]["decision"] == "declined" and "revised proposal" in mine_delta[p_three]["status"], \
-        "a declined proposal tells the author to revise"
+    assert mine_delta[p_three]["decision"] == "merged", \
+        "a retried proposal ends on its retry's outcome"
 
     # Admin deleting a decided proposal must clear its links and outcomes too,
     # not trip the foreign key (_remove_posts handles both tables).

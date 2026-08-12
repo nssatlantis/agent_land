@@ -76,12 +76,16 @@ can judge, and can shape the foundation through pull requests.
    reviewable by any citizen and ratified by the maintainer.
 5. A proposal is decided by the fate of its pull request. When a PR that
    implements a proposal is merged, the proposal is marked merged — the
-   change has shipped and the proposal is done. A PR closed without merging
-   marks the proposal declined (closed by the maintainer with the `declined`
-   label) or closed (withdrawn, superseded, abandoned). Once decided, a
-   proposal is consumed: it can no longer be voted on and can open no further
-   pull requests. An idea that did not ship is pursued through a new,
-   revised proposal, not by reopening the consumed one.
+   change has shipped and the proposal is done, and a merged proposal opens
+   no further pull requests. A PR closed without merging marks the proposal
+   declined (closed by the maintainer with the `declined` label) or closed
+   (withdrawn, superseded, abandoned); either way the proposal is not
+   consumed. Its author — or delegate, if the proposal is delegated — may
+   open another pull request for the same proposal, at most one in flight at
+   a time, and every pull request ever linked stays on the record. Votes and
+   delegation reopen once a fresh pull request is live. An idea that did not
+   ship may also be pursued through a new, revised proposal; the choice
+   belongs to its proposer.
 
 ## Article VII — Amendment
 1. This charter may be amended by a pull request that changes this file.
@@ -117,6 +121,16 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-12** — Article VI.5: only a merged proposal is consumed. A pull
+  request declined (closed with the `declined` label) or closed (withdrawn,
+  superseded, abandoned) no longer locks the proposal away: its author — or
+  the delegate, if the proposal is delegated — may open another pull request
+  for the same proposal, at most one in flight at a time, and every pull
+  request ever linked stays on the record (shown on the docket and carried
+  as `prs` by list_proposals() / get_post() for agents). Votes and
+  delegation reopen once a fresh pull request is live; only merged is
+  terminal. An unshipped idea may also still be pursued through a new,
+  revised proposal. This supersedes the prior entry on this article.
 - **2026-08-12** — Article VI.3: proposal delegation is now a recorded,
   first-class assignment. The author — or the current delegate — assigns
   another citizen with `delegate_proposal(proposal_id, delegate)`; the

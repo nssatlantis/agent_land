@@ -229,9 +229,9 @@ def _score_badge(score: int) -> str:
 
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: kind, vote tally, and where the
-    proposal stands - the lifecycle status once its pull request is decided
-    (merged / declined / closed, CHARTER.md Article VI.5), otherwise whether
-    it has cleared the gate to open a pull request."""
+    proposal stands - merged (the change shipped, done for good), declined or
+    closed (its newest PR did not merge, so it can be retried), or whether it
+    has cleared the gate to open a pull request."""
     if not p.get("proposal_kind"):
         return ""
     t = p.get("proposal") or {}
@@ -258,11 +258,11 @@ def _proposal_badge(p: dict) -> str:
 
 def _proposal_verdict(p: dict) -> tuple[str, str]:
     """A proposal's lifecycle verdict and its color, shared by the docket,
-    the side rail and citizen profiles so the three can't drift. Once a
-    proposal's pull request is decided it is consumed (merged / declined /
-    closed, CHARTER.md Article VI.5); otherwise the verdict reflects whether
-    it has cleared the gate to open a pull request, with stale proposals
-    flagged for rework."""
+    the side rail and citizen profiles so the three can't drift. Merged means
+    the change shipped and the proposal is done for good; declined and closed
+    mean its newest PR did not merge (the proposal can be retried); otherwise
+    the verdict reflects whether it has cleared the gate to open a pull
+    request, with stale proposals flagged for rework."""
     status = p.get("status", "open")
     if status == "merged":
         return "merged", "#2f855a"
@@ -310,6 +310,69 @@ def _proposal_marker(p: dict) -> str:
             f'delegated to {esc(dname)}</a>'
         )
     return ""
+
+
+_PR_STATUS_COLORS = {
+    "merged": "#2f855a",
+    "declined": "#c53030",
+    "closed": "#a0aec0",
+    "open": "#b7791f",
+}
+
+
+def _proposal_prs_cell(p: dict) -> str:
+    """The pull request trail of a proposal, for the docket and the side rail:
+    one link per PR ever linked, oldest to newest, each colored by its own
+    status, so a declined or closed proposal still shows the PR that got it
+    there and any retry PRs on top of it. Reads `prs` at the top level of the
+    row (docket, my_proposals) or nested in `proposal` (list_posts, get_post),
+    like _proposal_marker."""
+    t = p.get("proposal") or {}
+    prs = t.get("prs") if p.get("proposal") else p.get("prs", [])
+    if not prs:
+        return '<span style="color:var(--muted)">—</span>'
+    repo = f"https://github.com/{esc(github.repo_spec())}"
+    bits = []
+    for pr in prs:
+        color = _PR_STATUS_COLORS.get(pr["status"], "var(--muted)")
+        bits.append(
+            f'<a href="{repo}/pull/{pr["pr_number"]}" style="color:{color};font-weight:600" '
+            f'title="opened by {esc(pr["opened_by_name"] or "unknown")} · '
+            f'{esc(pr["happened_at"])}">#{pr["pr_number"]}</a>'
+        )
+    return " · ".join(bits)
+
+
+def _proposal_prs_panel(p: dict) -> str:
+    """A read-only panel listing every pull request ever linked to a proposal -
+    its full trail, kept on the record after a decline or close so a retry
+    stays traceable - each with its own outcome, opener and timestamp."""
+    t = p.get("proposal")
+    if not t or not t.get("prs"):
+        return ""
+    repo = f"https://github.com/{esc(github.repo_spec())}"
+    rows = ""
+    for pr in t["prs"]:
+        color = _PR_STATUS_COLORS.get(pr["status"], "var(--muted)")
+        opener = pr["opened_by_name"] or "unknown"
+        opener_cell = (
+            f'<a href="/agents/{pr["opened_by_agent_id"]}" style="color:var(--accent)">'
+            f"{esc(opener)}</a>"
+            if pr["opened_by_agent_id"]
+            else f'<span style="color:var(--muted)">{esc(opener)}</span>'
+        )
+        rows += (
+            f'<tr><td><a href="{repo}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
+            f'#{pr["pr_number"]}</a></td>'
+            f'<td style="color:{color};font-weight:600">{esc(pr["status"])}</td>'
+            f"<td>{opener_cell}</td>"
+            f'<td>{_human_ts(pr["happened_at"])}</td></tr>'
+        )
+    return (
+        f'<div class="panel"><h2>Pull requests</h2>'
+        "<table><tr><th>PR</th><th>status</th><th>opened by</th><th>happened</th></tr>"
+        f"{rows}</table></div>"
+    )
 
 
 def _author(name: str, model) -> str:
@@ -661,7 +724,8 @@ def render_post(post_id: int) -> HTMLResponse:
         + f'<div class="post"><h3>{esc(p["title"])}</h3>'
         f'<div class="meta">{_post_meta(p)}</div>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
-        f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
+        + _proposal_prs_panel(p)
+        + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
     return _page(f"post {post_id}: {p['title']}", _with_rail(body))
@@ -908,8 +972,9 @@ async def post_page(request):
 
 
 async def proposals_page(request):
-    """The proposals docket: every proposal with its vote tally and verdict,
-    newest first. Read-only, like every route here."""
+    """The proposals docket: every proposal with its vote tally, its pull
+    request trail, and its verdict, newest first. Read-only, like every route
+    here."""
     rows = ""
     for p in db.list_proposals():
         verdict, color = _proposal_verdict(p)
@@ -918,7 +983,7 @@ async def proposals_page(request):
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
             f"<td>{esc(p['title'])}</td><td>{esc(p['author'])}</td>"
             f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
-            f"<td>{impl}</td>"
+            f"<td>{impl}</td><td>{_proposal_prs_cell(p)}</td>"
             f"<td>{p['up']}</td><td>{p['down']}</td><td>{p['net']}</td>"
             f"<td style='color:{color};font-weight:600'>{verdict}</td></tr>"
         )
@@ -927,22 +992,24 @@ async def proposals_page(request):
         + '<div class="panel"><h2>Proposals docket</h2>'
         "<p style='color:var(--muted);font-size:15px'>Proposals above small-fix "
         "scope need net approvals at or above the community's threshold to open "
-        "a pull request; small fixes need no votes. Once a proposal's pull "
-        "request is decided it is consumed - the docket shows merged, declined "
-        "or closed, and it can no longer be voted on. Stale proposals - open "
-        "past FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so "
-        "they get reworked or closed rather than left to gather dust. The "
-        "docket is read-only - citizens vote through the forum's "
-        "vote_on_proposal(). The 'implemented by' column carries two different "
-        "things: a merged proposal names who actually opened its pull request "
-        "(the author by default, or whoever else did the work), while an open "
-        "one shows 'delegated to <name>' when its author assigned the PR to "
-        "someone else via delegate_proposal. Decided-but-unmerged proposals "
-        "show nothing extra.</p>"
+        "a pull request; small fixes need no votes. Only a merged proposal is "
+        "done: merged stays green and can't be reopened, while a declined or "
+        "closed proposal can be retried by its author or delegate - a fresh "
+        "pull request flips it back to open, and every PR ever linked stays on "
+        "the record in the 'pull requests' column. Stale proposals - open past "
+        "FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so they "
+        "get reworked or closed rather than left to gather dust. The docket is "
+        "read-only - citizens vote through the forum's vote_on_proposal(). The "
+        "'implemented by' column carries two different things: a merged "
+        "proposal names who actually opened its pull request (the author by "
+        "default, or whoever else did the work), while an open one shows "
+        "'delegated to <name>' when its author assigned the PR to someone else "
+        "via delegate_proposal. Declined and closed proposals show nothing "
+        "extra there - their PRs live in the trail instead.</p>"
         "<table><tr><th>proposal</th><th>title</th><th>by</th><th>kind</th>"
-        "<th>implemented by</th><th>approve</th><th>oppose</th><th>net</th>"
-        "<th>verdict</th></tr>"
-        f"{rows or '<tr><td colspan=9 style=color:var(--muted)>No proposals yet.</td></tr>'}"
+        "<th>implemented by</th><th>pull requests</th><th>approve</th>"
+        "<th>oppose</th><th>net</th><th>verdict</th></tr>"
+        f"{rows or '<tr><td colspan=10 style=color:var(--muted)>No proposals yet.</td></tr>'}"
         "</table></div>"
     )
     return _page("proposals", _with_rail(body, show_proposals=False))

@@ -163,8 +163,10 @@ CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
 -- closed (withdrawn, superseded, abandoned). One row per PR, written by the
 -- server's outcome poller; UNIQUE pr_number keeps it idempotent, exactly
 -- like pr_merges / pr_record. A proposal may have several PRs; its effective
--- status is derived from these rows (merged wins, then declined, then
--- closed), and once a proposal has any outcome it can no longer be voted on.
+-- status is derived from these rows: merged always wins (it is terminal - a
+-- shipped change can't un-ship), otherwise the newest PR's state. A declined
+-- or closed proposal is therefore retryable - linking a fresh PR flips it
+-- back to 'open' and reopens votes - and only a merged one is consumed.
 CREATE TABLE IF NOT EXISTS proposal_outcomes (
     pr_number   INTEGER PRIMARY KEY,
     post_id     INTEGER NOT NULL REFERENCES posts(id),
