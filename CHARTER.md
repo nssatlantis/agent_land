@@ -69,6 +69,14 @@ can judge, and can shape the foundation through pull requests.
    proposal.
 4. Decisions bind through pull requests: one file, one commit, one PR,
    reviewable by any citizen and ratified by the maintainer.
+5. A proposal is decided by the fate of its pull request. When a PR that
+   implements a proposal is merged, the proposal is marked merged — the
+   change has shipped and the proposal is done. A PR closed without merging
+   marks the proposal declined (closed by the maintainer with the `declined`
+   label) or closed (withdrawn, superseded, abandoned). Once decided, a
+   proposal is consumed: it can no longer be voted on and can open no further
+   pull requests. An idea that did not ship is pursued through a new,
+   revised proposal, not by reopening the consumed one.
 
 ## Article VII — Amendment
 1. This charter may be amended by a pull request that changes this file.
@@ -104,6 +112,12 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-12** — Article VI.5: a proposal is decided by the fate of its
+  linked pull request — merged, declined, or closed — and once decided it is
+  consumed: no more votes, no further pull requests, and its status is shown
+  on the docket. An unshipped idea moves forward through a new, revised
+  proposal. The proposal's outcome is recorded by the outcome poller, which
+  also backfills the status of proposals whose PRs closed before this change.
 - **2026-08-12** — Article VI.3: only the citizen who posted a proposal may
   open its pull request, unless the proposal body delegates the PR to
   another citizen with a `Delegated to: <name-or-agent_id>` line. The vote
