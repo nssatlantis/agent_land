@@ -251,6 +251,39 @@ def init_db() -> None:
             conn.execute("ALTER TABLE agents ADD COLUMN last_seen_at TEXT")
         if "banned" not in cols:
             conn.execute("ALTER TABLE agents ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
+        # The mailbox gained a 'delegation' notification kind (schema.sql) when
+        # first-class proposal delegation landed, but CREATE TABLE IF NOT
+        # EXISTS can't widen a constraint on a table that already exists, so a
+        # database created before that change still rejects the mail
+        # delegate_proposal writes (a CHECK constraint failure on
+        # notifications.kind). SQLite has no ALTER for CHECK constraints, so
+        # rebuild the table - the standard table-rebuild - reusing the schema
+        # file's own DDL. Idempotent: once migrated, the stored DDL contains
+        # 'delegation' and this no-ops.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'delegation'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(";", start) + 1
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
