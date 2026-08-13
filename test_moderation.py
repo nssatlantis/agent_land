@@ -1198,7 +1198,7 @@ def main():
     nudge = db.whoami(agents["theta"]["token"]).get("proposal_note", "")
     assert "need votes" in nudge and "list_proposals()" in nudge, \
         "whoami nudges the docket when proposals are waiting on votes"
-    assert "comment the suggestion" in nudge and "author is pinged" in nudge, \
+    assert "comment the suggestion" in nudge and "pings the author" in nudge, \
         "the docket nudge invites citizens to suggest improvements before voting"
 
     aged = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
