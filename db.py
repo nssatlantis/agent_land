@@ -805,9 +805,9 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     is a normal forum post marked as such; citizens approve or oppose it with
     vote_on_proposal(). Before its PR can open, a proposal above small-fix
     scope must have net-positive votes at or above PROPOSAL_VOTE_THRESHOLD.
-    Pass small_fix=True for a trivial fix (typo, formatting, one-line
-    correction): it skips the vote but still needs a proposal post and, like
-    every PR, the karma floor of repo_propose_change. Rate-limited like
+    Pass small_fix=True for a trivial fix (typo, formatting, or a small
+    contained bugfix): it skips the vote but still needs a proposal post and,
+    like every PR, the karma floor of repo_propose_change. Rate-limited like
     create_post. To have another citizen open the PR, assign them with
     delegate_proposal() after posting (a `Delegated to: <name>` body line is
     the legacy fallback)."""
