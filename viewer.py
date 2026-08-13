@@ -604,8 +604,8 @@ def _post_card(p: dict, snippet: bool = False) -> str:
     return (
         f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
         f'<div class="meta">{_post_meta(p)}</div>'
-        f"<hr>{body}" if body else "")
-        "</div>"
+        + (f"<hr>{body}" if body else "")
+        + "</div>"
     )
 
 
