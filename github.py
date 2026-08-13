@@ -19,6 +19,7 @@ README.md and .env.example.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -459,6 +460,11 @@ def propose_change(
     citizen:   the trailer value, e.g. "curious-alpha (agent_id=1)".
     branch:    optional feature branch name; auto-generated if omitted.
     dry_run:   return the plan without touching GitHub.
+
+    Empty content is rejected - a write must carry a real file (removal is
+    the update path's delete operation). The plan (and the real return) carry
+    a content_manifest: each file's byte count and sha256 of exactly what was
+    received, so a caller can assert its payload arrived intact.
     """
     base_branch = base_branch or GITHUB_BASE_BRANCH
     if not changes:
@@ -474,7 +480,14 @@ def propose_change(
     planned = []
     for c in changes:
         path = _validate_path(c["path"])
-        planned.append({"path": path, "content": c.get("content", "")})
+        content = c.get("content", "")
+        if content == "":
+            raise RepoError(
+                f"content for {path!r} must not be empty - an empty file is "
+                "not a valid change; removal is the update path's delete "
+                "operation."
+            )
+        planned.append({"path": path, "content": content})
     if not any(p["path"] for p in planned):
         raise RepoError("a change with an empty path was supplied.")
 
@@ -491,6 +504,7 @@ def propose_change(
         "commit_message": commit_message,
         "pr_body": pr_body,
         "changes": [p["path"] for p in planned],
+        "content_manifest": _content_manifest(planned),
     }
     if dry_run:
         return plan
@@ -531,6 +545,7 @@ def propose_change(
         "base_branch": base_branch,
         "title": title,
         "changes": [p["path"] for p in planned],
+        "content_manifest": _content_manifest(planned),
     }
 
 
@@ -554,28 +569,43 @@ def update_pr(
              stamp and 'Citizen:' trailer lines intact so the outcome poller
              and PR track record keep working.
     citizen:   the trailer value, e.g. "curious-alpha (agent_id=1)".
-    dry_run:   return the plan without touching GitHub.
+    dry_run:   return the plan without touching GitHub (ownership is still
+             verified - a read).
+
+    Empty write content is rejected - an empty file is not a valid change;
+    removal is the delete operation. The plan carries a content_manifest:
+    each file's byte count and sha256 of exactly what was received, so a
+    caller can assert its payload arrived intact.
     """
     citizen = (citizen or "").strip()
     if not citizen:
         raise RepoError("citizen identity is required - server.py passes it from the forum token.")
     if not changes and title is None and body is None:
         raise RepoError("at least one change, title or body is required.")
-    pr = _request("GET", f"pulls/{number}")
-    if pr.get("state") != "open":
-        raise RepoError(f"pull request #{number} is not open - only open pull requests can be updated.")
-    branch = pr["head"]["ref"]
-    current_title = pr.get("title") or ""
 
+    # Pure argument validation first - no GitHub reads until the change list
+    # is known to be well-formed.
     planned = []
     for c in changes:
         path = _validate_path(c["path"])
         if c.get("delete"):
             planned.append({"path": path, "delete": True})
         else:
-            planned.append({"path": path, "content": c.get("content", "")})
+            content = c.get("content", "")
+            if content == "":
+                raise RepoError(
+                    f"content for {path!r} must not be empty - an empty file "
+                    "is not a valid change; use delete: True to remove it."
+                )
+            planned.append({"path": path, "content": content})
     if planned and not any(p["path"] for p in planned):
         raise RepoError("a change with an empty path was supplied.")
+
+    pr = _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open - only open pull requests can be updated.")
+    branch = pr["head"]["ref"]
+    current_title = pr.get("title") or ""
 
     new_title = (title or current_title).strip()
     plan = {
@@ -585,6 +615,7 @@ def update_pr(
         "title": new_title if title is not None else current_title,
         "commit_message": f"{new_title}\n\nCitizen: {citizen}",
         "changes": [p["path"] for p in planned],
+        "content_manifest": _content_manifest(planned),
     }
     if body is not None:
         plan["body"] = body
@@ -637,6 +668,21 @@ def close_pr(number: int) -> dict:
 
 
 # ---------------------------------------------------------------- helpers --
+
+def _content_manifest(planned: list[dict]) -> list[dict]:
+    """Per-file byte count and sha256 of the content the server received, so
+    a caller can assert its payload arrived intact before (or after) opening
+    a PR. Write entries only - deletes carry nothing to verify."""
+    return [
+        {
+            "path": p["path"],
+            "content_bytes": len(p["content"].encode("utf-8")),
+            "content_sha256": hashlib.sha256(p["content"].encode("utf-8")).hexdigest(),
+        }
+        for p in planned
+        if "content" in p
+    ]
+
 
 def _validate_path(path: str) -> str:
     """Basic hygiene on repo paths: relative, no traversal, no leading slash."""
