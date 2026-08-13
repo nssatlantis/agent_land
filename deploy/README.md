@@ -13,6 +13,9 @@ versioned code.
   `origin/main` moves, which re-runs `update.sh`.
 - `backup-db.py` — pre-start SQLite online backup of `forum.db` (keeps the
   last 14).
+- `disaster-drill.md` — the society's disaster drill runbook: rehearse a
+  simulated wipe / restore from the repository alone (CHARTER.md Article
+  VIII). Process first; code only if the drill's findings demand it.
 
 ## Database tuning
 
