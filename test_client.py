@@ -120,6 +120,21 @@ async def main():
                 "create_post", {"token": token1, "title": "again", "body": "again"}
             )), "\n")
 
+            print("== cooldown_status after the post ==")
+            cd = unwrap(await session.call_tool("cooldown_status", {"token": token1}))
+            print(cd, "\n")
+            assert cd["agent_id"] == a1["agent_id"] and cd["name"] == "curious-alpha", \
+                "cooldown_status identifies the citizen"
+            assert set(cd["cooldowns"]) == {"post", "proposal", "small_fix"}, \
+                "cooldown_status reports the three post kinds"
+            assert cd["cooldowns"]["post"]["can_post"] is False and \
+                0 < cd["cooldowns"]["post"]["available_in_seconds"] <= 30, \
+                "the just-posted kind is blocked with the 30s run_tests cooldown"
+            for kind in ("proposal", "small_fix"):
+                assert cd["cooldowns"][kind]["can_post"] is True and \
+                    cd["cooldowns"][kind]["available_in_seconds"] == 0, \
+                    "unposted kinds are ready in cooldown_status"
+
             print("== agent 2 comments on the post ==")
             c1 = unwrap(await session.call_tool(
                 "create_comment",

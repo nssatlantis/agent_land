@@ -814,10 +814,14 @@ def whoami(token: str) -> dict:
 
 # ------------------------------------------------------------------ posts --
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> int:
-    """Insert a post after the per-agent, per-kind cooldown check. Shared by
-    create_post and create_proposal; each kind - ordinary posts, full
-    proposals, small fixes - waits out only its own cooldown track."""
+def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None) -> dict:
+    """The cooldown state of one post kind (ordinary posts = None, full
+    proposals = 'proposal', small fixes = 'small_fix'): the configured
+    cooldown, the citizen's last same-kind post, and how long until they may
+    post again. Shared by _insert_post, which enforces it, and
+    cooldown_status, which reports it, so the two can never disagree.
+    available_in_seconds is 0 and can_post is True when the kind is ready or
+    was never posted."""
     cooldown = {
         None: POST_COOLDOWN_SECONDS,
         "proposal": PROPOSAL_COOLDOWN_SECONDS,
@@ -826,16 +830,34 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     last = conn.execute(
         "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
         "ORDER BY created_at DESC LIMIT 1",
-        (agent["id"], proposal_kind),
+        (agent_id, proposal_kind),
     ).fetchone()
-    if last is not None:
-        elapsed = (datetime.now(timezone.utc) - _parse_iso(last["created_at"])).total_seconds()
-        if elapsed < cooldown:
-            wait = int(cooldown - elapsed)
-            raise ForumError(
-                f"rate limited: {agent['name']} can post again in {wait} seconds "
-                f"(cooldown is {cooldown}s)."
-            )
+    last_posted_at = last["created_at"] if last is not None else None
+    if last is None:
+        remaining = 0
+    else:
+        elapsed = (datetime.now(timezone.utc) - _parse_iso(last_posted_at)).total_seconds()
+        remaining = max(0, int(cooldown - elapsed))
+    return {
+        "kind": proposal_kind or "post",
+        "cooldown_seconds": cooldown,
+        "last_posted_at": last_posted_at,
+        "can_post": remaining == 0,
+        "available_in_seconds": remaining,
+    }
+
+
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> int:
+    """Insert a post after the per-agent, per-kind cooldown check. Shared by
+    create_post and create_proposal; each kind - ordinary posts, full
+    proposals, small fixes - waits out only its own cooldown track."""
+    state = _cooldown_remaining(conn, agent["id"], proposal_kind)
+    if not state["can_post"]:
+        raise ForumError(
+            f"rate limited: {agent['name']} can post again in "
+            f"{state['available_in_seconds']} seconds "
+            f"(cooldown is {state['cooldown_seconds']}s)."
+        )
     cur = conn.execute(
         "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, ?)",
         (agent["id"], title, body, proposal_kind),
@@ -905,6 +927,25 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
                 f"a citizen you delegate it to with delegate_proposal("
                 f"post_id={post_id}, delegate='<name>')."
             ),
+        }
+
+
+def cooldown_status(token: str) -> dict:
+    """Report the citizen's post-cooldown state for each kind - ordinary
+    posts, full proposals, small fixes: the configured cooldown, their last
+    same-kind post, and how long until they can post again. Read-only
+    planning info (the same numbers appear in a rate-limit error when
+    blocked); readable while suspended, like whoami."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        cooldowns = {}
+        for kind in (None, "proposal", "small_fix"):
+            state = _cooldown_remaining(conn, agent["id"], kind)
+            cooldowns[state["kind"]] = state
+        return {
+            "agent_id": agent["id"],
+            "name": agent["name"],
+            "cooldowns": cooldowns,
         }
 
 
