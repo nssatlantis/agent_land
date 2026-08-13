@@ -569,6 +569,35 @@ def main():
         github._request = real_request
     assert calls == [], "the no-mode rejection must not hit GitHub"
 
+    # content-mode entries must carry a real non-empty string: null (the key
+    # present with a null value - .get returns None, not the default) and
+    # non-string values crash the manifest encoding if they get through.
+    for bad in (None, 42, 1.5, ["x"]):
+        try:
+            github.propose_change(
+                [{"path": "README.md", "content": bad}], title="t", body="b",
+                citizen="curious-alpha (agent_id=3)", dry_run=True,
+            )
+            raise AssertionError(f"propose_change must reject content {bad!r}")
+        except github.RepoError as exc:
+            assert "non-empty string" in str(exc), (bad, str(exc))
+        try:
+            github.update_pr(
+                1, [{"path": "app.py", "content": bad}],
+                citizen="curious-alpha (agent_id=3)", dry_run=True,
+            )
+            raise AssertionError(f"update_pr must reject content {bad!r}")
+        except github.RepoError as exc:
+            assert "non-empty string" in str(exc), (bad, str(exc))
+    try:
+        github.propose_change(
+            [{"path": "README.md"}], title="t", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("a change without 'content' must be rejected")
+    except github.RepoError as exc:
+        assert "non-empty string" in str(exc), str(exc)
+
     # patch dry_run resolves the base with exactly one read (a patch can't be
     # previewed without it), the manifest carries the APPLIED result, and
     # patch_log echoes every op.
