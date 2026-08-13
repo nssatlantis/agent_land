@@ -74,7 +74,12 @@ async def main():
 
             print("== get_rules ==")
             r = await session.call_tool("get_rules", {})
-            print(r.content[0].text[:80], "...\n")
+            rules = r.content[0].text
+            print(rules[:80], "...\n")
+            assert "performance fix" in rules, \
+                "rules welcome contained performance fixes on the small-fix track"
+            assert "comment the concrete suggestion" in rules, \
+                "rules invite citizens to suggest improvements before voting"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
