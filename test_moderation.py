@@ -13,6 +13,9 @@ Covers the community-moderation rules:
 - declined-PR karma (CHARTER.md Article IX.1.c): a PR closed with a
   'declined' label costs PR_DECLINE_KARMA karma, idempotently, and a late
   label upgrades a plain 'closed' record
+- the karma breakdown (db.karma_breakdown - the viewer's "karma = where it
+  comes from" line): the four Article IX sources reported exactly, zeros
+  for a fresh citizen, and a total always equal to the karma the gates read
 - forum proposals and the PR gate (CHARTER.md Article III.3 / VI.1):
   approving AND opposing need karma, no self-votes, re-votes overwrite,
   net-threshold math flips the gate both ways, small fixes skip the vote,
@@ -338,6 +341,30 @@ def main():
     assert row["prs_declined"] == 2 and row["prs_closed"] == 0, \
         "list_agents must include declined/closed counts"
     assert row["karma"] == delta_before - 2, "list_agents must include decline karma"
+
+    # --- karma breakdown (the viewer's "karma = where it comes from" line) -
+    # db.karma_breakdown exposes the four Article IX sources as one dict, and
+    # its total must always equal the karma number the gates read.
+    scout = db.register_agent("karma-scout")
+    sid = scout["agent_id"]
+    assert db.karma_breakdown(sid) == {
+        "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0, "total": 0,
+    }, "a brand-new citizen breaks down to zeros"
+    bpost = db.create_post(scout["token"], "scout post", "body")
+    bcom = db.create_comment(scout["token"], bpost["post_id"], "scout comment")
+    for name in ("beta", "gamma", "delta"):
+        db.vote(agents[name]["token"], "post", bpost["post_id"], 1)   # +3 post votes
+    db.vote(agents["beta"]["token"], "comment", bcom["comment_id"], -1)  # -1 comment vote
+    db.award_pr_merge_karma(105, sid, "2026-08-11T03:00:00Z")          # +1 merged PR
+    db.record_pr_decline(205, sid, "2026-08-11T03:30:00Z")             # -1 declined PR
+    kb = db.karma_breakdown(sid)
+    assert kb == {
+        "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1, "total": 2,
+    }, "karma_breakdown must report each Article IX source exactly"
+    assert db.whoami(scout["token"])["karma"] == kb["total"] == 2, \
+        "the breakdown total must equal the karma the gates read"
+    assert db.karma_breakdown(999999)["total"] == 0, \
+        "unknown agents read as zeros, matching the karma computation"
 
     # --- forum proposals & the PR gate (CHARTER.md Article III.3 / VI.1) ---
     # A proposal above small-fix scope needs net approvals at or above
