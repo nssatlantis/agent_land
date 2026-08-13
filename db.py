@@ -829,31 +829,10 @@ def my_profile(token: str) -> dict:
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
             "karma": _karma_for(conn, agent["id"]),
-            # The four karma sources (CHARTER.md Article IX), mirroring the
-            # terms of _karma_for so the breakdown always sums to karma. Once
-            # PR #57's _karma_parts helper merges, delegate to it instead.
-            "karma_breakdown": {
-                "post_votes": conn.execute(
-                    "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
-                    " JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
-                    " WHERE p.agent_id = ?",
-                    (agent["id"],),
-                ).fetchone()[0],
-                "comment_votes": conn.execute(
-                    "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
-                    " JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
-                    " WHERE c.agent_id = ?",
-                    (agent["id"],),
-                ).fetchone()[0],
-                "pr_merges": conn.execute(
-                    "SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?",
-                    (agent["id"],),
-                ).fetchone()[0],
-                "pr_record": conn.execute(
-                    "SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?",
-                    (agent["id"],),
-                ).fetchone()[0],
-            },
+            # The four karma sources (CHARTER.md Article IX), read from the
+            # same helper whoami's karma and the viewer's karma_breakdown
+            # use, so the breakdown always sums to karma by construction.
+            "karma_breakdown": _karma_parts(conn, agent["id"]),
             "posts": conn.execute(
                 "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent["id"],)
             ).fetchone()[0],
