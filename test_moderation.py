@@ -246,6 +246,81 @@ def main():
         "a body without a signature is untouched"
     assert github.strip_trailing_citizen("") == "", "empty input stays empty"
 
+    # --- repo_search: the walker covers exactly the allowlist --------------
+    # search_files reads the checked-out working tree, restricted to an
+    # EXTENSION allowlist plus a few named specials, so the database, .env
+    # secrets, dependency manifests and binaries are never read, and
+    # .git / __pycache__ subtrees are pruned.
+    tree = Path(tempfile.mkdtemp(prefix="agentland_search_test_"))
+    marker = "needle-in-haystack"
+    (tree / "src").mkdir()
+    (tree / "src" / "mod.py").write_text(
+        "def f():\n    {0} = 1\n".format(marker), encoding="utf-8")
+    (tree / "docs").mkdir()
+    (tree / "docs" / "guide.md").write_text("see the {0}\n".format(marker), encoding="utf-8")
+    (tree / "schema.sql").write_text(
+        "CREATE TABLE t (x TEXT); -- {0}\n".format(marker), encoding="utf-8")
+    (tree / "deploy").mkdir()
+    (tree / "deploy" / "run.sh").write_text("echo {0}\n".format(marker), encoding="utf-8")
+    (tree / "ci.yml").write_text("jobs:\n  build: {0}\n".format(marker), encoding="utf-8")
+    (tree / ".env.example").write_text("# {0}\nFORUM_X=1\n".format(marker), encoding="utf-8")
+    (tree / ".gitignore").write_text("*.pyc\n{0}\n".format(marker), encoding="utf-8")
+    (tree / "CODEOWNERS").write_text("* @nssatlantis\n# {0}\n".format(marker), encoding="utf-8")
+    # excluded by the allowlist / pruning, however the marker is present
+    (tree / ".env").write_text("SECRET={0}\n".format(marker), encoding="utf-8")
+    (tree / "forum.db").write_bytes(b"sqlite\x00" + marker.encode() + b"\x00bytes")
+    (tree / "requirements.txt").write_text("# {0}\nrequests\n".format(marker), encoding="utf-8")
+    (tree / "src" / "notes.txt").write_text("not searchable {0}\n".format(marker), encoding="utf-8")
+    (tree / ".git").mkdir()
+    (tree / ".git" / "config").write_text("[core]\n\t{0}\n".format(marker), encoding="utf-8")
+    pycache = tree / "src" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "mod.py").write_text("# {0}\n".format(marker), encoding="utf-8")
+
+    res = github.search_files(marker, root=tree)
+    assert res["query"] == marker
+    got = {m["path"] for m in res["matches"]}
+    assert got == {
+        "src/mod.py", "docs/guide.md", "schema.sql", "deploy/run.sh",
+        "ci.yml", ".env.example", ".gitignore", "CODEOWNERS",
+    }, "search must cover exactly the allowlisted files, got {}".format(sorted(got))
+
+    # matches carry 1-based line numbers and the matching text
+    mod = next(m for m in res["matches"] if m["path"] == "src/mod.py")
+    assert mod["matches"][0]["line_number"] == 2 and marker in mod["matches"][0]["text"]
+
+    # a differently-cased query still hits (case-insensitive substring)
+    assert len(github.search_files(marker.upper(), root=tree)["matches"]) == len(res["matches"])
+
+    # excluded files never appear, whichever of their names is asked for
+    for q in ("SECRET", "sqlite", "requests", "not searchable", "core"):
+        assert all(".env" != m["path"] and not m["path"].endswith((".db", ".txt"))
+                   and not m["path"].startswith((".git/", "src/__pycache__/"))
+                   for m in github.search_files(q, root=tree)["matches"]), \
+            f"query {q!r} must not reach excluded files"
+
+    # long matched lines are trimmed with an ellipsis
+    (tree / "src" / "long.py").write_text(
+        "x = '{0}'\n".format("y" * 300), encoding="utf-8")
+    lmatch = next(m for m in github.search_files("y" * 10, root=tree)["matches"]
+                  if m["path"] == "src/long.py")
+    ltext = lmatch["matches"][0]["text"]
+    assert len(ltext) <= 160 and ltext.endswith("..."), "long lines must be trimmed"
+
+    # max_results bounds the number of files returned
+    assert len(github.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
+
+    # empty / too-short / too-long queries are rejected
+    for q in ("", "x", "x" * 201):
+        try:
+            github.search_files(q, root=tree)
+        except github.RepoError:
+            pass
+        else:
+            raise AssertionError(f"search should reject query {q!r}")
+
+    shutil.rmtree(tree, ignore_errors=True)
+
     # --- PR outcome classification (repo_get_pr) ---------------------------
     assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
     assert github._pr_outcome({
