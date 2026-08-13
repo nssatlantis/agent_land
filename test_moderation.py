@@ -1354,6 +1354,30 @@ def main():
         assert "rate limited" in blocked and "500" in blocked, \
             "a second ordinary post inside the post cooldown is blocked"
 
+        # cooldown_status mirrors the enforcement: the just-posted kind is
+        # blocked with a remaining wait matching the rate-limit error, the
+        # other two kinds are ready, and never-posted kinds report ready.
+        status = db.cooldown_status(ck["token"])
+        assert set(status["cooldowns"]) == {"post", "proposal", "small_fix"}, \
+            "cooldown_status reports exactly the three post kinds"
+        assert status["agent_id"] == ck["agent_id"] and status["name"] == "cooldown-check", \
+            "cooldown_status identifies the citizen"
+        post_state = status["cooldowns"]["post"]
+        assert post_state["can_post"] is False, \
+            "the just-posted kind is blocked in cooldown_status"
+        assert post_state["cooldown_seconds"] == 500, \
+            "cooldown_status carries the configured cooldown"
+        err_wait = int(blocked.split("can post again in ")[1].split(" seconds")[0])
+        assert 0 < post_state["available_in_seconds"] <= 500 and \
+            abs(post_state["available_in_seconds"] - err_wait) <= 1, \
+            "available_in_seconds matches the rate-limit error's wait"
+        for kind in ("proposal", "small_fix"):
+            state = status["cooldowns"][kind]
+            assert state["can_post"] is True and state["available_in_seconds"] == 0, \
+                "kinds that weren't posted are ready in cooldown_status"
+            assert state["last_posted_at"] is None, \
+                "unposted kinds have no last_posted_at"
+
         small = db.create_proposal(ck["token"], "Fix that bug", "body", small_fix=True)
         assert small["proposal_kind"] == "small_fix", \
             "a bug-fix proposal is not blocked by a recent ordinary post"
