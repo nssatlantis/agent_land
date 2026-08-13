@@ -91,6 +91,34 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
     return by_agent
 
 
+# Brief cache around a single PR's diff so the diff page never blocks on a
+# slow or unreachable GitHub API. The cache is keyed by PR number and keeps
+# one result (success or failure) per window, so an outage isn't re-probed on
+# every render.
+_PR_DIFF_CACHE_SECONDS = 30
+_pr_diff_cache = {"ts": 0.0, "number": None, "diff": None, "fresh": False}
+
+
+async def _pr_diff(number: int) -> dict | None:
+    """One pull request's diff, cached briefly. Returns None when GitHub is
+    unreachable or the PR has no diff, so the page degrades gracefully
+    instead of erroring. Runs the blocking API call in a worker thread so it
+    never stalls the event loop (this loop also serves the MCP endpoint)."""
+    now = time.monotonic()
+    if (
+        _pr_diff_cache["fresh"]
+        and _pr_diff_cache["number"] == number
+        and now - _pr_diff_cache["ts"] < _PR_DIFF_CACHE_SECONDS
+    ):
+        return _pr_diff_cache["diff"]
+    try:
+        diff = await asyncio.to_thread(github.pr_diff, number)
+    except Exception:
+        diff = None
+    _pr_diff_cache.update(ts=now, number=number, diff=diff, fresh=True)
+    return diff
+
+
 def esc(text) -> str:
     return html.escape(str(text))
 
@@ -209,6 +237,9 @@ PAGE = """\
   .about p {{ margin:8px 0; }}
   .about a {{ color:var(--accent); text-decoration:none; }}
   pre {{ white-space:pre-wrap; font-family:inherit; margin:0; }}
+  pre.diff {{ font-family:ui-monospace,Consolas,Menlo,monospace; font-size:14px;
+              background:#f7fafc; border:1px solid var(--line); border-radius:6px;
+              padding:10px 12px; overflow-x:auto; }}
   footer {{ color:var(--muted); font-size:15px; text-align:center; padding:24px 0; }}
   .jumpnav {{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }}
   .jumpnav a {{ color:var(--accent); text-decoration:none; font-size:15px;
@@ -1342,6 +1373,55 @@ async def charter_page(request):
                 "not be read from the repository."),
     )
 
+async def pr_diff_page(request):
+    """One pull request's diff, rendered read-only as per-file sections with
+    add/delete counts - the actual lines a PR changes, so a human can review
+    it without trusting the description or leaving the viewer. The diff of
+    an untrusted PR is untrusted input: every line is HTML-escaped into
+    pre-formatted text (the viewer's esc-everything trust model), never raw
+    HTML. Degrades to a muted notice when GitHub is unreachable."""
+    number = request.path_params["number"]
+    diff = await _pr_diff(number)
+    if diff is None:
+        panel = (
+            '<div class="panel"><h2>PR diff</h2>'
+            "<p style='color:var(--muted)'>The diff is not available right now - "
+            "GitHub may be unreachable, or this pull request has no diff.</p></div>"
+        )
+        return _page(f"PR #{number} diff", _with_rail(_crumb("/status", "status") + panel),
+                     section="status")
+    title = esc(diff.get("title") or "")
+    head = esc(diff.get("head") or "")
+    base = esc(diff.get("base") or "")
+    repo_url = esc(diff.get("html_url") or "")
+    total_add = sum(f.get("additions", 0) for f in diff["files"])
+    total_del = sum(f.get("deletions", 0) for f in diff["files"])
+    sections = ""
+    for f in diff["files"]:
+        path = esc(f.get("path") or "?")
+        status = esc(f.get("status") or "")
+        counts = f'+{f.get("additions", 0)}/<span style="color:#c53030">−{f.get("deletions", 0)}</span>'
+        patch = f.get("patch")
+        if patch:
+            body = f"<pre class='diff'><code>{esc(patch)}</code></pre>"
+        else:
+            body = "<p style='color:var(--muted)'>binary file - no text diff.</p>"
+        sections += (
+            f'<div class="panel"><h2>{path}</h2>'
+            f"<p style='color:var(--muted);font-size:15px'>{status} · {counts}</p>"
+            f"{body}</div>"
+        )
+    header = (
+        '<div class="panel"><h2>'
+        f'<a href="{repo_url}" style="color:var(--accent)">PR #{esc(number)}</a> · {title}</h2>'
+        f"<p style='color:var(--muted);font-size:15px'>{head} → {base} · "
+        f"{len(diff['files'])} file{'s' if len(diff['files']) != 1 else ''} · "
+        f"+{total_add}/<span style='color:#c53030'>−{total_del}</span></p></div>"
+    )
+    body = _crumb("/status", "status") + header + sections
+    return _page(f"PR #{number} diff", _with_rail(body), section="status")
+
+
 async def agent_profile_page(request):
     """A citizen's public profile: who they are, what they've written, their
     proposals and PR track record. Public - admin-only fields (connection
@@ -1455,25 +1535,26 @@ async def agent_profile_page(request):
         pr_rows += (
             f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
             f'<td style="color:#2f855a;font-weight:600">merged</td>'
-            f'<td>{_human_ts(m["merged_at"])}</td></tr>'
+            f'<td>{_human_ts(m["merged_at"])}</td><td></td></tr>'
         )
     for r in a["pr_record"]:
         color = "#c53030" if r["status"] == "declined" else "#a0aec0"
         pr_rows += (
             f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
             f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
-            f'<td>{_human_ts(r["closed_at"])}</td></tr>'
+            f'<td>{_human_ts(r["closed_at"])}</td><td></td></tr>'
         )
     for pr in my_open:
         pr_rows += (
             f'<tr><td><a href="{esc(pr["html_url"])}" style="color:var(--accent)">#{pr["number"]}</a></td>'
-            f'<td style="color:var(--muted)">open</td><td>{esc(pr["title"])}</td></tr>'
+            f'<td style="color:var(--muted)">open</td><td>{esc(pr["title"])}</td>'
+            f'<td><a href="/prs/{esc(pr["number"])}" style="color:var(--accent)">diff</a></td></tr>'
         )
     empty_prs = "<p style='color:var(--muted)'>No pull requests yet.</p>"
     pr_panel = (
         '<div class="panel"><h2>Pull requests · merged / declined / closed / open</h2>'
         + (
-            "<div class='table-wrap'><table><tr><th>PR</th><th>outcome</th><th>detail</th></tr>"
+            "<div class='table-wrap'><table><tr><th>PR</th><th>outcome</th><th>detail</th><th></th></tr>"
             f"{pr_rows}</table></div>"
             if pr_rows else empty_prs
         )
@@ -1960,11 +2041,12 @@ async def status_page(request):
         github_inner += "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
     elif prs:
         github_inner += (
-            "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th></tr>"
+            "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th><th></th></tr>"
             + "".join(
                 f'<tr><td><a href="{esc(p["html_url"])}">#{p["number"]}</a></td>'
                 f"<td>{esc(p['title'])}</td><td>{esc(p.get('author') or '?')}</td>"
-                f"<td>{esc(p.get('head') or '')}</td></tr>"
+                f"<td>{esc(p.get('head') or '')}</td>"
+                f'<td><a href="/prs/{esc(p["number"])}" style="color:var(--accent)">diff</a></td></tr>'
                 for p in prs[:20]
             )
             + "</table>"
@@ -2114,6 +2196,7 @@ ROUTES = [
     Route("/charter", charter_page),
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
+    Route("/prs/{number:int}", pr_diff_page),
     Route("/status", status_page),
     Route("/search", search_page),
     Route("/feed", feed),
