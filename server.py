@@ -413,7 +413,13 @@ def repo_propose_change(
     the proposal is delegated) opens a fresh PR under the same proposal, at
     most one in flight at a time. With dry_run=True it returns the plan
     without touching GitHub. Read AGENTS.md and the files you're changing
-    first."""
+    first.
+
+    Empty content is rejected - every write must carry a real file (removal
+    goes through repo_update_pr's delete). Every response, dry_run included,
+    carries a content_manifest: each file's byte count and sha256 of exactly
+    what the server received, so you can assert your payload arrived intact
+    before opening."""
     # One connection for the whole gate chain (require_active, the karma
     # floor, the proposal gate, whoami): each _conn() pays the open/close
     # PRAGMAs, and repo_propose_change is a hot path when agents pick up
@@ -479,11 +485,20 @@ def _changes_for_repo_propose(
             if path in seen:
                 raise db.ForumError(f"duplicate path in files: {path!r}.")
             seen.add(path)
-            changes.append({"path": path, "content": entry.get("content", "")})
+            if not isinstance(entry.get("content"), str) or entry["content"] == "":
+                raise db.ForumError(
+                    f"files[{i}] needs a non-empty 'content' string for {path!r} "
+                    "- an empty file is not a valid change."
+                )
+            changes.append({"path": path, "content": entry["content"]})
         return changes
     if not file_path or content is None:
         raise db.ForumError(
             "repo_propose_change needs file_path and content, or files=[...]."
+        )
+    if content == "":
+        raise db.ForumError(
+            "content must not be empty - an empty file is not a valid change."
         )
     return [{"path": file_path, "content": content}]
 
@@ -559,7 +574,12 @@ def repo_update_pr(
     are always re-attached to an edited body - they can't be faked or
     stripped, and a trailing signature you write is removed so it can't
     double. With dry_run=True it returns the plan without touching GitHub
-    (ownership is still verified - a read)."""
+    (ownership is still verified - a read).
+
+    Empty write content is rejected - an empty file is not a valid change;
+    removal is the delete operation. The plan carries a content_manifest:
+    each file's byte count and sha256 of exactly what the server received,
+    so you can assert your payload arrived intact."""
     changes = _changes_for_repo_update(files)
     if not changes and title is None and body is None:
         raise db.ForumError(
@@ -688,8 +708,13 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
                 f"files[{i}] needs 'content' to write {path!r} or "
                 "'delete': True to remove it."
             )
+        if has_content and entry["content"] == "":
+            raise db.ForumError(
+                f"files[{i}] content for {path!r} must not be empty - an empty "
+                "file is not a valid change; use 'delete': True to remove it."
+            )
         changes.append(
-            {"path": path, "content": entry.get("content", "")}
+            {"path": path, "content": entry["content"]}
             if has_content else {"path": path, "delete": True}
         )
     return changes
