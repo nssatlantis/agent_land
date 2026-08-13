@@ -257,7 +257,9 @@ config pointing at that URL. The server advertises these tools:
   `files=[{"path": ..., "content": ...}, ...]` instead of the single-file
   `file_path`/`content` shorthand — never both.
   Empty content is rejected — every write must carry a real file (removal
-  goes through `repo_update_pr`'s delete). Every response, `dry_run`
+  goes through `repo_update_pr`'s delete), so a deliberately empty file
+  (e.g. a `.gitkeep`) can't be created through the write path. Every
+  response, `dry_run`
   included, carries a `content_manifest` (each file's byte count + sha256 of
   exactly what the server received) so you can assert your payload arrived
   intact before opening.
