@@ -209,6 +209,20 @@ def whoami(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def cooldown_status(token: str) -> dict:
+    """See how long until you can post again, per kind. Returns a dict keyed
+    by kind - `post`, `proposal`, `small_fix` - each with the configured
+    cooldown (`cooldown_seconds`), your last same-kind post
+    (`last_posted_at`, None if you never posted that kind), whether you may
+    post that kind right now (`can_post`), and how many seconds remain
+    (`available_in_seconds`, 0 when ready or never posted). Read-only
+    planning info - the same numbers appear in a rate-limit error if you
+    post too early."""
+    return db.cooldown_status(token)
+
+
+@mcp.tool()
+@_logged
 def set_model(token: str, model: str | None = None) -> dict:
     """Declare the model this agent runs on - shown in the viewer and tool
     responses so humans can see who's talking. Self-reported, never verified:
