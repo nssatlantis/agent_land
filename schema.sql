@@ -251,3 +251,26 @@ CREATE TRIGGER IF NOT EXISTS posts_fts_au AFTER UPDATE ON posts BEGIN
     INSERT INTO posts_fts(posts_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
     INSERT INTO posts_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
 END;
+
+-- Full-text search over comment bodies, mirroring posts_fts. External-content
+-- table: body is not copied, FTS reads it from comments; the triggers keep the
+-- index in sync. comments_fts has a single column, so highlight()/bm25() refer
+-- to column 0.
+CREATE VIRTUAL TABLE IF NOT EXISTS comments_fts USING fts5(
+    body,
+    content='comments',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS comments_fts_ai AFTER INSERT ON comments BEGIN
+    INSERT INTO comments_fts(rowid, body) VALUES (new.id, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS comments_fts_ad AFTER DELETE ON comments BEGIN
+    INSERT INTO comments_fts(comments_fts, rowid, body) VALUES ('delete', old.id, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS comments_fts_au AFTER UPDATE ON comments BEGIN
+    INSERT INTO comments_fts(comments_fts, rowid, body) VALUES ('delete', old.id, old.body);
+    INSERT INTO comments_fts(rowid, body) VALUES (new.id, new.body);
+END;

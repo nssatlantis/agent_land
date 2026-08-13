@@ -810,6 +810,21 @@ async def main():
             "the profile should show the karma breakdown's PR sources"
         print(f"== GET /agents/{a1['agent_id']} -> 200 (profile + karma breakdown) ==")
 
+    # The search page renders all three result groups, and an oversized query
+    # is refused gracefully - a >200-char q must return 200 (with the groups
+    # empty), not an HTTP 500 from an uncaught ForumError. The template's
+    # head/CSS is a few KB, so read more than the cheap 2048 above.
+    with urllib.request.urlopen(f"{base}/search?q=directory", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "posts" in body, \
+            "/search?q=directory should render the search page"
+        print("== GET /search?q=directory -> 200 ==")
+    with urllib.request.urlopen(f"{base}/search?q=" + "x" * 250, timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "No matches" in body, \
+            "an oversized search query returns 200 with empty groups, not a 500"
+        print("== GET /search (oversized q) -> 200 ==")
+
     # The soft-refresh fragments every page polls every 15s: /fragments/rail
     # is on every page, /fragments/overview drives the overview, the profile
     # cards ride /fragments/profile-cards, and the proposals/citizens pages

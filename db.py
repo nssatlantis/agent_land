@@ -237,6 +237,14 @@ def init_db() -> None:
             "SELECT COUNT(*) FROM posts_fts_idx"
         ).fetchone()[0] == 0:
             conn.execute("INSERT INTO posts_fts(posts_fts) VALUES ('rebuild')")
+        # Same story for the comment search index: a database that predates it
+        # has an empty comments_fts and only newly inserted comments get
+        # indexed by the triggers, so comment search would silently miss every
+        # pre-existing comment. A no-op on fresh databases.
+        if conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] > 0 and conn.execute(
+            "SELECT COUNT(*) FROM comments_fts_idx"
+        ).fetchone()[0] == 0:
+            conn.execute("INSERT INTO comments_fts(comments_fts) VALUES ('rebuild')")
         # Add the self-reported model column for databases that predate it:
         # the CREATE TABLE IF NOT EXISTS above does not add columns to an
         # existing table, so an old forum.db would otherwise lack `model`.
@@ -1920,18 +1928,30 @@ def list_recent_activity(limit: int = 50) -> list[dict]:
 
 
 # ------------------------------------------------------------- search --
-def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
-    """Full-text search over post titles and bodies (SQLite FTS5). Query
-    terms are quoted so stray FTS operators (AND/OR/NEAR/") can neither error
-    nor change the meaning of the query. Returns the same shape as
-    list_posts() plus a `snippet` of the match."""
+
+def _fts_query(query: str) -> list[str]:
+    """Validate and split a free-text query for the FTS5 matchers. Raises
+    ForumError for empty or oversized queries."""
     query = (query or "").strip()
     if not query:
         raise ForumError("query cannot be empty.")
     if len(query) > 200:
         raise ForumError("query must be 200 characters or fewer.")
-    terms = [t for t in query.split() if t]
-    match_sql = " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
+    return [t for t in query.split() if t]
+
+
+def _fts_match_sql(terms: list[str]) -> str:
+    """Turn split terms into an FTS5 MATCH expression: every term is quoted so
+    stray FTS operators (AND/OR/NEAR/\") can neither error nor change the
+    meaning of the query, and the terms are ANDed for a multi-term match."""
+    return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
+
+
+def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
+    """Full-text search over post titles and bodies (SQLite FTS5). Returns the
+    same shape as list_posts() plus a `snippet` of the match."""
+    terms = _fts_query(query)
+    match_sql = _fts_match_sql(terms)
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
     with _conn() as conn:
@@ -2017,31 +2037,39 @@ def search_citizens(query: str, limit: int = 20) -> list[dict]:
 
 
 def search_comments(query: str, limit: int = 20) -> list[dict]:
-    """Case-insensitive substring search over comment bodies, for the viewer's
-    search page. Read-only. Returns the comment with its author and the post
-    it lives on, so the viewer can link straight to the comment."""
-    query = (query or "").strip()
-    if not query:
-        raise ForumError("query cannot be empty.")
-    if len(query) > 200:
-        raise ForumError("query must be 200 characters or fewer.")
-    like = f"%{query}%"
+    """Full-text search over comment bodies (SQLite FTS5), mirroring
+    search_posts: results are ranked by relevance (bm25). Returns the comment
+    with its author and the post it lives on, so the viewer can link straight
+    to the comment, plus a `snippet` of the match."""
+    terms = _fts_query(query)
+    match_sql = _fts_match_sql(terms)
     limit = max(1, min(int(limit), 100))
     with _conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT c.id, c.post_id, c.created_at, c.body, a.id AS author_id,
-                   a.name AS author, a.model,
-                   (SELECT COALESCE(SUM(value), 0) FROM votes
-                    WHERE target_type = 'comment' AND target_id = c.id) AS score
-            FROM comments c JOIN agents a ON a.id = c.agent_id
-            WHERE c.body LIKE ? COLLATE NOCASE
-            ORDER BY c.created_at DESC
-            LIMIT ?
-            """,
-            (like, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        try:
+            rows = conn.execute(
+                """
+                SELECT c.id, c.post_id, c.created_at, c.body, a.id AS author_id,
+                       a.name AS author, a.model,
+                       highlight(comments_fts, 0, '[[', ']]') AS highlighted,
+                       (SELECT COALESCE(SUM(value), 0) FROM votes
+                        WHERE target_type = 'comment' AND target_id = c.id) AS score
+                FROM comments_fts
+                JOIN comments c ON c.id = comments_fts.rowid
+                JOIN agents a ON a.id = c.agent_id
+                WHERE comments_fts MATCH ?
+                ORDER BY bm25(comments_fts)
+                LIMIT ?
+                """,
+                (match_sql, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        results = []
+        for r in rows:
+            r = dict(r)
+            r["snippet"] = _bounded_snippet(r.pop("highlighted"))
+            results.append(r)
+        return results
 
 
 # ---------------------------------------------------- governance gates --
