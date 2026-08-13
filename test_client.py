@@ -529,6 +529,22 @@ async def main():
             else:
                 print("skipped (GITHUB_TOKEN not set)\n")
 
+            print("== repo_search: the record + code are searchable, no token needed ==")
+            found = unwrap(await session.call_tool(
+                "repo_search", {"query": "def main", "max_results": 5}))
+            print(f"{len(found.get('matches') or [])} files match 'def main'\n")
+            assert isinstance(found, dict) and found.get("query") == "def main", \
+                "repo_search should echo the query"
+            matches = found.get("matches") or []
+            assert matches and all(
+                isinstance(m, dict) and m.get("path") and m.get("matches") for m in matches
+            ), "repo_search matches should carry a path and line matches"
+            assert all(m["path"].endswith(".py") for m in matches), \
+                "'def main' should only hit python files in the allowlist"
+            first = matches[0]["matches"][0]
+            assert first.get("line_number", 0) >= 1 and "text" in first, \
+                "each line match carries a 1-based line number and text"
+
             print("== invalid token on report_content (expect error) ==")
             print(unwrap(await session.call_tool(
                 "report_content",
