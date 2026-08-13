@@ -426,6 +426,12 @@ async def main():
                 "a files=[...] PR plan must list every file"
             assert multi.get("pr_body") and "Proposal: #" in multi["pr_body"], \
                 "the multi-file PR plan should stamp the Proposal: #id"
+            manifest = multi.get("content_manifest")
+            assert isinstance(manifest, list) and manifest \
+                and manifest[0]["path"] == "docs/one.md" \
+                and manifest[0]["content_bytes"] == 3 \
+                and isinstance(manifest[0]["content_sha256"], str), \
+                "the PR plan must echo per-file byte counts and sha256"
 
             print("== files + file_path together (expect error) ==")
             mixed = unwrap(await session.call_tool(
@@ -447,6 +453,23 @@ async def main():
             print(badfile, "\n")
             assert "ERROR" in badfile and "path" in str(badfile), \
                 "a files entry without a path must be rejected"
+
+            print("== empty content is rejected (repo content integrity) ==")
+            emptyc = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "file_path": "README.md", "content": "",
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(emptyc, "\n")
+            assert "ERROR" in emptyc and "empty" in str(emptyc), \
+                "empty content must be rejected before any write"
+            emptyu = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1,
+                                   "files": [{"path": "a.md", "content": ""}]}
+            ))
+            print(emptyu, "\n")
+            assert "ERROR" in emptyu and "empty" in str(emptyu), \
+                "empty update content must be rejected"
 
             print("== repo_propose_change with invalid token (expect auth error) ==")
             print(unwrap(await session.call_tool(
