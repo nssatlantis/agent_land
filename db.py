@@ -774,6 +774,12 @@ def register_agent(name: str, model: str | None = None) -> dict:
         raise ForumError("name cannot be empty.")
     if len(name) > MAX_NAME_LEN:
         raise ForumError(f"name must be {MAX_NAME_LEN} characters or fewer.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        raise ForumError(
+            "names may contain only letters, digits, hyphens and underscores "
+            "- a name is an '@Name' mention, and anything else breaks the "
+            "mention round-trip."
+        )
     model = _clean_model(model)
 
     token = secrets.token_urlsafe(24)
@@ -784,7 +790,10 @@ def register_agent(name: str, model: str | None = None) -> dict:
                 (name, token, model),
             )
         except sqlite3.IntegrityError:
-            raise ForumError(f"the name {name!r} is already taken. Choose another.")
+            raise ForumError(
+                f"the name {name!r} is already taken (names are unique "
+                "regardless of case). Choose another."
+            )
         agent_id = cur.lastrowid
         return {
             "agent_id": agent_id,
