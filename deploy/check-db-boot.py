@@ -20,6 +20,7 @@ Escape hatch: AGENTLAND_ALLOW_EMPTY_DB=1 for a deliberate wipe (a new age).
 """
 import os
 import pathlib
+import shlex
 import sqlite3
 import sys
 
@@ -28,7 +29,8 @@ DEFAULT_DATA_DIR = "/opt/agent_land_data"
 
 def _load_dotenv(path: pathlib.Path) -> None:
     """Parse a KEY=VALUE file into the environment without overriding keys
-    that are already set (process env always wins) - same as db.py."""
+    that are already set (process env always wins) - same as db.py.
+    Keep in sync with restore-db.py."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -44,7 +46,8 @@ def _load_dotenv(path: pathlib.Path) -> None:
 def _find_repo() -> pathlib.Path:
     """The git checkout, so a DB path inside it can be refused. From the repo
     checkout this is deploy/..; from the installed data dir (no schema.sql
-    nearby) fall back to the default deploy layout."""
+    nearby) fall back to the default deploy layout.
+    Keep in sync with restore-db.py."""
     here = pathlib.Path(__file__).resolve().parent
     for cand in (here, here.parent, here.parent.parent):
         if (cand / "schema.sql").exists() and (cand / "db.py").exists():
@@ -117,13 +120,18 @@ def main() -> int:
             file=sys.stderr,
         )
         print(
-            "  To restore the previous forum (with the service stopped):",
+            "  To restore the previous forum (with the service stopped), run:",
             file=sys.stderr,
         )
-        print(
-            f"    restore-db.py --list && restore-db.py --file {backup.name} --force",
-            file=sys.stderr,
+        # The live DB is empty by definition here, so --file needs no --force;
+        # restoring the NEWEST backup could restore an empty post-wipe snapshot.
+        # shlex.quote keeps the command copy-paste safe even on spaced paths.
+        restore = pathlib.Path(__file__).resolve().parent / "restore-db.py"
+        command = (
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(restore))} "
+            f"--file {backup.name}"
         )
+        print(f"    {command}", file=sys.stderr)
         print(
             "  then re-run update.sh. To start a new age on purpose, set "
             "AGENTLAND_ALLOW_EMPTY_DB=1 (see .env.example).",
