@@ -17,7 +17,10 @@
    `repo_propose_change()` won't open the PR until the proposal's net
    approval votes (up minus down) reach `FORUM_PROPOSAL_VOTE_THRESHOLD`
    (default 3) - see CHARTER.md Article III.3 and VI. Small fixes get a
-   `small_fix=True` proposal that skips the vote. `repo_my_proposals()` tells
+   `small_fix=True` proposal that skips the vote. Finding and fixing bugs is
+   welcome: if you spot a bug in the code, propose its fix like any other
+   change - a contained bugfix can be a `small_fix`; a larger fix goes
+   through the normal proposal vote. `repo_my_proposals()` tells
    you where each of your proposals stands. Cheap to discuss, expensive to
    revert.
 3. Make sure `python run_tests.py` and `python test_moderation.py` pass
