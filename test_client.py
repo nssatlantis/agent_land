@@ -22,6 +22,8 @@ import urllib.request
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+import github  # noqa: E402 - import-only; only for _MAX_EDITS_PER_FILE
+
 URL = f"http://{os.environ.get('FORUM_HOST', '127.0.0.1')}:{int(os.environ.get('FORUM_PORT', '8000'))}/mcp"
 
 
@@ -522,6 +524,29 @@ async def main():
             print(badocc, "\n")
             assert "ERROR" in badocc and "occurrence" in str(badocc), \
                 "an occurrence below 1 must be rejected"
+
+            print("== patch mode: occurrence null (expect error, not a crash) ==")
+            nullocc = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"path": "README.md",
+                            "edits": [{"find": "a", "replace": "b", "occurrence": None}]}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(nullocc, "\n")
+            assert "ERROR" in nullocc and "occurrence" in str(nullocc), \
+                "an explicit null occurrence must be rejected, not crash"
+
+            print("== patch mode: too many edits (expect error) ==")
+            toomany = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"path": "README.md",
+                            "edits": [{"find": "a", "replace": "b"}]
+                            * (github._MAX_EDITS_PER_FILE + 1)}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(toomany, "\n")
+            assert "ERROR" in toomany and "too many edits" in str(toomany), \
+                "an oversized edits list must be rejected"
 
             print("== null content is rejected (repo content integrity) ==")
             nullc = unwrap(await session.call_tool(
