@@ -72,8 +72,15 @@ Covers the community-moderation rules:
 - per-kind post cooldowns: ordinary posts, full proposals and small fixes
   each wait out only their own track, so a discussion post never blocks a
   bug-fix proposal and vice versa
+- patch / find-replace mode (the repo tools' `edits` input): the pure
+  github._apply_edits core (exact-once / occurrence / sequential / delete /
+  unicode semantics, all failure modes), edits shape validation at the
+  github layer, patch resolution against base / PR-branch refs via a fake
+  github._request (applied result reaches content_manifest + the PUT), and
+  the content-mode dry_run zero-_request guarantee
 """
 
+import base64
 import datetime as _dt
 import hashlib
 import os
@@ -419,14 +426,183 @@ def main():
     except github.RepoError as exc:
         assert "empty" in str(exc), str(exc)
 
-    # Null (explicit JSON null) and non-string content bypass the old
-    # `== ""` guards (`c.get("content", "")` returns None when the key is
-    # present with a null value; 42 != "") and then crash _content_manifest
-    # with an AttributeError. Rejected cleanly, before any GitHub read.
+    # --- patch / find-replace mode (PR #72) ---
+    # The pure apply core is network-free and deliberately strict: exact
+    # substring find-replace applied IN ORDER (each against the result of the
+    # previous), every find matching exactly once or the requested occurrence
+    # - never a guess the caller cannot see to correct.
+    out, log = github._apply_edits("docs/f.txt", "one two one", [
+        {"find": "one", "replace": "1", "occurrence": 2},
+        {"find": "two", "replace": "2"},
+    ])
+    assert out == "one 2 1", out
+    assert log == [
+        {"find": "one", "replace": "1", "occurrence": 2, "matched": 2},
+        {"find": "two", "replace": "2", "occurrence": 1, "matched": 1},
+    ], log
+
+    out, _ = github._apply_edits("docs/f.txt", "a\nbb\nccc\n", [
+        {"find": "bb", "replace": "B"},
+    ])
+    assert out == "a\nB\nccc\n", out
+
+    # an empty replace deletes the matched block
+    out, _ = github._apply_edits("docs/f.txt", "keep\n\n// TODO drop\nkeep2\n", [
+        {"find": "\n// TODO drop", "replace": ""},
+    ])
+    assert out == "keep\n\nkeep2\n", out
+
+    # finds may span lines and carry unicode
+    out, _ = github._apply_edits("docs/f.txt", "hé\nwörld", [
+        {"find": "é\nwö", "replace": "E/W"},
+    ])
+    assert out == "hE/Wrld", out
+
+    # a find that never matches fails closed, with a re-read hint
+    try:
+        github._apply_edits("docs/f.txt", "abc", [{"find": "xyz", "replace": "q"}])
+        raise AssertionError("a find that doesn't match must error")
+    except github.RepoError as exc:
+        assert "did not match" in str(exc), str(exc)
+
+    # an ambiguous find (2+ matches, no occurrence) is an error, not a guess
+    try:
+        github._apply_edits("docs/f.txt", "a a a", [{"find": "a", "replace": "b"}])
+        raise AssertionError("an ambiguous find must error")
+    except github.RepoError as exc:
+        assert "occurrence" in str(exc), str(exc)
+
+    # an out-of-range occurrence is an error
+    try:
+        github._apply_edits("docs/f.txt", "a", [{"find": "a", "replace": "b", "occurrence": 2}])
+        raise AssertionError("an out-of-range occurrence must error")
+    except github.RepoError as exc:
+        assert "out of range" in str(exc), str(exc)
+
+    # edits shape validation at the github layer (mirrors server.py's normalizer)
+    for bad, needle in [
+        ("nope", "edits"),
+        ([], "edits"),
+        ([{"replace": "x"}], "find"),
+        ([{"find": "", "replace": "x"}], "find"),
+        ([{"find": "a"}], "replace"),
+        ([{"find": "a", "replace": "x", "occurrence": 0}], "occurrence"),
+        ([{"find": "a", "replace": "x", "occurrence": True}], "occurrence"),
+        ([{"find": "a", "replace": "x", "occurrence": None}], "occurrence"),
+    ]:
+        try:
+            github._validate_edits("docs/f.txt", bad)
+            raise AssertionError(f"malformed edits {bad!r} must be rejected")
+        except github.RepoError as exc:
+            assert needle in str(exc), (bad, str(exc))
+    try:
+        github._validate_edits(
+            "docs/f.txt",
+            [{"find": "x", "replace": "y"}] * (github._MAX_EDITS_PER_FILE + 1),
+        )
+        raise AssertionError("too many edits must be rejected")
+    except github.RepoError as exc:
+        assert "too many edits" in str(exc), str(exc)
+
+    # the pure apply core also refuses an empty find directly - _validate_edits
+    # catches it upstream, but a direct call must error, not spin forever.
+    try:
+        github._apply_edits("docs/f.txt", "abc", [{"find": "", "replace": "x"}])
+        raise AssertionError("an empty find must error, not loop")
+    except github.RepoError as exc:
+        assert "must not be empty" in str(exc), str(exc)
+
+    # an empty edits list is a legal no-op for the pure core (the validators
+    # demand non-empty, but a direct call just passes the text through)
+    out, log = github._apply_edits("docs/f.txt", "abc", [])
+    assert (out, log) == ("abc", []), (out, log)
+
+    # ops apply in order against the RESULT of the previous op, so a find may
+    # match text an earlier op just introduced
+    out, _ = github._apply_edits("docs/f.txt", "a b", [
+        {"find": "a", "replace": "x"},
+        {"find": "x", "replace": "y"},
+    ])
+    assert out == "y b", out
+
+    # direct calls are defensively guarded against malformed replace /
+    # occurrence types - the validators catch these upstream, but the pure
+    # core must raise a clean error, not a raw TypeError.
+    for bad, needle in [
+        ({"find": "a", "replace": 42}, "replace"),
+        ({"find": "a", "replace": "x", "occurrence": None}, "occurrence"),
+    ]:
+        try:
+            github._apply_edits("docs/f.txt", "a", [bad])
+            raise AssertionError(f"malformed direct-call op {bad!r} must error")
+        except github.RepoError as exc:
+            assert needle in str(exc), (bad, str(exc))
+
+    # --- patch resolution against a fake GitHub ---
+    real_request = github._request
+
+    # the github layer enforces one write mode per entry (server.py's
+    # normalizer does too) - rejected before a single GitHub read, standalone
+    # callers included.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        raise AssertionError(f"exclusivity must be rejected before any request: {method} {path}")
+
+    github._request = fake_request
+    try:
+        github.propose_change(
+            [{"path": "README.md", "content": "x",
+              "edits": [{"find": "a", "replace": "b"}]}],
+            title="t", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("content and edits on one entry must be rejected")
+    except github.RepoError as exc:
+        assert "both 'content' and 'edits'" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [], "the exclusivity rejection must not hit GitHub"
+
+    calls = []
+    github._request = fake_request
+    try:
+        github.update_pr(
+            1,
+            [{"path": "app.py", "delete": True,
+              "edits": [{"find": "a", "replace": "b"}]}],
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("edits and delete on one entry must be rejected")
+    except github.RepoError as exc:
+        assert "more than one of" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [], "the exclusivity rejection must not hit GitHub"
+
+    calls = []
+    github._request = fake_request
+    try:
+        github.update_pr(
+            1,
+            [{"path": "app.py"}],
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("an entry with no write mode must be rejected")
+    except github.RepoError as exc:
+        assert "needs 'content', 'edits' or 'delete'" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [], "the no-mode rejection must not hit GitHub"
+
+    # content-mode entries must carry a real non-empty string: null (the key
+    # present with a null value - .get returns None, not the default) and
+    # non-string values crash the manifest encoding if they get through.
     for bad in (None, 42, 1.5, ["x"]):
         try:
             github.propose_change(
-                [{"path": "db.py", "content": bad}], title="bad", body="b",
+                [{"path": "README.md", "content": bad}], title="t", body="b",
                 citizen="curious-alpha (agent_id=3)", dry_run=True,
             )
             raise AssertionError(f"propose_change must reject content {bad!r}")
@@ -434,32 +610,63 @@ def main():
             assert "non-empty string" in str(exc), (bad, str(exc))
         try:
             github.update_pr(
-                1, [{"path": "db.py", "content": bad}],
+                1, [{"path": "app.py", "content": bad}],
                 citizen="curious-alpha (agent_id=3)", dry_run=True,
             )
             raise AssertionError(f"update_pr must reject content {bad!r}")
         except github.RepoError as exc:
             assert "non-empty string" in str(exc), (bad, str(exc))
-
-    # A missing 'content' key is also rejected, not treated as empty.
     try:
         github.propose_change(
-            [{"path": "db.py"}], title="no content", body="b",
+            [{"path": "README.md"}], title="t", body="b",
             citizen="curious-alpha (agent_id=3)", dry_run=True,
         )
         raise AssertionError("a change without 'content' must be rejected")
     except github.RepoError as exc:
         assert "non-empty string" in str(exc), str(exc)
 
+    # patch dry_run resolves the base with exactly one read (a patch can't be
+    # previewed without it), the manifest carries the APPLIED result, and
+    # patch_log echoes every op.
+    calls = []
+    base_b64 = base64.b64encode(b"old\nmiddle\nend\n").decode("ascii")
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path.startswith("contents/README.md?ref="):
+            return {"content": base_b64, "sha": "base-sha"}
+        raise AssertionError(f"dry-run patch must only fetch the base, got {method} {path}")
+
+    github._request = fake_request
+    try:
+        plan = github.propose_change(
+            [{"path": "README.md", "edits": [{"find": "middle", "replace": "patched"}]}],
+            title="patch demo", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+    finally:
+        github._request = real_request
+    assert calls == [("GET", "contents/README.md?ref=main")], calls
+    assert plan["changes"] == ["README.md"]
+    assert plan["content_manifest"] == [{
+        "path": "README.md",
+        "content_bytes": len(b"old\npatched\nend\n"),
+        "content_sha256": hashlib.sha256(b"old\npatched\nend\n").hexdigest(),
+    }], "the manifest must describe the APPLIED patch result"
+    assert plan["patch_log"] == [{
+        "path": "README.md",
+        "edits": [{"find": "middle", "replace": "patched", "occurrence": 1, "matched": 1}],
+    }], plan["patch_log"]
+
     # update_pr's manifest is computed for a valid content write too (not
     # just propose_change): dry_run needs only the ownership PR read.
-    real_request = github._request
     calls = []
 
     def fake_request(method, path, body=None, ok_404=False):
         calls.append((method, path))
-        assert method == "GET" and path == "pulls/9", (method, path)
-        return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+        if method == "GET" and path == "pulls/9":
+            return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+        raise AssertionError(f"unexpected request {method} {path}")
 
     github._request = fake_request
     try:
@@ -484,6 +691,130 @@ def main():
         "path": "docs/u.md", "content_bytes": 6,
         "content_sha256": hashlib.sha256("héllo".encode("utf-8")).hexdigest(),
     }], plan["content_manifest"]
+
+    # content-mode dry_run stays 100% network-free (regression for #71)
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        raise AssertionError("content-mode dry-run must not touch GitHub")
+
+    github._request = fake_request
+    try:
+        plan = github.propose_change(
+            [{"path": "docs/new.md", "content": "hello"}],
+            title="t", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+    finally:
+        github._request = real_request
+    assert calls == [], f"content-mode dry-run made {len(calls)} GitHub request(s)"
+    assert plan["patch_log"] == []
+
+    # a patch on a file that does not exist (ok_404 -> None) fails closed
+    def fake_request(method, path, body=None, ok_404=False):
+        assert method == "GET"
+        return None
+
+    github._request = fake_request
+    try:
+        github.propose_change(
+            [{"path": "nope.md", "edits": [{"find": "x", "replace": "y"}]}],
+            title="t", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("patching a missing file must error")
+    except github.RepoError as exc:
+        assert "use 'content' to create" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+
+    # a binary file (non-UTF-8) can't be patched
+    def fake_request(method, path, body=None, ok_404=False):
+        assert method == "GET"
+        return {"content": base64.b64encode(b"\xff\xfe\x00binary").decode("ascii"), "sha": "s"}
+
+    github._request = fake_request
+    try:
+        github.propose_change(
+            [{"path": "logo.png", "edits": [{"find": "x", "replace": "y"}]}],
+            title="t", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("patching a binary file must error")
+    except github.RepoError as exc:
+        assert "not UTF-8" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+
+    # a real (non-dry-run) patch PUT carries the applied content and the base
+    # sha, sharing the resolution GET - no extra round-trips.
+    calls = []
+    base_b64 = base64.b64encode(b"v1\nkeep\n").decode("ascii")
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path.startswith("contents/README.md?ref="):
+            return {"content": base_b64, "sha": "base-sha"}
+        if method == "GET" and path.startswith("git/ref/heads/"):
+            return {"object": {"sha": "head-sha"}}
+        if method == "POST" and path == "git/refs":
+            return {"ref": "refs/heads/proposal/x", "object": {"sha": "head-sha"}}
+        if method == "PUT" and path == "contents/README.md":
+            assert body["sha"] == "base-sha", body
+            assert body["content"] == base64.b64encode(b"v2\nkeep\n").decode("ascii"), body
+            return {"content": {"sha": "put-sha"}}
+        if method == "POST" and path == "pulls":
+            return {"number": 7, "html_url": "https://github.com/x/y/pull/7"}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        plan = github.propose_change(
+            [{"path": "README.md", "edits": [{"find": "v1", "replace": "v2"}]}],
+            title="patch real", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=False,
+        )
+    finally:
+        github._request = real_request
+    assert plan["pr_number"] == 7
+    assert plan["content_manifest"][0]["content_sha256"] == \
+        hashlib.sha256(b"v2\nkeep\n").hexdigest(), "real-path manifest is the applied result"
+    assert ("GET", "contents/README.md?ref=main") in calls
+    assert calls.count(("PUT", "contents/README.md")) == 1
+
+    # repo_update_pr resolves patch entries against the PR BRANCH head (so a
+    # patch stacks on the PR's own earlier commits), not the base branch.
+    calls = []
+    base_b64 = base64.b64encode(b"orig\n").decode("ascii")
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+        if method == "GET" and path.startswith("contents/app.py?ref=feature/x"):
+            return {"content": base_b64, "sha": "br-sha"}
+        if method == "PUT" and path == "contents/app.py":
+            assert body["sha"] == "br-sha", body
+            assert body["content"] == base64.b64encode(b"new\n").decode("ascii"), body
+            return {"content": {"sha": "x"}}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        plan = github.update_pr(
+            9,
+            [{"path": "app.py", "edits": [{"find": "orig", "replace": "new"}]}],
+            citizen="curious-alpha (agent_id=3)", dry_run=False,
+        )
+    finally:
+        github._request = real_request
+    assert plan["patch_log"] == [{
+        "path": "app.py",
+        "edits": [{"find": "orig", "replace": "new", "occurrence": 1, "matched": 1}],
+    }], plan["patch_log"]
+    assert plan["content_manifest"][0]["content_sha256"] == hashlib.sha256(b"new\n").hexdigest()
+    assert ("GET", "contents/app.py?ref=feature/x") in calls
 
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"

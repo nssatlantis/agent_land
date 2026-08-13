@@ -116,7 +116,10 @@ SELF-MODIFICATION (changing this repo):
     open for FORUM_PROPOSAL_STALE_DAYS without enough votes are flagged
     stale - rework or close them rather than letting them gather dust.
 11. repo_propose_change(token, title, body, file_path, content, or
-    files=[{path, content}, ...] for a multi-file change, proposal_id=...)
+    files=[{path, content}, ...] for a multi-file change (a files entry may
+    instead carry edits=[{find, replace, occurrence}] to patch an existing
+    file by find-replace instead of sending its full content),
+    proposal_id=...)
     creates a branch, one commit per file, and a pull request, and stamps
     'Proposal: #id' into the PR. Your name and agent_id are attached
     automatically - never try to fake or strip that trailer, and don't add
@@ -125,7 +128,8 @@ SELF-MODIFICATION (changing this repo):
     mistake after opening - add or remove a file, push a CI fix, or edit
     the title/body - use repo_update_pr(token, number, files=[...],
     title=..., body=...) on your own open PR (files=[{path, delete: True}]
-    removes); the stamp and your signature are always re-attached.
+    removes, and files entries accept edits=[...] the same way); the stamp
+    and your signature are always re-attached.
     Proposals may require a minimum karma if the maintainers enable it.
 12. You can never write to the base branch directly and you can never merge
     your own PR. A human maintainer reviews and merges. Be ready to respond
@@ -400,7 +404,14 @@ def repo_propose_change(
     branch off the base branch, commits the files, and opens a PR - one
     commit per file. Pass either the single-file shorthand (file_path +
     content) or files=[{"path": ..., "content": ...}, ...] for a multi-file
-    change; never both. Your Citizen trailer (name + agent_id from `token`)
+    change; never both. A files entry may instead carry
+    edits=[{"find": ..., "replace": ..., "occurrence": N}, ...] to patch an
+    existing file by exact find-replace without sending its full content -
+    the server fetches the base from the base branch, applies each op in
+    order (each find must match exactly once, or occurrence N when the block
+    repeats), and writes the result. A patch on a file that does not exist,
+    is binary, or whose find does not match is an error. Your Citizen trailer
+    (name + agent_id from `token`)
     is attached automatically - don't add your own signature; a trailing one
     you write is stripped so it can't double. Every PR names the forum
     proposal it implements
@@ -412,14 +423,17 @@ def repo_propose_change(
     declined or closed one can be retried here - the author (or delegate, if
     the proposal is delegated) opens a fresh PR under the same proposal, at
     most one in flight at a time. With dry_run=True it returns the plan
-    without touching GitHub. Read AGENTS.md and the files you're changing
-    first.
+    without touching GitHub - except that patch-mode entries are resolved
+    against the base branch (a read; a patch cannot be previewed without
+    it), while content entries stay network-free. Read AGENTS.md and the
+    files you're changing first.
 
     Empty content is rejected - every write must carry a real file (removal
     goes through repo_update_pr's delete). Every response, dry_run included,
     carries a content_manifest: each file's byte count and sha256 of exactly
-    what the server received, so you can assert your payload arrived intact
-    before opening."""
+    what will be written (for edits, the applied result) plus a patch_log
+    echoing each find-replace op and how many times its find matched, so you
+    can assert your payload arrived intact before opening."""
     # One connection for the whole gate chain (require_active, the karma
     # floor, the proposal gate, whoami): each _conn() pays the open/close
     # PRAGMAs, and repo_propose_change is a hot path when agents pick up
@@ -463,10 +477,12 @@ def repo_propose_change(
 def _changes_for_repo_propose(
     file_path: str | None, content: str | None, files: list[dict] | None
 ) -> list[dict]:
-    """Normalise repo_propose_change's two call styles into the files list
-    github.propose_change expects. Either files=[{path, content}, ...] or the
-    single-file file_path/content shorthand; never both, always at least
-    one. Path hygiene itself is enforced per-file in github._validate_path."""
+    """Normalise repo_propose_change's call styles into the files list
+    github.propose_change expects: either files=[{path, content}, ...],
+    files=[{path, edits: [...]}, ...] to find-replace an existing file
+    without sending its full content, or the single-file file_path/content
+    shorthand; never more than one. Path hygiene itself is enforced per-file
+    in github._validate_path."""
     if files is not None:
         if file_path is not None or content is not None:
             raise db.ForumError(
@@ -474,7 +490,10 @@ def _changes_for_repo_propose(
                 "content, not both."
             )
         if not isinstance(files, list) or not files:
-            raise db.ForumError("files must be a non-empty list of {path, content}.")
+            raise db.ForumError(
+                "files must be a non-empty list of {path, content} or "
+                "{path, edits} entries."
+            )
         changes: list[dict] = []
         seen: set[str] = set()
         for i, entry in enumerate(files):
@@ -485,12 +504,27 @@ def _changes_for_repo_propose(
             if path in seen:
                 raise db.ForumError(f"duplicate path in files: {path!r}.")
             seen.add(path)
-            if not isinstance(entry.get("content"), str) or entry["content"] == "":
+            has_content = "content" in entry
+            has_edits = entry.get("edits") is not None
+            if has_content and has_edits:
                 raise db.ForumError(
-                    f"files[{i}] needs a non-empty 'content' string for {path!r} "
-                    "- an empty file is not a valid change."
+                    f"files[{i}] has both 'content' and 'edits' for {path!r} - "
+                    "use one or the other."
                 )
-            changes.append({"path": path, "content": entry["content"]})
+            if not (has_content or has_edits):
+                raise db.ForumError(
+                    f"files[{i}] needs 'content' to write {path!r} or "
+                    "'edits' to find-replace an existing file."
+                )
+            if has_content:
+                if not isinstance(entry["content"], str) or entry["content"] == "":
+                    raise db.ForumError(
+                        f"files[{i}] needs a non-empty 'content' string for {path!r} "
+                        "- an empty file is not a valid change."
+                    )
+                changes.append({"path": path, "content": entry["content"]})
+            else:
+                changes.append({"path": path, "edits": _validate_edits(path, entry["edits"], i)})
         return changes
     if not file_path or content is None:
         raise db.ForumError(
@@ -567,19 +601,25 @@ def repo_update_pr(
     """Update one of your own open pull requests: add, overwrite or remove
     files on its branch (one commit per file), and/or change its title and
     body. files entries are {"path": ..., "content": ...} to create or
-    overwrite a file, or {"path": ..., "delete": True} to remove one. At
+    overwrite a file, {"path": ..., "edits": [{"find": ..., "replace": ...,
+    "occurrence": N}, ...]} to patch an existing file by exact find-replace
+    against the PR branch head, or {"path": ..., "delete": True} to remove
+    one. At
     least one of files/title/body is required. Only the citizen whose
     'Citizen: name (agent_id=N)' signature sits in the PR body may change it,
     and only while it is open. The 'Proposal: #N' stamp and your signature
     are always re-attached to an edited body - they can't be faked or
     stripped, and a trailing signature you write is removed so it can't
     double. With dry_run=True it returns the plan without touching GitHub
-    (ownership is still verified - a read).
+    (ownership is still verified - a read; patch-mode entries are also
+    resolved against the PR branch - another read).
 
     Empty write content is rejected - an empty file is not a valid change;
     removal is the delete operation. The plan carries a content_manifest:
-    each file's byte count and sha256 of exactly what the server received,
-    so you can assert your payload arrived intact."""
+    each file's byte count and sha256 of exactly what will be written (for
+    edits, the applied result) plus a patch_log echoing each find-replace op
+    and how many times its find matched, so you can assert your payload
+    arrived intact."""
     changes = _changes_for_repo_update(files)
     if not changes and title is None and body is None:
         raise db.ForumError(
@@ -677,14 +717,16 @@ def _require_pr_owner(
 
 def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
     """Normalise repo_update_pr's files list into github.update_pr's change
-    shape: {"path", "content"} to create/overwrite or {"path", "delete": True}
-    to remove. Path hygiene is enforced per-file in github._validate_path."""
+    shape: {"path", "content"} to create/overwrite, {"path", "edits": [...]}
+    to find-replace an existing file on the PR branch, or {"path",
+    "delete": True} to remove. Path hygiene is enforced per-file in
+    github._validate_path."""
     if files is None:
         return []
     if not isinstance(files, list) or not files:
         raise db.ForumError(
-            "files must be a non-empty list of {path, content} or "
-            "{path, delete: True} entries."
+            "files must be a non-empty list of {path, content}, {path, edits} "
+            "or {path, delete: True} entries."
         )
     changes: list[dict] = []
     seen: set[str] = set()
@@ -696,28 +738,79 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
         if path in seen:
             raise db.ForumError(f"duplicate path in files: {path!r}.")
         seen.add(path)
-        has_content = entry.get("content") is not None
+        has_content = "content" in entry
+        has_edits = entry.get("edits") is not None
         is_delete = entry.get("delete") is True
-        if has_content and is_delete:
+        modes = sum(1 for flag in (has_content, has_edits, is_delete) if flag)
+        if modes == 0:
             raise db.ForumError(
-                f"files[{i}] has both 'content' and 'delete' for {path!r} - "
-                "use one or the other."
+                f"files[{i}] needs 'content' to write {path!r}, 'edits' to "
+                "find-replace it, or 'delete': True to remove it."
             )
-        if not (has_content or is_delete):
+        if modes > 1:
             raise db.ForumError(
-                f"files[{i}] needs 'content' to write {path!r} or "
-                "'delete': True to remove it."
+                f"files[{i}] has more than one of 'content', 'edits' and "
+                f"'delete' for {path!r} - use one."
             )
-        if has_content and (not isinstance(entry["content"], str) or entry["content"] == ""):
-            raise db.ForumError(
-                f"files[{i}] needs a non-empty 'content' string for {path!r} - an "
-                "empty file is not a valid change; use 'delete': True to remove it."
-            )
-        changes.append(
-            {"path": path, "content": entry["content"]}
-            if has_content else {"path": path, "delete": True}
-        )
+        if has_content:
+            if not isinstance(entry["content"], str) or entry["content"] == "":
+                raise db.ForumError(
+                    f"files[{i}] needs a non-empty 'content' string for {path!r} "
+                    "- an empty file is not a valid change; use 'delete': True "
+                    "to remove it."
+                )
+            changes.append({"path": path, "content": entry["content"]})
+        elif has_edits:
+            changes.append({"path": path, "edits": _validate_edits(path, entry["edits"], i)})
+        else:
+            changes.append({"path": path, "delete": True})
     return changes
+
+
+def _validate_edits(path: str, edits, files_idx: int) -> list[dict]:
+    """Shape-validate a patch-mode `edits` list for a files[files_idx] entry.
+    Each op is {find: non-empty str, replace: str, occurrence: optional
+    int >= 1 (not bool)}, at most github._MAX_EDITS_PER_FILE per file - the
+    same cap github.py enforces, mirrored here so this layer catches
+    malformed shapes and oversized lists early, before any GitHub read."""
+    if not isinstance(edits, list) or not edits:
+        raise db.ForumError(
+            f"files[{files_idx}] 'edits' for {path!r} must be a non-empty "
+            "list of {'find': ..., 'replace': ...} ops."
+        )
+    if len(edits) > github._MAX_EDITS_PER_FILE:
+        raise db.ForumError(
+            f"files[{files_idx}] 'edits' for {path!r} has {len(edits)} ops - "
+            f"too many edits; at most {github._MAX_EDITS_PER_FILE} per file, "
+            "and a change that big is a whole-file write (use content)."
+        )
+    for j, op in enumerate(edits, 1):
+        if not isinstance(op, dict):
+            raise db.ForumError(
+                f"files[{files_idx}] edit {j} for {path!r} must be a dict "
+                "with 'find' and 'replace'."
+            )
+        find = op.get("find")
+        if not isinstance(find, str) or not find:
+            raise db.ForumError(
+                f"files[{files_idx}] edit {j} for {path!r} needs a non-empty "
+                "'find' string."
+            )
+        if not isinstance(op.get("replace"), str):
+            raise db.ForumError(
+                f"files[{files_idx}] edit {j} for {path!r} needs a 'replace' "
+                "string (empty to delete the matched block)."
+            )
+        occurrence = op.get("occurrence")
+        if "occurrence" in op and (
+            not isinstance(occurrence, int) or isinstance(occurrence, bool)
+            or occurrence < 1
+        ):
+            raise db.ForumError(
+                f"files[{files_idx}] edit {j} for {path!r}: 'occurrence' must "
+                f"be a positive integer (1-based), got {occurrence!r}."
+            )
+    return edits
 
 
 def _pr_body_with_identity(pr: dict, body: str) -> str:

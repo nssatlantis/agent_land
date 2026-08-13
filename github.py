@@ -36,6 +36,11 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "nssatlantis/agent_land")
 GITHUB_BASE_BRANCH = os.environ.get("GITHUB_BASE_BRANCH", "main")
 
+# Cap on find-replace ops per file (patch mode). Generous sanity bound only -
+# patch mode exists to keep tool calls small, so an edit list this long is
+# probably a whole rewrite that belongs in `content` instead.
+_MAX_EDITS_PER_FILE = 200
+
 
 class RepoError(Exception):
     """Raised for any rule violation or GitHub API failure. server.py lets
@@ -455,16 +460,28 @@ def propose_change(
 ) -> dict:
     """Propose a change as a pull request. Never writes to the base branch.
 
-    changes: list of {"path": str, "content": str} - one commit per entry.
+    changes: list of {"path": str, "content": str} for a whole-file write, or
+             {"path": str, "edits": [{"find": str, "replace": str,
+             "occurrence": int (optional, 1-based)}, ...]} for a find-replace
+             patch of an existing file - one commit per entry. Patch entries
+             are resolved against the base branch at call time: the server
+             fetches the file, applies each find-replace in order (each find
+             must match exactly once, or the requested occurrence), and writes
+             the result. A file that does not exist, is not UTF-8 text, or has
+             no matching find is an error - never a guess, because the caller
+             cannot see the result to correct it.
     title/body: the PR title and description.
     citizen:   the trailer value, e.g. "curious-alpha (agent_id=1)".
     branch:    optional feature branch name; auto-generated if omitted.
-    dry_run:   return the plan without touching GitHub.
+    dry_run:   return the plan without touching GitHub. Content entries stay
+             network-free; patch entries perform a read (the base file must
+             be fetched to resolve the patch).
 
     Empty content is rejected - a write must carry a real file (removal is
     the update path's delete operation). The plan (and the real return) carry
-    a content_manifest: each file's byte count and sha256 of exactly what was
-    received, so a caller can assert its payload arrived intact.
+    a content_manifest: each file's byte count and sha256 of exactly what
+    will be written (for patch entries, the APPLIED result), plus a patch_log
+    echoing every find-replace op and how many times its find matched.
     """
     base_branch = base_branch or GITHUB_BASE_BRANCH
     if not changes:
@@ -480,20 +497,46 @@ def propose_change(
     planned = []
     for c in changes:
         path = _validate_path(c["path"])
-        content = c.get("content", "")
-        if not isinstance(content, str) or content == "":
+        has_content = "content" in c
+        has_edits = "edits" in c
+        if has_content and has_edits:
             raise RepoError(
-                f"content for {path!r} must be a non-empty string - an empty "
-                "file is not a valid change; removal is the update path's "
-                "delete operation."
+                f"change for {path!r} has both 'content' and 'edits' - "
+                "use one or the other."
             )
-        planned.append({"path": path, "content": content})
+        if has_edits:
+            planned.append({"path": path, "edits": _validate_edits(path, c["edits"])})
+        else:
+            content = c.get("content", "")
+            if not isinstance(content, str) or content == "":
+                raise RepoError(
+                    f"content for {path!r} must be a non-empty string - an "
+                    "empty file is not a valid change; removal is the update "
+                    "path's delete operation."
+                )
+            planned.append({"path": path, "content": content})
     if not any(p["path"] for p in planned):
         raise RepoError("a change with an empty path was supplied.")
 
     branch = branch or _branch_name(citizen)
     commit_message = f"{title}\n\nCitizen: {citizen}"
     pr_body = f"{body}\n\nCitizen: {citizen}" if body else f"Citizen: {citizen}"
+
+    # Resolve patch entries against the base branch before building the plan:
+    # a patch cannot be previewed (or written) without the base, and the sha
+    # resolution rides along on the same GET. Content entries are left to the
+    # real path below - dry_run stays network-free for them.
+    resolved = []
+    for p in planned:
+        if "edits" in p:
+            data = _request("GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True)
+            content, log = _resolve_edits(p["path"], data, p["edits"])
+            resolved.append({
+                "path": p["path"], "content": content, "sha": data.get("sha"),
+                "patch_log": log,
+            })
+        else:
+            resolved.append({"path": p["path"], "content": p["content"]})
 
     plan = {
         "dry_run": dry_run,
@@ -503,16 +546,20 @@ def propose_change(
         "title": title,
         "commit_message": commit_message,
         "pr_body": pr_body,
-        "changes": [p["path"] for p in planned],
-        "content_manifest": _content_manifest(planned),
+        "changes": [p["path"] for p in resolved],
+        "content_manifest": _content_manifest(resolved),
+        "patch_log": _patch_log(resolved),
     }
     if dry_run:
         return plan
 
-    # Existing files need their current sha to update. Resolve against the
-    # base branch first, before the feature branch exists.
+    # Existing files need their current sha to update. Content entries resolve
+    # against the base branch first, before the feature branch exists; patch
+    # entries already carry their sha from the resolution pass.
     existing_sha: dict[str, str | None] = {}
-    for p in planned:
+    for p in resolved:
+        if "sha" in p:
+            continue
         data = _request("GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True)
         existing_sha[p["path"]] = data.get("sha") if data else None
 
@@ -521,13 +568,13 @@ def propose_change(
 
     _request("POST", "git/refs", {"ref": f"refs/heads/{branch}", "sha": base_sha})
 
-    for p in planned:
+    for p in resolved:
         put_body = {
             "message": commit_message,
             "content": base64.b64encode(p["content"].encode("utf-8")).decode("ascii"),
             "branch": branch,
         }
-        sha = existing_sha.get(p["path"])
+        sha = p.get("sha") if "sha" in p else existing_sha.get(p["path"])
         if sha:
             put_body["sha"] = sha
         _request("PUT", f"contents/{p['path']}", put_body)
@@ -544,8 +591,9 @@ def propose_change(
         "branch": branch,
         "base_branch": base_branch,
         "title": title,
-        "changes": [p["path"] for p in planned],
-        "content_manifest": _content_manifest(planned),
+        "changes": [p["path"] for p in resolved],
+        "content_manifest": _content_manifest(resolved),
+        "patch_log": _patch_log(resolved),
     }
 
 
@@ -561,21 +609,28 @@ def update_pr(
     """Add, overwrite or remove files on an existing pull request's branch,
     and/or change its title and body. Never writes to the base branch.
 
-    changes: list of {"path": str, "content": str} to create or overwrite, or
-             {"path": str, "delete": True} to remove - one commit per entry,
-             each carrying the Citizen trailer of whoever is updating.
+    changes: list of {"path": str, "content": str} to create or overwrite,
+             {"path": str, "edits": [{"find": str, "replace": str,
+             "occurrence": int (optional, 1-based)}, ...]} to find-replace an
+             existing file on the PR branch, or {"path": str, "delete": True}
+             to remove - one commit per entry, each carrying the Citizen
+             trailer of whoever is updating. Patch entries are resolved
+             against the PR branch head at call time (they stack on the PR's
+             own earlier commits) and fail closed on no-match / ambiguous /
+             out-of-range / missing / binary, like propose_change.
     title/body: optional new PR title/description. body is used verbatim - the
              caller (server.py) is responsible for keeping the 'Proposal: #N'
              stamp and 'Citizen:' trailer lines intact so the outcome poller
              and PR track record keep working.
     citizen:   the trailer value, e.g. "curious-alpha (agent_id=1)".
     dry_run:   return the plan without touching GitHub (ownership is still
-             verified - a read).
+             verified - a read; patch entries are also resolved, another read).
 
     Empty write content is rejected - an empty file is not a valid change;
     removal is the delete operation. The plan carries a content_manifest:
-    each file's byte count and sha256 of exactly what was received, so a
-    caller can assert its payload arrived intact.
+    each file's byte count and sha256 of exactly what will be written (for
+    patch entries, the APPLIED result), plus a patch_log echoing every
+    find-replace op and how many times its find matched.
     """
     citizen = (citizen or "").strip()
     if not citizen:
@@ -588,8 +643,24 @@ def update_pr(
     planned = []
     for c in changes:
         path = _validate_path(c["path"])
-        if c.get("delete"):
+        has_content = "content" in c
+        has_edits = "edits" in c
+        is_delete = c.get("delete") is True
+        modes = sum(1 for flag in (has_content, has_edits, is_delete) if flag)
+        if modes == 0:
+            raise RepoError(
+                f"change for {path!r} needs 'content', 'edits' or "
+                "'delete': True."
+            )
+        if modes > 1:
+            raise RepoError(
+                f"change for {path!r} has more than one of 'content', "
+                "'edits' and 'delete' - use one."
+            )
+        if is_delete:
             planned.append({"path": path, "delete": True})
+        elif has_edits:
+            planned.append({"path": path, "edits": _validate_edits(path, c["edits"])})
         else:
             content = c.get("content", "")
             if not isinstance(content, str) or content == "":
@@ -609,6 +680,18 @@ def update_pr(
     current_title = pr.get("title") or ""
 
     new_title = (title or current_title).strip()
+
+    # Resolve patch entries against the PR branch head before building the
+    # plan - a patch cannot be previewed (or written) without the base, and
+    # the sha resolution rides along on the same GET.
+    for p in planned:
+        if "edits" in p:
+            data = _request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            content, log = _resolve_edits(p["path"], data, p["edits"])
+            p["content"] = content
+            p["sha"] = data.get("sha")
+            p["patch_log"] = log
+
     plan = {
         "dry_run": dry_run,
         "pr_number": number,
@@ -617,6 +700,7 @@ def update_pr(
         "commit_message": f"{new_title}\n\nCitizen: {citizen}",
         "changes": [p["path"] for p in planned],
         "content_manifest": _content_manifest(planned),
+        "patch_log": _patch_log(planned),
     }
     if body is not None:
         plan["body"] = body
@@ -624,17 +708,28 @@ def update_pr(
         return plan
 
     for p in planned:
-        data = _request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
-        sha = data.get("sha") if data else None
         commit_body = {
             "message": plan["commit_message"],
             "branch": branch,
         }
         if p.get("delete"):
+            data = _request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            sha = data.get("sha") if data else None
             if sha is None:
                 raise RepoError(f"no file at {p['path']!r} on branch {branch!r} to delete.")
             _request("DELETE", f"contents/{p['path']}", {**commit_body, "sha": sha})
+        elif "edits" in p:
+            # Resolved in the pre-pass: content and sha are already current.
+            put_body = {
+                **commit_body,
+                "content": base64.b64encode(p["content"].encode("utf-8")).decode("ascii"),
+            }
+            if p.get("sha"):
+                put_body["sha"] = p["sha"]
+            _request("PUT", f"contents/{p['path']}", put_body)
         else:
+            data = _request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            sha = data.get("sha") if data else None
             put_body = {
                 **commit_body,
                 "content": base64.b64encode(p["content"].encode("utf-8")).decode("ascii"),
@@ -673,7 +768,8 @@ def close_pr(number: int) -> dict:
 def _content_manifest(planned: list[dict]) -> list[dict]:
     """Per-file byte count and sha256 of the content the server received, so
     a caller can assert its payload arrived intact before (or after) opening
-    a PR. Write entries only - deletes carry nothing to verify."""
+    a PR. Write entries only - deletes carry nothing to verify. For patch
+    entries this is the APPLIED result: exactly what will be committed."""
     return [
         {
             "path": p["path"],
@@ -683,6 +779,154 @@ def _content_manifest(planned: list[dict]) -> list[dict]:
         for p in planned
         if "content" in p
     ]
+
+
+def _patch_log(planned: list[dict]) -> list[dict]:
+    """Per-file echo of every find-replace op that was applied, so a caller
+    can see exactly what matched before (or after) opening a PR. Returns a
+    list of {path, edits: [...]} entries where each op is {find, replace,
+    occurrence, matched} - the same nested shape the tools document.
+    Patch-mode entries only; content/delete entries carry nothing to echo."""
+    return [
+        {"path": p["path"], "edits": p["patch_log"]}
+        for p in planned
+        if "patch_log" in p
+    ]
+
+
+def _validate_edits(path: str, edits) -> list[dict]:
+    """Shape-validate a patch mode `edits` list. Mirrors server.py's normalizer
+    so github.py can be used standalone: each op is {find: non-empty str,
+    replace: str, occurrence: optional int >= 1 (not bool)}, at most
+    _MAX_EDITS_PER_FILE per file."""
+    if not isinstance(edits, list) or not edits:
+        raise RepoError(
+            f"edits for {path!r} must be a non-empty list of "
+            "{'find': ..., 'replace': ...} ops."
+        )
+    if len(edits) > _MAX_EDITS_PER_FILE:
+        raise RepoError(
+            f"too many edits for {path!r} - at most {_MAX_EDITS_PER_FILE} "
+            "per file; a change that big is a whole-file write (use content)."
+        )
+    for i, op in enumerate(edits, 1):
+        if not isinstance(op, dict):
+            raise RepoError(
+                f"edit {i} for {path!r} must be a dict with 'find' and "
+                "'replace'."
+            )
+        find = op.get("find")
+        if not isinstance(find, str) or not find:
+            raise RepoError(
+                f"edit {i} for {path!r} needs a non-empty 'find' string."
+            )
+        if not isinstance(op.get("replace"), str):
+            raise RepoError(
+                f"edit {i} for {path!r} needs a 'replace' string (empty to "
+                "delete the matched block)."
+            )
+        occurrence = op.get("occurrence")
+        if "occurrence" in op and (
+            not isinstance(occurrence, int) or isinstance(occurrence, bool)
+            or occurrence < 1
+        ):
+            raise RepoError(
+                f"edit {i} for {path!r}: 'occurrence' must be a positive "
+                f"integer (1-based), got {occurrence!r}."
+            )
+    return edits
+
+
+def _decode_content_text(path: str, data: dict | None) -> str:
+    """Decode a contents-API response's base64 blob to UTF-8 text. Raises for
+    a missing file (`data` is None - the caller fetched with ok_404) or a
+    binary file, which patch mode cannot touch."""
+    if data is None:
+        raise RepoError(
+            f"no file at {path!r} to patch - patch mode edits an existing "
+            "file; use 'content' to create a new one."
+        )
+    raw = base64.b64decode(data.get("content", ""))
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise RepoError(
+            f"cannot patch {path!r} - it is not UTF-8 text (binary file)."
+        ) from None
+
+
+def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dict]]:
+    """Apply a find-replace `edits` list to `text` in order, each against the
+    result of the previous one. Returns (new_text, log) where log is one
+    entry per op: {find, replace, occurrence, matched}. Deliberately strict:
+    a find that does not match exactly once (or the requested occurrence) is
+    an error, never a guess - the caller cannot see the result to correct it,
+    so ambiguity must fail closed. Pure function, no network."""
+    result = text
+    log: list[dict] = []
+    for i, op in enumerate(edits, 1):
+        find = op["find"]
+        if not find:
+            raise RepoError(
+                f"edit {i} for {path!r}: 'find' must not be empty - a "
+                "zero-length find cannot be applied."
+            )
+        replace = op.get("replace")
+        if not isinstance(replace, str):
+            raise RepoError(
+                f"edit {i} for {path!r}: needs a 'replace' string (empty to "
+                "delete the matched block)."
+            )
+        occurrence = op.get("occurrence", 1)
+        if (not isinstance(occurrence, int) or isinstance(occurrence, bool)
+                or occurrence < 1):
+            raise RepoError(
+                f"edit {i} for {path!r}: 'occurrence' must be a positive "
+                f"integer (1-based), got {occurrence!r}."
+            )
+        hits: list[int] = []
+        start = 0
+        while True:
+            j = result.find(find, start)
+            if j < 0:
+                break
+            hits.append(j)
+            start = j + len(find)
+        if not hits:
+            raise RepoError(
+                f"edit {i} for {path!r}: find text did not match the file - "
+                "the base may have changed since you read it; re-read the "
+                "file with repo_read_file and retry."
+            )
+        if "occurrence" not in op and len(hits) > 1:
+            raise RepoError(
+                f"edit {i} for {path!r}: find text matched {len(hits)} times - "
+                "pass \"occurrence\": N (1-based) to pick one, or make the "
+                "find text longer so it is unambiguous."
+            )
+        if occurrence > len(hits):
+            raise RepoError(
+                f"edit {i} for {path!r}: occurrence {occurrence} is out of "
+                f"range - the find text matched {len(hits)} time(s)."
+            )
+        j = hits[occurrence - 1]
+        result = result[:j] + replace + result[j + len(find):]
+        log.append({
+            "find": find,
+            "replace": replace,
+            "occurrence": occurrence,
+            "matched": len(hits),
+        })
+    return result, log
+
+
+def _resolve_edits(path: str, data: dict | None, edits: list[dict]) -> tuple[str, list[dict]]:
+    """Resolve a patch-mode `edits` list against an already-fetched
+    contents-API response (`data` for the file on the resolution ref, None
+    when it does not exist): decode to UTF-8 text, apply the find-replace
+    ops, and return (content, log). The caller shares this one GET per file
+    with its sha resolution, so patch mode costs no extra GitHub round-trips."""
+    return _apply_edits(path, _decode_content_text(path, data), edits)
 
 
 def _validate_path(path: str) -> str:
