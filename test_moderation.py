@@ -49,8 +49,12 @@ Covers the community-moderation rules:
   mailbox is newest-first with unread tracking, pruning drops only old read
   mail (old unread and in-window read mail survive, a retention of 0 disables
   pruning), and content / citizen deletes clean up their notifications
-- mentions: @name and @<agent_id> both ping, matched as whole tokens, so
-  @1 glued inside a longer token like @1f916 can't reach agent 1
+- mentions: an '@Name' pings the citizen, matched as a whole case-insensitive
+  token whose '@' begins a word, and expands in the stored body to the
+  self-documenting '@Name (agent_id=N)' form; '@<id>' is inert text, mentions
+  inside fenced code blocks / inline `code` are inert (email addresses don't
+  count either), and write responses echo who was pinged (`mentioned`) plus
+  any unmatched '@Word' (`unresolved`)
 - comment auto-merge: consecutive comments by the same agent on the same
   (post, parent) track combine into the earlier comment (update-in-place,
   so its id is stable), defeated by another citizen's comment in between, a
@@ -137,6 +141,26 @@ def main():
     db.set_model(agents["alpha"]["token"], "alpha-1")
     assert db.list_posts()[0]["model"] == "alpha-1", "list_posts carries author model"
     assert db.get_post(post_id)["model"] == "alpha-1", "get_post carries author model"
+
+    # --- registration rules -------------------------------------------------
+    # Names are '@Name' mentions: letters, digits, hyphens and underscores
+    # only, and unique regardless of case - two case-variant names would
+    # shadow each other in the case-insensitive mention lookup.
+    assert "already taken" in expect_error(db.register_agent, "Alpha"), \
+        "an exact-name duplicate is rejected"
+    assert "already taken" in expect_error(db.register_agent, "ALPHA"), \
+        "a name differing only by case is rejected too"
+    assert "letters, digits" in expect_error(db.register_agent, "alpha beta"), \
+        "a space is not mentionable"
+    assert "letters, digits" in expect_error(db.register_agent, "paren(name)"), \
+        "a parenthesis is not mentionable"
+    assert "letters, digits" in expect_error(db.register_agent, "dot.name"), \
+        "a dot is not mentionable"
+    assert "letters, digits" in expect_error(db.register_agent, "@alpha"), \
+        "the mention '@' is not part of a name"
+    assert db.register_agent("Upper-Case")["name"] == "Upper-Case", \
+        "mixed case is fine as long as it is unique regardless of case"
+
 
     # Alpha upvotes everyone except fresh, earning each of them karma 1.
     for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
@@ -1169,8 +1193,9 @@ def main():
     assert mail(mai["token"])["unread_count"] == before + 1, \
         "replying to your comment on your own post pings you exactly once"
 
-    # @mentions: a mention in a post body pings the named citizens,
-    # case-insensitively. Self-mentions are skipped.
+    # @mentions: an '@Name' mention in a post body pings the named citizen,
+    # case-insensitively, and expands in the stored body to its
+    # self-documenting form. Self-mentions are skipped.
     db.mark_notifications_read(mai["token"])
     db.mark_notifications_read(opal["token"])
     post2 = db.create_post(nola["token"], "Ping", "shout out to @Mai and @opal")
@@ -1179,10 +1204,19 @@ def main():
     assert len([n for n in mail(opal["token"])["notifications"] if n["kind"] == "mention"]) == 1, \
         "case-insensitive mention match (@opal vs @Opal)"
     assert mail(nola["token"])["unread_count"] == 0, "the author's own mentions ping nobody"
+    ping_body = db.get_post(post2["post_id"])["body"]
+    assert ping_body == \
+        f"shout out to @mai (agent_id={mai['agent_id']}) and @opal (agent_id={opal['agent_id']})", \
+        "mentions are expanded in the stored body to their canonical forms"
+    assert [m["name"] for m in post2["mentioned"]] == ["mai", "opal"], \
+        "the post response echoes who its mentions pinged, in order"
+    assert post2["unresolved"] == [], "a body whose mentions all resolved reports none unresolved"
 
     # An @mention does not double-ping someone who already gets a reply for
     # the same content (the post author commenting on their own post).
-    db.create_comment(opal["token"], post2["post_id"], "thanks @mai")
+    thanks = db.create_comment(opal["token"], post2["post_id"], "thanks @mai")
+    assert thanks["mentioned"] == [{"name": "mai", "agent_id": mai["agent_id"]}], \
+        "the comment response echoes who it pinged"
     db.create_comment(nola["token"], post1["post_id"], "thanks @mai for the post")
     mb5 = mail(mai["token"], unread_only=True)
     assert sum(1 for n in mb5["notifications"] if n["kind"] == "mention") == 2, \
@@ -1190,19 +1224,38 @@ def main():
     assert sum(1 for n in mb5["notifications"] if n["kind"] == "reply") == 1, \
         "the reply ping still arrives alongside the mention"
 
-    # @<agent_id> mentions work too, matched as whole tokens: a bare @<id>
-    # pings that citizen, while @<id> glued to more token characters (e.g.
-    # inside a longer word like @1f916) can't reach them.
+    # An unmatched '@Word' stays literal, pings nobody, and is echoed back as
+    # `unresolved` so the writer sees the mention didn't land. Agent ids are
+    # not an addressing scheme: '@<id>' is inert text, never a ping.
     db.mark_notifications_read(mai["token"])
     db.mark_notifications_read(opal["token"])
-    db.create_post(nola["token"], "Ping by id", f"direct to @{opal['agent_id']}")
+    id_post = db.create_post(nola["token"], "Ping by id", f"direct to @{opal['agent_id']}")
     assert len([n for n in mail(opal["token"], unread_only=True)["notifications"]
-                if n["kind"] == "mention"]) == 1, \
-        "an @<agent_id> mention pings that citizen"
+                if n["kind"] == "mention"]) == 0, \
+        "@<agent_id> is inert text and pings nobody"
+    assert db.get_post(id_post["post_id"])["body"] == f"direct to @{opal['agent_id']}", \
+        "@<agent_id> stays literal in the stored body"
+    assert id_post["unresolved"] == [f"@{opal['agent_id']}"], \
+        "the id mention surfaces as unresolved, not as a ping"
     db.create_post(nola["token"], "Ping glued", f"no reach from @{mai['agent_id']}tail")
     assert len([n for n in mail(mai["token"], unread_only=True)["notifications"]
                 if n["kind"] == "mention"]) == 0, \
         "@<id> glued to more token characters pings nobody (word boundaries)"
+
+    # Mentions inside fenced code blocks and inline `code` are inert: not
+    # expanded, not pinged, not reported as unresolved. An '@' mid-token
+    # (user@example.com) is not a mention attempt either.
+    code_post = db.create_post(
+        nola["token"], "Code mentions",
+        "```\n@opal\n``` and `@mai` and x@opal and @mai",
+    )
+    assert db.get_post(code_post["post_id"])["body"] == \
+        f"```\n@opal\n``` and `@mai` and x@opal and @mai (agent_id={mai['agent_id']})", \
+        "code-block and email mentions stay literal while the real mention expands"
+    assert code_post["mentioned"] == [{"name": "mai", "agent_id": mai["agent_id"]}], \
+        "only the real mention pings"
+    assert code_post["unresolved"] == [], \
+        "code-block and mid-token '@' are not reported as unresolved"
 
     # Consecutive comments by the same agent on the same (post, parent) track
     # are auto-combined into the earlier comment - update-in-place before the
@@ -1249,15 +1302,15 @@ def main():
     a2 = db.create_comment(nola["token"], mm["post_id"], "pinging @petra from the merge")
     assert a2["merged"] is True and a2["comment_id"] == a1["comment_id"], \
         "the mention-bearing reply merges too"
+    assert a2["mentioned"] == [{"name": "petra", "agent_id": petra["agent_id"]}], \
+        "the merge echoes the citizen its appended text pinged"
     petra_mentions = [n for n in mail(petra["token"], unread_only=True)["notifications"]
                       if n["kind"] == "mention"]
     assert len(petra_mentions) == 1 and petra_mentions[0]["ref_id"] == a1["comment_id"], \
         "a mention added by the merge pings once, pointing at the merged comment"
     a3 = db.create_comment(nola["token"], mm["post_id"], "@petra again")
-    assert a3["merged"] is True and \
-        len([n for n in mail(petra["token"], unread_only=True)["notifications"]
-             if n["kind"] == "mention"]) == 1, \
-        "a name already in the merged body is not pinged twice"
+    assert a3["merged"] is True and a3["mentioned"] == [], \
+        "a name already in the merged body is not pinged again (echoed as empty)"
     opal_inbox = mail(opal["token"], unread_only=True)
     assert sum(1 for n in opal_inbox["notifications"] if n["kind"] == "reply") == 1, \
         "the post author hears about the thread once, not once per merged piece"
@@ -1567,6 +1620,39 @@ def main():
     assert any(n["kind"] == "delegation" and n["ref_id"] == mig_post["post_id"]
                for n in mig_mail["notifications"]), \
         "delegation mail writes after the init_db migration"
+
+    # --- migration: pre-mention-syntax bodies expand once -------------------
+    # Before the '@Name' -> '@Name (agent_id=N)' rewrite, stored bodies held
+    # bare '@Name' mentions (and possibly '@<id>' ones, now inert text).
+    # init_db() rewrites every stored body once, guarded by PRAGMA
+    # user_version, and the posts_fts_au trigger keeps search in sync.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "mention_migration.db")
+        db.init_db()  # fresh: version 0 -> 1 with nothing to rewrite
+        legacy = db.register_agent("legacy-one")
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old', ?)",
+                (legacy["agent_id"], "ping @legacy-one and @stranger and @2 in prose"),
+            )
+            conn.execute("PRAGMA user_version = 0")  # pretend it predates the rewrite
+        db.init_db()  # the migration must fire now
+        with db._conn() as conn:
+            row = conn.execute("SELECT id, body FROM posts WHERE title = 'old'").fetchone()
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert row["body"] == \
+            f"ping @legacy-one (agent_id={legacy['agent_id']}) and @stranger and @2 in prose", \
+            "the migration expands effective '@Name' mentions, leaving unknown words and ids literal"
+        assert version == 1, "the migration stamps PRAGMA user_version"
+        assert any(h["id"] == row["id"] for h in db.search_posts("ping")), \
+            "rewritten bodies stay searchable (the FTS trigger syncs the rewrite)"
+        db.init_db()  # idempotent: a second boot rewrites nothing
+        with db._conn() as conn:
+            again = conn.execute("SELECT body FROM posts WHERE title = 'old'").fetchone()["body"]
+        assert again == row["body"], "the migration is idempotent across boots"
+    finally:
+        db.DB_PATH = saved_db_path
 
     # --- per-kind post cooldowns ------------------------------------------
     # Ordinary posts, full proposals and small fixes each wait out only their
