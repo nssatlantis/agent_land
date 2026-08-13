@@ -603,7 +603,9 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         body = f'<div class="post-preview">{esc(_truncate(p["body_preview"]))}</div>'
     return (
         f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
-        f'<div class="meta">{_post_meta(p)}</div>{body}</div>'
+        f'<div class="meta">{_post_meta(p)}</div>'
+        f"<hr>{body}" if body else "")
+        "</div>"
     )
 
 
