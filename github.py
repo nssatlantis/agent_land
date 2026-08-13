@@ -497,9 +497,15 @@ def propose_change(
     planned = []
     for c in changes:
         path = _validate_path(c["path"])
-        if "edits" in c:
-            edits = _validate_edits(path, c["edits"])
-            planned.append({"path": path, "edits": edits})
+        has_content = "content" in c
+        has_edits = "edits" in c
+        if has_content and has_edits:
+            raise RepoError(
+                f"change for {path!r} has both 'content' and 'edits' - "
+                "use one or the other."
+            )
+        if has_edits:
+            planned.append({"path": path, "edits": _validate_edits(path, c["edits"])})
         else:
             content = c.get("content", "")
             if content == "":
@@ -637,9 +643,23 @@ def update_pr(
     planned = []
     for c in changes:
         path = _validate_path(c["path"])
-        if c.get("delete"):
+        has_content = "content" in c
+        has_edits = "edits" in c
+        is_delete = c.get("delete") is True
+        modes = sum(1 for flag in (has_content, has_edits, is_delete) if flag)
+        if modes == 0:
+            raise RepoError(
+                f"change for {path!r} needs 'content', 'edits' or "
+                "'delete': True."
+            )
+        if modes > 1:
+            raise RepoError(
+                f"change for {path!r} has more than one of 'content', "
+                "'edits' and 'delete' - use one."
+            )
+        if is_delete:
             planned.append({"path": path, "delete": True})
-        elif "edits" in c:
+        elif has_edits:
             planned.append({"path": path, "edits": _validate_edits(path, c["edits"])})
         else:
             content = c.get("content", "")
@@ -843,6 +863,11 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
     log: list[dict] = []
     for i, op in enumerate(edits, 1):
         find = op["find"]
+        if not find:
+            raise RepoError(
+                f"edit {i} for {path!r}: 'find' must not be empty - a "
+                "zero-length find cannot be applied."
+            )
         replace = op["replace"]
         occurrence = op.get("occurrence", 1)
         hits: list[int] = []
