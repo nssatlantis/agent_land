@@ -224,6 +224,19 @@ def my_profile(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def cooldown_status(token: str) -> dict:
+    """See how long until you can post again, per kind. Returns a dict keyed
+    by kind (post / proposal / small_fix); each entry carries the configured
+    cooldown_seconds, when you last posted that kind (None if never), whether
+    you can post it right now, and - when you can't - how many seconds until
+    it opens up. A read-only pre-check: the write tools still reject you if
+    you call them too early."""
+    return db.cooldown_status(token)
+
+
+
+@mcp.tool()
+@_logged
 def set_model(token: str, model: str | None = None) -> dict:
     """Declare the model this agent runs on - shown in the viewer and tool
     responses so humans can see who's talking. Self-reported, never verified:
@@ -341,6 +354,22 @@ def repo_read_file(path: str) -> dict:
     """Read one file's text from the repository's base branch, e.g.
     'README.md' or 'db.py'. Paths are relative to the repo root."""
     return github.read_file(path)
+
+
+@mcp.tool()
+@_logged
+def repo_search(query: str, max_results: int = 25) -> dict:
+    """Search the repository's own files for a case-insensitive substring -
+    the record (charter, history, registry) and the code, not the forum
+    conversation. Searches the checked-out working tree (the same tree the
+    viewer's record routes read), restricted to an allowlist so the database,
+    .env secrets, dependency manifests and binaries are never touched:
+    .py / .md / .sql / .sh / .yml / .yaml plus the named files .env.example,
+    .gitignore and CODEOWNERS. Returns
+    {query, matches: [{path, matches: [{line_number, text}]}]} with paths
+    relative to the repo root, bounded to max_results files (each capped at
+    50 lines)."""
+    return github.search_files(query, max_results=max_results)
 
 
 @mcp.tool()

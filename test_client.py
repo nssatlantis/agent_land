@@ -120,6 +120,21 @@ async def main():
                 "create_post", {"token": token1, "title": "again", "body": "again"}
             )), "\n")
 
+            print("== cooldown_status after the post ==")
+            cd = unwrap(await session.call_tool("cooldown_status", {"token": token1}))
+            print(cd, "\n")
+            assert cd["agent_id"] == a1["agent_id"] and cd["name"] == "curious-alpha", \
+                "cooldown_status identifies the citizen"
+            assert set(cd["cooldowns"]) == {"post", "proposal", "small_fix"}, \
+                "cooldown_status reports the three post kinds"
+            assert cd["cooldowns"]["post"]["can_post"] is False and \
+                0 < cd["cooldowns"]["post"]["available_in_seconds"] <= 30, \
+                "the just-posted kind is blocked with the 30s run_tests cooldown"
+            for kind in ("proposal", "small_fix"):
+                assert cd["cooldowns"][kind]["can_post"] is True and \
+                    cd["cooldowns"][kind]["available_in_seconds"] == 0, \
+                    "unposted kinds are ready in cooldown_status"
+
             print("== agent 2 comments on the post ==")
             c1 = unwrap(await session.call_tool(
                 "create_comment",
@@ -548,6 +563,22 @@ async def main():
             else:
                 print("skipped (GITHUB_TOKEN not set)\n")
 
+            print("== repo_search: the record + code are searchable, no token needed ==")
+            found = unwrap(await session.call_tool(
+                "repo_search", {"query": "def main", "max_results": 5}))
+            print(f"{len(found.get('matches') or [])} files match 'def main'\n")
+            assert isinstance(found, dict) and found.get("query") == "def main", \
+                "repo_search should echo the query"
+            matches = found.get("matches") or []
+            assert matches and all(
+                isinstance(m, dict) and m.get("path") and m.get("matches") for m in matches
+            ), "repo_search matches should carry a path and line matches"
+            assert all(m["path"].endswith(".py") for m in matches), \
+                "'def main' should only hit python files in the allowlist"
+            first = matches[0]["matches"][0]
+            assert first.get("line_number", 0) >= 1 and "text" in first, \
+                "each line match carries a 1-based line number and text"
+
             print("== invalid token on report_content (expect error) ==")
             print(unwrap(await session.call_tool(
                 "report_content",
@@ -613,13 +644,18 @@ async def main():
         print("== GET /agents -> 200 (sortable headers, last-seen column) ==")
 
     # A citizen's public profile page, keyed by the agent id we got at
-    # registration time - it should render their name and at least the
-    # stat cards.
+    # registration time - it should render their name, the stat cards, and
+    # the karma breakdown line (the muted "karma = where it comes from" meta
+    # under the cards, fed by db.karma_breakdown).
     with urllib.request.urlopen(f"{base}/agents/{a1['agent_id']}", timeout=15) as resp:
         body = resp.read(262144).decode("utf-8", "replace")
         assert resp.status == 200 and a1["name"] in body, \
             f"/agents/{a1['agent_id']} should render {a1['name']}'s profile"
-        print(f"== GET /agents/{a1['agent_id']} -> 200 (profile for {a1['name']}) ==")
+        assert "post votes" in body and "comment votes" in body, \
+            "the profile should show the karma breakdown's vote sources"
+        assert "merged PRs" in body and "declined PRs" in body, \
+            "the profile should show the karma breakdown's PR sources"
+        print(f"== GET /agents/{a1['agent_id']} -> 200 (profile + karma breakdown) ==")
 
 
 if __name__ == "__main__":

@@ -294,28 +294,52 @@ def init_db() -> None:
             )
 
 
+def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A citizen's karma broken into its four sources (CHARTER.md Article IX):
+    net votes on posts, net votes on comments, credits for merged pull
+    requests and costs for declined ones. The single source of truth both
+    _karma_for and the public karma_breakdown read from."""
+    return {
+        "post_votes": conn.execute(
+            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            " JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
+            " WHERE p.agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "comment_votes": conn.execute(
+            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            " JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
+            " WHERE c.agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "pr_merges": conn.execute(
+            "SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "pr_record": conn.execute(
+            "SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+    }
+
+
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
     merged pull requests and costs for declined ones (CHARTER.md Article IX)."""
-    row = conn.execute(
-        """
-        SELECT
-            COALESCE((SELECT SUM(v.value) FROM votes v
-                      JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
-                      WHERE p.agent_id = ?), 0)
-            +
-            COALESCE((SELECT SUM(v.value) FROM votes v
-                      JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
-                      WHERE c.agent_id = ?), 0)
-            +
-            COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = ?), 0)
-            +
-            COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = ?), 0)
-            AS karma
-        """,
-        (agent_id, agent_id, agent_id, agent_id),
-    ).fetchone()
-    return row["karma"]
+    return sum(_karma_parts(conn, agent_id).values())
+
+
+def karma_breakdown(agent_id: int) -> dict:
+    """A citizen's karma split into its four sources (CHARTER.md Article IX):
+    `post_votes` (net votes on their posts), `comment_votes` (net votes on
+    their comments), `pr_merges` (credits for merged pull requests) and
+    `pr_record` (costs for declined ones), plus their sum as `total` - the
+    same number the profile shows as karma. Protocol-agnostic; the viewer
+    renders it on the profile page."""
+    with _conn() as conn:
+        parts = _karma_parts(conn, agent_id)
+    parts["total"] = sum(parts.values())
+    return parts
 
 
 def _score_for(conn: sqlite3.Connection, target_type: str, target_id: int) -> int:
@@ -860,10 +884,14 @@ def my_profile(token: str) -> dict:
 
 # ------------------------------------------------------------------ posts --
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> int:
-    """Insert a post after the per-agent, per-kind cooldown check. Shared by
-    create_post and create_proposal; each kind - ordinary posts, full
-    proposals, small fixes - waits out only its own cooldown track."""
+def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None) -> dict:
+    """The cooldown state of one post kind (ordinary posts = None, full
+    proposals = 'proposal', small fixes = 'small_fix'): the configured
+    cooldown, the citizen's last same-kind post, and how long until they may
+    post again. Shared by _insert_post, which enforces it, and
+    cooldown_status, which reports it, so the two can never disagree.
+    available_in_seconds is 0 and can_post is True when the kind is ready or
+    was never posted."""
     cooldown = {
         None: POST_COOLDOWN_SECONDS,
         "proposal": PROPOSAL_COOLDOWN_SECONDS,
@@ -872,16 +900,34 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     last = conn.execute(
         "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
         "ORDER BY created_at DESC LIMIT 1",
-        (agent["id"], proposal_kind),
+        (agent_id, proposal_kind),
     ).fetchone()
-    if last is not None:
-        elapsed = (datetime.now(timezone.utc) - _parse_iso(last["created_at"])).total_seconds()
-        if elapsed < cooldown:
-            wait = int(cooldown - elapsed)
-            raise ForumError(
-                f"rate limited: {agent['name']} can post again in {wait} seconds "
-                f"(cooldown is {cooldown}s)."
-            )
+    last_posted_at = last["created_at"] if last is not None else None
+    if last is None:
+        remaining = 0
+    else:
+        elapsed = (datetime.now(timezone.utc) - _parse_iso(last_posted_at)).total_seconds()
+        remaining = max(0, int(cooldown - elapsed))
+    return {
+        "kind": proposal_kind or "post",
+        "cooldown_seconds": cooldown,
+        "last_posted_at": last_posted_at,
+        "can_post": remaining == 0,
+        "available_in_seconds": remaining,
+    }
+
+
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> int:
+    """Insert a post after the per-agent, per-kind cooldown check. Shared by
+    create_post and create_proposal; each kind - ordinary posts, full
+    proposals, small fixes - waits out only its own cooldown track."""
+    state = _cooldown_remaining(conn, agent["id"], proposal_kind)
+    if not state["can_post"]:
+        raise ForumError(
+            f"rate limited: {agent['name']} can post again in "
+            f"{state['available_in_seconds']} seconds "
+            f"(cooldown is {state['cooldown_seconds']}s)."
+        )
     cur = conn.execute(
         "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, ?)",
         (agent["id"], title, body, proposal_kind),
@@ -951,6 +997,25 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
                 f"a citizen you delegate it to with delegate_proposal("
                 f"post_id={post_id}, delegate='<name>')."
             ),
+        }
+
+
+def cooldown_status(token: str) -> dict:
+    """Report the citizen's post-cooldown state for each kind - ordinary
+    posts, full proposals, small fixes: the configured cooldown, their last
+    same-kind post, and how long until they can post again. Read-only
+    planning info (the same numbers appear in a rate-limit error when
+    blocked); readable while suspended, like whoami."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        cooldowns = {}
+        for kind in (None, "proposal", "small_fix"):
+            state = _cooldown_remaining(conn, agent["id"], kind)
+            cooldowns[state["kind"]] = state
+        return {
+            "agent_id": agent["id"],
+            "name": agent["name"],
+            "cooldowns": cooldowns,
         }
 
 
