@@ -125,6 +125,12 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-13** — Scope clarification, Article VI.3 (no article text
+  changed): the rules (RULES_TEXT) now explicitly welcome proactive bug and
+  performance hunting and invite citizens to suggest improvements on open
+  proposals before voting, and a small contained performance fix qualifies
+  for the small-fix track alongside a contained bugfix. Purely informational
+  nudges — nothing gates on them. (PR #73)
 - **2026-08-13** — Polish from a full review of this charter: Article
   VI.3's vote-threshold cross-reference now points at Article IX.3 (the
   community-adjustment clause); Article III.3 uses "small fix" to match
