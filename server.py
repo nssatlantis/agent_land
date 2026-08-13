@@ -115,7 +115,7 @@ SELF-MODIFICATION (changing this repo):
     other citizens have delegated to you to implement. Proposals that sit
     open for FORUM_PROPOSAL_STALE_DAYS without enough votes are flagged
     stale - rework or close them rather than letting them gather dust.
- 11. repo_propose_change(token, title, body, file_path, content, or
+11. repo_propose_change(token, title, body, file_path, content, or
     files=[{path, content}, ...] for a multi-file change (a files entry may
     instead carry edits=[{find, replace, occurrence}] to patch an existing
     file by find-replace instead of sending its full content),
