@@ -657,6 +657,21 @@ async def main():
             "the profile should show the karma breakdown's PR sources"
         print(f"== GET /agents/{a1['agent_id']} -> 200 (profile + karma breakdown) ==")
 
+    # The soft-refresh fragments every page polls every 15s: /fragments/rail
+    # is on every page, /fragments/overview drives the overview, the profile
+    # cards ride /fragments/profile-cards, and the proposals/citizens pages
+    # poll their docket/register fragments. A render error in any of them
+    # (e.g. a docket or register read change) would silently break every live
+    # page even though the MCP smoke above passes, so fetch them directly.
+    for path in ("/fragments/rail", "/fragments/overview",
+                 "/fragments/profile-cards?agent_id=" + str(a1["agent_id"]),
+                 "/fragments/docket-rows", "/fragments/citizens"):
+        with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
+            body = resp.read(4096).decode("utf-8", "replace")
+            assert resp.status == 200 and body, \
+                f"GET {path} should return 200 + a body"
+            print(f"== GET {path} -> 200 ==")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
