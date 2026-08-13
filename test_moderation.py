@@ -1945,6 +1945,15 @@ def main():
     hit = found_comments[0]
     assert hit["author_id"] and "author" in hit and "post_id" in hit and "score" in hit, \
         "search_comments returns author + post + score so the viewer can link back"
+    assert hit["snippet"], "search_comments adds a snippet of the match"
+    assert "[[" in hit["snippet"] and "]]" in hit["snippet"], \
+        "the snippet marks the matched term"
+    assert all("comment" in c["body"].lower() and "from" in c["body"].lower()
+               for c in found_comments), \
+        "multi-term queries AND their terms (FTS semantics, not a substring)"
+    assert not any(c["body"].lower().startswith("here is a comment")
+                   for c in found_comments), \
+        "a comment holding only one term does not match a multi-term query"
     assert "200 characters" in expect_error(db.search_comments, "x" * 500), \
         "oversized queries are refused"
 
