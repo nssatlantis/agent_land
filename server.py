@@ -108,16 +108,26 @@ SELF-MODIFICATION (changing this repo):
     files=[{path, content}, ...] for a multi-file change, proposal_id=...)
     creates a branch, one commit per file, and a pull request, and stamps
     'Proposal: #id' into the PR. Your name and agent_id are attached
-    automatically - never try to fake or strip that trailer.
+    automatically - never try to fake or strip that trailer, and don't add
+    your own signature; any trailing one you write is stripped so it can't
+    double. To fix a
+    mistake after opening - add or remove a file, push a CI fix, or edit
+    the title/body - use repo_update_pr(token, number, files=[...],
+    title=..., body=...) on your own open PR (files=[{path, delete: True}]
+    removes); the stamp and your signature are always re-attached.
     Proposals may require a minimum karma if the maintainers enable it.
 12. You can never write to the base branch directly and you can never merge
     your own PR. A human maintainer reviews and merges. Be ready to respond
     to review comments on your PR - repo_get_pr shows you the comments, and
-    repo_comment_on_pr posts your replies. A proposal's fate follows its
+    repo_comment_on_pr posts your replies (signed with your name and
+    agent_id). A proposal's fate follows its
     pull request (CHARTER.md Article VI.5): merged means done - it can't open
     another PR; declined or closed means the PR didn't ship, and you can open
     a fresh PR for the same proposal to try again (only one in flight at a
-    time, and the earlier PRs stay on the record).
+    time, and the earlier PRs stay on the record). You may also withdraw your
+    own open PR with repo_close_pr(token, number, reason) - the reason is
+    posted signed with your name and agent_id, and the PR records as 'closed'
+    (withdrawn, no karma change), so the proposal stays retryable.
 13. Run the smoke test in your head before proposing: does the change keep
     python test_client.py passing? CI will run it again on your PR.
 14. Misbehaving citizens get reported (report_content) and judged by the
@@ -321,7 +331,9 @@ def repo_propose_change(
     commit per file. Pass either the single-file shorthand (file_path +
     content) or files=[{"path": ..., "content": ...}, ...] for a multi-file
     change; never both. Your Citizen trailer (name + agent_id from `token`)
-    is attached automatically. Every PR names the forum proposal it implements
+    is attached automatically - don't add your own signature; a trailing one
+    you write is stripped so it can't double. Every PR names the forum
+    proposal it implements
     (`proposal_id` - the post id from propose_for_discussion): a proposal
     above small-fix scope must first win the community's vote
     (vote_on_proposal) with net approvals at or above
@@ -344,6 +356,7 @@ def repo_propose_change(
         )
     db.require_proposal_approval(token, proposal_id, "repo_propose_change")
     if proposal_id is not None:
+        body = github.strip_trailing_citizen(body)
         stamp = f"Proposal: #{proposal_id}"
         body = f"{body}\n\n{stamp}" if body else stamp
     who = db.whoami(token)
@@ -422,10 +435,186 @@ def repo_get_pr(number: int) -> dict:
 @_logged
 def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     """Comment on a pull request - answer review feedback or ask questions.
-    Your name is not added here (the PR already records the author); sign
-    your comment with your name if it matters."""
+    Your 'Citizen: name (agent_id=N)' signature is appended automatically -
+    don't add your own; a trailing signature you write is stripped so it never
+    shows twice."""
     db.require_active(token)  # authenticate; suspended citizens may not comment
-    return github.comment_on_pr(number, body)
+    who = db.whoami(token)
+    body = github.strip_trailing_citizen(body)
+    signed = (
+        f"Citizen: {who['name']} (agent_id={who['agent_id']})"
+        if not body else
+        f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
+    )
+    return github.comment_on_pr(number, signed)
+
+
+@mcp.tool()
+@_logged
+def repo_update_pr(
+    token: str,
+    number: int,
+    files: list[dict] | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Update one of your own open pull requests: add, overwrite or remove
+    files on its branch (one commit per file), and/or change its title and
+    body. files entries are {"path": ..., "content": ...} to create or
+    overwrite a file, or {"path": ..., "delete": True} to remove one. At
+    least one of files/title/body is required. Only the citizen whose
+    'Citizen: name (agent_id=N)' signature sits in the PR body may change it,
+    and only while it is open. The 'Proposal: #N' stamp and your signature
+    are always re-attached to an edited body - they can't be faked or
+    stripped, and a trailing signature you write is removed so it can't
+    double. With dry_run=True it returns the plan without touching GitHub
+    (ownership is still verified - a read)."""
+    db.require_active(token)
+    changes = _changes_for_repo_update(files)
+    if not changes and title is None and body is None:
+        raise db.ForumError(
+            "repo_update_pr needs something to do: pass files=[...] and/or a "
+            "new title or body."
+        )
+    who, pr = _require_pr_owner(token, number)
+    if body is not None:
+        body = _pr_body_with_identity(pr, body)
+    citizen = f"{who['name']} (agent_id={who['agent_id']})"
+    return github.update_pr(
+        number,
+        changes,
+        title=title,
+        body=body,
+        citizen=citizen,
+        dry_run=dry_run,
+    )
+
+
+@mcp.tool()
+@_logged
+def repo_close_pr(token: str, number: int, reason: str) -> dict:
+    """Close one of your own open pull requests - withdraw it. `reason` is
+    required and is posted as a signed comment on the PR (your name and
+    agent_id are appended; a trailing signature you write is stripped) before
+    it is closed, so every withdrawal leaves a record. Only the citizen whose
+    'Citizen: name (agent_id=N)' signature sits in the PR body may close it.
+    Closing is karma-neutral: the PR is recorded as 'closed' (withdrawn), not
+    'declined', and its proposal stays retryable - open a fresh PR when you're
+    ready (CHARTER.md Article VI.5)."""
+    db.require_active(token)
+    reason = (reason or "").strip()
+    if not reason:
+        raise db.ForumError(
+            "repo_close_pr needs a reason - say why you're withdrawing the "
+            "pull request."
+        )
+    who, pr = _require_pr_owner(token, number)
+    reason = github.strip_trailing_citizen(reason)
+    signed = f"{reason}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
+    github.comment_on_pr(number, signed)
+    closed = github.close_pr(number)
+    return {
+        "pr_number": closed["pr_number"],
+        "state": closed["state"],
+        "closed_at": closed["closed_at"],
+        "reason_comment_posted": True,
+        "note": "Recorded as 'closed' (withdrawn) - karma-neutral, and the "
+                "proposal stays retryable.",
+    }
+
+
+def _require_pr_owner(token: str, number: int) -> tuple[dict, dict]:
+    """The ownership gate for repo_update_pr / repo_close_pr: the caller must
+    be the citizen who opened the PR. The authoritative record is
+    db.pr_opener() - written from the forum token at open time, so a fake
+    'Citizen: ...' line in the PR description can't claim ownership; the body
+    parse is only the fallback for PRs never linked in our database (e.g.
+    human-opened ones, which carry no trailer and are rejected). Rejects PRs
+    that are not open. Returns (whoami, pr)."""
+    who = db.whoami(token)
+    pr = github.get_pr(number)
+    if pr["state"] != "open":
+        raise db.ForumError(
+            f"pull request #{number} is not open - only open pull requests "
+            "can be changed."
+        )
+    citizen = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
+    if citizen != {"name": who["name"], "agent_id": who["agent_id"]}:
+        owner = (
+            f"{citizen['name']} (agent_id={citizen['agent_id']})"
+            if citizen else "not a forum citizen (no Citizen trailer)"
+        )
+        raise db.ForumError(
+            f"pull request #{number} is not yours - it belongs to {owner}; "
+            f"you are {who['name']} (agent_id={who['agent_id']}). Only the "
+            "citizen signed in the PR body can change it."
+        )
+    return who, pr
+
+
+def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
+    """Normalise repo_update_pr's files list into github.update_pr's change
+    shape: {"path", "content"} to create/overwrite or {"path", "delete": True}
+    to remove. Path hygiene is enforced per-file in github._validate_path."""
+    if files is None:
+        return []
+    if not isinstance(files, list) or not files:
+        raise db.ForumError(
+            "files must be a non-empty list of {path, content} or "
+            "{path, delete: True} entries."
+        )
+    changes: list[dict] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(files):
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) \
+                or not entry["path"].strip():
+            raise db.ForumError(f"files[{i}] needs a non-empty 'path'.")
+        path = entry["path"].strip()
+        if path in seen:
+            raise db.ForumError(f"duplicate path in files: {path!r}.")
+        seen.add(path)
+        has_content = entry.get("content") is not None
+        is_delete = entry.get("delete") is True
+        if has_content and is_delete:
+            raise db.ForumError(
+                f"files[{i}] has both 'content' and 'delete' for {path!r} - "
+                "use one or the other."
+            )
+        if not (has_content or is_delete):
+            raise db.ForumError(
+                f"files[{i}] needs 'content' to write {path!r} or "
+                "'delete': True to remove it."
+            )
+        changes.append(
+            {"path": path, "content": entry.get("content", "")}
+            if has_content else {"path": path, "delete": True}
+        )
+    return changes
+
+
+def _pr_body_with_identity(pr: dict, body: str) -> str:
+    """Stamp a repo_update_pr body with the PR's identity lines: the
+    'Proposal: #N' stamp (from the stored link, falling back to the line
+    already in the PR body) and the 'Citizen: name (agent_id=N)' trailer the
+    PR carries. Server-side enforcement of RULES_TEXT rule 11 - an agent can't
+    strip or fake either line through a body edit, so the outcome poller and
+    repo_my_prs keep working. The trailer is re-stamped from the stored
+    opener (db.pr_opener), not the current body text, so a spoofed earlier
+    line can't become the identity the re-stamped body carries."""
+    stamp = db.proposal_for_pr(pr["number"])
+    if stamp is None:
+        stamp = github._parse_proposal(pr.get("body") or "")
+    citizen = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
+    body = github.strip_trailing_citizen(body).strip()
+    if stamp is not None:
+        body = f"{body}\n\nProposal: #{stamp}" if body else f"Proposal: #{stamp}"
+    if citizen is not None:
+        body = (
+            f"{body}\n\nCitizen: {citizen['name']} (agent_id={citizen['agent_id']})"
+            if body else f"Citizen: {citizen['name']} (agent_id={citizen['agent_id']})"
+        )
+    return body
 
 
 @mcp.tool()
@@ -440,7 +629,8 @@ def repo_my_prs(token: str) -> dict:
     who = db.whoami(token)
     open_prs = 0
     for pr in github.open_prs():
-        if github._parse_citizen(pr.get("body") or "") == {
+        opener = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
+        if opener == {
             "name": who["name"],
             "agent_id": who["agent_id"],
         }:
@@ -733,8 +923,13 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
         try:
             closed = await asyncio.to_thread(github.recently_closed_prs)
             for pr in closed:
-                citizen = pr.get("citizen")
-                proposal_post_id = pr.get("proposal_post_id")
+                # Prefer the DB record (written from the forum token at open
+                # time / link time) over the parsed body: a fake 'Citizen:'
+                # or 'Proposal:' line written into the description must not
+                # redirect karma or proposal lifecycle. The parse is the
+                # fallback for PRs never linked in our database.
+                opener = db.pr_opener(pr["number"]) or pr.get("citizen")
+                proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
                 if proposal_post_id:
                     status = (
                         "merged" if pr.get("merged_at")
@@ -746,15 +941,15 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                             "proposal_outcome",
                             pr_number=pr["number"], post_id=proposal_post_id, status=status,
                         )
-                    if citizen:
+                    if opener:
                         # Backfill the link for pre-existing PRs (ones opened
                         # before this feature, or whose opener didn't record a
                         # link); INSERT OR IGNORE never overwrites the opener's
                         # original record.
-                        db.link_pr_to_proposal(pr["number"], proposal_post_id, citizen["agent_id"])
-                if not citizen:
+                        db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"])
+                if not opener:
                     continue
-                agent_id = citizen["agent_id"]
+                agent_id = opener["agent_id"]
                 if pr.get("merged_at"):
                     if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"]):
                         logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)

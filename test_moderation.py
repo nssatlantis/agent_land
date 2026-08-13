@@ -201,6 +201,38 @@ def main():
     assert github._parse_proposal("no proposal here") is None, "no stamp -> no proposal"
     assert github._parse_proposal("") is None
 
+    # The parsers take the LAST match, not the first: server.py appends the
+    # real 'Citizen:' trailer and 'Proposal: #N' stamp at the very end of a
+    # PR body, so a fake line an agent writes into the description earlier
+    # must never win (identity / proposal-spoof protection).
+    assert github._parse_citizen(
+        "Citizen: fake-alpha (agent_id=99)\n\nDescription\n\nCitizen: real-beta (agent_id=3)"
+    ) == {"name": "real-beta", "agent_id": 3}, \
+        "the real trailer is appended last, so the last match is the real one"
+    assert github._parse_proposal(
+        "Proposal: #7\n\nDescription\n\nProposal: #42"
+    ) == 42, "the real stamp is appended last, so the last match is the real one"
+    assert github._parse_citizen("Citizen: x (agent_id=1)") == {
+        "name": "x", "agent_id": 1,
+    }, "a single trailer still parses"
+
+    # strip_trailing_citizen removes an agent's own trailing signature so the
+    # one server.py appends can't double (used by repo_comment_on_pr,
+    # repo_propose_change, repo_update_pr and repo_close_pr).
+    assert github.strip_trailing_citizen(
+        "Thanks for the review!\n\nCitizen: curious-alpha (agent_id=3)"
+    ) == "Thanks for the review!", "a trailing signature is stripped"
+    assert github.strip_trailing_citizen(
+        "Citizen: curious-alpha (agent_id=3)"
+    ) == "", "a lone signature is stripped entirely"
+    assert github.strip_trailing_citizen(
+        "Citizen: fake-alpha (agent_id=99)\n\nReal question here"
+    ) == "Citizen: fake-alpha (agent_id=99)\n\nReal question here", \
+        "a mid-body signature is content and stays"
+    assert github.strip_trailing_citizen("no signature here") == "no signature here", \
+        "a body without a signature is untouched"
+    assert github.strip_trailing_citizen("") == "", "empty input stays empty"
+
     # --- PR outcome classification (repo_get_pr) ---------------------------
     assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
     assert github._pr_outcome({
@@ -652,6 +684,23 @@ def main():
     assert "in flight" in expect_error(
         db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
     ), "a live PR blocks a second one from opening"
+
+    # proposal_for_pr resolves the linked proposal a PR implements (used by
+    # repo_update_pr to re-stamp a body the agent edited), None when unlinked.
+    assert db.proposal_for_pr(101) == plife, \
+        "a linked PR resolves back to its proposal"
+    assert db.proposal_for_pr(999999) is None, \
+        "an unlinked PR resolves to None"
+
+    # pr_opener resolves the citizen who opened a linked PR - the
+    # DB-authoritative identity (written from the token at open time) that
+    # runtime ownership / karma checks prefer over parsing the PR body.
+    assert db.pr_opener(101) == {
+        "name": agents["epsilon"]["name"],
+        "agent_id": agents["epsilon"]["agent_id"],
+    }, "a linked PR resolves to the citizen recorded as its opener"
+    assert db.pr_opener(999999) is None, \
+        "an unlinked PR has no recorded opener"
 
     # A merged proposal is consumed for good: status shows the outcome, votes
     # close, and it can't open another PR.

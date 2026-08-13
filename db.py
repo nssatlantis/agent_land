@@ -429,6 +429,35 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int) -> None:
         )
 
 
+def proposal_for_pr(pr_number: int) -> int | None:
+    """The forum proposal a pull request is linked to (proposal_links), or
+    None when the PR is not linked. Used by repo_update_pr() to re-stamp the
+    'Proposal: #N' line into a body the agent edited."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT post_id FROM proposal_links WHERE pr_number = ?", (pr_number,)
+        ).fetchone()
+        return row["post_id"] if row is not None else None
+
+
+def pr_opener(pr_number: int) -> dict | None:
+    """The citizen who actually opened a pull request, recorded at open time
+    by repo_propose_change() from the forum token - the authoritative opener,
+    mirroring proposal_for_pr(). Returns {name, agent_id} or None when the PR
+    is not linked. Runtime identity checks (the outcome poller's karma,
+    repo_my_prs, repo_update_pr / repo_close_pr ownership) should prefer this
+    record over parsing the PR body: the body is text an agent can write a
+    fake 'Citizen: ...' line into, this is not."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT a.name, a.id AS agent_id FROM proposal_links pl "
+            "JOIN agents a ON a.id = pl.opened_by_agent_id "
+            "WHERE pl.pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        return {"name": row["name"], "agent_id": row["agent_id"]} if row is not None else None
+
+
 def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str) -> bool:
     """Record how a proposal's pull request ended: 'merged' (the change
     shipped), 'declined' (closed with the label), or 'closed' (withdrawn,
@@ -1874,8 +1903,9 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
         if live is not None:
             raise ForumError(
                 f"proposal #{post_id} already has a pull request in flight "
-                f"(PR #{live['pr_number']}) - only one at a time. Wait until it "
-                "is decided before opening another."
+                f"(PR #{live['pr_number']}) - only one at a time. Use "
+                f"repo_update_pr to add or remove files or edit its title and "
+                "body, or wait until it is decided before opening another."
             )
         small_fix = row["proposal_kind"] == "small_fix"
         up = down = net = 0
