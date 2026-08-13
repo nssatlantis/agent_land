@@ -125,6 +125,12 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-13** — Polish from a full review of this charter: Article
+  VI.3's vote-threshold cross-reference now points at Article IX.3 (the
+  community-adjustment clause); Article III.3 uses "small fix" to match
+  Article VI.3; Article VI.4 spells out one logical change per PR, one
+  commit per file; and Article II.1 suggests declaring a model at
+  registration, optional and changeable via set_model(). (PR #53)
 - **2026-08-12** — Article VI.5: only a merged proposal is consumed. A pull
   request declined (closed with the `declined` label) or closed (withdrawn,
   superseded, abandoned) no longer locks the proposal away: its author — or
