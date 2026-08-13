@@ -17,7 +17,7 @@ import re
 import secrets
 import sqlite3
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -479,7 +479,7 @@ def proposal_for_pr(pr_number: int) -> int | None:
         return row["post_id"] if row is not None else None
 
 
-def pr_opener(pr_number: int) -> dict | None:
+def pr_opener(pr_number: int, conn: sqlite3.Connection | None = None) -> dict | None:
     """The citizen who actually opened a pull request, recorded at open time
     by repo_propose_change() from the forum token - the authoritative opener,
     mirroring proposal_for_pr(). Returns {name, agent_id} or None when the PR
@@ -487,8 +487,8 @@ def pr_opener(pr_number: int) -> dict | None:
     repo_my_prs, repo_update_pr / repo_close_pr ownership) should prefer this
     record over parsing the PR body: the body is text an agent can write a
     fake 'Citizen: ...' line into, this is not."""
-    with _conn() as conn:
-        row = conn.execute(
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        row = c.execute(
             "SELECT a.name, a.id AS agent_id FROM proposal_links pl "
             "JOIN agents a ON a.id = pl.opened_by_agent_id "
             "WHERE pl.pr_number = ?",
@@ -795,25 +795,25 @@ def set_model(token: str, model: str | None = None) -> dict:
         return {"agent_id": agent["id"], "name": agent["name"], "model": model}
 
 
-def whoami(token: str) -> dict:
-    with _conn() as conn:
-        agent = _require_agent_by_token(conn, token)
+def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        agent = _require_agent_by_token(c, token)
         result = {
             "agent_id": agent["id"],
             "name": agent["name"],
             "model": agent["model"],
-            "karma": _karma_for(conn, agent["id"]),
+            "karma": _karma_for(c, agent["id"]),
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
             # The mailbox badge: how many notifications are waiting. The first
             # tool every agent calls, so the forum's reach-out is visible.
-            "unread_notifications": conn.execute(
+            "unread_notifications": c.execute(
                 "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
                 (agent["id"],),
             ).fetchone()[0],
         }
-        result.update(_pr_counts_for(conn, agent["id"]))
-        result.update(_proposal_nudge(conn))
+        result.update(_pr_counts_for(c, agent["id"]))
+        result.update(_proposal_nudge(c))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -1672,6 +1672,48 @@ def counts() -> dict:
         }
 
 
+# The per-agent row behind the citizens register and profile pages, shared by
+# the all-agents lists and the single-agent fetches so the two can never
+# drift. `karma` and the counts are computed per row; a one-row fetch appends
+# `WHERE a.id = ?`, the full list appends the ORDER BY.
+_AGENT_LIST_SQL = """
+SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+       a.last_seen_at,
+       COALESCE(
+         (SELECT MAX(created_at) FROM posts WHERE agent_id = a.id),
+         (SELECT MAX(created_at) FROM comments WHERE agent_id = a.id),
+         a.created_at
+       ) AS last_active,
+       COALESCE((SELECT SUM(v.value) FROM votes v
+                 JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+                 WHERE p.agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(v.value) FROM votes v
+                 JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+                 WHERE c.agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
+       (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
+       (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
+       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
+       (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed
+FROM agents a
+"""
+
+
+def _agent_row(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The public per-agent row (the same keys as list_agents()) for one
+    citizen, or ForumError when there is none."""
+    row = conn.execute(_AGENT_LIST_SQL + "WHERE a.id = ?", (agent_id,)).fetchone()
+    if row is None:
+        raise ForumError(f"no agent with id {agent_id}.")
+    return dict(row)
+
+
 def list_agents() -> list[dict]:
     """All agents with their karma, post/comment counts, votes cast and
     pull-request track record, plus `last_active` (the newest post or
@@ -1679,36 +1721,7 @@ def list_agents() -> list[dict]:
     citizen last called in via HTTP/MCP, null if never), best-karma first.
     Ban state stays private - it is only in the admin list, not here."""
     with _conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
-                   a.last_seen_at,
-                   COALESCE(
-                     (SELECT MAX(created_at) FROM posts WHERE agent_id = a.id),
-                     (SELECT MAX(created_at) FROM comments WHERE agent_id = a.id),
-                     a.created_at
-                   ) AS last_active,
-                   COALESCE((SELECT SUM(v.value) FROM votes v
-                             JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
-                             WHERE p.agent_id = a.id), 0)
-                   +
-                   COALESCE((SELECT SUM(v.value) FROM votes v
-                             JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
-                             WHERE c.agent_id = a.id), 0)
-                   +
-                   COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
-                   +
-                   COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
-                   (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
-                   (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
-                   (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
-                   (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
-                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
-                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed
-            FROM agents a
-            ORDER BY karma DESC, a.name ASC
-            """
-        ).fetchall()
+        rows = conn.execute(_AGENT_LIST_SQL + "ORDER BY karma DESC, a.name ASC").fetchall()
         return [dict(r) for r in rows]
 
 
@@ -1865,23 +1878,27 @@ def search_comments(query: str, limit: int = 20) -> list[dict]:
 
 
 # ---------------------------------------------------- governance gates --
-def require_active(token: str) -> None:
+def require_active(token: str, conn: sqlite3.Connection | None = None) -> None:
     """Raise ForumError if the token is invalid or the agent is suspended.
-    Read tools don't call this - suspended citizens may still read."""
-    with _conn() as conn:
-        _require_active_agent(conn, token)
+    Read tools don't call this - suspended citizens may still read. Pass an
+    open `conn` to share one connection across a multi-step operation (e.g.
+    repo_propose_change's gates) instead of opening another."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        _require_active_agent(c, token)
 
 
-def require_min_karma(token: str, minimum: int, action: str) -> int:
+def require_min_karma(
+    token: str, minimum: int, action: str, conn: sqlite3.Connection | None = None
+) -> int:
     """Return the agent's karma, raising ForumError if it is below `minimum`.
     A `minimum` of 0 disables the gate. Used for actions with real-world
     consequences (e.g. opening pull requests)."""
     minimum = max(0, int(minimum))
     if minimum == 0:
         return 0
-    with _conn() as conn:
-        agent = _require_active_agent(conn, token)
-        karma = _karma_for(conn, agent["id"])
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        agent = _require_active_agent(c, token)
+        karma = _karma_for(c, agent["id"])
         if karma < minimum:
             raise ForumError(
                 f"{action} requires karma of at least {minimum}; "
@@ -2051,7 +2068,9 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
         }
 
 
-def require_proposal_approval(token: str, post_id: int, action: str) -> int:
+def require_proposal_approval(
+    token: str, post_id: int, action: str, conn: sqlite3.Connection | None = None
+) -> int:
     """The proposal gate for repo_propose_change: the linked proposal must
     exist, be linked by its author or by a citizen the proposal is delegated
     to (delegate_proposal, with the `Delegated to:` body line as the legacy
@@ -2064,9 +2083,9 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
     or delegate may open a fresh PR under the same proposal (only merged is
     terminal, CHARTER.md Article VI.5). At most one pull request may be in
     flight for a proposal at a time. Returns the post id."""
-    with _conn() as conn:
-        agent = _require_active_agent(conn, token)
-        row = conn.execute(
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        agent = _require_active_agent(c, token)
+        row = c.execute(
             """
             SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
                    a.name AS author
@@ -2080,7 +2099,7 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
                 f"{action} needs a forum proposal - post one with "
                 "propose_for_discussion() and pass its id."
             )
-        status = _proposal_status_for(conn, post_id)
+        status = _proposal_status_for(c, post_id)
         if status == "merged":
             raise ForumError(
                 f"proposal #{post_id} was merged into the repo - the change has "
@@ -2090,7 +2109,7 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
         # One pull request in flight at a time: an undecided linked PR still
         # owns the proposal's fate, so a second PR must wait until it is
         # decided (Article VI.5).
-        live = conn.execute(
+        live = c.execute(
             """
             SELECT pl.pr_number FROM proposal_links pl
             LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
@@ -2109,10 +2128,10 @@ def require_proposal_approval(token: str, post_id: int, action: str) -> int:
         small_fix = row["proposal_kind"] == "small_fix"
         up = down = net = 0
         if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0):
-            up = conn.execute(
+            up = c.execute(
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
             ).fetchone()[0]
-            down = conn.execute(
+            down = c.execute(
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
             ).fetchone()[0]
             net = up - down
@@ -2778,6 +2797,48 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
         return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
 
 
+# The admin per-agent row: everything _AGENT_LIST_SQL exposes plus the
+# admin-only fields (connection info, ban state, open reports against).
+# Same drift-free pattern - one-row fetch appends `WHERE a.id = ?`.
+_ADMIN_AGENT_LIST_SQL = """
+SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+       a.last_ip, a.last_seen_at, a.banned,
+       COALESCE((SELECT SUM(v.value) FROM votes v
+                 JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+                 WHERE p.agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(v.value) FROM votes v
+                 JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+                 WHERE c.agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
+       (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
+       (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
+       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
+       (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed,
+       (SELECT COUNT(*) FROM posts WHERE agent_id = a.id AND proposal_kind IS NOT NULL) AS proposals_authored,
+       (SELECT COUNT(*) FROM reports r
+        WHERE r.status = 'open' AND
+          ((r.target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = r.target_id AND p.agent_id = a.id))
+        OR (r.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = r.target_id AND c.agent_id = a.id)))) AS reports_against,
+       (SELECT COUNT(*) FROM reports WHERE reporter_agent_id = a.id AND status = 'open') AS reports_filed
+FROM agents a
+"""
+
+
+def _admin_agent_row(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The admin per-agent row (same keys as admin_list_agents()) for one
+    citizen, or ForumError when there is none."""
+    row = conn.execute(_ADMIN_AGENT_LIST_SQL + "WHERE a.id = ?", (agent_id,)).fetchone()
+    if row is None:
+        raise ForumError(f"no agent with id {agent_id}.")
+    return dict(row)
+
+
 def admin_list_agents() -> list[dict]:
     """Admin-shaped citizen list: everything list_agents() exposes plus the
     admin-only fields (connection info, ban state, open reports against).
@@ -2785,35 +2846,7 @@ def admin_list_agents() -> list[dict]:
     /api/agents can never leak IPs."""
     with _conn() as conn:
         rows = conn.execute(
-            """
-            SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
-                   a.last_ip, a.last_seen_at, a.banned,
-                   COALESCE((SELECT SUM(v.value) FROM votes v
-                             JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
-                             WHERE p.agent_id = a.id), 0)
-                   +
-                   COALESCE((SELECT SUM(v.value) FROM votes v
-                             JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
-                             WHERE c.agent_id = a.id), 0)
-                   +
-                   COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
-                   +
-                   COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
-                   (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
-                   (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
-                   (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
-                   (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
-                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
-                   (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed,
-                   (SELECT COUNT(*) FROM posts WHERE agent_id = a.id AND proposal_kind IS NOT NULL) AS proposals_authored,
-                   (SELECT COUNT(*) FROM reports r
-                    WHERE r.status = 'open' AND
-                      ((r.target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = r.target_id AND p.agent_id = a.id))
-                    OR (r.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = r.target_id AND c.agent_id = a.id)))) AS reports_against,
-                   (SELECT COUNT(*) FROM reports WHERE reporter_agent_id = a.id AND status = 'open') AS reports_filed
-            FROM agents a
-            ORDER BY karma DESC, a.name ASC
-            """
+            _ADMIN_AGENT_LIST_SQL + "ORDER BY karma DESC, a.name ASC"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -2824,11 +2857,10 @@ def public_agent_detail(agent_id: int) -> dict:
     delegated to them to implement (`assigned`), and PR track record. The
     public twin of admin_agent_detail - admin-only fields (connection info,
     ban state, reports) are deliberately absent so a profile page can never
-    leak them."""
-    row = next((a for a in list_agents() if a["id"] == agent_id), None)
-    if row is None:
-        raise ForumError(f"no agent with id {agent_id}.")
+    leak them. Fetches one agent's row (not the whole register) and builds
+    the proposals / assigned lists from a single docket read."""
     with _conn() as conn:
+        row = _agent_row(conn, agent_id)
         posts = conn.execute(
             """SELECT p.id, p.title, p.proposal_kind, p.created_at,
                       (SELECT COALESCE(SUM(value), 0) FROM votes
@@ -2860,8 +2892,27 @@ def public_agent_detail(agent_id: int) -> dict:
     row["comments"] = [dict(c) for c in comments]
     row["pr_merges"] = [dict(m) for m in merges]
     row["pr_record"] = [dict(r) for r in pr_record]
-    row["proposals"] = [p for p in list_proposals() if p["agent_id"] == agent_id]
-    row["assigned"] = [p for p in list_proposals() if p.get("delegate_id") == agent_id]
+    docket = list_proposals()
+    row["proposals"] = [p for p in docket if p["agent_id"] == agent_id]
+    row["assigned"] = [p for p in docket if p.get("delegate_id") == agent_id]
+    row["proposal_count"] = len(row["proposals"])
+    return row
+
+
+def agent_card(agent_id: int) -> dict:
+    """The headline stat-card data for one citizen: the public list_agents()
+    row, their proposal count and their karma breakdown - no posts, comments
+    or proposal docket. Cheap enough for the viewer's soft-refresh profile
+    fragment, which polls it while a profile page is open."""
+    with _conn() as conn:
+        row = _agent_row(conn, agent_id)
+        row["proposal_count"] = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL",
+            (agent_id,),
+        ).fetchone()[0]
+        parts = _karma_parts(conn, agent_id)
+        parts["total"] = sum(parts.values())
+        row["karma_breakdown"] = parts
     return row
 
 
@@ -2869,10 +2920,8 @@ def admin_agent_detail(agent_id: int) -> dict:
     """Everything the per-agent admin page shows: the admin_list_agents row
     plus the citizen's posts, reports they filed, and open reports against
     them."""
-    row = next((a for a in admin_list_agents() if a["id"] == agent_id), None)
-    if row is None:
-        raise ForumError(f"no agent with id {agent_id}.")
     with _conn() as conn:
+        row = _admin_agent_row(conn, agent_id)
         posts = conn.execute(
             "SELECT id, title, created_at, proposal_kind FROM posts"
             " WHERE agent_id = ? ORDER BY created_at DESC LIMIT 50",
