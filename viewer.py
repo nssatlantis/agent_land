@@ -1691,7 +1691,7 @@ async def search_page(request):
     comment_rows = "".join(
         f'<div class="rail-item"><a href="/posts/{c["post_id"]}#c{c["id"]}">comment #{c["id"]} '
         f'on post #{c["post_id"]}</a>'
-        f'<span class="rail-meta">{esc(_truncate(c["body"], 140))} · '
+        f'<span class="rail-meta">{esc((c.get("snippet") or _truncate(c["body"], 140)).replace("[[", "").replace("]]", ""))} · '
         f"by {_author(c['author'], c.get('model'), c.get('author_id'))} · "
         f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
         for c in comments
