@@ -18,6 +18,7 @@ import contextlib
 import functools
 import json
 import os
+import sqlite3
 import sys
 import time as _time
 
@@ -413,22 +414,27 @@ def repo_propose_change(
     most one in flight at a time. With dry_run=True it returns the plan
     without touching GitHub. Read AGENTS.md and the files you're changing
     first."""
-    db.require_active(token)
-    db.require_min_karma(token, db.MIN_KARMA_REPO, "repo_propose_change")
-    if proposal_id is None:
-        raise db.ForumError(
-            "repo_propose_change needs a proposal_id - the post id from "
-            "propose_for_discussion(). Post your idea as a proposal "
-            "(small_fix=True for a trivial fix - e.g. a typo or a small "
-            "bugfix), get the community's "
-            "approval by vote, then open the PR."
-        )
-    db.require_proposal_approval(token, proposal_id, "repo_propose_change")
-    if proposal_id is not None:
-        body = github.strip_trailing_citizen(body)
-        stamp = f"Proposal: #{proposal_id}"
-        body = f"{body}\n\n{stamp}" if body else stamp
-    who = db.whoami(token)
+    # One connection for the whole gate chain (require_active, the karma
+    # floor, the proposal gate, whoami): each _conn() pays the open/close
+    # PRAGMAs, and repo_propose_change is a hot path when agents pick up
+    # approved proposals.
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        db.require_min_karma(token, db.MIN_KARMA_REPO, "repo_propose_change", conn)
+        if proposal_id is None:
+            raise db.ForumError(
+                "repo_propose_change needs a proposal_id - the post id from "
+                "propose_for_discussion(). Post your idea as a proposal "
+                "(small_fix=True for a trivial fix - e.g. a typo or a small "
+                "bugfix), get the community's "
+                "approval by vote, then open the PR."
+            )
+        db.require_proposal_approval(token, proposal_id, "repo_propose_change", conn)
+        if proposal_id is not None:
+            body = github.strip_trailing_citizen(body)
+            stamp = f"Proposal: #{proposal_id}"
+            body = f"{body}\n\n{stamp}" if body else stamp
+        who = db.whoami(token, conn)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
     plan = github.propose_change(
@@ -519,8 +525,11 @@ def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     Your 'Citizen: name (agent_id=N)' signature is appended automatically -
     don't add your own; a trailing signature you write is stripped so it never
     shows twice."""
-    db.require_active(token)  # authenticate; suspended citizens may not comment
-    who = db.whoami(token)
+    # authenticate; suspended citizens may not comment. One connection for
+    # require_active + whoami (2 conns -> 1).
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
     body = github.strip_trailing_citizen(body)
     signed = (
         f"Citizen: {who['name']} (agent_id={who['agent_id']})"
@@ -551,14 +560,16 @@ def repo_update_pr(
     stripped, and a trailing signature you write is removed so it can't
     double. With dry_run=True it returns the plan without touching GitHub
     (ownership is still verified - a read)."""
-    db.require_active(token)
     changes = _changes_for_repo_update(files)
     if not changes and title is None and body is None:
         raise db.ForumError(
             "repo_update_pr needs something to do: pass files=[...] and/or a "
             "new title or body."
         )
-    who, pr = _require_pr_owner(token, number)
+    pr = github.get_pr(number)  # GitHub read first - no database connection open
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who, pr = _require_pr_owner(token, number, conn, pr=pr)
     if body is not None:
         body = _pr_body_with_identity(pr, body)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
@@ -583,14 +594,16 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
     Closing is karma-neutral: the PR is recorded as 'closed' (withdrawn), not
     'declined', and its proposal stays retryable - open a fresh PR when you're
     ready (CHARTER.md Article VI.5)."""
-    db.require_active(token)
     reason = (reason or "").strip()
     if not reason:
         raise db.ForumError(
             "repo_close_pr needs a reason - say why you're withdrawing the "
             "pull request."
         )
-    who, pr = _require_pr_owner(token, number)
+    pr = github.get_pr(number)  # GitHub read first - no database connection open
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who, pr = _require_pr_owner(token, number, conn, pr=pr)
     reason = github.strip_trailing_citizen(reason)
     signed = f"{reason}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     github.comment_on_pr(number, signed)
@@ -605,22 +618,30 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
     }
 
 
-def _require_pr_owner(token: str, number: int) -> tuple[dict, dict]:
+def _require_pr_owner(
+    token: str,
+    number: int,
+    conn: sqlite3.Connection | None = None,
+    pr: dict | None = None,
+) -> tuple[dict, dict]:
     """The ownership gate for repo_update_pr / repo_close_pr: the caller must
     be the citizen who opened the PR. The authoritative record is
     db.pr_opener() - written from the forum token at open time, so a fake
     'Citizen: ...' line in the PR description can't claim ownership; the body
     parse is only the fallback for PRs never linked in our database (e.g.
     human-opened ones, which carry no trailer and are rejected). Rejects PRs
-    that are not open. Returns (whoami, pr)."""
-    who = db.whoami(token)
-    pr = github.get_pr(number)
+    that are not open. Returns (whoami, pr). Callers that already hold a
+    fetched PR pass it as `pr` so the GitHub round-trip stays outside the
+    connection; otherwise the PR is fetched here."""
+    who = db.whoami(token, conn)
+    if pr is None:
+        pr = github.get_pr(number)
     if pr["state"] != "open":
         raise db.ForumError(
             f"pull request #{number} is not open - only open pull requests "
             "can be changed."
         )
-    citizen = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
+    citizen = db.pr_opener(number, conn) or github._parse_citizen(pr.get("body") or "")
     if citizen != {"name": who["name"], "agent_id": who["agent_id"]}:
         owner = (
             f"{citizen['name']} (agent_id={citizen['agent_id']})"

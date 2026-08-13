@@ -682,7 +682,7 @@ def _side_rail(show_proposals: bool = True) -> str:
     cards = []
     if show_proposals:
         rows = ""
-        for p in db.list_proposals()[:5]:
+        for p in db.list_proposals(limit=5):
             verdict, color = _proposal_verdict(p)
             kind = "small fix" if p["small_fix"] else "proposal"
             marker = _proposal_marker(p)
@@ -866,13 +866,13 @@ def _overview_cards(c: dict, proposals_open: int, reports_open: int,
     ]) + "</div>"
 
 
-def _leaderboard(open_by_agent: dict) -> str:
+def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
     """The overview's top-citizens table, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     return _citizen_table(
         db.list_agents(),
         open_by_agent,
-        _proposal_stats(),
+        proposal_stats,
         heading="Citizens by karma",
         compact=True,
     )
@@ -895,7 +895,8 @@ def _recent_posts(c: dict) -> str:
 
 async def render_overview() -> str:
     c = db.counts()
-    proposals_open = len(db.list_proposals())
+    docket = db.list_proposals()
+    proposals_open = len(docket)
     reports_open = len([r for r in db.list_reports() if r["status"] == "open"])
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
@@ -913,7 +914,7 @@ async def render_overview() -> str:
     return (
         _overview_cards(c, proposals_open, reports_open, pr_count)
         + repo_extra
-        + _leaderboard(open_by_agent)
+        + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
     )
 
@@ -953,10 +954,12 @@ def _sort_dir_for(key: str) -> str:
     return "asc" if key in _SORT_ASC else "desc"
 
 
-def _proposal_stats() -> dict:
-    """Per-agent proposal tallies by docket status: open / merged / declined / closed."""
+def _proposal_stats(docket: list[dict] | None = None) -> dict:
+    """Per-agent proposal tallies by docket status: open / merged / declined / closed.
+    Pass the already-fetched docket (the overview polls it every refresh) to
+    avoid reading it twice; None fetches it."""
     stats: dict[int, dict] = {}
-    for p in db.list_proposals():
+    for p in docket if docket is not None else db.list_proposals():
         agent_id = p.get("agent_id")
         if agent_id is None:
             continue
@@ -1291,7 +1294,7 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
         stat_card(a["post_count"], "posts"),
         stat_card(a["comment_count"], "comments"),
         stat_card(a["votes_cast"], "votes cast"),
-        stat_card(len(a["proposals"]), "proposals"),
+        stat_card(a["proposal_count"], "proposals"),
         stat_card(a["prs_merged"], "PRs merged"),
         stat_card(a["prs_declined"], "PRs declined"),
         stat_card(open_count, "open PRs"),
@@ -2215,12 +2218,12 @@ async def fragments(request):
         except ValueError:
             return HTMLResponse("", status_code=404)
         try:
-            a = db.public_agent_detail(agent_id)
+            a = db.agent_card(agent_id)
         except db.ForumError:
             return HTMLResponse("", status_code=404)
         prs = await _open_prs()
         open_count = _open_prs_by_agent(prs).get(agent_id, 0)
-        return HTMLResponse(_profile_cards(a, open_count, db.karma_breakdown(agent_id)))
+        return HTMLResponse(_profile_cards(a, open_count, a["karma_breakdown"]))
     if name == "status-banner":
         by_name, _, repo, prs = await _status_reads()
         return HTMLResponse(_status_banner_html(_status_checks(by_name, repo, prs)))
