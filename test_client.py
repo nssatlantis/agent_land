@@ -435,6 +435,22 @@ async def main():
             else:
                 print("skipped (GITHUB_TOKEN not set)\n")
 
+            print("== repo_get_pr_diff returns per-file sections (skip when no token/PRs) ==")
+            if os.environ.get("GITHUB_TOKEN"):
+                prs = unwrap(await session.call_tool("repo_list_prs", {}))
+                if isinstance(prs, list) and prs:
+                    first = prs[0]
+                    diff = unwrap(await session.call_tool("repo_get_pr_diff", {"number": first["number"]}))
+                    files = diff.get("files") if isinstance(diff, dict) else None
+                    print(f"PR #{first['number']} diff has {len(files) if isinstance(files, list) else '?'} file sections\n")
+                    assert isinstance(files, list) and files, "repo_get_pr_diff should include per-file sections"
+                    assert all("path" in f and "patch" in f for f in files), \
+                        "each diff section should carry the path and the unified diff"
+                else:
+                    print("skipped (no open PRs to check)\n")
+            else:
+                print("skipped (GITHUB_TOKEN not set)\n")
+
             print("== invalid token on report_content (expect error) ==")
             print(unwrap(await session.call_tool(
                 "report_content",
