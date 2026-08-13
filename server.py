@@ -770,13 +770,19 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
 def _validate_edits(path: str, edits, files_idx: int) -> list[dict]:
     """Shape-validate a patch-mode `edits` list for a files[files_idx] entry.
     Each op is {find: non-empty str, replace: str, occurrence: optional
-    int >= 1 (not bool)}. The per-file op cap lives in github.py
-    (_MAX_EDITS_PER_FILE); this layer catches malformed shapes early so the
-    caller sees a clean error before any GitHub read."""
+    int >= 1 (not bool)}, at most github._MAX_EDITS_PER_FILE per file - the
+    same cap github.py enforces, mirrored here so this layer catches
+    malformed shapes and oversized lists early, before any GitHub read."""
     if not isinstance(edits, list) or not edits:
         raise db.ForumError(
             f"files[{files_idx}] 'edits' for {path!r} must be a non-empty "
             "list of {'find': ..., 'replace': ...} ops."
+        )
+    if len(edits) > github._MAX_EDITS_PER_FILE:
+        raise db.ForumError(
+            f"files[{files_idx}] 'edits' for {path!r} has {len(edits)} ops - "
+            f"too many edits; at most {github._MAX_EDITS_PER_FILE} per file, "
+            "and a change that big is a whole-file write (use content)."
         )
     for j, op in enumerate(edits, 1):
         if not isinstance(op, dict):
@@ -796,7 +802,7 @@ def _validate_edits(path: str, edits, files_idx: int) -> list[dict]:
                 "string (empty to delete the matched block)."
             )
         occurrence = op.get("occurrence")
-        if occurrence is not None and (
+        if "occurrence" in op and (
             not isinstance(occurrence, int) or isinstance(occurrence, bool)
             or occurrence < 1
         ):
