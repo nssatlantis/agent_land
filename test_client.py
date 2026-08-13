@@ -421,6 +421,69 @@ async def main():
                  "file_path": "test_client.py", "content": "# x", "dry_run": True},
             )), "\n")
 
+            print("== repo_update_pr with invalid token (expect auth error) ==")
+            print(unwrap(await session.call_tool(
+                "repo_update_pr",
+                {"token": "nope", "number": 1, "title": "t"},
+            )), "\n")
+
+            print("== repo_update_pr with nothing to do (expect error) ==")
+            nothing = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1}
+            ))
+            print(nothing, "\n")
+            assert "ERROR" in nothing and "something to do" in str(nothing), \
+                "repo_update_pr without files/title/body must be rejected"
+
+            print("== repo_update_pr duplicate path (expect error) ==")
+            dup = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1,
+                                   "files": [{"path": "a.md", "content": "x"},
+                                             {"path": "a.md", "content": "y"}]}
+            ))
+            print(dup, "\n")
+            assert "ERROR" in dup and "duplicate path" in str(dup), \
+                "duplicate paths in files must be rejected"
+
+            print("== repo_update_pr content + delete on one path (expect error) ==")
+            both = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1,
+                                   "files": [{"path": "a.md", "content": "x", "delete": True}]}
+            ))
+            print(both, "\n")
+            assert "ERROR" in both and "delete" in str(both), \
+                "content and delete on the same path must be rejected"
+
+            print("== repo_update_pr entry with neither content nor delete (expect error) ==")
+            neither = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1,
+                                   "files": [{"path": "a.md"}]}
+            ))
+            print(neither, "\n")
+            assert "ERROR" in neither and "delete" in str(neither), \
+                "a files entry with neither content nor delete must be rejected"
+
+            print("== repo_update_pr empty files list (expect error) ==")
+            empty = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1, "files": []}
+            ))
+            print(empty, "\n")
+            assert "ERROR" in empty and "files" in str(empty), \
+                "an empty files list must be rejected"
+
+            print("== repo_close_pr with invalid token (expect auth error) ==")
+            print(unwrap(await session.call_tool(
+                "repo_close_pr", {"token": "nope", "number": 1, "reason": "test"}
+            )), "\n")
+
+            print("== repo_close_pr without a reason (expect error) ==")
+            noreason = unwrap(await session.call_tool(
+                "repo_close_pr", {"token": token3, "number": 1}
+            ))
+            print(noreason, "\n")
+            assert "ERROR" in noreason and "reason" in str(noreason), \
+                "closing a PR without a reason must be rejected"
+
             print("== repo_get_pr returns the comment thread (skip when no token/PRs) ==")
             if os.environ.get("GITHUB_TOKEN"):
                 prs = unwrap(await session.call_tool("repo_list_prs", {}))
@@ -428,8 +491,23 @@ async def main():
                     first = prs[0]
                     pr = unwrap(await session.call_tool("repo_get_pr", {"number": first["number"]}))
                     comments = pr.get("comments") if isinstance(pr, dict) else None
-                    print(f"PR #{first['number']} has {len(comments) if isinstance(comments, list) else '?'} comments\n")
+                    files = pr.get("files") if isinstance(pr, dict) else None
+                    print(f"PR #{first['number']} has {len(comments) if isinstance(comments, list) else '?'} "
+                          f"comments and {len(files) if isinstance(files, list) else '?'} files\n")
                     assert isinstance(comments, list), "repo_get_pr should include the comment thread"
+                    assert isinstance(files, list), "repo_get_pr should include the changed-file list"
+
+                    print("== repo_update_pr / repo_close_pr on a bogus PR number (expect GitHub 404) ==")
+                    bogus = unwrap(await session.call_tool(
+                        "repo_update_pr", {"token": token1, "number": 99999999, "title": "t"}
+                    ))
+                    print(bogus, "\n")
+                    assert "ERROR" in bogus, "updating a non-existent PR must fail"
+                    bogus_close = unwrap(await session.call_tool(
+                        "repo_close_pr", {"token": token1, "number": 99999999, "reason": "nope"}
+                    ))
+                    print(bogus_close, "\n")
+                    assert "ERROR" in bogus_close, "closing a non-existent PR must fail"
                 else:
                     print("skipped (no open PRs to check)\n")
             else:

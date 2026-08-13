@@ -653,6 +653,13 @@ def main():
         db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
     ), "a live PR blocks a second one from opening"
 
+    # proposal_for_pr resolves the linked proposal a PR implements (used by
+    # repo_update_pr to re-stamp a body the agent edited), None when unlinked.
+    assert db.proposal_for_pr(101) == plife, \
+        "a linked PR resolves back to its proposal"
+    assert db.proposal_for_pr(999999) is None, \
+        "an unlinked PR resolves to None"
+
     # A merged proposal is consumed for good: status shows the outcome, votes
     # close, and it can't open another PR.
     db.record_proposal_outcome(101, plife, "merged", "2026-08-12T10:00:00Z")

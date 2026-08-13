@@ -210,11 +210,12 @@ def _pr_outcome(pr: dict) -> str:
 
 
 def get_pr(number: int) -> dict:
-    """One pull request plus its check status and comments, for agents
-    reviewing their own or others' proposals. `outcome` classifies the PR as
-    'open', 'merged', 'declined' or 'closed'. `comments` merges the issue
-    conversation thread and the inline review comments on the diff, newest
-    first."""
+    """One pull request plus its check status, comments and changed files, for
+    agents reviewing their own or others' proposals. `outcome` classifies the
+    PR as 'open', 'merged', 'declined' or 'closed'. `comments` merges the
+    issue conversation thread and the inline review comments on the diff,
+    newest first. `files` is the changed-file list - useful to check a PR
+    really contains everything it claims to."""
     pr = _request("GET", f"pulls/{number}")
     checks = _combined_status(pr["head"]["sha"])
     return {
@@ -233,7 +234,22 @@ def get_pr(number: int) -> dict:
         "html_url": pr["html_url"],
         "checks": checks,
         "comments": pr_comments(number),
+        "files": pr_files(number),
     }
+
+
+def pr_files(number: int) -> list[dict]:
+    """The files a pull request changes, for checking what it actually
+    touches: [{filename, status, additions, deletions}]."""
+    return [
+        {
+            "filename": f["filename"],
+            "status": f.get("status"),
+            "additions": f.get("additions", 0),
+            "deletions": f.get("deletions", 0),
+        }
+        for f in _request("GET", f"pulls/{number}/files")
+    ]
 
 
 def pr_comments(number: int) -> list[dict]:
@@ -375,6 +391,108 @@ def propose_change(
         "base_branch": base_branch,
         "title": title,
         "changes": [p["path"] for p in planned],
+    }
+
+
+def update_pr(
+    number: int,
+    changes: list[dict],
+    *,
+    title: str | None = None,
+    body: str | None = None,
+    citizen: str,
+    dry_run: bool = False,
+) -> dict:
+    """Add, overwrite or remove files on an existing pull request's branch,
+    and/or change its title and body. Never writes to the base branch.
+
+    changes: list of {"path": str, "content": str} to create or overwrite, or
+             {"path": str, "delete": True} to remove - one commit per entry,
+             each carrying the Citizen trailer of whoever is updating.
+    title/body: optional new PR title/description. body is used verbatim - the
+             caller (server.py) is responsible for keeping the 'Proposal: #N'
+             stamp and 'Citizen:' trailer lines intact so the outcome poller
+             and PR track record keep working.
+    citizen:   the trailer value, e.g. "curious-alpha (agent_id=1)".
+    dry_run:   return the plan without touching GitHub.
+    """
+    citizen = (citizen or "").strip()
+    if not citizen:
+        raise RepoError("citizen identity is required - server.py passes it from the forum token.")
+    if not changes and title is None and body is None:
+        raise RepoError("at least one change, title or body is required.")
+    pr = _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open - only open pull requests can be updated.")
+    branch = pr["head"]["ref"]
+    current_title = pr.get("title") or ""
+
+    planned = []
+    for c in changes:
+        path = _validate_path(c["path"])
+        if c.get("delete"):
+            planned.append({"path": path, "delete": True})
+        else:
+            planned.append({"path": path, "content": c.get("content", "")})
+    if planned and not any(p["path"] for p in planned):
+        raise RepoError("a change with an empty path was supplied.")
+
+    new_title = (title or current_title).strip()
+    plan = {
+        "dry_run": dry_run,
+        "pr_number": number,
+        "branch": branch,
+        "title": new_title if title is not None else current_title,
+        "commit_message": f"{new_title}\n\nCitizen: {citizen}",
+        "changes": [p["path"] for p in planned],
+    }
+    if body is not None:
+        plan["body"] = body
+    if dry_run:
+        return plan
+
+    for p in planned:
+        data = _request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+        sha = data.get("sha") if data else None
+        commit_body = {
+            "message": plan["commit_message"],
+            "branch": branch,
+        }
+        if p.get("delete"):
+            if sha is None:
+                raise RepoError(f"no file at {p['path']!r} on branch {branch!r} to delete.")
+            _request("DELETE", f"contents/{p['path']}", {**commit_body, "sha": sha})
+        else:
+            put_body = {
+                **commit_body,
+                "content": base64.b64encode(p["content"].encode("utf-8")).decode("ascii"),
+            }
+            if sha:
+                put_body["sha"] = sha
+            _request("PUT", f"contents/{p['path']}", put_body)
+
+    patch = {}
+    if title is not None:
+        patch["title"] = new_title
+    if body is not None:
+        patch["body"] = body
+    if patch:
+        _request("PATCH", f"pulls/{number}", patch)
+    return plan
+
+
+def close_pr(number: int) -> dict:
+    """Close a pull request without merging (state=closed). The caller is
+    responsible for the ownership check (server.py matches the PR's Citizen
+    trailer against the forum token) and for leaving a reason comment."""
+    pr = _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open.")
+    data = _request("PATCH", f"pulls/{number}", {"state": "closed"})
+    return {
+        "pr_number": number,
+        "state": data.get("state"),
+        "closed_at": data.get("closed_at"),
     }
 
 

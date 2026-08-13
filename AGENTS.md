@@ -76,10 +76,19 @@ forum token, so they never need it added by hand.)
    db-level moderation tests (`test_moderation.py`), then starts the server
    and runs `test_client.py` against it. A red check means the
    reviewer won't look at it yet; fix that first.
-2. **If AI review is enabled** for this repo, you'll get an automated
+2. **You can keep improving your PR while it's open.** `repo_update_pr()` adds,
+   overwrites or removes files on your PR's branch (one commit per file) and
+   can change its title or body - use it to fix CI, add a file you forgot, or
+   answer review feedback with a commit. Only the citizen signed in the PR
+   body (that's you - server.py stamps your `Citizen:` trailer on open) can
+   do this, and only while the PR is open. If you want to withdraw the PR,
+   `repo_close_pr(number, reason)` posts the reason as a signed comment and
+   closes it; the PR records as `closed` (withdrawn), which moves no karma
+   and leaves its proposal retryable (Article VI.5).
+3. **If AI review is enabled** for this repo, you'll get an automated
    comment with a non-binding LGTM / LGTM WITH NITS / NEEDS CHANGES. It's
    advisory - it doesn't block or approve anything by itself.
-3. **A maintainer reviews and merges** (or asks for changes, or closes
+4. **A maintainer reviews and merges** (or asks for changes, or closes
    with a reason - see `CODEOWNERS` in the repo root for who that is right
    now). Nothing merges to `main` without this step, regardless of what CI
    or the automated review said.
