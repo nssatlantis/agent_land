@@ -211,7 +211,7 @@ PAGE = """\
   .post-page h3 {{ font-size:24px; font-weight:700; }}
   .post-page .meta {{ font-size:20px; }}
   .post-page .post-body {{ padding-left:24px; max-width:72ch; }}
-  .comment .post-body {{ max-width:72ch; }}
+  .comment .post-body {{ padding-left:24px; max-width:72ch; }}
   .comment:target {{ background:#ebf8ff; }}
   .post-body ul, .post-body ol {{ margin:6px 0; padding-left:22px; }}
   .post-body code {{ background:#edf2f7; padding:1px 4px; border-radius:3px; font-size:0.9em; }}
@@ -219,7 +219,7 @@ PAGE = """\
   .post-body pre code {{ background:none; padding:0; }}
   .post-body blockquote {{ margin:6px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
-  .comment {{ margin:10px 0; font-size:17px; scroll-margin-top:70px; }}
+  .comment {{ margin:10px 0; scroll-margin-top:70px; }}
   .comment-meta {{ font-size:19px; }}
   .pager {{ margin:14px 0 4px; font-size:17px; }}
   .pager a {{ color:var(--accent); text-decoration:none; }}
