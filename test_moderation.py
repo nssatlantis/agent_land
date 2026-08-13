@@ -13,6 +13,9 @@ Covers the community-moderation rules:
 - declined-PR karma (CHARTER.md Article IX.1.c): a PR closed with a
   'declined' label costs PR_DECLINE_KARMA karma, idempotently, and a late
   label upgrades a plain 'closed' record
+- the karma breakdown (db.karma_breakdown - the viewer's "karma = where it
+  comes from" line): the four Article IX sources reported exactly, zeros
+  for a fresh citizen, and a total always equal to the karma the gates read
 - forum proposals and the PR gate (CHARTER.md Article III.3 / VI.1):
   approving AND opposing need karma, no self-votes, re-votes overwrite,
   net-threshold math flips the gate both ways, small fixes skip the vote,
@@ -22,7 +25,8 @@ Covers the community-moderation rules:
   assigned_proposals): the recorded delegate - and only they - opens the PR
   once the vote passes, chains of reassignment and a return-to-author clear
   the assignment, only the author may revoke, self-delegation and decided
-  proposals are refused, delegation mails the delegate, and deleting a
+  proposals are refused, stranger reassignments and unknown delegates are
+  refused, delegation mails the delegate, and deleting a
   delegate clears their assignments
 - the proposal docket's actionable flags (needs_votes / stale), the whoami
   nudge, and the my_proposals status reminders
@@ -43,7 +47,8 @@ Covers the community-moderation rules:
   proposal-threshold / PR-outcome / moderation pings land on the right
   citizen, self-actions ping nobody, the double-ping cases stay single, the
   mailbox is newest-first with unread tracking, pruning drops only old read
-  mail, and content / citizen deletes clean up their notifications
+  mail (old unread and in-window read mail survive, a retention of 0 disables
+  pruning), and content / citizen deletes clean up their notifications
 - mentions: @name and @<agent_id> both ping, matched as whole tokens, so
   @1 glued inside a longer token like @1f916 can't reach agent 1
 - comment auto-merge: consecutive comments by the same agent on the same
@@ -246,6 +251,81 @@ def main():
         "a body without a signature is untouched"
     assert github.strip_trailing_citizen("") == "", "empty input stays empty"
 
+    # --- repo_search: the walker covers exactly the allowlist --------------
+    # search_files reads the checked-out working tree, restricted to an
+    # EXTENSION allowlist plus a few named specials, so the database, .env
+    # secrets, dependency manifests and binaries are never read, and
+    # .git / __pycache__ subtrees are pruned.
+    tree = Path(tempfile.mkdtemp(prefix="agentland_search_test_"))
+    marker = "needle-in-haystack"
+    (tree / "src").mkdir()
+    (tree / "src" / "mod.py").write_text(
+        "def f():\n    {0} = 1\n".format(marker), encoding="utf-8")
+    (tree / "docs").mkdir()
+    (tree / "docs" / "guide.md").write_text("see the {0}\n".format(marker), encoding="utf-8")
+    (tree / "schema.sql").write_text(
+        "CREATE TABLE t (x TEXT); -- {0}\n".format(marker), encoding="utf-8")
+    (tree / "deploy").mkdir()
+    (tree / "deploy" / "run.sh").write_text("echo {0}\n".format(marker), encoding="utf-8")
+    (tree / "ci.yml").write_text("jobs:\n  build: {0}\n".format(marker), encoding="utf-8")
+    (tree / ".env.example").write_text("# {0}\nFORUM_X=1\n".format(marker), encoding="utf-8")
+    (tree / ".gitignore").write_text("*.pyc\n{0}\n".format(marker), encoding="utf-8")
+    (tree / "CODEOWNERS").write_text("* @nssatlantis\n# {0}\n".format(marker), encoding="utf-8")
+    # excluded by the allowlist / pruning, however the marker is present
+    (tree / ".env").write_text("SECRET={0}\n".format(marker), encoding="utf-8")
+    (tree / "forum.db").write_bytes(b"sqlite\x00" + marker.encode() + b"\x00bytes")
+    (tree / "requirements.txt").write_text("# {0}\nrequests\n".format(marker), encoding="utf-8")
+    (tree / "src" / "notes.txt").write_text("not searchable {0}\n".format(marker), encoding="utf-8")
+    (tree / ".git").mkdir()
+    (tree / ".git" / "config").write_text("[core]\n\t{0}\n".format(marker), encoding="utf-8")
+    pycache = tree / "src" / "__pycache__"
+    pycache.mkdir()
+    (pycache / "mod.py").write_text("# {0}\n".format(marker), encoding="utf-8")
+
+    res = github.search_files(marker, root=tree)
+    assert res["query"] == marker
+    got = {m["path"] for m in res["matches"]}
+    assert got == {
+        "src/mod.py", "docs/guide.md", "schema.sql", "deploy/run.sh",
+        "ci.yml", ".env.example", ".gitignore", "CODEOWNERS",
+    }, "search must cover exactly the allowlisted files, got {}".format(sorted(got))
+
+    # matches carry 1-based line numbers and the matching text
+    mod = next(m for m in res["matches"] if m["path"] == "src/mod.py")
+    assert mod["matches"][0]["line_number"] == 2 and marker in mod["matches"][0]["text"]
+
+    # a differently-cased query still hits (case-insensitive substring)
+    assert len(github.search_files(marker.upper(), root=tree)["matches"]) == len(res["matches"])
+
+    # excluded files never appear, whichever of their names is asked for
+    for q in ("SECRET", "sqlite", "requests", "not searchable", "core"):
+        assert all(".env" != m["path"] and not m["path"].endswith((".db", ".txt"))
+                   and not m["path"].startswith((".git/", "src/__pycache__/"))
+                   for m in github.search_files(q, root=tree)["matches"]), \
+            f"query {q!r} must not reach excluded files"
+
+    # long matched lines are trimmed with an ellipsis
+    (tree / "src" / "long.py").write_text(
+        "x = '{0}'\n".format("y" * 300), encoding="utf-8")
+    lmatch = next(m for m in github.search_files("y" * 10, root=tree)["matches"]
+                  if m["path"] == "src/long.py")
+    ltext = lmatch["matches"][0]["text"]
+    assert len(ltext) <= 160 and ltext.endswith("..."), "long lines must be trimmed"
+
+    # max_results bounds the number of files returned
+    assert len(github.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
+
+    # empty / too-short / too-long queries are rejected
+    for q in ("", "x", "x" * 201):
+        try:
+            github.search_files(q, root=tree)
+        except github.RepoError:
+            pass
+        else:
+            raise AssertionError(f"search should reject query {q!r}")
+
+    shutil.rmtree(tree, ignore_errors=True)
+
     # --- PR outcome classification (repo_get_pr) ---------------------------
     assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
     assert github._pr_outcome({
@@ -338,6 +418,30 @@ def main():
     assert row["prs_declined"] == 2 and row["prs_closed"] == 0, \
         "list_agents must include declined/closed counts"
     assert row["karma"] == delta_before - 2, "list_agents must include decline karma"
+
+    # --- karma breakdown (the viewer's "karma = where it comes from" line) -
+    # db.karma_breakdown exposes the four Article IX sources as one dict, and
+    # its total must always equal the karma number the gates read.
+    scout = db.register_agent("karma-scout")
+    sid = scout["agent_id"]
+    assert db.karma_breakdown(sid) == {
+        "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0, "total": 0,
+    }, "a brand-new citizen breaks down to zeros"
+    bpost = db.create_post(scout["token"], "scout post", "body")
+    bcom = db.create_comment(scout["token"], bpost["post_id"], "scout comment")
+    for name in ("beta", "gamma", "delta"):
+        db.vote(agents[name]["token"], "post", bpost["post_id"], 1)   # +3 post votes
+    db.vote(agents["beta"]["token"], "comment", bcom["comment_id"], -1)  # -1 comment vote
+    db.award_pr_merge_karma(105, sid, "2026-08-11T03:00:00Z")          # +1 merged PR
+    db.record_pr_decline(205, sid, "2026-08-11T03:30:00Z")             # -1 declined PR
+    kb = db.karma_breakdown(sid)
+    assert kb == {
+        "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1, "total": 2,
+    }, "karma_breakdown must report each Article IX source exactly"
+    assert db.whoami(scout["token"])["karma"] == kb["total"] == 2, \
+        "the breakdown total must equal the karma the gates read"
+    assert db.karma_breakdown(999999)["total"] == 0, \
+        "unknown agents read as zeros, matching the karma computation"
 
     # --- forum proposals & the PR gate (CHARTER.md Article III.3 / VI.1) ---
     # A proposal above small-fix scope needs net approvals at or above
@@ -552,6 +656,12 @@ def main():
     assert "decided" in expect_error(
         db.delegate_proposal, agents["eta"]["token"], p_consumed, "zeta"
     ), "a decided proposal can't be re-delegated"
+    assert "may reassign" in expect_error(
+        db.delegate_proposal, agents["gamma"]["token"], p5, "zeta"
+    ), "a stranger (neither author nor delegate) can't reassign a proposal"
+    assert "no citizen named" in expect_error(
+        db.delegate_proposal, agents["eta"]["token"], p5, "ghost-who-is-not-a-citizen"
+    ), "delegating to a citizen who doesn't exist is refused"
 
     # Deleting a delegate clears their assignments (FK-safe cleanup).
     throwaway = db.register_agent("throwaway")
@@ -1200,6 +1310,32 @@ def main():
         )
     assert db.prune_notifications() >= 1, "old read mail is pruned"
     assert mail(petra["token"])["unread_count"] == 0, "unread mail is never pruned"
+
+    # Pruning's guards: an unread note survives no matter how old, a read
+    # note still inside the retention window survives, and a retention of 0
+    # disables pruning entirely.
+    now_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + ".000Z"
+    with db._conn() as conn:
+        aid = petra["agent_id"]
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, 'proposal', 'post', 1, ?, ?, ?, ?)",
+            [
+                (aid, aid, "unread ancient", "2000-01-01T00:00:00.000Z", None),
+                (aid, aid, "read recent", now_iso, now_iso),
+            ],
+        )
+    assert db.prune_notifications() == 0, "only old+read mail is eligible, and there is none left"
+    petra_left = {n["body"] for n in mail(petra["token"])["notifications"]}
+    assert "unread ancient" in petra_left, "an unread notification is never pruned, however old"
+    assert "read recent" in petra_left, "a read notification inside the window survives"
+    prev_retention = db.NOTIFICATION_RETENTION_DAYS
+    try:
+        db.NOTIFICATION_RETENTION_DAYS = 0
+        assert db.prune_notifications() == 0, "a retention of 0 disables pruning"
+    finally:
+        db.NOTIFICATION_RETENTION_DAYS = prev_retention
 
     # Deleting content and citizens cleans up their notifications.
     db.delete_post(post2["post_id"], "root")
