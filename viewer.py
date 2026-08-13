@@ -96,27 +96,34 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
 # one result (success or failure) per window, so an outage isn't re-probed on
 # every render.
 _PR_DIFF_CACHE_SECONDS = 30
-_pr_diff_cache = {"ts": 0.0, "number": None, "diff": None, "fresh": False}
+_pr_diff_cache = {"ts": 0.0, "number": None, "diff": None, "missing": False, "fresh": False}
 
 
-async def _pr_diff(number: int) -> dict | None:
-    """One pull request's diff, cached briefly. Returns None when GitHub is
-    unreachable or the PR has no diff, so the page degrades gracefully
-    instead of erroring. Runs the blocking API call in a worker thread so it
-    never stalls the event loop (this loop also serves the MCP endpoint)."""
+async def _pr_diff(number: int) -> tuple[dict | None, bool]:
+    """One pull request's diff, cached briefly. Returns (diff, missing):
+    `diff` is None when the diff is unavailable, and `missing` is True only
+    when the pull request number doesn't exist (GitHub 404), so the page can
+    tell a bad number from an outage. Runs the blocking API call in a worker
+    thread so it never stalls the event loop (this loop also serves the MCP
+    endpoint)."""
     now = time.monotonic()
     if (
         _pr_diff_cache["fresh"]
         and _pr_diff_cache["number"] == number
         and now - _pr_diff_cache["ts"] < _PR_DIFF_CACHE_SECONDS
     ):
-        return _pr_diff_cache["diff"]
+        return _pr_diff_cache["diff"], _pr_diff_cache["missing"]
     try:
         diff = await asyncio.to_thread(github.pr_diff, number)
-    except Exception:
+        missing = False
+    except github.RepoError as e:
+        missing = "404" in str(e)
         diff = None
-    _pr_diff_cache.update(ts=now, number=number, diff=diff, fresh=True)
-    return diff
+    except Exception:
+        missing = False
+        diff = None
+    _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
+    return diff, missing
 
 
 def esc(text) -> str:
@@ -1381,12 +1388,20 @@ async def pr_diff_page(request):
     pre-formatted text (the viewer's esc-everything trust model), never raw
     HTML. Degrades to a muted notice when GitHub is unreachable."""
     number = request.path_params["number"]
-    diff = await _pr_diff(number)
+    diff, missing = await _pr_diff(number)
+    if missing:
+        panel = (
+            '<div class="panel"><h2>PR diff</h2>'
+            f"<p style='color:var(--muted)'>No pull request #{esc(number)} - "
+            "check the number, or browse the open PRs from the status page.</p></div>"
+        )
+        return _page(f"PR #{number} diff", _with_rail(_crumb("/status", "status") + panel),
+                     section="status")
     if diff is None:
         panel = (
             '<div class="panel"><h2>PR diff</h2>'
             "<p style='color:var(--muted)'>The diff is not available right now - "
-            "GitHub may be unreachable, or this pull request has no diff.</p></div>"
+            "GitHub may be unreachable.</p></div>"
         )
         return _page(f"PR #{number} diff", _with_rail(_crumb("/status", "status") + panel),
                      section="status")
@@ -1405,7 +1420,7 @@ async def pr_diff_page(request):
         if patch:
             body = f"<pre class='diff'><code>{esc(patch)}</code></pre>"
         else:
-            body = "<p style='color:var(--muted)'>binary file - no text diff.</p>"
+            body = "<p style='color:var(--muted)'>no text diff available - binary, renamed, or too large.</p>"
         sections += (
             f'<div class="panel"><h2>{path}</h2>'
             f"<p style='color:var(--muted);font-size:15px'>{status} · {counts}</p>"

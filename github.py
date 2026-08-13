@@ -265,7 +265,16 @@ def pr_diff(number: int) -> dict:
     the add/delete counts, and the unified-diff `patch` text; binary files
     come back with no patch (None)."""
     pr = _request("GET", f"pulls/{number}")
-    files = _request("GET", f"pulls/{number}/files?per_page=100")
+    # GitHub pages the files endpoint at 100 per request; page through so a
+    # large PR's diff is never silently truncated at the first page.
+    files: list[dict] = []
+    page = 1
+    while True:
+        batch = _request("GET", f"pulls/{number}/files?per_page=100&page={page}")
+        files.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
     return {
         "number": pr["number"],
         "title": pr["title"],
