@@ -481,11 +481,11 @@ def propose_change(
     for c in changes:
         path = _validate_path(c["path"])
         content = c.get("content", "")
-        if content == "":
+        if not isinstance(content, str) or content == "":
             raise RepoError(
-                f"content for {path!r} must not be empty - an empty file is "
-                "not a valid change; removal is the update path's delete "
-                "operation."
+                f"content for {path!r} must be a non-empty string - an empty "
+                "file is not a valid change; removal is the update path's "
+                "delete operation."
             )
         planned.append({"path": path, "content": content})
     if not any(p["path"] for p in planned):
@@ -592,10 +592,11 @@ def update_pr(
             planned.append({"path": path, "delete": True})
         else:
             content = c.get("content", "")
-            if content == "":
+            if not isinstance(content, str) or content == "":
                 raise RepoError(
-                    f"content for {path!r} must not be empty - an empty file "
-                    "is not a valid change; use delete: True to remove it."
+                    f"content for {path!r} must be a non-empty string - an "
+                    "empty file is not a valid change; use delete: True to "
+                    "remove it."
                 )
             planned.append({"path": path, "content": content})
     if planned and not any(p["path"] for p in planned):
