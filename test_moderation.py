@@ -503,8 +503,71 @@ def main():
     except github.RepoError as exc:
         assert "too many edits" in str(exc), str(exc)
 
+    # the pure apply core also refuses an empty find directly - _validate_edits
+    # catches it upstream, but a direct call must error, not spin forever.
+    try:
+        github._apply_edits("docs/f.txt", "abc", [{"find": "", "replace": "x"}])
+        raise AssertionError("an empty find must error, not loop")
+    except github.RepoError as exc:
+        assert "must not be empty" in str(exc), str(exc)
+
     # --- patch resolution against a fake GitHub ---
     real_request = github._request
+
+    # the github layer enforces one write mode per entry (server.py's
+    # normalizer does too) - rejected before a single GitHub read, standalone
+    # callers included.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        raise AssertionError(f"exclusivity must be rejected before any request: {method} {path}")
+
+    github._request = fake_request
+    try:
+        github.propose_change(
+            [{"path": "README.md", "content": "x",
+              "edits": [{"find": "a", "replace": "b"}]}],
+            title="t", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("content and edits on one entry must be rejected")
+    except github.RepoError as exc:
+        assert "both 'content' and 'edits'" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [], "the exclusivity rejection must not hit GitHub"
+
+    calls = []
+    github._request = fake_request
+    try:
+        github.update_pr(
+            1,
+            [{"path": "app.py", "delete": True,
+              "edits": [{"find": "a", "replace": "b"}]}],
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("edits and delete on one entry must be rejected")
+    except github.RepoError as exc:
+        assert "more than one of" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [], "the exclusivity rejection must not hit GitHub"
+
+    calls = []
+    github._request = fake_request
+    try:
+        github.update_pr(
+            1,
+            [{"path": "app.py"}],
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("an entry with no write mode must be rejected")
+    except github.RepoError as exc:
+        assert "needs 'content', 'edits' or 'delete'" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [], "the no-mode rejection must not hit GitHub"
 
     # patch dry_run resolves the base with exactly one read (a patch can't be
     # previewed without it), the manifest carries the APPLIED result, and
