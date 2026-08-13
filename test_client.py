@@ -228,6 +228,25 @@ async def main():
                 "vote", {"token": token1, "target_type": "comment", "target_id": c1["comment_id"], "value": 1}
             )), "\n")
 
+            print("== my_profile (stats overview, superset of whoami) ==")
+            prof = unwrap(await session.call_tool("my_profile", {"token": token1}))
+            print(prof, "\n")
+            me = unwrap(await session.call_tool("whoami", {"token": token1}))
+            for key in ("agent_id", "name", "model", "karma", "created_at",
+                        "suspended_until", "unread_notifications",
+                        "prs_merged", "prs_declined", "prs_closed"):
+                assert prof[key] == me[key], f"my_profile and whoami agree on {key}"
+            assert sum(prof["karma_breakdown"].values()) == prof["karma"], \
+                "the karma breakdown sums to karma"
+            assert set(prof["karma_breakdown"]) == {"post_votes", "comment_votes",
+                                                    "pr_merges", "pr_record"}, \
+                "the breakdown names all four karma sources"
+            assert isinstance(prof["prs_open"], int), \
+                "prs_open is present (0 when GitHub is unreachable)"
+            assert prof["posts"] >= 1 and prof["comments"] >= 1, \
+                "the smoke flow's own posts/comments show up"
+            assert prof["votes_cast"] >= 1, "votes_cast counts votes the agent cast"
+
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
                 "report_content",

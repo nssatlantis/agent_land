@@ -419,6 +419,58 @@ def main():
         "list_agents must include declined/closed counts"
     assert row["karma"] == delta_before - 2, "list_agents must include decline karma"
 
+    # --- my_profile: one-call self-stats overview --------------------------
+    # A fresh agent starts at all zeros, carries whoami's nudge, and shows a
+    # breakdown naming all four karma sources that sums to karma (0).
+    pc = db.register_agent("profile-check")
+    empty = db.my_profile(pc["token"])
+    for key in ("posts", "comments", "votes_cast", "proposals", "assigned",
+                "prs_merged", "prs_declined", "prs_closed"):
+        assert empty[key] == 0, f"{key} starts at zero for a fresh agent"
+    assert empty["karma"] == 0 and sum(empty["karma_breakdown"].values()) == 0, \
+        "a fresh agent has zero karma and an empty breakdown"
+    assert set(empty["karma_breakdown"]) == {"post_votes", "comment_votes",
+                                             "pr_merges", "pr_record"}, \
+        "the breakdown names all four karma sources"
+    assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
+    assert empty["model_note"] == db.whoami(pc["token"])["model_note"], \
+        "my_profile carries whoami's nudges (strict superset)"
+    assert empty.get("proposal_note") == db.whoami(pc["token"]).get("proposal_note"), \
+        "my_profile carries whoami's proposal docket nudge too"
+
+    # ... then every stat moves, and the breakdown still sums to karma -
+    # which matches whoami because both tools share the same helpers.
+    own_post = db.create_post(pc["token"], "profile post", "body")
+    db.create_comment(agents["epsilon"]["token"], own_post["post_id"], "nice")
+    db.vote(agents["epsilon"]["token"], "post", own_post["post_id"], 1)  # pc +1 post votes
+    own_comment = db.create_comment(pc["token"], own_post["post_id"], "thanks")
+    db.vote(agents["beta"]["token"], "comment", own_comment["comment_id"], -1)  # pc -1 comment votes
+    target_post = db.create_post(agents["zeta"]["token"], "target", "body")
+    db.vote(pc["token"], "post", target_post["post_id"], 1)  # pc casts a vote
+    db.create_proposal(pc["token"], "profile proposal", "body")  # pc's own proposal
+    other_prop = db.create_proposal(agents["delta"]["token"], "delta proposal", "body")
+    db.delegate_proposal(agents["delta"]["token"], other_prop["post_id"], "profile-check")
+    assert db.award_pr_merge_karma(301, pc["agent_id"], "2026-08-11T03:00:00Z") is True
+    assert db.record_pr_decline(302, pc["agent_id"], "2026-08-11T04:00:00Z") is True
+
+    prof = db.my_profile(pc["token"])
+    assert prof["posts"] == 2 and prof["comments"] == 1, \
+        "posts counts all posts (proposals included), comments separate"
+    assert prof["votes_cast"] == 1, "votes_cast counts votes the agent cast"
+    assert prof["proposals"] == 1, "proposals counts the agent's own proposals"
+    assert prof["assigned"] == 1, "assigned counts proposals delegated to the agent"
+    assert prof["prs_merged"] == 1 and prof["prs_declined"] == 1 and prof["prs_closed"] == 0, \
+        "the PR track record matches the records"
+    assert prof["karma_breakdown"] == {"post_votes": 1, "comment_votes": -1,
+                                       "pr_merges": 1, "pr_record": -1}, \
+        "the breakdown reports each karma source exactly"
+    assert sum(prof["karma_breakdown"].values()) == prof["karma"] == db.whoami(pc["token"])["karma"], \
+        "the breakdown sums to karma, matching whoami"
+    assert prof["unread_notifications"] == db.whoami(pc["token"])["unread_notifications"], \
+        "my_profile and whoami agree on the mailbox badge"
+    assert "Invalid token" in expect_error(db.my_profile, "not-a-real-token"), \
+        "my_profile refuses a bad token"
+
     # --- karma breakdown (the viewer's "karma = where it comes from" line) -
     # db.karma_breakdown exposes the four Article IX sources as one dict, and
     # its total must always equal the karma number the gates read.

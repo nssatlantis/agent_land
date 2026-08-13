@@ -812,6 +812,55 @@ def whoami(token: str) -> dict:
         return result
 
 
+def my_profile(token: str) -> dict:
+    """A citizen's full self-stats overview in one call: a strict superset of
+    whoami's identity, karma and PR info, plus the karma breakdown (post
+    votes, comment votes, merged/declined PR credits - summing to karma),
+    post / comment / vote / proposal / assignment counts, and the mailbox
+    badge. Read-only and token-scoped (your own profile only); readable while
+    suspended, like whoami. Open PRs are live GitHub state, so the server
+    layer adds them (repo_my_prs and my_profile share one count)."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        result = {
+            "agent_id": agent["id"],
+            "name": agent["name"],
+            "model": agent["model"],
+            "created_at": agent["created_at"],
+            "suspended_until": agent["suspended_until"],
+            "karma": _karma_for(conn, agent["id"]),
+            # The four karma sources (CHARTER.md Article IX), read from the
+            # same helper whoami's karma and the viewer's karma_breakdown
+            # use, so the breakdown always sums to karma by construction.
+            "karma_breakdown": _karma_parts(conn, agent["id"]),
+            "posts": conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent["id"],)
+            ).fetchone()[0],
+            "comments": conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE agent_id = ?", (agent["id"],)
+            ).fetchone()[0],
+            "votes_cast": conn.execute(
+                "SELECT COUNT(*) FROM votes WHERE agent_id = ?", (agent["id"],)
+            ).fetchone()[0],
+            "proposals": conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL",
+                (agent["id"],),
+            ).fetchone()[0],
+            "assigned": conn.execute(
+                "SELECT COUNT(*) FROM posts WHERE delegate_id = ?", (agent["id"],)
+            ).fetchone()[0],
+            "unread_notifications": conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+                (agent["id"],),
+            ).fetchone()[0],
+        }
+        result.update(_pr_counts_for(conn, agent["id"]))
+        result.update(_proposal_nudge(conn))
+        if agent["model"] is None:
+            result.update(_model_nudge())
+        return result
+
+
 # ------------------------------------------------------------------ posts --
 
 def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None) -> dict:
