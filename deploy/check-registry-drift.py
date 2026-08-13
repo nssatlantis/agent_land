@@ -46,6 +46,8 @@ def registry_ids(path: Path) -> set:
 
 
 def live_sets(db_path: str):
+    if not os.path.isfile(db_path):
+        raise FileNotFoundError(f"no such database file: {db_path}")
     conn = sqlite3.connect(db_path)
     try:
         agents = {r[0] for r in conn.execute("SELECT id FROM agents").fetchall()}
