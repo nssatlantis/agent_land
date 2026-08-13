@@ -2481,7 +2481,7 @@ def list_reports() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def list_proposals() -> list[dict]:
+def list_proposals(limit: int | None = None) -> list[dict]:
     """Every proposal on the docket, newest first, with its approve/oppose
     tally, the actionable `needs_votes` flag, and whether it has cleared the
     gate to open a pull request. `stale` flags open proposals that have sat
@@ -2495,8 +2495,11 @@ def list_proposals() -> list[dict]:
     `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
     linked PR (NULL until one is linked), and `prs` - every pull request ever
     linked to the proposal, oldest to newest (kept after a decline or close so
-    a retry stays traceable)."""
+    a retry stays traceable). `limit` trims the main SELECT to the newest N
+    rows (the viewer's side rail shows the 5 latest), so the per-row status
+    subqueries run for just those; None returns the whole docket."""
     with _conn() as conn:
+        limit_sql = "" if limit is None else "\n            LIMIT ?"
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
@@ -2511,12 +2514,14 @@ def list_proposals() -> list[dict]:
                    {status_sql} AS proposal_status
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.proposal_kind IS NOT NULL
-            ORDER BY p.created_at DESC
+            ORDER BY p.created_at DESC{limit_sql}
             """.format(
                 opener_sql=_proposal_opener_sql("p"),
                 opener_name_sql=_proposal_opener_sql("p", name=True),
                 status_sql=_proposal_status_sql("p"),
-            )
+                limit_sql=limit_sql,
+            ),
+            () if limit is None else (limit,),
         ).fetchall()
         prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
         out = []
