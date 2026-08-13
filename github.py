@@ -783,8 +783,10 @@ def _content_manifest(planned: list[dict]) -> list[dict]:
 
 def _patch_log(planned: list[dict]) -> list[dict]:
     """Per-file echo of every find-replace op that was applied, so a caller
-    can see exactly what matched before (or after) opening a PR. Patch-mode
-    entries only; content/delete entries carry nothing to echo."""
+    can see exactly what matched before (or after) opening a PR. Returns a
+    list of {path, edits: [...]} entries where each op is {find, replace,
+    occurrence, matched} - the same nested shape the tools document.
+    Patch-mode entries only; content/delete entries carry nothing to echo."""
     return [
         {"path": p["path"], "edits": p["patch_log"]}
         for p in planned
@@ -824,7 +826,7 @@ def _validate_edits(path: str, edits) -> list[dict]:
                 "delete the matched block)."
             )
         occurrence = op.get("occurrence")
-        if occurrence is not None and (
+        if "occurrence" in op and (
             not isinstance(occurrence, int) or isinstance(occurrence, bool)
             or occurrence < 1
         ):
@@ -869,8 +871,19 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
                 f"edit {i} for {path!r}: 'find' must not be empty - a "
                 "zero-length find cannot be applied."
             )
-        replace = op["replace"]
+        replace = op.get("replace")
+        if not isinstance(replace, str):
+            raise RepoError(
+                f"edit {i} for {path!r}: needs a 'replace' string (empty to "
+                "delete the matched block)."
+            )
         occurrence = op.get("occurrence", 1)
+        if (not isinstance(occurrence, int) or isinstance(occurrence, bool)
+                or occurrence < 1):
+            raise RepoError(
+                f"edit {i} for {path!r}: 'occurrence' must be a positive "
+                f"integer (1-based), got {occurrence!r}."
+            )
         hits: list[int] = []
         start = 0
         while True:
@@ -901,7 +914,7 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
         log.append({
             "find": find,
             "replace": replace,
-            "occurrence": occurrence if "occurrence" in op else None,
+            "occurrence": occurrence,
             "matched": len(hits),
         })
     return result, log
