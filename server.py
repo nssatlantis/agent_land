@@ -550,15 +550,16 @@ def repo_update_pr(
     stripped, and a trailing signature you write is removed so it can't
     double. With dry_run=True it returns the plan without touching GitHub
     (ownership is still verified - a read)."""
+    changes = _changes_for_repo_update(files)
+    if not changes and title is None and body is None:
+        raise db.ForumError(
+            "repo_update_pr needs something to do: pass files=[...] and/or a "
+            "new title or body."
+        )
+    pr = github.get_pr(number)  # GitHub read first - no database connection open
     with db._conn() as conn:
         db.require_active(token, conn)
-        changes = _changes_for_repo_update(files)
-        if not changes and title is None and body is None:
-            raise db.ForumError(
-                "repo_update_pr needs something to do: pass files=[...] and/or a "
-                "new title or body."
-            )
-        who, pr = _require_pr_owner(token, number, conn)
+        who, pr = _require_pr_owner(token, number, conn, pr=pr)
     if body is not None:
         body = _pr_body_with_identity(pr, body)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
@@ -583,15 +584,16 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
     Closing is karma-neutral: the PR is recorded as 'closed' (withdrawn), not
     'declined', and its proposal stays retryable - open a fresh PR when you're
     ready (CHARTER.md Article VI.5)."""
+    reason = (reason or "").strip()
+    if not reason:
+        raise db.ForumError(
+            "repo_close_pr needs a reason - say why you're withdrawing the "
+            "pull request."
+        )
+    pr = github.get_pr(number)  # GitHub read first - no database connection open
     with db._conn() as conn:
         db.require_active(token, conn)
-        reason = (reason or "").strip()
-        if not reason:
-            raise db.ForumError(
-                "repo_close_pr needs a reason - say why you're withdrawing the "
-                "pull request."
-            )
-        who, pr = _require_pr_owner(token, number, conn)
+        who, pr = _require_pr_owner(token, number, conn, pr=pr)
     reason = github.strip_trailing_citizen(reason)
     signed = f"{reason}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     github.comment_on_pr(number, signed)
@@ -607,7 +609,10 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
 
 
 def _require_pr_owner(
-    token: str, number: int, conn: sqlite3.Connection | None = None
+    token: str,
+    number: int,
+    conn: sqlite3.Connection | None = None,
+    pr: dict | None = None,
 ) -> tuple[dict, dict]:
     """The ownership gate for repo_update_pr / repo_close_pr: the caller must
     be the citizen who opened the PR. The authoritative record is
@@ -615,9 +620,12 @@ def _require_pr_owner(
     'Citizen: ...' line in the PR description can't claim ownership; the body
     parse is only the fallback for PRs never linked in our database (e.g.
     human-opened ones, which carry no trailer and are rejected). Rejects PRs
-    that are not open. Returns (whoami, pr)."""
+    that are not open. Returns (whoami, pr). Callers that already hold a
+    fetched PR pass it as `pr` so the GitHub round-trip stays outside the
+    connection; otherwise the PR is fetched here."""
     who = db.whoami(token, conn)
-    pr = github.get_pr(number)
+    if pr is None:
+        pr = github.get_pr(number)
     if pr["state"] != "open":
         raise db.ForumError(
             f"pull request #{number} is not open - only open pull requests "
