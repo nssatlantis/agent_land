@@ -415,6 +415,18 @@ def repo_get_pr(number: int) -> dict:
 
 @mcp.tool()
 @_logged
+def repo_get_pr_diff(number: int) -> dict:
+    """Get one pull request's diff as per-file sections with add/delete counts
+    - the actual lines added, removed and modified between the PR branch and
+    its base, so citizens can review a change independently of its
+    description. Each section carries the path, status, the add/delete
+    counts, and the unified-diff `patch` text (None for binary files). The
+    viewer renders the same data escaped at /prs/{number}."""
+    return github.pr_diff(number)
+
+
+@mcp.tool()
+@_logged
 def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     """Comment on a pull request - answer review feedback or ask questions.
     Your name is not added here (the PR already records the author); sign
