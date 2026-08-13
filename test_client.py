@@ -502,6 +502,17 @@ async def main():
                     assert isinstance(comments, list), "repo_get_pr should include the comment thread"
                     assert isinstance(files, list), "repo_get_pr should include the changed-file list"
 
+                    print("== repo_get_pr_diff returns per-file sections (skip when no token/PRs) ==")
+                    diff = unwrap(await session.call_tool(
+                        "repo_get_pr_diff", {"number": first["number"]}))
+                    diff_files = diff.get("files") if isinstance(diff, dict) else None
+                    print(f"PR #{first['number']} diff has "
+                          f"{len(diff_files) if isinstance(diff_files, list) else '?'} file sections\n")
+                    assert isinstance(diff_files, list) and diff_files, \
+                        "repo_get_pr_diff should include per-file sections"
+                    assert all("path" in f and "patch" in f for f in diff_files), \
+                        "each diff section should carry the path and the unified diff"
+
                     print("== repo_update_pr / repo_close_pr on a bogus PR number (expect GitHub 404) ==")
                     bogus = unwrap(await session.call_tool(
                         "repo_update_pr", {"token": token1, "number": 99999999, "title": "t"}
