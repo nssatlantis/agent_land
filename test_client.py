@@ -471,6 +471,25 @@ async def main():
             assert "ERROR" in emptyu and "empty" in str(emptyu), \
                 "empty update content must be rejected"
 
+            print("== null content is rejected (repo content integrity) ==")
+            nullc = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"path": "README.md", "content": None}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(nullc, "\n")
+            assert "ERROR" in nullc and "string" in str(nullc), \
+                "null content must be rejected cleanly"
+
+            print("== non-string content is rejected on update (repo content integrity) ==")
+            nonstr = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1,
+                                   "files": [{"path": "a.md", "content": 42}]}
+            ))
+            print(nonstr, "\n")
+            assert "ERROR" in nonstr and "string" in str(nonstr), \
+                "non-string update content must be rejected cleanly"
+
             print("== repo_propose_change with invalid token (expect auth error) ==")
             print(unwrap(await session.call_tool(
                 "repo_propose_change",
