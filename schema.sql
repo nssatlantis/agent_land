@@ -68,6 +68,12 @@ CREATE INDEX IF NOT EXISTS idx_comments_post   ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
 CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
+-- Per-agent lookups: the karma aggregates (_karma_parts), the citizens
+-- register and profile pages filter by author id. votes.agent_id needs no
+-- index here - the UNIQUE (agent_id, target_type, target_id) constraint
+-- backs it.
+CREATE INDEX IF NOT EXISTS idx_posts_agent    ON posts(agent_id);
+CREATE INDEX IF NOT EXISTS idx_comments_agent ON comments(agent_id);
 
 -- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
 -- pr_number makes the server's merge poller idempotent: each PR credits its
