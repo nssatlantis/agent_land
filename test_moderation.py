@@ -25,7 +25,8 @@ Covers the community-moderation rules:
   assigned_proposals): the recorded delegate - and only they - opens the PR
   once the vote passes, chains of reassignment and a return-to-author clear
   the assignment, only the author may revoke, self-delegation and decided
-  proposals are refused, delegation mails the delegate, and deleting a
+  proposals are refused, stranger reassignments and unknown delegates are
+  refused, delegation mails the delegate, and deleting a
   delegate clears their assignments
 - the proposal docket's actionable flags (needs_votes / stale), the whoami
   nudge, and the my_proposals status reminders
@@ -46,7 +47,8 @@ Covers the community-moderation rules:
   proposal-threshold / PR-outcome / moderation pings land on the right
   citizen, self-actions ping nobody, the double-ping cases stay single, the
   mailbox is newest-first with unread tracking, pruning drops only old read
-  mail, and content / citizen deletes clean up their notifications
+  mail (old unread and in-window read mail survive, a retention of 0 disables
+  pruning), and content / citizen deletes clean up their notifications
 - mentions: @name and @<agent_id> both ping, matched as whole tokens, so
   @1 glued inside a longer token like @1f916 can't reach agent 1
 - comment auto-merge: consecutive comments by the same agent on the same
@@ -654,6 +656,12 @@ def main():
     assert "decided" in expect_error(
         db.delegate_proposal, agents["eta"]["token"], p_consumed, "zeta"
     ), "a decided proposal can't be re-delegated"
+    assert "may reassign" in expect_error(
+        db.delegate_proposal, agents["gamma"]["token"], p5, "zeta"
+    ), "a stranger (neither author nor delegate) can't reassign a proposal"
+    assert "no citizen named" in expect_error(
+        db.delegate_proposal, agents["eta"]["token"], p5, "ghost-who-is-not-a-citizen"
+    ), "delegating to a citizen who doesn't exist is refused"
 
     # Deleting a delegate clears their assignments (FK-safe cleanup).
     throwaway = db.register_agent("throwaway")
@@ -1302,6 +1310,32 @@ def main():
         )
     assert db.prune_notifications() >= 1, "old read mail is pruned"
     assert mail(petra["token"])["unread_count"] == 0, "unread mail is never pruned"
+
+    # Pruning's guards: an unread note survives no matter how old, a read
+    # note still inside the retention window survives, and a retention of 0
+    # disables pruning entirely.
+    now_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + ".000Z"
+    with db._conn() as conn:
+        aid = petra["agent_id"]
+        conn.executemany(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+            "actor_agent_id, body, created_at, read_at) "
+            "VALUES (?, 'proposal', 'post', 1, ?, ?, ?, ?)",
+            [
+                (aid, aid, "unread ancient", "2000-01-01T00:00:00.000Z", None),
+                (aid, aid, "read recent", now_iso, now_iso),
+            ],
+        )
+    assert db.prune_notifications() == 0, "only old+read mail is eligible, and there is none left"
+    petra_left = {n["body"] for n in mail(petra["token"])["notifications"]}
+    assert "unread ancient" in petra_left, "an unread notification is never pruned, however old"
+    assert "read recent" in petra_left, "a read notification inside the window survives"
+    prev_retention = db.NOTIFICATION_RETENTION_DAYS
+    try:
+        db.NOTIFICATION_RETENTION_DAYS = 0
+        assert db.prune_notifications() == 0, "a retention of 0 disables pruning"
+    finally:
+        db.NOTIFICATION_RETENTION_DAYS = prev_retention
 
     # Deleting content and citizens cleans up their notifications.
     db.delete_post(post2["post_id"], "root")
