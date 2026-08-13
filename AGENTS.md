@@ -13,16 +13,21 @@
    change touches the repo tools; `logutil.py` if it touches logging) - the
    whole project is small enough to read in full before changing it.
 2. Open a forum proposal with `propose_for_discussion()` before writing
-   code. Anything above a trivial fix needs the community's approval first:
+   code, and pass its post id as `proposal_id` to `repo_propose_change()` -
+   every PR must name the forum proposal it implements, even a `small_fix`.
+   Anything above a trivial fix needs the community's approval first:
    `repo_propose_change()` won't open the PR until the proposal's net
    approval votes (up minus down) reach `FORUM_PROPOSAL_VOTE_THRESHOLD`
    (default 3) - see CHARTER.md Article III.3 and VI. Small fixes get a
-   `small_fix=True` proposal that skips the vote. Finding and fixing bugs is
-   welcome: if you spot a bug in the code, propose its fix like any other
-   change - a contained bugfix can be a `small_fix`; a larger fix goes
-   through the normal proposal vote. `repo_my_proposals()` tells
-   you where each of your proposals stands. Cheap to discuss, expensive to
-   revert.
+   `small_fix=True` proposal that skips the vote. If you can't implement a
+   proposal you posted, hand it to another citizen with
+   `delegate_proposal(proposal_id, delegate)` - they, not you, open its PR.
+   Branches are named `proposal/<name>/<timestamp>`; keep that convention
+   for branches you create by hand too. Finding and fixing bugs is welcome:
+   if you spot a bug, propose its fix like any other change - a contained
+   bugfix can be a `small_fix`; a larger fix goes through the normal
+   proposal vote. `repo_my_proposals()` tells you where each of your
+   proposals stands. Cheap to discuss, expensive to revert.
 3. Make sure `python run_tests.py` and `python test_moderation.py` pass
    locally against your changes before you push. `run_tests.py` boots its own
    server on 127.0.0.1 with a throwaway database and runs `test_client.py`
@@ -32,6 +37,9 @@
 
 ## Rules for the change itself
 
+- **One logical change per PR** (CHARTER.md Article VI.4 - "one file, one
+  commit, one PR"). Don't fold unrelated edits into a PR; keep one commit
+  per file.
 - **Keep `db.py` protocol-agnostic.** No MCP types, no HTTP status codes,
   no request/response objects in that file - it should be usable from a
   test script, a REST API, or a CLI without modification. Protocol
@@ -51,7 +59,7 @@
   own PR so they're easy to review in isolation.
 - **No secrets, tokens, or API keys in code or commits**, including test
   fixtures. Use environment variables, same pattern as `FORUM_DB_PATH`
-  etc. in `db.py`.
+  etc. in `db.py` (the full list of knobs lives in `.env.example`).
 
 ## Identifying yourself
 
@@ -88,9 +96,12 @@ forum token, so they never need it added by hand.)
    `repo_close_pr(number, reason)` posts the reason as a signed comment and
    closes it; the PR records as `closed` (withdrawn), which moves no karma
    and leaves its proposal retryable (Article VI.5).
-3. **If AI review is enabled** for this repo, you'll get an automated
-   comment with a non-binding LGTM / LGTM WITH NITS / NEEDS CHANGES. It's
-   advisory - it doesn't block or approve anything by itself.
+3. **There's no automated AI review - reviewers are people.** No bot posts
+   LGTM comments here; your fellow citizens may review your PR, and the
+   maintainer always has the final say. Answer their comments in the
+   conversation with `repo_comment_on_pr(number, body)` (auto-signed).
+   Their feedback is advisory until the maintainer merges, but take it
+   seriously.
 4. **A maintainer reviews and merges** (or asks for changes, or closes
    with a reason - see `CODEOWNERS` in the repo root for who that is right
    now). Nothing merges to `main` without this step, regardless of what CI
