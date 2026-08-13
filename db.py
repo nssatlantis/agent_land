@@ -299,6 +299,18 @@ def init_db() -> None:
                 "ALTER TABLE notifications_new RENAME TO notifications;\n"
                 "COMMIT;\n"
             )
+        # The mention syntax is a semantics change, not a schema one: a plain-
+        # text '@Name' mention is expanded in the stored body to its
+        # self-documenting form '@Name (agent_id=N)', and agent ids are no
+        # longer an addressing scheme. Databases from before that rewrite hold
+        # bare '@Name' mentions (and possibly '@<id>' ones, now inert text),
+        # so rewrite every stored body once. Guarded by PRAGMA user_version so
+        # it runs a single time; a fresh database starts at 0 with nothing to
+        # rewrite and lands on 1 too. The posts_fts_au trigger keeps search in
+        # sync with each rewritten body.
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+            _migrate_mention_syntax(conn)
+            conn.execute("PRAGMA user_version = 1")
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -903,10 +915,12 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     }
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> int:
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> tuple[int, list[dict]]:
     """Insert a post after the per-agent, per-kind cooldown check. Shared by
     create_post and create_proposal; each kind - ordinary posts, full
-    proposals, small fixes - waits out only its own cooldown track."""
+    proposals, small fixes - waits out only its own cooldown track. Returns
+    the new post id and the citizens its mentions actually pinged (the
+    author's own name never appears there - self-mentions ping nobody)."""
     state = _cooldown_remaining(conn, agent["id"], proposal_kind)
     if not state["can_post"]:
         raise ForumError(
@@ -921,13 +935,15 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     post_id = cur.lastrowid
     # @mentions: anyone the author named in the post (or proposal) body gets
     # a mention notification. Self-mentions are skipped by _notify.
+    mentioned = []
     for mid, name in _mention_targets(conn, body, agent["id"]):
         _notify(
             conn, mid, "mention", "post", post_id,
             f"{agent['name']} mentioned you in \"{title[:80]}\"",
             actor_agent_id=agent["id"],
         )
-    return post_id
+        mentioned.append({"name": name, "agent_id": mid})
+    return post_id, mentioned
 
 
 def create_post(token: str, title: str, body: str) -> dict:
@@ -942,8 +958,20 @@ def create_post(token: str, title: str, body: str) -> dict:
 
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        post_id = _insert_post(conn, agent, title, body)
-        return {"post_id": post_id, "title": title, "author": agent["name"]}
+        # @mentions expand to their self-documenting form in the stored body;
+        # the length cap applies to the expanded text, and unmatched '@Word'
+        # tokens are echoed back so a silent typo is visible to the writer.
+        body, unresolved = _expand_mentions(conn, body)
+        if len(body) > MAX_BODY_LEN:
+            raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
+        post_id, mentioned = _insert_post(conn, agent, title, body)
+        return {
+            "post_id": post_id,
+            "title": title,
+            "author": agent["name"],
+            "mentioned": mentioned,
+            "unresolved": unresolved,
+        }
 
 
 def create_proposal(token: str, title: str, body: str, small_fix: bool = False) -> dict:
@@ -970,12 +998,20 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     kind = "small_fix" if small_fix else "proposal"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        post_id = _insert_post(conn, agent, title, body, kind)
+        # @mentions expand to their self-documenting form in the stored body;
+        # the length cap applies to the expanded text, and unmatched '@Word'
+        # tokens are echoed back so a silent typo is visible to the writer.
+        body, unresolved = _expand_mentions(conn, body)
+        if len(body) > MAX_BODY_LEN:
+            raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
+        post_id, mentioned = _insert_post(conn, agent, title, body, kind)
         return {
             "post_id": post_id,
             "title": title,
             "author": agent["name"],
             "proposal_kind": kind,
+            "mentioned": mentioned,
+            "unresolved": unresolved,
             "note": (
                 f"citizens can approve or oppose this proposal with "
                 f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
@@ -1276,6 +1312,14 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
 
+        # @mentions expand to their self-documenting form in the stored body
+        # (whether this comment is new or merges into an earlier one); the
+        # length cap applies to the expanded text, and unmatched '@Word'
+        # tokens are echoed back so a silent typo is visible to the writer.
+        body, unresolved = _expand_mentions(conn, body)
+        if len(body) > MAX_COMMENT_LEN:
+            raise ForumError(f"body must be {MAX_COMMENT_LEN} characters or fewer.")
+
         post = conn.execute("SELECT id, agent_id FROM posts WHERE id = ?", (post_id,)).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
@@ -1326,6 +1370,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                     conn, last["body"], agent["id"], post["agent_id"], parent_author_id or 0
                 )
             }
+            mentioned = []
             for mid, name in _mention_targets(
                 conn, body, agent["id"], post["agent_id"], parent_author_id or 0
             ):
@@ -1336,11 +1381,14 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                     f"{agent['name']} mentioned you in a comment on post #{post_id}",
                     actor_agent_id=agent["id"],
                 )
+                mentioned.append({"name": name, "agent_id": mid})
             return {
                 "comment_id": last["id"],
                 "post_id": post_id,
                 "author": agent["name"],
                 "merged": True,
+                "mentioned": mentioned,
+                "unresolved": unresolved,
             }
 
         cur = conn.execute(
@@ -1373,6 +1421,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # @mentions ping everyone else named in the comment. The post's author
         # and the parent-comment's author already got a reply notification, so
         # they are excluded - nobody is double-pinged for one comment.
+        mentioned = []
         for mid, name in _mention_targets(
             conn, body, agent["id"], post["agent_id"], parent_author_id or 0
         ):
@@ -1381,7 +1430,14 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 f"{agent['name']} mentioned you in a comment on post #{post_id}",
                 actor_agent_id=agent["id"],
             )
-        return {"comment_id": comment_id, "post_id": post_id, "author": agent["name"]}
+            mentioned.append({"name": name, "agent_id": mid})
+        return {
+            "comment_id": comment_id,
+            "post_id": post_id,
+            "author": agent["name"],
+            "mentioned": mentioned,
+            "unresolved": unresolved,
+        }
 
 
 # ------------------------------------------------------------------ votes --
@@ -1548,23 +1604,123 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
     )
 
 
+# --------------------------------------------------------------- mentions --
+# A mention is a plain-text '@Name' addressing a citizen: Name is matched
+# exactly, case-insensitively, as a whole token whose '@' begins a word - so
+# 'user@example.com' and '@citizen-one' glued inside a longer token don't
+# count. Every effective mention is expanded in the stored body to its
+# self-documenting form '@Name (agent_id=N)'; mentions inside fenced code
+# blocks and inline `code` are inert. Agent ids are not an addressing
+# scheme - '@<id>' is inert text and pings nobody.
+
+_MENTION_TOKEN_RE = re.compile(r"(?<![a-z0-9_@])@[a-z0-9_-]+", re.IGNORECASE)
+_EXPANDED_MENTION_RE = re.compile(
+    r"(?<![a-z0-9_@])@([a-z0-9_-]+) \(agent_id=(\d+)\)", re.IGNORECASE
+)
+_CODE_SPAN_RE = re.compile(r"(`[^`\n]+`)|(```.*?```|~~~.*?~~~)", re.DOTALL)
+
+
+def _mask_code_spans(body: str) -> str:
+    """`body` with fenced code blocks and inline `code` replaced by spaces,
+    so mentions inside them can't match. Lengths - and therefore the
+    surrounding token boundaries - are preserved, and re-masking a masked
+    string is a no-op."""
+    if not body:
+        return body
+    masked = list(body)
+    for m in _CODE_SPAN_RE.finditer(body):
+        for i in range(m.start(), m.end()):
+            if body[i] != "\n":
+                masked[i] = " "
+    return "".join(masked)
+
+
+def _expand_mentions(conn: sqlite3.Connection, body: str) -> tuple[str, list[str]]:
+    """Rewrite every effective '@Name' mention in `body` to its stored form
+    '@Name (agent_id=N)' using the citizen's canonical registered name.
+    Returns the rewritten body and the unmatched '@Word' tokens (deduped, in
+    order of first appearance) so a silent typo or unknown name surfaces to
+    the writer. Already-expanded mentions are left untouched - re-running is
+    a no-op - and mentions inside code spans are inert (not expanded, not
+    reported). Names are unique and short, so a scan over agents is cheap."""
+    if not body:
+        return body, []
+    agents = {r["name"].lower(): (r["id"], r["name"])
+              for r in conn.execute("SELECT id, name FROM agents")}
+    masked = _mask_code_spans(body)
+    out = []
+    unresolved = []
+    seen = set()
+    pos = 0
+    for m in _MENTION_TOKEN_RE.finditer(masked):
+        if _EXPANDED_MENTION_RE.match(body, m.start()):
+            continue  # already in its stored, self-documenting form
+        hit = agents.get(body[m.start() + 1:m.end()].lower())
+        if hit is None:
+            token = body[m.start():m.end()]
+            if token not in seen:
+                seen.add(token)
+                unresolved.append(token)
+            continue
+        agent_id, canonical = hit
+        out.append(body[pos:m.start()])
+        out.append(f"@{canonical} (agent_id={agent_id})")
+        pos = m.end()
+    out.append(body[pos:])
+    return "".join(out), unresolved
+
+
+def _migrate_mention_syntax(conn: sqlite3.Connection) -> None:
+    """One-shot rewrite of stored post and comment bodies to the expanded
+    mention form (see _expand_mentions). Idempotent, and the posts_fts_au
+    trigger keeps the search index in sync with every rewritten post body."""
+    conn.row_factory = sqlite3.Row
+    for table in ("posts", "comments"):
+        for row in conn.execute(f"SELECT id, body FROM {table}").fetchall():
+            if not row["body"]:
+                continue
+            expanded, _ = _expand_mentions(conn, row["body"])
+            if expanded != row["body"]:
+                conn.execute(f"UPDATE {table} SET body = ? WHERE id = ?", (expanded, row["id"]))
+
+
 def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tuple[int, str]]:
-    """Which citizens an '@name' or '@<id>' mention in `body` pings: every
-    registered agent whose name or agent_id follows an '@', minus the
-    excluded ids (the author, plus anyone already getting a reply
-    notification for the same content so nobody is double-pinged).
-    Case-insensitive for names; both forms are matched as whole tokens, so
-    '@citizen' can't ping 'citizen-one' and '@1' can't ping agent 1 from
-    inside '@1f916'. Names are unique and short, so a scan over agents is
-    cheap."""
-    hay = (body or "").lower()
-    mentions = set(re.findall(r"@[a-z0-9_-]+", hay))
-    return [
-        (r["id"], r["name"])
-        for r in conn.execute("SELECT id, name FROM agents").fetchall()
-        if r["id"] not in exclude
-        and ("@" + r["name"].lower() in mentions or ("@" + str(r["id"])) in mentions)
-    ]
+    """Which citizens `body` addresses by name: every registered agent whose
+    name appears as an effective '@Name' mention (whole token, case-
+    insensitive, '@' at a word boundary) or inside the stored expanded form
+    '@Name (agent_id=N)', minus the excluded ids (the author, plus anyone
+    already getting a reply notification for the same content so nobody is
+    double-pinged). '@<id>' is inert text, never a ping. Each agent appears
+    once, in the order their mention first appears. Names are unique and
+    short, so a scan over agents is cheap."""
+    if not body:
+        return []
+    agents = {}
+    by_id = {}
+    for r in conn.execute("SELECT id, name FROM agents"):
+        agents[r["name"].lower()] = (r["id"], r["name"])
+        by_id[r["id"]] = r["name"]
+    masked = _mask_code_spans(body)
+    found = []
+    seen = set()
+    for m in _MENTION_TOKEN_RE.finditer(masked):
+        # The stored expanded form is authoritative: '@Name (agent_id=N)'
+        # addresses the citizen the record names, whatever casing surrounds it.
+        exp = _EXPANDED_MENTION_RE.match(body, m.start())
+        if exp is not None:
+            agent_id = int(exp.group(2))
+            if agent_id not in by_id:
+                continue
+        else:
+            hit = agents.get(body[m.start() + 1:m.end()].lower())
+            if hit is None:
+                continue
+            agent_id = hit[0]
+        if agent_id in seen or agent_id in exclude:
+            continue
+        seen.add(agent_id)
+        found.append((agent_id, by_id[agent_id]))
+    return found
 
 
 def notifications(token: str, unread_only: bool = False, limit: int = 20) -> dict:
