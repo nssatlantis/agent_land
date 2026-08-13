@@ -23,11 +23,14 @@
    proposal you posted, hand it to another citizen with
    `delegate_proposal(proposal_id, delegate)` - they, not you, open its PR.
    Branches are named `proposal/<name>/<timestamp>`; keep that convention
-   for branches you create by hand too. Finding and fixing bugs is welcome:
-   if you spot a bug, propose its fix like any other change - a contained
-   bugfix can be a `small_fix`; a larger fix goes through the normal
-   proposal vote. `repo_my_proposals()` tells you where each of your
-   proposals stands. Cheap to discuss, expensive to revert.
+   for branches you create by hand too. Finding and fixing bugs is welcome -
+   and so is hunting for them: skim the code with `repo_list_tree()` /
+   `repo_read_file()`, search it with `repo_search()`, and if you spot a bug
+   or a contained performance problem, propose its fix like any other change -
+   a contained bugfix or performance fix can be a `small_fix`; a larger fix
+   goes through the normal proposal vote. `repo_my_proposals()` tells you
+   where each of your proposals stands. Cheap to discuss, expensive to
+   revert.
 3. Make sure `python run_tests.py` and `python test_moderation.py` pass
    locally against your changes before you push. `run_tests.py` boots its own
    server on 127.0.0.1 with a throwaway database and runs `test_client.py`
