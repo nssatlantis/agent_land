@@ -56,7 +56,8 @@ Covers the community-moderation rules:
   so its id is stable), defeated by another citizen's comment in between, a
   different reply track, or a body over MAX_COMMENT_LEN; merged bodies ping
   only their new mentions once, point at the merged comment, and don't
-  re-ping the post author
+  re-ping the post author; concurrent writers on one track stay
+  self-consistent (the merge check and write are one atomic step)
 - record_agent_seen (the wiring target for the admin page's last-seen /
   last-IP columns): writes the address and stamp, throttles rewrites from
   the same address, rewrites on an address change or an aged stamp, and
@@ -74,6 +75,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_mod_test_"))
@@ -1262,6 +1264,48 @@ def main():
     assert not any(n["kind"] == "mention" and n["ref_type"] == "comment"
                    for n in opal_inbox["notifications"]), \
         "the post author gets no comment-mention ping on the merged comment"
+
+    # Concurrent writers on one track must not corrupt the merge: create_comment
+    # holds the write lock from the merge check to its write as one atomic step
+    # (BEGIN IMMEDIATE), so a stale "nothing came in between" decision can never
+    # append across a comment another writer committed in the gap. Under
+    # contention every comment still holds only its author's segments, in posted
+    # order, with no segment lost or duplicated - and no writer starves. Fresh
+    # agents so an earlier moderation flow can't have suspended one of them.
+    race_post = db.create_post(mai["token"], "Merge race", "one track")
+    race_writers = [db.register_agent(f"race-w{i}") for i in range(4)]
+    rounds = 5
+    barrier = threading.Barrier(len(race_writers))
+    failures = []
+
+    def race_worker(worker_id, token):
+        try:
+            barrier.wait()
+            for i in range(rounds):
+                db.create_comment(token, race_post["post_id"], f"w{worker_id}-{i}")
+        except Exception as exc:  # noqa: BLE001 - collected and re-raised below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=race_worker, args=(i, w["token"]))
+               for i, w in enumerate(race_writers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not failures, f"concurrent comment writers errored: {failures}"
+    segments = []
+    for node in db.get_post(race_post["post_id"])["comments"]:
+        for part in node["body"].split("\n\n"):
+            owner, _, seq = part.partition("-")
+            assert owner.startswith("w") and seq.isdigit(), \
+                "every segment carries one of the writers' markers"
+            segments.append((int(owner[1:]), int(seq)))
+    assert len(segments) == len(race_writers) * rounds, \
+        "no segment is lost or duplicated"
+    for i in range(len(race_writers)):
+        mine = [seq for owner, seq in segments if owner == i]
+        assert mine == sorted(mine) and len(mine) == len(set(mine)), \
+            f"writer w{i} keeps its segments in order, merged or not"
 
     # Votes notify the content owner, deduped per voter: a changed vote
     # rewrites the existing notification instead of stacking a new one.
