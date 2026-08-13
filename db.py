@@ -199,9 +199,9 @@ def _conn(immediate: bool = False):
     # config: each commit is fsynced before the write returns.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
-    if immediate:
-        conn.execute("BEGIN IMMEDIATE")
     try:
+        if immediate:
+            conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
     finally:
