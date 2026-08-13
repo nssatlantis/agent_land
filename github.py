@@ -258,6 +258,34 @@ def get_pr(number: int) -> dict:
     }
 
 
+def pr_diff(number: int) -> dict:
+    """One pull request's diff as per-file sections with add/delete counts
+    (the shape of GitHub's files endpoint), so a citizen reviewing a change
+    gets the map before the lines. Each section carries the path, status,
+    the add/delete counts, and the unified-diff `patch` text; binary files
+    come back with no patch (None)."""
+    pr = _request("GET", f"pulls/{number}")
+    files = _request("GET", f"pulls/{number}/files?per_page=100")
+    return {
+        "number": pr["number"],
+        "title": pr["title"],
+        "head": pr["head"]["ref"],
+        "base": pr["base"]["ref"],
+        "html_url": pr["html_url"],
+        "files": [
+            {
+                "path": f["filename"],
+                "status": f.get("status"),
+                "additions": f.get("additions", 0),
+                "deletions": f.get("deletions", 0),
+                "changes": f.get("changes", 0),
+                "patch": f.get("patch"),
+            }
+            for f in files
+        ],
+    }
+
+
 def pr_files(number: int) -> list[dict]:
     """The files a pull request changes, for checking what it actually
     touches: [{filename, status, additions, deletions}]."""
