@@ -67,6 +67,19 @@ fi
 "$DATA_DIR/venv/bin/python" "$DATA_DIR/backup-db.py" \
     || echo "WARNING: pre-start backup failed - continuing" >&2
 
+# DB safety #2b: the pre-start backup can't tell a first run from an unexpected
+# wipe. Fail closed instead of silently booting an empty forum: only continue
+# when the live DB has agents, or when it never had any (fresh install), or the
+# escape hatch is set. On a wipe, tell the operator exactly how to restore.
+if ! "$DATA_DIR/venv/bin/python" "$DATA_DIR/check-db-boot.py"; then
+    echo "ERROR: refusing to start - the forum database looks wiped." >&2
+    echo "       Restore a backup, e.g.:" >&2
+    echo "         $DATA_DIR/venv/bin/python $DATA_DIR/restore-db.py --list" >&2
+    echo "         $DATA_DIR/venv/bin/python $DATA_DIR/restore-db.py --force" >&2
+    echo "       (or set AGENTLAND_ALLOW_EMPTY_DB=1 to start anyway)." >&2
+    exit 1
+fi
+
 # DB safety #3: repo is disposable; data lives outside it.
 if git fetch origin main; then
     git checkout -f main
@@ -80,7 +93,7 @@ fi
 # Sync deploy scripts from the (fresh) checkout into the data dir so installed
 # copies always match the repo. tmp+mv keeps the overwrite atomic in case
 # update.sh replaces itself while running.
-for f in update.sh check-update.sh backup-db.py; do
+for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py; do
     cp "$REPO_DIR/deploy/$f" "$DATA_DIR/$f.tmp" && mv "$DATA_DIR/$f.tmp" "$DATA_DIR/$f"
     chmod 755 "$DATA_DIR/$f"
 done
