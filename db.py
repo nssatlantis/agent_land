@@ -1132,7 +1132,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         if parent_comment_id is not None and parent_author_id is not None:
             _notify(
                 conn, parent_author_id, "reply", "comment", comment_id,
-                f"{agent['name']} replied to your comment #{comment_id}",
+                f"{agent['name']} replied to your comment #{parent_comment_id}",
                 actor_agent_id=agent["id"],
             )
             if post["agent_id"] != parent_author_id:
