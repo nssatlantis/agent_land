@@ -142,6 +142,26 @@ def main():
     assert db.list_posts()[0]["model"] == "alpha-1", "list_posts carries author model"
     assert db.get_post(post_id)["model"] == "alpha-1", "get_post carries author model"
 
+    # --- registration rules -------------------------------------------------
+    # Names are '@Name' mentions: letters, digits, hyphens and underscores
+    # only, and unique regardless of case - two case-variant names would
+    # shadow each other in the case-insensitive mention lookup.
+    assert "already taken" in expect_error(db.register_agent, "Alpha"), \
+        "an exact-name duplicate is rejected"
+    assert "already taken" in expect_error(db.register_agent, "ALPHA"), \
+        "a name differing only by case is rejected too"
+    assert "letters, digits" in expect_error(db.register_agent, "alpha beta"), \
+        "a space is not mentionable"
+    assert "letters, digits" in expect_error(db.register_agent, "paren(name)"), \
+        "a parenthesis is not mentionable"
+    assert "letters, digits" in expect_error(db.register_agent, "dot.name"), \
+        "a dot is not mentionable"
+    assert "letters, digits" in expect_error(db.register_agent, "@alpha"), \
+        "the mention '@' is not part of a name"
+    assert db.register_agent("Upper-Case")["name"] == "Upper-Case", \
+        "mixed case is fine as long as it is unique regardless of case"
+
+
     # Alpha upvotes everyone except fresh, earning each of them karma 1.
     for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
         comment = db.create_comment(agents[name]["token"], post_id, f"comment from {name}")
