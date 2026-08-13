@@ -74,6 +74,11 @@ CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
 -- backs it.
 CREATE INDEX IF NOT EXISTS idx_posts_agent    ON posts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_agent ON comments(agent_id);
+-- The recent-activity feed (rail + /feed) sorts all three timelines by
+-- created_at; these let the UNION ALL's ORDER BY DESC LIMIT use reverse
+-- index scans instead of scanning + temp-sorting comments and votes.
+CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(created_at);
+CREATE INDEX IF NOT EXISTS idx_votes_created    ON votes(created_at);
 
 -- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
 -- pr_number makes the server's merge poller idempotent: each PR credits its
