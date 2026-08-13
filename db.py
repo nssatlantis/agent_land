@@ -759,7 +759,7 @@ def _proposal_nudge(conn: sqlite3.Connection) -> dict:
         f"{open_needing} open proposal(s) need votes (threshold "
         f"{PROPOSAL_VOTE_THRESHOLD}) - list_proposals() to see them, "
         "vote_on_proposal(post_id, value=1 or -1) to vote. If you can "
-        "strengthen a proposal, comment the suggestion (the author is pinged) "
+        "strengthen a proposal, comment the suggestion (this pings the author) "
         "- voting approves or opposes the idea as it stands."
     )
     if stale:
