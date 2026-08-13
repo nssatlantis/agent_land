@@ -72,6 +72,9 @@ Covers the community-moderation rules:
 - per-kind post cooldowns: ordinary posts, full proposals and small fixes
   each wait out only their own track, so a discussion post never blocks a
   bug-fix proposal and vice versa
+- report de-dup + re-report cooldown: one open report per reporter per
+  target, a re-report on decided content waits out the report cooldown, a
+  fresh target is never blocked, and both verdict paths stamp the decision
 - patch / find-replace mode (the repo tools' `edits` input): the pure
   github._apply_edits core (exact-once / occurrence / sequential / delete /
   unicode semantics, all failure modes), edits shape validation at the
@@ -95,6 +98,7 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
+os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db  # noqa: E402 - env must be set before the import
@@ -2246,6 +2250,86 @@ def main():
     assert kb["post_votes"] == 1 and kb["comment_votes"] == 1 and \
         kb["pr_merges"] == 0 and kb["pr_record"] == 0, \
         "the fresh citizen's karma is exactly the two upvotes"
+
+    # --- report de-dup + re-report cooldown --------------------------------
+    # One open report per reporter per target, and a re-report on the same
+    # content waits out the report cooldown once the previous report was
+    # decided - a resolved dispute must not be re-litigated on repeat (each
+    # re-file resets the target's tally and re-pings the author). Different
+    # content is never blocked.
+    saved_report_cd = db.REPORT_COOLDOWN_SECONDS
+    saved_suspend_votes = db.REPORT_SUSPEND_VOTES
+    try:
+        db.REPORT_COOLDOWN_SECONDS = 500
+        db.REPORT_SUSPEND_VOTES = 2
+        victim = db.register_agent("report-victim")
+        flagger = db.register_agent("report-flagger")
+        voter_a = db.register_agent("report-voter-a")
+        voter_b = db.register_agent("report-voter-b")
+        victim_post = db.create_post(victim["token"], "flagged content", "body")
+        # Karma farms: flagger needs 1 to report, the voters 1 each to vote
+        # 'suspend'. Each farm comment is upvoted by a different citizen.
+        farm = db.create_comment(flagger["token"], victim_post["post_id"], "farm")
+        db.vote(voter_a["token"], "comment", farm["comment_id"], 1)
+        farm2 = db.create_comment(flagger["token"], victim_post["post_id"], "farm 2")
+        db.vote(voter_b["token"], "comment", farm2["comment_id"], 1)
+        farm3 = db.create_comment(voter_a["token"], victim_post["post_id"], "farm 3")
+        db.vote(flagger["token"], "comment", farm3["comment_id"], 1)
+        farm4 = db.create_comment(voter_b["token"], victim_post["post_id"], "farm 4")
+        db.vote(flagger["token"], "comment", farm4["comment_id"], 1)
+
+        report1 = db.report_content(flagger["token"], "post", victim_post["post_id"], "first flag")
+        dup = expect_error(
+            db.report_content, flagger["token"], "post", victim_post["post_id"], "second flag"
+        )
+        assert "open report" in dup, \
+            "a second report by the same reporter on the same target while one is open is refused"
+        other = db.report_content(voter_a["token"], "post", victim_post["post_id"], "separate flag")
+        assert other["report_id"] != report1["report_id"], \
+            "a different citizen may still flag the same content (reports share one tally)"
+
+        # Community verdict: 2 net suspend votes suspends the author and
+        # decides every open report on the target, resetting the tally.
+        db.vote_on_report(voter_a["token"], report1["report_id"], "suspend")
+        db.vote_on_report(voter_b["token"], other["report_id"], "suspend")
+        with db._conn() as conn:
+            decided = conn.execute(
+                "SELECT decided_at FROM reports WHERE id = ?", (report1["report_id"],)
+            ).fetchone()[0]
+        assert decided, "a community suspension stamps decided_at on the reports it decides"
+        blocked = expect_error(
+            db.report_content, flagger["token"], "post", victim_post["post_id"], "re-flag"
+        )
+        assert "rate limited" in blocked and "500" in blocked, \
+            "a re-report on the same content inside the report cooldown is refused"
+
+        # Different content is never blocked, and an aged decision reopens
+        # the same content - the cooldown anchors on decided_at, not the
+        # report's creation (a long-open report must not defeat the gate).
+        fresh_post = db.create_post(voter_b["token"], "fresh content", "b")
+        db.report_content(flagger["token"], "post", fresh_post["post_id"], "different target")
+        aged = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=2)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE reports SET decided_at = ? WHERE id = ?", (aged, report1["report_id"])
+            )
+        db.report_content(flagger["token"], "post", victim_post["post_id"], "re-flag after cooldown")
+
+        # The admin resolve path stamps decided_at too: a freshly resolved
+        # report starts the re-report cooldown.
+        re_flag = db.report_content(
+            flagger["token"], "post", victim_post["post_id"], "re-flag after cooldown"
+        )
+        db.resolve_report(re_flag["report_id"], "root", "clear")
+        blocked2 = expect_error(
+            db.report_content, flagger["token"], "post", victim_post["post_id"], "again"
+        )
+        assert "rate limited" in blocked2, \
+            "an admin-resolved report also starts the re-report cooldown"
+    finally:
+        db.REPORT_COOLDOWN_SECONDS, db.REPORT_SUSPEND_VOTES = saved_report_cd, saved_suspend_votes
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
