@@ -1650,10 +1650,44 @@ def main():
         "init_db() creates the per-agent and created_at indexes"
 
     # The side rail shows the 5 newest proposals; the limit must return the
-    # same newest 5 as slicing the full docket.
+    # same newest 5 rows (every field, not just the ids) as slicing the full
+    # docket, and a limit larger than the docket returns the whole docket.
     limited = db.list_proposals(limit=5)
-    assert [p["id"] for p in limited] == [p["id"] for p in db.list_proposals()[:5]], \
+    assert limited == db.list_proposals()[:5], \
         "list_proposals(limit=5) matches the newest 5 of the full docket"
+    assert db.list_proposals(limit=10**6) == db.list_proposals(), \
+        "a limit larger than the docket returns everything"
+
+    # --- migration: a pre-index database gains them on next boot ------------
+    # init_db() re-runs schema.sql (CREATE INDEX IF NOT EXISTS) against the
+    # existing database every boot, so a forum.db created before the perf
+    # indexes still gets them the first time the new server starts - the
+    # upgrade-path regression for the index changes (compare the
+    # pre-delegation mailbox migration above).
+    with db._conn() as conn:
+        for name in ("idx_posts_agent", "idx_comments_agent",
+                     "idx_comments_created", "idx_votes_created"):
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+    db.init_db()  # must recreate the four perf indexes on the existing DB
+    with db._conn() as conn:
+        recreated = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
+            "('idx_posts_agent', 'idx_comments_agent', "
+            "'idx_comments_created', 'idx_votes_created')"
+        )}
+    assert {"idx_posts_agent", "idx_comments_agent",
+            "idx_comments_created", "idx_votes_created"} <= recreated, \
+        "init_db() recreates the perf indexes on an existing database"
+    db.init_db()  # and a second boot is a no-op, not an error
+    with db._conn() as conn:
+        again = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
+            "('idx_posts_agent', 'idx_comments_agent', "
+            "'idx_comments_created', 'idx_votes_created')"
+        )}
+    assert {"idx_posts_agent", "idx_comments_agent",
+            "idx_comments_created", "idx_votes_created"} <= again, \
+        "a second init_db() leaves the perf indexes in place"
 
     # The cheap profile fragment (agent_card) must agree with the full page
     # (public_agent_detail) on every shared stat - the two share one SQL
