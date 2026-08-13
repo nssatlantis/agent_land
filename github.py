@@ -149,6 +149,17 @@ def open_prs() -> list[dict]:
 
 _CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
 _PROPOSAL_RE = re.compile(r"Proposal:\s*#?(\d+)")
+_TRAILING_CITIZEN_RE = re.compile(
+    r"(?:\r?\n[ \t]*)?Citizen:[ \t]*(?:[^\r\n]*?)\(agent_id=\d+\)[ \t]*$"
+)
+
+
+def strip_trailing_citizen(text: str) -> str:
+    """Remove a 'Citizen: <name> (agent_id=N)' signature line from the very
+    end of `text` (and the blank line before it), so an agent's own signature
+    can never double the one server.py appends automatically. A signature
+    anywhere but the last line is the agent's content and is left alone."""
+    return _TRAILING_CITIZEN_RE.sub("", text or "").rstrip()
 
 
 def recently_closed_prs(per_page: int = 30) -> list[dict]:

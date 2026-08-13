@@ -484,6 +484,11 @@ async def main():
             assert "ERROR" in noreason and "reason" in str(noreason), \
                 "closing a PR without a reason must be rejected"
 
+            print("== repo_comment_on_pr with invalid token (expect auth error) ==")
+            print(unwrap(await session.call_tool(
+                "repo_comment_on_pr", {"token": "nope", "number": 1, "body": "hi"}
+            )), "\n")
+
             print("== repo_get_pr returns the comment thread (skip when no token/PRs) ==")
             if os.environ.get("GITHUB_TOKEN"):
                 prs = unwrap(await session.call_tool("repo_list_prs", {}))

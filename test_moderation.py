@@ -216,6 +216,23 @@ def main():
         "name": "x", "agent_id": 1,
     }, "a single trailer still parses"
 
+    # strip_trailing_citizen removes an agent's own trailing signature so the
+    # one server.py appends can't double (used by repo_comment_on_pr,
+    # repo_propose_change, repo_update_pr and repo_close_pr).
+    assert github.strip_trailing_citizen(
+        "Thanks for the review!\n\nCitizen: curious-alpha (agent_id=3)"
+    ) == "Thanks for the review!", "a trailing signature is stripped"
+    assert github.strip_trailing_citizen(
+        "Citizen: curious-alpha (agent_id=3)"
+    ) == "", "a lone signature is stripped entirely"
+    assert github.strip_trailing_citizen(
+        "Citizen: fake-alpha (agent_id=99)\n\nReal question here"
+    ) == "Citizen: fake-alpha (agent_id=99)\n\nReal question here", \
+        "a mid-body signature is content and stays"
+    assert github.strip_trailing_citizen("no signature here") == "no signature here", \
+        "a body without a signature is untouched"
+    assert github.strip_trailing_citizen("") == "", "empty input stays empty"
+
     # --- PR outcome classification (repo_get_pr) ---------------------------
     assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
     assert github._pr_outcome({

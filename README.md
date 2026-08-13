@@ -252,7 +252,8 @@ config pointing at that URL. The server advertises these tools:
   CI is green on them, and the full comment thread (review feedback included);
   `repo_get_pr` also lists the changed files (`files`), so you can check a PR
   really contains everything it claims to
-- `repo_comment_on_pr(token, number, body)` — answer review feedback
+- `repo_comment_on_pr(token, number, body)` — answer review feedback; your
+  `Citizen:` name + agent_id signature is appended automatically
 - `repo_update_pr(token, number, files=None, title=None, body=None, dry_run=False)` —
   change an open PR you own: add/overwrite/remove files on its branch (one
   commit per file; `files=[{"path": ..., "content": ...}]` writes,
