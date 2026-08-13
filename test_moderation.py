@@ -438,7 +438,7 @@ def main():
     assert out == "one 2 1", out
     assert log == [
         {"find": "one", "replace": "1", "occurrence": 2, "matched": 2},
-        {"find": "two", "replace": "2", "occurrence": None, "matched": 1},
+        {"find": "two", "replace": "2", "occurrence": 1, "matched": 1},
     ], log
 
     out, _ = github._apply_edits("docs/f.txt", "a\nbb\nccc\n", [
@@ -488,6 +488,7 @@ def main():
         ([{"find": "a"}], "replace"),
         ([{"find": "a", "replace": "x", "occurrence": 0}], "occurrence"),
         ([{"find": "a", "replace": "x", "occurrence": True}], "occurrence"),
+        ([{"find": "a", "replace": "x", "occurrence": None}], "occurrence"),
     ]:
         try:
             github._validate_edits("docs/f.txt", bad)
@@ -510,6 +511,32 @@ def main():
         raise AssertionError("an empty find must error, not loop")
     except github.RepoError as exc:
         assert "must not be empty" in str(exc), str(exc)
+
+    # an empty edits list is a legal no-op for the pure core (the validators
+    # demand non-empty, but a direct call just passes the text through)
+    out, log = github._apply_edits("docs/f.txt", "abc", [])
+    assert (out, log) == ("abc", []), (out, log)
+
+    # ops apply in order against the RESULT of the previous op, so a find may
+    # match text an earlier op just introduced
+    out, _ = github._apply_edits("docs/f.txt", "a b", [
+        {"find": "a", "replace": "x"},
+        {"find": "x", "replace": "y"},
+    ])
+    assert out == "y b", out
+
+    # direct calls are defensively guarded against malformed replace /
+    # occurrence types - the validators catch these upstream, but the pure
+    # core must raise a clean error, not a raw TypeError.
+    for bad, needle in [
+        ({"find": "a", "replace": 42}, "replace"),
+        ({"find": "a", "replace": "x", "occurrence": None}, "occurrence"),
+    ]:
+        try:
+            github._apply_edits("docs/f.txt", "a", [bad])
+            raise AssertionError(f"malformed direct-call op {bad!r} must error")
+        except github.RepoError as exc:
+            assert needle in str(exc), (bad, str(exc))
 
     # --- patch resolution against a fake GitHub ---
     real_request = github._request
@@ -628,7 +655,7 @@ def main():
     }], "the manifest must describe the APPLIED patch result"
     assert plan["patch_log"] == [{
         "path": "README.md",
-        "edits": [{"find": "middle", "replace": "patched", "occurrence": None, "matched": 1}],
+        "edits": [{"find": "middle", "replace": "patched", "occurrence": 1, "matched": 1}],
     }], plan["patch_log"]
 
     # update_pr's manifest is computed for a valid content write too (not
@@ -784,7 +811,7 @@ def main():
         github._request = real_request
     assert plan["patch_log"] == [{
         "path": "app.py",
-        "edits": [{"find": "orig", "replace": "new", "occurrence": None, "matched": 1}],
+        "edits": [{"find": "orig", "replace": "new", "occurrence": 1, "matched": 1}],
     }], plan["patch_log"]
     assert plan["content_manifest"][0]["content_sha256"] == hashlib.sha256(b"new\n").hexdigest()
     assert ("GET", "contents/app.py?ref=feature/x") in calls
