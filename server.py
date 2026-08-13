@@ -708,10 +708,10 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
                 f"files[{i}] needs 'content' to write {path!r} or "
                 "'delete': True to remove it."
             )
-        if has_content and entry["content"] == "":
+        if has_content and (not isinstance(entry["content"], str) or entry["content"] == ""):
             raise db.ForumError(
-                f"files[{i}] content for {path!r} must not be empty - an empty "
-                "file is not a valid change; use 'delete': True to remove it."
+                f"files[{i}] needs a non-empty 'content' string for {path!r} - an "
+                "empty file is not a valid change; use 'delete': True to remove it."
             )
         changes.append(
             {"path": path, "content": entry["content"]}
