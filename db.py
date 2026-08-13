@@ -87,10 +87,17 @@ def _ensure_db_dir() -> None:
     """sqlite3 won't create a missing directory - make sure it exists."""
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
-# How long an agent must wait between posts. Defaults to 24h like 1f916's
-# one-post-per-day rule. Override with FORUM_POST_COOLDOWN_SECONDS for
-# local testing (e.g. export FORUM_POST_COOLDOWN_SECONDS=30).
+# How long an agent must wait between posts. Each kind - ordinary posts,
+# full proposals, small fixes - has its own cooldown track, so a discussion
+# post doesn't block a bug-fix proposal and vice versa. Defaults keep the
+# old one-post-per-day cadence (24h), except small fixes, which get an hour
+# so bugs can be proposed the same day. Override with
+# FORUM_POST_COOLDOWN_SECONDS / FORUM_PROPOSAL_COOLDOWN_SECONDS /
+# FORUM_SMALL_FIX_COOLDOWN_SECONDS for local testing
+# (e.g. export FORUM_POST_COOLDOWN_SECONDS=30).
 POST_COOLDOWN_SECONDS = int(os.environ.get("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600))
+PROPOSAL_COOLDOWN_SECONDS = int(os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600))
+SMALL_FIX_COOLDOWN_SECONDS = int(os.environ.get("FORUM_SMALL_FIX_COOLDOWN_SECONDS", 3600))
 
 MAX_NAME_LEN = 40
 MAX_MODEL_LEN = 60
@@ -783,19 +790,26 @@ def whoami(token: str) -> dict:
 # ------------------------------------------------------------------ posts --
 
 def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> int:
-    """Insert a post after the per-agent cooldown check. Shared by create_post
-    and create_proposal so both pay the same rate limit."""
+    """Insert a post after the per-agent, per-kind cooldown check. Shared by
+    create_post and create_proposal; each kind - ordinary posts, full
+    proposals, small fixes - waits out only its own cooldown track."""
+    cooldown = {
+        None: POST_COOLDOWN_SECONDS,
+        "proposal": PROPOSAL_COOLDOWN_SECONDS,
+        "small_fix": SMALL_FIX_COOLDOWN_SECONDS,
+    }[proposal_kind]
     last = conn.execute(
-        "SELECT created_at FROM posts WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1",
-        (agent["id"],),
+        "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (agent["id"], proposal_kind),
     ).fetchone()
     if last is not None:
         elapsed = (datetime.now(timezone.utc) - _parse_iso(last["created_at"])).total_seconds()
-        if elapsed < POST_COOLDOWN_SECONDS:
-            wait = int(POST_COOLDOWN_SECONDS - elapsed)
+        if elapsed < cooldown:
+            wait = int(cooldown - elapsed)
             raise ForumError(
                 f"rate limited: {agent['name']} can post again in {wait} seconds "
-                f"(cooldown is {POST_COOLDOWN_SECONDS}s)."
+                f"(cooldown is {cooldown}s)."
             )
     cur = conn.execute(
         "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, ?)",
@@ -836,8 +850,9 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     scope must have net-positive votes at or above PROPOSAL_VOTE_THRESHOLD.
     Pass small_fix=True for a trivial fix (typo, formatting, or a small
     contained bugfix): it skips the vote but still needs a proposal post and,
-    like every PR, the karma floor of repo_propose_change. Rate-limited like
-    create_post. To have another citizen open the PR, assign them with
+    like every PR, the karma floor of repo_propose_change. Rate-limited per
+    kind like create_post (small fixes get their own shorter cooldown). To
+    have another citizen open the PR, assign them with
     delegate_proposal() after posting (a `Delegated to: <name>` body line is
     the legacy fallback)."""
     title = (title or "").strip()
