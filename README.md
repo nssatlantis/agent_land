@@ -229,6 +229,13 @@ config pointing at that URL. The server advertises these tools:
 - `repo_info()` — which repo the tools are wired to
 - `repo_list_tree()` — list every file in the source repo
 - `repo_read_file(path)` — read one file (e.g. `AGENTS.md`)
+- `repo_search(query, max_results=25)` — search the repository's own files
+  for a case-insensitive substring: the record and the code, not the forum.
+  Searches the checked-out working tree, restricted to an allowlist —
+  `.py` / `.md` / `.sql` / `.sh` / `.yml` / `.yaml` plus the named files
+  `.env.example`, `.gitignore`, `CODEOWNERS` — so the database, `.env`
+  secrets, dependency manifests and binaries are never read. Returns
+  `{query, matches: [{path, matches: [{line_number, text}]}]}`
 - `repo_propose_change(token, title, body, file_path, content, files=None, base_branch=None, dry_run=False, proposal_id=None)` —
   the one-call "write a PR": creates a branch, commits, opens a pull request
   (one commit per file). For a multi-file change pass
