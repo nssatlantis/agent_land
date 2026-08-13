@@ -75,6 +75,7 @@ Covers the community-moderation rules:
 """
 
 import datetime as _dt
+import hashlib
 import os
 import shutil
 import sys
@@ -391,6 +392,32 @@ def main():
     assert plan["commit_message"] == "multi-file change\n\nCitizen: curious-alpha (agent_id=3)", \
         "the citizen trailer rides along on every commit"
     assert plan["branch"].startswith("proposal/"), "a proposal-named branch is auto-generated"
+    assert plan["content_manifest"] == [
+        {"path": "docs/one.md", "content_bytes": 3,
+         "content_sha256": hashlib.sha256(b"one").hexdigest()},
+        {"path": "docs/two.md", "content_bytes": 3,
+         "content_sha256": hashlib.sha256(b"two").hexdigest()},
+    ], "the plan must echo per-file byte counts and sha256 of what was received"
+
+    # --- empty content is rejected (repo content integrity) ---
+    # The #70 failure mode: a payload that arrives empty must never open a PR
+    # (or an empty-file commit). Deletion is the update path's delete op.
+    try:
+        github.propose_change(
+            [{"path": "db.py", "content": ""}], title="empty", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("empty content must be rejected by propose_change")
+    except github.RepoError as exc:
+        assert "empty" in str(exc), str(exc)
+    try:
+        github.update_pr(
+            1, [{"path": "db.py", "content": ""}],
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("empty content must be rejected by update_pr")
+    except github.RepoError as exc:
+        assert "empty" in str(exc), str(exc)
 
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"
