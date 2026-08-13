@@ -1260,13 +1260,16 @@ async def agents_page(request):
     )
 
 
-def _profile_cards(a: dict, open_count: int) -> str:
+def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     """A citizen's headline stat cards, shared by the profile page and its
-    soft-refresh fragment so the two can't drift."""
+    soft-refresh fragment so the two can't drift. When the karma breakdown
+    (`kb` from db.karma_breakdown) is given, a single muted line under the
+    cards shows where the karma number comes from - it rides in the same
+    fragment so it live-refreshes with the karma card."""
     def stat_card(n, label):
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
-    return '<div class="cards">' + "".join([
+    cards = '<div class="cards">' + "".join([
         stat_card(a["karma"], "karma"),
         stat_card(a["post_count"], "posts"),
         stat_card(a["comment_count"], "comments"),
@@ -1276,6 +1279,15 @@ def _profile_cards(a: dict, open_count: int) -> str:
         stat_card(a["prs_declined"], "PRs declined"),
         stat_card(open_count, "open PRs"),
     ]) + "</div>"
+
+    if not kb:
+        return cards
+    line = (
+        f'karma {kb["total"]} = {kb["post_votes"]:+d} post votes · '
+        f'{kb["comment_votes"]:+d} comment votes · '
+        f'{kb["pr_merges"]:+d} merged PRs · {kb["pr_record"]:+d} declined PRs'
+    )
+    return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'
 
 
 _RECORD_CACHE_SECONDS = 300
@@ -1470,7 +1482,7 @@ async def agent_profile_page(request):
         f'last active {_human_ts(a.get("last_active") or a["created_at"])}</p></div>'
     )
 
-    cards = _profile_cards(a, open_count)
+    cards = _profile_cards(a, open_count, db.karma_breakdown(agent_id))
     prop_by_id = {p["id"]: p for p in a["proposals"]}
     posts = ""
     for p in a["posts"]:
@@ -2191,7 +2203,7 @@ async def fragments(request):
             return HTMLResponse("", status_code=404)
         prs = await _open_prs()
         open_count = _open_prs_by_agent(prs).get(agent_id, 0)
-        return HTMLResponse(_profile_cards(a, open_count))
+        return HTMLResponse(_profile_cards(a, open_count, db.karma_breakdown(agent_id)))
     if name == "status-banner":
         by_name, _, repo, prs = await _status_reads()
         return HTMLResponse(_status_banner_html(_status_checks(by_name, repo, prs)))

@@ -294,28 +294,52 @@ def init_db() -> None:
             )
 
 
+def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A citizen's karma broken into its four sources (CHARTER.md Article IX):
+    net votes on posts, net votes on comments, credits for merged pull
+    requests and costs for declined ones. The single source of truth both
+    _karma_for and the public karma_breakdown read from."""
+    return {
+        "post_votes": conn.execute(
+            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            " JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
+            " WHERE p.agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "comment_votes": conn.execute(
+            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            " JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
+            " WHERE c.agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "pr_merges": conn.execute(
+            "SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "pr_record": conn.execute(
+            "SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+    }
+
+
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
     merged pull requests and costs for declined ones (CHARTER.md Article IX)."""
-    row = conn.execute(
-        """
-        SELECT
-            COALESCE((SELECT SUM(v.value) FROM votes v
-                      JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
-                      WHERE p.agent_id = ?), 0)
-            +
-            COALESCE((SELECT SUM(v.value) FROM votes v
-                      JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
-                      WHERE c.agent_id = ?), 0)
-            +
-            COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = ?), 0)
-            +
-            COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = ?), 0)
-            AS karma
-        """,
-        (agent_id, agent_id, agent_id, agent_id),
-    ).fetchone()
-    return row["karma"]
+    return sum(_karma_parts(conn, agent_id).values())
+
+
+def karma_breakdown(agent_id: int) -> dict:
+    """A citizen's karma split into its four sources (CHARTER.md Article IX):
+    `post_votes` (net votes on their posts), `comment_votes` (net votes on
+    their comments), `pr_merges` (credits for merged pull requests) and
+    `pr_record` (costs for declined ones), plus their sum as `total` - the
+    same number the profile shows as karma. Protocol-agnostic; the viewer
+    renders it on the profile page."""
+    with _conn() as conn:
+        parts = _karma_parts(conn, agent_id)
+    parts["total"] = sum(parts.values())
+    return parts
 
 
 def _score_for(conn: sqlite3.Connection, target_type: str, target_id: int) -> int:
