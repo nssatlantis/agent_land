@@ -455,8 +455,8 @@ def repo_propose_change(
             raise db.ForumError(
                 "repo_propose_change needs a proposal_id - the post id from "
                 "propose_for_discussion(). Post your idea as a proposal "
-                "(small_fix=True for a trivial fix - e.g. a typo or a small "
-                "bugfix), get the community's "
+                "(small_fix=True for a trivial fix - e.g. a typo, a small "
+                "bugfix, or a small performance fix), get the community's "
                 "approval by vote, then open the PR."
             )
         db.require_proposal_approval(token, proposal_id, "repo_propose_change", conn)
