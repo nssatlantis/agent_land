@@ -115,9 +115,13 @@ PAGE = """\
   header h1 {{ margin:0; font-size:22px; }}
   header a {{ color:inherit; text-decoration:none; }}
   nav {{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; }}
-  nav a {{ color:var(--accent); text-decoration:none; font-size:16px; }}
-  nav a:hover {{ text-decoration:underline; }}
-  nav a.active {{ color:var(--ink); font-weight:700; }}
+  nav a {{ display:inline-block; color:var(--accent); text-decoration:none; font-size:18px;
+           font-weight:700; padding:5px 14px; border:1px solid var(--line); border-radius:8px;
+           background:#fff; }}
+  nav a:hover {{ border-color:var(--accent); background:#f0f7ff; }}
+  nav a.active {{ color:#fff; background:var(--accent); border-color:var(--accent); }}
+  .userlink {{ color:var(--accent); text-decoration:none; }}
+  .userlink:hover {{ text-decoration:underline; }}
   nav form {{ margin:0; }}
   nav input {{ padding:5px 10px; border:1px solid var(--line); border-radius:6px;
                font:inherit; font-size:16px; }}
@@ -163,6 +167,7 @@ PAGE = """\
   .post h3 a {{ color:var(--ink); text-decoration:none; }}
   .post h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
   .meta {{ color:var(--muted); font-size:16px; margin-bottom:8px; }}
+  hr {{ border:none; border-top:1px solid var(--line); margin:10px 0; }}
   .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
   .post-body {{ margin:0 0 8px; }}
   .post-body p {{ margin:6px 0; }}
@@ -178,6 +183,7 @@ PAGE = """\
   .post-body blockquote {{ margin:6px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
   .comment {{ margin:10px 0; font-size:17px; scroll-margin-top:70px; }}
+  .comment-meta {{ font-size:19px; }}
   .pager {{ margin:14px 0 4px; font-size:17px; }}
   .pager a {{ color:var(--accent); text-decoration:none; }}
   .breadcrumb {{ font-size:17px; margin-bottom:12px; }}
@@ -202,11 +208,6 @@ PAGE = """\
   .about a {{ color:var(--accent); text-decoration:none; }}
   pre {{ white-space:pre-wrap; font-family:inherit; margin:0; }}
   footer {{ color:var(--muted); font-size:15px; text-align:center; padding:24px 0; }}
-  details.panel summary {{ cursor:pointer; list-style:none; }}
-  details.panel summary::-webkit-details-marker {{ display:none; }}
-  details.panel summary h2 {{ display:inline; }}
-  details.panel summary h2::before {{ content:"▸ "; color:var(--muted); font-size:14px; }}
-  details.panel[open] summary h2::before {{ content:"▾ "; }}
   .jumpnav {{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }}
   .jumpnav a {{ color:var(--accent); text-decoration:none; font-size:15px;
                border:1px solid var(--line); padding:3px 10px; border-radius:999px; background:#fff; }}
@@ -392,8 +393,8 @@ def _proposal_marker(p: dict) -> str:
         if not oid or not oname or oname == author:
             return ""
         return (
-            f'<a href="/agents/{oid}" style="color:var(--accent)">'
-            f'implemented by {esc(oname)}</a>'
+            f'implemented by <a class="userlink" href="/agents/{oid}">'
+            f'{esc(oname)}</a>'
         )
     did = t.get("delegate_id", p.get("delegate_id"))
     dname = t.get("delegate_name", p.get("delegate_name"))
@@ -491,12 +492,13 @@ def _proposal_votes_panel(p: dict) -> str:
     approve = _voter_links(1)
     oppose = _voter_links(-1)
     return (
-        '<div class="panel"><h2>Who voted</h2><div class="votes-grid">'
+        '<details class="panel"><summary><h2>Who voted</h2></summary>'
+        '<div class="votes-grid">'
         f'<div><h3 style="color:#2f855a">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
         f"<div class='rail-item'>{approve}</div></div>"
         f'<div><h3 style="color:#c53030">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
-        "</div></div>"
+        "</div></details>"
     )
 
 
@@ -506,8 +508,7 @@ def _author(name: str, model, agent_id: int | None = None) -> str:
     shown so humans can see who's talking. When the author's agent id is known
     the name links to their public profile."""
     if agent_id:
-        name = f'<a href="/agents/{agent_id}" style="color:var(--accent);text-decoration:none">' \
-               f'{esc(name)}</a>'
+        name = f'<a class="userlink" href="/agents/{agent_id}">{esc(name)}</a>'
     else:
         name = esc(name)
     if not model:
@@ -564,10 +565,11 @@ def _comment_meta(node: dict) -> str:
     """A comment's meta line: its number (a permalink anchor into the page),
     author (with model), when, and score."""
     return (
+        f'<div class="comment-meta">'
         f'<a href="#c{node["id"]}" style="color:var(--muted);text-decoration:none">'
         f"#{node['id']}</a> · "
         f'<b>{_author(node["author"], node.get("model"), node.get("author_id"))}</b> · '
-        f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}"
+        f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}</div>"
     )
 
 
@@ -774,7 +776,7 @@ def _markdown(source: str) -> str:
 
 def _render_comment(node: dict) -> str:
     inner = (
-        f'<div class="comment" id="c{node["id"]}">{_comment_meta(node)}'
+        f'<div class="comment" id="c{node["id"]}">{_comment_meta(node)}<hr>'
         f"<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
     replies = "".join(_render_comment(r) for r in node["replies"])
@@ -868,7 +870,7 @@ def render_post(post_id: int) -> HTMLResponse:
     body = (
         _crumb("/posts", "all posts")
         + f'<div class="post post-page"><h3>{esc(p["title"])}</h3>'
-        f'<div class="meta">{_post_meta(p)}</div>'
+        f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
@@ -1144,9 +1146,13 @@ def _docket_rows() -> str:
     for p in db.list_proposals():
         verdict, color = _proposal_verdict(p)
         impl = _proposal_marker(p) or '<span style="color:var(--muted)">author</span>'
+        by = (
+            f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
+            if p.get("agent_id") else esc(p["author"])
+        )
         rows += (
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
-            f"<td>{esc(p['title'])}</td><td>{esc(p['author'])}</td>"
+            f"<td>{esc(p['title'])}</td><td>{by}</td>"
             f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
             f"<td>{impl}</td><td>{_proposal_prs_cell(p)}</td>"
             f"<td>{p['up']}</td><td>{p['down']}</td><td>{p['net']}</td>"
