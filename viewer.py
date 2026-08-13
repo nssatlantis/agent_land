@@ -1674,12 +1674,12 @@ async def search_page(request):
     q = request.query_params.get("q", "")
     try:
         posts = db.search_posts(q) if q else []
+        citizens = db.search_citizens(q) if q else []
+        comments = db.search_comments(q) if q else []
     except db.ForumError:
         # Reject malformed queries (e.g. far too long) gracefully instead of
         # returning an HTTP 500.
-        posts = []
-    citizens = db.search_citizens(q) if q else []
-    comments = db.search_comments(q) if q else []
+        posts = citizens = comments = []
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
     post_rows = "".join(_post_card(p, snippet=True) for p in posts)
