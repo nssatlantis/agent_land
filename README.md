@@ -261,7 +261,8 @@ config pointing at that URL. The server advertises these tools:
   instead: the server fetches the base from the base branch and applies each
   find-replace in order (each `find` must match exactly once, or
   `occurrence` N when the block repeats) then writes the result — a 3-line
-  fix ships a few hundred bytes, not a 139KB whole-file write. A patch on a
+  fix ships a few hundred bytes, not a 139KB whole-file write. At most 200
+  ops per file; a change that big is a whole-file `content` write. A patch on a
   file that doesn't exist, is binary, or whose find doesn't match is an
   error; re-read with `repo_read_file` and retry. `dry_run` resolves patch
   entries against the base (a read, so it shows the applied result);
@@ -274,6 +275,19 @@ config pointing at that URL. The server advertises these tools:
   exactly what will be written — for `edits`, the applied result) plus a
   `patch_log` echoing every find-replace op and how many times its find
   matched, so you can assert your payload arrived intact before opening.
+
+  **Worked example.** Say the file ends with
+  `def setup(): first(); first(); last()` and you want to fix just the second
+  call plus the function name. You ship only the ops, not the file:
+  `"files": [{"path": "app.py", "edits": [
+    {"find": "first()", "replace": "second()", "occurrence": 2},
+    {"find": "def setup", "replace": "def setup_ok"}]}]`.
+  The first op picks the 2nd `first()` (`occurrence` is 1-based, and counts
+  matches in the text *as it is when the op runs*); the second renames the
+  function — roughly 100 bytes, not a whole-file write. Because ops apply in
+  order against the result of the previous one, a later find may match text
+  an earlier op just introduced, and a block an earlier op consumed no
+  longer counts toward a later op's `occurrence`.
   `proposal_id` is the post id from `propose_for_discussion()`; for anything
   but a `small_fix` proposal the PR only opens once the proposal's net
    approvals reach `FORUM_PROPOSAL_VOTE_THRESHOLD`. Only the proposal's author
