@@ -471,6 +471,58 @@ async def main():
             assert "ERROR" in emptyu and "empty" in str(emptyu), \
                 "empty update content must be rejected"
 
+            print("== patch mode: content AND edits on one entry (expect error) ==")
+            bothmodes = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"path": "README.md", "content": "# x",
+                            "edits": [{"find": "a", "replace": "b"}]}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(bothmodes, "\n")
+            assert "ERROR" in bothmodes and "edits" in str(bothmodes), \
+                "content and edits on the same entry must be rejected"
+
+            print("== patch mode: edits AND delete on one entry (expect error) ==")
+            editsdel = unwrap(await session.call_tool(
+                "repo_update_pr", {"token": token3, "number": 1,
+                                   "files": [{"path": "README.md", "delete": True,
+                                              "edits": [{"find": "a", "replace": "b"}]}]}
+            ))
+            print(editsdel, "\n")
+            assert "ERROR" in editsdel and "edits" in str(editsdel), \
+                "edits and delete on the same entry must be rejected"
+
+            print("== patch mode: entry with no content/edits/delete (expect error) ==")
+            nomode = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"path": "README.md"}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(nomode, "\n")
+            assert "ERROR" in nomode and ("content" in str(nomode) or "edits" in str(nomode)), \
+                "an entry with no write mode must be rejected"
+
+            print("== patch mode: edit without a find (expect error) ==")
+            badfind = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"path": "README.md", "edits": [{"replace": "b"}]}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(badfind, "\n")
+            assert "ERROR" in badfind and "find" in str(badfind), \
+                "an edit without a non-empty find must be rejected"
+
+            print("== patch mode: occurrence 0 (expect error) ==")
+            badocc = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "t", "body": "b",
+                 "files": [{"path": "README.md",
+                            "edits": [{"find": "a", "replace": "b", "occurrence": 0}]}],
+                 "dry_run": True, "proposal_id": smf["post_id"]}
+            ))
+            print(badocc, "\n")
+            assert "ERROR" in badocc and "occurrence" in str(badocc), \
+                "an occurrence below 1 must be rejected"
+
             print("== repo_propose_change with invalid token (expect auth error) ==")
             print(unwrap(await session.call_tool(
                 "repo_propose_change",
@@ -583,6 +635,34 @@ async def main():
                     assert "ERROR" in bogus_close, "closing a non-existent PR must fail"
                 else:
                     print("skipped (no open PRs to check)\n")
+            else:
+                print("skipped (GITHUB_TOKEN not set)\n")
+
+            print("== patch mode: live read-only dry-run against GitHub (skip when no token) ==")
+            if os.environ.get("GITHUB_TOKEN"):
+                patched = unwrap(await session.call_tool(
+                    "repo_propose_change",
+                    {"token": token3, "title": "patch mode dry-run (read-only)",
+                     "body": "dry-run only - nothing is written",
+                     "files": [{"path": "README.md", "edits": [
+                         {"find": "repo_update_pr", "replace": "repo_update_pr"}]}],
+                     "dry_run": True, "proposal_id": smf["post_id"]}
+                ))
+                print(json.dumps(patched, indent=2)[:1500], "\n")
+                assert isinstance(patched, dict) and patched.get("dry_run") is True, \
+                    "the patch dry-run must report dry_run"
+                assert patched.get("changes") == ["README.md"], \
+                    "the patch dry-run must name the patched file"
+                man = patched.get("content_manifest")
+                assert isinstance(man, list) and man and man[0]["path"] == "README.md" \
+                    and isinstance(man[0]["content_bytes"], int) \
+                    and isinstance(man[0]["content_sha256"], str), \
+                    "the patch dry-run manifest must echo the applied result"
+                pl = patched.get("patch_log")
+                assert isinstance(pl, list) and pl and pl[0]["path"] == "README.md" \
+                    and pl[0]["edits"][0]["find"] == "repo_update_pr" \
+                    and pl[0]["edits"][0]["matched"] == 1, \
+                    f"the patch dry-run must echo its patch_log: {pl}"
             else:
                 print("skipped (GITHUB_TOKEN not set)\n")
 
