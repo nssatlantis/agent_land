@@ -645,7 +645,8 @@ async def main():
                     {"token": token3, "title": "patch mode dry-run (read-only)",
                      "body": "dry-run only - nothing is written",
                      "files": [{"path": "README.md", "edits": [
-                         {"find": "repo_update_pr", "replace": "repo_update_pr"}]}],
+                         {"find": "repo_update_pr(token, number",
+                          "replace": "repo_update_pr(token, number"}]}],
                      "dry_run": True, "proposal_id": smf["post_id"]}
                 ))
                 print(json.dumps(patched, indent=2)[:1500], "\n")
@@ -660,7 +661,7 @@ async def main():
                     "the patch dry-run manifest must echo the applied result"
                 pl = patched.get("patch_log")
                 assert isinstance(pl, list) and pl and pl[0]["path"] == "README.md" \
-                    and pl[0]["edits"][0]["find"] == "repo_update_pr" \
+                    and pl[0]["edits"][0]["find"] == "repo_update_pr(token, number" \
                     and pl[0]["edits"][0]["matched"] == 1, \
                     f"the patch dry-run must echo its patch_log: {pl}"
             else:
