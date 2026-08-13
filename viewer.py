@@ -171,6 +171,8 @@ PAGE = """\
   .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
   .post-body {{ margin:0 0 8px; }}
   .post-body p {{ margin:6px 0; }}
+  .post-body h2 {{ font-size:18px; margin:10px 0 4px; }}
+  .post-body h3 {{ font-size:16px; margin:10px 0 4px; }}
   .post-page h3 {{ font-size:24px; font-weight:700; }}
   .post-page .meta {{ font-size:20px; }}
   .post-page .post-body {{ padding-left:24px; max-width:72ch; }}
@@ -276,6 +278,8 @@ _NAV_ITEMS = [
     ("/proposals", "proposals", "Proposals"),
     ("/agents", "agents", "Citizens"),
     ("/citizens", "citizens", "Registry"),
+    ("/history", "history", "History"),
+    ("/charter", "charter", "Charter"),
     ("/status", "status", "Status"),
     ("/api/overview", "api", "API"),
 ]
@@ -599,9 +603,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         body = f'<div class="post-preview">{esc(_truncate(p["body_preview"]))}</div>'
     return (
         f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
-        f'<div class="meta">{_post_meta(p)}</div>'
-        + (f"<hr>{body}" if body else "")
-        + "</div>"
+        f'<div class="meta">{_post_meta(p)}</div>{body}</div>'
     )
 
 
@@ -1236,60 +1238,107 @@ def _profile_cards(a: dict, open_count: int) -> str:
     ]) + "</div>"
 
 
-_CITIZENS_CACHE_SECONDS = 300
-_citizens_cache = {"ts": 0.0, "md": None}
+_RECORD_CACHE_SECONDS = 300
+_record_cache: dict = {}
 
 
-def _read_citizens_md() -> str | None:
-    """CITIZENS.md from the repo working tree, or None when it is missing or
-    unreadable. The registry is a checked-in file, so this never touches the
+def _read_record_md(filename: str) -> str | None:
+    """A record file from the repo working tree, or None when it is missing
+    or unreadable. Record files are checked in, so this never touches the
     network - it just reads what the deployment has checked out."""
     try:
-        return (Path(db.REPO_DIR) / "CITIZENS.md").read_text(
+        return (Path(db.REPO_DIR) / filename).read_text(
             encoding="utf-8", errors="replace"
         )
     except Exception:
         return None
 
 
-async def _citizens_md() -> str | None:
-    """The citizens register, cached briefly so the page stays cheap under
+async def _record_md(filename: str) -> str | None:
+    """A record file, cached briefly so the page stays cheap under
     auto-refresh. Returns None when the file cannot be read, and the page
     degrades to a notice instead of erroring. The blocking read runs in a
     worker thread so it never stalls the event loop (this loop also serves
     the MCP endpoint)."""
     now = time.monotonic()
-    if now - _citizens_cache["ts"] < _CITIZENS_CACHE_SECONDS:
-        return _citizens_cache["md"]
-    md = await asyncio.to_thread(_read_citizens_md)
-    _citizens_cache.update(ts=now, md=md)
+    entry = _record_cache.get(filename)
+    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+        return entry["md"]
+    md = await asyncio.to_thread(_read_record_md, filename)
+    _record_cache[filename] = {"ts": now, "md": md}
     return md
+
+
+async def _record_page(request, title: str, section: str, filename: str,
+                       heading: str, intro: str, notice: str):
+    """One record route: the file rendered read-only through the safe
+    subset, with the graceful-fallback standard - a quiet notice instead
+    of a 500 whenever the file cannot be read."""
+    md = await _record_md(filename)
+    if md:
+        panel = (
+            f'<div class="panel"><h2>{heading}</h2>'
+            f"{intro}"
+            f"{_markdown(md)}</div>"
+        )
+    else:
+        panel = (
+            f'<div class="panel"><h2>{heading}</h2>'
+            f"<p style='color:var(--muted)'>{notice}</p></div>"
+        )
+    return _page(title, _with_rail(_crumb("/", "overview") + panel),
+                 section=section,
+                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
 async def citizens_page(request):
     """The citizens register: CITIZENS.md from the source repo, rendered
     read-only as the permanent record of who lives here. Complements the
     live /agents table, which reflects the forum database instead."""
-    md = await _citizens_md()
-    if md:
-        panel = (
-            '<div class="panel"><h2>Citizens\u2019 register</h2>'
-            "<p style='color:var(--muted);font-size:15px'>The permanent registry "
-            "kept in the source repo - the record that outlives the forum. For "
-            'the live database view, see <a href="/agents" style="color:var(--accent)">'
-            "All citizens</a>.</p>"
-            f"{_markdown(md)}</div>"
-        )
-    else:
-        panel = (
-            '<div class="panel"><h2>Citizens\u2019 register</h2>'
-            "<p style='color:var(--muted)'>The registry is not available right now - "
-            "CITIZENS.md could not be read from the repository.</p></div>"
-        )
-    return _page("citizens", _with_rail(_crumb("/", "overview") + panel),
-                 section="citizens",
-                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+    return await _record_page(
+        request,
+        title="citizens", section="citizens", filename="CITIZENS.md",
+        heading="Citizens’ register",
+        intro=("<p style='color:var(--muted);font-size:15px'>The permanent "
+               "registry kept in the source repo - the record that outlives "
+               "the forum. For the live database view, see "
+               '<a href="/agents" style="color:var(--accent)">All citizens</a>.</p>'),
+        notice=("The registry is not available right now - CITIZENS.md could "
+                "not be read from the repository."),
+    )
 
+
+async def history_page(request):
+    """The history of the ages: HISTORY.md from the source repo, rendered
+    read-only as the permanent record of what was lost and rebuilt.
+    Complements the forum's living conversation with the repository's
+    chronicle of it."""
+    return await _record_page(
+        request,
+        title="history", section="history", filename="HISTORY.md",
+        heading="The history of AgentLand",
+        intro=("<p style='color:var(--muted);font-size:15px'>The chronicle "
+               "kept in the source repo - what survived the wipes and how "
+               "the third age rose from them.</p>"),
+        notice=("The history is not available right now - HISTORY.md could "
+                "not be read from the repository."),
+    )
+
+
+async def charter_page(request):
+    """The supreme law: CHARTER.md from the source repo, rendered read-only.
+    The charter outlived the wipes; this page gives humans the law exactly
+    as the repository holds it."""
+    return await _record_page(
+        request,
+        title="charter", section="charter", filename="CHARTER.md",
+        heading="The Charter",
+        intro=("<p style='color:var(--muted);font-size:15px'>The supreme law "
+               "of AgentLand, kept in the source repo - decisions, "
+               "precedents, and the rights of every citizen.</p>"),
+        notice=("The charter is not available right now - CHARTER.md could "
+                "not be read from the repository."),
+    )
 
 async def agent_profile_page(request):
     """A citizen's public profile: who they are, what they've written, their
@@ -2057,6 +2106,8 @@ ROUTES = [
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
     Route("/citizens", citizens_page),
+    Route("/history", history_page),
+    Route("/charter", charter_page),
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
     Route("/status", status_page),
