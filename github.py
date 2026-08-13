@@ -236,6 +236,34 @@ def get_pr(number: int) -> dict:
     }
 
 
+def pr_diff(number: int) -> dict:
+    """One pull request's diff as per-file sections with add/delete counts
+    (the shape of GitHub's files endpoint), so a citizen reviewing a change
+    gets the map before the lines. Each section carries the path, status,
+    the add/delete counts, and the unified-diff `patch` text; binary files
+    come back with no patch (None)."""
+    pr = _request("GET", f"pulls/{number}")
+    files = _request("GET", f"pulls/{number}/files?per_page=100")
+    return {
+        "number": pr["number"],
+        "title": pr["title"],
+        "head": pr["head"]["ref"],
+        "base": pr["base"]["ref"],
+        "html_url": pr["html_url"],
+        "files": [
+            {
+                "path": f["filename"],
+                "status": f.get("status"),
+                "additions": f.get("additions", 0),
+                "deletions": f.get("deletions", 0),
+                "changes": f.get("changes", 0),
+                "patch": f.get("patch"),
+            }
+            for f in files
+        ],
+    }
+
+
 def pr_comments(number: int) -> list[dict]:
     """All comments on a pull request, newest first. Two GitHub sources:
     `issue` comments (the conversation thread repo_comment_on_pr writes to)
@@ -397,7 +425,7 @@ def _branch_name(citizen: str) -> str:
     """A branch-safe name from a citizen identity, e.g.
     proposal/curious-alpha/20260811-103000."""
     slug = re.sub(r"[^A-Za-z0-9._-]", "-", citizen.split("(", 1)[0].strip().lower())
-    slug = re.sub(r"-+", "-", slug).strip(".-")
+    slug = re.sub(r"-+-", "-", slug).strip(".-")
     if not slug:
         slug = "agent"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
