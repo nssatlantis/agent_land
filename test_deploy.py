@@ -11,7 +11,9 @@ other live database.
 Scenarios:
 - fresh install (no db, no backups) -> boot check passes (exit 0)
 - healthy db with a backup -> boot check passes
-- wiped db (deleted, or replaced by an empty file) -> boot check fires (1)
+- wiped db (deleted, or replaced by an empty file) -> boot check fires (1);
+  the empty-file case runs the full update.sh sequence (pre-start backup then
+  guard) and asserts the guard names the content backup, never the empty newest
 - escape hatch AGENTLAND_ALLOW_EMPTY_DB=1 -> boot check passes
 - backup-db.py on a missing db -> nonzero (update.sh's WARNING path)
 - restore refuses to overwrite a non-empty live db without --force
@@ -21,7 +23,9 @@ Scenarios:
 - restore rejects a non-snapshot / path --file name
 - --list shows the backups with counts
 - a db path inside the repo is refused and nothing is created
-- update.sh wires the guard and self-syncs the new scripts
+- update.sh installs the scripts (self-sync) BEFORE the guard runs, and its
+  hint and the guard's message restore a named backup via --file, never the
+  newest snapshot with --force
 """
 
 import os
@@ -63,16 +67,16 @@ def seed(db_path, names, posts=0):
     `names` is the full citizen list (each seed call must use fresh names)."""
     code = (
         "import os, sys\n"
-        f"os.environ['FORUM_DB_PATH'] = {str(db_path)!r}\n"
+        "os.environ['FORUM_DB_PATH'] = {db_path!r}\n"
         "os.environ['FORUM_POST_COOLDOWN_SECONDS'] = '0'\n"
-        f"sys.path.insert(0, {str(REPO)!r})\n"
+        "sys.path.insert(0, {repo!r})\n"
         "import db\n"
         "db.init_db()\n"
         "tokens = [db.register_agent(n, 'test-model')['token'] for n in {names!r}]\n"
         "for i in range({posts}):\n"
         "    db.create_post(tokens[0], 'seed post ' + str(i), 'seed body ' + str(i))\n"
         "print('SEEDED', len(db.list_agents()))\n"
-    ).format(names=names, posts=posts)
+    ).format(db_path=str(db_path), repo=str(REPO), names=names, posts=posts)
     _python(code)
 
 
@@ -100,6 +104,13 @@ def count(db_path, table):
 
 def backups_of(td):
     return sorted((pathlib.Path(td) / "backups").glob("forum.*.db"))
+
+
+def _find(lines, needle):
+    for i, line in enumerate(lines):
+        if needle in line:
+            return i
+    raise AssertionError(f"no line in update.sh contains {needle!r}")
 
 
 def wipe(db_path):
@@ -143,16 +154,32 @@ def main():
     print("== wiped db -> guard fires, names the backup ==")
 
     # == wiped but the live file exists as an empty 0-byte file ==
+    # The FULL update.sh sequence: the pre-start backup runs BEFORE the guard,
+    # so a post-wipe empty snapshot becomes the newest backup. The guard must
+    # name the content-bearing backup (A) via --file - never the empty newest
+    # (restoring that would leave the forum wiped, and a bare `restore-db.py`
+    # would pick it as the default newest).
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
         seed(db_path, ["alpha", "beta"], posts=1)
         rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, err
+        content = backups_of(td)[-1]
         wipe(db_path)
         db_path.write_bytes(b"")
-        rc, _, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, "the pre-start backup must succeed even on an empty file"
+        empty = backups_of(td)[-1]
+        assert empty != content, "the post-wipe snapshot is a distinct file"
+        rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 1, (rc, err)
-    print("== wiped with an empty file -> guard fires ==")
+        assert content.name in err, f"must name the content backup, got: {err}"
+        assert empty.name not in err, f"must not name the empty post-wipe snapshot: {err}"
+        assert f"--file {content.name}" in err, \
+            f"hint must restore the content backup by name, got: {err}"
+        assert "restore-db.py" in err, f"hint must reference restore-db.py, got: {err}"
+        assert "--force" not in err, f"an empty live DB needs no --force: {err}"
+    print("== wiped with an empty file -> guard names the content backup ==")
 
     # == escape hatch: a deliberate new age ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
@@ -291,12 +318,25 @@ def main():
         assert sorted(count(b, "agents") for b in backups) == [2, 3], "both snapshots survive intact"
     print("== same-second backups don't overwrite each other ==")
 
-    # == update.sh wires the guard and self-syncs the new scripts ==
+    # == update.sh installs the scripts before the guard runs and hints with --file ==
+    # Regression: the guard must come AFTER the self-sync loop (the data dir's
+    # old update.sh self-syncs only three scripts, so on the transition deploy
+    # the new check-db-boot.py / restore-db.py would otherwise be missing when
+    # the guard's first run executes). And the hint must not tell the operator
+    # to restore the NEWEST snapshot with --force (that is the empty post-wipe
+    # backup in the empty-file wipe case).
     text = (REPO / "deploy" / "update.sh").read_text(encoding="utf-8")
-    assert "check-db-boot.py" in text, "update.sh must run the boot guard"
-    assert "restore-db.py" in text, "update.sh must document the restore flow"
-    assert "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py; do" in text, \
-        "update.sh must self-sync the new scripts"
+    lines = text.splitlines()
+    sync = _find(lines, "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py")
+    guard = _find(lines, 'check-db-boot.py"; then')
+    assert sync < guard, f"scripts must be installed (line {sync}) before the guard runs (line {guard})"
+    assert "restore-db.py --list" in text, "update.sh must document --list"
+    assert "--force" not in text, "update.sh must not suggest restoring the newest snapshot with --force"
+    assert "WIPE-CHECK" in text, "update.sh must point at the guard's own restore command"
+    boot = (REPO / "deploy" / "check-db-boot.py").read_text(encoding="utf-8")
+    assert "restore-db.py" in boot, "the guard must reference the restore script"
+    cmd_line = next(l for l in boot.splitlines() if "--file" in l and "backup.name" in l)
+    assert "--force" not in cmd_line, f"the guard's restore command must not use --force: {cmd_line!r}"
     print("== update.sh wiring ==")
 
     print("test_deploy: all assertions passed")
