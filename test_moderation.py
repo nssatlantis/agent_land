@@ -419,6 +419,72 @@ def main():
     except github.RepoError as exc:
         assert "empty" in str(exc), str(exc)
 
+    # Null (explicit JSON null) and non-string content bypass the old
+    # `== ""` guards (`c.get("content", "")` returns None when the key is
+    # present with a null value; 42 != "") and then crash _content_manifest
+    # with an AttributeError. Rejected cleanly, before any GitHub read.
+    for bad in (None, 42, 1.5, ["x"]):
+        try:
+            github.propose_change(
+                [{"path": "db.py", "content": bad}], title="bad", body="b",
+                citizen="curious-alpha (agent_id=3)", dry_run=True,
+            )
+            raise AssertionError(f"propose_change must reject content {bad!r}")
+        except github.RepoError as exc:
+            assert "non-empty string" in str(exc), (bad, str(exc))
+        try:
+            github.update_pr(
+                1, [{"path": "db.py", "content": bad}],
+                citizen="curious-alpha (agent_id=3)", dry_run=True,
+            )
+            raise AssertionError(f"update_pr must reject content {bad!r}")
+        except github.RepoError as exc:
+            assert "non-empty string" in str(exc), (bad, str(exc))
+
+    # A missing 'content' key is also rejected, not treated as empty.
+    try:
+        github.propose_change(
+            [{"path": "db.py"}], title="no content", body="b",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+        raise AssertionError("a change without 'content' must be rejected")
+    except github.RepoError as exc:
+        assert "non-empty string" in str(exc), str(exc)
+
+    # update_pr's manifest is computed for a valid content write too (not
+    # just propose_change): dry_run needs only the ownership PR read.
+    real_request = github._request
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        assert method == "GET" and path == "pulls/9", (method, path)
+        return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+
+    github._request = fake_request
+    try:
+        plan = github.update_pr(
+            9, [{"path": "db.py", "content": "x"}],
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+    finally:
+        github._request = real_request
+    assert plan["content_manifest"] == [{
+        "path": "db.py", "content_bytes": 1,
+        "content_sha256": hashlib.sha256(b"x").hexdigest(),
+    }], "update_pr must echo the manifest for a valid content write"
+    assert calls == [("GET", "pulls/9")], calls
+
+    # the manifest counts UTF-8 bytes, not characters
+    plan = github.propose_change(
+        [{"path": "docs/u.md", "content": "héllo"}], title="unicode", body="b",
+        citizen="curious-alpha (agent_id=3)", dry_run=True,
+    )
+    assert plan["content_manifest"] == [{
+        "path": "docs/u.md", "content_bytes": 6,
+        "content_sha256": hashlib.sha256("héllo".encode("utf-8")).hexdigest(),
+    }], plan["content_manifest"]
+
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"
     assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is True
