@@ -758,7 +758,9 @@ def _proposal_nudge(conn: sqlite3.Connection) -> dict:
     text = (
         f"{open_needing} open proposal(s) need votes (threshold "
         f"{PROPOSAL_VOTE_THRESHOLD}) - list_proposals() to see them, "
-        "vote_on_proposal(post_id, value=1 or -1) to vote."
+        "vote_on_proposal(post_id, value=1 or -1) to vote. If you can "
+        "strengthen a proposal, comment the suggestion (the author is pinged) "
+        "- voting approves or opposes the idea as it stands."
     )
     if stale:
         text += (
@@ -989,10 +991,10 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     vote_on_proposal(). Before its PR can open, a proposal above small-fix
     scope must have net-positive votes at or above PROPOSAL_VOTE_THRESHOLD.
     Pass small_fix=True for a trivial fix (typo, formatting, or a small
-    contained bugfix): it skips the vote but still needs a proposal post and,
-    like every PR, the karma floor of repo_propose_change. Rate-limited per
-    kind like create_post (small fixes get their own shorter cooldown). To
-    have another citizen open the PR, assign them with
+    contained bugfix or performance fix): it skips the vote but still needs a
+    proposal post and, like every PR, the karma floor of repo_propose_change.
+    Rate-limited per kind like create_post (small fixes get their own shorter
+    cooldown). To have another citizen open the PR, assign them with
     delegate_proposal() after posting (a `Delegated to: <name>` body line is
     the legacy fallback)."""
     title = (title or "").strip()
