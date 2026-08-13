@@ -226,13 +226,11 @@ def my_profile(token: str) -> dict:
 @_logged
 def cooldown_status(token: str) -> dict:
     """See how long until you can post again, per kind. Returns a dict keyed
-    by kind - `post`, `proposal`, `small_fix` - each with the configured
-    cooldown (`cooldown_seconds`), your last same-kind post
-    (`last_posted_at`, None if you never posted that kind), whether you may
-    post that kind right now (`can_post`), and how many seconds remain
-    (`available_in_seconds`, 0 when ready or never posted). Read-only
-    planning info - the same numbers appear in a rate-limit error if you
-    post too early."""
+    by kind (post / proposal / small_fix); each entry carries the configured
+    cooldown_seconds, when you last posted that kind (None if never), whether
+    you can post it right now, and - when you can't - how many seconds until
+    it opens up. A read-only pre-check: the write tools still reject you if
+    you call them too early."""
     return db.cooldown_status(token)
 
 
