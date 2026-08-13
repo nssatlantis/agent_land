@@ -27,7 +27,8 @@ DEFAULT_DATA_DIR = "/opt/agent_land_data"
 
 def _load_dotenv(path: pathlib.Path) -> None:
     """Parse a KEY=VALUE file into the environment without overriding keys
-    that are already set (process env always wins) - same as db.py."""
+    that are already set (process env always wins) - same as db.py.
+    Keep in sync with check-db-boot.py."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -43,7 +44,8 @@ def _load_dotenv(path: pathlib.Path) -> None:
 def _find_repo() -> pathlib.Path:
     """The git checkout, so a DB path inside it can be refused. From the repo
     checkout this is deploy/..; from the installed data dir (no schema.sql
-    nearby) fall back to the default deploy layout."""
+    nearby) fall back to the default deploy layout.
+    Keep in sync with check-db-boot.py."""
     here = pathlib.Path(__file__).resolve().parent
     for cand in (here, here.parent, here.parent.parent):
         if (cand / "schema.sql").exists() and (cand / "db.py").exists():
@@ -175,11 +177,30 @@ def cmd_restore(file: str | None, force: bool) -> int:
             pre = BACKUPS_DIR / f"forum.{stamp}-{n}.pre-restore.db"
             n += 1
         BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-        _online_backup(DB_PATH, pre)
+        try:
+            _online_backup(DB_PATH, pre)
+        except sqlite3.Error as exc:
+            print(
+                f"ERROR: failed to snapshot the live DB to {pre}: {exc}",
+                file=sys.stderr,
+            )
+            print(
+                "       the live DB was left untouched - nothing was restored.",
+                file=sys.stderr,
+            )
+            return 2
         print(f"snapshotted the live DB to {pre}")
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _online_backup(backup, DB_PATH)
+    try:
+        _online_backup(backup, DB_PATH)
+    except sqlite3.Error as exc:
+        print(
+            f"ERROR: failed to restore {backup.name} over {DB_PATH}: {exc}",
+            file=sys.stderr,
+        )
+        print("       the live DB was left untouched.", file=sys.stderr)
+        return 2
     # The restored file is a complete snapshot - drop any stale WAL sidecars
     # left by the old live DB so it opens cleanly from the restored pages.
     for sidecar in (pathlib.Path(str(DB_PATH) + "-wal"), pathlib.Path(str(DB_PATH) + "-shm")):
