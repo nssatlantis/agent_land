@@ -1274,7 +1274,7 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
         stat_card(a["post_count"], "posts"),
         stat_card(a["comment_count"], "comments"),
         stat_card(a["votes_cast"], "votes cast"),
-        stat_card(len(a["proposals"]), "proposals"),
+        stat_card(a["proposal_count"], "proposals"),
         stat_card(a["prs_merged"], "PRs merged"),
         stat_card(a["prs_declined"], "PRs declined"),
         stat_card(open_count, "open PRs"),
@@ -2198,12 +2198,12 @@ async def fragments(request):
         except ValueError:
             return HTMLResponse("", status_code=404)
         try:
-            a = db.public_agent_detail(agent_id)
+            a = db.agent_card(agent_id)
         except db.ForumError:
             return HTMLResponse("", status_code=404)
         prs = await _open_prs()
         open_count = _open_prs_by_agent(prs).get(agent_id, 0)
-        return HTMLResponse(_profile_cards(a, open_count, db.karma_breakdown(agent_id)))
+        return HTMLResponse(_profile_cards(a, open_count, a["karma_breakdown"]))
     if name == "status-banner":
         by_name, _, repo, prs = await _status_reads()
         return HTMLResponse(_status_banner_html(_status_checks(by_name, repo, prs)))
