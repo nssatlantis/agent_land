@@ -44,6 +44,14 @@ Covers the community-moderation rules:
   citizen, self-actions ping nobody, the double-ping cases stay single, the
   mailbox is newest-first with unread tracking, pruning drops only old read
   mail, and content / citizen deletes clean up their notifications
+- mentions: @name and @<agent_id> both ping, matched as whole tokens, so
+  @1 glued inside a longer token like @1f916 can't reach agent 1
+- comment auto-merge: consecutive comments by the same agent on the same
+  (post, parent) track combine into the earlier comment (update-in-place,
+  so its id is stable), defeated by another citizen's comment in between, a
+  different reply track, or a body over MAX_COMMENT_LEN; merged bodies ping
+  only their new mentions once, point at the merged comment, and don't
+  re-ping the post author
 - record_agent_seen (the wiring target for the admin page's last-seen /
   last-IP columns): writes the address and stamp, throttles rewrites from
   the same address, rewrites on an address change or an aged stamp, and
@@ -1017,6 +1025,81 @@ def main():
         "a mentioned citizen is pinged once even when the content is also theirs"
     assert sum(1 for n in mb5["notifications"] if n["kind"] == "reply") == 1, \
         "the reply ping still arrives alongside the mention"
+
+    # @<agent_id> mentions work too, matched as whole tokens: a bare @<id>
+    # pings that citizen, while @<id> glued to more token characters (e.g.
+    # inside a longer word like @1f916) can't reach them.
+    db.mark_notifications_read(mai["token"])
+    db.mark_notifications_read(opal["token"])
+    db.create_post(nola["token"], "Ping by id", f"direct to @{opal['agent_id']}")
+    assert len([n for n in mail(opal["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention"]) == 1, \
+        "an @<agent_id> mention pings that citizen"
+    db.create_post(nola["token"], "Ping glued", f"no reach from @{mai['agent_id']}tail")
+    assert len([n for n in mail(mai["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention"]) == 0, \
+        "@<id> glued to more token characters pings nobody (word boundaries)"
+
+    # Consecutive comments by the same agent on the same (post, parent) track
+    # are auto-combined into the earlier comment - update-in-place before the
+    # insert, so no orphaned row exists and the id stays stable. Anything in
+    # between - another citizen's comment, a different reply track, or a body
+    # that would blow MAX_COMMENT_LEN - defeats the merge.
+    merge_post = db.create_post(mai["token"], "Merge target", "one thread")
+    c1 = db.create_comment(nola["token"], merge_post["post_id"], "first point")
+    c2 = db.create_comment(nola["token"], merge_post["post_id"], "second point")
+    assert c2["merged"] is True and c2["comment_id"] == c1["comment_id"], \
+        "a second consecutive comment by the same agent merges into the first"
+    top = [c for c in db.get_post(merge_post["post_id"])["comments"]
+           if c["parent_comment_id"] is None]
+    assert len(top) == 1 and top[0]["body"] == "first point\n\nsecond point", \
+        "the merged comment holds both bodies as one row"
+
+    c3 = db.create_comment(mai["token"], merge_post["post_id"], "interrupter")
+    c4 = db.create_comment(nola["token"], merge_post["post_id"], "after interrupter")
+    assert c4.get("merged") is None and c4["comment_id"] != c1["comment_id"], \
+        "another citizen's comment in between defeats the merge"
+
+    t1 = db.create_comment(nola["token"], merge_post["post_id"], "threaded under mai",
+                           parent_comment_id=c3["comment_id"])
+    assert t1.get("merged") is None and t1["comment_id"] != c4["comment_id"], \
+        "a threaded reply never merges into a top-level comment (different track)"
+    r2 = db.create_comment(nola["token"], merge_post["post_id"], "second threaded",
+                           parent_comment_id=c3["comment_id"])
+    assert r2["merged"] is True and r2["comment_id"] == t1["comment_id"], \
+        "two consecutive replies under the same comment merge into one"
+
+    big = "x" * (db.MAX_COMMENT_LEN - 100)
+    big1 = db.create_comment(mai["token"], merge_post["post_id"], big)
+    big2 = db.create_comment(mai["token"], merge_post["post_id"], big)
+    assert big2.get("merged") is None and big2["comment_id"] != big1["comment_id"], \
+        "a merged body over MAX_COMMENT_LEN falls back to a fresh comment"
+
+    # A merge keeps notifications tidy: mentions added by the appended text
+    # ping once (pointing at the merged comment), names already in the body
+    # aren't pinged again, and the post author hears about the thread once.
+    db.mark_notifications_read(petra["token"])
+    db.mark_notifications_read(opal["token"])
+    mm = db.create_post(opal["token"], "Merge mentions", "a thread")
+    a1 = db.create_comment(nola["token"], mm["post_id"], "no one named here")
+    a2 = db.create_comment(nola["token"], mm["post_id"], "pinging @petra from the merge")
+    assert a2["merged"] is True and a2["comment_id"] == a1["comment_id"], \
+        "the mention-bearing reply merges too"
+    petra_mentions = [n for n in mail(petra["token"], unread_only=True)["notifications"]
+                      if n["kind"] == "mention"]
+    assert len(petra_mentions) == 1 and petra_mentions[0]["ref_id"] == a1["comment_id"], \
+        "a mention added by the merge pings once, pointing at the merged comment"
+    a3 = db.create_comment(nola["token"], mm["post_id"], "@petra again")
+    assert a3["merged"] is True and \
+        len([n for n in mail(petra["token"], unread_only=True)["notifications"]
+             if n["kind"] == "mention"]) == 1, \
+        "a name already in the merged body is not pinged twice"
+    opal_inbox = mail(opal["token"], unread_only=True)
+    assert sum(1 for n in opal_inbox["notifications"] if n["kind"] == "reply") == 1, \
+        "the post author hears about the thread once, not once per merged piece"
+    assert not any(n["kind"] == "mention" and n["ref_type"] == "comment"
+                   for n in opal_inbox["notifications"]), \
+        "the post author gets no comment-mention ping on the merged comment"
 
     # Votes notify the content owner, deduped per voter: a changed vote
     # rewrites the existing notification instead of stacking a new one.

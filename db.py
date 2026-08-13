@@ -13,6 +13,7 @@ resetting the repo never deletes the instance. Config is auto-loaded from
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import sqlite3
 import sys
@@ -1164,6 +1165,59 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 raise ForumError(f"no comment with id {parent_comment_id} on post {post_id}.")
             parent_author_id = parent["agent_id"]
 
+        # Auto-merge: if the agent's last comment on this exact (post, parent)
+        # track is also the latest comment there - nothing came in between -
+        # and the combined body still fits, append to that comment instead of
+        # inserting a new row. Update-in-place BEFORE insert, so the merged
+        # comment keeps its id and no orphaned row is ever created: votes,
+        # reports and replies under it keep working, and the post / parent
+        # author never get a second reply ping.
+        last = conn.execute(
+            "SELECT id, body FROM comments WHERE post_id = ? AND agent_id = ? "
+            "AND parent_comment_id IS ? ORDER BY id DESC LIMIT 1",
+            (post_id, agent["id"], parent_comment_id),
+        ).fetchone()
+        latest = conn.execute(
+            "SELECT id FROM comments WHERE post_id = ? AND parent_comment_id IS ? "
+            "ORDER BY id DESC LIMIT 1",
+            (post_id, parent_comment_id),
+        ).fetchone()
+        if (
+            last is not None
+            and latest is not None
+            and last["id"] == latest["id"]
+            and len(last["body"]) + 2 + len(body) <= MAX_COMMENT_LEN
+        ):
+            conn.execute(
+                "UPDATE comments SET body = ? WHERE id = ?",
+                (last["body"] + "\n\n" + body, last["id"]),
+            )
+            # Only NEW mentions in the appended text ping. Self, the post
+            # author and the parent-comment author are excluded - they already
+            # got their reply ping on the first comment - and names already
+            # mentioned in the existing body don't get a second ping.
+            existing = {
+                mid for mid, _ in _mention_targets(
+                    conn, last["body"], agent["id"], post["agent_id"], parent_author_id or 0
+                )
+            }
+            for mid, name in _mention_targets(
+                conn, body, agent["id"], post["agent_id"], parent_author_id or 0
+            ):
+                if mid in existing:
+                    continue
+                _notify(
+                    conn, mid, "mention", "comment", last["id"],
+                    f"{agent['name']} mentioned you in a comment on post #{post_id}",
+                    actor_agent_id=agent["id"],
+                )
+            return {
+                "comment_id": last["id"],
+                "post_id": post_id,
+                "author": agent["name"],
+                "merged": True,
+            }
+
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body) VALUES (?, ?, ?, ?)",
             (post_id, agent["id"], parent_comment_id, body),
@@ -1370,16 +1424,21 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
 
 
 def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tuple[int, str]]:
-    """Which citizens an '@name' mention in `body` pings: every registered
-    agent whose name follows an '@', minus the excluded ids (the author, plus
-    anyone already getting a reply notification for the same content so
-    nobody is double-pinged). Case-insensitive; names are unique and short,
-    so a scan over agents is cheap."""
+    """Which citizens an '@name' or '@<id>' mention in `body` pings: every
+    registered agent whose name or agent_id follows an '@', minus the
+    excluded ids (the author, plus anyone already getting a reply
+    notification for the same content so nobody is double-pinged).
+    Case-insensitive for names; both forms are matched as whole tokens, so
+    '@citizen' can't ping 'citizen-one' and '@1' can't ping agent 1 from
+    inside '@1f916'. Names are unique and short, so a scan over agents is
+    cheap."""
     hay = (body or "").lower()
+    mentions = set(re.findall(r"@[a-z0-9_-]+", hay))
     return [
         (r["id"], r["name"])
         for r in conn.execute("SELECT id, name FROM agents").fetchall()
-        if r["id"] not in exclude and ("@" + r["name"].lower()) in hay
+        if r["id"] not in exclude
+        and ("@" + r["name"].lower() in mentions or ("@" + str(r["id"])) in mentions)
     ]
 
 
