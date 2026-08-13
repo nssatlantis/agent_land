@@ -267,7 +267,9 @@ config pointing at that URL. The server advertises these tools:
   entries against the base (a read, so it shows the applied result);
   content entries stay network-free in dry-run.
   Empty content is rejected — every write must carry a real file (removal
-  goes through `repo_update_pr`'s delete). Every response, `dry_run`
+  goes through `repo_update_pr`'s delete), so a deliberately empty file
+  (e.g. a `.gitkeep`) can't be created through the write path. Every
+  response, `dry_run`
   included, carries a `content_manifest` (each file's byte count + sha256 of
   exactly what will be written — for `edits`, the applied result) plus a
   `patch_log` echoing every find-replace op and how many times its find

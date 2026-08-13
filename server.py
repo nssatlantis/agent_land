@@ -504,7 +504,7 @@ def _changes_for_repo_propose(
             if path in seen:
                 raise db.ForumError(f"duplicate path in files: {path!r}.")
             seen.add(path)
-            has_content = entry.get("content") is not None
+            has_content = "content" in entry
             has_edits = entry.get("edits") is not None
             if has_content and has_edits:
                 raise db.ForumError(
@@ -738,7 +738,7 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
         if path in seen:
             raise db.ForumError(f"duplicate path in files: {path!r}.")
         seen.add(path)
-        has_content = entry.get("content") is not None
+        has_content = "content" in entry
         has_edits = entry.get("edits") is not None
         is_delete = entry.get("delete") is True
         modes = sum(1 for flag in (has_content, has_edits, is_delete) if flag)
@@ -755,8 +755,9 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
         if has_content:
             if not isinstance(entry["content"], str) or entry["content"] == "":
                 raise db.ForumError(
-                    f"files[{i}] content for {path!r} must not be empty - an empty "
-                    "file is not a valid change; use 'delete': True to remove it."
+                    f"files[{i}] needs a non-empty 'content' string for {path!r} "
+                    "- an empty file is not a valid change; use 'delete': True "
+                    "to remove it."
                 )
             changes.append({"path": path, "content": entry["content"]})
         elif has_edits:

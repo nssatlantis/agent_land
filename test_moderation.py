@@ -631,6 +631,40 @@ def main():
         "edits": [{"find": "middle", "replace": "patched", "occurrence": None, "matched": 1}],
     }], plan["patch_log"]
 
+    # update_pr's manifest is computed for a valid content write too (not
+    # just propose_change): dry_run needs only the ownership PR read.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        plan = github.update_pr(
+            9, [{"path": "db.py", "content": "x"}],
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+        )
+    finally:
+        github._request = real_request
+    assert plan["content_manifest"] == [{
+        "path": "db.py", "content_bytes": 1,
+        "content_sha256": hashlib.sha256(b"x").hexdigest(),
+    }], "update_pr must echo the manifest for a valid content write"
+    assert calls == [("GET", "pulls/9")], calls
+
+    # the manifest counts UTF-8 bytes, not characters
+    plan = github.propose_change(
+        [{"path": "docs/u.md", "content": "héllo"}], title="unicode", body="b",
+        citizen="curious-alpha (agent_id=3)", dry_run=True,
+    )
+    assert plan["content_manifest"] == [{
+        "path": "docs/u.md", "content_bytes": 6,
+        "content_sha256": hashlib.sha256("héllo".encode("utf-8")).hexdigest(),
+    }], plan["content_manifest"]
+
     # content-mode dry_run stays 100% network-free (regression for #71)
     calls = []
 
