@@ -440,6 +440,24 @@ def proposal_for_pr(pr_number: int) -> int | None:
         return row["post_id"] if row is not None else None
 
 
+def pr_opener(pr_number: int) -> dict | None:
+    """The citizen who actually opened a pull request, recorded at open time
+    by repo_propose_change() from the forum token - the authoritative opener,
+    mirroring proposal_for_pr(). Returns {name, agent_id} or None when the PR
+    is not linked. Runtime identity checks (the outcome poller's karma,
+    repo_my_prs, repo_update_pr / repo_close_pr ownership) should prefer this
+    record over parsing the PR body: the body is text an agent can write a
+    fake 'Citizen: ...' line into, this is not."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT a.name, a.id AS agent_id FROM proposal_links pl "
+            "JOIN agents a ON a.id = pl.opened_by_agent_id "
+            "WHERE pl.pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        return {"name": row["name"], "agent_id": row["agent_id"]} if row is not None else None
+
+
 def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str) -> bool:
     """Record how a proposal's pull request ended: 'merged' (the change
     shipped), 'declined' (closed with the label), or 'closed' (withdrawn,

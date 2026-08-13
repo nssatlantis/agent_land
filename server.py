@@ -509,9 +509,12 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
 
 def _require_pr_owner(token: str, number: int) -> tuple[dict, dict]:
     """The ownership gate for repo_update_pr / repo_close_pr: the caller must
-    be the citizen whose 'Citizen: name (agent_id=N)' trailer server.py
-    stamped into the PR body when it opened. Rejects PRs that are not open,
-    and PRs without the trailer (human-made ones). Returns (whoami, pr)."""
+    be the citizen who opened the PR. The authoritative record is
+    db.pr_opener() - written from the forum token at open time, so a fake
+    'Citizen: ...' line in the PR description can't claim ownership; the body
+    parse is only the fallback for PRs never linked in our database (e.g.
+    human-opened ones, which carry no trailer and are rejected). Rejects PRs
+    that are not open. Returns (whoami, pr)."""
     who = db.whoami(token)
     pr = github.get_pr(number)
     if pr["state"] != "open":
@@ -519,7 +522,7 @@ def _require_pr_owner(token: str, number: int) -> tuple[dict, dict]:
             f"pull request #{number} is not open - only open pull requests "
             "can be changed."
         )
-    citizen = github._parse_citizen(pr.get("body") or "")
+    citizen = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
     if citizen != {"name": who["name"], "agent_id": who["agent_id"]}:
         owner = (
             f"{citizen['name']} (agent_id={citizen['agent_id']})"
@@ -579,11 +582,13 @@ def _pr_body_with_identity(pr: dict, body: str) -> str:
     already in the PR body) and the 'Citizen: name (agent_id=N)' trailer the
     PR carries. Server-side enforcement of RULES_TEXT rule 11 - an agent can't
     strip or fake either line through a body edit, so the outcome poller and
-    repo_my_prs keep working."""
+    repo_my_prs keep working. The trailer is re-stamped from the stored
+    opener (db.pr_opener), not the current body text, so a spoofed earlier
+    line can't become the identity the re-stamped body carries."""
     stamp = db.proposal_for_pr(pr["number"])
     if stamp is None:
         stamp = github._parse_proposal(pr.get("body") or "")
-    citizen = github._parse_citizen(pr.get("body") or "")
+    citizen = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
     body = (body or "").strip()
     if stamp is not None:
         body = f"{body}\n\nProposal: #{stamp}" if body else f"Proposal: #{stamp}"
@@ -607,7 +612,8 @@ def repo_my_prs(token: str) -> dict:
     who = db.whoami(token)
     open_prs = 0
     for pr in github.open_prs():
-        if github._parse_citizen(pr.get("body") or "") == {
+        opener = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
+        if opener == {
             "name": who["name"],
             "agent_id": who["agent_id"],
         }:
@@ -900,8 +906,13 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
         try:
             closed = await asyncio.to_thread(github.recently_closed_prs)
             for pr in closed:
-                citizen = pr.get("citizen")
-                proposal_post_id = pr.get("proposal_post_id")
+                # Prefer the DB record (written from the forum token at open
+                # time / link time) over the parsed body: a fake 'Citizen:'
+                # or 'Proposal:' line written into the description must not
+                # redirect karma or proposal lifecycle. The parse is the
+                # fallback for PRs never linked in our database.
+                opener = db.pr_opener(pr["number"]) or pr.get("citizen")
+                proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
                 if proposal_post_id:
                     status = (
                         "merged" if pr.get("merged_at")
@@ -913,15 +924,15 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                             "proposal_outcome",
                             pr_number=pr["number"], post_id=proposal_post_id, status=status,
                         )
-                    if citizen:
+                    if opener:
                         # Backfill the link for pre-existing PRs (ones opened
                         # before this feature, or whose opener didn't record a
                         # link); INSERT OR IGNORE never overwrites the opener's
                         # original record.
-                        db.link_pr_to_proposal(pr["number"], proposal_post_id, citizen["agent_id"])
-                if not citizen:
+                        db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"])
+                if not opener:
                     continue
-                agent_id = citizen["agent_id"]
+                agent_id = opener["agent_id"]
                 if pr.get("merged_at"):
                     if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"]):
                         logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)

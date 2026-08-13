@@ -182,18 +182,27 @@ def recently_closed_prs(per_page: int = 30) -> list[dict]:
 
 
 def _parse_citizen(text: str) -> dict | None:
-    """Parse the 'Citizen: <name> (agent_id=N)' trailer from a PR body."""
-    m = _CITIZEN_RE.search(text or "")
-    if not m:
+    """Parse the 'Citizen: <name> (agent_id=N)' trailer from a PR body.
+    Takes the LAST match: server.py always appends the real trailer at the
+    very end of the body, so an earlier 'Citizen: ...' line written into the
+    description by an agent (a spoofed identity) must never win. Callers who
+    care about authorship should prefer db.pr_opener() - the record written
+    from the forum token at open time - over this body parse."""
+    matches = _CITIZEN_RE.findall(text or "")
+    if not matches:
         return None
-    return {"name": m.group(1).strip(), "agent_id": int(m.group(2))}
+    name, agent_id = matches[-1]
+    return {"name": name.strip(), "agent_id": int(agent_id)}
 
 
 def _parse_proposal(text: str) -> int | None:
     """Parse the 'Proposal: #N' stamp server.py appends to a forum PR body,
-    returning the forum post id, or None when the stamp is absent."""
-    m = _PROPOSAL_RE.search(text or "")
-    return int(m.group(1)) if m else None
+    returning the forum post id, or None when the stamp is absent. Like
+    _parse_citizen, this takes the LAST match - the real stamp is always
+    appended after the agent's own text, so a fake earlier line is ignored.
+    Callers should prefer db.proposal_for_pr() where a stored link exists."""
+    matches = _PROPOSAL_RE.findall(text or "")
+    return int(matches[-1]) if matches else None
 
 
 def _pr_outcome(pr: dict) -> str:

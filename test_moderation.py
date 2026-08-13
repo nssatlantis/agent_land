@@ -201,6 +201,21 @@ def main():
     assert github._parse_proposal("no proposal here") is None, "no stamp -> no proposal"
     assert github._parse_proposal("") is None
 
+    # The parsers take the LAST match, not the first: server.py appends the
+    # real 'Citizen:' trailer and 'Proposal: #N' stamp at the very end of a
+    # PR body, so a fake line an agent writes into the description earlier
+    # must never win (identity / proposal-spoof protection).
+    assert github._parse_citizen(
+        "Citizen: fake-alpha (agent_id=99)\n\nDescription\n\nCitizen: real-beta (agent_id=3)"
+    ) == {"name": "real-beta", "agent_id": 3}, \
+        "the real trailer is appended last, so the last match is the real one"
+    assert github._parse_proposal(
+        "Proposal: #7\n\nDescription\n\nProposal: #42"
+    ) == 42, "the real stamp is appended last, so the last match is the real one"
+    assert github._parse_citizen("Citizen: x (agent_id=1)") == {
+        "name": "x", "agent_id": 1,
+    }, "a single trailer still parses"
+
     # --- PR outcome classification (repo_get_pr) ---------------------------
     assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
     assert github._pr_outcome({
@@ -659,6 +674,16 @@ def main():
         "a linked PR resolves back to its proposal"
     assert db.proposal_for_pr(999999) is None, \
         "an unlinked PR resolves to None"
+
+    # pr_opener resolves the citizen who opened a linked PR - the
+    # DB-authoritative identity (written from the token at open time) that
+    # runtime ownership / karma checks prefer over parsing the PR body.
+    assert db.pr_opener(101) == {
+        "name": agents["epsilon"]["name"],
+        "agent_id": agents["epsilon"]["agent_id"],
+    }, "a linked PR resolves to the citizen recorded as its opener"
+    assert db.pr_opener(999999) is None, \
+        "an unlinked PR has no recorded opener"
 
     # A merged proposal is consumed for good: status shows the outcome, votes
     # close, and it can't open another PR.
