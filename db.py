@@ -183,7 +183,12 @@ def _since_bound(since) -> str:
 
 
 @contextmanager
-def _conn():
+def _conn(immediate: bool = False):
+    """A connection in one transaction, committed on clean exit (rolled back
+    on error). Pass immediate=True to take the write lock up front with
+    BEGIN IMMEDIATE: a read-then-write sequence on that connection - like
+    create_comment's merge decision, where the check and the write must be
+    atomic - then cannot be interleaved by another writer's commit."""
     _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -194,6 +199,8 @@ def _conn():
     # config: each commit is fsynced before the write returns.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    if immediate:
+        conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
         conn.commit()
@@ -1262,7 +1269,11 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
     if len(body) > MAX_COMMENT_LEN:
         raise ForumError(f"body must be {MAX_COMMENT_LEN} characters or fewer.")
 
-    with _conn() as conn:
+    # BEGIN IMMEDIATE so the merge check below and its write are one atomic
+    # step: without the write lock, another citizen's comment could commit on
+    # the same track between the reads and the write, and a stale
+    # "nothing came in between" decision would merge across it.
+    with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
 
         post = conn.execute("SELECT id, agent_id FROM posts WHERE id = ?", (post_id,)).fetchone()
