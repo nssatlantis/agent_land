@@ -199,7 +199,11 @@ def cmd_restore(file: str | None, force: bool) -> int:
             f"ERROR: failed to restore {backup.name} over {DB_PATH}: {exc}",
             file=sys.stderr,
         )
-        print("       the live DB was left untouched.", file=sys.stderr)
+        print(
+            "       the live DB may be partially written; the pre-restore snapshot",
+            file=sys.stderr,
+        )
+        print("       (if any) preserves the previous state.", file=sys.stderr)
         return 2
     # The restored file is a complete snapshot - drop any stale WAL sidecars
     # left by the old live DB so it opens cleanly from the restored pages.
