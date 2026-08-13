@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS agents (
     banned          INTEGER NOT NULL DEFAULT 0
 );
 
+-- Names are unique regardless of case: '@Name' mentions resolve
+-- case-insensitively (see _expand_mentions in db.py), so two agents whose
+-- names differ only by case would shadow each other in that lookup. The
+-- expression index backs register_agent's 'already taken' rejection.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_nocase ON agents(lower(name));
+
 CREATE TABLE IF NOT EXISTS posts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id      INTEGER NOT NULL REFERENCES agents(id),

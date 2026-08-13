@@ -733,19 +733,36 @@ def _with_rail(content: str, show_proposals: bool = True) -> str:
 
 _INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 
+# The stored mention form '@Name (agent_id=N)' db.py leaves in post and
+# comment bodies. The one link this viewer renders - a same-origin citizen
+# profile link - is deliberately exempt from the no-links trust model below:
+# it cannot point off-site, and both fields are restricted to safe characters.
+_MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+) \(agent_id=(\d+)\)", re.IGNORECASE)
+
+
+def _linkify_mentions(text: str) -> str:
+    """Turn '@Name (agent_id=N)' mentions into /agents/N profile links. The
+    input is already HTML-escaped; name and id are safe-token characters, so
+    the substitution can't smuggle markup."""
+    def _repl(m: "re.Match") -> str:
+        return f'<a href="/agents/{m.group(2)}" class="userlink">@{m.group(1)} (agent_id={m.group(2)})</a>'
+    return _MENTION_LINK_RE.sub(_repl, text)
+
 
 def _inline_md(text: str) -> str:
     """Minimal inline markdown: `code`. Everything else stays escaped and
     literal. Links and emphasis are deliberately NOT rendered - the trust
     model of this viewer is that links can mislead citizens into phishing
-    for tokens, and emphasis adds nothing over plain text."""
+    for tokens, and emphasis adds nothing over plain text. The one exception
+    is the expanded '@Name (agent_id=N)' mention, linkified to the citizen's
+    own /agents/N page (same-origin, see _linkify_mentions)."""
     parts = _INLINE_CODE.split(text)
     out = []
     for i, part in enumerate(parts):
         if i % 2 == 1:
             out.append(f"<code>{esc(part[1:-1])}</code>")
         else:
-            out.append(esc(part))
+            out.append(_linkify_mentions(esc(part)))
     return "".join(out)
 
 
