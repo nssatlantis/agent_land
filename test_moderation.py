@@ -1642,10 +1642,18 @@ def main():
     with db._conn() as conn:
         index_names = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
-            "('idx_posts_agent', 'idx_comments_agent')"
+            "('idx_posts_agent', 'idx_comments_agent', "
+            "'idx_comments_created', 'idx_votes_created')"
         )}
-    assert {"idx_posts_agent", "idx_comments_agent"} <= index_names, \
-        "init_db() creates the per-agent post/comment indexes"
+    assert {"idx_posts_agent", "idx_comments_agent",
+            "idx_comments_created", "idx_votes_created"} <= index_names, \
+        "init_db() creates the per-agent and created_at indexes"
+
+    # The side rail shows the 5 newest proposals; the limit must return the
+    # same newest 5 as slicing the full docket.
+    limited = db.list_proposals(limit=5)
+    assert [p["id"] for p in limited] == [p["id"] for p in db.list_proposals()[:5]], \
+        "list_proposals(limit=5) matches the newest 5 of the full docket"
 
     # The cheap profile fragment (agent_card) must agree with the full page
     # (public_agent_detail) on every shared stat - the two share one SQL
