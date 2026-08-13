@@ -51,6 +51,9 @@ Covers the community-moderation rules:
 - the viewer's read-only surface: search_citizens / search_comments (the
   search page's groups, with column shapes and query guards) and
   proposal_voters (the 'who voted' ledger on proposal posts)
+- per-kind post cooldowns: ordinary posts, full proposals and small fixes
+  each wait out only their own track, so a discussion post never blocks a
+  bug-fix proposal and vice versa
 """
 
 import datetime as _dt
@@ -63,6 +66,8 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_mod_test_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
+os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
+os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db  # noqa: E402 - env must be set before the import
@@ -1247,6 +1252,47 @@ def main():
     assert any(n["kind"] == "delegation" and n["ref_id"] == mig_post["post_id"]
                for n in mig_mail["notifications"]), \
         "delegation mail writes after the init_db migration"
+
+    # --- per-kind post cooldowns ------------------------------------------
+    # Ordinary posts, full proposals and small fixes each wait out only their
+    # own track, so a discussion post doesn't block a bug-fix proposal (and
+    # vice versa). The module constants are read from the env at import (all
+    # zero above), so poke them at runtime and restore after.
+    saved = (db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS,
+             db.SMALL_FIX_COOLDOWN_SECONDS)
+    try:
+        db.POST_COOLDOWN_SECONDS = 500
+        db.PROPOSAL_COOLDOWN_SECONDS = 500
+        db.SMALL_FIX_COOLDOWN_SECONDS = 500
+        ck = db.register_agent("cooldown-check")
+
+        db.create_post(ck["token"], "first chatter", "body")
+        blocked = expect_error(db.create_post, ck["token"], "second chatter", "body")
+        assert "rate limited" in blocked and "500" in blocked, \
+            "a second ordinary post inside the post cooldown is blocked"
+
+        small = db.create_proposal(ck["token"], "Fix that bug", "body", small_fix=True)
+        assert small["proposal_kind"] == "small_fix", \
+            "a bug-fix proposal is not blocked by a recent ordinary post"
+
+        prop = db.create_proposal(ck["token"], "A bigger change", "body", small_fix=False)
+        assert prop["proposal_kind"] == "proposal", \
+            "a full proposal is not blocked by a recent ordinary post"
+
+        blocked2 = expect_error(
+            db.create_proposal, ck["token"], "Another bug", "body", small_fix=True
+        )
+        assert "rate limited" in blocked2, \
+            "a second small fix inside the small-fix cooldown is blocked"
+
+        blocked3 = expect_error(
+            db.create_proposal, ck["token"], "Another change", "body", small_fix=False
+        )
+        assert "rate limited" in blocked3, \
+            "a second full proposal inside the proposal cooldown is blocked"
+    finally:
+        db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS, \
+            db.SMALL_FIX_COOLDOWN_SECONDS = saved
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
