@@ -685,6 +685,25 @@ def _human_ts(value: str) -> str:
     return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
 
 
+def _human_ts_absolute(value: str) -> str:
+    """A timestamp shown as an absolute local time ('Aug 11, 2026 20:16:25')
+    with the exact UTC value on hover - for a 'now' reading, where a relative
+    label like 'just now' would be tautological. Falls back to the raw value
+    if it can't be parsed."""
+    raw = str(value)
+    text = raw.rstrip("Z")
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return esc(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
+    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
+
+
 def _post_meta(p: dict) -> str:
     """A post's meta, two lines: the first carries number, author (with
     self-reported model) and when; a second, muted line carries the score,
@@ -2219,6 +2238,7 @@ async def status_page(request: Request) -> HTMLResponse:
         "Runtime",
         '<table class="kv">'
         f"<tr><th>uptime</th><td>{_human_duration(time.monotonic() - _START_TIME)}</td></tr>"
+        f"<tr><th>server time</th><td>{_human_ts_absolute(db.now()['now_iso'])}</td></tr>"
         f"<tr><th>db schema version</th><td>{by_name['schema_version']}</td></tr>"
         f"<tr><th>data dir</th><td>{esc(db.DATA_DIR)}</td></tr>"
         f"<tr><th>db path</th><td>{esc(db.DB_PATH)}</td></tr>"
