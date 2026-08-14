@@ -1,0 +1,383 @@
+"""Admin HTTP-layer test: drives admin.py's route handlers in-process against
+a temp database.
+
+Run: python test_admin.py   (stdlib + the already-installed starlette; no
+server needed)
+
+test_moderation.py covers the db-level admin functions (ban_agent, delete_agent,
+resolve_report, ...) but nothing has ever touched the admin HTTP surface: the
+basic-auth gate, the CSRF token machinery and the form-handling routes that
+wrap those db calls. This file closes that gap by calling the handlers directly
+with in-process starlette Request objects, exactly as the viewer's own pages
+would - headers, cookies, a urlencoded form body, and path params.
+
+Covers:
+- the basic-auth gate: denied without/wrong credentials (401 + WWW-Authenticate),
+  admitted with the right ones, and the open-admin mode (no ADMIN_PASSWORD)
+- the CSRF machinery: fresh-token generation stashed on request.state, cookie
+  reuse, the form field carrying the token, and compare_digest validation
+  (matching / mismatched / missing)
+- the form routes, each through its full POST shape:
+  ban / unban (mutate helper), delete_agent (typed-name confirmation + the
+  destroy_content guard), delete_post (confirm checkbox), resolve_report
+  (clear / suspend) - asserting the 303 redirect, the db effect, and that a
+  bad CSRF or wrong confirmation never mutates anything
+- the pages: /admin, per-agent detail, per-report detail (200 for real rows,
+  a graceful flash for missing ones)
+- the audit trail: every successful action leaves an admin_actions row signed
+  with the authenticated admin username
+"""
+
+import asyncio
+import base64
+import importlib
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
+from pathlib import Path
+
+from starlette.requests import Request
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_admin_test_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
+os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
+os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
+# admin.py reads these at import time - set them before the import.
+os.environ["ADMIN_USER"] = "root"
+os.environ["ADMIN_PASSWORD"] = "secret"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import db  # noqa: E402 - env must be set before the import
+import admin  # noqa: E402 - reads ADMIN_USER/ADMIN_PASSWORD at import
+
+_CSRF = admin._CSRF_COOKIE
+_AUTH = "Basic " + base64.b64encode(b"root:secret").decode()
+
+
+def _req(method, path, *, params=None, body=None, cookies=None, headers=None):
+    """A minimal in-process starlette Request. `body` is a dict that gets
+    urlencoded as the form payload, with the matching Content-Type header."""
+    header_bytes = list(headers or [])
+    if cookies:
+        cookie_hdr = "; ".join(f"{k}={v}" for k, v in cookies.items()).encode()
+        header_bytes.append((b"cookie", cookie_hdr))
+    if body is not None:
+        body_bytes = _urlencode(body)
+        header_bytes.append((b"content-type", b"application/x-www-form-urlencoded"))
+    else:
+        body_bytes = b""
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "root_path": "",
+        "query_string": b"",
+        "headers": header_bytes,
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8000),
+        "path_params": params or {},
+        "state": {},
+    }
+    return Request(scope, _receive(body_bytes))
+
+
+def _urlencode(form):
+    from urllib.parse import urlencode
+    return urlencode(form).encode()
+
+
+def _receive(body):
+    """A receive channel that yields the whole form body once, then signals
+    the end of the stream - the shape starlette's form parser expects."""
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return receive
+
+
+def _call(handler, *args, **kw):
+    return asyncio.run(handler(*args, **kw))
+
+
+async def _load_form(request):
+    return await request.form()
+
+
+def _audit_rows():
+    """Every admin_actions row, newest first - the trail each action leaves."""
+    conn = sqlite3.connect(os.environ["FORUM_DB_PATH"])
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT admin_user, action, target_type, target_id, detail "
+            "FROM admin_actions ORDER BY id"
+        )]
+    finally:
+        conn.close()
+
+
+def _flash_ok(resp):
+    """A flash page (the no-mutation failure shape) is a 200 admin page."""
+    assert resp.status_code == 200, f"expected flash (200), got {resp.status_code}"
+    return resp.body
+
+
+def main():
+    db.init_db()
+
+    alice = db.register_agent("alice")
+    bob = db.register_agent("bob")
+    a_token, b_token = alice["token"], bob["token"]
+
+    # bob needs >=1 karma to file a report (MIN_KARMA_MOD).
+    bob_post = db.create_post(b_token, "bob's stone", "hello")
+    db.vote(a_token, "post", bob_post["post_id"], 1)
+    alice_post = db.create_post(a_token, "alice's stone", "world")
+    report = db.report_content(b_token, "post", alice_post["post_id"], "flagged for review")
+    report_id = report["report_id"]
+
+    # --- basic-auth gate ---------------------------------------------------
+    no_auth = _req("GET", "/admin")
+    assert admin._authorized(no_auth) is False, "no credentials: denied"
+    denied = _call(admin.admin_page, no_auth)
+    assert denied.status_code == 401, "no credentials: 401"
+    assert "Basic" in denied.headers.get("WWW-Authenticate", ""), "401 carries WWW-Authenticate"
+
+    wrong_auth = _req("GET", "/admin", headers=[(b"authorization",
+                                                b"Basic " + base64.b64encode(b"root:nope"))])
+    assert admin._authorized(wrong_auth) is False, "wrong password: denied"
+
+    ok_auth = _req("GET", "/admin", headers=[(b"authorization", _AUTH.encode())])
+    assert admin._authorized(ok_auth) is True, "right credentials: admitted"
+    assert admin._admin_user(ok_auth) == "root", "audit username comes from the header"
+
+    page = _call(admin.admin_page, ok_auth)
+    assert page.status_code == 200, "authenticated admin page renders"
+    assert b"Reports docket" in page.body and b"Citizens" in page.body, \
+        "the docket page carries reports, proposals and citizens panels"
+
+    # --- CSRF machinery ----------------------------------------------------
+    fresh = _req("GET", "/admin")
+    token = admin._csrf_token(fresh)
+    assert token and len(token) > 8, "fresh token generated when no cookie present"
+    assert admin._csrf_token(fresh) == token, "token stashed on request.state, stable per render"
+    assert f'name="csrf" value="{token}"'.encode() in admin._csrf_field(fresh).encode(), \
+        "the form field carries the same token"
+
+    reused = _req("GET", "/admin", cookies={_CSRF: "known-token"})
+    assert admin._csrf_token(reused) == "known-token", "existing cookie is reused, not regenerated"
+
+    ok_form = _req("POST", "/admin", cookies={_CSRF: "tok"},
+                   body={"csrf": "tok", "confirm": "x"})
+    assert admin._csrf_ok(ok_form, asyncio.run(_load_form(ok_form))) is True, \
+        "matching cookie + form token passes compare_digest"
+    bad_form = _req("POST", "/admin", cookies={_CSRF: "tok"},
+                    body={"csrf": "WRONG", "confirm": "x"})
+    assert admin._csrf_ok(bad_form, asyncio.run(_load_form(bad_form))) is False, \
+        "mismatched token is rejected"
+    no_csrf = _req("POST", "/admin", body={"confirm": "x"})
+    assert admin._csrf_ok(no_csrf, asyncio.run(_load_form(no_csrf))) is False, \
+        "missing token is rejected"
+
+    # The response cookie round-trip: the rendered page sets the CSRF cookie
+    # and the POST carries it back.
+    rendered = _call(admin.admin_page, ok_auth)
+    set_cookie = rendered.headers.get("set-cookie") or ""
+    assert f"{_CSRF}=" in set_cookie, "the admin page sets the admin_csrf cookie"
+    cookie_token = set_cookie.split(f"{_CSRF}=", 1)[1].split(";", 1)[0]
+
+    # --- ban / unban through the mutate route ------------------------------
+    resp = _call(admin.ban_agent, _req(
+        "POST", f"/admin/agents/{bob['agent_id']}/ban", params={"id": bob["agent_id"]},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert resp.status_code == 303 and resp.headers.get("location") == "/admin", \
+        "ban redirects back to the docket"
+    assert [a for a in db.admin_list_agents() if a["id"] == bob["agent_id"]][0]["banned"], \
+        "ban actually bans the citizen"
+
+    resp = _call(admin.ban_agent, _req(
+        "POST", f"/admin/agents/{bob['agent_id']}/ban", params={"id": bob["agent_id"]},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"already banned" in _flash_ok(resp), "re-banning is a flash, not a crash"
+
+    resp = _call(admin.unban_agent, _req(
+        "POST", f"/admin/agents/{bob['agent_id']}/unban", params={"id": bob["agent_id"]},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert resp.status_code == 303, "unban redirects"
+    assert not [a for a in db.admin_list_agents() if a["id"] == bob["agent_id"]][0]["banned"], \
+        "unban restores the citizen"
+
+    # CSRF and auth still guard the mutation routes even when the db call
+    # would succeed.
+    resp = _call(admin.ban_agent, _req(
+        "POST", f"/admin/agents/{bob['agent_id']}/ban", params={"id": bob["agent_id"]},
+        body={"csrf": "WRONG"}, headers=[(b"authorization", _AUTH.encode())]))
+    _flash_ok(resp)
+    assert not [a for a in db.admin_list_agents() if a["id"] == bob["agent_id"]][0]["banned"], \
+        "a bad CSRF must never mutate anything"
+
+    resp = _call(admin.ban_agent, _req(
+        "POST", f"/admin/agents/{bob['agent_id']}/ban", params={"id": bob["agent_id"]},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token}))
+    assert resp.status_code == 401, "the auth gate guards the mutation routes too"
+
+    # --- delete_agent: typed-name confirmation + destroy_content -----------
+    b2 = db.register_agent("carol")
+    c_post = db.create_post(b2["token"], "carol's post", "to be destroyed")
+    c_id = b2["agent_id"]
+
+    resp = _call(admin.delete_agent, _req(
+        "POST", f"/admin/agents/{c_id}/delete", params={"id": c_id},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "confirm": "WRONG"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"confirmation mismatch" in _flash_ok(resp), "typo'd confirmation is refused"
+    assert db.agent_name(c_id) == "carol", "nothing deleted on a mismatch"
+
+    resp = _call(admin.delete_agent, _req(
+        "POST", f"/admin/agents/{c_id}/delete", params={"id": c_id},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "confirm": "carol"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"posts" in _flash_ok(resp).lower() or b"comments" in _flash_ok(resp).lower(), \
+        "deleting a citizen with content but no destroy_content is refused"
+    assert db.agent_name(c_id) == "carol", "the destroy-content guard held"
+
+    resp = _call(admin.delete_agent, _req(
+        "POST", f"/admin/agents/{c_id}/delete", params={"id": c_id},
+        cookies={_CSRF: cookie_token},
+        body={"csrf": cookie_token, "confirm": "carol", "destroy_content": "on"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert resp.status_code == 303, "correctly-confirmed delete redirects"
+    assert db.agent_name(c_id) is None, "the citizen is gone"
+    from db import ForumError
+    try:
+        db.get_post(c_post["post_id"])
+        raise AssertionError("destroyed content must be gone")
+    except ForumError:
+        pass
+
+    resp = _call(admin.delete_agent, _req(
+        "POST", "/admin/agents/999999/delete", params={"id": 999999},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "confirm": "x"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"no such agent" in _flash_ok(resp), "missing agent is a graceful flash"
+
+    # --- delete_post: confirm checkbox + referer ---------------------------
+    keep = db.create_post(b_token, "keep me", "body")
+    resp = _call(admin.delete_post, _req(
+        "POST", f"/admin/posts/{keep['post_id']}/delete", params={"id": keep["post_id"]},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"must be ticked" in _flash_ok(resp), "an unticked confirm box is refused"
+    assert db.get_post(keep["post_id"])["title"] == "keep me", "the post survived"
+
+    resp = _call(admin.delete_post, _req(
+        "POST", f"/admin/posts/{keep['post_id']}/delete", params={"id": keep["post_id"]},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "confirm": "on"},
+        headers=[(b"authorization", _AUTH.encode()), (b"referer", b"/admin/agents/2")]))
+    assert resp.status_code == 303, "ticked delete redirects"
+    assert resp.headers.get("location") == "/admin/agents/2", \
+        "delete_post redirects to the referer (the page it was clicked from)"
+    try:
+        db.get_post(keep["post_id"])
+        raise AssertionError("deleted post must be gone")
+    except ForumError:
+        pass
+
+    # --- resolve_report: clear / suspend -----------------------------------
+    resp = _call(admin.resolve_report, _req(
+        "POST", f"/admin/reports/{report_id}/resolve", params={"id": report_id},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "action": "clear"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert resp.status_code == 303, "clear redirects"
+    assert [r for r in db.list_reports() if r["id"] == report_id][0]["status"] == "cleared", \
+        "clear closes the report"
+
+    rep2 = db.report_content(b_token, "post", alice_post["post_id"], "second flag")
+    resp = _call(admin.resolve_report, _req(
+        "POST", f"/admin/reports/{rep2['report_id']}/resolve", params={"id": rep2["report_id"]},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "action": "suspend"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert resp.status_code == 303, "suspend redirects"
+    assert db.whoami(a_token)["suspended_until"] is not None, "suspend suspends the author"
+    assert [r for r in db.list_reports() if r["id"] == rep2["report_id"]][0]["status"] \
+        == "suspended", "the report records the suspension"
+
+    resp = _call(admin.resolve_report, _req(
+        "POST", f"/admin/reports/{report_id}/resolve", params={"id": report_id},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "action": "nonsense"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert resp.status_code == 200, "an unknown action is a graceful flash"
+    assert [r for r in db.list_reports() if r["id"] == report_id][0]["status"] \
+        == "cleared", "an invalid action never changes the report"
+
+    # --- pages: agent detail + report detail -------------------------------
+    detail = _call(admin.agent_detail, _req(
+        "GET", f"/admin/agents/{alice['agent_id']}", params={"id": alice["agent_id"]},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert detail.status_code == 200 and b"Citizen detail" in detail.body, \
+        "agent detail renders"
+    missing = _call(admin.agent_detail, _req(
+        "GET", "/admin/agents/999999", params={"id": 999999},
+        headers=[(b"authorization", _AUTH.encode())]))
+    _flash_ok(missing), "missing agent detail is a graceful flash"
+
+    rep_page = _call(admin.report_detail, _req(
+        "GET", f"/admin/reports/{report_id}", params={"id": report_id},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert rep_page.status_code == 200 and b"Report" in rep_page.body, "report detail renders"
+    rep_missing = _call(admin.report_detail, _req(
+        "GET", "/admin/reports/999999", params={"id": 999999},
+        headers=[(b"authorization", _AUTH.encode())]))
+    _flash_ok(rep_missing), "missing report detail is a graceful flash"
+
+    # --- audit trail -------------------------------------------------------
+    rows = _audit_rows()
+    by_action = {}
+    for r in rows:
+        by_action.setdefault(r["action"], []).append(r)
+    assert any(r["admin_user"] == "root" and r["action"] == "ban"
+               and r["target_id"] == bob["agent_id"] for r in rows), \
+        "the ban left a signed audit row"
+    assert any(r["admin_user"] == "root" and r["action"] == "unban"
+               and r["target_id"] == bob["agent_id"] for r in rows), \
+        "the unban left a signed audit row"
+    assert any(r["admin_user"] == "root" and r["action"] == "delete"
+               and r["target_id"] == c_id for r in rows), \
+        "the citizen delete left a signed audit row"
+    assert any(r["admin_user"] == "root" and r["action"] == "delete_post"
+               and r["target_id"] == keep["post_id"] for r in rows), \
+        "the post delete left a signed audit row"
+    assert any(r["admin_user"] == "root" and r["action"] == "resolve_report"
+               and r["target_id"] == report_id for r in rows), \
+        "the report resolution left a signed audit row"
+
+    # --- open-admin mode (no ADMIN_PASSWORD) --------------------------------
+    os.environ["ADMIN_PASSWORD"] = ""
+    importlib.reload(admin)
+    open_req = _req("GET", "/admin")
+    assert admin._authorized(open_req) is True, "no password: open admin admits everyone"
+    assert admin._admin_user(open_req) == "admin", \
+        "open admin falls back to the 'admin' audit username"
+    open_page = _call(admin.admin_page, open_req)
+    assert open_page.status_code == 200, "open admin page renders without credentials"
+
+    print("test_admin: all assertions passed")
+    shutil.rmtree(_TMP, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
