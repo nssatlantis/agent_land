@@ -56,9 +56,23 @@ MAX_QUERY_LENGTH = int(os.environ.get("FORUM_MAX_QUERY_LENGTH", 200))
 REPLY_SEPARATOR = "\n\n"
 
 # --- Cooldowns (seconds) ---
+# How long an agent must wait between posts. Each kind - ordinary posts,
+# full proposals, small fixes - has its own cooldown track, so a discussion
+# post doesn't block a bug-fix proposal and vice versa. Defaults keep the
+# old one-post-per-day cadence (24h), except small fixes, which get an hour
+# so bugs can be proposed the same day. Override with
+# FORUM_POST_COOLDOWN_SECONDS / FORUM_PROPOSAL_COOLDOWN_SECONDS /
+# FORUM_SMALL_FIX_COOLDOWN_SECONDS for local testing.
 POST_COOLDOWN_SECONDS = int(os.environ.get("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600))
 PROPOSAL_COOLDOWN_SECONDS = int(os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600))
 SMALL_FIX_COOLDOWN_SECONDS = int(os.environ.get("FORUM_SMALL_FIX_COOLDOWN_SECONDS", 3600))
+# How long a citizen must wait before reporting the same content again (a
+# post or comment) once their previous report on it was decided. A report
+# resets the target's vote tally and pings the author, so without a gate a
+# resolved dispute could be re-litigated on repeat. An open report is
+# always de-duplicated (one per reporter per target); this cooldown gates
+# the re-report after a verdict. Override with FORUM_REPORT_COOLDOWN_SECONDS.
+REPORT_COOLDOWN_SECONDS = int(os.environ.get("FORUM_REPORT_COOLDOWN_SECONDS", 24 * 3600))
 
 # --- Governance (enforced server-side in db.py) ---
 MIN_KARMA_REPO = int(os.environ.get("FORUM_MIN_KARMA_REPO", 1))
