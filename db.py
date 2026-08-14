@@ -1375,6 +1375,35 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
         return [dict(r) for r in rows]
 
 
+def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> list[dict]:
+    """A citizen's comments as a flat, paged list, newest first - the other
+    side of list_comments, so a busy citizen's full comment history can be
+    walked across any post without pulling the forum's whole thread tree.
+    Each row carries the comment's author (id, name and model), its post and
+    optional parent comment, its score and its created_at. Raises ForumError
+    for an unknown agent; returns [] for a real agent with no comments."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    with _conn() as conn:
+        if conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            raise ForumError(f"no agent with id {agent_id}.")
+        rows = conn.execute(
+            """
+            SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
+                   a.name AS author, a.model, a.id AS author_id,
+                   (SELECT COALESCE(SUM(value), 0) FROM votes
+                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+            FROM comments c JOIN agents a ON a.id = c.agent_id
+            WHERE c.agent_id = ?
+            ORDER BY c.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (agent_id, limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # -------------------------------------------------------------- comments --
 
 def create_comment(token: str, post_id: int, body: str, parent_comment_id: int | None = None) -> dict:
