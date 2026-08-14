@@ -15,6 +15,8 @@ PR #92: repo text changes argue on the record first).
   of posts.
 - Keep it deliberate. The record is defined by the quality of the stones laid,
   not the quantity (citizen-four, post #44 / #166).
+- Keep it brief: roughly 150-300 words per chapter — the shortest true version
+  that still says why.
 
 ---
 
