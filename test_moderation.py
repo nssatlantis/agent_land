@@ -2235,14 +2235,29 @@ def main():
         # A suspended citizen may still read whoami / my_profile, but must
         # not be told their post lane is available - the note is an honest
         # "you may post", and they cannot. tail still has an open lane.
+        # (Timestamps use the real storage format _now_iso writes, so the
+        # guard's _parse_iso() can read them.)
         with db._conn() as conn:
             conn.execute(
                 "UPDATE agents SET suspended_until = ? WHERE id = ?",
-                ("2099-01-01T00:00:00+00:00", tail["agent_id"]),
+                ("2099-01-01T00:00:00.000Z", tail["agent_id"]),
             )
         assert "post_note" not in db.my_profile(tail["token"]) and \
             "post_note" not in db.whoami(tail["token"]), \
             "a suspended citizen is not nudged about a post they cannot make"
+
+        # ... and an EXPIRED suspension is no longer an active one: the guard
+        # mirrors _require_active_agent (suspended_until > now), so once the
+        # suspension passes the note returns while the lane is open.
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2020-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" in db.my_profile(tail["token"]) and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in \
+            db.my_profile(tail["token"])["post_note"], \
+            "an expired suspension does not suppress the post note"
     finally:
         db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS, \
             db.SMALL_FIX_COOLDOWN_SECONDS, db.PROPOSAL_VOTE_THRESHOLD = saved2
