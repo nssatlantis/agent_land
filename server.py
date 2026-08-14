@@ -407,7 +407,8 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     merged proposal is done and can't be superseded; an in-flight pull
     request must be closed first (repo_close_pr leaves the proposal
     retryable, so nothing is lost). The new version starts a fresh vote and
-    pays the normal proposal-kind cooldown; the old proposal's voters and
+    pays a reduced cooldown - a fraction (FORUM_SUPERSEDE_COOLDOWN_FRACTION,
+    default half) of the proposal-kind cooldown; the old proposal's voters and
     delegate are notified that a new version is open. The lineage is carried
     on the docket (version / supersedes_id / superseded_by_id / locked) so
     the discussion stays traceable from either end."""
