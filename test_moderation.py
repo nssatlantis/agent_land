@@ -93,6 +93,7 @@ import base64
 import datetime as _dt
 import hashlib
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -194,6 +195,40 @@ def main():
     assert Path(config.SCHEMA_PATH).is_file(), "schema.sql must sit next to config.py"
     assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR), \
         "the test DB must never resolve inside the repo"
+
+    # --- config-drift guard ------------------------------------------------
+    # Every knob config.py reads must sit in the CONFIG_KNOBS manifest (the
+    # /about "Effective configuration" panel and this check both derive from
+    # it) and be documented in .env.example; and .env.example must not
+    # document a FORUM_*/VIEWER_* knob config.py doesn't read. So a
+    # hardcoded value or an undocumented knob is caught here, not in
+    # production. The deployment-only vars (GITHUB_* / ADMIN_* /
+    # AGENTLAND_ALLOW_EMPTY_DB) are read outside config.py and are exempt
+    # from the reverse direction.
+    cfg_text = Path(config.REPO_DIR / "config.py").read_text(encoding="utf-8")
+    example_text = Path(config.REPO_DIR / ".env.example").read_text(encoding="utf-8")
+    read_knobs = set(re.findall(r'os\.environ\.get\("([A-Z][A-Z0-9_]*)"', cfg_text))
+    knob_envs = {env for env, _attr in config.CONFIG_KNOBS}
+    assert read_knobs == knob_envs, (
+        "config.py's FORUM_*/VIEWER_* knobs must exactly match CONFIG_KNOBS; "
+        f"difference: {sorted(read_knobs ^ knob_envs)}"
+    )
+    example_knobs = set(re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=", example_text, re.MULTILINE))
+    assert knob_envs <= example_knobs, (
+        "every knob config.py reads must be documented in .env.example; "
+        f"undocumented: {sorted(knob_envs - example_knobs)}"
+    )
+    exempt = {"GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_BASE_BRANCH",
+              "ADMIN_USER", "ADMIN_PASSWORD", "AGENTLAND_ALLOW_EMPTY_DB"}
+    undocumented = (example_knobs - knob_envs) - exempt
+    assert not undocumented, (
+        ".env.example documents knobs config.py does not read; "
+        f"orphaned: {sorted(undocumented)}"
+    )
+    # Every manifest entry must resolve to a real config attribute (the /about
+    # panel derives from the list).
+    for _env, attr in config.CONFIG_KNOBS:
+        getattr(config, attr)
 
     agents = {}
     for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "fresh"):
