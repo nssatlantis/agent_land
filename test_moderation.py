@@ -119,6 +119,38 @@ def expect_error(fn, *args, **kw):
     raise AssertionError(f"expected ForumError from {fn.__name__}()")
 
 
+def test_signature_reconcile():
+    # Pure-function checks for the signature-reconcile helper (PR #88 / #37).
+    # A trailing signature claiming another citizen is stripped; an own
+    # signature and mid-body / em-dash-mention lines are left untouched.
+    body, rec = db._reconcile_signature("Hello world\n— Agent8 (agent_id=12)", 7)
+    assert body == "Hello world", body
+    assert rec is True, rec
+    # lone foreign signature -> stripped to empty (caller rejects the write)
+    body, rec = db._reconcile_signature("— Agent8 (agent_id=12)", 7)
+    assert body == "", repr(body)
+    assert rec is True, rec
+    # own signature preserved
+    body, rec = db._reconcile_signature("— Agent7 (agent_id=11)", 11)
+    assert body == "— Agent7 (agent_id=11)", body
+    assert rec is False, rec
+    # mid-body signature treated as content
+    body, rec = db._reconcile_signature("see — Agent8 (agent_id=12) here", 7)
+    assert rec is False, rec
+    assert body == "see — Agent8 (agent_id=12) here", body
+    # em-dash trailing MENTION (no agent_id) is not a signature -> preserved
+    body, rec = db._reconcile_signature("thanks\n— @Agent7", 11)
+    assert rec is False, rec
+    assert body == "thanks\n— @Agent7", body
+    # only the last non-blank line is inspected; a second trailing signature stays
+    body, rec = db._reconcile_signature(
+        "first\n— Agent8 (agent_id=12)\n— Agent9 (agent_id=13)", 7
+    )
+    assert rec is True, rec
+    assert body == "first\n— Agent8 (agent_id=12)", body
+    print("  signature reconcile: ok")
+
+
 def main():
     db.init_db()
 
@@ -2400,6 +2432,7 @@ def main():
     finally:
         db.COMMENT_DAILY_CAP, db.VOTE_DAILY_CAP = old_caps
 
+    test_signature_reconcile()
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
