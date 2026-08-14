@@ -1952,6 +1952,183 @@ def main():
         ).fetchone()[0]
     assert nola_left == 0, "deleting an agent removes their mailbox and the pings they caused"
 
+    # --- proposal supersede / versioning (Article VI.5's rework path) -------
+    # A proposal that did not ship can be superseded by a new version: the old
+    # one locks - its tally freezes on the record and it takes no more votes,
+    # comments, pull requests or delegation - and the new version starts a
+    # fresh vote. Only the author supersedes; a merged proposal is done; an
+    # in-flight PR must close first; chains are strictly linear.
+    sups_a = db.register_agent("sups-author")
+    sups = {n: db.register_agent(n) for n in ("sups-v1", "sups-v2", "sups-v3")}
+    for v in sups.values():
+        if db.whoami(v["token"])["karma"] < 1:
+            farm = db.create_comment(v["token"], post1["post_id"], "karma for " + v["name"])
+            db.vote(sups_a["token"], "comment", farm["comment_id"], 1)
+
+    p_base = db.create_proposal(sups_a["token"], "Supersede me", "v1 of the idea")
+    p1 = p_base["post_id"]
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], p1, 1)
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p1]["approved"] is True and docket[p1]["net"] == 3, \
+        "v1 clears the gate before being superseded"
+
+    # Only the author may supersede; a plain post is not a proposal.
+    assert "only the author" in expect_error(
+        db.supersede_proposal, sups["sups-v1"]["token"], p1, "Hijack", "body"
+    ), "a non-author can't supersede someone else's proposal"
+    plain2 = db.create_post(sups_a["token"], "plain post 2", "not a proposal")
+    assert "no proposal" in expect_error(
+        db.supersede_proposal, sups_a["token"], plain2["post_id"], "X", "y"
+    ), "superseding needs a proposal, not a plain post"
+
+    sup = db.supersede_proposal(sups_a["token"], p1, "Supersede me v2", "revised")
+    p2 = sup["post_id"]
+    assert sup["version"] == 2 and sup["supersedes_id"] == p1 \
+        and sup["supersedes_version"] == 1, "the new version carries the lineage back to v1"
+    assert sup["proposal_kind"] == "proposal", "the kind carries over"
+
+    # The old proposal is locked: the tally is frozen on the record and every
+    # write to it is refused, naming the new version.
+    v1_after = db.get_post(p1)
+    assert v1_after["proposal"]["locked"] is True \
+        and v1_after["proposal"]["superseded_by_id"] == p2, \
+        "superseding marks the old proposal locked, pointing at the new one"
+    assert v1_after["proposal"]["up"] == 3, "the old tally is frozen on the record"
+    assert "superseded" in expect_error(
+        db.vote_on_proposal, sups["sups-v1"]["token"], p1, -1
+    ), "votes are closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.create_comment, sups_a["token"], p1, "bump"
+    ), "comments are closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.delegate_proposal, sups_a["token"], p1, "sups-v1"
+    ), "delegation is closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.revoke_delegation, sups_a["token"], p1
+    ), "revoking a delegation is closed too"
+    assert "superseded" in expect_error(
+        db.require_proposal_approval, sups_a["token"], p1, "repo_propose_change"
+    ), "no pull request can open on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.supersede_proposal, sups_a["token"], p1, "v3?", "nope"
+    ), "a locked proposal can't be superseded again - chains are linear"
+
+    # The new version starts fresh: no votes yet, so the gate still binds.
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p2]["version"] == 2 and docket[p2]["supersedes"]["id"] == p1 \
+        and docket[p2]["supersedes"]["version"] == 1, \
+        "the docket carries the lineage from the new side too"
+    assert docket[p2]["locked"] is False and docket[p2]["up"] == 0 \
+        and docket[p2]["needs_votes"] is True, "the new version starts a fresh vote"
+    assert docket[p1]["locked"] is True and docket[p1]["is_current"] is False, \
+        "the old version is no longer current"
+    assert docket[p1]["stale"] is False, "a locked proposal is never stale"
+    assert "net approval" in expect_error(
+        db.require_proposal_approval, sups_a["token"], p2, "repo_propose_change"
+    ), "the fresh tally must clear the gate again"
+
+    # The author's dashboard reads superseded on the old version and
+    # needs_votes on the new one.
+    mine_s = {p["id"]: p for p in db.my_proposals(sups_a["token"])["proposals"]}
+    assert mine_s[p1]["decision"] == "superseded" \
+        and "superseded" in mine_s[p1]["status"] and mine_s[p1]["superseded_by_id"] == p2, \
+        "the old version reads as superseded in the author's dashboard"
+    assert mine_s[p2]["decision"] == "needs_votes", "the new version reads as needs_votes"
+
+    # The old proposal's voters are pointed at the new version in their mail.
+    for v in sups.values():
+        pings = [n for n in mail(v["token"])["notifications"]
+                 if n["kind"] == "proposal" and n["ref_id"] == p2]
+        assert pings and "superseded" in pings[0]["body"] and f"#{p2}" in pings[0]["body"], \
+            f"{v['name']} is told their old vote is frozen and the new version is open"
+
+    # The lineage travels through every lister, both ways.
+    rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
+    assert rows[p1]["proposal"]["locked"] and rows[p1]["proposal"]["superseded_by_id"] == p2
+    assert rows[p2]["proposal"]["supersedes_id"] == p1 and rows[p2]["proposal"]["version"] == 2
+
+    # The fresh tally clears the gate; the new version may now open its PR.
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], p2, 1)
+    db.require_proposal_approval(sups_a["token"], p2, "repo_propose_change")
+
+    # Chains stay linear across several revisions: v2 -> v3, while v1's lock
+    # keeps pointing at its direct successor v2, not the newest version.
+    sup3 = db.supersede_proposal(sups_a["token"], p2, "Supersede me v3", "again")
+    p3 = sup3["post_id"]
+    assert sup3["version"] == 3 and sup3["supersedes_id"] == p2, "v3 supersedes v2"
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p2]["locked"] is True and docket[p2]["superseded_by_id"] == p3, \
+        "v2 is locked and points at v3"
+    assert docket[p1]["superseded_by_id"] == p2, "v1's lock still names its direct successor"
+    detail1 = db.get_post(p1)
+    assert detail1["proposal"]["superseded_by_id"] == p2
+    detail3 = db.get_post(p3)
+    assert detail3["proposal"]["supersedes"]["id"] == p2 \
+        and detail3["proposal"]["supersedes"]["version"] == 2, \
+        "get_post on v3 names v2 as the proposal it revises"
+
+    # A merged proposal is done for good - it can't be superseded.
+    merged_p = db.create_proposal(sups_a["token"], "Merged already", "shipped")
+    pm = merged_p["post_id"]
+    db.record_proposal_outcome(701, pm, "merged", "2026-08-12T10:00:00Z")
+    assert "merged" in expect_error(
+        db.supersede_proposal, sups_a["token"], pm, "X", "y"
+    ), "a merged proposal is consumed for good"
+
+    # An in-flight PR blocks superseding; once the PR is decided (closed, so
+    # nothing was lost) the proposal can be superseded again.
+    inflight = db.create_proposal(sups_a["token"], "PR in flight", "has an open PR")
+    pif = inflight["post_id"]
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], pif, 1)
+    db.require_proposal_approval(sups_a["token"], pif, "repo_propose_change")
+    db.link_pr_to_proposal(702, pif, sups_a["agent_id"])
+    assert "in flight" in expect_error(
+        db.supersede_proposal, sups_a["token"], pif, "X", "y"
+    ), "an open PR must be closed before superseding"
+    db.record_proposal_outcome(702, pif, "closed", "2026-08-12T11:00:00Z")
+    sup_if = db.supersede_proposal(sups_a["token"], pif, "PR closed, revise", "now ok")
+    assert sup_if["supersedes_id"] == pif, "a closed PR no longer blocks superseding"
+
+    # A delegated proposal supersedes too: the delegate's assignment is void
+    # on the old version and the new one starts undelegated; the former
+    # delegate is told.
+    deleg = db.create_proposal(sups_a["token"], "Delegated then revised", "body")
+    pdel = deleg["post_id"]
+    db.delegate_proposal(sups_a["token"], pdel, "sups-v1")
+    sup_del = db.supersede_proposal(sups_a["token"], pdel, "Delegated then revised v2", "body")
+    pd2 = sup_del["post_id"]
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[pd2]["delegate_id"] is None, \
+        "a superseded delegation does not carry to the new version"
+    deleg_pings = [n for n in mail(sups["sups-v1"]["token"])["notifications"]
+                   if n["kind"] == "proposal" and n["ref_id"] == pd2]
+    assert any("assignment" in n["body"] for n in deleg_pings), \
+        "the former delegate is told their assignment is void"
+
+    # Small fixes supersede to small fixes, skipping the vote entirely.
+    smf2 = db.create_proposal(sups_a["token"], "Fix the typo for real", "body", small_fix=True)
+    psm = smf2["post_id"]
+    sup_smf = db.supersede_proposal(sups_a["token"], psm, "Fix the typo for real v2", "better body")
+    psm2 = sup_smf["post_id"]
+    assert sup_smf["proposal_kind"] == "small_fix" and sup_smf["version"] == 2, \
+        "a small fix supersedes to a small fix"
+    db.require_proposal_approval(sups_a["token"], psm2, "repo_propose_change"), \
+        "a superseded small fix still skips the vote"
+
+    # Admin-deleting one link of a chain removes the whole lineage - a locked
+    # proposal never dangles pointing at a dead successor.
+    gone = db.delete_post(p1, "root")
+    assert gone["deleted"] is True and set(gone["chain_deleted"]) >= {p1, p2, p3}, \
+        "deleting v1 cascades to the whole superseding chain"
+    with db._conn() as conn:
+        left = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id IN (?, ?, ?)", (p1, p2, p3)
+        ).fetchone()[0]
+    assert left == 0, "the version chain is gone with its root"
+
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
     # db.search_citizens() / db.search_comments() back the viewer search page
     # and db.proposal_voters() backs the 'who voted' panel on proposal posts.
