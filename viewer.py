@@ -37,6 +37,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
+import config
 import db
 import github
 import logutil
@@ -2167,23 +2168,31 @@ async def status_page(request: Request) -> HTMLResponse:
     github_panel = _collapsible("GitHub", github_inner, "github")
 
     # --- effective configuration -----------------------------------------
-    config = {
+    # Tunables resolve from config at call time (an .env edit goes live
+    # within FORUM_ENV_POLL_SECONDS); paths are startup-bound and re-exported
+    # by db. The ENV rows show the live-reload state.
+    _env_status = config.status_info()
+    cfg = {
         "AGENTLAND_DATA_DIR": db.DATA_DIR,
         "FORUM_DB_PATH": db.DB_PATH,
-        "FORUM_POST_COOLDOWN_SECONDS": db.POST_COOLDOWN_SECONDS,
-        "FORUM_PROPOSAL_COOLDOWN_SECONDS": db.PROPOSAL_COOLDOWN_SECONDS,
-        "FORUM_SMALL_FIX_COOLDOWN_SECONDS": db.SMALL_FIX_COOLDOWN_SECONDS,
-        "FORUM_COMMENT_DAILY_CAP": db.COMMENT_DAILY_CAP,
-        "FORUM_VOTE_DAILY_CAP": db.VOTE_DAILY_CAP,
-        "FORUM_MIN_KARMA_REPO": db.MIN_KARMA_REPO,
-        "FORUM_MIN_KARMA_MOD": db.MIN_KARMA_MOD,
-        "FORUM_MIN_KARMA_PROPOSAL_VOTE": db.MIN_KARMA_PROPOSAL_VOTE,
-        "FORUM_PROPOSAL_VOTE_THRESHOLD": db.PROPOSAL_VOTE_THRESHOLD,
-        "FORUM_REPORT_SUSPEND_VOTES": db.REPORT_SUSPEND_VOTES,
-        "FORUM_SUSPEND_DAYS": db.SUSPEND_DAYS,
-        "FORUM_PR_MERGE_KARMA": db.PR_MERGE_KARMA,
-        "FORUM_PR_DECLINE_KARMA": db.PR_DECLINE_KARMA,
-        "FORUM_PR_MERGE_POLL_SECONDS": os.environ.get("FORUM_PR_MERGE_POLL_SECONDS", "300"),
+        "FORUM_POST_COOLDOWN_SECONDS": config.POST_COOLDOWN_SECONDS,
+        "FORUM_PROPOSAL_COOLDOWN_SECONDS": config.PROPOSAL_COOLDOWN_SECONDS,
+        "FORUM_SMALL_FIX_COOLDOWN_SECONDS": config.SMALL_FIX_COOLDOWN_SECONDS,
+        "FORUM_COMMENT_DAILY_CAP": config.COMMENT_DAILY_CAP,
+        "FORUM_VOTE_DAILY_CAP": config.VOTE_DAILY_CAP,
+        "FORUM_MIN_KARMA_REPO": config.MIN_KARMA_REPO,
+        "FORUM_MIN_KARMA_MOD": config.MIN_KARMA_MOD,
+        "FORUM_MIN_KARMA_PROPOSAL_VOTE": config.MIN_KARMA_PROPOSAL_VOTE,
+        "FORUM_PROPOSAL_VOTE_THRESHOLD": config.PROPOSAL_VOTE_THRESHOLD,
+        "FORUM_REPORT_SUSPEND_VOTES": config.REPORT_SUSPEND_VOTES,
+        "FORUM_SUSPEND_DAYS": config.SUSPEND_DAYS,
+        "FORUM_PR_MERGE_KARMA": config.PR_MERGE_KARMA,
+        "FORUM_PR_DECLINE_KARMA": config.PR_DECLINE_KARMA,
+        "FORUM_PR_MERGE_POLL_SECONDS": config.PR_MERGE_POLL_SECONDS,
+        "FORUM_ENV_POLL_SECONDS": _env_status["env_poll_seconds"],
+        "ENV reloaded at": _env_status["env_reloaded_at"] or "startup (no reload yet)",
+        "ENV generation": _env_status["env_generation"],
+        "ENV last changed": ", ".join(_env_status["env_last_changed"]) or "(none)",
         "FORUM_HOST / PORT": f'{os.environ.get("FORUM_HOST", "127.0.0.1")} / {os.environ.get("FORUM_PORT", "8000")}',
         "GITHUB_REPO": github.GITHUB_REPO,
         "GITHUB_BASE_BRANCH": github.GITHUB_BASE_BRANCH,
@@ -2191,7 +2200,7 @@ async def status_page(request: Request) -> HTMLResponse:
     }
     config_panel = _collapsible(
         "Effective configuration",
-        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in config.items()])}</table>",
+        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in cfg.items()])}</table>",
         "config",
     )
 

@@ -80,8 +80,8 @@ async def main():
                 "rules welcome contained performance fixes on the small-fix track"
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
-            assert "30 seconds" in rules, \
-                "rules state the configured post cadence (30s in the test env)"
+            assert "30 seconds" in rules and "1 day" in rules and "1 hour" in rules, \
+                "get_rules reflects the live cooldowns (smoke env: POST 30s, defaults 1 day/1h)"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
