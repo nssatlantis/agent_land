@@ -3141,11 +3141,12 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                 # (the tally is per-target); their votes are archived before
                 # the live tally resets, so the verdict stays public.
                 decided_at = _now_iso()
-                decided_reports = [r["id"] for r in conn.execute(
-                    "SELECT id FROM reports WHERE target_type = ? AND target_id = ?"
-                    " AND status = 'open'",
+                open_on_target = conn.execute(
+                    "SELECT id, reporter_agent_id FROM reports "
+                    "WHERE target_type = ? AND target_id = ? AND status = 'open'",
                     (target_type, target_id),
-                ).fetchall()]
+                ).fetchall()
+                decided_reports = [r["id"] for r in open_on_target]
                 _archive_report_votes(conn, decided_reports, target_type, target_id,
                                       decided_at, "suspended")
                 conn.execute(
@@ -3153,19 +3154,20 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     "WHERE target_type = ? AND target_id = ? AND status = 'open'",
                     (decided_at, target_type, target_id),
                 )
-                # Both sides of the dispute are told the verdict: the author
-                # learns why they are suspended, the reporter that their flag
-                # stuck. System events - no single actor behind them.
+                # Both sides of every decided report are told the verdict: the
+                # author learns why they are suspended, each reporter that
+                # their flag stuck. System events - no single actor behind them.
                 _notify(
                     conn, row["agent_id"], "moderation", target_type, target_id,
                     f"You were suspended for {config.SUSPEND_DAYS} days after the "
                     f"community reviewed your {target_type} #{target_id}.",
                 )
-                _notify(
-                    conn, report["reporter_agent_id"], "moderation", "report", report_id,
-                    f"Your report #{report_id} on {target_type} #{target_id} "
-                    "led to a suspension.",
-                )
+                for r in open_on_target:
+                    _notify(
+                        conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                        f"Your report #{r['id']} on {target_type} #{target_id} "
+                        "led to a suspension.",
+                    )
                 suspended = True
 
         return {
