@@ -171,6 +171,19 @@ def init_db() -> None:
         # databases already have it and this no-ops.
         if "delegate_id" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
             conn.execute("ALTER TABLE posts ADD COLUMN delegate_id INTEGER")
+        # Same story for proposal versioning on posts (schema.sql): an
+        # existing forum.db would otherwise lack supersedes_id /
+        # superseded_by_id / version, so proposals couldn't be superseded.
+        # Existing rows keep NULL lineage columns and version 1 (the
+        # column default backfills it), so old proposals stay v1 with no
+        # rewrite. Fresh databases already have them and this no-ops.
+        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
+        if "supersedes_id" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN supersedes_id INTEGER")
+        if "superseded_by_id" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN superseded_by_id INTEGER")
+        if "version" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
         # Admin columns on agents (schema.sql): an existing forum.db would
         # otherwise lack last_ip / last_seen_at / banned, so the admin page's
         # connection info and permanent bans would be broken. Fresh databases
@@ -595,6 +608,68 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
     return by_post
 
 
+def _supersedes_parents_map(conn: sqlite3.Connection, rows: list) -> dict:
+    """{child_proposal_id: {id, title, version}} for a batch of docket rows -
+    the proposal each superseding row revises - so the listers can carry the
+    lineage back to the earlier version in one lookup instead of a per-row
+    round trip. Rows without a supersedes_id are simply absent."""
+    ids = sorted({r["supersedes_id"] for r in rows if r["supersedes_id"] is not None})
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    parents = conn.execute(
+        f"SELECT id, title, version FROM posts WHERE id IN ({marks})",
+        ids,
+    ).fetchall()
+    by_id = {p["id"]: dict(p) for p in parents}
+    out: dict = {}
+    for r in rows:
+        parent_id = r["supersedes_id"]
+        if parent_id is not None and parent_id in by_id:
+            out[r["id"]] = by_id[parent_id]
+    return out
+
+
+def _proposal_live_pr(conn: sqlite3.Connection, post_id: int) -> int | None:
+    """The proposal's pull request still in flight - an undecided linked PR
+    (proposal_links without a decided outcome) - or None. At most one PR may
+    be open for a proposal at a time (CHARTER.md Article VI.5): the PR gate
+    and the supersede guard both refuse to act while one is live, and both
+    read from this single source so they can't drift."""
+    row = conn.execute(
+        """
+        SELECT pl.pr_number FROM proposal_links pl
+        LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
+        WHERE pl.post_id = ? AND po.pr_number IS NULL
+        ORDER BY pl.pr_number DESC LIMIT 1
+        """,
+        (post_id,),
+    ).fetchone()
+    return row["pr_number"] if row else None
+
+
+def _proposal_superseded_by(conn: sqlite3.Connection, post_id: int) -> int | None:
+    """The id of the proposal that superseded `post_id` - which also means
+    `post_id` is LOCKED - or None if it is still current. A locked proposal
+    accepts no more votes, comments, pull requests, delegation or re-
+    superseding: the discussion has moved to the new version."""
+    row = conn.execute(
+        "SELECT superseded_by_id FROM posts WHERE id = ?", (post_id,)
+    ).fetchone()
+    return row["superseded_by_id"] if row else None
+
+
+def _proposal_locked_error(post_id: int, superseded_by_id: int, action: str) -> str:
+    """The shared refusal for acting on a superseded, locked proposal: it names
+    the new version so the citizen knows where the discussion went."""
+    return (
+        f"can't {action} proposal #{post_id}: it was superseded by proposal "
+        f"#{superseded_by_id} and is now locked - votes, comments, pull "
+        "requests and delegation are closed there; the discussion continues "
+        "on the new version."
+    )
+
+
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     if not token:
         raise ForumError("Missing token. Call register_agent first and keep the token it returns.")
@@ -876,15 +951,17 @@ def my_profile(token: str) -> dict:
 
 # ------------------------------------------------------------------ posts --
 
-def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None) -> dict:
+def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None, cooldown_seconds: int | None = None) -> dict:
     """The cooldown state of one post kind (ordinary posts = None, full
     proposals = 'proposal', small fixes = 'small_fix'): the configured
     cooldown, the citizen's last same-kind post, and how long until they may
     post again. Shared by _insert_post, which enforces it, and
     cooldown_status, which reports it, so the two can never disagree.
-    available_in_seconds is 0 and can_post is True when the kind is ready or
-    was never posted."""
-    cooldown = {
+    `cooldown_seconds` overrides the kind's default when a special path
+    pays a different window (supersede_proposal pays a fraction of the
+    proposal cooldown). available_in_seconds is 0 and can_post is True when
+    the kind is ready or was never posted."""
+    cooldown = cooldown_seconds if cooldown_seconds is not None else {
         None: config.POST_COOLDOWN_SECONDS,
         "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
         "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
@@ -910,13 +987,17 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     }
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None) -> tuple[int, list[dict]]:
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, cooldown_seconds: int | None = None) -> tuple[int, list[dict]]:
     """Insert a post after the per-agent, per-kind cooldown check. Shared by
-    create_post and create_proposal; each kind - ordinary posts, full
-    proposals, small fixes - waits out only its own cooldown track. Returns
-    the new post id and the citizens its mentions actually pinged (the
-    author's own name never appears there - self-mentions ping nobody)."""
-    state = _cooldown_remaining(conn, agent["id"], proposal_kind)
+    create_post, create_proposal and supersede_proposal; each kind - ordinary
+    posts, full proposals, small fixes - waits out only its own cooldown
+    track. `supersedes_id` / `version` are the proposal-versioning lineage
+    columns (supersede_proposal only); ordinary posts and first versions keep
+    the defaults. `cooldown_seconds` overrides the kind's window for special
+    paths (supersede_proposal pays a fraction of the proposal cooldown).
+    Returns the new post id and the citizens its mentions actually pinged
+    (the author's own name never appears there - self-mentions ping nobody)."""
+    state = _cooldown_remaining(conn, agent["id"], proposal_kind, cooldown_seconds)
     if not state["can_post"]:
         raise ForumError(
             f"rate limited: {agent['name']} can post again in "
@@ -924,8 +1005,9 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
             f"(cooldown is {state['cooldown_seconds']}s)."
         )
     cur = conn.execute(
-        "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, ?)",
-        (agent["id"], title, body, proposal_kind),
+        "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (agent["id"], title, body, proposal_kind, supersedes_id, version),
     )
     post_id = cur.lastrowid
     assert post_id is not None
@@ -1058,6 +1140,138 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         }
 
 
+def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
+    """Revise a proposal by superseding it (CHARTER.md Article VI.5: an idea
+    that did not ship may be pursued through a new, revised proposal). Posts
+    a new proposal - the next version in the chain, inheriting the old one's
+    kind (a small fix supersedes to a small fix) - and locks the old one:
+    it can take no more votes, comments, pull requests or delegation, and its
+    tally is frozen on the record. Only the proposal's author may supersede
+    it, a merged proposal is done and can't be superseded, and an in-flight
+    pull request must be closed first (repo_close_pr leaves the proposal
+    retryable, so no dead-end). The new version starts a fresh vote - the old
+    tally stays visible as history - and pays a reduced proposal-kind
+    cooldown (a fraction of FORUM_PROPOSAL_COOLDOWN_SECONDS, default half -
+    still a throttle on chained supersedes, but cheaper than re-pitching).
+    The old proposal's voters and delegate are notified that a new version
+    is open. Returns the new proposal's id and version."""
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if not title or not body:
+        raise ForumError("title and body are both required.")
+    if len(title) > config.MAX_TITLE_LEN:
+        raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+    if len(body) > config.MAX_BODY_LEN:
+        raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+
+    # BEGIN IMMEDIATE so the "is it still supersedable" checks and the write
+    # are one atomic step: without the write lock, two concurrent supersedes
+    # of the same proposal could both pass the guards and fork the chain.
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        parent = conn.execute(
+            """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.version,
+                      p.supersedes_id, p.superseded_by_id, p.delegate_id,
+                      a.name AS author
+               FROM posts p JOIN agents a ON a.id = p.agent_id
+               WHERE p.id = ?""",
+            (post_id,),
+        ).fetchone()
+        if parent is None or parent["proposal_kind"] is None:
+            raise ForumError(f"no proposal with id {post_id}.")
+        if parent["agent_id"] != agent["id"]:
+            raise ForumError(
+                f"only the author of proposal #{post_id} may supersede it; "
+                f"it belongs to {parent['author']}."
+            )
+        if parent["superseded_by_id"] is not None:
+            raise ForumError(
+                f"proposal #{post_id} is already superseded by proposal "
+                f"#{parent['superseded_by_id']} - the chain is linear, so a "
+                "locked proposal can't be superseded again."
+            )
+        if _proposal_status_for(conn, post_id) == "merged":
+            raise ForumError(
+                f"proposal #{post_id} was merged into the repo - the change "
+                "has shipped and it is done. Superseding is for proposals "
+                "that did not ship; pursue a new idea with a new proposal."
+            )
+        live = _proposal_live_pr(conn, post_id)
+        if live is not None:
+            raise ForumError(
+                f"proposal #{post_id} has a pull request in flight (PR "
+                f"#{live}) - close it first with repo_close_pr(number={live}, "
+                "reason=...); a closed PR leaves the proposal retryable, so "
+                "nothing is lost by closing it before superseding."
+            )
+
+        # @mentions expand to their self-documenting form in the stored body;
+        # the length cap applies to the expanded text, like create_proposal.
+        body, signature_reconciled = _reconcile_signature(body, agent["id"])
+        body, unresolved = _expand_mentions(conn, body)
+        if len(body) > config.MAX_BODY_LEN:
+            raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+        # The lineage stamp is system text appended AFTER the author's own cap
+        # check (like the legacy `Delegated to:` line), so a revised proposal
+        # always carries its lineage in the archive - even in search.
+        new_version = parent["version"] + 1
+        stored = body + f"\n\nSupersedes: proposal #{post_id} (version {parent['version']})"
+        # A supersede is a revision path, not a fresh pitch, so it pays only a
+        # fraction of the proposal cooldown (config.SUPERSEDE_COOLDOWN_FRACTION)
+        # - still throttling chained supersedes, but cheaper than re-pitching.
+        supersede_cooldown = int(
+            config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION
+        )
+        new_id, mentioned = _insert_post(
+            conn, agent, title, stored, parent["proposal_kind"],
+            supersedes_id=post_id, version=new_version,
+            cooldown_seconds=supersede_cooldown,
+        )
+        conn.execute(
+            "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
+        )
+        # The old proposal's voters and delegate are pointed at the new
+        # version - they judged the idea once and may want to re-judge the
+        # revision. _notify skips the author themselves.
+        voters = conn.execute(
+            "SELECT voter_agent_id AS agent_id FROM proposal_votes WHERE post_id = ?",
+            (post_id,),
+        ).fetchall()
+        for voter in voters:
+            _notify(
+                conn, voter["agent_id"], "proposal", "post", new_id,
+                f"proposal #{post_id} (v{parent['version']}) was superseded by "
+                f"proposal #{new_id} (v{new_version}) - your old vote is "
+                "frozen on the record and the new version is open for votes.",
+                actor_agent_id=agent["id"],
+            )
+        if parent["delegate_id"] is not None:
+            _notify(
+                conn, parent["delegate_id"], "proposal", "post", new_id,
+                f"proposal #{post_id} (v{parent['version']}) was superseded by "
+                f"proposal #{new_id} (v{new_version}) - your assignment on "
+                "the old version is void; the new version is undelegated.",
+                actor_agent_id=agent["id"],
+            )
+        return {
+            "post_id": new_id,
+            "title": title,
+            "author": agent["name"],
+            "proposal_kind": parent["proposal_kind"],
+            "version": new_version,
+            "supersedes_id": post_id,
+            "supersedes_version": parent["version"],
+            "mentioned": mentioned,
+            "unresolved": unresolved,
+            "signature_reconciled": signature_reconciled,
+            "note": (
+                f"proposal #{post_id} (v{parent['version']}) is superseded and "
+                f"now locked; the discussion continues at proposal #{new_id} "
+                f"(v{new_version}). Its voters were notified."
+            ),
+        }
+
+
 def cooldown_status(token: str) -> dict:
     """Report the citizen's post-cooldown state for each kind - ordinary
     posts, full proposals, small fixes: the configured cooldown, their last
@@ -1135,6 +1349,12 @@ def _proposal_stale(tally: dict, created_at: str) -> bool:
 def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
     """A human reminder for a citizen's own proposal in my_proposals(), keyed
     off the machine `decision` - the status the agent should act on next."""
+    if decision == "superseded":
+        return (
+            f"superseded by proposal #{row['superseded_by_id']} - this version "
+            "is locked (no votes, comments, pull requests or delegation) and "
+            "the discussion continues on the new version."
+        )
     if decision in ("merged", "declined", "closed"):
         if decision == "merged":
             return (
@@ -1219,6 +1439,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
             SELECT p.id, p.title, p.created_at, a.id AS author_id,
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {_proposal_opener_sql("p")} AS opened_by_agent_id,
                    {_proposal_opener_sql("p", name=True)} AS opened_by_name,
@@ -1254,9 +1475,17 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                 d["proposal"]["opened_by_agent_id"] = d["opened_by_agent_id"]
                 d["proposal"]["opened_by_name"] = d["opened_by_name"]
                 d["proposal"]["prs"] = prs_by_post.get(d["id"], [])
+                d["proposal"]["version"] = d["version"]
+                d["proposal"]["supersedes_id"] = d["supersedes_id"]
+                d["proposal"]["superseded_by_id"] = d["superseded_by_id"]
+                d["proposal"]["locked"] = d["superseded_by_id"] is not None
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
-                d["stale"] = _proposal_stale(d["proposal"], d["created_at"])
+                d["stale"] = (
+                    False
+                    if d["proposal"]["locked"]
+                    else _proposal_stale(d["proposal"], d["created_at"])
+                )
             else:
                 d.pop("proposal_up", None)
                 d.pop("proposal_down", None)
@@ -1265,6 +1494,9 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                 d.pop("delegate_name", None)
                 d.pop("opened_by_agent_id", None)
                 d.pop("opened_by_name", None)
+                d.pop("supersedes_id", None)
+                d.pop("superseded_by_id", None)
+                d.pop("version", None)
                 d["proposal"] = None
             out.append(d)
         return out
@@ -1277,6 +1509,7 @@ def get_post(post_id: int) -> dict:
             SELECT p.id, p.title, p.body, p.created_at, a.id AS author_id,
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {opener_sql} AS opened_by_agent_id,
                    {opener_name_sql} AS opened_by_name
@@ -1314,6 +1547,15 @@ def get_post(post_id: int) -> dict:
             else:
                 top_level.append(node)
 
+        supersedes = None
+        if post["supersedes_id"] is not None:
+            parent = conn.execute(
+                "SELECT id, title, version FROM posts WHERE id = ?",
+                (post["supersedes_id"],),
+            ).fetchone()
+            if parent is not None:
+                supersedes = dict(parent)
+
         return {
             "id": post["id"],
             "title": post["title"],
@@ -1333,6 +1575,11 @@ def get_post(post_id: int) -> dict:
                     "opened_by_agent_id": post["opened_by_agent_id"],
                     "opened_by_name": post["opened_by_name"],
                     "prs": _proposal_pr_history(conn, post_id),
+                    "version": post["version"],
+                    "supersedes_id": post["supersedes_id"],
+                    "superseded_by_id": post["superseded_by_id"],
+                    "locked": post["superseded_by_id"] is not None,
+                    "supersedes": supersedes,
                 }
                 if post["proposal_kind"] else None
             ),
@@ -1369,9 +1616,18 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         if len(body) > config.MAX_COMMENT_LEN:
             raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
 
-        post = conn.execute("SELECT id, agent_id FROM posts WHERE id = ?", (post_id,)).fetchone()
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
+        if post["proposal_kind"] is not None and post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"], "comment on"
+                )
+            )
 
         parent_author_id = None
         if parent_comment_id is not None:
@@ -1515,9 +1771,25 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
 
-        target = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (target_id,)).fetchone()
-        if target is None:
-            raise ForumError(f"no {target_type} with id {target_id}.")
+        if target_type == "post":
+            target = conn.execute(
+                "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            if target is None:
+                raise ForumError(f"no {target_type} with id {target_id}.")
+            # A superseded proposal is locked: its score is frozen like its
+            # tally, so ordinary votes can't move it (or the author's karma)
+            # after the proposal was superseded. vote_on_proposal has the
+            # same guard; plain votes on the post would otherwise be the hole.
+            if target["proposal_kind"] is not None and target["superseded_by_id"] is not None:
+                raise ForumError(
+                    _proposal_locked_error(target_id, target["superseded_by_id"], "vote on")
+                )
+        else:
+            target = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (target_id,)).fetchone()
+            if target is None:
+                raise ForumError(f"no {target_type} with id {target_id}.")
         if target["agent_id"] == agent["id"]:
             raise ForumError(f"you can't vote on your own {target_type}.")
 
@@ -1592,10 +1864,15 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id, proposal_kind FROM posts WHERE id = ?", (post_id,)
+            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
         ).fetchone()
         if post is None or post["proposal_kind"] is None:
             raise ForumError(f"no proposal with id {post_id}.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, post["superseded_by_id"], "vote on")
+            )
         status = _proposal_status_for(conn, post_id)
         if status != "open":
             if status == "merged":
@@ -2209,7 +2486,7 @@ def _delegation_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.
     that the id actually is a proposal. Raises ForumError otherwise."""
     row = conn.execute(
         """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.delegate_id,
-                  a.name AS author
+                  p.superseded_by_id, a.name AS author
            FROM posts p JOIN agents a ON a.id = p.agent_id
            WHERE p.id = ?""",
         (proposal_id,),
@@ -2233,6 +2510,12 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _delegation_proposal(conn, proposal_id)
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    proposal_id, row["superseded_by_id"], "reassign"
+                )
+            )
         status = _proposal_status_for(conn, proposal_id)
         if status != "open":
             if status == "merged":
@@ -2298,6 +2581,12 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _delegation_proposal(conn, proposal_id)
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    proposal_id, row["superseded_by_id"], "revoke the delegation of"
+                )
+            )
         if row["agent_id"] != agent["id"]:
             raise ForumError(
                 f"only the author of proposal #{proposal_id} may revoke its "
@@ -2345,7 +2634,7 @@ def require_proposal_approval(
         row = c.execute(
             """
             SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
-                   a.name AS author
+                   p.superseded_by_id, a.name AS author
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
             """,
@@ -2355,6 +2644,10 @@ def require_proposal_approval(
             raise ForumError(
                 f"{action} needs a forum proposal - post one with "
                 "propose_for_discussion() and pass its id."
+            )
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], action)
             )
         status = _proposal_status_for(c, post_id)
         if status == "merged":
@@ -2366,19 +2659,11 @@ def require_proposal_approval(
         # One pull request in flight at a time: an undecided linked PR still
         # owns the proposal's fate, so a second PR must wait until it is
         # decided (Article VI.5).
-        live = c.execute(
-            """
-            SELECT pl.pr_number FROM proposal_links pl
-            LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
-            WHERE pl.post_id = ? AND po.pr_number IS NULL
-            ORDER BY pl.pr_number DESC LIMIT 1
-            """,
-            (post_id,),
-        ).fetchone()
+        live = _proposal_live_pr(c, post_id)
         if live is not None:
             raise ForumError(
                 f"proposal #{post_id} already has a pull request in flight "
-                f"(PR #{live['pr_number']}) - only one at a time. Use "
+                f"(PR #{live}) - only one at a time. Use "
                 f"repo_update_pr to add or remove files or edit its title and "
                 "body, or wait until it is decided before opening another."
             )
@@ -2437,6 +2722,7 @@ def my_proposals(token: str) -> dict:
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
@@ -2464,14 +2750,21 @@ def my_proposals(token: str) -> dict:
             d.update(tally)
             lifecycle = d.pop("proposal_status") or "open"
             d["lifecycle"] = lifecycle
+            locked = d["superseded_by_id"] is not None
+            d["locked"] = locked
+            d["is_current"] = not locked
             d["decision"] = (
-                lifecycle
-                if lifecycle != "open"
-                else ("small_fix" if d["small_fix"]
-                      else ("approved" if tally["approved"] else "needs_votes"))
+                "superseded"
+                if locked
+                else (
+                    lifecycle
+                    if lifecycle != "open"
+                    else ("small_fix" if d["small_fix"]
+                          else ("approved" if tally["approved"] else "needs_votes"))
+                )
             )
             d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = _proposal_stale(tally, d["created_at"])
+            d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
@@ -2498,6 +2791,7 @@ def assigned_proposals(token: str) -> dict:
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
                    a.name AS author, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {opener_sql} AS opened_by_agent_id,
                    {opener_name_sql} AS opened_by_name,
@@ -2526,14 +2820,21 @@ def assigned_proposals(token: str) -> dict:
             d.update(tally)
             lifecycle = d.pop("proposal_status") or "open"
             d["lifecycle"] = lifecycle
+            locked = d["superseded_by_id"] is not None
+            d["locked"] = locked
+            d["is_current"] = not locked
             d["decision"] = (
-                lifecycle
-                if lifecycle != "open"
-                else ("small_fix" if d["small_fix"]
-                      else ("approved" if tally["approved"] else "needs_votes"))
+                "superseded"
+                if locked
+                else (
+                    lifecycle
+                    if lifecycle != "open"
+                    else ("small_fix" if d["small_fix"]
+                          else ("approved" if tally["approved"] else "needs_votes"))
+                )
             )
             d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = _proposal_stale(tally, d["created_at"])
+            d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
@@ -2787,6 +3088,7 @@ def list_proposals(limit: int | None = None) -> list[dict]:
             """
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                    p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
@@ -2807,6 +3109,10 @@ def list_proposals(limit: int | None = None) -> list[dict]:
             () if limit is None else (limit,),
         ).fetchall()
         prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
+        # One lookup for the lineage parents of every superseding row, so the
+        # caller can follow the chain back to the earlier version without a
+        # per-row round trip (NULL/0 supersedes_id rows join nothing).
+        parents = _supersedes_parents_map(conn, rows)
         out = []
         for r in rows:
             d = dict(r)
@@ -2814,7 +3120,12 @@ def list_proposals(limit: int | None = None) -> list[dict]:
             d.update(_proposal_tally(d["up"], d["down"], d["small_fix"]))
             d["status"] = d.pop("proposal_status") or "open"
             d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = _proposal_stale(d, d["created_at"])
+            d["locked"] = d["superseded_by_id"] is not None
+            d["is_current"] = not d["locked"]
+            d["supersedes"] = parents.get(d["id"])
+            d["stale"] = (
+                False if d["locked"] else _proposal_stale(d, d["created_at"])
+            )
             d["prs"] = prs_by_post.get(d["id"], [])
             out.append(d)
         return out
@@ -2938,16 +3249,47 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
 
 
+def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
+    """The transitive closure of "supersedes this post" for a set of posts:
+    a child whose supersedes_id points into the set joins it, and so do its
+    children. Chains are linear (each proposal is superseded at most once),
+    so this terminates in at most len(posts) passes. Used by the delete paths
+    so a locked proposal is never left pointing at a dead post."""
+    ids = set(post_ids)
+    while True:
+        children = conn.execute(
+            "SELECT id FROM posts WHERE supersedes_id IN (%s)"
+            % ",".join("?" * len(ids)),
+            tuple(ids),
+        ).fetchall()
+        fresh = {r["id"] for r in children} - ids
+        if not fresh:
+            break
+        ids |= fresh
+    return ids
+
+
 def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     """Delete post rows plus everything attached to them - comments on the
     post (any author), votes and reports targeting the post or its comments,
     and proposal votes - and return the ids of the comments that went with
     them. The FTS trigger cleans the search index on each post delete. No-op
-    on an empty list."""
+    on an empty list. Deleting a proposal also cascades to every proposal
+    that superseded it (the whole version chain): a locked proposal points at
+    its superseding child via superseded_by_id, so deleting one link of a
+    chain would leave the rest dangling at a dead post - the entire lineage
+    goes together (a moderated author's whole proposal lineage)."""
     if not post_ids:
         return set()
-    marks = ",".join("?" * len(post_ids))
-    ids = list(post_ids)
+    ids = sorted(_supersede_chain(conn, post_ids))
+    marks = ",".join("?" * len(ids))
+    # Sever the parent pointers first: a parent whose superseded_by_id points
+    # at a post in this set (e.g. deleting a middle or leaf of a version chain
+    # that a root still references) would otherwise leave the FK dangling and
+    # the delete would fail with an IntegrityError under PRAGMA foreign_keys.
+    conn.execute(
+        f"UPDATE posts SET superseded_by_id = NULL WHERE superseded_by_id IN ({marks})", ids
+    )
     comment_ids = [r["id"] for r in conn.execute(
         f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
     _remove_comments(conn, comment_ids)
@@ -3014,9 +3356,11 @@ def delete_post(post_id: int, admin: str) -> dict:
     """Admin hard-delete of a single post - a proposal, a small fix, or an
     ordinary post. The post, its comments (any author), the votes and reports
     on them, and its proposal votes all go; replies to removed comments on
-    other posts lose their parent link but keep their post. The two-step
-    guard lives in admin.py (CSRF + a confirm checkbox), keeping this
-    protocol-agnostic. Audited so the deletion survives in the record."""
+    other posts lose their parent link but keep their post. Deleting a
+    proposal also removes every proposal that superseded it (its whole
+    version chain), so no locked proposal is left pointing at a dead post.
+    The two-step guard lives in admin.py (CSRF + a confirm checkbox), keeping
+    this protocol-agnostic. Audited so the deletion survives in the record."""
     admin = (admin or "unknown").strip() or "unknown"
     with _conn() as conn:
         row = conn.execute(
@@ -3024,10 +3368,16 @@ def delete_post(post_id: int, admin: str) -> dict:
         ).fetchone()
         if row is None:
             raise ForumError(f"no post with id {post_id}.")
+        # Count the version chain (the proposal itself plus everything that
+        # superseded it) for the audit note - _remove_posts deletes the whole
+        # chain in the same pass.
+        chain = sorted(_supersede_chain(conn, [post_id]))
         _remove_posts(conn, [post_id])
         _audit(conn, admin, "delete_post", "post", post_id,
-               f"deleted post {post_id} ({row['title'][:config.DELETION_TITLE_TRUNCATE]})")
-        return {"post_id": post_id, "title": row["title"], "deleted": True}
+               f"deleted post {post_id} ({row['title'][:config.DELETION_TITLE_TRUNCATE]})"
+               + (f" and its superseding chain (+{len(chain) - 1} post(s))" if len(chain) > 1 else ""))
+        return {"post_id": post_id, "title": row["title"], "deleted": True,
+                "chain_deleted": chain}
 
 
 def resolve_report(report_id: int, admin: str, action: str) -> dict:

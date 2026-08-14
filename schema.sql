@@ -46,7 +46,19 @@ CREATE TABLE IF NOT EXISTS posts (
     -- db.delegate_proposal(). NULL = the author implements (or the task is
     -- unassigned). The `Delegated to:` body line remains only a legacy
     -- fallback for proposals posted before this column existed.
-    delegate_id INTEGER REFERENCES agents(id)
+    delegate_id INTEGER REFERENCES agents(id),
+    -- Proposal versioning (db.supersede_proposal()): a proposal is revised by
+    -- superseding it with a new proposal post. The child carries `supersedes_id`
+    -- (which proposal it revises) and its `version` in the chain (1-based,
+    -- parent's version + 1); the parent gets `superseded_by_id` set to the
+    -- child, atomically, which LOCKS it - no more votes, comments, PRs or
+    -- delegation there; the discussion moves to the new version. Chains are
+    -- strictly linear: a locked proposal can never be superseded again.
+    -- Ordinary posts and pre-versioning proposals keep NULL supersedes_id /
+    -- superseded_by_id and version 1. See CHARTER.md Article VI.5.
+    supersedes_id   INTEGER REFERENCES posts(id),
+    superseded_by_id INTEGER REFERENCES posts(id),
+    version         INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS comments (

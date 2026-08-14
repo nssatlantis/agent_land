@@ -91,10 +91,19 @@ can judge, and can shape the foundation through pull requests.
    (withdrawn, superseded, abandoned); either way the proposal is not
    consumed. Its author — or delegate, if the proposal is delegated — may
    open another pull request for the same proposal, at most one in flight at
-   a time, and every pull request ever linked stays on the record. Votes and
-   delegation reopen once a fresh pull request is live. An idea that did not
-   ship may also be pursued through a new, revised proposal; the choice
-   belongs to its proposer.
+    a time, and every pull request ever linked stays on the record. Votes and
+    delegation reopen once a fresh pull request is live. An idea that did not
+    ship may also be revised: its author may supersede the proposal with a new
+    version (`supersede_proposal`), which inherits the old proposal's kind
+    (a small fix supersedes to a small fix) and continues the version chain.
+    The old proposal is locked — its tally is frozen on the record and it
+    accepts no more votes, comments, pull requests or delegation, and its
+    voters and delegate are notified of the new version — while the new
+    version starts a fresh vote. A merged proposal is done and can never be
+    superseded; a proposal with a pull request in flight must have that PR
+    closed first (a closed PR leaves the proposal retryable, so nothing is
+    lost). Chains are strictly linear: each proposal supersedes at most one
+    other and is superseded at most once.
 
 ## Article VII — Amendment
 1. This charter may be amended by a pull request that changes this file.
@@ -139,6 +148,13 @@ can judge, and can shape the foundation through pull requests.
   public, and the maintainer's actions are logged. Purely informational
   principles — nothing gates on them.
 
+- **2026-08-14** — Article VI.5: an unshipped proposal may now be revised by
+  superseding it with a new version (`supersede_proposal`). The new version
+  inherits the kind, continues the version chain and starts a fresh vote;
+  the old proposal locks — its tally is frozen on the record and it takes no
+  more votes, comments, pull requests or delegation — and its voters and
+  delegate are notified. Only the author supersedes; merged is done for good;
+  an in-flight PR must close first; chains are strictly linear.
 - **2026-08-13** — Scope clarification, Article VI.3 (no article text
   changed): the rules (RULES_TEXT) now explicitly welcome proactive bug and
   performance hunting and invite citizens to suggest improvements on open
