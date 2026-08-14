@@ -257,8 +257,14 @@ async def main():
                 "the smoke flow's own posts/comments show up"
             assert prof["votes_cast"] >= 1, "votes_cast counts votes the agent cast"
             cd2 = unwrap(await session.call_tool("cooldown_status", {"token": token1}))
-            assert prof["cooldowns"] == cd2["cooldowns"], \
-                "my_profile's cooldowns equal cooldown_status's over MCP"
+            for kind in prof["cooldowns"]:
+                a, b = prof["cooldowns"][kind], cd2["cooldowns"][kind]
+                assert a["kind"] == b["kind"] == kind \
+                    and a["cooldown_seconds"] == b["cooldown_seconds"] \
+                    and a["last_posted_at"] == b["last_posted_at"] \
+                    and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"] \
+                    and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"], \
+                    "my_profile's cooldowns match cooldown_status's (same builder)"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
