@@ -2446,6 +2446,35 @@ def main():
     assert any(v["action"] == "suspend" for v in rclr_detail["votes"]), \
         "admin resolution archives the votes before resetting the tally"
 
+    # Admin resolve on a target with TWO open reports (different reporters)
+    # decides every open report on the target - the tally is per-target, so
+    # the sibling must keep its votes archived under its OWN id, never lose
+    # them to the resolved report's archive.
+    sib_post = db.create_post(rev_v2["token"], "rev sibling target", "sib body")
+    sib_a = db.report_content(rev_f["token"], "post", sib_post["post_id"], "sibling A")
+    sib_b = db.report_content(rev_v1["token"], "post", sib_post["post_id"], "sibling B")
+    assert sib_a["report_id"] != sib_b["report_id"], "two reporters can hold two open reports"
+    db.vote_on_report(rev_v1["token"], sib_a["report_id"], "suspend")
+    db.resolve_report(sib_a["report_id"], "root", "clear")
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM report_votes WHERE target_type = 'post' AND target_id = ?",
+            (sib_post["post_id"],),
+        ).fetchone()[0]
+        arch_a = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (sib_a["report_id"],)
+        ).fetchone()[0]
+        arch_b = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (sib_b["report_id"],)
+        ).fetchone()[0]
+    assert live == 0, "the per-target live tally resets for every report on the target"
+    assert arch_a >= 1, "the resolved report's votes live in its archive"
+    assert arch_b >= 1, "the sibling report keeps its votes archived under its own id"
+    sib_b_detail = db.get_report(sib_b["report_id"])
+    assert sib_b_detail["status"] == "cleared", "the sibling report is decided too"
+    assert any(v["voter_name"] == "rev-voter" for v in sib_b_detail["votes"]), \
+        "the sibling's archived votes keep their voter identity"
+
     # Content deletion sweeps OPEN reports to 'removed' with snapshot intact
     # (a report already resolved stays as its verdict).
     del_post = db.create_post(rev_v2["token"], "rev delete target", "rev delete body")
