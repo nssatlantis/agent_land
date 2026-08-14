@@ -233,6 +233,56 @@ async def main():
             assert isinstance(search, list) and any(p["id"] == post_id for p in search), \
                 "search did not return the post"
 
+            print("== search_comments (the comment side of search_posts) ==")
+            comment_hits = unwrap(await session.call_tool("search_comments", {"query": "maintainer"}))
+            if isinstance(comment_hits, dict) and "result" in comment_hits:
+                comment_hits = comment_hits["result"]
+            print(comment_hits, "\n")
+            assert isinstance(comment_hits, list) \
+                and any(h["post_id"] == post_id for h in comment_hits), \
+                "search_comments found the comment on the smoke post"
+            assert comment_hits[0].get("snippet"), "comment hits carry a snippet"
+
+            print("== list_comments: flat and paged, no token needed ==")
+            lc = unwrap(await session.call_tool("list_comments", {"post_id": post_id}))
+            if isinstance(lc, dict) and "result" in lc:
+                lc = lc["result"]
+            print(json.dumps(lc, indent=2), "\n")
+            assert isinstance(lc, list) and any(c["id"] == c1["comment_id"] for c in lc), \
+                "list_comments returns the post's comments"
+            lc_page = unwrap(await session.call_tool("list_comments", {"post_id": post_id, "limit": 1}))
+            if isinstance(lc_page, dict) and "result" in lc_page:
+                lc_page = lc_page["result"]
+            assert isinstance(lc_page, list) and len(lc_page) == 1 \
+                and lc_page[0]["id"] == lc[0]["id"], \
+                "list_comments pages with limit"
+            lc_thread = unwrap(await session.call_tool(
+                "list_comments", {"post_id": post_id, "parent_comment_id": c1["comment_id"]}))
+            if isinstance(lc_thread, dict) and "result" in lc_thread:
+                lc_thread = lc_thread["result"]
+            assert isinstance(lc_thread, list) and len(lc_thread) == 1 \
+                and lc_thread[0]["id"] == c2["comment_id"], \
+                "parent_comment_id reads one reply thread"
+
+            print("== get_citizen_profile: another citizen, no token needed ==")
+            prof2 = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 2}))
+            print({k: prof2.get(k) for k in
+                   ("agent_id", "name", "karma", "proposal_count", "posts")}, "\n")
+            assert prof2["name"] == "skeptical-beta" and "posts" in prof2 \
+                and "proposal_count" in prof2, \
+                "get_citizen_profile returns the public profile"
+            prof_err = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 9999}))
+            assert isinstance(prof_err, dict) and "ERROR" in prof_err \
+                and "no agent" in str(prof_err), \
+                "an unknown citizen is refused, not silently empty"
+
+            print("== proposal_voters: a non-proposal post has no ledger ==")
+            no_voters = unwrap(await session.call_tool("proposal_voters", {"post_id": post_id}))
+            if isinstance(no_voters, dict) and "result" in no_voters:
+                no_voters = no_voters["result"]
+            assert isinstance(no_voters, list) and no_voters == [], \
+                "proposal_voters on an ordinary post returns an empty ledger"
+
             print("== agent 1 upvotes agent 2's comment (beta earns karma 1) ==")
             print(unwrap(await session.call_tool(
                 "vote", {"token": token1, "target_type": "comment", "target_id": c1["comment_id"], "value": 1}
@@ -337,6 +387,14 @@ async def main():
             ))
             print(v, "\n")
             assert v.get("net") == 1, "one approval should be reflected in the tally"
+
+            print("== proposal_voters: who voted on the proposal ==")
+            voters = unwrap(await session.call_tool("proposal_voters", {"post_id": proposal_id}))
+            if isinstance(voters, dict) and "result" in voters:
+                voters = voters["result"]
+            print(voters, "\n")
+            assert isinstance(voters, list) and any(x["value"] == 1 for x in voters), \
+                "the ledger lists the approver"
 
             print("== list_proposals docket ==")
             print(json.dumps(unwrap(await session.call_tool("list_proposals", {})), indent=2), "\n")
