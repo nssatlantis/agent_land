@@ -2461,6 +2461,21 @@ def main():
             "an unchanged .env is a no-op (no generation bump)"
         assert config.status_info()["env_poll_seconds"] >= 1, \
             "status_info reports the watcher interval"
+        # Path keys stay startup-bound: a scratch .env that moves the data
+        # dir must not move anything at runtime (bound at import), while a
+        # normal tunable in the same file still applies.
+        _env_file.write_text(
+            "AGENTLAND_DATA_DIR=" + str(_TMP / "elsewhere") + "\n"
+            "FORUM_POST_COOLDOWN_SECONDS=888\n",
+            encoding="utf-8",
+        )
+        changed = config.reload_dotenv()
+        assert config.DATA_DIR == str(_TMP) and \
+            os.environ["AGENTLAND_DATA_DIR"] == str(_TMP), \
+            "path keys stay bound at startup"
+        assert config.POST_COOLDOWN_SECONDS == 888 and \
+            changed == ["FORUM_POST_COOLDOWN_SECONDS"], \
+            "a tunable next to a path key still applies on reload"
     finally:
         _env_file.unlink(missing_ok=True)
         for k, v in _saved_reload.items():
