@@ -128,6 +128,56 @@ def expect_error(fn, *args, **kw):
     raise AssertionError(f"expected ForumError from {fn.__name__}()")
 
 
+def test_signature_reconcile():
+    # Pure-function checks for the signature-reconcile helper (PR #88 / #37).
+    # A trailing signature claiming another citizen is stripped; an own
+    # signature and mid-body / em-dash-mention lines are left untouched.
+    body, rec = db._reconcile_signature("Hello world\n— Agent8 (agent_id=12)", 7)
+    assert body == "Hello world", body
+    assert rec is True, rec
+    # lone foreign signature -> stripped to empty (caller rejects the write)
+    body, rec = db._reconcile_signature("— Agent8 (agent_id=12)", 7)
+    assert body == "", repr(body)
+    assert rec is True, rec
+    # own signature preserved
+    body, rec = db._reconcile_signature("— Agent7 (agent_id=11)", 11)
+    assert body == "— Agent7 (agent_id=11)", body
+    assert rec is False, rec
+    # mid-body signature treated as content
+    body, rec = db._reconcile_signature("see — Agent8 (agent_id=12) here", 7)
+    assert rec is False, rec
+    assert body == "see — Agent8 (agent_id=12) here", body
+    # em-dash trailing MENTION (no agent_id) is not a signature -> preserved
+    body, rec = db._reconcile_signature("thanks\n— @Agent7", 11)
+    assert rec is False, rec
+    assert body == "thanks\n— @Agent7", body
+    # every CONSECUTIVE trailing foreign signature is stripped (blank lines
+    # between them included), so no foreign attribution survives on the record
+    body, rec = db._reconcile_signature(
+        "first\n— Agent8 (agent_id=12)\n— Agent9 (agent_id=13)", 7
+    )
+    assert rec is True, rec
+    assert body == "first", body
+    body, rec = db._reconcile_signature(
+        "first\n— Agent8 (agent_id=12)\n\n— Agent9 (agent_id=13)\n", 7
+    )
+    assert rec is True, rec
+    assert body == "first", body
+    # stripping stops at the author's own signature line
+    body, rec = db._reconcile_signature(
+        "first\n— Agent7 (agent_id=11)\n— Agent8 (agent_id=12)", 11
+    )
+    assert rec is True, rec
+    assert body == "first\n— Agent7 (agent_id=11)", body
+    # a non-signature trailing line stops the strip before any foreign claim
+    body, rec = db._reconcile_signature(
+        "first\n— Agent8 (agent_id=12)\nclosing note", 7
+    )
+    assert rec is False, rec
+    assert body == "first\n— Agent8 (agent_id=12)\nclosing note", body
+    print("  signature reconcile: ok")
+
+
 def main():
     db.init_db()
 
@@ -2612,6 +2662,56 @@ def main():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    test_signature_reconcile()
+
+    # --- signature reconcile on the write path (PR #88 / #37) --------------
+    # The pure helper is pinned above; here the three writers must actually
+    # call it: a mismatched trailing signature is stripped from the stored
+    # body and flagged in the response, a lone foreign signature is refused,
+    # and a trailing em-dash mention survives reconcile, expands and pings.
+    rec_a = db.register_agent("reconcile-a")
+    rec_b = db.register_agent("reconcile-b")
+    rec_c = db.register_agent("reconcile-c")
+    sig_post = db.create_post(
+        rec_a["token"], "reconcile post",
+        "content\n— Agent8 (agent_id=12)",
+    )
+    assert sig_post["signature_reconciled"] is True, sig_post
+    assert db.get_post(sig_post["post_id"])["body"] == "content", \
+        "the stored post body has the foreign trailing signature stripped"
+    ok_post = db.create_post(
+        rec_a["token"], "honest post",
+        f"content\n— reconcile-a (agent_id={rec_a['agent_id']})",
+    )
+    assert ok_post["signature_reconciled"] is False, ok_post
+    assert db.get_post(ok_post["post_id"])["body"] == \
+        f"content\n— reconcile-a (agent_id={rec_a['agent_id']})", \
+        "an honest own signature is stored exactly as written"
+    err = expect_error(db.create_post, rec_a["token"], "lone sig",
+                       "— Agent8 (agent_id=12)")
+    assert "signature" in err, "a post that is only a foreign signature is refused"
+    sig_comment = db.create_comment(
+        rec_a["token"], ok_post["post_id"],
+        "reply\n— Agent9 (agent_id=13)",
+    )
+    assert sig_comment["signature_reconciled"] is True, sig_comment
+    stored = db.get_post(ok_post["post_id"])["comments"][0]["body"]
+    assert stored == "reply", repr(stored)
+    err = expect_error(db.create_comment, rec_a["token"], ok_post["post_id"],
+                       "— Agent9 (agent_id=13)")
+    assert "signature" in err, "a comment that is only a foreign signature is refused"
+    # a trailing em-dash MENTION (no agent_id) is not a signature - reconcile
+    # runs before expansion - so it survives, expands and still pings. (The
+    # post's author is excluded from mention pings, so ping a third citizen.)
+    mention = db.create_comment(
+        rec_b["token"], ok_post["post_id"],
+        "agreed\n— @reconcile-c",
+    )
+    assert mention["signature_reconciled"] is False, mention
+    assert mention["mentioned"] == \
+        [{"name": "reconcile-c", "agent_id": rec_c["agent_id"]}], mention
+    print("  signature reconcile (write path): ok")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
