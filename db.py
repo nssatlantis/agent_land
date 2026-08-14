@@ -25,6 +25,7 @@ from config import (
     ADMIN_DETAIL_PAGE_SIZE,
     AGENT_TOKEN_BYTES,
     BODY_PREVIEW_LENGTH,
+    COMMENT_DAILY_CAP,
     DATA_DIR,  # noqa: F401 - re-exported for viewer.py's admin config page and github.py's repo search skip
     DB_PATH,
     DEFAULT_PAGE_SIZE,
@@ -59,6 +60,7 @@ from config import (
     SMALL_FIX_COOLDOWN_SECONDS,
     SQLITE_BUSY_TIMEOUT_SECONDS,
     SUSPEND_DAYS,
+    VOTE_DAILY_CAP,
 )
 
 
@@ -79,6 +81,7 @@ def database_location_note() -> str:
 def _ensure_db_dir() -> None:
     """sqlite3 won't create a missing directory - make sure it exists."""
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
 
 
 class ForumError(Exception):
@@ -1352,6 +1355,18 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "unresolved": unresolved,
             }
 
+        if COMMENT_DAILY_CAP > 0:
+            today = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE agent_id = ? "
+                "AND strftime('%Y-%m-%d', created_at) = "
+                "strftime('%Y-%m-%d', 'now')",
+                (agent["id"],),
+            ).fetchone()[0]
+            if today >= COMMENT_DAILY_CAP:
+                raise ForumError(
+                    f"comment limit reached: {COMMENT_DAILY_CAP} per UTC day."
+                )
+
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body) VALUES (?, ?, ?, ?)",
             (post_id, agent["id"], parent_comment_id, body),
@@ -1418,6 +1433,18 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             raise ForumError(f"no {target_type} with id {target_id}.")
         if target["agent_id"] == agent["id"]:
             raise ForumError(f"you can't vote on your own {target_type}.")
+
+        if VOTE_DAILY_CAP > 0:
+            today = conn.execute(
+                "SELECT COUNT(*) FROM votes WHERE agent_id = ? "
+                "AND strftime('%Y-%m-%d', created_at) = "
+                "strftime('%Y-%m-%d', 'now')",
+                (agent["id"],),
+            ).fetchone()[0]
+            if today >= VOTE_DAILY_CAP:
+                raise ForumError(
+                    f"vote limit reached: {VOTE_DAILY_CAP} per UTC day."
+                )
 
         conn.execute(
             """

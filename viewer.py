@@ -195,6 +195,14 @@ PAGE = """\
   .table-wrap {{ overflow-x:auto; }}
   .table-wrap table {{ min-width:900px; }}
   .table-wrap tbody tr:nth-child(even) {{ background:#fbfcfe; }}
+  .profile-scroll {{ max-height:480px; overflow-y:auto; }}
+  details.show-more {{ margin-top:4px; }}
+  details.show-more > summary {{ cursor:pointer; list-style:none; color:var(--accent);
+                                 font-size:15px; padding:6px 0; }}
+  details.show-more > summary::-webkit-details-marker {{ display:none; }}
+  details.show-more > summary::after {{ content:" ▾"; color:var(--muted); }}
+  details.show-more:not([open]) > summary::after {{ content:" ▸"; }}
+  details.show-more > summary:hover {{ text-decoration:underline; }}
   td.num {{ text-align:right; white-space:nowrap; }}
   .subline {{ display:block; color:var(--muted); font-size:14px; font-weight:normal;
               max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
@@ -1506,7 +1514,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
 
     cards = _profile_cards(a, open_count, db.karma_breakdown(agent_id))
     prop_by_id = {p["id"]: p for p in a["proposals"]}
-    posts = ""
+    posts = []
     for p in a["posts"]:
         p["author"] = a["name"]
         p["model"] = a["model"]
@@ -1514,9 +1522,19 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
             prop = prop_by_id[p["id"]]
             p["proposal"] = {"up": prop["up"], "down": prop["down"], "approved": prop["approved"]}
             p["status"] = prop["status"]
-        posts += _post_card(p)
+        posts.append(_post_card(p))
     empty = "<p style='color:var(--muted)'>No posts yet.</p>"
-    posts_panel = f'<div class="panel"><h2>Posts · {len(a["posts"])}</h2>{posts or empty}</div>'
+    visible_posts, rest_posts = _capped_rows(posts)
+    posts_inner = (
+        f'<div class="profile-scroll">{"".join(visible_posts)}'
+        + (_show_more(len(rest_posts), "".join(rest_posts)) if rest_posts else "")
+        + "</div>"
+    )
+    posts_panel = _collapsible(
+        f'Posts · {len(a["posts"])}',
+        posts_inner if posts else empty,
+        "posts",
+    )
 
     proposals_rows = ""
     for p in a["proposals"]:
@@ -1564,50 +1582,60 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
 
-    comments = ""
+    comments = []
     for c in a["comments"]:
-        comments += (
+        comments.append(
             f'<div class="rail-item"><a href="/posts/{c["post_id"]}">comment #{c["id"]} '
             f'on post #{c["post_id"]}</a>'
             f'<span class="rail-meta">{esc(_truncate(c["body"], 140))} · '
             f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
         )
     empty_comments = "<p style='color:var(--muted)'>No comments yet.</p>"
-    comments_panel = (
-        f'<div class="panel"><h2>Recent comments · {len(a["comments"])}</h2>'
-        f"{comments or empty_comments}</div>"
+    visible_comments, rest_comments = _capped_rows(comments)
+    comments_inner = (
+        f'<div class="profile-scroll">{"".join(visible_comments)}'
+        + (_show_more(len(rest_comments), "".join(rest_comments)) if rest_comments else "")
+        + "</div>"
+    )
+    comments_panel = _collapsible(
+        f'Recent comments · {len(a["comments"])}',
+        comments_inner if comments else empty_comments,
+        "comments",
     )
 
     repo = f"https://github.com/{esc(github.repo_spec())}"
-    pr_rows = ""
+    pr_rows = []
     for m in a["pr_merges"]:
-        pr_rows += (
+        pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
             f'<td style="color:#2f855a;font-weight:600">merged</td>'
             f'<td>{_human_ts(m["merged_at"])}</td><td></td></tr>'
         )
     for r in a["pr_record"]:
         color = "#c53030" if r["status"] == "declined" else "#a0aec0"
-        pr_rows += (
+        pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
             f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
             f'<td>{_human_ts(r["closed_at"])}</td><td></td></tr>'
         )
     for pr in my_open:
-        pr_rows += (
+        pr_rows.append(
             f'<tr><td><a href="{esc(pr["html_url"])}" style="color:var(--accent)">#{pr["number"]}</a></td>'
             f'<td style="color:var(--muted)">open</td><td>{esc(pr["title"])}</td>'
             f'<td><a href="/prs/{esc(pr["number"])}" style="color:var(--accent)">diff</a></td></tr>'
         )
     empty_prs = "<p style='color:var(--muted)'>No pull requests yet.</p>"
-    pr_panel = (
-        '<div class="panel"><h2>Pull requests · merged / declined / closed / open</h2>'
-        + (
-            "<div class='table-wrap'><table><tr><th>PR</th><th>outcome</th><th>detail</th><th></th></tr>"
-            f"{pr_rows}</table></div>"
-            if pr_rows else empty_prs
-        )
+    pr_head = "<tr><th>PR</th><th>outcome</th><th>detail</th><th></th></tr>"
+    visible_prs, rest_prs = _capped_rows(pr_rows)
+    pr_inner = (
+        f'<div class="table-wrap profile-scroll"><table>{pr_head}{"".join(visible_prs)}</table>'
+        + (_show_more(len(rest_prs), f"<table>{pr_head}{''.join(rest_prs)}</table>") if rest_prs else "")
         + "</div>"
+    )
+    pr_panel = _collapsible(
+        f"Pull requests · {len(pr_rows)} · merged / declined / closed / open",
+        pr_inner if pr_rows else empty_prs,
+        "prs",
     )
 
     body = (
@@ -2000,6 +2028,25 @@ def _collapsible(title: str, inner: str, section_id: str) -> str:
     )
 
 
+def _capped_rows(rows: list[str], cap: int = 8) -> tuple[list[str], list[str]]:
+    """Split already-rendered list rows into the visible cap and the rest, so
+    a long profile list shows `cap` rows plus a 'show all' toggle instead of
+    stretching the page. Returns (visible, rest); callers render the toggle
+    only when rest is non-empty."""
+    if len(rows) <= cap:
+        return rows, []
+    return rows[:cap], rows[cap:]
+
+
+def _show_more(count: int, inner: str) -> str:
+    """The 'show all N more' toggle for a capped list: a nested <details> that
+    expands the remainder in place. Styled by the details.show-more rules."""
+    return (
+        f'<details class="show-more"><summary>show all {count} more</summary>'
+        f"{inner}</details>"
+    )
+
+
 async def status_page(request: Request) -> HTMLResponse:
     by_name, latency, repo, prs = await _status_reads()
     checks = _status_checks(by_name, repo, prs)
@@ -2121,6 +2168,8 @@ async def status_page(request: Request) -> HTMLResponse:
         "FORUM_POST_COOLDOWN_SECONDS": db.POST_COOLDOWN_SECONDS,
         "FORUM_PROPOSAL_COOLDOWN_SECONDS": db.PROPOSAL_COOLDOWN_SECONDS,
         "FORUM_SMALL_FIX_COOLDOWN_SECONDS": db.SMALL_FIX_COOLDOWN_SECONDS,
+        "FORUM_COMMENT_DAILY_CAP": db.COMMENT_DAILY_CAP,
+        "FORUM_VOTE_DAILY_CAP": db.VOTE_DAILY_CAP,
         "FORUM_MIN_KARMA_REPO": db.MIN_KARMA_REPO,
         "FORUM_MIN_KARMA_MOD": db.MIN_KARMA_MOD,
         "FORUM_MIN_KARMA_PROPOSAL_VOTE": db.MIN_KARMA_PROPOSAL_VOTE,

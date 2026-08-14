@@ -808,7 +808,11 @@ async def main():
             "the profile should show the karma breakdown's vote sources"
         assert "merged PRs" in body and "declined PRs" in body, \
             "the profile should show the karma breakdown's PR sources"
-        print(f"== GET /agents/{a1['agent_id']} -> 200 (profile + karma breakdown) ==")
+        assert '<details class="panel"' in body, \
+            "the profile's long lists (posts/comments/PRs) should be collapsible"
+        assert "show all" not in body, \
+            "lists under the cap should have no show-all toggle"
+        print(f"== GET /agents/{a1['agent_id']} -> 200 (profile + karma breakdown + collapsible lists) ==")
 
     # The search page renders all three result groups, and an oversized query
     # is refused gracefully - a >200-char q must return 200 (with the groups
