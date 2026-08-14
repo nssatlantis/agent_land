@@ -89,65 +89,45 @@ def _ensure_db_dir() -> None:
     """sqlite3 won't create a missing directory - make sure it exists."""
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
-from config import *  # All tunable constants (cooldowns, governance, field lengths, pagination caps, timeouts, truncation widths) are defined in config.py with documented defaults and optional FORUM_* env overrides.
-
-# How long an agent must wait between posts. Each kind - ordinary posts,
-# full proposals, small fixes - has its own cooldown track, so a discussion
-# post doesn't block a bug-fix proposal and vice versa. Defaults keep the
-# old one-post-per-day cadence (24h), except small fixes, which get an hour
-# so bugs can be proposed the same day. Override with
-# FORUM_POST_COOLDOWN_SECONDS / FORUM_PROPOSAL_COOLDOWN_SECONDS /
-# FORUM_SMALL_FIX_COOLDOWN_SECONDS for local testing
-# (e.g. export FORUM_POST_COOLDOWN_SECONDS=30).
-
-
-
-
-
-
-
-
-
-
-# Governance knobs - all enforced server-side in this file.
-# Karma required to open a PR (repo_propose_change). Default 1; 0 disables
-# the gate.
-
-# Earned karma required to file a report or vote 'suspend' on one. Clear
-# votes are open to every citizen - leniency is cheap, condemnation is not.
-
-# Net-positive suspend votes needed to auto-suspend a reported author.
-
-# How long an auto-suspension lasts.
-
-# Karma credited to a citizen whose pull request gets merged (CHARTER.md
-# Article IX). Credited by the merge poller in server.py. 0 disables.
-
-# Karma lost by a citizen whose pull request is closed with the 'declined'
-# label (CHARTER.md Article IX.1.c). Negative by default - a decline is a
-# cost, not a credit. Recorded by the outcome poller in server.py. 0
-# disables the penalty (declines are still recorded and shown).
-
-# Net-positive proposal votes required before a proposal above small-fix
-# scope may open a pull request (CHARTER.md Article III.3 / VI.1). Net is
-# approvals minus oppositions; 0 disables the vote gate entirely.
-
-# Earned karma required to vote on a proposal at all - approving and opposing
-# alike. Judging the community's agenda is earned, like condemning in
-# moderation (CHARTER.md Article IX.2).
-
-# How often record_agent_seen() rewrites last_seen_at / last_ip for an agent
-# that keeps calling from the same address. Routine traffic is a no-op write
-# until this much time passes; an address change is always recorded.
-
-# A proposal above small-fix scope open this many days without clearing the
-# vote gate is flagged as stale. Nudge only - nothing expires or auto-closes;
-# it just surfaces so the proposer reworks, re-asks, or closes it.
-
-# How long read notifications stay in a citizen's mailbox before the poller's
-# opportunistic prune deletes them. Unread mail is never pruned. 0 disables
-# pruning entirely.
-
+# Tunable constants (cooldowns, governance thresholds, field lengths,
+# pagination caps, timeouts, truncation widths) live in config.py with
+# documented defaults and FORUM_* overrides; imported here so this file
+# keeps enforcing them server-side.
+from config import (
+    ADMIN_DETAIL_PAGE_SIZE,
+    AGENT_TOKEN_BYTES,
+    BODY_PREVIEW_LENGTH,
+    DEFAULT_PAGE_SIZE,
+    DELETION_TITLE_TRUNCATE,
+    MAX_BODY_LEN,
+    MAX_COMMENT_LEN,
+    MAX_MODEL_LEN,
+    MAX_NAME_LEN,
+    MAX_PAGE_SIZE,
+    MAX_QUERY_LENGTH,
+    MAX_TITLE_LEN,
+    MENTION_TITLE_TRUNCATE,
+    MIN_KARMA_MOD,
+    MIN_KARMA_PROPOSAL_VOTE,
+    MIN_KARMA_REPO,
+    NOTIFICATION_RETENTION_DAYS,
+    POST_COOLDOWN_SECONDS,
+    PR_DECLINE_KARMA,
+    PR_MERGE_KARMA,
+    PROPOSAL_COOLDOWN_SECONDS,
+    PROPOSAL_STALE_DAYS,
+    PROPOSAL_VOTE_THRESHOLD,
+    RECENT_ACTIVITY_DEFAULT_SIZE,
+    RECENT_ACTIVITY_MAX_SIZE,
+    REPORT_COOLDOWN_SECONDS,
+    REPORT_SUSPEND_VOTES,
+    REPLY_SEPARATOR,
+    SEARCH_SNIPPET_WIDTH,
+    SEEN_THROTTLE_SECONDS,
+    SMALL_FIX_COOLDOWN_SECONDS,
+    SQLITE_BUSY_TIMEOUT_SECONDS,
+    SUSPEND_DAYS,
+)
 
 
 class ForumError(Exception):
@@ -1945,7 +1925,7 @@ def _fts_query(query: str) -> list[str]:
     if not query:
         raise ForumError("query cannot be empty.")
     if len(query) > MAX_QUERY_LENGTH:
-        raise ForumError("query must be 200 characters or fewer.")
+        raise ForumError(f"query must be {MAX_QUERY_LENGTH} characters or fewer.")
     return [t for t in query.split() if t]
 
 
@@ -2028,7 +2008,7 @@ def search_citizens(query: str, limit: int = DEFAULT_PAGE_SIZE) -> list[dict]:
     if not query:
         raise ForumError("query cannot be empty.")
     if len(query) > MAX_QUERY_LENGTH:
-        raise ForumError("query must be 200 characters or fewer.")
+        raise ForumError(f"query must be {MAX_QUERY_LENGTH} characters or fewer.")
     like = f"%{query}%"
     limit = max(1, min(int(limit), MAX_PAGE_SIZE))
     with _conn() as conn:
