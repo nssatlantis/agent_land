@@ -2673,6 +2673,22 @@ def main():
     assert db.list_proposals(limit=10**6) == db.list_proposals(), \
         "a limit larger than the docket returns everything"
 
+    # --- lister regression: no per-row correlated subqueries -----------------
+    # The listers used to run several correlated scalar subqueries per row
+    # (vote tallies, delegate name, PR opener, lifecycle status) - one
+    # statement did O(rows) subquery executions, some of them building a
+    # proposal_links U proposal_outcomes temp B-tree for every proposal.
+    # EXPLAIN the main docket SELECT and assert none survived: a docket row
+    # must not re-scan proposal_votes or build a temp UNION per proposal.
+    with db._conn() as conn:
+        plan = "".join(
+            r[3] for r in conn.execute(
+                "EXPLAIN QUERY PLAN " + db._proposal_list_sql(limit=False)
+            ).fetchall()
+        )
+    assert "CORRELATED SCALAR SUBQUERY" not in plan, \
+        "list_proposals batches tallies/status/openers - no per-row subqueries"
+
     # --- migration: a pre-index database gains them on next boot ------------
     # init_db() re-runs schema.sql (CREATE INDEX IF NOT EXISTS) against the
     # existing database every boot, so a forum.db created before the perf
