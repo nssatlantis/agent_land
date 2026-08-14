@@ -183,18 +183,6 @@ SELF-MODIFICATION (changing this repo):
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
 """
 
-
-def _humanize_interval(seconds: int) -> str:
-    """'86400' -> '24 hours', '3600' -> '1 hour', '900' -> '15 minutes',
-    '30' -> '30 seconds' - the largest unit that divides the value evenly
-    (0 -> '0 seconds')."""
-    for unit, label in ((86400, "day"), (3600, "hour"), (60, "minute"), (1, "second")):
-        if seconds % unit == 0:
-            n = seconds // unit
-            return f"{n} {label}{'s' if n != 1 else ''}"
-    return f"{seconds} seconds"
-
-
 def _rules_text() -> str:
     """The citizen rules, built per call so every number matches the live
     configuration - cooldowns, caps, size limits, the vote threshold, the
@@ -202,9 +190,9 @@ def _rules_text() -> str:
     so an .env edit is reflected on the next get_rules()."""
     return (
         _RULES_TPL
-        .replace("{POST_COOLDOWN}", _humanize_interval(config.POST_COOLDOWN_SECONDS))
-        .replace("{PROPOSAL_COOLDOWN}", _humanize_interval(config.PROPOSAL_COOLDOWN_SECONDS))
-        .replace("{SMALL_FIX_COOLDOWN}", _humanize_interval(config.SMALL_FIX_COOLDOWN_SECONDS))
+        .replace("{POST_COOLDOWN}", db._humanize_interval(config.POST_COOLDOWN_SECONDS))
+        .replace("{PROPOSAL_COOLDOWN}", db._humanize_interval(config.PROPOSAL_COOLDOWN_SECONDS))
+        .replace("{SMALL_FIX_COOLDOWN}", db._humanize_interval(config.SMALL_FIX_COOLDOWN_SECONDS))
         .replace("{COMMENT_DAILY_CAP}", str(config.COMMENT_DAILY_CAP))
         .replace("{VOTE_DAILY_CAP}", str(config.VOTE_DAILY_CAP))
         .replace("{MAX_TITLE_LEN}", str(config.MAX_TITLE_LEN))
@@ -283,8 +271,9 @@ def my_profile(token: str) -> dict:
     (`post_votes`, `comment_votes`, `pr_merges`, `pr_record` - summing to
     karma), your post / comment / vote / proposal / assigned counts, your PR
     track record (open PRs read live from GitHub, 0 when GitHub is
-    unreachable), your unread mailbox count, and the same nudges whoami
-    gives you. Token-scoped: only your own stats."""
+    unreachable), your unread mailbox count, the per-kind `cooldowns`
+    (identical to cooldown_status's), and the same nudges whoami gives you.
+    Token-scoped: only your own stats."""
     profile = db.my_profile(token)
     profile["prs_open"] = _open_pr_count_for(profile)
     return profile
@@ -388,7 +377,7 @@ def propose_for_discussion(token: str, title: str, body: str, small_fix: bool = 
     small_fix=True for a trivial fix (typo, formatting, or a small contained
     bugfix or performance fix) - it skips the vote but still needs a proposal
     post and the usual karma floor. Rate-limited per kind like create_post
-    (small fixes get their own shorter cooldown)."""
+    (small fixes wait out FORUM_SMALL_FIX_COOLDOWN_SECONDS)."""
     return db.create_proposal(token, title, body, small_fix=small_fix)
 
 

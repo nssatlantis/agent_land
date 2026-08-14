@@ -67,60 +67,6 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
 
 _file_sources: dict[str, str] = {}
 
-
-def _load_dotenv(path: Path) -> None:
-    """Initial load: parse KEY=VALUE entries into the environment without
-    overriding keys that are already set (process env always wins). Values
-    this module sets from a file are remembered in _file_sources so
-    reload_dotenv() can tell a file edit from a process override."""
-    for key, value in _parse_dotenv(path).items():
-        if key not in os.environ:
-            os.environ[key] = value
-            _file_sources[key] = value
-
-
-# --- Paths / data ---
-# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
-# so the repo can be reset without losing the instance. Default: a sibling of
-# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
-# with AGENTLAND_DATA_DIR (process env, or a loaded .env via the re-resolve
-# below; it decides where .env is found).
-DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
-
-# Load .env files - data-dir .env first so it outranks the repo .env fallback.
-# Existing setups with only a repo .env keep working unchanged.
-_load_dotenv(Path(DATA_DIR) / ".env")
-_load_dotenv(REPO_DIR / ".env")
-
-# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
-DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
-
-DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
-SCHEMA_PATH = REPO_DIR / "schema.sql"
-
-# A DB path inside the checkout is a data-loss trap: update.sh runs
-# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
-# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
-if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
-    print(
-        f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
-        "update.sh's `git clean -xdf` deletes gitignored files like forum.db "
-        "on every deploy, so this database will be wiped. Move it to the data "
-        f"dir (e.g. {DATA_DIR}/forum.db) and fix FORUM_DB_PATH / "
-        "AGENTLAND_DATA_DIR.",
-        file=sys.stderr,
-    )
-
-# --- Comment threading ---
-# Separator concatenated between two comments that get auto-merged into one.
-REPLY_SEPARATOR = "\n\n"
-
-# --- Live reload ---
-# How often the background env watcher re-reads the .env files (seconds). The
-# FORUM_* tunables below resolve at call time, so an edit to <data dir>/.env
-# applies within this window without a restart. Paths stay startup-bound.
-ENV_POLL_SECONDS = int(os.environ.get("FORUM_ENV_POLL_SECONDS", "60"))
-
 # --- Tunable registry ---
 # name -> (env key, code default, converter). Every FORUM_* tuning knob lives
 # here; module __getattr__ resolves config.NAME against the environment at
@@ -184,9 +130,86 @@ _ENV_CONVERTERS = {env_key: convert for _attr, (env_key, _default, convert) in _
 _PATH_KEYS = ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH")
 _SKIP_KEYS = _PATH_KEYS + ("FORUM_ENV_POLL_SECONDS",)
 
+
+def _valid_reload_value(key: str, value: str) -> bool:
+    """True if a .env value converts for a known tunable env key, else False.
+    Invalid values are skipped (logged) so a bad .env edit - at boot or on
+    reload - doesn't 500 every call to that tunable; the key keeps its
+    prior/default value instead."""
+    convert = _ENV_CONVERTERS.get(key)
+    if convert is None:
+        return True
+    try:
+        convert(value)
+        return True
+    except (ValueError, TypeError):
+        logger.warning(
+            "ignoring invalid %s=%r in .env; keeping the prior/default value",
+            key,
+            value,
+        )
+        return False
+
+
+def _load_dotenv(path: Path) -> None:
+    """Initial load: parse KEY=VALUE entries into the environment without
+    overriding keys that are already set (process env always wins). Values
+    this module sets from a file are remembered in _file_sources so
+    reload_dotenv() can tell a file edit from a process override. A value
+    that fails its tunable's converter is skipped (logged) at boot too, so
+    a bad .env never 500s every call to that knob."""
+    for key, value in _parse_dotenv(path).items():
+        if key not in os.environ and _valid_reload_value(key, value):
+            os.environ[key] = value
+            _file_sources[key] = value
+
+
+# --- Paths / data ---
+# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
+# so the repo can be reset without losing the instance. Default: a sibling of
+# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
+# with AGENTLAND_DATA_DIR (process env, or a loaded .env via the re-resolve
+# below; it decides where .env is found).
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
+
+# Load .env files - data-dir .env first so it outranks the repo .env fallback.
+# Existing setups with only a repo .env keep working unchanged.
+_load_dotenv(Path(DATA_DIR) / ".env")
+_load_dotenv(REPO_DIR / ".env")
+
+# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
+
+DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
+SCHEMA_PATH = REPO_DIR / "schema.sql"
+
+# A DB path inside the checkout is a data-loss trap: update.sh runs
+# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
+# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
+if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
+    print(
+        f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
+        "update.sh's `git clean -xdf` deletes gitignored files like forum.db "
+        "on every deploy, so this database will be wiped. Move it to the data "
+        f"dir (e.g. {DATA_DIR}/forum.db) and fix FORUM_DB_PATH / "
+        "AGENTLAND_DATA_DIR.",
+        file=sys.stderr,
+    )
+
+# --- Comment threading ---
+# Separator concatenated between two comments that get auto-merged into one.
+REPLY_SEPARATOR = "\n\n"
+
+# --- Live reload ---
+# How often the background env watcher re-reads the .env files (seconds). The
+# FORUM_* tunables below resolve at call time, so an edit to <data dir>/.env
+# applies within this window without a restart. Paths stay startup-bound.
+ENV_POLL_SECONDS = int(os.environ.get("FORUM_ENV_POLL_SECONDS", "60"))
+
 _env_generation = 0
 _env_reloaded_at: str | None = None
 _env_last_changed: tuple[str, ...] = ()
+_watcher_task: asyncio.Task[None] | None = None
 
 
 def __getattr__(name: str) -> Any:
@@ -201,25 +224,6 @@ def __getattr__(name: str) -> Any:
     env_key, default, convert = spec
     raw = os.environ.get(env_key)
     return convert(raw) if raw is not None else default
-
-
-def _valid_reload_value(key: str, value: str) -> bool:
-    """True if a .env value converts for a known tunable env key, else False.
-    Invalid values are skipped (logged) so a bad .env edit doesn't 500 every
-    call to that tunable - the key keeps its prior/default value instead."""
-    convert = _ENV_CONVERTERS.get(key)
-    if convert is None:
-        return True
-    try:
-        convert(value)
-        return True
-    except (ValueError, TypeError):
-        logger.warning(
-            "ignoring invalid %s=%r in .env; keeping the prior/default value",
-            key,
-            value,
-        )
-        return False
 
 
 def reload_dotenv() -> list[str]:
@@ -321,8 +325,14 @@ async def env_watcher(interval_seconds: int | None = None) -> None:
 
 def spawn_env_watcher(interval_seconds: int | None = None) -> asyncio.Task[None]:
     """Start the .env watcher on the running event loop; cancel the returned
-    task to stop it (the server's lifespan cancels it on shutdown)."""
-    return asyncio.get_running_loop().create_task(env_watcher(interval_seconds))
+    task to stop it (the server's lifespan cancels it on shutdown). Idempotent:
+    a second call while one is running returns the same task rather than
+    spawning a duplicate watcher."""
+    global _watcher_task
+    if _watcher_task is not None and not _watcher_task.done():
+        return _watcher_task
+    _watcher_task = asyncio.get_running_loop().create_task(env_watcher(interval_seconds))
+    return _watcher_task
 
 
 def status_info() -> dict:

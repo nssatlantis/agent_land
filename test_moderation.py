@@ -72,6 +72,11 @@ Covers the community-moderation rules:
 - per-kind post cooldowns: ordinary posts, full proposals and small fixes
   each wait out only their own track, so a discussion post never blocks a
   bug-fix proposal and vice versa
+- the post nudge + my_profile cooldowns: the ordinary post lane is config,
+  not prose - whoami / my_profile carry the post-spending note naming the
+  live interval while the lane is open (gone once spent, and never shown to
+  a suspended citizen), my_profile's cooldowns equal cooldown_status's
+  exactly (one shared builder), and _humanize_interval speaks whole units
 - report de-dup + re-report cooldown: one open report per reporter per
   target, a re-report on decided content waits out the report cooldown, a
   fresh target is never blocked, and both verdict paths stamp the decision
@@ -83,6 +88,7 @@ Covers the community-moderation rules:
   the content-mode dry_run zero-_request guarantee
 """
 
+import asyncio
 import base64
 import datetime as _dt
 import hashlib
@@ -2188,6 +2194,97 @@ def main():
             else:
                 os.environ[k] = v
 
+    # --- post nudge + my_profile cooldowns (cadence is config) -------------
+    # The ordinary post lane is config, not prose: whoami / my_profile carry
+    # a post-spending note naming the LIVE interval (an env override must
+    # show through), my_profile's cooldowns equal cooldown_status's exactly
+    # (one shared builder), spending the post silences the note, and a
+    # suspended citizen - who may still read - is never told the lane is
+    # open when it isn't. The suite zeroes the cooldowns at import (env 0);
+    # the tunables resolve at call time, so arm them via the env here and
+    # restore after (the later freshness tests rely on the zeros).
+    _pn_keys = ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                "FORUM_SMALL_FIX_COOLDOWN_SECONDS", "FORUM_PROPOSAL_VOTE_THRESHOLD")
+    _saved_pn = {k: os.environ.get(k) for k in _pn_keys}
+    try:
+        for k in ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                  "FORUM_SMALL_FIX_COOLDOWN_SECONDS"):
+            os.environ[k] = "500"
+        nudge = db.register_agent("post-nudge")
+        who = db.whoami(nudge["token"])
+        prof = db.my_profile(nudge["token"])
+        assert "post_note" in who and who["post_note"] == prof["post_note"], \
+            "whoami and my_profile carry the same post note"
+        assert "once per 500 seconds" in who["post_note"] and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in who["post_note"], \
+            "the note names the live interval and the knob"
+        assert prof["cooldowns"] == db.cooldown_status(nudge["token"])["cooldowns"], \
+            "my_profile's cooldowns equal cooldown_status's exactly"
+        assert prof["cooldowns"]["post"]["cooldown_seconds"] == 500, \
+            "my_profile carries the configured post cooldown"
+
+        db.create_post(nudge["token"], "spent", "the one post")
+        assert "post_note" not in db.whoami(nudge["token"]) and \
+            "post_note" not in db.my_profile(nudge["token"]), \
+            "spending the post silences the note"
+        assert db.my_profile(nudge["token"])["cooldowns"] == \
+            db.cooldown_status(nudge["token"])["cooldowns"], \
+            "cooldowns stay equal after the post"
+
+        # The docket tail: with proposals waiting the note says so, without
+        # it ends with the plain invitation (threshold 0 empties the docket).
+        # Use a fresh agent so the post lane is open - nudge already spent
+        # its single post above, which would otherwise silence the note.
+        tail = db.register_agent("post-nudge-tail")
+        os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "0"
+        clear_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" not in clear_note and \
+            "list_posts() to weigh into an open thread" in clear_note, \
+            "a clear docket ends the post note with the plain invitation"
+        os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "3"
+        full_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" in full_note, \
+            "a non-empty docket names the proposals needing votes"
+
+        # A suspended citizen may still read whoami / my_profile, but must
+        # not be told their post lane is available - the note is an honest
+        # "you may post", and they cannot. tail still has an open lane.
+        # (Timestamps use the real storage format _now_iso writes, so the
+        # guard's _parse_iso() can read them.)
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2099-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" not in db.my_profile(tail["token"]) and \
+            "post_note" not in db.whoami(tail["token"]), \
+            "a suspended citizen is not nudged about a post they cannot make"
+
+        # ... and an EXPIRED suspension is no longer an active one: the guard
+        # mirrors _require_active_agent (suspended_until > now), so once the
+        # suspension passes the note returns while the lane is open.
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2020-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" in db.my_profile(tail["token"]) and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in \
+            db.my_profile(tail["token"])["post_note"], \
+            "an expired suspension does not suppress the post note"
+    finally:
+        for k, v in _saved_pn.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert db._humanize_interval(86400) == "1 day"
+    assert db._humanize_interval(43200) == "12 hours"
+    assert db._humanize_interval(3600) == "1 hour"
+    assert db._humanize_interval(900) == "15 minutes"
+    assert db._humanize_interval(30) == "30 seconds"
+
     # --- per-agent indexes + agent_card consistency ------------------------
     # The karma aggregates and the citizens / profile pages filter posts and
     # comments by author; both are backed by an index (votes.agent_id needs
@@ -2476,6 +2573,26 @@ def main():
         assert config.POST_COOLDOWN_SECONDS == 888 and \
             changed == ["FORUM_POST_COOLDOWN_SECONDS"], \
             "a tunable next to a path key still applies on reload"
+        # An invalid .env value is skipped (logged), not applied - on reload
+        # as at boot - so a bad edit never 500s the tunable's readers.
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=not-a-number\n", encoding="utf-8")
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 888 and changed == [], \
+            f"an invalid .env value is skipped on reload, got {changed}"
+
+        # spawn_env_watcher is idempotent: a second call returns the same
+        # task instead of spawning a duplicate watcher.
+        async def _probe_watcher():
+            t1 = config.spawn_env_watcher(interval_seconds=0.01)
+            t2 = config.spawn_env_watcher(interval_seconds=0.01)
+            assert t1 is t2, "spawn_env_watcher must not spawn a duplicate"
+            t1.cancel()
+            try:
+                await t1
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_probe_watcher())
     finally:
         _env_file.unlink(missing_ok=True)
         for k, v in _saved_reload.items():
