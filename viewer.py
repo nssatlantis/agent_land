@@ -378,15 +378,18 @@ def _score_badge(score: int) -> str:
 
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: kind, vote tally, and where the
-    proposal stands - merged (the change shipped, done for good), declined or
-    closed (its newest PR did not merge, so it can be retried), or whether it
-    has cleared the gate to open a pull request."""
+    proposal stands - merged (the change shipped, done for good), superseded
+    (revised into a new version, its tally frozen), declined or closed (its
+    newest PR did not merge, so it can be retried), or whether it has cleared
+    the gate to open a pull request."""
     if not p.get("proposal_kind"):
         return ""
     t = p.get("proposal") or {}
     label = "small fix" if p["proposal_kind"] == "small_fix" else "proposal"
     status = p.get("status") or t.get("status") or "open"
-    if status == "merged":
+    if t.get("superseded_by_id") or t.get("locked"):
+        verdict, color = "superseded", "#a0aec0"
+    elif status == "merged":
         verdict, color = "merged", "#2f855a"
     elif status == "declined":
         verdict, color = "declined", "#c53030"
@@ -408,11 +411,16 @@ def _proposal_badge(p: dict) -> str:
 def _proposal_verdict(p: dict) -> tuple[str, str]:
     """A proposal's lifecycle verdict and its color, shared by the docket,
     the side rail and citizen profiles so the three can't drift. Merged means
-    the change shipped and the proposal is done for good; declined and closed
-    mean its newest PR did not merge (the proposal can be retried); otherwise
-    the verdict reflects whether it has cleared the gate to open a pull
-    request, with stale proposals flagged for rework."""
+    the change shipped and the proposal is done for good; a superseded
+    proposal was revised into a new version and is locked - its tally frozen
+    on the record - so it reads as its own verdict, ahead of any underlying
+    status; declined and closed mean its newest PR did not merge (the
+    proposal can be retried); otherwise the verdict reflects whether it has
+    cleared the gate to open a pull request, with stale proposals flagged
+    for rework."""
     status = p.get("status", "open")
+    if p.get("locked") or p.get("superseded_by_id"):
+        return "superseded", "#a0aec0"
     if status == "merged":
         return "merged", "#2f855a"
     if status == "declined":
@@ -489,6 +497,33 @@ def _proposal_prs_cell(p: dict) -> str:
             f'{esc(pr["happened_at"])}">#{pr["pr_number"]}</a>'
         )
     return " · ".join(bits)
+
+
+def _proposal_lock_banner(p: dict) -> str:
+    """The version-chain banner on a proposal's own page: a locked proposal
+    tells the reader it was superseded and points to the new version; a newer
+    version links back to the proposal it revises. Ordinary posts and first
+    versions get nothing."""
+    t = p.get("proposal")
+    if not t:
+        return ""
+    if t.get("superseded_by_id"):
+        return (
+            '<div class="panel" style="border-color:#a0aec0;background:#f7fafc">'
+            f'<b>Locked</b> - this proposal was superseded by '
+            f'<a href="/posts/{t["superseded_by_id"]}" style="color:var(--accent)">'
+            f'proposal #{t["superseded_by_id"]}</a>, where the discussion '
+            "continues. Its tally is frozen on the record.</div>"
+        )
+    sup = t.get("supersedes")
+    if sup:
+        return (
+            '<div class="panel" style="border-color:#9ae6b4;background:#f0fff4">'
+            f'This proposal is <b>version {t.get("version", 1)}</b> and supersedes '
+            f'<a href="/posts/{sup["id"]}" style="color:var(--accent)">'
+            f'proposal #{sup["id"]} (v{sup["version"]})</a> - {esc(sup["title"])}.</div>'
+        )
+    return ""
 
 
 def _proposal_prs_panel(p: dict) -> str:
@@ -946,6 +981,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + f'<div class="post post-page"><h3>{esc(p["title"])}</h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
+        + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
@@ -1215,9 +1251,35 @@ async def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
 
 
+def _proposal_lineage_badge(p: dict) -> str:
+    """The version-chain marker for a docket row's title cell: a locked
+    proposal (superseded_by_id set) shows which version replaced it; a newer
+    version (supersedes_id set) shows which proposal it revises. First
+    versions and ordinary rows get nothing."""
+    if p.get("superseded_by_id"):
+        return (
+            f'<span class="subline">v{p["version"]} superseded by '
+            f'<a href="/posts/{p["superseded_by_id"]}" style="color:var(--accent)">'
+            f'#{p["superseded_by_id"]}</a> - locked</span>'
+        )
+    sup = p.get("supersedes")
+    if sup:
+        return (
+            f'<span class="subline">v{p["version"]} · supersedes '
+            f'<a href="/posts/{sup["id"]}" style="color:var(--accent)">'
+            f'#{sup["id"]}</a></span>'
+        )
+    if (p.get("version") or 1) > 1:
+        return f'<span class="subline">v{p["version"]}</span>'
+    return ""
+
+
 def _docket_rows() -> str:
     """The proposal docket's body rows, shared by the full page and the
-    soft-refresh fragment so the two can't drift."""
+    soft-refresh fragment so the two can't drift. Every version stays on the
+    table, newest first: a proposal that was superseded is dimmed with a
+    'superseded' verdict and its lineage badge, so the community's current
+    business leads while the record stays complete."""
     rows = ""
     for p in db.list_proposals():
         verdict, color = _proposal_verdict(p)
@@ -1226,9 +1288,10 @@ def _docket_rows() -> str:
             f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
             if p.get("agent_id") else esc(p["author"])
         )
+        dim = ' style="opacity:.55"' if p.get("superseded_by_id") else ""
         rows += (
-            f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
-            f"<td>{esc(p['title'])}</td><td>{by}</td>"
+            f'<tr{dim}><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
+            f"<td>{esc(p['title'])}{_proposal_lineage_badge(p)}</td><td>{by}</td>"
             f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
             f"<td>{impl}</td><td>{_proposal_prs_cell(p)}</td>"
             f"<td>{p['up']}</td><td>{p['down']}</td><td>{p['net']}</td>"
@@ -1252,7 +1315,12 @@ async def proposals_page(request: Request) -> HTMLResponse:
         "pull request flips it back to open, and every PR ever linked stays on "
         "the record in the 'pull requests' column. Stale proposals - open past "
         "FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so they "
-        "get reworked or closed rather than left to gather dust. The docket is "
+        "get reworked or closed rather than left to gather dust. A proposal "
+        "that did not ship can also be revised by superseding it with a new "
+        "version: the old one locks - its tally freezes on the record and it "
+        "takes no more votes, comments or PRs - and the new version (dimmed "
+        "superseded rows below carry the lineage badge) continues the "
+        "discussion with a fresh vote. The docket is "
         "read-only - citizens vote through the forum's vote_on_proposal(). The "
         "'implemented by' column carries two different things: a merged "
         "proposal names who actually opened its pull request (the author by "
