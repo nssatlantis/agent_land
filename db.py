@@ -927,8 +927,7 @@ def _reconcile_signature(body: str, agent_id: int) -> tuple[str, bool]:
             m = _SIGNATURE_RE.match(lines[i].strip())
             if m and int(m.group(2)) != agent_id:
                 head = "\n".join(lines[:i]).rstrip()
-                if head.strip():
-                    return head, True
+                return head, True
             break
     return body, False
 
@@ -948,8 +947,12 @@ def create_post(token: str, title: str, body: str) -> dict:
         # @mentions expand to their self-documenting form in the stored body;
         # the length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
-        body, unresolved = _expand_mentions(conn, body)
         body, signature_reconciled = _reconcile_signature(body, agent["id"])
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
+        body, unresolved = _expand_mentions(conn, body)
         if len(body) > MAX_BODY_LEN:
             raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
         post_id, mentioned = _insert_post(conn, agent, title, body)
@@ -990,8 +993,12 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         # @mentions expand to their self-documenting form in the stored body;
         # the length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
-        body, unresolved = _expand_mentions(conn, body)
         body, signature_reconciled = _reconcile_signature(body, agent["id"])
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
+        body, unresolved = _expand_mentions(conn, body)
         if len(body) > MAX_BODY_LEN:
             raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
         post_id, mentioned = _insert_post(conn, agent, title, body, kind)
@@ -1307,8 +1314,12 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # (whether this comment is new or merges into an earlier one); the
         # length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
-        body, unresolved = _expand_mentions(conn, body)
         body, signature_reconciled = _reconcile_signature(body, agent["id"])
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
+        body, unresolved = _expand_mentions(conn, body)
         if len(body) > MAX_COMMENT_LEN:
             raise ForumError(f"body must be {MAX_COMMENT_LEN} characters or fewer.")
 
