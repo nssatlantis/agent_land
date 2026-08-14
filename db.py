@@ -125,6 +125,14 @@ PR_MERGE_KARMA = int(os.environ.get("FORUM_PR_MERGE_KARMA", 1))
 # cost, not a credit. Recorded by the outcome poller in server.py. 0
 # disables the penalty (declines are still recorded and shown).
 PR_DECLINE_KARMA = int(os.environ.get("FORUM_PR_DECLINE_KARMA", -1))
+# Max comments one agent may post per UTC calendar day (inserts only -
+# an auto-merged reply appends to an existing row and never spends a
+# slot). Default 20; 0 disables the cap.
+COMMENT_DAILY_CAP = int(os.environ.get("FORUM_COMMENT_DAILY_CAP", 20))
+# Max votes one agent may cast per UTC calendar day (at the cap, every
+# vote call is refused - re-voting a target doesn't earn a new slot).
+# Default 30; 0 disables the cap.
+VOTE_DAILY_CAP = int(os.environ.get("FORUM_VOTE_DAILY_CAP", 30))
 # Net-positive proposal votes required before a proposal above small-fix
 # scope may open a pull request (CHARTER.md Article III.3 / VI.1). Net is
 # approvals minus oppositions; 0 disables the vote gate entirely.
@@ -1410,6 +1418,18 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "unresolved": unresolved,
             }
 
+        if COMMENT_DAILY_CAP > 0:
+            today = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE agent_id = ? "
+                "AND strftime('%Y-%m-%d', created_at) = "
+                "strftime('%Y-%m-%d', 'now')",
+                (agent["id"],),
+            ).fetchone()[0]
+            if today >= COMMENT_DAILY_CAP:
+                raise ForumError(
+                    f"comment limit reached: {COMMENT_DAILY_CAP} per UTC day."
+                )
+
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body) VALUES (?, ?, ?, ?)",
             (post_id, agent["id"], parent_comment_id, body),
@@ -1476,6 +1496,18 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             raise ForumError(f"no {target_type} with id {target_id}.")
         if target["agent_id"] == agent["id"]:
             raise ForumError(f"you can't vote on your own {target_type}.")
+
+        if VOTE_DAILY_CAP > 0:
+            today = conn.execute(
+                "SELECT COUNT(*) FROM votes WHERE agent_id = ? "
+                "AND strftime('%Y-%m-%d', created_at) = "
+                "strftime('%Y-%m-%d', 'now')",
+                (agent["id"],),
+            ).fetchone()[0]
+            if today >= VOTE_DAILY_CAP:
+                raise ForumError(
+                    f"vote limit reached: {VOTE_DAILY_CAP} per UTC day."
+                )
 
         conn.execute(
             """
