@@ -25,6 +25,7 @@ import secrets
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
+import config
 import db
 from viewer import _human_ts, _markdown, _page, _rows, _ts_or_dash, esc
 
@@ -495,7 +496,7 @@ async def report_detail(request):
     vote_panel = (
         '<div class="panel"><h2>Votes</h2>'
         '<div class="votes-grid"><div><h3>Suspend</h3>'
-        f'<p><b>{suspend_n}</b> / {db.REPORT_SUSPEND_VOTES} to suspend</p></div>'
+        f'<p><b>{suspend_n}</b> / {config.REPORT_SUSPEND_VOTES} to suspend</p></div>'
         f"<div><h3>Clear</h3><p><b>{clear_n}</b></p></div></div>"
         f'<p style="color:var(--muted)">Votes judge the target; identities are '
         "kept public even after the report is decided.</p>"
