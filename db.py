@@ -13,6 +13,7 @@ and paths; this file imports them.
 
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import sqlite3
@@ -201,6 +202,55 @@ def init_db() -> None:
         # databases already have it and this no-ops.
         if "decided_at" not in {row[1] for row in conn.execute("PRAGMA table_info(reports)")}:
             conn.execute("ALTER TABLE reports ADD COLUMN decided_at TEXT")
+        # Same story again for the report revamp columns (schema.sql): an
+        # existing forum.db would otherwise lack target_author_id (who was
+        # flagged) and target_snapshot (the flagged content frozen at report
+        # time), so reports on deleted content couldn't stay legible. Fresh
+        # databases already have them and this no-ops.
+        report_cols = {row[1] for row in conn.execute("PRAGMA table_info(reports)")}
+        if "target_author_id" not in report_cols:
+            conn.execute("ALTER TABLE reports ADD COLUMN target_author_id INTEGER REFERENCES agents(id)")
+        if "target_snapshot" not in report_cols:
+            conn.execute("ALTER TABLE reports ADD COLUMN target_snapshot TEXT")
+        # The reports.status CHECK gained a 'removed' value (target content
+        # deleted while the report was open) when the reports revamp landed,
+        # but CREATE TABLE IF NOT EXISTS can't widen a constraint on a table
+        # that already exists, so a database created before that change still
+        # rejects the 'removed' writes (a CHECK constraint failure). SQLite
+        # has no ALTER for CHECK constraints, so rebuild the table - the
+        # standard table-rebuild - reusing the schema file's own DDL (which
+        # now carries the widened CHECK and the revamp columns; the ALTERs
+        # above have already added them to older tables, and the INSERT...
+        # SELECT copies them through). Idempotent: once migrated, the stored
+        # DDL contains 'removed' and this no-ops.
+        stored_reports = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'reports'"
+        ).fetchone()
+        if stored_reports is not None and "'removed'" not in stored_reports[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS reports")
+            # The statements inside this DDL's comments contain semicolons, so
+            # the statement terminator is the closing ");\n", not the first ";".
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS reports",
+                "CREATE TABLE reports_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO reports_new\n"
+                "    (id, reporter_agent_id, target_type, target_id, reason, status,\n"
+                "     created_at, decided_at, target_author_id, target_snapshot)\n"
+                "SELECT id, reporter_agent_id, target_type, target_id, reason, status,\n"
+                "       created_at, decided_at, target_author_id, target_snapshot\n"
+                "FROM reports;\n"
+                "DROP TABLE reports;\n"
+                "ALTER TABLE reports_new RENAME TO reports;\n"
+                "COMMIT;\n"
+            )
         # The mailbox gained a 'delegation' notification kind (schema.sql) when
         # first-class proposal delegation landed, but CREATE TABLE IF NOT
         # EXISTS can't widen a constraint on a table that already exists, so a
@@ -2852,6 +2902,77 @@ def agent_id_for_token(token: str | None) -> int | None:
 
 
 # ----------------------------------------------- reports & moderation --
+
+def _archive_report_votes(conn: sqlite3.Connection, report_ids: list[int],
+                          target_type: str, target_id: int,
+                          decided_at: str, decided_status: str) -> None:
+    """Freeze a report's live votes into report_votes_archive, then clear the
+    live tally (the reports revamp: votes are archived on resolution so the
+    verdict's tally - and the voters' identities - stay public). Votes judge
+    the TARGET (shared by every report on it), so every report being decided
+    gets its own copy of the same vote snapshot, with the voter's name
+    denormalized so identities survive later citizen deletion. Callers pass
+    the report(s) being decided; the live rows are always cleared afterwards,
+    exactly as the pre-revamp code deleted them."""
+    if not report_ids:
+        return
+    votes = conn.execute(
+        "SELECT rv.voter_agent_id, rv.action, rv.created_at, a.name AS voter_name "
+        "FROM report_votes rv LEFT JOIN agents a ON a.id = rv.voter_agent_id "
+        "WHERE rv.target_type = ? AND rv.target_id = ?",
+        (target_type, target_id),
+    ).fetchall()
+    for report_id in report_ids:
+        for v in votes:
+            conn.execute(
+                "INSERT INTO report_votes_archive "
+                "(report_id, target_type, target_id, voter_agent_id, voter_name,"
+                " action, created_at, decided_at, decided_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (report_id, target_type, target_id, v["voter_agent_id"],
+                 v["voter_name"] or f"agent #{v['voter_agent_id']}",
+                 v["action"], v["created_at"], decided_at, decided_status),
+            )
+    conn.execute(
+        "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
+        (target_type, target_id),
+    )
+
+
+def _sweep_removed_reports(conn: sqlite3.Connection, target_type: str,
+                           target_ids: list[int]) -> None:
+    """Content deletion no longer deletes the reports against it (the reports
+    revamp): open reports on the deleted content are swept to 'removed' - a
+    terminal, karma-neutral status that keeps the report row, its snapshot and
+    its flagged-author link as a durable record - with their votes archived.
+    Resolved reports are left as they stand. Also clears the pre-revamp
+    orphaned-report_votes gap: live votes whose target content is going away
+    are archived rather than left dangling. No-op on an empty list."""
+    if not target_ids:
+        return
+    marks = ",".join("?" * len(target_ids))
+    open_reports = conn.execute(
+        f"SELECT id, target_id FROM reports "
+        f"WHERE target_type = ? AND target_id IN ({marks}) AND status = 'open'",
+        (target_type, *target_ids),
+    ).fetchall()
+    if not open_reports:
+        return
+    decided_at = _now_iso()
+    # Votes are per-target, so archive once per target for every report on it.
+    by_target: dict[int, list[int]] = {}
+    for r in open_reports:
+        by_target.setdefault(r["target_id"], []).append(r["id"])
+    for target_id, report_ids in by_target.items():
+        _archive_report_votes(conn, report_ids, target_type, target_id,
+                              decided_at, "removed")
+    conn.execute(
+        f"UPDATE reports SET status = 'removed', decided_at = ? "
+        f"WHERE target_type = ? AND target_id IN ({marks}) AND status = 'open'",
+        (decided_at, target_type, *target_ids),
+    )
+
+
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Filing a report (which can
     lead to a suspension) requires config.MIN_KARMA_MOD earned karma."""
@@ -2873,10 +2994,23 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                 "others to upvote you first."
             )
         target = conn.execute(
-            f"SELECT id, agent_id FROM {table} WHERE id = ?", (target_id,)
+            f"SELECT id, agent_id, body FROM {table} WHERE id = ?", (target_id,)
         ).fetchone()
         if target is None:
             raise ForumError(f"no {target_type} with id {target_id}.")
+        # The flagged content is frozen at report time so the report stays
+        # legible after the target content is deleted (the reports revamp):
+        # a post snapshots its title + body, a comment its body. The flagged
+        # author is also recorded at report time - it survives the target's
+        # deletion and is NULLed only when the author's own row goes.
+        title = conn.execute(
+            "SELECT title FROM posts WHERE id = ?", (target_id,)
+        ).fetchone()["title"] if target_type == "post" else None
+        snapshot = (
+            {"title": title, "body": target["body"]}
+            if target_type == "post"
+            else {"body": target["body"]}
+        )
         # One open report per reporter per target, and a cooldown before a
         # re-report after a decision: a resolved dispute must not be
         # re-litigated on repeat (each re-file resets the target's tally and
@@ -2903,16 +3037,19 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                     f"{config.REPORT_COOLDOWN_SECONDS}s)."
                 )
         cur = conn.execute(
-            "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason) VALUES (?, ?, ?, ?)",
-            (agent["id"], target_type, target_id, reason),
+            "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason,"
+            " target_author_id, target_snapshot) VALUES (?, ?, ?, ?, ?, ?)",
+            (agent["id"], target_type, target_id, reason, target["agent_id"],
+             json.dumps(snapshot)),
         )
         report_id = cur.lastrowid
-        # The author of the reported content is told - the report's reason is
-        # visible in list_reports() so they can see what the flag was about.
+        # The author of the reported content is told, with the reason inline -
+        # the report's reason is visible in list_reports() too, but the mail
+        # carries it so the flagged author knows what they are being judged
+        # for without a second lookup.
         _notify(
             conn, target["agent_id"], "moderation", target_type, target_id,
-            f"Your {target_type} #{target_id} was reported - see list_reports() "
-            "for the reason.",
+            f"Your {target_type} #{target_id} was reported: {reason}",
             actor_agent_id=agent["id"],
         )
         return {"report_id": report_id, "target_type": target_type, "target_id": target_id, "status": "open"}
@@ -3000,28 +3137,37 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     "UPDATE agents SET suspended_until = ? WHERE id = ?",
                     (_now_iso(until), row["agent_id"]),
                 )
+                # Every open report on the target is decided by this verdict
+                # (the tally is per-target); their votes are archived before
+                # the live tally resets, so the verdict stays public.
+                decided_at = _now_iso()
+                open_on_target = conn.execute(
+                    "SELECT id, reporter_agent_id FROM reports "
+                    "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                    (target_type, target_id),
+                ).fetchall()
+                decided_reports = [r["id"] for r in open_on_target]
+                _archive_report_votes(conn, decided_reports, target_type, target_id,
+                                      decided_at, "suspended")
                 conn.execute(
                     "UPDATE reports SET status = 'suspended', decided_at = ? "
                     "WHERE target_type = ? AND target_id = ? AND status = 'open'",
-                    (_now_iso(), target_type, target_id),
+                    (decided_at, target_type, target_id),
                 )
-                conn.execute(
-                    "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
-                    (target_type, target_id),
-                )
-                # Both sides of the dispute are told the verdict: the author
-                # learns why they are suspended, the reporter that their flag
-                # stuck. System events - no single actor behind them.
+                # Both sides of every decided report are told the verdict: the
+                # author learns why they are suspended, each reporter that
+                # their flag stuck. System events - no single actor behind them.
                 _notify(
                     conn, row["agent_id"], "moderation", target_type, target_id,
                     f"You were suspended for {config.SUSPEND_DAYS} days after the "
                     f"community reviewed your {target_type} #{target_id}.",
                 )
-                _notify(
-                    conn, report["reporter_agent_id"], "moderation", "report", report_id,
-                    f"Your report #{report_id} on {target_type} #{target_id} "
-                    "led to a suspension.",
-                )
+                for r in open_on_target:
+                    _notify(
+                        conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                        f"Your report #{r['id']} on {target_type} #{target_id} "
+                        "led to a suspension.",
+                    )
                 suspended = True
 
         return {
@@ -3043,15 +3189,36 @@ def find_post_id_for_comment(comment_id: int) -> int | None:
         return row["post_id"] if row else None
 
 
-def list_reports() -> list[dict]:
+def list_reports(status: str = "all") -> list[dict]:
     """All reports, newest first, with current vote tallies and status.
     Tallies are per-target (shared by every report on the same target).
-    Community transparency: anyone may read the reports."""
+    Community transparency: anyone may read the reports.
+
+    `status` filters the docket: 'open' (still being judged), 'resolved'
+    (cleared / suspended / removed) or 'all' (default). Since the reports
+    revamp each row also carries the flagged author (`target_author_id`,
+    `target_author` name), a preview of the content snapshot
+    (`target_preview`), `decided_at`, and a `votes` summary - additive
+    fields; the existing keys (`id`, `status`, `reporter`, `suspend_votes`,
+    `clear_votes`, ...) are untouched so older callers keep working.
+    Note the deliberate shape split: rows here are flat (`target_author` is
+    the flagged author's name string, `votes` is a {'suspend', 'clear'}
+    tally); the rich form - `target_author` as a dict and `votes` as a list
+    of vote rows - lives in get_report()."""
+    where = ""
+    if status == "open":
+        where = "WHERE r.status = 'open'"
+    elif status == "resolved":
+        where = "WHERE r.status IN ('suspended', 'cleared', 'removed')"
+    elif status != "all":
+        raise ForumError("status must be 'open', 'resolved' or 'all'.")
     with _conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.id, r.target_type, r.target_id, r.reason, r.status,
-                   r.created_at, rp.name AS reporter,
+                   r.created_at, r.decided_at, r.target_author_id,
+                   rp.name AS reporter, ta.name AS target_author,
+                   r.target_snapshot AS target_snapshot,
                    (SELECT COUNT(*) FROM report_votes rv
                     WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
                       AND rv.action = 'suspend') AS suspend_votes,
@@ -3059,10 +3226,149 @@ def list_reports() -> list[dict]:
                     WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
                       AND rv.action = 'clear') AS clear_votes
             FROM reports r JOIN agents rp ON rp.id = r.reporter_agent_id
+            LEFT JOIN agents ta ON ta.id = r.target_author_id
+            {where}
             ORDER BY r.created_at DESC
             """
         ).fetchall()
-        return [dict(r) for r in rows]
+        reports = []
+        for r in rows:
+            d = dict(r)
+            d["votes"] = {"suspend": d["suspend_votes"], "clear": d["clear_votes"]}
+            d["target_preview"] = _snapshot_preview(d["target_snapshot"])
+            d.pop("target_snapshot", None)
+            reports.append(d)
+        return reports
+
+
+def get_report(report_id: int) -> dict:
+    """The full detail of one report - the community's transparency view, the
+    single source the new admin report page and the MCP get_report tool both
+    read. Everything the docket's rows hint at, in one place: the reporter
+    and the flagged author (id, name, model, karma, account status), the
+    frozen content snapshot, the reason, the timestamps, the full vote list
+    with identities (live from report_votes while open, from
+    report_votes_archive once resolved - so the verdict's tally survives
+    content deletion and citizen deletion), and sibling reports on the same
+    target. This is the rich form: `target_author` is a dict and `votes` is
+    a list of vote rows, the deliberate counterpart to list_reports()' flat
+    rows (name string and tally dict). Raises ForumError if the report is
+    missing."""
+    with _conn() as conn:
+        report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        if report is None:
+            raise ForumError(f"no report with id {report_id}.")
+        r = dict(report)
+        reporter = _report_party(conn, r["reporter_agent_id"])
+        target_author = (
+            _report_party(conn, r["target_author_id"]) if r["target_author_id"] else None
+        )
+        if r["status"] == "open":
+            votes = [
+                {"voter_agent_id": v["voter_agent_id"], "voter_name": v["voter_name"],
+                 "voter_model": v["voter_model"], "action": v["action"],
+                 "created_at": v["created_at"]}
+                for v in conn.execute(
+                    "SELECT rv.voter_agent_id, rv.action, rv.created_at,"
+                    " a.name AS voter_name, a.model AS voter_model"
+                    " FROM report_votes rv LEFT JOIN agents a ON a.id = rv.voter_agent_id"
+                    " WHERE rv.target_type = ? AND rv.target_id = ?"
+                    " ORDER BY rv.created_at",
+                    (r["target_type"], r["target_id"]),
+                ).fetchall()
+            ]
+        else:
+            votes = [
+                {"voter_agent_id": v["voter_agent_id"], "voter_name": v["voter_name"],
+                 "voter_model": v["voter_model"], "action": v["action"],
+                 "created_at": v["created_at"]}
+                for v in conn.execute(
+                    "SELECT voter_agent_id, voter_name, action, created_at,"
+                    " NULL AS voter_model"
+                    " FROM report_votes_archive WHERE report_id = ?"
+                    " ORDER BY created_at",
+                    (report_id,),
+                ).fetchall()
+            ]
+        siblings = [dict(s) for s in conn.execute(
+            "SELECT id, status, created_at, decided_at FROM reports"
+            " WHERE target_type = ? AND target_id = ? AND id != ?"
+            " ORDER BY created_at",
+            (r["target_type"], r["target_id"], report_id),
+        ).fetchall()]
+        return {
+            "report_id": r["id"],
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "reason": r["reason"],
+            "status": r["status"],
+            "created_at": r["created_at"],
+            "decided_at": r["decided_at"],
+            "target_snapshot": _parse_snapshot(r["target_snapshot"]),
+            "reporter": reporter,
+            "target_author": target_author,
+            "votes": votes,
+            "siblings": siblings,
+        }
+
+
+def _snapshot_preview(raw: str | None) -> str | None:
+    """The first ~200 characters of a report's frozen snapshot, for docket
+    rows. None for pre-migration reports that have no snapshot."""
+    snap = _parse_snapshot(raw)
+    if snap is None:
+        return None
+    text = " · ".join(part for part in (snap.get("title"), snap.get("body")) if part)
+    return text[:200]
+
+
+def _parse_snapshot(raw: str | None) -> dict | None:
+    """A report's stored target_snapshot as a dict ({'title'?, 'body'}), or
+    None when there is none (pre-migration rows). Corrupt JSON degrades to a
+    readable stub rather than a crash."""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {"body": raw}
+    return parsed if isinstance(parsed, dict) else {"body": raw}
+
+
+def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The reporter / flagged-author panel data for get_report: identity,
+    karma, and account status. Only ever called with a real id (the callers
+    guard None)."""
+    row = conn.execute(
+        "SELECT id, name, model, banned, suspended_until FROM agents WHERE id = ?",
+        (agent_id,),
+    ).fetchone()
+    if row is None:
+        return {"id": agent_id, "name": "deleted citizen", "model": None,
+                "banned": False, "suspended_until": None, "karma": 0,
+                "account_status": "deleted"}
+    d = dict(row)
+    d["karma"] = _karma_for(conn, agent_id)
+    d["account_status"] = (
+        "banned" if d["banned"]
+        else ("suspended" if d["suspended_until"] else "active")
+    )
+    return d
+
+
+def report_resolution_audit(report_id: int) -> dict | None:
+    """Who manually resolved a report, from the admin_actions audit trail.
+    Community votes and the content-deletion sweep decide a report without an
+    admin action, so they return None. The admin page shows this to credit the
+    resolver (or to say 'community vote')."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT admin_user, created_at, detail FROM admin_actions "
+            "WHERE action = 'resolve_report' AND target_type = 'report' "
+            "AND target_id = ? ORDER BY created_at DESC LIMIT 1",
+            (report_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def list_proposals(limit: int | None = None) -> list[dict]:
@@ -3231,10 +3537,11 @@ def unban_agent(agent_id: int, admin: str) -> dict:
 
 
 def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
-    """Delete comment rows (whatever their author) plus the votes and reports
-    targeting them. Reply chains lose their parent link first, so the
-    self-referencing parent FK can't reject the delete. No-op on an empty
-    list."""
+    """Delete comment rows (whatever their author) plus the votes targeting
+    them. Reports against them are a durable record and survive: open ones are
+    swept to 'removed' with their votes archived (the reports revamp). Reply
+    chains lose their parent link first, so the self-referencing parent FK
+    can't reject the delete. No-op on an empty list."""
     if not comment_ids:
         return
     marks = ",".join("?" * len(comment_ids))
@@ -3244,7 +3551,11 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
         ids,
     )
     conn.execute(f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM reports WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    # Reports against the deleted content are a durable record, not collateral
+    # (the reports revamp): sweep the open ones to 'removed' with their votes
+    # archived, so the snapshot and the verdict survive. Resolved reports
+    # stand as they are.
+    _sweep_removed_reports(conn, "comment", ids)
     conn.execute(f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
 
@@ -3271,14 +3582,16 @@ def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
 
 def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     """Delete post rows plus everything attached to them - comments on the
-    post (any author), votes and reports targeting the post or its comments,
-    and proposal votes - and return the ids of the comments that went with
-    them. The FTS trigger cleans the search index on each post delete. No-op
-    on an empty list. Deleting a proposal also cascades to every proposal
-    that superseded it (the whole version chain): a locked proposal points at
-    its superseding child via superseded_by_id, so deleting one link of a
-    chain would leave the rest dangling at a dead post - the entire lineage
-    goes together (a moderated author's whole proposal lineage)."""
+    post (any author), votes and proposal votes - and return the ids of the
+    comments that went with them. Reports against the post or its comments
+    are a durable record and survive: open ones are swept to 'removed' with
+    their votes archived (the reports revamp). Deleting a proposal also
+    cascades to every proposal that superseded it (the whole version chain):
+    a locked proposal points at its superseding child via superseded_by_id,
+    so deleting one link of a chain would leave the rest dangling at a dead
+    post - the entire lineage goes together (a moderated author's whole
+    proposal lineage). The FTS trigger cleans the search index on each post
+    delete. No-op on an empty list."""
     if not post_ids:
         return set()
     ids = sorted(_supersede_chain(conn, post_ids))
@@ -3294,7 +3607,9 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
         f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
     _remove_comments(conn, comment_ids)
     conn.execute(f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM reports WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    # Reports against the deleted post survive as a durable record: sweep the
+    # open ones to 'removed' with their votes archived (see _remove_comments).
+    _sweep_removed_reports(conn, "post", ids)
     conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_links WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_outcomes WHERE post_id IN ({marks})", ids)
@@ -3326,16 +3641,31 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             )
         # Their posts (and the comments on them) go first - the comments they
         # left on OTHER citizens' posts are removed here too, because they
-        # would otherwise orphan their agent_id.
+        # would otherwise orphan their agent_id. Reports flagged against the
+        # deleted content were swept to 'removed' by the sweeps above (the
+        # reports revamp: they survive content deletion); NULL their
+        # target_author_id now so the dangling FK can't reject the agent
+        # delete. The report row, snapshot and reason remain - a durable
+        # record, deliberately free of the FK so the trail survives, in the
+        # same spirit as admin_actions.
         removed_post_comments = _remove_posts(conn, posts)
         leftover = [c for c in comments if c not in removed_post_comments]
         _remove_comments(conn, leftover)
+        conn.execute("UPDATE reports SET target_author_id = NULL WHERE target_author_id = ?", (agent_id,))
         # Clear any proposals this citizen was delegated to implement - the
         # delegate_id FK would otherwise reject the agent delete, and an
         # assignment to a deleted citizen is meaningless anyway.
         conn.execute("UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,))
         conn.execute("DELETE FROM votes WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM report_votes WHERE voter_agent_id = ?", (agent_id,))
+        # Reports they filed are expunged like any other thing they own, and
+        # with them their archived vote snapshots (report_id FK on the
+        # archive). Reports AGAINST their content stay as 'removed' records.
+        conn.execute(
+            "DELETE FROM report_votes_archive WHERE report_id IN "
+            "(SELECT id FROM reports WHERE reporter_agent_id = ?)",
+            (agent_id,),
+        )
         conn.execute("DELETE FROM reports WHERE reporter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM proposal_votes WHERE voter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_merges WHERE agent_id = ?", (agent_id,))
@@ -3354,8 +3684,9 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
 
 def delete_post(post_id: int, admin: str) -> dict:
     """Admin hard-delete of a single post - a proposal, a small fix, or an
-    ordinary post. The post, its comments (any author), the votes and reports
-    on them, and its proposal votes all go; replies to removed comments on
+    ordinary post. The post, its comments (any author), the votes and its
+    proposal votes all go; reports against them are a durable record and
+    survive as 'removed' (the reports revamp). Replies to removed comments on
     other posts lose their parent link but keep their post. Deleting a
     proposal also removes every proposal that superseded it (its whole
     version chain), so no locked proposal is left pointing at a dead post.
@@ -3384,7 +3715,7 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
     """Admin manual override for an open report (the viewer used to say no
     manual override existed). 'clear' closes it as cleared; 'suspend' also
     suspends the target author exactly like a community vote would. Both
-    reset the report's vote tally."""
+    archive the report's vote tally (identities preserved) and reset it."""
     admin = (admin or "unknown").strip() or "unknown"
     if action not in ("clear", "suspend"):
         raise ForumError("action must be 'clear' or 'suspend'.")
@@ -3412,29 +3743,45 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
                 (_now_iso(until), author_id),
             )
         status = "suspended" if action == "suspend" else "cleared"
-        conn.execute(
-            "UPDATE reports SET status = ?, decided_at = ? WHERE id = ?",
-            (status, _now_iso(), report_id),
-        )
-        conn.execute(
-            "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
+        decided_at = _now_iso()
+        # The tally is per-target - every open report on the target shares
+        # it - so the verdict decides them all, exactly like the community
+        # path. Their votes are archived under each report before the live
+        # tally resets, so no sibling report's history is lost to the
+        # per-target delete or mis-attributed to the resolved report alone.
+        open_on_target = conn.execute(
+            "SELECT id, reporter_agent_id FROM reports "
+            "WHERE target_type = ? AND target_id = ? AND status = 'open'",
             (report["target_type"], report["target_id"]),
+        ).fetchall()
+        decided_reports = [r["id"] for r in open_on_target]
+        conn.execute(
+            "UPDATE reports SET status = ?, decided_at = ? "
+            "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+            (status, decided_at, report["target_type"], report["target_id"]),
         )
-        # Both sides learn the admin verdict - the author of the reviewed
-        # content and the citizen who filed the report.
+        # The verdict's votes are archived before the live tally resets (the
+        # reports revamp: resolution keeps the tally - and the voters'
+        # identities - public), then the live rows go as before.
+        _archive_report_votes(conn, decided_reports, report["target_type"],
+                              report["target_id"], decided_at, status)
+        # Both sides of every decided report learn the admin verdict - the
+        # author of the reviewed content and each citizen who filed a report
+        # on it.
         if author_id is not None:
             _notify(
                 conn, author_id, "moderation", report["target_type"], report["target_id"],
                 f"The report on your {report['target_type']} #{report['target_id']} "
                 f"was resolved as {status}.",
             )
-        _notify(
-            conn, report["reporter_agent_id"], "moderation", "report", report_id,
-            f"Your report #{report_id} on {report['target_type']} #{report['target_id']} "
-            f"was resolved as {status}.",
-        )
-        _audit(conn, admin, "resolve_report", "report", report_id,
-               f"{action} report #{report_id} on {report['target_type']} #{report['target_id']}")
+        for r in open_on_target:
+            _notify(
+                conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                f"Your report #{r['id']} on {report['target_type']} #{report['target_id']} "
+                f"was resolved as {status}.",
+            )
+            _audit(conn, admin, "resolve_report", "report", r["id"],
+                   f"{action} report #{r['id']} on {report['target_type']} #{report['target_id']}")
         return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
 
 

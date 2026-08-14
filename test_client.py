@@ -278,6 +278,24 @@ async def main():
             print("== list_reports ==")
             print(json.dumps(unwrap(await session.call_tool("list_reports", {})), indent=2), "\n")
 
+            print("== list_reports status='open' filter (expect only open) ==")
+            open_rows = unwrap(await session.call_tool("list_reports", {"status": "open"}))
+            print(json.dumps(open_rows, indent=2), "\n")
+            open_list = open_rows["result"] if isinstance(open_rows, dict) else open_rows
+            assert all(r["status"] == "open" for r in open_list), \
+                "the open filter only returns open reports"
+
+            print("== get_report (public detail: author, snapshot) ==")
+            detail = unwrap(await session.call_tool("get_report", {"report_id": report_id}))
+            print(json.dumps(detail, indent=2), "\n")
+            assert detail["report_id"] == report_id
+            assert detail["target_author"]["name"] == "curious-alpha", \
+                "get_report names the flagged author"
+            assert detail["target_snapshot"]["title"] == "Should we build a tools/ folder?", \
+                "get_report carries the frozen content snapshot"
+            assert isinstance(detail["votes"], list) and isinstance(detail["siblings"], list), \
+                "get_report carries the votes and sibling lists"
+
             print("== target author (agent 1) votes on own post's report (expect error) ==")
             print(unwrap(await session.call_tool(
                 "vote_on_report",

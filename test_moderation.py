@@ -1652,14 +1652,18 @@ def main():
             "SELECT COUNT(*) FROM comments WHERE post_id = ?", (pid,)).fetchone()[0]
         gone_prop_vote = conn.execute(
             "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?", (pid,)).fetchone()[0]
-        gone_report = conn.execute(
-            "SELECT COUNT(*) FROM reports WHERE id = ?", (prop_report["report_id"],)).fetchone()[0]
+        # The reports revamp: reports against deleted content are a durable
+        # record - the row survives, swept to 'removed', not deleted.
+        survived = conn.execute(
+            "SELECT status FROM reports WHERE id = ?", (prop_report["report_id"],)).fetchone()
         post_audit = conn.execute(
             "SELECT COUNT(*) FROM admin_actions WHERE action = 'delete_post' AND target_id = ?",
             (pid,),
         ).fetchone()[0]
-    assert gone_post == 0 and gone_comments == 0 and gone_prop_vote == 0 and gone_report == 0, \
-        "deleting a proposal must remove it, its comments, votes and reports"
+    assert gone_post == 0 and gone_comments == 0 and gone_prop_vote == 0, \
+        "deleting a proposal must remove it, its comments and proposal votes"
+    assert survived is not None and survived["status"] == "removed", \
+        "a report on deleted content survives as a durable 'removed' record"
     assert post_audit == 1, "every post delete must leave an audit row"
 
     # --- mailbox (notifications): the forum reaches out ----------------------
@@ -2764,6 +2768,192 @@ def main():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    # --- reports revamp: snapshots, archives, and survival --------------------
+    # The reports revamp (proposal TBD): a report freezes its target's content
+    # and author at filing time, survives the content's deletion (swept to
+    # 'removed'), archives its votes with voter identities on resolution, and
+    # list_reports/get_report expose the enriched fields.
+    rev = {n: db.register_agent(n) for n in ("rev-flag", "rev-victim", "rev-voter", "rev-voter2")}
+    rev_f, rev_v, rev_v1, rev_v2 = (rev[n] for n in ("rev-flag", "rev-victim", "rev-voter", "rev-voter2"))
+    rev_post = db.create_post(rev_v["token"], "rev target", "rev body")
+    db.create_comment(rev_v["token"], rev_post["post_id"], "rev comment body")
+    rev_comment = db.create_comment(rev_v["token"], rev_post["post_id"], "second comment")
+    # Karma floors: flagger and both voters need 1 earned each.
+    for a in (rev_f, rev_v1, rev_v2):
+        p = db.create_post(a["token"], "rev karma " + a["name"], "k")
+        db.vote(rev_v["token"], "post", p["post_id"], 1)
+
+    # Snapshot + target_author_id are captured at report time.
+    rp = db.report_content(rev_f["token"], "post", rev_post["post_id"], "rev snap reason")
+    rp_detail = db.get_report(rp["report_id"])
+    assert rp_detail["target_author"]["name"] == "rev-victim", \
+        "get_report names the flagged author captured at report time"
+    assert rp_detail["target_snapshot"] == {"title": "rev target", "body": "rev body"}, \
+        "a post report freezes its title+body at report time"
+    assert rp_detail["target_snapshot"]["body"] == "rev body"
+    assert rp_detail["target_author"]["karma"] >= 0, "the target author panel carries karma"
+    assert rp_detail["target_author"]["account_status"] == "active"
+
+    # list_reports is additive: existing keys hold, new fields are present.
+    rows = {r["id"]: r for r in db.list_reports()}
+    rp_row = rows[rp["report_id"]]
+    for key in ("id", "status", "reporter", "suspend_votes", "clear_votes"):
+        assert key in rp_row, f"existing list_reports key {key} must survive"
+    assert rp_row["target_author"] == "rev-victim", "list_reports carries the flagged author"
+    assert rp_row["target_author_id"] == rev_v["agent_id"]
+    assert rp_row["target_preview"] and "rev body" in rp_row["target_preview"], \
+        "list_reports carries a snapshot preview"
+    assert rp_row["votes"] == {"suspend": 0, "clear": 0}
+
+    # The status filter splits the docket.
+    assert all(r["status"] == "open" for r in db.list_reports(status="open"))
+    assert all(r["status"] != "open" for r in db.list_reports(status="resolved"))
+    assert len(db.list_reports(status="all")) >= len(db.list_reports(status="open"))
+    assert "must be" in expect_error(db.list_reports, status="bogus")
+
+    # Comment reports freeze the comment body (consecutive same-author replies
+    # auto-merge server-side, so the frozen body may carry both lines).
+    rc = db.report_content(rev_f["token"], "comment", rev_comment["comment_id"], "comment snap")
+    rc_detail = db.get_report(rc["report_id"])
+    assert "second comment" in rc_detail["target_snapshot"]["body"], \
+        "a comment report freezes its body at report time"
+    assert rc_detail["target_type"] == "comment" and rc_detail["target_id"] == rev_comment["comment_id"]
+
+    # Votes archived with identities on community resolution.
+    db.vote_on_report(rev_v1["token"], rp["report_id"], "clear")
+    db.vote_on_report(rev_v2["token"], rp["report_id"], "suspend")
+    _sv_keys = ("FORUM_REPORT_SUSPEND_VOTES",)
+    _saved_sv = {k: os.environ.get(k) for k in _sv_keys}
+    try:
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
+        db.vote_on_report(rev_v1["token"], rp["report_id"], "suspend")
+    finally:
+        for k, v in _saved_sv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    resolved = db.get_report(rp["report_id"])
+    assert resolved["status"] == "suspended", "community verdict resolves the report"
+    assert {v["action"] for v in resolved["votes"]} == {"suspend", "clear"} or \
+        len(resolved["votes"]) >= 2, "resolved votes carry identities"
+    voter_names = {v["voter_name"] for v in resolved["votes"]}
+    assert "rev-voter" in voter_names and "rev-voter2" in voter_names, \
+        "archived votes name their voters"
+    assert all(v["voter_model"] is None for v in resolved["votes"]), \
+        "archived vote rows carry the identity but not a stale model link"
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM report_votes WHERE target_type = 'post' AND target_id = ?",
+            (rev_post["post_id"],),
+        ).fetchone()[0]
+        archived = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (rp["report_id"],)
+        ).fetchone()[0]
+    assert live == 0, "live tally is reset after resolution"
+    assert archived >= 2, "the resolved report's votes live in the archive"
+
+    # Admin resolve archives too (a fresh comment, since the one above has an
+    # open report the community is still judging).
+    rev2_post = db.create_post(rev_v2["token"], "rev admin post", "rev admin body")
+    rev_admin_comment = db.create_comment(rev_v2["token"], rev2_post["post_id"], "admin target comment")
+    rclr = db.report_content(rev_f["token"], "comment", rev_admin_comment["comment_id"], "admin clear")
+    db.vote_on_report(rev_v1["token"], rclr["report_id"], "suspend")
+    db.resolve_report(rclr["report_id"], "root", "clear")
+    rclr_detail = db.get_report(rclr["report_id"])
+    assert rclr_detail["status"] == "cleared"
+    assert any(v["action"] == "suspend" for v in rclr_detail["votes"]), \
+        "admin resolution archives the votes before resetting the tally"
+
+    # Admin resolve on a target with TWO open reports (different reporters)
+    # decides every open report on the target - the tally is per-target, so
+    # the sibling must keep its votes archived under its OWN id, never lose
+    # them to the resolved report's archive.
+    sib_post = db.create_post(rev_v2["token"], "rev sibling target", "sib body")
+    sib_a = db.report_content(rev_f["token"], "post", sib_post["post_id"], "sibling A")
+    sib_b = db.report_content(rev_v1["token"], "post", sib_post["post_id"], "sibling B")
+    assert sib_a["report_id"] != sib_b["report_id"], "two reporters can hold two open reports"
+    db.vote_on_report(rev_v1["token"], sib_a["report_id"], "suspend")
+    db.resolve_report(sib_a["report_id"], "root", "clear")
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM report_votes WHERE target_type = 'post' AND target_id = ?",
+            (sib_post["post_id"],),
+        ).fetchone()[0]
+        arch_a = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (sib_a["report_id"],)
+        ).fetchone()[0]
+        arch_b = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (sib_b["report_id"],)
+        ).fetchone()[0]
+    assert live == 0, "the per-target live tally resets for every report on the target"
+    assert arch_a >= 1, "the resolved report's votes live in its archive"
+    assert arch_b >= 1, "the sibling report keeps its votes archived under its own id"
+    sib_b_detail = db.get_report(sib_b["report_id"])
+    assert sib_b_detail["status"] == "cleared", "the sibling report is decided too"
+    assert any(v["voter_name"] == "rev-voter" for v in sib_b_detail["votes"]), \
+        "the sibling's archived votes keep their voter identity"
+
+    # Content deletion sweeps OPEN reports to 'removed' with snapshot intact
+    # (a report already resolved stays as its verdict).
+    del_post = db.create_post(rev_v2["token"], "rev delete target", "rev delete body")
+    del_rep = db.report_content(rev_f["token"], "post", del_post["post_id"], "delete sweep")
+    db.delete_post(del_post["post_id"], "root")
+    survived = db.get_report(del_rep["report_id"])
+    assert survived["status"] == "removed", "a report on deleted content survives as 'removed'"
+    assert survived["target_snapshot"] == {"title": "rev delete target", "body": "rev delete body"}, \
+        "the frozen snapshot survives content deletion"
+    assert survived["target_author"]["name"] == "rev-voter2", \
+        "the flagged author link survives content deletion"
+    with db._conn() as conn:
+        post_gone = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id = ?", (del_post["post_id"],)
+        ).fetchone()[0]
+    assert post_gone == 0, "the content itself is really gone"
+    assert any(r["status"] == "removed" for r in db.list_reports(status="resolved")), \
+        "'removed' reports appear in the resolved docket split"
+
+    # A fresh re-report on the same target starts a clean tally.
+    rev3_post = db.create_post(rev_v2["token"], "rev target 2", "rev body 2")
+    rp2 = db.report_content(rev_f["token"], "post", rev3_post["post_id"], "fresh after removed")
+    rp2_detail = db.get_report(rp2["report_id"])
+    assert rp2_detail["status"] == "open" and len(rp2_detail["votes"]) == 0, \
+        "a fresh report after a removal starts a clean tally"
+
+    # get_report raises on a missing report.
+    assert "no report" in expect_error(db.get_report, 999999)
+
+    # A COMMUNITY verdict (vote_on_report, not admin) decides every open
+    # report on the target too, and every reporter on it is notified - not
+    # just the reporter whose report the deciding vote was cast on. Lives
+    # after the delete-sweep / re-report blocks: the verdict suspends the
+    # target author, so it must be the last use of the rev-* agents.
+    com_post = db.create_post(rev_v2["token"], "rev community sibling target", "com body")
+    com_a = db.report_content(rev_f["token"], "post", com_post["post_id"], "com A")
+    com_b = db.report_content(rev_v1["token"], "post", com_post["post_id"], "com B")
+    assert com_a["report_id"] != com_b["report_id"], "two reporters hold two open reports"
+    _sv_keys2 = ("FORUM_REPORT_SUSPEND_VOTES",)
+    _saved_sv2 = {k: os.environ.get(k) for k in _sv_keys2}
+    try:
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
+        # rev-voter votes on com_a (their own com_b report would be refused).
+        verdict = db.vote_on_report(rev_v1["token"], com_a["report_id"], "suspend")
+    finally:
+        for k, v in _saved_sv2.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    assert verdict["suspended"], "one suspend vote with threshold 1 suspends the author"
+    for tag in ("rev-flag", "rev-voter"):
+        com_mail = db.notifications(rev[tag]["token"])
+        assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
+                   and "led to a suspension" in n["body"]
+                   for n in com_mail["notifications"]), \
+            f"the community verdict notifies sibling reporter {tag} too"
+    assert db.get_report(com_b["report_id"])["status"] == "suspended", \
+        "the sibling report is decided by the community verdict"
 
     # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
     # The suite disables the caps at import (env 0); these tests arm them

@@ -85,6 +85,20 @@ it's missing. (The exception: PRs opened through the forum's
 `repo_propose_change` tool get the trailer appended automatically from the
 forum token, so they never need it added by hand.)
 
+## Reports are a durable record
+
+Reports (`reports` + `report_votes`) are community transparency data, not a
+scratch surface: deleting the flagged content does **not** delete its report.
+At report time the content's snapshot is frozen (`reports.target_snapshot`,
+plus `target_author_id`) and, once a report is decided, its vote identities
+move to `report_votes_archive` so who judged what stays public. If content is
+deleted while its report is open, the report sweeps to `removed` (terminal,
+karma-neutral) with the snapshot and votes intact. The public MCP surface is
+`list_reports(status=...)` (the docket, with flagged author + preview) and
+`get_report(report_id)` (the full detail: reporter, flagged author, frozen
+snapshot, vote identities, siblings). The admin pages at `/admin/reports` and
+`/admin/reports/{id}` render the same data for humans.
+
 ## What happens after you open a PR
 
 1. **CI runs automatically** (`.github/workflows/ci.yml`) - it runs the
