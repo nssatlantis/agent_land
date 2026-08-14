@@ -173,6 +173,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "NOTIFICATION_RETENTION_DAYS": ("FORUM_NOTIFICATION_RETENTION_DAYS", 60, int),
 }
 
+# Reverse lookup for reload validation: env key -> converter. Built once from
+# the registry so reload_dotenv() can reject an invalid value (a bad .env edit
+# is skipped and logged rather than 500ing every call to the tunable).
+_ENV_CONVERTERS = {env_key: convert for _attr, (env_key, _default, convert) in _TUNING.items()}
+
+# Startup-bound keys never re-applied on reload. The path keys decide where
+# .env and the database live (a change warns for a restart); FORUM_ENV_POLL_SECONDS
+# governs the watcher that would reload it, so it cannot be live either.
+_PATH_KEYS = ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH")
+_SKIP_KEYS = _PATH_KEYS + ("FORUM_ENV_POLL_SECONDS",)
+
 _env_generation = 0
 _env_reloaded_at: str | None = None
 _env_last_changed: tuple[str, ...] = ()
@@ -192,16 +203,36 @@ def __getattr__(name: str) -> Any:
     return convert(raw) if raw is not None else default
 
 
+def _valid_reload_value(key: str, value: str) -> bool:
+    """True if a .env value converts for a known tunable env key, else False.
+    Invalid values are skipped (logged) so a bad .env edit doesn't 500 every
+    call to that tunable - the key keeps its prior/default value instead."""
+    convert = _ENV_CONVERTERS.get(key)
+    if convert is None:
+        return True
+    try:
+        convert(value)
+        return True
+    except (ValueError, TypeError):
+        logger.warning(
+            "ignoring invalid %s=%r in .env; keeping the prior/default value",
+            key,
+            value,
+        )
+        return False
+
+
 def reload_dotenv() -> list[str]:
     """Re-read both .env files (data dir outranks the repo) and apply file
     edits to the environment, returning the keys that changed.
 
     Process env always wins: a key is applied only when os.environ still
     holds the value this module last set from a file - a process-level
-    override is never touched. A key that vanished from every file reverts
-    to the code default (unless the process set its own value). Path keys
-    (AGENTLAND_DATA_DIR / FORUM_DB_PATH) are startup-bound: a change to
-    either on disk is reported with a restart warning."""
+    override is never touched. A key the process removed reverts to the file
+    value. A value that fails its converter is skipped (logged), not applied.
+    Startup-bound keys (the two path keys and FORUM_ENV_POLL_SECONDS) are
+    never re-applied; a change to a path key on disk is reported with a
+    restart warning."""
     global _env_generation, _env_reloaded_at, _env_last_changed
     data = _parse_dotenv(Path(DATA_DIR) / ".env")
     repo = _parse_dotenv(REPO_DIR / ".env")
@@ -210,7 +241,9 @@ def reload_dotenv() -> list[str]:
         merged.setdefault(key, value)
     changed: list[str] = []
     for key, value in merged.items():
-        if key in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH"):
+        if key in _SKIP_KEYS:
+            continue
+        if not _valid_reload_value(key, value):
             continue
         current = os.environ.get(key)
         prev = _file_sources.get(key)
@@ -220,12 +253,12 @@ def reload_dotenv() -> list[str]:
             os.environ[key] = value
             _file_sources[key] = value
             changed.append(key)
-        elif current is None and key not in _file_sources:
+        elif current is None:
             os.environ[key] = value
             _file_sources[key] = value
             changed.append(key)
     for key, prev in list(_file_sources.items()):
-        if key in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH"):
+        if key in _SKIP_KEYS:
             continue
         if key not in merged:
             current = os.environ.get(key)
@@ -237,7 +270,7 @@ def reload_dotenv() -> list[str]:
         _env_generation += 1
     _env_reloaded_at = datetime.now(timezone.utc).isoformat()
     _env_last_changed = tuple(changed)
-    for path_key in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH"):
+    for path_key in _PATH_KEYS:
         if path_key in merged and merged[path_key] != os.environ.get(path_key):
             print(
                 "WARNING: AGENTLAND_DATA_DIR / FORUM_DB_PATH changed on disk - these "
@@ -274,8 +307,8 @@ async def env_watcher(interval_seconds: int | None = None) -> None:
         try:
             now = dotenv_fingerprint()
             if now != seen:
-                seen = now
                 changed = reload_dotenv()
+                seen = now
                 if changed:
                     logger.info(
                         "config reloaded from .env (generation %d): %s",
