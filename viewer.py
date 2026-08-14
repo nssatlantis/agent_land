@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
-import os
 import re
 import shutil
 import subprocess
@@ -42,9 +41,9 @@ import db
 import github
 import logutil
 
-HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
-PORT = int(os.environ.get("VIEWER_PORT", "8000"))
-REFRESH_SECONDS = 15
+HOST = config.VIEWER_HOST
+PORT = config.VIEWER_PORT
+REFRESH_SECONDS = config.VIEWER_REFRESH_SECONDS
 POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
@@ -54,7 +53,7 @@ _START_TIME = time.monotonic()
 # REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
 # window). "fresh" tracks whether a result (success or failure) is cached, so
 # an outage isn't re-probed on every fragment render within the cache window.
-_PR_PRS_CACHE_SECONDS = 30
+_PR_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 
 # The Repository panel's ahead/behind is only as truthful as its last `git
@@ -62,7 +61,7 @@ _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 # within a minute (one fetch per window is plenty). "ok" records whether the
 # last fetch succeeded; a failed fetch keeps the previous refs but marks the
 # panel stale instead of pretending.
-_GIT_FETCH_CACHE_SECONDS = 60
+_GIT_FETCH_CACHE_SECONDS = config.GIT_FETCH_CACHE_SECONDS
 _git_fetch_cache = {"ts": 0.0, "ok": False}
 
 
@@ -98,7 +97,7 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
 # slow or unreachable GitHub API. The cache is keyed by PR number and keeps
 # one result (success or failure) per window, so an outage isn't re-probed on
 # every render.
-_PR_DIFF_CACHE_SECONDS = 30
+_PR_DIFF_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_diff_cache: dict[str, Any] = {"ts": 0.0, "number": None, "diff": None, "missing": False, "fresh": False}
 
 
@@ -1394,7 +1393,7 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'
 
 
-_RECORD_CACHE_SECONDS = 300
+_RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
 _record_cache: dict = {}
 
 
@@ -1882,7 +1881,7 @@ def _git(args: list[str], cwd: str) -> str:
         cwd=cwd,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 
@@ -1897,7 +1896,7 @@ def _git_ok(args: list[str], cwd: str) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
         )
         return result.returncode == 0
     except Exception:
@@ -2236,39 +2235,24 @@ async def status_page(request: Request) -> HTMLResponse:
     github_panel = _collapsible("GitHub", github_inner, "github")
 
     # --- effective configuration -----------------------------------------
-    # Tunables resolve from config at call time (an .env edit goes live
-    # within FORUM_ENV_POLL_SECONDS); paths are startup-bound and re-exported
-    # by db. The ENV rows show the live-reload state.
+    # Every knob config.py reads, derived from config.CONFIG_KNOBS (env name
+    # + config attribute name), so the panel and the running server can't
+    # drift. The GitHub identity / token rows are deployment values that live
+    # outside config.py; they're listed after the tunables for completeness.
+    # The ENV rows show the live-reload state.
     _env_status = config.status_info()
-    cfg = {
-        "AGENTLAND_DATA_DIR": db.DATA_DIR,
-        "FORUM_DB_PATH": db.DB_PATH,
-        "FORUM_POST_COOLDOWN_SECONDS": config.POST_COOLDOWN_SECONDS,
-        "FORUM_PROPOSAL_COOLDOWN_SECONDS": config.PROPOSAL_COOLDOWN_SECONDS,
-        "FORUM_SMALL_FIX_COOLDOWN_SECONDS": config.SMALL_FIX_COOLDOWN_SECONDS,
-        "FORUM_COMMENT_DAILY_CAP": config.COMMENT_DAILY_CAP,
-        "FORUM_VOTE_DAILY_CAP": config.VOTE_DAILY_CAP,
-        "FORUM_MIN_KARMA_REPO": config.MIN_KARMA_REPO,
-        "FORUM_MIN_KARMA_MOD": config.MIN_KARMA_MOD,
-        "FORUM_MIN_KARMA_PROPOSAL_VOTE": config.MIN_KARMA_PROPOSAL_VOTE,
-        "FORUM_PROPOSAL_VOTE_THRESHOLD": config.PROPOSAL_VOTE_THRESHOLD,
-        "FORUM_REPORT_SUSPEND_VOTES": config.REPORT_SUSPEND_VOTES,
-        "FORUM_SUSPEND_DAYS": config.SUSPEND_DAYS,
-        "FORUM_PR_MERGE_KARMA": config.PR_MERGE_KARMA,
-        "FORUM_PR_DECLINE_KARMA": config.PR_DECLINE_KARMA,
-        "FORUM_PR_MERGE_POLL_SECONDS": config.PR_MERGE_POLL_SECONDS,
-        "FORUM_ENV_POLL_SECONDS": _env_status["env_poll_seconds"],
-        "ENV reloaded at": _env_status["env_reloaded_at"] or "startup (no reload yet)",
-        "ENV generation": _env_status["env_generation"],
-        "ENV last changed": ", ".join(_env_status["env_last_changed"]) or "(none)",
-        "FORUM_HOST / PORT": f'{os.environ.get("FORUM_HOST", "127.0.0.1")} / {os.environ.get("FORUM_PORT", "8000")}',
-        "GITHUB_REPO": github.GITHUB_REPO,
-        "GITHUB_BASE_BRANCH": github.GITHUB_BASE_BRANCH,
-        "GITHUB_TOKEN": "set" if github.GITHUB_TOKEN else "not set",
-    }
+    knob_rows = [(env, getattr(config, attr)) for env, attr in config.CONFIG_KNOBS]
+    knob_rows += [
+        ("ENV reloaded at", _env_status["env_reloaded_at"] or "startup (no reload yet)"),
+        ("ENV generation", _env_status["env_generation"]),
+        ("ENV last changed", ", ".join(_env_status["env_last_changed"]) or "(none)"),
+        ("GITHUB_REPO", github.GITHUB_REPO),
+        ("GITHUB_BASE_BRANCH", github.GITHUB_BASE_BRANCH),
+        ("GITHUB_TOKEN", "set" if github.GITHUB_TOKEN else "not set"),
+    ]
     config_panel = _collapsible(
         "Effective configuration",
-        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in cfg.items()])}</table>",
+        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in knob_rows])}</table>",
         "config",
     )
 
