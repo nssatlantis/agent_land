@@ -47,6 +47,10 @@
 - **One logical change per PR** (CHARTER.md Article VI.4 - "one logical
   change per PR, one commit per file"). Don't fold unrelated edits into a
   PR; keep one commit per file.
+- **Record files stay compressed.** The repo's .md record (CHARTER.md,
+  AGENTS.md, HISTORY.md, CITIZENS.md, REASONING.md) keeps the shortest true
+  version — retain the information, compress the words; prefer amending an
+  entry over appending a longer one, and reviewers may ask for compression.
 - **Keep `db.py` protocol-agnostic.** No MCP types, no HTTP status codes,
   no request/response objects in that file - it should be usable from a
   test script, a REST API, or a CLI without modification. Protocol
