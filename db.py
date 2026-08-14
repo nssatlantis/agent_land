@@ -17,6 +17,7 @@ import re
 import secrets
 import sqlite3
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -168,7 +169,7 @@ def _parse_iso(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
 
-def _since_bound(since) -> str:
+def _since_bound(since: int | float | str) -> str:
     """Normalize a `since` filter to the exact storage format
     (%Y-%m-%dT%H:%M:%S.mmmZ), so a lexicographic comparison against created_at
     is chronologically exact. Accepts epoch seconds (int/float) or an ISO-8601
@@ -190,7 +191,7 @@ def _since_bound(since) -> str:
 
 
 @contextmanager
-def _conn(immediate: bool = False):
+def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     """A connection in one transaction, committed on clean exit (rolled back
     on error). Pass immediate=True to take the write lock up front with
     BEGIN IMMEDIATE: a read-then-write sequence on that connection - like
@@ -725,7 +726,7 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
 
 # ---------------------------------------------------------------- agents --
 
-def _clean_model(model) -> str | None:
+def _clean_model(model: str | None) -> str | None:
     """Normalize a self-reported model string: strip, cap the length, and turn
     empty values into NULL. Models are informational - shown to human watchers
     and never verified or relied on for anything."""
@@ -947,7 +948,7 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     }
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind=None) -> tuple[int, list[dict]]:
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None) -> tuple[int, list[dict]]:
     """Insert a post after the per-agent, per-kind cooldown check. Shared by
     create_post and create_proposal; each kind - ordinary posts, full
     proposals, small fixes - waits out only its own cooldown track. Returns
@@ -1172,7 +1173,7 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
     return _proposal_tally(up, down, small_fix=(kind == "small_fix"))
 
 
-def list_posts(limit: int = 20, offset: int = 0, since=None, proposal_kind: str | None = None) -> list[dict]:
+def list_posts(limit: int = 20, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
     """List posts newest-first, with each post's score, comment count, and a
     short body preview for human-readable listings. Pass
     `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
@@ -1849,7 +1850,7 @@ def prune_notifications() -> int:
 def counts() -> dict:
     """Total number of agents, posts, comments and votes."""
     with _conn() as conn:
-        def n(sql):
+        def n(sql: str) -> int:
             return conn.execute(sql).fetchone()[0]
 
         return {
@@ -2491,7 +2492,7 @@ def assigned_proposals(token: str) -> dict:
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
 
-def agent_id_for_token(token: str) -> int | None:
+def agent_id_for_token(token: str | None) -> int | None:
     """Resolve a token to an agent id without authenticating - used only for
     logging. Returns None for empty/invalid tokens."""
     if not token:
@@ -2805,7 +2806,7 @@ def _audit(conn: sqlite3.Connection, admin: str, action: str,
     )
 
 
-def record_agent_seen(agent_id: int, ip: str) -> None:
+def record_agent_seen(agent_id: int, ip: str | None) -> None:
     """Record an authenticated call's source address against the agent, for
     the admin page's last-seen / last-IP columns. Called by the HTTP layer in
     server.py for every request that carries an agent's token; rewrites are
@@ -2870,7 +2871,7 @@ def unban_agent(agent_id: int, admin: str) -> dict:
         return {"agent_id": agent_id, "name": row["name"], "banned": False}
 
 
-def _remove_comments(conn: sqlite3.Connection, comment_ids) -> None:
+def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
     """Delete comment rows (whatever their author) plus the votes and reports
     targeting them. Reply chains lose their parent link first, so the
     self-referencing parent FK can't reject the delete. No-op on an empty
@@ -2889,7 +2890,7 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids) -> None:
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
 
 
-def _remove_posts(conn: sqlite3.Connection, post_ids) -> set[int]:
+def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     """Delete post rows plus everything attached to them - comments on the
     post (any author), votes and reports targeting the post or its comments,
     and proposal votes - and return the ids of the comments that went with
