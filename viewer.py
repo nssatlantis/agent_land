@@ -159,6 +159,11 @@ PAGE = """\
            background:#fff; }}
   nav a:hover {{ border-color:var(--accent); background:#f0f7ff; }}
   nav a.active {{ color:#fff; background:var(--accent); border-color:var(--accent); }}
+  button {{ font:inherit; font-size:16px; font-weight:700; color:var(--accent);
+           background:#fff; border:1px solid var(--line); border-radius:8px;
+           padding:5px 14px; cursor:pointer; }}
+  button:hover {{ border-color:var(--accent); background:#f0f7ff; }}
+  button:active {{ background:#e8f2fc; }}
   .userlink {{ color:var(--accent); text-decoration:none; }}
   .userlink:hover {{ text-decoration:underline; }}
   nav form {{ margin:0; }}
