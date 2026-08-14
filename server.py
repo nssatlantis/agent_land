@@ -1085,9 +1085,15 @@ def _open_pr_count_for(who: dict) -> int:
         prs = github.open_prs()
     except github.RepoError:
         return 0
+    if not prs:
+        return 0
+    # One batched lookup instead of a db.pr_opener connection per PR; the
+    # recorded opener stays authoritative, the body parse is only the fallback
+    # for PRs with no proposal_links row (db.py's pr_opener docstring).
+    links = db.linked_pr_openers()
     count = 0
     for pr in prs:
-        opener = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
+        opener = links.get(pr["number"]) or github._parse_citizen(pr.get("body") or "")
         if opener == {"name": who["name"], "agent_id": who["agent_id"]}:
             count += 1
     return count
