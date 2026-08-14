@@ -40,6 +40,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("agentland.config")
 
@@ -177,11 +178,12 @@ _env_reloaded_at: str | None = None
 _env_last_changed: tuple[str, ...] = ()
 
 
-def __getattr__(name: str) -> object:
+def __getattr__(name: str) -> Any:
     """Resolve a tunable against the environment at call time - every
     config.X read is live, so an .env edit (or reload_dotenv()) is reflected
     on the next call. Unknown names raise AttributeError like a normal module
-    attribute."""
+    attribute. Returns Any so the static gate types call-time config reads
+    loosely; every tunable is int-converted at the registry."""
     spec = _TUNING.get(name)
     if spec is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
