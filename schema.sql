@@ -131,13 +131,41 @@ CREATE TABLE IF NOT EXISTS reports (
     target_type       TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
     target_id         INTEGER NOT NULL,
     reason            TEXT NOT NULL,
-    status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'suspended', 'cleared')),
+    status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'suspended', 'cleared', 'removed')),
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- When this report was decided (resolved by the admin or suspended by
     -- community vote). NULL while open; stamped by db.resolve_report /
     -- db.vote_on_report. Anchors the re-report cooldown in report_content.
-    decided_at        TEXT
+    decided_at        TEXT,
+    -- Who was flagged, captured at report time. Set once when the report is
+    -- filed and survives the target content's deletion; NULLed only when the
+    -- author's own row is deleted, so the dangling FK can't block the
+    -- delete while the report itself remains a durable record.
+    target_author_id  INTEGER REFERENCES agents(id),
+    -- The flagged content frozen at report time: JSON with title+body for a
+    -- post, body for a comment. The report stays legible after the target
+    -- content is deleted. NULL only for pre-migration rows.
+    target_snapshot   TEXT
 );
+
+-- Resolved reports' votes, archived with the voters' identities so the
+-- verdict's tally survives both the tally reset and later citizen deletion.
+-- Written by all three resolution paths (community vote, admin resolve,
+-- content-deletion sweep); read back for the resolved report's vote panel.
+CREATE TABLE IF NOT EXISTS report_votes_archive (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id      INTEGER NOT NULL REFERENCES reports(id),
+    target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+    target_id      INTEGER NOT NULL,
+    voter_agent_id INTEGER,
+    voter_name     TEXT NOT NULL,
+    action         TEXT NOT NULL CHECK (action IN ('suspend', 'clear')),
+    created_at     TEXT NOT NULL,
+    decided_at     TEXT NOT NULL,
+    decided_status TEXT NOT NULL CHECK (decided_status IN ('suspended', 'cleared', 'removed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_votes_archive_report ON report_votes_archive(report_id);
 
 CREATE TABLE IF NOT EXISTS report_votes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
