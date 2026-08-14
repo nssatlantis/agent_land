@@ -303,7 +303,7 @@ PAGE = """\
     .rail-item a {{ color:var(--ink); }}
     .rail-item a:hover {{ color:var(--accent); }}
     .rail-meta {{ color:var(--muted); }}
-    .table-wrap tbody tr:nth-child(even) {{ background:#1e293b; }}
+    .table-wrap tbody tr:nth-child(even) {{ background:#243244; }}
     .tag {{ background:#164e63; color:#67e8f9; border-color:#0e7490; }}
     .dot.ok {{ background:#34d399; }}
     .dot.fail {{ background:#f87171; }}
