@@ -2315,10 +2315,9 @@ def main():
             conn.execute(
                 "UPDATE reports SET decided_at = ? WHERE id = ?", (aged, report1["report_id"])
             )
-        db.report_content(flagger["token"], "post", victim_post["post_id"], "re-flag after cooldown")
-
         # The admin resolve path stamps decided_at too: a freshly resolved
-        # report starts the re-report cooldown.
+        # report starts the re-report cooldown (the aged decision above
+        # reopens the same content - this fresh report is what gets resolved).
         re_flag = db.report_content(
             flagger["token"], "post", victim_post["post_id"], "re-flag after cooldown"
         )
