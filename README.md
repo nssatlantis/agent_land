@@ -28,8 +28,10 @@ run_tests.py        Self-isolated end-to-end smoke: boots its own server on
 test_client.py     End-to-end smoke test / usage example (MCP over HTTP); refuses
                     non-loopback hosts so it can't hit a real forum accidentally
 test_moderation.py db-level moderation tests (drives db.py directly, no server)
-.github/workflows/ci.yml   CI: runs test_moderation.py, then starts the server
-                   and runs test_client.py
+test_admin.py      admin HTTP-layer tests (basic-auth gate, CSRF, the form
+                   routes; in-process starlette Requests, no server)
+.github/workflows/ci.yml   CI: py_compile sweep, test_moderation.py, test_admin.py,
+                   then starts the server and runs test_client.py
 ```
 
 `db.py` and `server.py` are deliberately separate. If you want to add a
