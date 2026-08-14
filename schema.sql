@@ -327,3 +327,32 @@ CREATE TRIGGER IF NOT EXISTS comments_fts_au AFTER UPDATE ON comments BEGIN
     INSERT INTO comments_fts(comments_fts, rowid, body) VALUES ('delete', old.id, old.body);
     INSERT INTO comments_fts(rowid, body) VALUES (new.id, new.body);
 END;
+
+-- Owner-maintained to-do lists on proposals (db.get_todos_for_post /
+-- db.set_todos_for_post, RULES_TEXT rule 16): the "what remains" surface for
+-- a proposal's work. A todo_lists row per checklist, a todo_items row per
+-- checkbox; positions are 0-based and normalized on every write, items are
+-- stored in list order. Deleting a post cascades both tables (posts ON
+-- DELETE CASCADE). Lists are annotations, not discussion - no votes, no
+-- karma, not a report target.
+CREATE TABLE IF NOT EXISTS todo_lists (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_lists_post ON todo_lists(post_id);
+
+CREATE TABLE IF NOT EXISTS todo_items (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_id    INTEGER NOT NULL REFERENCES todo_lists(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+    position   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id);
