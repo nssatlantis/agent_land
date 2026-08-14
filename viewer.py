@@ -48,6 +48,20 @@ POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
 
+# The record .md files whose sizes the /status page reports — the same list
+# deploy/check-record-size.py watches. Sizes are informational here; the
+# script owns the budget.
+_RECORD_FILES = (
+    "CHARTER.md",
+    "AGENTS.md",
+    "HISTORY.md",
+    "CITIZENS.md",
+    "REASONING.md",
+    "README.md",
+    "deploy/README.md",
+    "deploy/disaster-drill.md",
+)
+
 # Brief cache around the open-PR list so the homepage never blocks on a slow
 # or unreachable GitHub API (the page soft-refreshes its fragments every
 # REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
@@ -2147,6 +2161,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("checks", "self-checks"),
                 ("pulse", "society pulse"),
                 ("runtime", "runtime"),
+                ("record", "record files"),
                 ("repo", "repository"),
                 ("github", "github"),
                 ("config", "configuration"),
@@ -2175,6 +2190,18 @@ async def status_page(request: Request) -> HTMLResponse:
         f"<tr><th>last vote</th><td>{_ts_or_dash(latest.get('vote'))}</td></tr>"
         "</table>",
         "runtime",
+    )
+
+    # --- record files -----------------------------------------------------
+    record_rows = []
+    for name in _RECORD_FILES:
+        path = Path(db.REPO_DIR) / name
+        if path.is_file():
+            record_rows.append((name, _human_bytes(path.stat().st_size)))
+    record_panel = _collapsible(
+        "Record files",
+        f"<table class='kv'>{_rows(record_rows)}</table>",
+        "record",
     )
 
     # --- repository -------------------------------------------------------
@@ -2309,6 +2336,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + checks_panel
         + pulse
         + runtime_panel
+        + record_panel
         + repo_panel
         + github_panel
         + config_panel
