@@ -28,6 +28,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import config  # noqa: E402 - for the GitHub API / repo-search tunables
 import db  # noqa: E402 - for REPO_DIR / DATA_DIR / DB_PATH resolution
 
 API_ROOT = "https://api.github.com"
@@ -39,7 +40,7 @@ GITHUB_BASE_BRANCH = os.environ.get("GITHUB_BASE_BRANCH", "main")
 # Cap on find-replace ops per file (patch mode). Generous sanity bound only -
 # patch mode exists to keep tool calls small, so an edit list this long is
 # probably a whole rewrite that belongs in `content` instead.
-_MAX_EDITS_PER_FILE = 200
+_MAX_EDITS_PER_FILE = config.MAX_EDITS_PER_FILE
 
 
 class RepoError(Exception):
@@ -73,7 +74,7 @@ def _request(method: str, path: str, body: dict | None = None, ok_404: bool = Fa
         data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method=method, headers=_headers())
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS) as resp:
             raw = resp.read()
             if not raw:
                 return None
@@ -147,9 +148,9 @@ def read_file(path: str) -> dict:
 SEARCH_EXTENSIONS = {".py", ".md", ".sql", ".sh", ".yml", ".yaml"}
 SEARCH_SPECIAL_FILES = {".env.example", ".gitignore", "CODEOWNERS"}
 _SEARCH_SKIP_DIRS = {".git", "__pycache__"}
-_SEARCH_MAX_PER_FILE = 50
-_SEARCH_MAX_FILES = 100
-_SEARCH_LINE_TRIM = 160
+_SEARCH_MAX_PER_FILE = config.REPO_SEARCH_MAX_PER_FILE
+_SEARCH_MAX_FILES = config.REPO_SEARCH_MAX_FILES
+_SEARCH_LINE_TRIM = config.REPO_SEARCH_LINE_TRIM
 
 
 def _searchable_file(path: Path) -> bool:
@@ -167,7 +168,7 @@ def _trim_search_line(line: str) -> str:
     return line[: _SEARCH_LINE_TRIM - len(ellipsis)] + ellipsis
 
 
-def search_files(query: str, max_results: int = 25, root=None) -> dict:
+def search_files(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_FILES, root=None) -> dict:
     """Search the repo's checked-out working tree for a case-insensitive
     substring, restricted to the record and code files (SEARCH_EXTENSIONS +
     SEARCH_SPECIAL_FILES) so the database, secrets and manifests are never
@@ -180,8 +181,10 @@ def search_files(query: str, max_results: int = 25, root=None) -> dict:
         raise RepoError("repo_search needs a non-empty query.")
     if len(query) < 2:
         raise RepoError("repo_search query too short - use at least 2 characters.")
-    if len(query) > 200:
-        raise RepoError("repo_search query too long - keep it under 200 characters.")
+    if len(query) > config.MAX_QUERY_LENGTH:
+        raise RepoError(
+            f"repo_search query too long - keep it under {config.MAX_QUERY_LENGTH} characters."
+        )
     max_results = max(1, min(int(max_results), _SEARCH_MAX_FILES))
     root = Path(root).resolve() if root else Path(db.REPO_DIR).resolve()
     needle = query.lower()
@@ -219,7 +222,7 @@ def search_files(query: str, max_results: int = 25, root=None) -> dict:
 
 def open_prs() -> list[dict]:
     """Open pull requests, newest first."""
-    pulls = _request("GET", "pulls?state=open&per_page=50")
+    pulls = _request("GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}")
     return [
         {
             "number": p["number"],
@@ -251,7 +254,7 @@ def strip_trailing_citizen(text: str) -> str:
     return _TRAILING_CITIZEN_RE.sub("", text or "").rstrip()
 
 
-def recently_closed_prs(per_page: int = 30) -> list[dict]:
+def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
     """Recently closed pull requests, newest first, with the forum's citizen
     trailer and proposal stamp parsed and the labels attached. The outcome
     poller classifies each one as merged (`merged_at` set), declined (carries

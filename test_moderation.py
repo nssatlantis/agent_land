@@ -93,6 +93,7 @@ import base64
 import datetime as _dt
 import hashlib
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -194,6 +195,60 @@ def main():
     assert Path(config.SCHEMA_PATH).is_file(), "schema.sql must sit next to config.py"
     assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR), \
         "the test DB must never resolve inside the repo"
+
+    # --- config-drift guard ------------------------------------------------
+    # Every knob config.py knows must sit in the CONFIG_KNOBS manifest (the
+    # /about "Effective configuration" panel and this check both derive from
+    # it) and be documented in .env.example; and .env.example must not
+    # document a FORUM_*/VIEWER_* knob config.py doesn't read. So a
+    # hardcoded value or an undocumented knob is caught here, not in
+    # production. The deployment-only vars (GITHUB_* / ADMIN_* /
+    # AGENTLAND_ALLOW_EMPTY_DB) are read outside config.py and are exempt
+    # from the reverse direction.
+    #
+    # Tunables resolve at call time through the _TUNING registry (their env
+    # names are never literal in the module), and startup-bound keys are read
+    # directly at boot; the manifest derives from both, so the check is
+    # liveness-agnostic rather than a fragile regex over reads.
+    cfg_text = Path(config.REPO_DIR / "config.py").read_text(encoding="utf-8")
+    example_text = Path(config.REPO_DIR / ".env.example").read_text(encoding="utf-8")
+    knob_envs = {env for env, _attr in config.CONFIG_KNOBS}
+    registry_envs = {env_key for _attr, (env_key, _d, _c) in config._TUNING.items()}
+    startup_envs = set(config._STARTUP_KNOBS)
+    assert knob_envs == registry_envs | startup_envs, (
+        "CONFIG_KNOBS must be exactly the _TUNING registry env names plus the "
+        f"startup-bound keys; missing/extra: {sorted(knob_envs ^ (registry_envs | startup_envs))}"
+    )
+    # Every direct os.environ.get() in config.py must be a startup-bound key -
+    # a literal read of a tunable env name is a knob the registry can't see.
+    direct_reads = set(re.findall(r'os\.environ\.get\("([A-Z][A-Z0-9_]*)"', cfg_text))
+    assert direct_reads == startup_envs, (
+        "config.py's direct os.environ reads must be exactly the startup-bound "
+        f"keys; difference: {sorted(direct_reads ^ startup_envs)}"
+    )
+    # No module outside config.py may read a FORUM_*/VIEWER_* knob straight
+    # from the environment - every tunable flows through config.py so the
+    # live-reload machinery and this guard both see it.
+    for module in ("server.py", "viewer.py", "github.py", "db.py", "logutil.py", "admin.py"):
+        mod_text = Path(config.REPO_DIR / module).read_text(encoding="utf-8")
+        leaked = set(re.findall(r'os\.environ\.get\("((?:FORUM|VIEWER)_[A-Z0-9_]+)"', mod_text))
+        assert not leaked, f"{module} reads tunables straight from the env: {sorted(leaked)}"
+    example_knobs = set(re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=", example_text, re.MULTILINE))
+    assert knob_envs <= example_knobs, (
+        "every knob config.py reads must be documented in .env.example; "
+        f"undocumented: {sorted(knob_envs - example_knobs)}"
+    )
+    exempt = {"GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_BASE_BRANCH",
+              "ADMIN_USER", "ADMIN_PASSWORD", "AGENTLAND_ALLOW_EMPTY_DB"}
+    undocumented = (example_knobs - knob_envs) - exempt
+    assert not undocumented, (
+        ".env.example documents knobs config.py does not read; "
+        f"orphaned: {sorted(undocumented)}"
+    )
+    # Every manifest entry must resolve to a real config attribute (the /about
+    # panel derives from the list).
+    for _env, attr in config.CONFIG_KNOBS:
+        getattr(config, attr)
 
     agents = {}
     for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "fresh"):

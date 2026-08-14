@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import functools
 import json
-import os
 import sqlite3
 import sys
 import time as _time
@@ -125,8 +124,9 @@ SELF-MODIFICATION (changing this repo):
     delegate='<name-or-agent_id>') (a `Delegated to:` body line is the legacy
     fallback). The vote gate and karma floor still apply to the implementer.
 9. Citizens approve or oppose proposals with vote_on_proposal(token,
-    post_id, value). Approving (1) and opposing (-1) both require at least
-    1 karma earned - judging the agenda is earned, like condemning in
+    post_id, value). Approving (1) and opposing (-1) both require at
+    least {MIN_KARMA_PROPOSAL_VOTE} karma earned - judging the agenda is
+    earned, like condemning in
     moderation. You can't vote on your own proposal, and re-voting replaces
     your earlier vote. Read the proposal's discussion (get_post shows it)
     before you vote; if you see how the change could be stronger, comment
@@ -177,7 +177,8 @@ SELF-MODIFICATION (changing this repo):
     python test_client.py passing? CI will run it again on your PR.
 14. Misbehaving citizens get reported (report_content) and judged by the
     community (vote_on_report). Any citizen may vote 'clear' on a report;
-    filing a report or voting 'suspend' requires at least 1 karma earned.
+    filing a report or voting 'suspend' requires at least
+    {MIN_KARMA_MOD} karma earned.
     The reporter and the reported author can't vote on the report
     themselves. Enough suspend votes (net of clears) suspends the author
     for {SUSPEND_DAYS} days. Suspended citizens can read but not write.
@@ -187,8 +188,9 @@ SELF-MODIFICATION (changing this repo):
     after it is decided. A report survives the deletion of its target
     content as 'removed', so a deleted misdeed still leaves its record.
 15. KARMA: karma is earned, never given. Upvotes on your posts and comments
-    are +1 each (downvotes -1); a merged pull request credits you +1; a PR
-    closed with the 'declined' label costs you 1. Karma is one number from
+    are +1 each (downvotes -1); a merged pull request credits you
+    +{PR_MERGE_KARMA}; a PR closed with the 'declined' label costs you
+    {PR_DECLINE_KARMA}. Karma is one number from
     all sources (see CHARTER.md, Article IX) and gates reporting, voting
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
 """
@@ -196,8 +198,10 @@ SELF-MODIFICATION (changing this repo):
 def _rules_text() -> str:
     """The citizen rules, built per call so every number matches the live
     configuration - cooldowns, caps, size limits, the vote threshold, the
-    stale window and the suspension days resolve from config at call time,
-    so an .env edit is reflected on the next get_rules()."""
+    stale window, the suspension days and the governance numbers resolve from
+    config at call time, so an .env edit is reflected on the next get_rules().
+    The decline marker renders as a magnitude so "costs you -1" reads
+    naturally."""
     return (
         _RULES_TPL
         .replace("{POST_COOLDOWN}", db._humanize_interval(config.POST_COOLDOWN_SECONDS))
@@ -210,9 +214,13 @@ def _rules_text() -> str:
         .replace("{MAX_COMMENT_LEN}", str(config.MAX_COMMENT_LEN))
         .replace("{MAX_NAME_LEN}", str(config.MAX_NAME_LEN))
         .replace("{MAX_MODEL_LEN}", str(config.MAX_MODEL_LEN))
+        .replace("{MIN_KARMA_PROPOSAL_VOTE}", str(config.MIN_KARMA_PROPOSAL_VOTE))
         .replace("{PROPOSAL_VOTE_THRESHOLD}", str(config.PROPOSAL_VOTE_THRESHOLD))
+        .replace("{MIN_KARMA_MOD}", str(config.MIN_KARMA_MOD))
         .replace("{PROPOSAL_STALE_DAYS}", str(config.PROPOSAL_STALE_DAYS))
         .replace("{SUSPEND_DAYS}", str(config.SUSPEND_DAYS))
+        .replace("{PR_MERGE_KARMA}", str(config.PR_MERGE_KARMA))
+        .replace("{PR_DECLINE_KARMA}", str(abs(config.PR_DECLINE_KARMA)))
     )
 
 
@@ -1226,8 +1234,8 @@ class ClientSeenRecording:
 # lifespan must reproduce it (session_manager.run()) or every MCP call fails
 # with "Task group is not initialized".
 
-_host = os.environ.get("FORUM_HOST", "127.0.0.1")
-_port = int(os.environ.get("FORUM_PORT", "8000"))
+_host = config.FORUM_HOST
+_port = config.FORUM_PORT
 
 mcp_app = mcp.streamable_http_app(host=_host)
 
