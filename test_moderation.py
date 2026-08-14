@@ -2579,6 +2579,18 @@ def main():
         changed = config.reload_dotenv()
         assert config.POST_COOLDOWN_SECONDS == 888 and changed == [], \
             f"an invalid .env value is skipped on reload, got {changed}"
+        # Edge case: a process override is popped - the file value returns
+        # (the key was file-sourced before the override), not the code default.
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=999\n", encoding="utf-8")
+        os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "444"
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 444 and changed == [], \
+            "a process override beats the file while it is set"
+        os.environ.pop("FORUM_POST_COOLDOWN_SECONDS", None)
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 999 and \
+            changed == ["FORUM_POST_COOLDOWN_SECONDS"], \
+            "a removed process override lets the file value return, not the default"
 
         # spawn_env_watcher is idempotent: a second call returns the same
         # task instead of spawning a duplicate watcher.
