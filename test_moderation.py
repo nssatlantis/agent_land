@@ -72,6 +72,11 @@ Covers the community-moderation rules:
 - per-kind post cooldowns: ordinary posts, full proposals and small fixes
   each wait out only their own track, so a discussion post never blocks a
   bug-fix proposal and vice versa
+- the post nudge + my_profile cooldowns: the ordinary post lane is config,
+  not prose - whoami / my_profile carry the post-spending note naming the
+  live interval while the lane is open (gone once spent, and never shown to
+  a suspended citizen), my_profile's cooldowns equal cooldown_status's
+  exactly (one shared builder), and _humanize_interval speaks whole units
 - report de-dup + re-report cooldown: one open report per reporter per
   target, a re-report on decided content waits out the report cooldown, a
   fresh target is never blocked, and both verdict paths stamp the decision
@@ -83,6 +88,7 @@ Covers the community-moderation rules:
   the content-mode dry_run zero-_request guarantee
 """
 
+import asyncio
 import base64
 import datetime as _dt
 import hashlib
@@ -95,13 +101,16 @@ from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_mod_test_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+# The data dir points at the temp dir too, so reload_dotenv() in the
+# live-reload block below reads a scratch .env, never a deployment's.
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 # The daily comment/vote caps are disabled for the whole suite; their
-# dedicated tests below monkeypatch the module constants (like the
-# cooldown tests do), so no other section trips them.
+# dedicated tests below arm the env (tunables resolve at call time,
+# like the cooldown tests do), so no other section trips them.
 os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
 os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1768,7 +1777,7 @@ def main():
     assert r2["merged"] is True and r2["comment_id"] == t1["comment_id"], \
         "two consecutive replies under the same comment merge into one"
 
-    big = "x" * (db.MAX_COMMENT_LEN - 100)
+    big = "x" * (config.MAX_COMMENT_LEN - 100)
     big1 = db.create_comment(mai["token"], merge_post["post_id"], big)
     big2 = db.create_comment(mai["token"], merge_post["post_id"], big)
     assert big2.get("merged") is None and big2["comment_id"] != big1["comment_id"], \
@@ -1961,12 +1970,15 @@ def main():
     petra_left = {n["body"] for n in mail(petra["token"])["notifications"]}
     assert "unread ancient" in petra_left, "an unread notification is never pruned, however old"
     assert "read recent" in petra_left, "a read notification inside the window survives"
-    prev_retention = db.NOTIFICATION_RETENTION_DAYS
+    _saved_retention = os.environ.get("FORUM_NOTIFICATION_RETENTION_DAYS")
     try:
-        db.NOTIFICATION_RETENTION_DAYS = 0
+        os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = "0"
         assert db.prune_notifications() == 0, "a retention of 0 disables pruning"
     finally:
-        db.NOTIFICATION_RETENTION_DAYS = prev_retention
+        if _saved_retention is None:
+            os.environ.pop("FORUM_NOTIFICATION_RETENTION_DAYS", None)
+        else:
+            os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = _saved_retention
 
     # Deleting content and citizens cleans up their notifications.
     db.delete_post(post2["post_id"], "root")
@@ -2148,14 +2160,15 @@ def main():
     # --- per-kind post cooldowns ------------------------------------------
     # Ordinary posts, full proposals and small fixes each wait out only their
     # own track, so a discussion post doesn't block a bug-fix proposal (and
-    # vice versa). The module constants are read from the env at import (all
-    # zero above), so poke them at runtime and restore after.
-    saved = (db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS,
-             db.SMALL_FIX_COOLDOWN_SECONDS)
+    # vice versa). The suite zeroes the cooldowns at import (env 0); the
+    # tunables resolve at call time, so arm them via the env here and
+    # restore after (the later freshness tests rely on the zeros).
+    _cd_keys = ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                "FORUM_SMALL_FIX_COOLDOWN_SECONDS")
+    _saved_cd = {k: os.environ.get(k) for k in _cd_keys}
     try:
-        db.POST_COOLDOWN_SECONDS = 500
-        db.PROPOSAL_COOLDOWN_SECONDS = 500
-        db.SMALL_FIX_COOLDOWN_SECONDS = 500
+        for k in _cd_keys:
+            os.environ[k] = "500"
         ck = db.register_agent("cooldown-check")
 
         db.create_post(ck["token"], "first chatter", "body")
@@ -2207,8 +2220,102 @@ def main():
         assert "rate limited" in blocked3, \
             "a second full proposal inside the proposal cooldown is blocked"
     finally:
-        db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS, \
-            db.SMALL_FIX_COOLDOWN_SECONDS = saved
+        for k, v in _saved_cd.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- post nudge + my_profile cooldowns (cadence is config) -------------
+    # The ordinary post lane is config, not prose: whoami / my_profile carry
+    # a post-spending note naming the LIVE interval (an env override must
+    # show through), my_profile's cooldowns equal cooldown_status's exactly
+    # (one shared builder), spending the post silences the note, and a
+    # suspended citizen - who may still read - is never told the lane is
+    # open when it isn't. The suite zeroes the cooldowns at import (env 0);
+    # the tunables resolve at call time, so arm them via the env here and
+    # restore after (the later freshness tests rely on the zeros).
+    _pn_keys = ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                "FORUM_SMALL_FIX_COOLDOWN_SECONDS", "FORUM_PROPOSAL_VOTE_THRESHOLD")
+    _saved_pn = {k: os.environ.get(k) for k in _pn_keys}
+    try:
+        for k in ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                  "FORUM_SMALL_FIX_COOLDOWN_SECONDS"):
+            os.environ[k] = "500"
+        nudge = db.register_agent("post-nudge")
+        who = db.whoami(nudge["token"])
+        prof = db.my_profile(nudge["token"])
+        assert "post_note" in who and who["post_note"] == prof["post_note"], \
+            "whoami and my_profile carry the same post note"
+        assert "once per 500 seconds" in who["post_note"] and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in who["post_note"], \
+            "the note names the live interval and the knob"
+        assert prof["cooldowns"] == db.cooldown_status(nudge["token"])["cooldowns"], \
+            "my_profile's cooldowns equal cooldown_status's exactly"
+        assert prof["cooldowns"]["post"]["cooldown_seconds"] == 500, \
+            "my_profile carries the configured post cooldown"
+
+        db.create_post(nudge["token"], "spent", "the one post")
+        assert "post_note" not in db.whoami(nudge["token"]) and \
+            "post_note" not in db.my_profile(nudge["token"]), \
+            "spending the post silences the note"
+        assert db.my_profile(nudge["token"])["cooldowns"] == \
+            db.cooldown_status(nudge["token"])["cooldowns"], \
+            "cooldowns stay equal after the post"
+
+        # The docket tail: with proposals waiting the note says so, without
+        # it ends with the plain invitation (threshold 0 empties the docket).
+        # Use a fresh agent so the post lane is open - nudge already spent
+        # its single post above, which would otherwise silence the note.
+        tail = db.register_agent("post-nudge-tail")
+        os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "0"
+        clear_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" not in clear_note and \
+            "list_posts() to weigh into an open thread" in clear_note, \
+            "a clear docket ends the post note with the plain invitation"
+        os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "3"
+        full_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" in full_note, \
+            "a non-empty docket names the proposals needing votes"
+
+        # A suspended citizen may still read whoami / my_profile, but must
+        # not be told their post lane is available - the note is an honest
+        # "you may post", and they cannot. tail still has an open lane.
+        # (Timestamps use the real storage format _now_iso writes, so the
+        # guard's _parse_iso() can read them.)
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2099-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" not in db.my_profile(tail["token"]) and \
+            "post_note" not in db.whoami(tail["token"]), \
+            "a suspended citizen is not nudged about a post they cannot make"
+
+        # ... and an EXPIRED suspension is no longer an active one: the guard
+        # mirrors _require_active_agent (suspended_until > now), so once the
+        # suspension passes the note returns while the lane is open.
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2020-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" in db.my_profile(tail["token"]) and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in \
+            db.my_profile(tail["token"])["post_note"], \
+            "an expired suspension does not suppress the post note"
+    finally:
+        for k, v in _saved_pn.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert db._humanize_interval(86400) == "1 day"
+    assert db._humanize_interval(43200) == "12 hours"
+    assert db._humanize_interval(3600) == "1 hour"
+    assert db._humanize_interval(900) == "15 minutes"
+    assert db._humanize_interval(30) == "30 seconds"
 
     # --- per-agent indexes + agent_card consistency ------------------------
     # The karma aggregates and the citizens / profile pages filter posts and
@@ -2309,11 +2416,11 @@ def main():
     # decided - a resolved dispute must not be re-litigated on repeat (each
     # re-file resets the target's tally and re-pings the author). Different
     # content is never blocked.
-    saved_report_cd = db.REPORT_COOLDOWN_SECONDS
-    saved_suspend_votes = db.REPORT_SUSPEND_VOTES
+    _rep_keys = ("FORUM_REPORT_COOLDOWN_SECONDS", "FORUM_REPORT_SUSPEND_VOTES")
+    _saved_rep = {k: os.environ.get(k) for k in _rep_keys}
     try:
-        db.REPORT_COOLDOWN_SECONDS = 500
-        db.REPORT_SUSPEND_VOTES = 2
+        os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "500"
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "2"
         victim = db.register_agent("report-victim")
         flagger = db.register_agent("report-flagger")
         voter_a = db.register_agent("report-voter-a")
@@ -2380,18 +2487,23 @@ def main():
         assert "rate limited" in blocked2, \
             "an admin-resolved report also starts the re-report cooldown"
     finally:
-        db.REPORT_COOLDOWN_SECONDS, db.REPORT_SUSPEND_VOTES = saved_report_cd, saved_suspend_votes
+        for k, v in _saved_rep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
     # The suite disables the caps at import (env 0); these tests arm them
-    # directly, like the cooldown tests do. Comments are counted on the
+    # via the env, like the cooldown tests do. Comments are counted on the
     # insert branch only: an auto-merged reply appends to an existing row
     # and never spends a slot. Votes count per successful call (re-votes
     # included). The window is the UTC calendar day, and a cap of 0
     # disables the limit.
-    old_caps = (db.COMMENT_DAILY_CAP, db.VOTE_DAILY_CAP)
-    db.COMMENT_DAILY_CAP = 20
-    db.VOTE_DAILY_CAP = 30
+    _cap_keys = ("FORUM_COMMENT_DAILY_CAP", "FORUM_VOTE_DAILY_CAP")
+    _saved_caps = {k: os.environ.get(k) for k in _cap_keys}
+    os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
+    os.environ["FORUM_VOTE_DAILY_CAP"] = "30"
     try:
         cap_c = db.register_agent("cap-commenter")
         cap_d = db.register_agent("cap-interloper")
@@ -2405,9 +2517,9 @@ def main():
         cap_p2 = db.create_post(cap_c["token"], "cap comment target 2", "body")["post_id"]
         err = expect_error(db.create_comment, cap_c["token"], cap_p2, "one past the cap")
         assert "per UTC day" in err, f"the 21st insert today is refused: {err}"
-        db.COMMENT_DAILY_CAP = 0
+        os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
         db.create_comment(cap_c["token"], cap_p2, "uncapped")
-        db.COMMENT_DAILY_CAP = 20
+        os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
 
         cap_v = db.register_agent("cap-voter")
         v_posts = [db.create_post(cap_c["token"], f"cap vote target {i}", "b")["post_id"]
@@ -2425,12 +2537,113 @@ def main():
                 (cap_v["agent_id"],),
             )
         db.vote(cap_v["token"], "post", v_posts[30], 1)  # yesterday's don't count
-        db.VOTE_DAILY_CAP = 0
+        os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
         for i in range(3):
             db.vote(cap_v["token"], "post", v_posts[i], -1)
-        db.VOTE_DAILY_CAP = 30
+        os.environ["FORUM_VOTE_DAILY_CAP"] = "30"
     finally:
-        db.COMMENT_DAILY_CAP, db.VOTE_DAILY_CAP = old_caps
+        for k, v in _saved_caps.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- live .env reload (config.reload_dotenv) ---------------------------
+    # Tunables resolve from the environment at call time, so an .env edit
+    # applies without a restart: reload_dotenv() re-reads both .env files
+    # (data dir outranks the repo) and applies a file value only when the
+    # process environment hasn't overridden it. AGENTLAND_DATA_DIR points
+    # at the temp dir, so the scratch .env below is the data-dir one.
+    _env_file = _TMP / ".env"
+    _saved_reload = {k: os.environ.get(k)
+                     for k in ("FORUM_SMALL_FIX_COOLDOWN_SECONDS",
+                               "FORUM_POST_COOLDOWN_SECONDS")}
+    try:
+        os.environ.pop("FORUM_SMALL_FIX_COOLDOWN_SECONDS", None)
+        os.environ.pop("FORUM_POST_COOLDOWN_SECONDS", None)
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 3600 and \
+            config.POST_COOLDOWN_SECONDS == 86400, \
+            "a key absent from the env resolves to its code default"
+        _env_file.write_text("FORUM_SMALL_FIX_COOLDOWN_SECONDS=123\n", encoding="utf-8")
+        changed = config.reload_dotenv()
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 123, \
+            "a fresh .env value goes live on reload"
+        assert changed == ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"], \
+            f"reload reports exactly the applied key, got {changed}"
+        gen_after_apply = config.status_info()["env_generation"]
+        assert gen_after_apply >= 1, "an applied reload bumps the generation"
+        os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "456"
+        changed = config.reload_dotenv()
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 456 and changed == [], \
+            "a process-level override beats the .env on reload"
+        os.environ.pop("FORUM_SMALL_FIX_COOLDOWN_SECONDS", None)
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=789\n", encoding="utf-8")
+        changed = config.reload_dotenv()
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 3600 and \
+            config.POST_COOLDOWN_SECONDS == 789 and \
+            sorted(changed) == ["FORUM_POST_COOLDOWN_SECONDS",
+                                  "FORUM_SMALL_FIX_COOLDOWN_SECONDS"], \
+            "a key removed from the .env reverts to its default while new keys apply"
+        changed = config.reload_dotenv()
+        assert changed == [] and \
+            config.status_info()["env_generation"] == gen_after_apply + 1, \
+            "an unchanged .env is a no-op (no generation bump)"
+        assert config.status_info()["env_poll_seconds"] >= 1, \
+            "status_info reports the watcher interval"
+        # Path keys stay startup-bound: a scratch .env that moves the data
+        # dir must not move anything at runtime (bound at import), while a
+        # normal tunable in the same file still applies.
+        _env_file.write_text(
+            "AGENTLAND_DATA_DIR=" + str(_TMP / "elsewhere") + "\n"
+            "FORUM_POST_COOLDOWN_SECONDS=888\n",
+            encoding="utf-8",
+        )
+        changed = config.reload_dotenv()
+        assert config.DATA_DIR == str(_TMP) and \
+            os.environ["AGENTLAND_DATA_DIR"] == str(_TMP), \
+            "path keys stay bound at startup"
+        assert config.POST_COOLDOWN_SECONDS == 888 and \
+            changed == ["FORUM_POST_COOLDOWN_SECONDS"], \
+            "a tunable next to a path key still applies on reload"
+        # An invalid .env value is skipped (logged), not applied - on reload
+        # as at boot - so a bad edit never 500s the tunable's readers.
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=not-a-number\n", encoding="utf-8")
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 888 and changed == [], \
+            f"an invalid .env value is skipped on reload, got {changed}"
+        # Edge case: a process override is popped - the file value returns
+        # (the key was file-sourced before the override), not the code default.
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=999\n", encoding="utf-8")
+        os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "444"
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 444 and changed == [], \
+            "a process override beats the file while it is set"
+        os.environ.pop("FORUM_POST_COOLDOWN_SECONDS", None)
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 999 and \
+            changed == ["FORUM_POST_COOLDOWN_SECONDS"], \
+            "a removed process override lets the file value return, not the default"
+
+        # spawn_env_watcher is idempotent: a second call returns the same
+        # task instead of spawning a duplicate watcher.
+        async def _probe_watcher():
+            t1 = config.spawn_env_watcher(interval_seconds=0.01)
+            t2 = config.spawn_env_watcher(interval_seconds=0.01)
+            assert t1 is t2, "spawn_env_watcher must not spawn a duplicate"
+            t1.cancel()
+            try:
+                await t1
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_probe_watcher())
+    finally:
+        _env_file.unlink(missing_ok=True)
+        for k, v in _saved_reload.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     test_signature_reconcile()
     print("test_moderation: all assertions passed")

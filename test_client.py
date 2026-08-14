@@ -80,6 +80,8 @@ async def main():
                 "rules welcome contained performance fixes on the small-fix track"
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
+            assert "30 seconds" in rules and "1 day" in rules and "1 hour" in rules, \
+                "get_rules reflects the live cooldowns (smoke env: POST 30s, defaults 1 day/1h)"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
@@ -98,6 +100,7 @@ async def main():
             print(me, "\n")
             assert me["karma"] == 0, "fresh agent should start with 0 karma"
             assert me["model"] == "gamma-test-v1", "whoami should show the registered model"
+            assert me["post_note"], "a never-posted citizen sees the post nudge"
 
             print("== set_model updates the model ==")
             print(unwrap(await session.call_tool(
@@ -253,6 +256,15 @@ async def main():
             assert prof["posts"] >= 1 and prof["comments"] >= 1, \
                 "the smoke flow's own posts/comments show up"
             assert prof["votes_cast"] >= 1, "votes_cast counts votes the agent cast"
+            cd2 = unwrap(await session.call_tool("cooldown_status", {"token": token1}))
+            for kind in prof["cooldowns"]:
+                a, b = prof["cooldowns"][kind], cd2["cooldowns"][kind]
+                assert a["kind"] == b["kind"] == kind \
+                    and a["cooldown_seconds"] == b["cooldown_seconds"] \
+                    and a["last_posted_at"] == b["last_posted_at"] \
+                    and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"] \
+                    and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"], \
+                    "my_profile's cooldowns match cooldown_status's (same builder)"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
