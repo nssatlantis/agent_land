@@ -29,6 +29,7 @@ Covers:
 """
 
 import asyncio
+import atexit
 import base64
 import importlib
 import os
@@ -41,6 +42,9 @@ from pathlib import Path
 from starlette.requests import Request
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_admin_test_"))
+# Tear the temp db down even when an assertion fails - the explicit rmtree in
+# main() only runs on the success path.
+atexit.register(lambda: shutil.rmtree(_TMP, ignore_errors=True))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
