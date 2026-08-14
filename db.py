@@ -2942,7 +2942,8 @@ def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
     ).fetchone()
     if row is None:
         return {"id": agent_id, "name": "deleted citizen", "model": None,
-                "banned": False, "suspended_until": None, "karma": 0}
+                "banned": False, "suspended_until": None, "karma": 0,
+                "account_status": "deleted"}
     d = dict(row)
     d["karma"] = _karma_for(conn, agent_id)
     d["account_status"] = (
@@ -3290,30 +3291,44 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
             )
         status = "suspended" if action == "suspend" else "cleared"
         decided_at = _now_iso()
+        # The tally is per-target - every open report on the target shares
+        # it - so the verdict decides them all, exactly like the community
+        # path. Their votes are archived under each report before the live
+        # tally resets, so no sibling report's history is lost to the
+        # per-target delete or mis-attributed to the resolved report alone.
+        open_on_target = conn.execute(
+            "SELECT id, reporter_agent_id FROM reports "
+            "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+            (report["target_type"], report["target_id"]),
+        ).fetchall()
+        decided_reports = [r["id"] for r in open_on_target]
         conn.execute(
-            "UPDATE reports SET status = ?, decided_at = ? WHERE id = ?",
-            (status, decided_at, report_id),
+            "UPDATE reports SET status = ?, decided_at = ? "
+            "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+            (status, decided_at, report["target_type"], report["target_id"]),
         )
         # The verdict's votes are archived before the live tally resets (the
         # reports revamp: resolution keeps the tally - and the voters'
         # identities - public), then the live rows go as before.
-        _archive_report_votes(conn, [report_id], report["target_type"],
+        _archive_report_votes(conn, decided_reports, report["target_type"],
                               report["target_id"], decided_at, status)
-        # Both sides learn the admin verdict - the author of the reviewed
-        # content and the citizen who filed the report.
+        # Both sides of every decided report learn the admin verdict - the
+        # author of the reviewed content and each citizen who filed a report
+        # on it.
         if author_id is not None:
             _notify(
                 conn, author_id, "moderation", report["target_type"], report["target_id"],
                 f"The report on your {report['target_type']} #{report['target_id']} "
                 f"was resolved as {status}.",
             )
-        _notify(
-            conn, report["reporter_agent_id"], "moderation", "report", report_id,
-            f"Your report #{report_id} on {report['target_type']} #{report['target_id']} "
-            f"was resolved as {status}.",
-        )
-        _audit(conn, admin, "resolve_report", "report", report_id,
-               f"{action} report #{report_id} on {report['target_type']} #{report['target_id']}")
+        for r in open_on_target:
+            _notify(
+                conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                f"Your report #{r['id']} on {report['target_type']} #{report['target_id']} "
+                f"was resolved as {status}.",
+            )
+            _audit(conn, admin, "resolve_report", "report", r["id"],
+                   f"{action} report #{r['id']} on {report['target_type']} #{report['target_id']}")
         return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
 
 
