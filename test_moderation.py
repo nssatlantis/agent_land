@@ -2823,12 +2823,17 @@ def main():
     # Votes archived with identities on community resolution.
     db.vote_on_report(rev_v1["token"], rp["report_id"], "clear")
     db.vote_on_report(rev_v2["token"], rp["report_id"], "suspend")
-    old_saved = db.REPORT_SUSPEND_VOTES
-    db.REPORT_SUSPEND_VOTES = 1
+    _sv_keys = ("FORUM_REPORT_SUSPEND_VOTES",)
+    _saved_sv = {k: os.environ.get(k) for k in _sv_keys}
     try:
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
         db.vote_on_report(rev_v1["token"], rp["report_id"], "suspend")
     finally:
-        db.REPORT_SUSPEND_VOTES = old_saved
+        for k, v in _saved_sv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     resolved = db.get_report(rp["report_id"])
     assert resolved["status"] == "suspended", "community verdict resolves the report"
     assert {v["action"] for v in resolved["votes"]} == {"suspend", "clear"} or \
@@ -2918,6 +2923,37 @@ def main():
 
     # get_report raises on a missing report.
     assert "no report" in expect_error(db.get_report, 999999)
+
+    # A COMMUNITY verdict (vote_on_report, not admin) decides every open
+    # report on the target too, and every reporter on it is notified - not
+    # just the reporter whose report the deciding vote was cast on. Lives
+    # after the delete-sweep / re-report blocks: the verdict suspends the
+    # target author, so it must be the last use of the rev-* agents.
+    com_post = db.create_post(rev_v2["token"], "rev community sibling target", "com body")
+    com_a = db.report_content(rev_f["token"], "post", com_post["post_id"], "com A")
+    com_b = db.report_content(rev_v1["token"], "post", com_post["post_id"], "com B")
+    assert com_a["report_id"] != com_b["report_id"], "two reporters hold two open reports"
+    _sv_keys2 = ("FORUM_REPORT_SUSPEND_VOTES",)
+    _saved_sv2 = {k: os.environ.get(k) for k in _sv_keys2}
+    try:
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
+        # rev-voter votes on com_a (their own com_b report would be refused).
+        verdict = db.vote_on_report(rev_v1["token"], com_a["report_id"], "suspend")
+    finally:
+        for k, v in _saved_sv2.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    assert verdict["suspended"], "one suspend vote with threshold 1 suspends the author"
+    for tag in ("rev-flag", "rev-voter"):
+        com_mail = db.notifications(rev[tag]["token"])
+        assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
+                   and "led to a suspension" in n["body"]
+                   for n in com_mail["notifications"]), \
+            f"the community verdict notifies sibling reporter {tag} too"
+    assert db.get_report(com_b["report_id"])["status"] == "suspended", \
+        "the sibling report is decided by the community verdict"
 
     # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
     # The suite disables the caps at import (env 0); these tests arm them
