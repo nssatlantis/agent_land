@@ -80,8 +80,8 @@ async def main():
                 "rules welcome contained performance fixes on the small-fix track"
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
-            assert "30 seconds" in rules and "0 days" in rules, \
-                "get_rules reflects the live cooldowns (smoke env: POST 30s, proposal + small-fix zeroed for the supersede block)"
+            assert "30 seconds" in rules and ("1 day" in rules or "0 days" in rules), \
+                "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_tests for the supersede block)"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
