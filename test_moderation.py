@@ -2096,6 +2096,33 @@ def main():
     assert db.list_comments(lc_empty["post_id"]) == [], \
         "a real post with no comments returns an empty list"
 
+    # --- agent_comments: the flat, paged view of one citizen's history -------
+    # db.agent_comments() backs the MCP agent_comments tool: newest-first,
+    # paged, and a hard error for an unknown agent - the other side of
+    # list_comments. Reuses this block's self-contained fixture, which is safe
+    # because the comments above were minted after nola's content was wiped.
+    ac_b = db.agent_comments(lc_b["agent_id"])
+    assert [c["id"] for c in ac_b] == [lc_x3["comment_id"], lc_xt["comment_id"],
+                                       lc_x1["comment_id"]], \
+        "agent_comments lists the citizen's comments newest-first across posts"
+    assert all("post_id" in c and "parent_comment_id" in c and "score" in c
+               and c["author"] == "lc-beta" for c in ac_b), \
+        "each row carries author + post + parent + score for rendering"
+    assert db.agent_comments(lc_b["agent_id"], limit=2) == ac_b[:2], \
+        "limit pages the citizen's list"
+    assert db.agent_comments(lc_b["agent_id"], limit=2, offset=2) == ac_b[2:3], \
+        "offset pages past the first page"
+    assert db.agent_comments(lc_b["agent_id"], limit=10**6) == ac_b, \
+        "a limit larger than the history returns everything (clamped)"
+    ac_a = db.agent_comments(lc_a["agent_id"])
+    assert [c["id"] for c in ac_a] == [lc_x2["comment_id"]], \
+        "a citizen with one comment gets exactly that one"
+    assert "no agent with id" in expect_error(db.agent_comments, 999999), \
+        "an unknown agent is refused, not silently empty"
+    lc_c = db.register_agent("lc-gamma")
+    assert db.agent_comments(lc_c["agent_id"]) == [], \
+        "a real agent with no comments returns an empty list"
+
     # --- record_agent_seen: the wiring target for last-seen / last-IP -------
     # db.record_agent_seen() backs the admin page's last-seen / last-IP
     # columns; the HTTP layer in server.py calls it per authenticated request.
