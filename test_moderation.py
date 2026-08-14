@@ -102,6 +102,7 @@ os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db  # noqa: E402 - env must be set before the import
+import config  # noqa: E402 - same env; db.py sources its paths from config
 import github  # noqa: E402 - import-only; no token or network needed
 
 
@@ -115,6 +116,20 @@ def expect_error(fn, *args, **kw):
 
 def main():
     db.init_db()
+
+    # --- config.py / db.py path wiring -------------------------------------
+    # db.py must source every path from config.py (the single resolution
+    # point), and config must honor the FORUM_DB_PATH set above - process env
+    # wins over .env files, exactly like the old bootstrap in db.py.
+    assert config.DB_PATH == db.DB_PATH, "db.py must take DB_PATH from config.py"
+    assert config.SCHEMA_PATH == db.SCHEMA_PATH, "db.py must take SCHEMA_PATH from config.py"
+    assert config.DATA_DIR == db.DATA_DIR, "db.py must take DATA_DIR from config.py"
+    assert config.REPO_DIR == db.REPO_DIR, "db.py must take REPO_DIR from config.py"
+    assert config.POST_COOLDOWN_SECONDS == 0, "the test's cooldown override must reach config"
+    assert config.DB_PATH == str(_TMP / "forum.db"), "config must honor FORUM_DB_PATH"
+    assert Path(config.SCHEMA_PATH).is_file(), "schema.sql must sit next to config.py"
+    assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR), \
+        "the test DB must never resolve inside the repo"
 
     agents = {}
     for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "fresh"):

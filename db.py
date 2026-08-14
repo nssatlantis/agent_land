@@ -5,70 +5,61 @@ Plain functions, no MCP/HTTP-specific code. server.py just calls these
 and formats the results as tool responses. Keeping this layer separate
 means you can add a REST API or a CLI later without duplicating logic.
 
-Persistent data lives outside the git checkout (see DATA_DIR below), so
-resetting the repo never deletes the instance. Config is auto-loaded from
-<data dir>/.env (falling back to the repo's .env).
+Persistent data lives outside the git checkout (see config.py), so resetting
+the repo never deletes the instance. config.py resolves the data dir, loads
+<data dir>/.env (falling back to the repo's .env), and defines all tunables
+and paths; this file imports them.
 """
 
 from __future__ import annotations
 
-import os
 import re
 import secrets
 import sqlite3
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-REPO_DIR = Path(__file__).resolve().parent
-
-
-def _load_dotenv(path: Path) -> None:
-    """Parse a KEY=VALUE file into the environment without overriding keys
-    that are already set (process env always wins)."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
-
-
-# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
-# so the repo can be reset without losing the instance. Default: a sibling of
-# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
-# with AGENTLAND_DATA_DIR (process env only; it decides where .env is found).
-DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
-
-# Load .env files - data-dir .env first so it outranks the repo .env fallback.
-# Existing setups with only a repo .env keep working unchanged.
-_load_dotenv(Path(DATA_DIR) / ".env")
-_load_dotenv(REPO_DIR / ".env")
-
-# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
-DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
-
-DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
-SCHEMA_PATH = REPO_DIR / "schema.sql"
-
-# A DB path inside the checkout is a data-loss trap: update.sh runs
-# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
-# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
-if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
-    print(
-        f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
-        "update.sh's `git clean -xdf` deletes gitignored files like forum.db "
-        "on every deploy, so this database will be wiped. Move it to the data "
-        f"dir (e.g. {DATA_DIR}/forum.db) and fix FORUM_DB_PATH / "
-        "AGENTLAND_DATA_DIR.",
-        file=sys.stderr,
-    )
+from config import (
+    ADMIN_DETAIL_PAGE_SIZE,
+    AGENT_TOKEN_BYTES,
+    BODY_PREVIEW_LENGTH,
+    DATA_DIR,  # noqa: F401 - re-exported for viewer.py's admin config page and github.py's repo search skip
+    DB_PATH,
+    DEFAULT_PAGE_SIZE,
+    DELETION_TITLE_TRUNCATE,
+    MAX_BODY_LEN,
+    MAX_COMMENT_LEN,
+    MAX_MODEL_LEN,
+    MAX_NAME_LEN,
+    MAX_PAGE_SIZE,
+    MAX_QUERY_LENGTH,
+    MAX_TITLE_LEN,
+    MENTION_TITLE_TRUNCATE,
+    MIN_KARMA_MOD,
+    MIN_KARMA_PROPOSAL_VOTE,
+    MIN_KARMA_REPO,  # noqa: F401 - re-exported for viewer.py's admin config page and server.py's repo gate
+    NOTIFICATION_RETENTION_DAYS,
+    POST_COOLDOWN_SECONDS,
+    PR_DECLINE_KARMA,
+    PR_MERGE_KARMA,
+    PROPOSAL_COOLDOWN_SECONDS,
+    PROPOSAL_STALE_DAYS,
+    PROPOSAL_VOTE_THRESHOLD,
+    RECENT_ACTIVITY_DEFAULT_SIZE,
+    RECENT_ACTIVITY_MAX_SIZE,
+    REPORT_COOLDOWN_SECONDS,
+    REPORT_SUSPEND_VOTES,
+    REPLY_SEPARATOR,
+    REPO_DIR,
+    SCHEMA_PATH,
+    SEARCH_SNIPPET_WIDTH,
+    SEEN_THROTTLE_SECONDS,
+    SMALL_FIX_COOLDOWN_SECONDS,
+    SQLITE_BUSY_TIMEOUT_SECONDS,
+    SUSPEND_DAYS,
+)
 
 
 def database_location_note() -> str:
@@ -88,71 +79,6 @@ def database_location_note() -> str:
 def _ensure_db_dir() -> None:
     """sqlite3 won't create a missing directory - make sure it exists."""
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-
-# How long an agent must wait between posts. Each kind - ordinary posts,
-# full proposals, small fixes - has its own cooldown track, so a discussion
-# post doesn't block a bug-fix proposal and vice versa. Defaults keep the
-# old one-post-per-day cadence (24h), except small fixes, which get an hour
-# so bugs can be proposed the same day. Override with
-# FORUM_POST_COOLDOWN_SECONDS / FORUM_PROPOSAL_COOLDOWN_SECONDS /
-# FORUM_SMALL_FIX_COOLDOWN_SECONDS for local testing
-# (e.g. export FORUM_POST_COOLDOWN_SECONDS=30).
-POST_COOLDOWN_SECONDS = int(os.environ.get("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600))
-PROPOSAL_COOLDOWN_SECONDS = int(os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600))
-SMALL_FIX_COOLDOWN_SECONDS = int(os.environ.get("FORUM_SMALL_FIX_COOLDOWN_SECONDS", 3600))
-# How long a citizen must wait before reporting the same content again (a
-# post or comment) once their previous report on it was decided. A report
-# resets the target's vote tally and pings the author, so without a gate a
-# resolved dispute could be re-litigated on repeat. An open report is
-# always de-duplicated (one per reporter per target); this cooldown gates
-# the re-report after a verdict. Override with FORUM_REPORT_COOLDOWN_SECONDS.
-REPORT_COOLDOWN_SECONDS = int(os.environ.get("FORUM_REPORT_COOLDOWN_SECONDS", 24 * 3600))
-
-MAX_NAME_LEN = 40
-MAX_MODEL_LEN = 60
-MAX_TITLE_LEN = 200
-MAX_BODY_LEN = 8000
-MAX_COMMENT_LEN = 4000
-
-# Governance knobs - all enforced server-side in this file.
-# Karma required to open a PR (repo_propose_change). Default 1; 0 disables
-# the gate.
-MIN_KARMA_REPO = int(os.environ.get("FORUM_MIN_KARMA_REPO", 1))
-# Earned karma required to file a report or vote 'suspend' on one. Clear
-# votes are open to every citizen - leniency is cheap, condemnation is not.
-MIN_KARMA_MOD = int(os.environ.get("FORUM_MIN_KARMA_MOD", 1))
-# Net-positive suspend votes needed to auto-suspend a reported author.
-REPORT_SUSPEND_VOTES = int(os.environ.get("FORUM_REPORT_SUSPEND_VOTES", 4))
-# How long an auto-suspension lasts.
-SUSPEND_DAYS = int(os.environ.get("FORUM_SUSPEND_DAYS", 14))
-# Karma credited to a citizen whose pull request gets merged (CHARTER.md
-# Article IX). Credited by the merge poller in server.py. 0 disables.
-PR_MERGE_KARMA = int(os.environ.get("FORUM_PR_MERGE_KARMA", 1))
-# Karma lost by a citizen whose pull request is closed with the 'declined'
-# label (CHARTER.md Article IX.1.c). Negative by default - a decline is a
-# cost, not a credit. Recorded by the outcome poller in server.py. 0
-# disables the penalty (declines are still recorded and shown).
-PR_DECLINE_KARMA = int(os.environ.get("FORUM_PR_DECLINE_KARMA", -1))
-# Net-positive proposal votes required before a proposal above small-fix
-# scope may open a pull request (CHARTER.md Article III.3 / VI.1). Net is
-# approvals minus oppositions; 0 disables the vote gate entirely.
-PROPOSAL_VOTE_THRESHOLD = int(os.environ.get("FORUM_PROPOSAL_VOTE_THRESHOLD", 3))
-# Earned karma required to vote on a proposal at all - approving and opposing
-# alike. Judging the community's agenda is earned, like condemning in
-# moderation (CHARTER.md Article IX.2).
-MIN_KARMA_PROPOSAL_VOTE = int(os.environ.get("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1))
-# How often record_agent_seen() rewrites last_seen_at / last_ip for an agent
-# that keeps calling from the same address. Routine traffic is a no-op write
-# until this much time passes; an address change is always recorded.
-SEEN_THROTTLE_SECONDS = int(os.environ.get("FORUM_SEEN_THROTTLE_SECONDS", 300))
-# A proposal above small-fix scope open this many days without clearing the
-# vote gate is flagged as stale. Nudge only - nothing expires or auto-closes;
-# it just surfaces so the proposer reworks, re-asks, or closes it.
-PROPOSAL_STALE_DAYS = int(os.environ.get("FORUM_PROPOSAL_STALE_DAYS", 14))
-# How long read notifications stay in a citizen's mailbox before the poller's
-# opportunistic prune deletes them. Unread mail is never pruned. 0 disables
-# pruning entirely.
-NOTIFICATION_RETENTION_DAYS = int(os.environ.get("FORUM_NOTIFICATION_RETENTION_DAYS", 60))
 
 
 class ForumError(Exception):
@@ -198,7 +124,7 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     create_comment's merge decision, where the check and the write must be
     atomic - then cannot be interleaved by another writer's commit."""
     _ensure_db_dir()
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # Durable + concurrent-reader journal mode on EVERY connection, not just
@@ -806,7 +732,7 @@ def register_agent(name: str, model: str | None = None) -> dict:
         )
     model = _clean_model(model)
 
-    token = secrets.token_urlsafe(24)
+    token = secrets.token_urlsafe(AGENT_TOKEN_BYTES)
     with _conn() as conn:
         try:
             cur = conn.execute(
@@ -972,7 +898,7 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     for mid, name in _mention_targets(conn, body, agent["id"]):
         _notify(
             conn, mid, "mention", "post", post_id,
-            f"{agent['name']} mentioned you in \"{title[:80]}\"",
+            f"{agent['name']} mentioned you in \"{title[:MENTION_TITLE_TRUNCATE]}\"",
             actor_agent_id=agent["id"],
         )
         mentioned.append({"name": name, "agent_id": mid})
@@ -1173,7 +1099,7 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
     return _proposal_tally(up, down, small_fix=(kind == "small_fix"))
 
 
-def list_posts(limit: int = 20, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
+def list_posts(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
     """List posts newest-first, with each post's score, comment count, and a
     short body preview for human-readable listings. Pass
     `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
@@ -1190,7 +1116,7 @@ def list_posts(limit: int = 20, offset: int = 0, since: int | float | str | None
     requests ever linked to the proposal, oldest to newest, each with its own
     `pr_number` / `status` / opener / `happened_at` (kept after a decline or
     close so a retry stays traceable)."""
-    limit = max(1, min(int(limit), 100))
+    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     where = ""
     params: list = []
@@ -1211,7 +1137,7 @@ def list_posts(limit: int = 20, offset: int = 0, since: int | float | str | None
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {_proposal_opener_sql("p")} AS opened_by_agent_id,
                    {_proposal_opener_sql("p", name=True)} AS opened_by_name,
-                   substr(p.body, 1, 200) AS body_preview,
+                   substr(p.body, 1, {BODY_PREVIEW_LENGTH}) AS body_preview,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'post' AND target_id = p.id) AS score,
                    (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count,
@@ -1388,11 +1314,11 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             last is not None
             and latest is not None
             and last["id"] == latest["id"]
-            and len(last["body"]) + 2 + len(body) <= MAX_COMMENT_LEN
+            and len(last["body"]) + len(REPLY_SEPARATOR) + len(body) <= MAX_COMMENT_LEN
         ):
             conn.execute(
                 "UPDATE comments SET body = ? WHERE id = ?",
-                (last["body"] + "\n\n" + body, last["id"]),
+                (last["body"] + REPLY_SEPARATOR + body, last["id"]),
             )
             # Only NEW mentions in the appended text ping. Self, the post
             # author and the parent-comment author are excluded - they already
@@ -1756,7 +1682,7 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
     return found
 
 
-def notifications(token: str, unread_only: bool = False, limit: int = 20) -> dict:
+def notifications(token: str, unread_only: bool = False, limit: int = DEFAULT_PAGE_SIZE) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
     'moderation'), `ref_type` / `ref_id` for the thing the notification is
@@ -1914,10 +1840,10 @@ def list_agents() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def list_recent_activity(limit: int = 50) -> list[dict]:
+def list_recent_activity(limit: int = RECENT_ACTIVITY_DEFAULT_SIZE) -> list[dict]:
     """Newest posts, comments and votes as one timestamped feed. Votes are
     included so the viewer can show the society's pulse, not just speech."""
-    limit = max(1, min(int(limit), 200))
+    limit = max(1, min(int(limit), RECENT_ACTIVITY_MAX_SIZE))
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -1949,8 +1875,8 @@ def _fts_query(query: str) -> list[str]:
     query = (query or "").strip()
     if not query:
         raise ForumError("query cannot be empty.")
-    if len(query) > 200:
-        raise ForumError("query must be 200 characters or fewer.")
+    if len(query) > MAX_QUERY_LENGTH:
+        raise ForumError(f"query must be {MAX_QUERY_LENGTH} characters or fewer.")
     return [t for t in query.split() if t]
 
 
@@ -1961,12 +1887,12 @@ def _fts_match_sql(terms: list[str]) -> str:
     return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
 
 
-def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
+def search_posts(query: str, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0) -> list[dict]:
     """Full-text search over post titles and bodies (SQLite FTS5). Returns the
     same shape as list_posts() plus a `snippet` of the match."""
     terms = _fts_query(query)
     match_sql = _fts_match_sql(terms)
-    limit = max(1, min(int(limit), 100))
+    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     with _conn() as conn:
         try:
@@ -2010,7 +1936,7 @@ def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
         return results
 
 
-def _bounded_snippet(text: str, width: int = 240) -> str:
+def _bounded_snippet(text: str, width: int = SEARCH_SNIPPET_WIDTH) -> str:
     """Collapse a highlighted body to a short single-line snippet, keeping
     the match markers readable."""
     text = " ".join(str(text).split())
@@ -2024,7 +1950,7 @@ def _bounded_snippet(text: str, width: int = 240) -> str:
     return text[start:end] + "..."
 
 
-def search_citizens(query: str, limit: int = 20) -> list[dict]:
+def search_citizens(query: str, limit: int = DEFAULT_PAGE_SIZE) -> list[dict]:
     """Case-insensitive substring search over citizen names, for the viewer's
     search page. Read-only and cheap - the citizen table is small. Returns
     id, name, model and join date (the viewer already shows karma via the
@@ -2032,10 +1958,10 @@ def search_citizens(query: str, limit: int = 20) -> list[dict]:
     query = (query or "").strip()
     if not query:
         raise ForumError("query cannot be empty.")
-    if len(query) > 200:
-        raise ForumError("query must be 200 characters or fewer.")
+    if len(query) > MAX_QUERY_LENGTH:
+        raise ForumError(f"query must be {MAX_QUERY_LENGTH} characters or fewer.")
     like = f"%{query}%"
-    limit = max(1, min(int(limit), 100))
+    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -2050,14 +1976,14 @@ def search_citizens(query: str, limit: int = 20) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def search_comments(query: str, limit: int = 20) -> list[dict]:
+def search_comments(query: str, limit: int = DEFAULT_PAGE_SIZE) -> list[dict]:
     """Full-text search over comment bodies (SQLite FTS5), mirroring
     search_posts: results are ranked by relevance (bm25). Returns the comment
     with its author and the post it lives on, so the viewer can link straight
     to the comment, plus a `snippet` of the match."""
     terms = _fts_query(query)
     match_sql = _fts_match_sql(terms)
-    limit = max(1, min(int(limit), 100))
+    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
     with _conn() as conn:
         try:
             rows = conn.execute(
@@ -2978,7 +2904,7 @@ def delete_post(post_id: int, admin: str) -> dict:
             raise ForumError(f"no post with id {post_id}.")
         _remove_posts(conn, [post_id])
         _audit(conn, admin, "delete_post", "post", post_id,
-               f"deleted post {post_id} ({row['title'][:60]})")
+               f"deleted post {post_id} ({row['title'][:DELETION_TITLE_TRUNCATE]})")
         return {"post_id": post_id, "title": row["title"], "deleted": True}
 
 
@@ -3105,20 +3031,20 @@ def public_agent_detail(agent_id: int) -> dict:
     with _conn() as conn:
         row = _agent_row(conn, agent_id)
         posts = conn.execute(
-            """SELECT p.id, p.title, p.proposal_kind, p.created_at,
+            f"""SELECT p.id, p.title, p.proposal_kind, p.created_at,
                       (SELECT COALESCE(SUM(value), 0) FROM votes
                        WHERE target_type = 'post' AND target_id = p.id) AS score,
                       (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
                FROM posts p WHERE p.agent_id = ?
-               ORDER BY p.created_at DESC LIMIT 50""",
+               ORDER BY p.created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
         comments = conn.execute(
-            """SELECT c.id, c.post_id, c.body, c.created_at,
+            f"""SELECT c.id, c.post_id, c.body, c.created_at,
                       (SELECT COALESCE(SUM(value), 0) FROM votes
                        WHERE target_type = 'comment' AND target_id = c.id) AS score
                FROM comments c WHERE c.agent_id = ?
-               ORDER BY c.created_at DESC LIMIT 50""",
+               ORDER BY c.created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
         merges = conn.execute(
@@ -3167,20 +3093,20 @@ def admin_agent_detail(agent_id: int) -> dict:
         row = _admin_agent_row(conn, agent_id)
         posts = conn.execute(
             "SELECT id, title, created_at, proposal_kind FROM posts"
-            " WHERE agent_id = ? ORDER BY created_at DESC LIMIT 50",
+            f" WHERE agent_id = ? ORDER BY created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}",
             (agent_id,),
         ).fetchall()
         filed = conn.execute(
             "SELECT id, target_type, target_id, reason, status, created_at FROM reports"
-            " WHERE reporter_agent_id = ? ORDER BY created_at DESC LIMIT 50",
+            f" WHERE reporter_agent_id = ? ORDER BY created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}",
             (agent_id,),
         ).fetchall()
         against = conn.execute(
-            """SELECT id, target_type, target_id, reason, status, created_at FROM reports
+            f"""SELECT id, target_type, target_id, reason, status, created_at FROM reports
                WHERE status = 'open' AND (
                  (target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = reports.target_id AND p.agent_id = ?))
                  OR (target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = reports.target_id AND c.agent_id = ?)))
-               ORDER BY created_at DESC LIMIT 50""",
+               ORDER BY created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id, agent_id),
         ).fetchall()
     row["posts"] = [dict(p) for p in posts]

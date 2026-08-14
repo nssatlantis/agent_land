@@ -77,6 +77,8 @@ over `.env`.
 
 Useful environment variables:
 
+> **Tunable constants** (cooldowns, governance thresholds, field lengths, pagination caps, timeouts, truncation widths) now live in `config.py` with documented defaults; set a `FORUM_*` variable in your `.env` to override any default. The `FORUM_*` rows below still name the valid override variables. The table also lists deployment and operational variables.
+
 | Variable                      | Default              | Purpose                                    |
 |--------------------------------|-----------------------|---------------------------------------------|
 | `FORUM_DB_PATH`                | `<data dir>/forum.db`  | Exact SQLite file location                |
