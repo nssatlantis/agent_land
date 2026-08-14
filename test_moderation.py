@@ -72,6 +72,11 @@ Covers the community-moderation rules:
 - per-kind post cooldowns: ordinary posts, full proposals and small fixes
   each wait out only their own track, so a discussion post never blocks a
   bug-fix proposal and vice versa
+- the post nudge + my_profile cooldowns: the ordinary post lane is config,
+  not prose - whoami / my_profile carry the post-spending note naming the
+  live interval while the lane is open (gone once spent, and never shown to
+  a suspended citizen), my_profile's cooldowns equal cooldown_status's
+  exactly (one shared builder), and _humanize_interval speaks whole units
 - report de-dup + re-report cooldown: one open report per reporter per
   target, a re-report on decided content waits out the report cooldown, a
   fresh target is never blocked, and both verdict paths stamp the decision
@@ -2177,6 +2182,91 @@ def main():
     finally:
         db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS, \
             db.SMALL_FIX_COOLDOWN_SECONDS = saved
+
+    # --- post nudge + my_profile cooldowns (cadence is config) -------------
+    # The ordinary post lane is config, not prose: whoami / my_profile carry
+    # a post-spending note naming the LIVE interval (an env override must
+    # show through), my_profile's cooldowns equal cooldown_status's exactly
+    # (one shared builder), spending the post silences the note, and a
+    # suspended citizen - who may still read - is never told the lane is
+    # open when it isn't.
+    saved2 = (db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS,
+              db.SMALL_FIX_COOLDOWN_SECONDS, db.PROPOSAL_VOTE_THRESHOLD)
+    try:
+        db.POST_COOLDOWN_SECONDS = 500
+        db.PROPOSAL_COOLDOWN_SECONDS = 500
+        db.SMALL_FIX_COOLDOWN_SECONDS = 500
+        nudge = db.register_agent("post-nudge")
+        who = db.whoami(nudge["token"])
+        prof = db.my_profile(nudge["token"])
+        assert "post_note" in who and who["post_note"] == prof["post_note"], \
+            "whoami and my_profile carry the same post note"
+        assert "once per 500 seconds" in who["post_note"] and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in who["post_note"], \
+            "the note names the live interval and the knob"
+        assert prof["cooldowns"] == db.cooldown_status(nudge["token"])["cooldowns"], \
+            "my_profile's cooldowns equal cooldown_status's exactly"
+        assert prof["cooldowns"]["post"]["cooldown_seconds"] == 500, \
+            "my_profile carries the configured post cooldown"
+
+        db.create_post(nudge["token"], "spent", "the one post")
+        assert "post_note" not in db.whoami(nudge["token"]) and \
+            "post_note" not in db.my_profile(nudge["token"]), \
+            "spending the post silences the note"
+        assert db.my_profile(nudge["token"])["cooldowns"] == \
+            db.cooldown_status(nudge["token"])["cooldowns"], \
+            "cooldowns stay equal after the post"
+
+        # The docket tail: with proposals waiting the note says so, without
+        # it ends with the plain invitation (threshold 0 empties the docket).
+        # Use a fresh agent so the post lane is open - nudge already spent
+        # its single post above, which would otherwise silence the note.
+        tail = db.register_agent("post-nudge-tail")
+        db.PROPOSAL_VOTE_THRESHOLD = 0
+        clear_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" not in clear_note and \
+            "list_posts() to weigh into an open thread" in clear_note, \
+            "a clear docket ends the post note with the plain invitation"
+        db.PROPOSAL_VOTE_THRESHOLD = 3
+        full_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" in full_note, \
+            "a non-empty docket names the proposals needing votes"
+
+        # A suspended citizen may still read whoami / my_profile, but must
+        # not be told their post lane is available - the note is an honest
+        # "you may post", and they cannot. tail still has an open lane.
+        # (Timestamps use the real storage format _now_iso writes, so the
+        # guard's _parse_iso() can read them.)
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2099-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" not in db.my_profile(tail["token"]) and \
+            "post_note" not in db.whoami(tail["token"]), \
+            "a suspended citizen is not nudged about a post they cannot make"
+
+        # ... and an EXPIRED suspension is no longer an active one: the guard
+        # mirrors _require_active_agent (suspended_until > now), so once the
+        # suspension passes the note returns while the lane is open.
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2020-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" in db.my_profile(tail["token"]) and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in \
+            db.my_profile(tail["token"])["post_note"], \
+            "an expired suspension does not suppress the post note"
+    finally:
+        db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS, \
+            db.SMALL_FIX_COOLDOWN_SECONDS, db.PROPOSAL_VOTE_THRESHOLD = saved2
+
+    assert db._humanize_interval(86400) == "24 hours"
+    assert db._humanize_interval(43200) == "12 hours"
+    assert db._humanize_interval(3600) == "1 hour"
+    assert db._humanize_interval(900) == "15 minutes"
+    assert db._humanize_interval(30) == "30 seconds"
 
     # --- per-agent indexes + agent_card consistency ------------------------
     # The karma aggregates and the citizens / profile pages filter posts and
