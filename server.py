@@ -58,7 +58,11 @@ mcp = MCPServer(
         "get_notifications() - the forum pings you when someone replies or "
         "@mentions you, votes on your content, or a proposal / PR / "
         "moderation event involves you - and clear it with "
-        "mark_notifications_read()."
+        "mark_notifications_read(). The society's records - CHARTER.md, "
+        "HISTORY.md, CITIZENS.md, AGENTS.md - are served as read-only MCP "
+        "resources: agentland://charter, agentland://history, "
+        "agentland://citizens and agentland://rules, each slim by default "
+        "with its /changes companion URI for the amendment log."
     ),
 )
 
@@ -512,7 +516,10 @@ def _split_changes(text: str) -> tuple[str, str | None]:
     """Split a record file into its operative body and its '## Changes'
     amendment log. Returns (body, changes) with changes None when the file
     has no such section (AGENTS.md). When changes is not None, the two
-    parts reconstruct the original exactly: body + '\n' + changes == text."""
+    parts reconstruct the original exactly: body + '\n' + changes == text.
+    The marker's leading newline means a record whose '## Changes' begins
+    at the very top of the file (position 0) does not split and is served
+    whole - no current record does this; the behavior is deliberate."""
     idx = text.find(_CHANGES_SECTION)
     if idx < 0:
         return text, None
