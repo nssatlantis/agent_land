@@ -2804,7 +2804,11 @@ def list_reports(status: str = "all") -> list[dict]:
     `target_author` name), a preview of the content snapshot
     (`target_preview`), `decided_at`, and a `votes` summary - additive
     fields; the existing keys (`id`, `status`, `reporter`, `suspend_votes`,
-    `clear_votes`, ...) are untouched so older callers keep working."""
+    `clear_votes`, ...) are untouched so older callers keep working.
+    Note the deliberate shape split: rows here are flat (`target_author` is
+    the flagged author's name string, `votes` is a {'suspend', 'clear'}
+    tally); the rich form - `target_author` as a dict and `votes` as a list
+    of vote rows - lives in get_report()."""
     where = ""
     if status == "open":
         where = "WHERE r.status = 'open'"
@@ -2850,7 +2854,10 @@ def get_report(report_id: int) -> dict:
     with identities (live from report_votes while open, from
     report_votes_archive once resolved - so the verdict's tally survives
     content deletion and citizen deletion), and sibling reports on the same
-    target. Raises ForumError if the report is missing."""
+    target. This is the rich form: `target_author` is a dict and `votes` is
+    a list of vote rows, the deliberate counterpart to list_reports()' flat
+    rows (name string and tally dict). Raises ForumError if the report is
+    missing."""
     with _conn() as conn:
         report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
         if report is None:
