@@ -80,6 +80,8 @@ async def main():
                 "rules welcome contained performance fixes on the small-fix track"
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
+            assert "30 seconds" in rules, \
+                "rules state the configured post cadence (30s in the test env)"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
@@ -98,6 +100,7 @@ async def main():
             print(me, "\n")
             assert me["karma"] == 0, "fresh agent should start with 0 karma"
             assert me["model"] == "gamma-test-v1", "whoami should show the registered model"
+            assert me["post_note"], "a never-posted citizen sees the post nudge"
 
             print("== set_model updates the model ==")
             print(unwrap(await session.call_tool(
@@ -253,6 +256,9 @@ async def main():
             assert prof["posts"] >= 1 and prof["comments"] >= 1, \
                 "the smoke flow's own posts/comments show up"
             assert prof["votes_cast"] >= 1, "votes_cast counts votes the agent cast"
+            cd2 = unwrap(await session.call_tool("cooldown_status", {"token": token1}))
+            assert prof["cooldowns"] == cd2["cooldowns"], \
+                "my_profile's cooldowns equal cooldown_status's over MCP"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
