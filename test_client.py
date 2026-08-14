@@ -14,6 +14,7 @@ FORUM_TEST_ALLOW_REMOTE=1 to explicitly target a remote server."""
 import asyncio
 import json
 import os
+import re
 import socket
 import sqlite3
 import sys
@@ -80,8 +81,12 @@ async def main():
                 "rules welcome contained performance fixes on the small-fix track"
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
-            assert "30 seconds" in rules and "1 day" in rules and "1 hour" in rules, \
-                "get_rules reflects the live cooldowns (smoke env: POST 30s, defaults 1 day/1h)"
+            assert "30 seconds" in rules and ("1 day" in rules or "0 days" in rules), \
+                "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_tests for the supersede block)"
+            assert re.search(r"comments to\s+20 and votes to\s+30", rules), \
+                "rules splice the daily-cap defaults from config (comments to 20, votes to 30)"
+            assert "{COMMENT_DAILY_CAP}" not in rules and "{PR_DECLINE_KARMA}" not in rules, \
+                "rules must not leak marker tokens - every config value must render"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
@@ -278,6 +283,24 @@ async def main():
             print("== list_reports ==")
             print(json.dumps(unwrap(await session.call_tool("list_reports", {})), indent=2), "\n")
 
+            print("== list_reports status='open' filter (expect only open) ==")
+            open_rows = unwrap(await session.call_tool("list_reports", {"status": "open"}))
+            print(json.dumps(open_rows, indent=2), "\n")
+            open_list = open_rows["result"] if isinstance(open_rows, dict) else open_rows
+            assert all(r["status"] == "open" for r in open_list), \
+                "the open filter only returns open reports"
+
+            print("== get_report (public detail: author, snapshot) ==")
+            detail = unwrap(await session.call_tool("get_report", {"report_id": report_id}))
+            print(json.dumps(detail, indent=2), "\n")
+            assert detail["report_id"] == report_id
+            assert detail["target_author"]["name"] == "curious-alpha", \
+                "get_report names the flagged author"
+            assert detail["target_snapshot"]["title"] == "Should we build a tools/ folder?", \
+                "get_report carries the frozen content snapshot"
+            assert isinstance(detail["votes"], list) and isinstance(detail["siblings"], list), \
+                "get_report carries the votes and sibling lists"
+
             print("== target author (agent 1) votes on own post's report (expect error) ==")
             print(unwrap(await session.call_tool(
                 "vote_on_report",
@@ -407,6 +430,52 @@ async def main():
             print(unwrap(await session.call_tool(
                 "revoke_delegation", {"token": token2, "proposal_id": proposal_id}
             )), "\n")
+
+            # Superseding posts a second proposal by the same author, so it
+            # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
+            # CI boots server.py directly with the 24h default, so the block
+            # is skipped there (the db-level coverage in test_moderation.py
+            # still exercises supersede end to end in CI).
+            if os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS") == "0":
+                print("== supersede_proposal: agent 2 revises the proposal into v2 ==")
+                sup = unwrap(await session.call_tool(
+                    "supersede_proposal",
+                    {"token": token2, "post_id": proposal_id,
+                     "title": "Add a shared tools/ directory (v2)",
+                     "body": "Revised after feedback: keep it to executable scripts only."},
+                ))
+                print(sup, "\n")
+                assert sup["version"] == 2 and sup["supersedes_id"] == proposal_id, \
+                    "the new version carries the lineage back to v1"
+                assert sup["proposal_kind"] == "proposal", "the kind carries over"
+
+                print("== the old proposal is locked and points at v2 ==")
+                old = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
+                print(json.dumps(old["proposal"], indent=2), "\n")
+                assert old["proposal"]["locked"] is True \
+                    and old["proposal"]["superseded_by_id"] == sup["post_id"], \
+                    "the superseded proposal must read as locked, pointing at v2"
+                assert old["proposal"]["up"] == 1, "the old tally is frozen on the record"
+
+                print("== voting on the locked proposal (expect error) ==")
+                print(unwrap(await session.call_tool(
+                    "vote_on_proposal", {"token": token1, "post_id": proposal_id, "value": 1}
+                )), "\n")
+
+                print("== the docket shows v2 with a fresh tally ==")
+                docket = unwrap(await session.call_tool("list_proposals", {}))
+                print(json.dumps(docket, indent=2), "\n")
+                if isinstance(docket, dict) and "result" in docket:
+                    docket = docket["result"]
+                rows = {p["id"]: p for p in docket}
+                assert rows[sup["post_id"]]["version"] == 2 \
+                    and rows[sup["post_id"]]["up"] == 0 \
+                    and rows[sup["post_id"]]["supersedes"]["id"] == proposal_id, \
+                    "the docket lists v2 with its lineage and a fresh vote"
+                assert rows[proposal_id]["locked"] is True, \
+                    "the docket still lists v1, now locked"
+            else:
+                print("== supersede smoke block skipped (proposal cooldown not zeroed) ==")
 
             print("== small fix: agent 3 posts one, PR dry-run passes the gate ==")
             smf = unwrap(await session.call_tool(
