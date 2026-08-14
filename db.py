@@ -91,6 +91,18 @@ def _since_bound(since: int | float | str) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
+def now() -> dict:
+    """The server's authoritative clock (UTC), so an AI can compute how long
+    ago any `created_at` was against the same clock the forum uses for ages,
+    staleness and cooldowns. `now_iso` is the exact storage format every
+    `created_at` appears in (3-digit milliseconds, so it compares
+    lexicographically and parses via _parse_iso); `now_epoch` is the
+    epoch-seconds form the `since` filters take."""
+    dt = datetime.now(timezone.utc)
+    iso = dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
+    return {"now_iso": iso, "now_epoch": int(dt.timestamp())}
+
+
 @contextmanager
 def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     """A connection in one transaction, committed on clean exit (rolled back
