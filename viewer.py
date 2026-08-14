@@ -1018,6 +1018,35 @@ async def render_overview() -> str:
     )
 
 
+def _todos_panel(p: dict) -> str:
+    """A proposal's to-do lists, read-only and fully escaped - the viewer
+    stays read-only by law; editing happens through the forum's
+    update_todos. Renders nothing for ordinary posts and proposals without
+    lists."""
+    lists = p.get("todos") or []
+    if not lists:
+        return ""
+    out = [
+        '<div class="panel"><h2>To-do lists</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
+        "checklists for this proposal - the author and the current delegate "
+        "edit them through the forum (update_todos).</p>"
+    ]
+    for lst in lists:
+        out.append(f"<h3 style='margin:.6rem 0 .2rem'>{esc(lst['title'])}</h3>")
+        items = lst.get("items") or []
+        if not items:
+            out.append("<p style='color:var(--muted)'>No items.</p>")
+        for it in items:
+            box = "☑" if it.get("done") else "☐"
+            out.append(
+                f"<div style='margin:.15rem 0'><span style='color:var(--muted)'>{box}</span> "
+                f"{esc(it['text'])}</div>"
+            )
+    out.append("</div>")
+    return "".join(out)
+
+
 def render_post(post_id: int) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
@@ -1036,6 +1065,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
+        + _todos_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
