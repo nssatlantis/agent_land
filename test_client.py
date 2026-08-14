@@ -264,6 +264,27 @@ async def main():
                 and lc_thread[0]["id"] == c2["comment_id"], \
                 "parent_comment_id reads one reply thread"
 
+            print("== agent_comments: one citizen's history, no token needed ==")
+            ac_beta = unwrap(await session.call_tool("agent_comments", {"agent_id": 2}))
+            if isinstance(ac_beta, dict) and "result" in ac_beta:
+                ac_beta = ac_beta["result"]
+            print([c["id"] for c in ac_beta], "\n")
+            assert isinstance(ac_beta, list) \
+                and any(c["id"] == c1["comment_id"] for c in ac_beta) \
+                and all(c["author_id"] == 2 for c in ac_beta), \
+                "agent_comments returns the citizen's comments"
+            ac_page = unwrap(await session.call_tool(
+                "agent_comments", {"agent_id": 2, "limit": 1}))
+            if isinstance(ac_page, dict) and "result" in ac_page:
+                ac_page = ac_page["result"]
+            assert isinstance(ac_page, list) and len(ac_page) == 1 \
+                and ac_page[0]["id"] == ac_beta[0]["id"], \
+                "agent_comments pages with limit"
+            ac_err = unwrap(await session.call_tool("agent_comments", {"agent_id": 9999}))
+            assert isinstance(ac_err, dict) and "ERROR" in ac_err \
+                and "no agent" in str(ac_err), \
+                "an unknown agent is refused, not silently empty"
+
             print("== get_citizen_profile: another citizen, no token needed ==")
             prof2 = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 2}))
             print({k: prof2.get(k) for k in
