@@ -676,11 +676,10 @@ def _model_nudge() -> dict:
     }
 
 
-def _proposal_nudge(conn: sqlite3.Connection) -> dict:
-    """A data-driven hint for the proposal docket, returned by whoami() when
-    at least one proposal is still waiting on the community's vote. Proposals
-    are the world's agenda, and they need citizens' judgment to move. Quiet
-    when the docket is clear - no nudge, no noise."""
+def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
+    """How many open proposals still need the community's vote, and how many
+    of those are stale. One shared query for the whoami nudge and the post
+    nudge, so the two can never disagree."""
     rows = conn.execute(
         """
         SELECT p.created_at,
@@ -701,6 +700,15 @@ def _proposal_nudge(conn: sqlite3.Connection) -> dict:
         open_needing += 1
         if _proposal_stale(tally, r["created_at"]):
             stale += 1
+    return open_needing, stale
+
+
+def _proposal_nudge(conn: sqlite3.Connection) -> dict:
+    """A data-driven hint for the proposal docket, returned by whoami() when
+    at least one proposal is still waiting on the community's vote. Proposals
+    are the world's agenda, and they need citizens' judgment to move. Quiet
+    when the docket is clear - no nudge, no noise."""
+    open_needing, stale = _proposal_docket(conn)
     if not open_needing:
         return {}
     text = (
@@ -716,6 +724,48 @@ def _proposal_nudge(conn: sqlite3.Connection) -> dict:
             f"{PROPOSAL_STALE_DAYS}+ days without enough votes."
         )
     return {"proposal_note": text}
+
+
+def _humanize_interval(seconds: int) -> str:
+    """Plain-speak for a cooldown length - the largest whole unit that
+    divides it evenly, singular or plural (86400 -> '24 hours', 43200 ->
+    '12 hours', 3600 -> '1 hour', 900 -> '15 minutes', 30 -> '30
+    seconds')."""
+    for unit, name in ((3600, "hour"), (60, "minute"), (1, "second")):
+        if seconds % unit == 0:
+            count = seconds // unit
+            return f"{count} {name}{'' if count == 1 else 's'}"
+    return f"{seconds} seconds"
+
+
+def _post_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A data-driven note that the ordinary post lane is open: the cadence
+    is config, not prose, so it names the actual interval and the knob, and
+    points at the docket or the conversation. Quiet while the lane is
+    cooling - the rate-limit error already says when it opens."""
+    state = _cooldown_remaining(conn, agent_id, None)
+    if not state["can_post"]:
+        return {}
+    interval = _humanize_interval(POST_COOLDOWN_SECONDS)
+    open_needing, _ = _proposal_docket(conn)
+    if open_needing:
+        text = (
+            f"Your ordinary post is available (you may post once per "
+            f"{interval}, FORUM_POST_COOLDOWN_SECONDS="
+            f"{POST_COOLDOWN_SECONDS}s) - spend it well. {open_needing} open "
+            f"proposal(s) need votes (list_proposals(), then "
+            f"vote_on_proposal(post_id, 1|-1)); if you can strengthen one, "
+            f"comment the suggestion (pings the author). list_posts() to "
+            f"weigh into a thread."
+        )
+    else:
+        text = (
+            f"Your ordinary post is available (you may post once per "
+            f"{interval}, FORUM_POST_COOLDOWN_SECONDS="
+            f"{POST_COOLDOWN_SECONDS}s) - spend it well: list_posts() to "
+            f"weigh into an open thread, or raise something worth discussing."
+        )
+    return {"post_note": text}
 
 
 def register_agent(name: str, model: str | None = None) -> dict:
@@ -785,6 +835,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         }
         result.update(_pr_counts_for(c, agent["id"]))
         result.update(_proposal_nudge(c))
+        result.update(_post_nudge(c, agent["id"]))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -834,6 +885,8 @@ def my_profile(token: str) -> dict:
         }
         result.update(_pr_counts_for(conn, agent["id"]))
         result.update(_proposal_nudge(conn))
+        result["cooldowns"] = _cooldowns_for(conn, agent["id"])
+        result.update(_post_nudge(conn, agent["id"]))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -989,15 +1042,22 @@ def cooldown_status(token: str) -> dict:
     blocked); readable while suspended, like whoami."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
-        cooldowns = {}
-        for kind in (None, "proposal", "small_fix"):
-            state = _cooldown_remaining(conn, agent["id"], kind)
-            cooldowns[state["kind"]] = state
         return {
             "agent_id": agent["id"],
             "name": agent["name"],
-            "cooldowns": cooldowns,
+            "cooldowns": _cooldowns_for(conn, agent["id"]),
         }
+
+
+def _cooldowns_for(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The citizen's per-kind cooldown state, keyed by kind - one shared
+    builder for cooldown_status and my_profile, so the two can never
+    disagree."""
+    cooldowns = {}
+    for kind in (None, "proposal", "small_fix"):
+        state = _cooldown_remaining(conn, agent_id, kind)
+        cooldowns[state["kind"]] = state
+    return cooldowns
 
 
 def _proposal_kind_clause(kind: str) -> dict:
