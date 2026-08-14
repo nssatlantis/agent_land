@@ -748,7 +748,10 @@ def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row) -> dict:
     cooling - the rate-limit error already says when it opens - and for a
     citizen under an active suspension or a permanent ban, who may read
     whoami / my_profile but cannot write."""
-    if agent["banned"] or agent["suspended_until"]:
+    if agent["banned"] or (
+        agent["suspended_until"]
+        and _parse_iso(agent["suspended_until"]) > datetime.now(timezone.utc)
+    ):
         return {}
     state = _cooldown_remaining(conn, agent["id"], None)
     if not state["can_post"]:
