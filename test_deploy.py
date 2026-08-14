@@ -380,6 +380,26 @@ def main():
         assert "CONFIG_OK" in proc.stdout, proc.stdout
         assert "inside the repo" in proc.stderr, proc.stderr
         assert "wiped" in proc.stderr, proc.stderr
+
+        # A bad value in a loaded .env is skipped at boot (logged), so config
+        # keeps the code default instead of 500ing every read of the tunable.
+        (scratch / ".env").write_text("FORUM_POST_COOLDOWN_SECONDS=not-a-number\n",
+                                      encoding="utf-8")
+        env_bad = dict(os.environ)
+        for k in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH", "FORUM_POST_COOLDOWN_SECONDS"):
+            env_bad.pop(k, None)
+        env_bad["AGENTLAND_DATA_DIR"] = str(scratch)
+        code_bad = (
+            "import os, sys\n"
+            f"sys.path.insert(0, {str(REPO)!r})\n"
+            "import config\n"
+            "assert config.POST_COOLDOWN_SECONDS == 86400, config.POST_COOLDOWN_SECONDS\n"
+            "assert 'FORUM_POST_COOLDOWN_SECONDS' not in os.environ\n"
+            "print('CONFIG_OK')\n"
+        )
+        proc = subprocess.run([PY, "-c", code_bad], env=env_bad, capture_output=True, text=True)
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        assert "CONFIG_OK" in proc.stdout, proc.stdout
     print("== config.py resolves env + .env paths, warns on inside-repo DB ==")
 
     # == two backups in the same second must not overwrite each other ==
