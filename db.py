@@ -741,12 +741,16 @@ def _humanize_interval(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def _post_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row) -> dict:
     """A data-driven note that the ordinary post lane is open: the cadence
     is config, not prose, so it names the actual interval and the knob, and
     points at the docket or the conversation. Quiet while the lane is
-    cooling - the rate-limit error already says when it opens."""
-    state = _cooldown_remaining(conn, agent_id, None)
+    cooling - the rate-limit error already says when it opens - and for a
+    citizen under an active suspension or a permanent ban, who may read
+    whoami / my_profile but cannot write."""
+    if agent["banned"] or agent["suspended_until"]:
+        return {}
+    state = _cooldown_remaining(conn, agent["id"], None)
     if not state["can_post"]:
         return {}
     interval = _humanize_interval(POST_COOLDOWN_SECONDS)
@@ -838,7 +842,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         }
         result.update(_pr_counts_for(c, agent["id"]))
         result.update(_proposal_nudge(c))
-        result.update(_post_nudge(c, agent["id"]))
+        result.update(_post_nudge(c, agent))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -889,7 +893,7 @@ def my_profile(token: str) -> dict:
         result.update(_pr_counts_for(conn, agent["id"]))
         result.update(_proposal_nudge(conn))
         result["cooldowns"] = _cooldowns_for(conn, agent["id"])
-        result.update(_post_nudge(conn, agent["id"]))
+        result.update(_post_nudge(conn, agent))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
