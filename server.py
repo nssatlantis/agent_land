@@ -693,8 +693,12 @@ def repo_propose_change(
         db.require_proposal_approval(token, proposal_id, "repo_propose_change", conn)
         if proposal_id is not None:
             body = github.strip_trailing_citizen(body)
+            header = github.pr_proposal_header(
+                proposal_id, _proposal_title(proposal_id)
+            )
+            body = f"{header}\n\n{body}" if body else header
             stamp = f"Proposal: #{proposal_id}"
-            body = f"{body}\n\n{stamp}" if body else stamp
+            body = f"{body}\n\n{stamp}"
         who = db.whoami(token, conn)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
@@ -1054,22 +1058,37 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     return edits
 
 
+def _proposal_title(post_id: int) -> str | None:
+    """The title of a proposal post, or None when the post no longer exists -
+    a deliberately narrow read (one column, no comment tree) feeding the PR-
+    body header github.pr_proposal_header renders."""
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT title FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        return row["title"] if row else None
+
+
 def _pr_body_with_identity(pr: dict, body: str) -> str:
     """Stamp a repo_update_pr body with the PR's identity lines: the
     'Proposal: #N' stamp (from the stored link, falling back to the line
     already in the PR body) and the 'Citizen: name (agent_id=N)' trailer the
-    PR carries. Server-side enforcement of rules-text rule 11 - an agent can't
-    strip or fake either line through a body edit, so the outcome poller and
-    repo_my_prs keep working. The trailer is re-stamped from the stored
-    opener (db.pr_opener), not the current body text, so a spoofed earlier
-    line can't become the identity the re-stamped body carries."""
+    PR carries. When the PR names a proposal, the body also opens with the
+    proposal header (forum link + title, then a '---' rule). Server-side
+    enforcement of rules-text rule 11 - an agent can't strip or fake either
+    line through a body edit, so the outcome poller and repo_my_prs keep
+    working. The trailer is re-stamped from the stored opener (db.pr_opener),
+    not the current body text, so a spoofed earlier line can't become the
+    identity the re-stamped body carries."""
     stamp = db.proposal_for_pr(pr["number"])
     if stamp is None:
         stamp = github._parse_proposal(pr.get("body") or "")
     citizen = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
     body = github.strip_trailing_citizen(body).strip()
     if stamp is not None:
-        body = f"{body}\n\nProposal: #{stamp}" if body else f"Proposal: #{stamp}"
+        header = github.pr_proposal_header(stamp, _proposal_title(stamp))
+        body = f"{header}\n\n{body}" if body else header
+        body = f"{body}\n\nProposal: #{stamp}"
     if citizen is not None:
         body = (
             f"{body}\n\nCitizen: {citizen['name']} (agent_id={citizen['agent_id']})"
