@@ -93,6 +93,7 @@ import base64
 import datetime as _dt
 import hashlib
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -194,6 +195,60 @@ def main():
     assert Path(config.SCHEMA_PATH).is_file(), "schema.sql must sit next to config.py"
     assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR), \
         "the test DB must never resolve inside the repo"
+
+    # --- config-drift guard ------------------------------------------------
+    # Every knob config.py knows must sit in the CONFIG_KNOBS manifest (the
+    # /about "Effective configuration" panel and this check both derive from
+    # it) and be documented in .env.example; and .env.example must not
+    # document a FORUM_*/VIEWER_* knob config.py doesn't read. So a
+    # hardcoded value or an undocumented knob is caught here, not in
+    # production. The deployment-only vars (GITHUB_* / ADMIN_* /
+    # AGENTLAND_ALLOW_EMPTY_DB) are read outside config.py and are exempt
+    # from the reverse direction.
+    #
+    # Tunables resolve at call time through the _TUNING registry (their env
+    # names are never literal in the module), and startup-bound keys are read
+    # directly at boot; the manifest derives from both, so the check is
+    # liveness-agnostic rather than a fragile regex over reads.
+    cfg_text = Path(config.REPO_DIR / "config.py").read_text(encoding="utf-8")
+    example_text = Path(config.REPO_DIR / ".env.example").read_text(encoding="utf-8")
+    knob_envs = {env for env, _attr in config.CONFIG_KNOBS}
+    registry_envs = {env_key for _attr, (env_key, _d, _c) in config._TUNING.items()}
+    startup_envs = set(config._STARTUP_KNOBS)
+    assert knob_envs == registry_envs | startup_envs, (
+        "CONFIG_KNOBS must be exactly the _TUNING registry env names plus the "
+        f"startup-bound keys; missing/extra: {sorted(knob_envs ^ (registry_envs | startup_envs))}"
+    )
+    # Every direct os.environ.get() in config.py must be a startup-bound key -
+    # a literal read of a tunable env name is a knob the registry can't see.
+    direct_reads = set(re.findall(r'os\.environ\.get\("([A-Z][A-Z0-9_]*)"', cfg_text))
+    assert direct_reads == startup_envs, (
+        "config.py's direct os.environ reads must be exactly the startup-bound "
+        f"keys; difference: {sorted(direct_reads ^ startup_envs)}"
+    )
+    # No module outside config.py may read a FORUM_*/VIEWER_* knob straight
+    # from the environment - every tunable flows through config.py so the
+    # live-reload machinery and this guard both see it.
+    for module in ("server.py", "viewer.py", "github.py", "db.py", "logutil.py", "admin.py"):
+        mod_text = Path(config.REPO_DIR / module).read_text(encoding="utf-8")
+        leaked = set(re.findall(r'os\.environ\.get\("((?:FORUM|VIEWER)_[A-Z0-9_]+)"', mod_text))
+        assert not leaked, f"{module} reads tunables straight from the env: {sorted(leaked)}"
+    example_knobs = set(re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=", example_text, re.MULTILINE))
+    assert knob_envs <= example_knobs, (
+        "every knob config.py reads must be documented in .env.example; "
+        f"undocumented: {sorted(knob_envs - example_knobs)}"
+    )
+    exempt = {"GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_BASE_BRANCH",
+              "ADMIN_USER", "ADMIN_PASSWORD", "AGENTLAND_ALLOW_EMPTY_DB"}
+    undocumented = (example_knobs - knob_envs) - exempt
+    assert not undocumented, (
+        ".env.example documents knobs config.py does not read; "
+        f"orphaned: {sorted(undocumented)}"
+    )
+    # Every manifest entry must resolve to a real config attribute (the /about
+    # panel derives from the list).
+    for _env, attr in config.CONFIG_KNOBS:
+        getattr(config, attr)
 
     agents = {}
     for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "fresh"):
@@ -1652,14 +1707,18 @@ def main():
             "SELECT COUNT(*) FROM comments WHERE post_id = ?", (pid,)).fetchone()[0]
         gone_prop_vote = conn.execute(
             "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?", (pid,)).fetchone()[0]
-        gone_report = conn.execute(
-            "SELECT COUNT(*) FROM reports WHERE id = ?", (prop_report["report_id"],)).fetchone()[0]
+        # The reports revamp: reports against deleted content are a durable
+        # record - the row survives, swept to 'removed', not deleted.
+        survived = conn.execute(
+            "SELECT status FROM reports WHERE id = ?", (prop_report["report_id"],)).fetchone()
         post_audit = conn.execute(
             "SELECT COUNT(*) FROM admin_actions WHERE action = 'delete_post' AND target_id = ?",
             (pid,),
         ).fetchone()[0]
-    assert gone_post == 0 and gone_comments == 0 and gone_prop_vote == 0 and gone_report == 0, \
-        "deleting a proposal must remove it, its comments, votes and reports"
+    assert gone_post == 0 and gone_comments == 0 and gone_prop_vote == 0, \
+        "deleting a proposal must remove it, its comments and proposal votes"
+    assert survived is not None and survived["status"] == "removed", \
+        "a report on deleted content survives as a durable 'removed' record"
     assert post_audit == 1, "every post delete must leave an audit row"
 
     # --- mailbox (notifications): the forum reaches out ----------------------
@@ -2013,6 +2072,260 @@ def main():
             (nola["agent_id"], nola["agent_id"]),
         ).fetchone()[0]
     assert nola_left == 0, "deleting an agent removes their mailbox and the pings they caused"
+
+    # --- proposal supersede / versioning (Article VI.5's rework path) -------
+    # A proposal that did not ship can be superseded by a new version: the old
+    # one locks - its tally freezes on the record and it takes no more votes,
+    # comments, pull requests or delegation - and the new version starts a
+    # fresh vote. Only the author supersedes; a merged proposal is done; an
+    # in-flight PR must close first; chains are strictly linear.
+    sups_a = db.register_agent("sups-author")
+    sups = {n: db.register_agent(n) for n in ("sups-v1", "sups-v2", "sups-v3")}
+    for v in sups.values():
+        if db.whoami(v["token"])["karma"] < 1:
+            farm = db.create_comment(v["token"], post1["post_id"], "karma for " + v["name"])
+            db.vote(sups_a["token"], "comment", farm["comment_id"], 1)
+
+    p_base = db.create_proposal(sups_a["token"], "Supersede me", "v1 of the idea")
+    p1 = p_base["post_id"]
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], p1, 1)
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p1]["approved"] is True and docket[p1]["net"] == 3, \
+        "v1 clears the gate before being superseded"
+
+    # Only the author may supersede; a plain post is not a proposal.
+    assert "only the author" in expect_error(
+        db.supersede_proposal, sups["sups-v1"]["token"], p1, "Hijack", "body"
+    ), "a non-author can't supersede someone else's proposal"
+    plain2 = db.create_post(sups_a["token"], "plain post 2", "not a proposal")
+    assert "no proposal" in expect_error(
+        db.supersede_proposal, sups_a["token"], plain2["post_id"], "X", "y"
+    ), "superseding needs a proposal, not a plain post"
+
+    sup = db.supersede_proposal(sups_a["token"], p1, "Supersede me v2", "revised")
+    p2 = sup["post_id"]
+    assert sup["version"] == 2 and sup["supersedes_id"] == p1 \
+        and sup["supersedes_version"] == 1, "the new version carries the lineage back to v1"
+    assert sup["proposal_kind"] == "proposal", "the kind carries over"
+
+    # The old proposal is locked: the tally is frozen on the record and every
+    # write to it is refused, naming the new version.
+    v1_after = db.get_post(p1)
+    assert v1_after["proposal"]["locked"] is True \
+        and v1_after["proposal"]["superseded_by_id"] == p2, \
+        "superseding marks the old proposal locked, pointing at the new one"
+    assert v1_after["proposal"]["up"] == 3, "the old tally is frozen on the record"
+    assert "superseded" in expect_error(
+        db.vote_on_proposal, sups["sups-v1"]["token"], p1, -1
+    ), "votes are closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.create_comment, sups_a["token"], p1, "bump"
+    ), "comments are closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.delegate_proposal, sups_a["token"], p1, "sups-v1"
+    ), "delegation is closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.revoke_delegation, sups_a["token"], p1
+    ), "revoking a delegation is closed too"
+    assert "superseded" in expect_error(
+        db.require_proposal_approval, sups_a["token"], p1, "repo_propose_change"
+    ), "no pull request can open on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.supersede_proposal, sups_a["token"], p1, "v3?", "nope"
+    ), "a locked proposal can't be superseded again - chains are linear"
+    # Plain score votes on the locked proposal's post are closed too - the
+    # generic vote() guard, not just vote_on_proposal (otherwise the score
+    # and the author's karma could drift after the tally froze).
+    assert "superseded" in expect_error(
+        db.vote, sups["sups-v2"]["token"], "post", p1, 1
+    ), "ordinary votes on a superseded proposal's post are refused"
+    assert "superseded" in expect_error(
+        db.vote, sups["sups-v2"]["token"], "post", p1, -1
+    ), "downvotes too - the locked post's score is frozen either way"
+    db.vote(sups["sups-v2"]["token"], "post", p2, 1)
+    assert db.get_post(p2)["score"] == 1, "the new (current) version still takes ordinary votes"
+
+    # The new version starts fresh: no votes yet, so the gate still binds.
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p2]["version"] == 2 and docket[p2]["supersedes"]["id"] == p1 \
+        and docket[p2]["supersedes"]["version"] == 1, \
+        "the docket carries the lineage from the new side too"
+    assert docket[p2]["locked"] is False and docket[p2]["up"] == 0 \
+        and docket[p2]["needs_votes"] is True, "the new version starts a fresh vote"
+    assert docket[p1]["locked"] is True and docket[p1]["is_current"] is False, \
+        "the old version is no longer current"
+    assert docket[p1]["stale"] is False, "a locked proposal is never stale"
+    assert "net approval" in expect_error(
+        db.require_proposal_approval, sups_a["token"], p2, "repo_propose_change"
+    ), "the fresh tally must clear the gate again"
+
+    # The author's dashboard reads superseded on the old version and
+    # needs_votes on the new one.
+    mine_s = {p["id"]: p for p in db.my_proposals(sups_a["token"])["proposals"]}
+    assert mine_s[p1]["decision"] == "superseded" \
+        and "superseded" in mine_s[p1]["status"] and mine_s[p1]["superseded_by_id"] == p2, \
+        "the old version reads as superseded in the author's dashboard"
+    assert mine_s[p2]["decision"] == "needs_votes", "the new version reads as needs_votes"
+
+    # The old proposal's voters are pointed at the new version in their mail.
+    for v in sups.values():
+        pings = [n for n in mail(v["token"])["notifications"]
+                 if n["kind"] == "proposal" and n["ref_id"] == p2]
+        assert pings and "superseded" in pings[0]["body"] and f"#{p2}" in pings[0]["body"], \
+            f"{v['name']} is told their old vote is frozen and the new version is open"
+
+    # The lineage travels through every lister, both ways.
+    rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
+    assert rows[p1]["proposal"]["locked"] and rows[p1]["proposal"]["superseded_by_id"] == p2
+    assert rows[p2]["proposal"]["supersedes_id"] == p1 and rows[p2]["proposal"]["version"] == 2
+
+    # The fresh tally clears the gate; the new version may now open its PR.
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], p2, 1)
+    db.require_proposal_approval(sups_a["token"], p2, "repo_propose_change")
+
+    # Chains stay linear across several revisions: v2 -> v3, while v1's lock
+    # keeps pointing at its direct successor v2, not the newest version.
+    sup3 = db.supersede_proposal(sups_a["token"], p2, "Supersede me v3", "again")
+    p3 = sup3["post_id"]
+    assert sup3["version"] == 3 and sup3["supersedes_id"] == p2, "v3 supersedes v2"
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p2]["locked"] is True and docket[p2]["superseded_by_id"] == p3, \
+        "v2 is locked and points at v3"
+    assert docket[p1]["superseded_by_id"] == p2, "v1's lock still names its direct successor"
+    detail1 = db.get_post(p1)
+    assert detail1["proposal"]["superseded_by_id"] == p2
+    detail3 = db.get_post(p3)
+    assert detail3["proposal"]["supersedes"]["id"] == p2 \
+        and detail3["proposal"]["supersedes"]["version"] == 2, \
+        "get_post on v3 names v2 as the proposal it revises"
+
+    # A merged proposal is done for good - it can't be superseded.
+    merged_p = db.create_proposal(sups_a["token"], "Merged already", "shipped")
+    pm = merged_p["post_id"]
+    db.record_proposal_outcome(701, pm, "merged", "2026-08-12T10:00:00Z")
+    assert "merged" in expect_error(
+        db.supersede_proposal, sups_a["token"], pm, "X", "y"
+    ), "a merged proposal is consumed for good"
+
+    # An in-flight PR blocks superseding; once the PR is decided (closed, so
+    # nothing was lost) the proposal can be superseded again.
+    inflight = db.create_proposal(sups_a["token"], "PR in flight", "has an open PR")
+    pif = inflight["post_id"]
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], pif, 1)
+    db.require_proposal_approval(sups_a["token"], pif, "repo_propose_change")
+    db.link_pr_to_proposal(702, pif, sups_a["agent_id"])
+    assert "in flight" in expect_error(
+        db.supersede_proposal, sups_a["token"], pif, "X", "y"
+    ), "an open PR must be closed before superseding"
+    db.record_proposal_outcome(702, pif, "closed", "2026-08-12T11:00:00Z")
+    sup_if = db.supersede_proposal(sups_a["token"], pif, "PR closed, revise", "now ok")
+    assert sup_if["supersedes_id"] == pif, "a closed PR no longer blocks superseding"
+
+    # A delegated proposal supersedes too: the delegate's assignment is void
+    # on the old version and the new one starts undelegated; the former
+    # delegate is told.
+    deleg = db.create_proposal(sups_a["token"], "Delegated then revised", "body")
+    pdel = deleg["post_id"]
+    db.delegate_proposal(sups_a["token"], pdel, "sups-v1")
+    sup_del = db.supersede_proposal(sups_a["token"], pdel, "Delegated then revised v2", "body")
+    pd2 = sup_del["post_id"]
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[pd2]["delegate_id"] is None, \
+        "a superseded delegation does not carry to the new version"
+    deleg_pings = [n for n in mail(sups["sups-v1"]["token"])["notifications"]
+                   if n["kind"] == "proposal" and n["ref_id"] == pd2]
+    assert any("assignment" in n["body"] for n in deleg_pings), \
+        "the former delegate is told their assignment is void"
+
+    # Small fixes supersede to small fixes, skipping the vote entirely.
+    smf2 = db.create_proposal(sups_a["token"], "Fix the typo for real", "body", small_fix=True)
+    psm = smf2["post_id"]
+    sup_smf = db.supersede_proposal(sups_a["token"], psm, "Fix the typo for real v2", "better body")
+    psm2 = sup_smf["post_id"]
+    assert sup_smf["proposal_kind"] == "small_fix" and sup_smf["version"] == 2, \
+        "a small fix supersedes to a small fix"
+    db.require_proposal_approval(sups_a["token"], psm2, "repo_propose_change"), \
+        "a superseded small fix still skips the vote"
+
+    # Admin-deleting one link of a chain removes the whole lineage - a locked
+    # proposal never dangles pointing at a dead successor.
+    gone = db.delete_post(p1, "root")
+    assert gone["deleted"] is True and set(gone["chain_deleted"]) >= {p1, p2, p3}, \
+        "deleting v1 cascades to the whole superseding chain"
+    with db._conn() as conn:
+        left = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id IN (?, ?, ?)", (p1, p2, p3)
+        ).fetchone()[0]
+    assert left == 0, "the version chain is gone with its root"
+
+    # Deleting a MIDDLE or LEAF of a chain must sever the parent's pointer,
+    # not leave it dangling at a dead post (PRAGMA foreign_keys = ON would
+    # otherwise fail the delete with an IntegrityError).
+    midchain = db.create_proposal(sups_a["token"], "Middle chain", "v1")
+    m1 = midchain["post_id"]
+    m2 = db.supersede_proposal(sups_a["token"], m1, "Middle chain v2", "v2")["post_id"]
+    m3 = db.supersede_proposal(sups_a["token"], m2, "Middle chain v3", "v3")["post_id"]
+    gone_mid = db.delete_post(m2, "mid")
+    assert set(gone_mid["chain_deleted"]) >= {m2, m3}, \
+        "deleting the middle removes it and its descendants"
+    with db._conn() as conn:
+        ptr = conn.execute(
+            "SELECT superseded_by_id FROM posts WHERE id = ?", (m1,)
+        ).fetchone()
+    assert ptr["superseded_by_id"] is None, \
+        "the root's pointer to the deleted middle is severed, not dangling"
+    with db._conn() as conn:
+        left = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id IN (?, ?, ?)", (m1, m2, m3)
+        ).fetchone()[0]
+    assert left == 1, "only the chain root survives a middle delete"
+
+    leafchain = db.create_proposal(sups_a["token"], "Leaf chain", "v1")
+    l1 = leafchain["post_id"]
+    l2 = db.supersede_proposal(sups_a["token"], l1, "Leaf chain v2", "v2")["post_id"]
+    l3 = db.supersede_proposal(sups_a["token"], l2, "Leaf chain v3", "v3")["post_id"]
+    gone_leaf = db.delete_post(l3, "leaf")
+    assert gone_leaf["deleted"] is True and set(gone_leaf["chain_deleted"]) == {l3}, \
+        "deleting the leaf removes just it"
+    with db._conn() as conn:
+        ptr = conn.execute(
+            "SELECT superseded_by_id FROM posts WHERE id = ?", (l2,)
+        ).fetchone()
+    assert ptr["superseded_by_id"] is None, \
+        "the middle's pointer to the deleted leaf is severed, not dangling"
+    # The supersede write path reconciles a trailing foreign signature like
+    # every other writer (#88), and the revision pays a reduced cooldown - a
+    # fraction of the proposal cooldown, still a throttle on chained bumps.
+    sig_sup = db.supersede_proposal(
+        sups_a["token"], m1, "Reconciled v2",
+        f"revised\n\n— {sups['sups-v1']['name']} (agent_id={sups['sups-v1']['agent_id']})"
+    )
+    assert sig_sup["signature_reconciled"] is True, \
+        "a foreign trailing signature on a supersede body is stripped and echoed"
+    assert "sups-v1" not in db.get_post(sig_sup["post_id"])["body"], \
+        "the foreign signature is gone from the stored revision"
+    _sup_cd_keys = ("FORUM_PROPOSAL_COOLDOWN_SECONDS", "FORUM_SUPERSEDE_COOLDOWN_FRACTION")
+    _saved_sup_cd = {k: os.environ.get(k) for k in _sup_cd_keys}
+    try:
+        os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "500"
+        os.environ["FORUM_SUPERSEDE_COOLDOWN_FRACTION"] = "0.5"
+        cda = db.register_agent("supersede-cooldown")
+        cdc = db.create_proposal(cda["token"], "Cooldown supersede", "v1")["post_id"]
+        blocked = expect_error(
+            db.supersede_proposal, cda["token"], cdc, "Cooldown supersede v2", "body"
+        )
+        assert "rate limited" in blocked, "a supersede inside its reduced window is blocked"
+        wait = int(blocked.split("can post again in ")[1].split(" seconds")[0])
+        assert wait <= 250, "the supersede wait uses the HALVED cooldown, not the full 500s"
+    finally:
+        for k in _sup_cd_keys:
+            if _saved_sup_cd[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_sup_cd[k]
 
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
     # db.search_citizens() / db.search_comments() back the viewer search page
@@ -2510,6 +2823,192 @@ def main():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    # --- reports revamp: snapshots, archives, and survival --------------------
+    # The reports revamp (proposal TBD): a report freezes its target's content
+    # and author at filing time, survives the content's deletion (swept to
+    # 'removed'), archives its votes with voter identities on resolution, and
+    # list_reports/get_report expose the enriched fields.
+    rev = {n: db.register_agent(n) for n in ("rev-flag", "rev-victim", "rev-voter", "rev-voter2")}
+    rev_f, rev_v, rev_v1, rev_v2 = (rev[n] for n in ("rev-flag", "rev-victim", "rev-voter", "rev-voter2"))
+    rev_post = db.create_post(rev_v["token"], "rev target", "rev body")
+    db.create_comment(rev_v["token"], rev_post["post_id"], "rev comment body")
+    rev_comment = db.create_comment(rev_v["token"], rev_post["post_id"], "second comment")
+    # Karma floors: flagger and both voters need 1 earned each.
+    for a in (rev_f, rev_v1, rev_v2):
+        p = db.create_post(a["token"], "rev karma " + a["name"], "k")
+        db.vote(rev_v["token"], "post", p["post_id"], 1)
+
+    # Snapshot + target_author_id are captured at report time.
+    rp = db.report_content(rev_f["token"], "post", rev_post["post_id"], "rev snap reason")
+    rp_detail = db.get_report(rp["report_id"])
+    assert rp_detail["target_author"]["name"] == "rev-victim", \
+        "get_report names the flagged author captured at report time"
+    assert rp_detail["target_snapshot"] == {"title": "rev target", "body": "rev body"}, \
+        "a post report freezes its title+body at report time"
+    assert rp_detail["target_snapshot"]["body"] == "rev body"
+    assert rp_detail["target_author"]["karma"] >= 0, "the target author panel carries karma"
+    assert rp_detail["target_author"]["account_status"] == "active"
+
+    # list_reports is additive: existing keys hold, new fields are present.
+    rows = {r["id"]: r for r in db.list_reports()}
+    rp_row = rows[rp["report_id"]]
+    for key in ("id", "status", "reporter", "suspend_votes", "clear_votes"):
+        assert key in rp_row, f"existing list_reports key {key} must survive"
+    assert rp_row["target_author"] == "rev-victim", "list_reports carries the flagged author"
+    assert rp_row["target_author_id"] == rev_v["agent_id"]
+    assert rp_row["target_preview"] and "rev body" in rp_row["target_preview"], \
+        "list_reports carries a snapshot preview"
+    assert rp_row["votes"] == {"suspend": 0, "clear": 0}
+
+    # The status filter splits the docket.
+    assert all(r["status"] == "open" for r in db.list_reports(status="open"))
+    assert all(r["status"] != "open" for r in db.list_reports(status="resolved"))
+    assert len(db.list_reports(status="all")) >= len(db.list_reports(status="open"))
+    assert "must be" in expect_error(db.list_reports, status="bogus")
+
+    # Comment reports freeze the comment body (consecutive same-author replies
+    # auto-merge server-side, so the frozen body may carry both lines).
+    rc = db.report_content(rev_f["token"], "comment", rev_comment["comment_id"], "comment snap")
+    rc_detail = db.get_report(rc["report_id"])
+    assert "second comment" in rc_detail["target_snapshot"]["body"], \
+        "a comment report freezes its body at report time"
+    assert rc_detail["target_type"] == "comment" and rc_detail["target_id"] == rev_comment["comment_id"]
+
+    # Votes archived with identities on community resolution.
+    db.vote_on_report(rev_v1["token"], rp["report_id"], "clear")
+    db.vote_on_report(rev_v2["token"], rp["report_id"], "suspend")
+    _sv_keys = ("FORUM_REPORT_SUSPEND_VOTES",)
+    _saved_sv = {k: os.environ.get(k) for k in _sv_keys}
+    try:
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
+        db.vote_on_report(rev_v1["token"], rp["report_id"], "suspend")
+    finally:
+        for k, v in _saved_sv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    resolved = db.get_report(rp["report_id"])
+    assert resolved["status"] == "suspended", "community verdict resolves the report"
+    assert {v["action"] for v in resolved["votes"]} == {"suspend", "clear"} or \
+        len(resolved["votes"]) >= 2, "resolved votes carry identities"
+    voter_names = {v["voter_name"] for v in resolved["votes"]}
+    assert "rev-voter" in voter_names and "rev-voter2" in voter_names, \
+        "archived votes name their voters"
+    assert all(v["voter_model"] is None for v in resolved["votes"]), \
+        "archived vote rows carry the identity but not a stale model link"
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM report_votes WHERE target_type = 'post' AND target_id = ?",
+            (rev_post["post_id"],),
+        ).fetchone()[0]
+        archived = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (rp["report_id"],)
+        ).fetchone()[0]
+    assert live == 0, "live tally is reset after resolution"
+    assert archived >= 2, "the resolved report's votes live in the archive"
+
+    # Admin resolve archives too (a fresh comment, since the one above has an
+    # open report the community is still judging).
+    rev2_post = db.create_post(rev_v2["token"], "rev admin post", "rev admin body")
+    rev_admin_comment = db.create_comment(rev_v2["token"], rev2_post["post_id"], "admin target comment")
+    rclr = db.report_content(rev_f["token"], "comment", rev_admin_comment["comment_id"], "admin clear")
+    db.vote_on_report(rev_v1["token"], rclr["report_id"], "suspend")
+    db.resolve_report(rclr["report_id"], "root", "clear")
+    rclr_detail = db.get_report(rclr["report_id"])
+    assert rclr_detail["status"] == "cleared"
+    assert any(v["action"] == "suspend" for v in rclr_detail["votes"]), \
+        "admin resolution archives the votes before resetting the tally"
+
+    # Admin resolve on a target with TWO open reports (different reporters)
+    # decides every open report on the target - the tally is per-target, so
+    # the sibling must keep its votes archived under its OWN id, never lose
+    # them to the resolved report's archive.
+    sib_post = db.create_post(rev_v2["token"], "rev sibling target", "sib body")
+    sib_a = db.report_content(rev_f["token"], "post", sib_post["post_id"], "sibling A")
+    sib_b = db.report_content(rev_v1["token"], "post", sib_post["post_id"], "sibling B")
+    assert sib_a["report_id"] != sib_b["report_id"], "two reporters can hold two open reports"
+    db.vote_on_report(rev_v1["token"], sib_a["report_id"], "suspend")
+    db.resolve_report(sib_a["report_id"], "root", "clear")
+    with db._conn() as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM report_votes WHERE target_type = 'post' AND target_id = ?",
+            (sib_post["post_id"],),
+        ).fetchone()[0]
+        arch_a = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (sib_a["report_id"],)
+        ).fetchone()[0]
+        arch_b = conn.execute(
+            "SELECT COUNT(*) FROM report_votes_archive WHERE report_id = ?", (sib_b["report_id"],)
+        ).fetchone()[0]
+    assert live == 0, "the per-target live tally resets for every report on the target"
+    assert arch_a >= 1, "the resolved report's votes live in its archive"
+    assert arch_b >= 1, "the sibling report keeps its votes archived under its own id"
+    sib_b_detail = db.get_report(sib_b["report_id"])
+    assert sib_b_detail["status"] == "cleared", "the sibling report is decided too"
+    assert any(v["voter_name"] == "rev-voter" for v in sib_b_detail["votes"]), \
+        "the sibling's archived votes keep their voter identity"
+
+    # Content deletion sweeps OPEN reports to 'removed' with snapshot intact
+    # (a report already resolved stays as its verdict).
+    del_post = db.create_post(rev_v2["token"], "rev delete target", "rev delete body")
+    del_rep = db.report_content(rev_f["token"], "post", del_post["post_id"], "delete sweep")
+    db.delete_post(del_post["post_id"], "root")
+    survived = db.get_report(del_rep["report_id"])
+    assert survived["status"] == "removed", "a report on deleted content survives as 'removed'"
+    assert survived["target_snapshot"] == {"title": "rev delete target", "body": "rev delete body"}, \
+        "the frozen snapshot survives content deletion"
+    assert survived["target_author"]["name"] == "rev-voter2", \
+        "the flagged author link survives content deletion"
+    with db._conn() as conn:
+        post_gone = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id = ?", (del_post["post_id"],)
+        ).fetchone()[0]
+    assert post_gone == 0, "the content itself is really gone"
+    assert any(r["status"] == "removed" for r in db.list_reports(status="resolved")), \
+        "'removed' reports appear in the resolved docket split"
+
+    # A fresh re-report on the same target starts a clean tally.
+    rev3_post = db.create_post(rev_v2["token"], "rev target 2", "rev body 2")
+    rp2 = db.report_content(rev_f["token"], "post", rev3_post["post_id"], "fresh after removed")
+    rp2_detail = db.get_report(rp2["report_id"])
+    assert rp2_detail["status"] == "open" and len(rp2_detail["votes"]) == 0, \
+        "a fresh report after a removal starts a clean tally"
+
+    # get_report raises on a missing report.
+    assert "no report" in expect_error(db.get_report, 999999)
+
+    # A COMMUNITY verdict (vote_on_report, not admin) decides every open
+    # report on the target too, and every reporter on it is notified - not
+    # just the reporter whose report the deciding vote was cast on. Lives
+    # after the delete-sweep / re-report blocks: the verdict suspends the
+    # target author, so it must be the last use of the rev-* agents.
+    com_post = db.create_post(rev_v2["token"], "rev community sibling target", "com body")
+    com_a = db.report_content(rev_f["token"], "post", com_post["post_id"], "com A")
+    com_b = db.report_content(rev_v1["token"], "post", com_post["post_id"], "com B")
+    assert com_a["report_id"] != com_b["report_id"], "two reporters hold two open reports"
+    _sv_keys2 = ("FORUM_REPORT_SUSPEND_VOTES",)
+    _saved_sv2 = {k: os.environ.get(k) for k in _sv_keys2}
+    try:
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
+        # rev-voter votes on com_a (their own com_b report would be refused).
+        verdict = db.vote_on_report(rev_v1["token"], com_a["report_id"], "suspend")
+    finally:
+        for k, v in _saved_sv2.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    assert verdict["suspended"], "one suspend vote with threshold 1 suspends the author"
+    for tag in ("rev-flag", "rev-voter"):
+        com_mail = db.notifications(rev[tag]["token"])
+        assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
+                   and "led to a suspension" in n["body"]
+                   for n in com_mail["notifications"]), \
+            f"the community verdict notifies sibling reporter {tag} too"
+    assert db.get_report(com_b["report_id"])["status"] == "suspended", \
+        "the sibling report is decided by the community verdict"
 
     # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
     # The suite disables the caps at import (env 0); these tests arm them

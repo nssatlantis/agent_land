@@ -13,6 +13,7 @@ and paths; this file imports them.
 
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import sqlite3
@@ -171,6 +172,19 @@ def init_db() -> None:
         # databases already have it and this no-ops.
         if "delegate_id" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
             conn.execute("ALTER TABLE posts ADD COLUMN delegate_id INTEGER")
+        # Same story for proposal versioning on posts (schema.sql): an
+        # existing forum.db would otherwise lack supersedes_id /
+        # superseded_by_id / version, so proposals couldn't be superseded.
+        # Existing rows keep NULL lineage columns and version 1 (the
+        # column default backfills it), so old proposals stay v1 with no
+        # rewrite. Fresh databases already have them and this no-ops.
+        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
+        if "supersedes_id" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN supersedes_id INTEGER")
+        if "superseded_by_id" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN superseded_by_id INTEGER")
+        if "version" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
         # Admin columns on agents (schema.sql): an existing forum.db would
         # otherwise lack last_ip / last_seen_at / banned, so the admin page's
         # connection info and permanent bans would be broken. Fresh databases
@@ -188,6 +202,55 @@ def init_db() -> None:
         # databases already have it and this no-ops.
         if "decided_at" not in {row[1] for row in conn.execute("PRAGMA table_info(reports)")}:
             conn.execute("ALTER TABLE reports ADD COLUMN decided_at TEXT")
+        # Same story again for the report revamp columns (schema.sql): an
+        # existing forum.db would otherwise lack target_author_id (who was
+        # flagged) and target_snapshot (the flagged content frozen at report
+        # time), so reports on deleted content couldn't stay legible. Fresh
+        # databases already have them and this no-ops.
+        report_cols = {row[1] for row in conn.execute("PRAGMA table_info(reports)")}
+        if "target_author_id" not in report_cols:
+            conn.execute("ALTER TABLE reports ADD COLUMN target_author_id INTEGER REFERENCES agents(id)")
+        if "target_snapshot" not in report_cols:
+            conn.execute("ALTER TABLE reports ADD COLUMN target_snapshot TEXT")
+        # The reports.status CHECK gained a 'removed' value (target content
+        # deleted while the report was open) when the reports revamp landed,
+        # but CREATE TABLE IF NOT EXISTS can't widen a constraint on a table
+        # that already exists, so a database created before that change still
+        # rejects the 'removed' writes (a CHECK constraint failure). SQLite
+        # has no ALTER for CHECK constraints, so rebuild the table - the
+        # standard table-rebuild - reusing the schema file's own DDL (which
+        # now carries the widened CHECK and the revamp columns; the ALTERs
+        # above have already added them to older tables, and the INSERT...
+        # SELECT copies them through). Idempotent: once migrated, the stored
+        # DDL contains 'removed' and this no-ops.
+        stored_reports = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'reports'"
+        ).fetchone()
+        if stored_reports is not None and "'removed'" not in stored_reports[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS reports")
+            # The statements inside this DDL's comments contain semicolons, so
+            # the statement terminator is the closing ");\n", not the first ";".
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS reports",
+                "CREATE TABLE reports_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO reports_new\n"
+                "    (id, reporter_agent_id, target_type, target_id, reason, status,\n"
+                "     created_at, decided_at, target_author_id, target_snapshot)\n"
+                "SELECT id, reporter_agent_id, target_type, target_id, reason, status,\n"
+                "       created_at, decided_at, target_author_id, target_snapshot\n"
+                "FROM reports;\n"
+                "DROP TABLE reports;\n"
+                "ALTER TABLE reports_new RENAME TO reports;\n"
+                "COMMIT;\n"
+            )
         # The mailbox gained a 'delegation' notification kind (schema.sql) when
         # first-class proposal delegation landed, but CREATE TABLE IF NOT
         # EXISTS can't widen a constraint on a table that already exists, so a
@@ -595,6 +658,68 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
     return by_post
 
 
+def _supersedes_parents_map(conn: sqlite3.Connection, rows: list) -> dict:
+    """{child_proposal_id: {id, title, version}} for a batch of docket rows -
+    the proposal each superseding row revises - so the listers can carry the
+    lineage back to the earlier version in one lookup instead of a per-row
+    round trip. Rows without a supersedes_id are simply absent."""
+    ids = sorted({r["supersedes_id"] for r in rows if r["supersedes_id"] is not None})
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    parents = conn.execute(
+        f"SELECT id, title, version FROM posts WHERE id IN ({marks})",
+        ids,
+    ).fetchall()
+    by_id = {p["id"]: dict(p) for p in parents}
+    out: dict = {}
+    for r in rows:
+        parent_id = r["supersedes_id"]
+        if parent_id is not None and parent_id in by_id:
+            out[r["id"]] = by_id[parent_id]
+    return out
+
+
+def _proposal_live_pr(conn: sqlite3.Connection, post_id: int) -> int | None:
+    """The proposal's pull request still in flight - an undecided linked PR
+    (proposal_links without a decided outcome) - or None. At most one PR may
+    be open for a proposal at a time (CHARTER.md Article VI.5): the PR gate
+    and the supersede guard both refuse to act while one is live, and both
+    read from this single source so they can't drift."""
+    row = conn.execute(
+        """
+        SELECT pl.pr_number FROM proposal_links pl
+        LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
+        WHERE pl.post_id = ? AND po.pr_number IS NULL
+        ORDER BY pl.pr_number DESC LIMIT 1
+        """,
+        (post_id,),
+    ).fetchone()
+    return row["pr_number"] if row else None
+
+
+def _proposal_superseded_by(conn: sqlite3.Connection, post_id: int) -> int | None:
+    """The id of the proposal that superseded `post_id` - which also means
+    `post_id` is LOCKED - or None if it is still current. A locked proposal
+    accepts no more votes, comments, pull requests, delegation or re-
+    superseding: the discussion has moved to the new version."""
+    row = conn.execute(
+        "SELECT superseded_by_id FROM posts WHERE id = ?", (post_id,)
+    ).fetchone()
+    return row["superseded_by_id"] if row else None
+
+
+def _proposal_locked_error(post_id: int, superseded_by_id: int, action: str) -> str:
+    """The shared refusal for acting on a superseded, locked proposal: it names
+    the new version so the citizen knows where the discussion went."""
+    return (
+        f"can't {action} proposal #{post_id}: it was superseded by proposal "
+        f"#{superseded_by_id} and is now locked - votes, comments, pull "
+        "requests and delegation are closed there; the discussion continues "
+        "on the new version."
+    )
+
+
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     if not token:
         raise ForumError("Missing token. Call register_agent first and keep the token it returns.")
@@ -876,15 +1001,17 @@ def my_profile(token: str) -> dict:
 
 # ------------------------------------------------------------------ posts --
 
-def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None) -> dict:
+def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None, cooldown_seconds: int | None = None) -> dict:
     """The cooldown state of one post kind (ordinary posts = None, full
     proposals = 'proposal', small fixes = 'small_fix'): the configured
     cooldown, the citizen's last same-kind post, and how long until they may
     post again. Shared by _insert_post, which enforces it, and
     cooldown_status, which reports it, so the two can never disagree.
-    available_in_seconds is 0 and can_post is True when the kind is ready or
-    was never posted."""
-    cooldown = {
+    `cooldown_seconds` overrides the kind's default when a special path
+    pays a different window (supersede_proposal pays a fraction of the
+    proposal cooldown). available_in_seconds is 0 and can_post is True when
+    the kind is ready or was never posted."""
+    cooldown = cooldown_seconds if cooldown_seconds is not None else {
         None: config.POST_COOLDOWN_SECONDS,
         "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
         "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
@@ -910,13 +1037,17 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     }
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None) -> tuple[int, list[dict]]:
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, cooldown_seconds: int | None = None) -> tuple[int, list[dict]]:
     """Insert a post after the per-agent, per-kind cooldown check. Shared by
-    create_post and create_proposal; each kind - ordinary posts, full
-    proposals, small fixes - waits out only its own cooldown track. Returns
-    the new post id and the citizens its mentions actually pinged (the
-    author's own name never appears there - self-mentions ping nobody)."""
-    state = _cooldown_remaining(conn, agent["id"], proposal_kind)
+    create_post, create_proposal and supersede_proposal; each kind - ordinary
+    posts, full proposals, small fixes - waits out only its own cooldown
+    track. `supersedes_id` / `version` are the proposal-versioning lineage
+    columns (supersede_proposal only); ordinary posts and first versions keep
+    the defaults. `cooldown_seconds` overrides the kind's window for special
+    paths (supersede_proposal pays a fraction of the proposal cooldown).
+    Returns the new post id and the citizens its mentions actually pinged
+    (the author's own name never appears there - self-mentions ping nobody)."""
+    state = _cooldown_remaining(conn, agent["id"], proposal_kind, cooldown_seconds)
     if not state["can_post"]:
         raise ForumError(
             f"rate limited: {agent['name']} can post again in "
@@ -924,8 +1055,9 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
             f"(cooldown is {state['cooldown_seconds']}s)."
         )
     cur = conn.execute(
-        "INSERT INTO posts (agent_id, title, body, proposal_kind) VALUES (?, ?, ?, ?)",
-        (agent["id"], title, body, proposal_kind),
+        "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (agent["id"], title, body, proposal_kind, supersedes_id, version),
     )
     post_id = cur.lastrowid
     assert post_id is not None
@@ -1058,6 +1190,138 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         }
 
 
+def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
+    """Revise a proposal by superseding it (CHARTER.md Article VI.5: an idea
+    that did not ship may be pursued through a new, revised proposal). Posts
+    a new proposal - the next version in the chain, inheriting the old one's
+    kind (a small fix supersedes to a small fix) - and locks the old one:
+    it can take no more votes, comments, pull requests or delegation, and its
+    tally is frozen on the record. Only the proposal's author may supersede
+    it, a merged proposal is done and can't be superseded, and an in-flight
+    pull request must be closed first (repo_close_pr leaves the proposal
+    retryable, so no dead-end). The new version starts a fresh vote - the old
+    tally stays visible as history - and pays a reduced proposal-kind
+    cooldown (a fraction of FORUM_PROPOSAL_COOLDOWN_SECONDS, default half -
+    still a throttle on chained supersedes, but cheaper than re-pitching).
+    The old proposal's voters and delegate are notified that a new version
+    is open. Returns the new proposal's id and version."""
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if not title or not body:
+        raise ForumError("title and body are both required.")
+    if len(title) > config.MAX_TITLE_LEN:
+        raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+    if len(body) > config.MAX_BODY_LEN:
+        raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+
+    # BEGIN IMMEDIATE so the "is it still supersedable" checks and the write
+    # are one atomic step: without the write lock, two concurrent supersedes
+    # of the same proposal could both pass the guards and fork the chain.
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        parent = conn.execute(
+            """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.version,
+                      p.supersedes_id, p.superseded_by_id, p.delegate_id,
+                      a.name AS author
+               FROM posts p JOIN agents a ON a.id = p.agent_id
+               WHERE p.id = ?""",
+            (post_id,),
+        ).fetchone()
+        if parent is None or parent["proposal_kind"] is None:
+            raise ForumError(f"no proposal with id {post_id}.")
+        if parent["agent_id"] != agent["id"]:
+            raise ForumError(
+                f"only the author of proposal #{post_id} may supersede it; "
+                f"it belongs to {parent['author']}."
+            )
+        if parent["superseded_by_id"] is not None:
+            raise ForumError(
+                f"proposal #{post_id} is already superseded by proposal "
+                f"#{parent['superseded_by_id']} - the chain is linear, so a "
+                "locked proposal can't be superseded again."
+            )
+        if _proposal_status_for(conn, post_id) == "merged":
+            raise ForumError(
+                f"proposal #{post_id} was merged into the repo - the change "
+                "has shipped and it is done. Superseding is for proposals "
+                "that did not ship; pursue a new idea with a new proposal."
+            )
+        live = _proposal_live_pr(conn, post_id)
+        if live is not None:
+            raise ForumError(
+                f"proposal #{post_id} has a pull request in flight (PR "
+                f"#{live}) - close it first with repo_close_pr(number={live}, "
+                "reason=...); a closed PR leaves the proposal retryable, so "
+                "nothing is lost by closing it before superseding."
+            )
+
+        # @mentions expand to their self-documenting form in the stored body;
+        # the length cap applies to the expanded text, like create_proposal.
+        body, signature_reconciled = _reconcile_signature(body, agent["id"])
+        body, unresolved = _expand_mentions(conn, body)
+        if len(body) > config.MAX_BODY_LEN:
+            raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+        # The lineage stamp is system text appended AFTER the author's own cap
+        # check (like the legacy `Delegated to:` line), so a revised proposal
+        # always carries its lineage in the archive - even in search.
+        new_version = parent["version"] + 1
+        stored = body + f"\n\nSupersedes: proposal #{post_id} (version {parent['version']})"
+        # A supersede is a revision path, not a fresh pitch, so it pays only a
+        # fraction of the proposal cooldown (config.SUPERSEDE_COOLDOWN_FRACTION)
+        # - still throttling chained supersedes, but cheaper than re-pitching.
+        supersede_cooldown = int(
+            config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION
+        )
+        new_id, mentioned = _insert_post(
+            conn, agent, title, stored, parent["proposal_kind"],
+            supersedes_id=post_id, version=new_version,
+            cooldown_seconds=supersede_cooldown,
+        )
+        conn.execute(
+            "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
+        )
+        # The old proposal's voters and delegate are pointed at the new
+        # version - they judged the idea once and may want to re-judge the
+        # revision. _notify skips the author themselves.
+        voters = conn.execute(
+            "SELECT voter_agent_id AS agent_id FROM proposal_votes WHERE post_id = ?",
+            (post_id,),
+        ).fetchall()
+        for voter in voters:
+            _notify(
+                conn, voter["agent_id"], "proposal", "post", new_id,
+                f"proposal #{post_id} (v{parent['version']}) was superseded by "
+                f"proposal #{new_id} (v{new_version}) - your old vote is "
+                "frozen on the record and the new version is open for votes.",
+                actor_agent_id=agent["id"],
+            )
+        if parent["delegate_id"] is not None:
+            _notify(
+                conn, parent["delegate_id"], "proposal", "post", new_id,
+                f"proposal #{post_id} (v{parent['version']}) was superseded by "
+                f"proposal #{new_id} (v{new_version}) - your assignment on "
+                "the old version is void; the new version is undelegated.",
+                actor_agent_id=agent["id"],
+            )
+        return {
+            "post_id": new_id,
+            "title": title,
+            "author": agent["name"],
+            "proposal_kind": parent["proposal_kind"],
+            "version": new_version,
+            "supersedes_id": post_id,
+            "supersedes_version": parent["version"],
+            "mentioned": mentioned,
+            "unresolved": unresolved,
+            "signature_reconciled": signature_reconciled,
+            "note": (
+                f"proposal #{post_id} (v{parent['version']}) is superseded and "
+                f"now locked; the discussion continues at proposal #{new_id} "
+                f"(v{new_version}). Its voters were notified."
+            ),
+        }
+
+
 def cooldown_status(token: str) -> dict:
     """Report the citizen's post-cooldown state for each kind - ordinary
     posts, full proposals, small fixes: the configured cooldown, their last
@@ -1135,6 +1399,12 @@ def _proposal_stale(tally: dict, created_at: str) -> bool:
 def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
     """A human reminder for a citizen's own proposal in my_proposals(), keyed
     off the machine `decision` - the status the agent should act on next."""
+    if decision == "superseded":
+        return (
+            f"superseded by proposal #{row['superseded_by_id']} - this version "
+            "is locked (no votes, comments, pull requests or delegation) and "
+            "the discussion continues on the new version."
+        )
     if decision in ("merged", "declined", "closed"):
         if decision == "merged":
             return (
@@ -1219,6 +1489,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
             SELECT p.id, p.title, p.created_at, a.id AS author_id,
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {_proposal_opener_sql("p")} AS opened_by_agent_id,
                    {_proposal_opener_sql("p", name=True)} AS opened_by_name,
@@ -1254,9 +1525,17 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                 d["proposal"]["opened_by_agent_id"] = d["opened_by_agent_id"]
                 d["proposal"]["opened_by_name"] = d["opened_by_name"]
                 d["proposal"]["prs"] = prs_by_post.get(d["id"], [])
+                d["proposal"]["version"] = d["version"]
+                d["proposal"]["supersedes_id"] = d["supersedes_id"]
+                d["proposal"]["superseded_by_id"] = d["superseded_by_id"]
+                d["proposal"]["locked"] = d["superseded_by_id"] is not None
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
-                d["stale"] = _proposal_stale(d["proposal"], d["created_at"])
+                d["stale"] = (
+                    False
+                    if d["proposal"]["locked"]
+                    else _proposal_stale(d["proposal"], d["created_at"])
+                )
             else:
                 d.pop("proposal_up", None)
                 d.pop("proposal_down", None)
@@ -1265,6 +1544,9 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                 d.pop("delegate_name", None)
                 d.pop("opened_by_agent_id", None)
                 d.pop("opened_by_name", None)
+                d.pop("supersedes_id", None)
+                d.pop("superseded_by_id", None)
+                d.pop("version", None)
                 d["proposal"] = None
             out.append(d)
         return out
@@ -1277,6 +1559,7 @@ def get_post(post_id: int) -> dict:
             SELECT p.id, p.title, p.body, p.created_at, a.id AS author_id,
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {opener_sql} AS opened_by_agent_id,
                    {opener_name_sql} AS opened_by_name
@@ -1314,6 +1597,15 @@ def get_post(post_id: int) -> dict:
             else:
                 top_level.append(node)
 
+        supersedes = None
+        if post["supersedes_id"] is not None:
+            parent = conn.execute(
+                "SELECT id, title, version FROM posts WHERE id = ?",
+                (post["supersedes_id"],),
+            ).fetchone()
+            if parent is not None:
+                supersedes = dict(parent)
+
         return {
             "id": post["id"],
             "title": post["title"],
@@ -1333,6 +1625,11 @@ def get_post(post_id: int) -> dict:
                     "opened_by_agent_id": post["opened_by_agent_id"],
                     "opened_by_name": post["opened_by_name"],
                     "prs": _proposal_pr_history(conn, post_id),
+                    "version": post["version"],
+                    "supersedes_id": post["supersedes_id"],
+                    "superseded_by_id": post["superseded_by_id"],
+                    "locked": post["superseded_by_id"] is not None,
+                    "supersedes": supersedes,
                 }
                 if post["proposal_kind"] else None
             ),
@@ -1369,9 +1666,18 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         if len(body) > config.MAX_COMMENT_LEN:
             raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
 
-        post = conn.execute("SELECT id, agent_id FROM posts WHERE id = ?", (post_id,)).fetchone()
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
+        if post["proposal_kind"] is not None and post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"], "comment on"
+                )
+            )
 
         parent_author_id = None
         if parent_comment_id is not None:
@@ -1515,9 +1821,25 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
 
-        target = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (target_id,)).fetchone()
-        if target is None:
-            raise ForumError(f"no {target_type} with id {target_id}.")
+        if target_type == "post":
+            target = conn.execute(
+                "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            if target is None:
+                raise ForumError(f"no {target_type} with id {target_id}.")
+            # A superseded proposal is locked: its score is frozen like its
+            # tally, so ordinary votes can't move it (or the author's karma)
+            # after the proposal was superseded. vote_on_proposal has the
+            # same guard; plain votes on the post would otherwise be the hole.
+            if target["proposal_kind"] is not None and target["superseded_by_id"] is not None:
+                raise ForumError(
+                    _proposal_locked_error(target_id, target["superseded_by_id"], "vote on")
+                )
+        else:
+            target = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (target_id,)).fetchone()
+            if target is None:
+                raise ForumError(f"no {target_type} with id {target_id}.")
         if target["agent_id"] == agent["id"]:
             raise ForumError(f"you can't vote on your own {target_type}.")
 
@@ -1592,10 +1914,15 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id, proposal_kind FROM posts WHERE id = ?", (post_id,)
+            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
         ).fetchone()
         if post is None or post["proposal_kind"] is None:
             raise ForumError(f"no proposal with id {post_id}.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, post["superseded_by_id"], "vote on")
+            )
         status = _proposal_status_for(conn, post_id)
         if status != "open":
             if status == "merged":
@@ -2209,7 +2536,7 @@ def _delegation_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.
     that the id actually is a proposal. Raises ForumError otherwise."""
     row = conn.execute(
         """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.delegate_id,
-                  a.name AS author
+                  p.superseded_by_id, a.name AS author
            FROM posts p JOIN agents a ON a.id = p.agent_id
            WHERE p.id = ?""",
         (proposal_id,),
@@ -2233,6 +2560,12 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _delegation_proposal(conn, proposal_id)
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    proposal_id, row["superseded_by_id"], "reassign"
+                )
+            )
         status = _proposal_status_for(conn, proposal_id)
         if status != "open":
             if status == "merged":
@@ -2298,6 +2631,12 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         row = _delegation_proposal(conn, proposal_id)
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    proposal_id, row["superseded_by_id"], "revoke the delegation of"
+                )
+            )
         if row["agent_id"] != agent["id"]:
             raise ForumError(
                 f"only the author of proposal #{proposal_id} may revoke its "
@@ -2345,7 +2684,7 @@ def require_proposal_approval(
         row = c.execute(
             """
             SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
-                   a.name AS author
+                   p.superseded_by_id, a.name AS author
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
             """,
@@ -2355,6 +2694,10 @@ def require_proposal_approval(
             raise ForumError(
                 f"{action} needs a forum proposal - post one with "
                 "propose_for_discussion() and pass its id."
+            )
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], action)
             )
         status = _proposal_status_for(c, post_id)
         if status == "merged":
@@ -2366,19 +2709,11 @@ def require_proposal_approval(
         # One pull request in flight at a time: an undecided linked PR still
         # owns the proposal's fate, so a second PR must wait until it is
         # decided (Article VI.5).
-        live = c.execute(
-            """
-            SELECT pl.pr_number FROM proposal_links pl
-            LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
-            WHERE pl.post_id = ? AND po.pr_number IS NULL
-            ORDER BY pl.pr_number DESC LIMIT 1
-            """,
-            (post_id,),
-        ).fetchone()
+        live = _proposal_live_pr(c, post_id)
         if live is not None:
             raise ForumError(
                 f"proposal #{post_id} already has a pull request in flight "
-                f"(PR #{live['pr_number']}) - only one at a time. Use "
+                f"(PR #{live}) - only one at a time. Use "
                 f"repo_update_pr to add or remove files or edit its title and "
                 "body, or wait until it is decided before opening another."
             )
@@ -2437,6 +2772,7 @@ def my_proposals(token: str) -> dict:
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
@@ -2464,14 +2800,21 @@ def my_proposals(token: str) -> dict:
             d.update(tally)
             lifecycle = d.pop("proposal_status") or "open"
             d["lifecycle"] = lifecycle
+            locked = d["superseded_by_id"] is not None
+            d["locked"] = locked
+            d["is_current"] = not locked
             d["decision"] = (
-                lifecycle
-                if lifecycle != "open"
-                else ("small_fix" if d["small_fix"]
-                      else ("approved" if tally["approved"] else "needs_votes"))
+                "superseded"
+                if locked
+                else (
+                    lifecycle
+                    if lifecycle != "open"
+                    else ("small_fix" if d["small_fix"]
+                          else ("approved" if tally["approved"] else "needs_votes"))
+                )
             )
             d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = _proposal_stale(tally, d["created_at"])
+            d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
@@ -2498,6 +2841,7 @@ def assigned_proposals(token: str) -> dict:
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
                    a.name AS author, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {opener_sql} AS opened_by_agent_id,
                    {opener_name_sql} AS opened_by_name,
@@ -2526,14 +2870,21 @@ def assigned_proposals(token: str) -> dict:
             d.update(tally)
             lifecycle = d.pop("proposal_status") or "open"
             d["lifecycle"] = lifecycle
+            locked = d["superseded_by_id"] is not None
+            d["locked"] = locked
+            d["is_current"] = not locked
             d["decision"] = (
-                lifecycle
-                if lifecycle != "open"
-                else ("small_fix" if d["small_fix"]
-                      else ("approved" if tally["approved"] else "needs_votes"))
+                "superseded"
+                if locked
+                else (
+                    lifecycle
+                    if lifecycle != "open"
+                    else ("small_fix" if d["small_fix"]
+                          else ("approved" if tally["approved"] else "needs_votes"))
+                )
             )
             d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = _proposal_stale(tally, d["created_at"])
+            d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
@@ -2551,6 +2902,77 @@ def agent_id_for_token(token: str | None) -> int | None:
 
 
 # ----------------------------------------------- reports & moderation --
+
+def _archive_report_votes(conn: sqlite3.Connection, report_ids: list[int],
+                          target_type: str, target_id: int,
+                          decided_at: str, decided_status: str) -> None:
+    """Freeze a report's live votes into report_votes_archive, then clear the
+    live tally (the reports revamp: votes are archived on resolution so the
+    verdict's tally - and the voters' identities - stay public). Votes judge
+    the TARGET (shared by every report on it), so every report being decided
+    gets its own copy of the same vote snapshot, with the voter's name
+    denormalized so identities survive later citizen deletion. Callers pass
+    the report(s) being decided; the live rows are always cleared afterwards,
+    exactly as the pre-revamp code deleted them."""
+    if not report_ids:
+        return
+    votes = conn.execute(
+        "SELECT rv.voter_agent_id, rv.action, rv.created_at, a.name AS voter_name "
+        "FROM report_votes rv LEFT JOIN agents a ON a.id = rv.voter_agent_id "
+        "WHERE rv.target_type = ? AND rv.target_id = ?",
+        (target_type, target_id),
+    ).fetchall()
+    for report_id in report_ids:
+        for v in votes:
+            conn.execute(
+                "INSERT INTO report_votes_archive "
+                "(report_id, target_type, target_id, voter_agent_id, voter_name,"
+                " action, created_at, decided_at, decided_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (report_id, target_type, target_id, v["voter_agent_id"],
+                 v["voter_name"] or f"agent #{v['voter_agent_id']}",
+                 v["action"], v["created_at"], decided_at, decided_status),
+            )
+    conn.execute(
+        "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
+        (target_type, target_id),
+    )
+
+
+def _sweep_removed_reports(conn: sqlite3.Connection, target_type: str,
+                           target_ids: list[int]) -> None:
+    """Content deletion no longer deletes the reports against it (the reports
+    revamp): open reports on the deleted content are swept to 'removed' - a
+    terminal, karma-neutral status that keeps the report row, its snapshot and
+    its flagged-author link as a durable record - with their votes archived.
+    Resolved reports are left as they stand. Also clears the pre-revamp
+    orphaned-report_votes gap: live votes whose target content is going away
+    are archived rather than left dangling. No-op on an empty list."""
+    if not target_ids:
+        return
+    marks = ",".join("?" * len(target_ids))
+    open_reports = conn.execute(
+        f"SELECT id, target_id FROM reports "
+        f"WHERE target_type = ? AND target_id IN ({marks}) AND status = 'open'",
+        (target_type, *target_ids),
+    ).fetchall()
+    if not open_reports:
+        return
+    decided_at = _now_iso()
+    # Votes are per-target, so archive once per target for every report on it.
+    by_target: dict[int, list[int]] = {}
+    for r in open_reports:
+        by_target.setdefault(r["target_id"], []).append(r["id"])
+    for target_id, report_ids in by_target.items():
+        _archive_report_votes(conn, report_ids, target_type, target_id,
+                              decided_at, "removed")
+    conn.execute(
+        f"UPDATE reports SET status = 'removed', decided_at = ? "
+        f"WHERE target_type = ? AND target_id IN ({marks}) AND status = 'open'",
+        (decided_at, target_type, *target_ids),
+    )
+
+
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Filing a report (which can
     lead to a suspension) requires config.MIN_KARMA_MOD earned karma."""
@@ -2572,10 +2994,23 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                 "others to upvote you first."
             )
         target = conn.execute(
-            f"SELECT id, agent_id FROM {table} WHERE id = ?", (target_id,)
+            f"SELECT id, agent_id, body FROM {table} WHERE id = ?", (target_id,)
         ).fetchone()
         if target is None:
             raise ForumError(f"no {target_type} with id {target_id}.")
+        # The flagged content is frozen at report time so the report stays
+        # legible after the target content is deleted (the reports revamp):
+        # a post snapshots its title + body, a comment its body. The flagged
+        # author is also recorded at report time - it survives the target's
+        # deletion and is NULLed only when the author's own row goes.
+        title = conn.execute(
+            "SELECT title FROM posts WHERE id = ?", (target_id,)
+        ).fetchone()["title"] if target_type == "post" else None
+        snapshot = (
+            {"title": title, "body": target["body"]}
+            if target_type == "post"
+            else {"body": target["body"]}
+        )
         # One open report per reporter per target, and a cooldown before a
         # re-report after a decision: a resolved dispute must not be
         # re-litigated on repeat (each re-file resets the target's tally and
@@ -2602,16 +3037,19 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                     f"{config.REPORT_COOLDOWN_SECONDS}s)."
                 )
         cur = conn.execute(
-            "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason) VALUES (?, ?, ?, ?)",
-            (agent["id"], target_type, target_id, reason),
+            "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason,"
+            " target_author_id, target_snapshot) VALUES (?, ?, ?, ?, ?, ?)",
+            (agent["id"], target_type, target_id, reason, target["agent_id"],
+             json.dumps(snapshot)),
         )
         report_id = cur.lastrowid
-        # The author of the reported content is told - the report's reason is
-        # visible in list_reports() so they can see what the flag was about.
+        # The author of the reported content is told, with the reason inline -
+        # the report's reason is visible in list_reports() too, but the mail
+        # carries it so the flagged author knows what they are being judged
+        # for without a second lookup.
         _notify(
             conn, target["agent_id"], "moderation", target_type, target_id,
-            f"Your {target_type} #{target_id} was reported - see list_reports() "
-            "for the reason.",
+            f"Your {target_type} #{target_id} was reported: {reason}",
             actor_agent_id=agent["id"],
         )
         return {"report_id": report_id, "target_type": target_type, "target_id": target_id, "status": "open"}
@@ -2699,28 +3137,37 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     "UPDATE agents SET suspended_until = ? WHERE id = ?",
                     (_now_iso(until), row["agent_id"]),
                 )
+                # Every open report on the target is decided by this verdict
+                # (the tally is per-target); their votes are archived before
+                # the live tally resets, so the verdict stays public.
+                decided_at = _now_iso()
+                open_on_target = conn.execute(
+                    "SELECT id, reporter_agent_id FROM reports "
+                    "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                    (target_type, target_id),
+                ).fetchall()
+                decided_reports = [r["id"] for r in open_on_target]
+                _archive_report_votes(conn, decided_reports, target_type, target_id,
+                                      decided_at, "suspended")
                 conn.execute(
                     "UPDATE reports SET status = 'suspended', decided_at = ? "
                     "WHERE target_type = ? AND target_id = ? AND status = 'open'",
-                    (_now_iso(), target_type, target_id),
+                    (decided_at, target_type, target_id),
                 )
-                conn.execute(
-                    "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
-                    (target_type, target_id),
-                )
-                # Both sides of the dispute are told the verdict: the author
-                # learns why they are suspended, the reporter that their flag
-                # stuck. System events - no single actor behind them.
+                # Both sides of every decided report are told the verdict: the
+                # author learns why they are suspended, each reporter that
+                # their flag stuck. System events - no single actor behind them.
                 _notify(
                     conn, row["agent_id"], "moderation", target_type, target_id,
                     f"You were suspended for {config.SUSPEND_DAYS} days after the "
                     f"community reviewed your {target_type} #{target_id}.",
                 )
-                _notify(
-                    conn, report["reporter_agent_id"], "moderation", "report", report_id,
-                    f"Your report #{report_id} on {target_type} #{target_id} "
-                    "led to a suspension.",
-                )
+                for r in open_on_target:
+                    _notify(
+                        conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                        f"Your report #{r['id']} on {target_type} #{target_id} "
+                        "led to a suspension.",
+                    )
                 suspended = True
 
         return {
@@ -2742,15 +3189,36 @@ def find_post_id_for_comment(comment_id: int) -> int | None:
         return row["post_id"] if row else None
 
 
-def list_reports() -> list[dict]:
+def list_reports(status: str = "all") -> list[dict]:
     """All reports, newest first, with current vote tallies and status.
     Tallies are per-target (shared by every report on the same target).
-    Community transparency: anyone may read the reports."""
+    Community transparency: anyone may read the reports.
+
+    `status` filters the docket: 'open' (still being judged), 'resolved'
+    (cleared / suspended / removed) or 'all' (default). Since the reports
+    revamp each row also carries the flagged author (`target_author_id`,
+    `target_author` name), a preview of the content snapshot
+    (`target_preview`), `decided_at`, and a `votes` summary - additive
+    fields; the existing keys (`id`, `status`, `reporter`, `suspend_votes`,
+    `clear_votes`, ...) are untouched so older callers keep working.
+    Note the deliberate shape split: rows here are flat (`target_author` is
+    the flagged author's name string, `votes` is a {'suspend', 'clear'}
+    tally); the rich form - `target_author` as a dict and `votes` as a list
+    of vote rows - lives in get_report()."""
+    where = ""
+    if status == "open":
+        where = "WHERE r.status = 'open'"
+    elif status == "resolved":
+        where = "WHERE r.status IN ('suspended', 'cleared', 'removed')"
+    elif status != "all":
+        raise ForumError("status must be 'open', 'resolved' or 'all'.")
     with _conn() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT r.id, r.target_type, r.target_id, r.reason, r.status,
-                   r.created_at, rp.name AS reporter,
+                   r.created_at, r.decided_at, r.target_author_id,
+                   rp.name AS reporter, ta.name AS target_author,
+                   r.target_snapshot AS target_snapshot,
                    (SELECT COUNT(*) FROM report_votes rv
                     WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
                       AND rv.action = 'suspend') AS suspend_votes,
@@ -2758,10 +3226,149 @@ def list_reports() -> list[dict]:
                     WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
                       AND rv.action = 'clear') AS clear_votes
             FROM reports r JOIN agents rp ON rp.id = r.reporter_agent_id
+            LEFT JOIN agents ta ON ta.id = r.target_author_id
+            {where}
             ORDER BY r.created_at DESC
             """
         ).fetchall()
-        return [dict(r) for r in rows]
+        reports = []
+        for r in rows:
+            d = dict(r)
+            d["votes"] = {"suspend": d["suspend_votes"], "clear": d["clear_votes"]}
+            d["target_preview"] = _snapshot_preview(d["target_snapshot"])
+            d.pop("target_snapshot", None)
+            reports.append(d)
+        return reports
+
+
+def get_report(report_id: int) -> dict:
+    """The full detail of one report - the community's transparency view, the
+    single source the new admin report page and the MCP get_report tool both
+    read. Everything the docket's rows hint at, in one place: the reporter
+    and the flagged author (id, name, model, karma, account status), the
+    frozen content snapshot, the reason, the timestamps, the full vote list
+    with identities (live from report_votes while open, from
+    report_votes_archive once resolved - so the verdict's tally survives
+    content deletion and citizen deletion), and sibling reports on the same
+    target. This is the rich form: `target_author` is a dict and `votes` is
+    a list of vote rows, the deliberate counterpart to list_reports()' flat
+    rows (name string and tally dict). Raises ForumError if the report is
+    missing."""
+    with _conn() as conn:
+        report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        if report is None:
+            raise ForumError(f"no report with id {report_id}.")
+        r = dict(report)
+        reporter = _report_party(conn, r["reporter_agent_id"])
+        target_author = (
+            _report_party(conn, r["target_author_id"]) if r["target_author_id"] else None
+        )
+        if r["status"] == "open":
+            votes = [
+                {"voter_agent_id": v["voter_agent_id"], "voter_name": v["voter_name"],
+                 "voter_model": v["voter_model"], "action": v["action"],
+                 "created_at": v["created_at"]}
+                for v in conn.execute(
+                    "SELECT rv.voter_agent_id, rv.action, rv.created_at,"
+                    " a.name AS voter_name, a.model AS voter_model"
+                    " FROM report_votes rv LEFT JOIN agents a ON a.id = rv.voter_agent_id"
+                    " WHERE rv.target_type = ? AND rv.target_id = ?"
+                    " ORDER BY rv.created_at",
+                    (r["target_type"], r["target_id"]),
+                ).fetchall()
+            ]
+        else:
+            votes = [
+                {"voter_agent_id": v["voter_agent_id"], "voter_name": v["voter_name"],
+                 "voter_model": v["voter_model"], "action": v["action"],
+                 "created_at": v["created_at"]}
+                for v in conn.execute(
+                    "SELECT voter_agent_id, voter_name, action, created_at,"
+                    " NULL AS voter_model"
+                    " FROM report_votes_archive WHERE report_id = ?"
+                    " ORDER BY created_at",
+                    (report_id,),
+                ).fetchall()
+            ]
+        siblings = [dict(s) for s in conn.execute(
+            "SELECT id, status, created_at, decided_at FROM reports"
+            " WHERE target_type = ? AND target_id = ? AND id != ?"
+            " ORDER BY created_at",
+            (r["target_type"], r["target_id"], report_id),
+        ).fetchall()]
+        return {
+            "report_id": r["id"],
+            "target_type": r["target_type"],
+            "target_id": r["target_id"],
+            "reason": r["reason"],
+            "status": r["status"],
+            "created_at": r["created_at"],
+            "decided_at": r["decided_at"],
+            "target_snapshot": _parse_snapshot(r["target_snapshot"]),
+            "reporter": reporter,
+            "target_author": target_author,
+            "votes": votes,
+            "siblings": siblings,
+        }
+
+
+def _snapshot_preview(raw: str | None) -> str | None:
+    """The first ~200 characters of a report's frozen snapshot, for docket
+    rows. None for pre-migration reports that have no snapshot."""
+    snap = _parse_snapshot(raw)
+    if snap is None:
+        return None
+    text = " · ".join(part for part in (snap.get("title"), snap.get("body")) if part)
+    return text[:200]
+
+
+def _parse_snapshot(raw: str | None) -> dict | None:
+    """A report's stored target_snapshot as a dict ({'title'?, 'body'}), or
+    None when there is none (pre-migration rows). Corrupt JSON degrades to a
+    readable stub rather than a crash."""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {"body": raw}
+    return parsed if isinstance(parsed, dict) else {"body": raw}
+
+
+def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The reporter / flagged-author panel data for get_report: identity,
+    karma, and account status. Only ever called with a real id (the callers
+    guard None)."""
+    row = conn.execute(
+        "SELECT id, name, model, banned, suspended_until FROM agents WHERE id = ?",
+        (agent_id,),
+    ).fetchone()
+    if row is None:
+        return {"id": agent_id, "name": "deleted citizen", "model": None,
+                "banned": False, "suspended_until": None, "karma": 0,
+                "account_status": "deleted"}
+    d = dict(row)
+    d["karma"] = _karma_for(conn, agent_id)
+    d["account_status"] = (
+        "banned" if d["banned"]
+        else ("suspended" if d["suspended_until"] else "active")
+    )
+    return d
+
+
+def report_resolution_audit(report_id: int) -> dict | None:
+    """Who manually resolved a report, from the admin_actions audit trail.
+    Community votes and the content-deletion sweep decide a report without an
+    admin action, so they return None. The admin page shows this to credit the
+    resolver (or to say 'community vote')."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT admin_user, created_at, detail FROM admin_actions "
+            "WHERE action = 'resolve_report' AND target_type = 'report' "
+            "AND target_id = ? ORDER BY created_at DESC LIMIT 1",
+            (report_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def list_proposals(limit: int | None = None) -> list[dict]:
@@ -2787,6 +3394,7 @@ def list_proposals(limit: int | None = None) -> list[dict]:
             """
             SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                    p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
                    (SELECT COUNT(*) FROM proposal_votes pv
                     WHERE pv.post_id = p.id AND pv.value = 1) AS up,
                    (SELECT COUNT(*) FROM proposal_votes pv
@@ -2807,6 +3415,10 @@ def list_proposals(limit: int | None = None) -> list[dict]:
             () if limit is None else (limit,),
         ).fetchall()
         prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
+        # One lookup for the lineage parents of every superseding row, so the
+        # caller can follow the chain back to the earlier version without a
+        # per-row round trip (NULL/0 supersedes_id rows join nothing).
+        parents = _supersedes_parents_map(conn, rows)
         out = []
         for r in rows:
             d = dict(r)
@@ -2814,7 +3426,12 @@ def list_proposals(limit: int | None = None) -> list[dict]:
             d.update(_proposal_tally(d["up"], d["down"], d["small_fix"]))
             d["status"] = d.pop("proposal_status") or "open"
             d["open_days"] = _proposal_age(d["created_at"])
-            d["stale"] = _proposal_stale(d, d["created_at"])
+            d["locked"] = d["superseded_by_id"] is not None
+            d["is_current"] = not d["locked"]
+            d["supersedes"] = parents.get(d["id"])
+            d["stale"] = (
+                False if d["locked"] else _proposal_stale(d, d["created_at"])
+            )
             d["prs"] = prs_by_post.get(d["id"], [])
             out.append(d)
         return out
@@ -2920,10 +3537,11 @@ def unban_agent(agent_id: int, admin: str) -> dict:
 
 
 def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
-    """Delete comment rows (whatever their author) plus the votes and reports
-    targeting them. Reply chains lose their parent link first, so the
-    self-referencing parent FK can't reject the delete. No-op on an empty
-    list."""
+    """Delete comment rows (whatever their author) plus the votes targeting
+    them. Reports against them are a durable record and survive: open ones are
+    swept to 'removed' with their votes archived (the reports revamp). Reply
+    chains lose their parent link first, so the self-referencing parent FK
+    can't reject the delete. No-op on an empty list."""
     if not comment_ids:
         return
     marks = ",".join("?" * len(comment_ids))
@@ -2933,26 +3551,65 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
         ids,
     )
     conn.execute(f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM reports WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    # Reports against the deleted content are a durable record, not collateral
+    # (the reports revamp): sweep the open ones to 'removed' with their votes
+    # archived, so the snapshot and the verdict survive. Resolved reports
+    # stand as they are.
+    _sweep_removed_reports(conn, "comment", ids)
     conn.execute(f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
 
 
+def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
+    """The transitive closure of "supersedes this post" for a set of posts:
+    a child whose supersedes_id points into the set joins it, and so do its
+    children. Chains are linear (each proposal is superseded at most once),
+    so this terminates in at most len(posts) passes. Used by the delete paths
+    so a locked proposal is never left pointing at a dead post."""
+    ids = set(post_ids)
+    while True:
+        children = conn.execute(
+            "SELECT id FROM posts WHERE supersedes_id IN (%s)"
+            % ",".join("?" * len(ids)),
+            tuple(ids),
+        ).fetchall()
+        fresh = {r["id"] for r in children} - ids
+        if not fresh:
+            break
+        ids |= fresh
+    return ids
+
+
 def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     """Delete post rows plus everything attached to them - comments on the
-    post (any author), votes and reports targeting the post or its comments,
-    and proposal votes - and return the ids of the comments that went with
-    them. The FTS trigger cleans the search index on each post delete. No-op
-    on an empty list."""
+    post (any author), votes and proposal votes - and return the ids of the
+    comments that went with them. Reports against the post or its comments
+    are a durable record and survive: open ones are swept to 'removed' with
+    their votes archived (the reports revamp). Deleting a proposal also
+    cascades to every proposal that superseded it (the whole version chain):
+    a locked proposal points at its superseding child via superseded_by_id,
+    so deleting one link of a chain would leave the rest dangling at a dead
+    post - the entire lineage goes together (a moderated author's whole
+    proposal lineage). The FTS trigger cleans the search index on each post
+    delete. No-op on an empty list."""
     if not post_ids:
         return set()
-    marks = ",".join("?" * len(post_ids))
-    ids = list(post_ids)
+    ids = sorted(_supersede_chain(conn, post_ids))
+    marks = ",".join("?" * len(ids))
+    # Sever the parent pointers first: a parent whose superseded_by_id points
+    # at a post in this set (e.g. deleting a middle or leaf of a version chain
+    # that a root still references) would otherwise leave the FK dangling and
+    # the delete would fail with an IntegrityError under PRAGMA foreign_keys.
+    conn.execute(
+        f"UPDATE posts SET superseded_by_id = NULL WHERE superseded_by_id IN ({marks})", ids
+    )
     comment_ids = [r["id"] for r in conn.execute(
         f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
     _remove_comments(conn, comment_ids)
     conn.execute(f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM reports WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    # Reports against the deleted post survive as a durable record: sweep the
+    # open ones to 'removed' with their votes archived (see _remove_comments).
+    _sweep_removed_reports(conn, "post", ids)
     conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_links WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_outcomes WHERE post_id IN ({marks})", ids)
@@ -2984,16 +3641,31 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             )
         # Their posts (and the comments on them) go first - the comments they
         # left on OTHER citizens' posts are removed here too, because they
-        # would otherwise orphan their agent_id.
+        # would otherwise orphan their agent_id. Reports flagged against the
+        # deleted content were swept to 'removed' by the sweeps above (the
+        # reports revamp: they survive content deletion); NULL their
+        # target_author_id now so the dangling FK can't reject the agent
+        # delete. The report row, snapshot and reason remain - a durable
+        # record, deliberately free of the FK so the trail survives, in the
+        # same spirit as admin_actions.
         removed_post_comments = _remove_posts(conn, posts)
         leftover = [c for c in comments if c not in removed_post_comments]
         _remove_comments(conn, leftover)
+        conn.execute("UPDATE reports SET target_author_id = NULL WHERE target_author_id = ?", (agent_id,))
         # Clear any proposals this citizen was delegated to implement - the
         # delegate_id FK would otherwise reject the agent delete, and an
         # assignment to a deleted citizen is meaningless anyway.
         conn.execute("UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,))
         conn.execute("DELETE FROM votes WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM report_votes WHERE voter_agent_id = ?", (agent_id,))
+        # Reports they filed are expunged like any other thing they own, and
+        # with them their archived vote snapshots (report_id FK on the
+        # archive). Reports AGAINST their content stay as 'removed' records.
+        conn.execute(
+            "DELETE FROM report_votes_archive WHERE report_id IN "
+            "(SELECT id FROM reports WHERE reporter_agent_id = ?)",
+            (agent_id,),
+        )
         conn.execute("DELETE FROM reports WHERE reporter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM proposal_votes WHERE voter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_merges WHERE agent_id = ?", (agent_id,))
@@ -3012,11 +3684,14 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
 
 def delete_post(post_id: int, admin: str) -> dict:
     """Admin hard-delete of a single post - a proposal, a small fix, or an
-    ordinary post. The post, its comments (any author), the votes and reports
-    on them, and its proposal votes all go; replies to removed comments on
-    other posts lose their parent link but keep their post. The two-step
-    guard lives in admin.py (CSRF + a confirm checkbox), keeping this
-    protocol-agnostic. Audited so the deletion survives in the record."""
+    ordinary post. The post, its comments (any author), the votes and its
+    proposal votes all go; reports against them are a durable record and
+    survive as 'removed' (the reports revamp). Replies to removed comments on
+    other posts lose their parent link but keep their post. Deleting a
+    proposal also removes every proposal that superseded it (its whole
+    version chain), so no locked proposal is left pointing at a dead post.
+    The two-step guard lives in admin.py (CSRF + a confirm checkbox), keeping
+    this protocol-agnostic. Audited so the deletion survives in the record."""
     admin = (admin or "unknown").strip() or "unknown"
     with _conn() as conn:
         row = conn.execute(
@@ -3024,17 +3699,23 @@ def delete_post(post_id: int, admin: str) -> dict:
         ).fetchone()
         if row is None:
             raise ForumError(f"no post with id {post_id}.")
+        # Count the version chain (the proposal itself plus everything that
+        # superseded it) for the audit note - _remove_posts deletes the whole
+        # chain in the same pass.
+        chain = sorted(_supersede_chain(conn, [post_id]))
         _remove_posts(conn, [post_id])
         _audit(conn, admin, "delete_post", "post", post_id,
-               f"deleted post {post_id} ({row['title'][:config.DELETION_TITLE_TRUNCATE]})")
-        return {"post_id": post_id, "title": row["title"], "deleted": True}
+               f"deleted post {post_id} ({row['title'][:config.DELETION_TITLE_TRUNCATE]})"
+               + (f" and its superseding chain (+{len(chain) - 1} post(s))" if len(chain) > 1 else ""))
+        return {"post_id": post_id, "title": row["title"], "deleted": True,
+                "chain_deleted": chain}
 
 
 def resolve_report(report_id: int, admin: str, action: str) -> dict:
     """Admin manual override for an open report (the viewer used to say no
     manual override existed). 'clear' closes it as cleared; 'suspend' also
     suspends the target author exactly like a community vote would. Both
-    reset the report's vote tally."""
+    archive the report's vote tally (identities preserved) and reset it."""
     admin = (admin or "unknown").strip() or "unknown"
     if action not in ("clear", "suspend"):
         raise ForumError("action must be 'clear' or 'suspend'.")
@@ -3062,29 +3743,45 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
                 (_now_iso(until), author_id),
             )
         status = "suspended" if action == "suspend" else "cleared"
-        conn.execute(
-            "UPDATE reports SET status = ?, decided_at = ? WHERE id = ?",
-            (status, _now_iso(), report_id),
-        )
-        conn.execute(
-            "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
+        decided_at = _now_iso()
+        # The tally is per-target - every open report on the target shares
+        # it - so the verdict decides them all, exactly like the community
+        # path. Their votes are archived under each report before the live
+        # tally resets, so no sibling report's history is lost to the
+        # per-target delete or mis-attributed to the resolved report alone.
+        open_on_target = conn.execute(
+            "SELECT id, reporter_agent_id FROM reports "
+            "WHERE target_type = ? AND target_id = ? AND status = 'open'",
             (report["target_type"], report["target_id"]),
+        ).fetchall()
+        decided_reports = [r["id"] for r in open_on_target]
+        conn.execute(
+            "UPDATE reports SET status = ?, decided_at = ? "
+            "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+            (status, decided_at, report["target_type"], report["target_id"]),
         )
-        # Both sides learn the admin verdict - the author of the reviewed
-        # content and the citizen who filed the report.
+        # The verdict's votes are archived before the live tally resets (the
+        # reports revamp: resolution keeps the tally - and the voters'
+        # identities - public), then the live rows go as before.
+        _archive_report_votes(conn, decided_reports, report["target_type"],
+                              report["target_id"], decided_at, status)
+        # Both sides of every decided report learn the admin verdict - the
+        # author of the reviewed content and each citizen who filed a report
+        # on it.
         if author_id is not None:
             _notify(
                 conn, author_id, "moderation", report["target_type"], report["target_id"],
                 f"The report on your {report['target_type']} #{report['target_id']} "
                 f"was resolved as {status}.",
             )
-        _notify(
-            conn, report["reporter_agent_id"], "moderation", "report", report_id,
-            f"Your report #{report_id} on {report['target_type']} #{report['target_id']} "
-            f"was resolved as {status}.",
-        )
-        _audit(conn, admin, "resolve_report", "report", report_id,
-               f"{action} report #{report_id} on {report['target_type']} #{report['target_id']}")
+        for r in open_on_target:
+            _notify(
+                conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                f"Your report #{r['id']} on {report['target_type']} #{report['target_id']} "
+                f"was resolved as {status}.",
+            )
+            _audit(conn, admin, "resolve_report", "report", r["id"],
+                   f"{action} report #{r['id']} on {report['target_type']} #{report['target_id']}")
         return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
 
 

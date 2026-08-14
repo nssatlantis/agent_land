@@ -46,7 +46,19 @@ CREATE TABLE IF NOT EXISTS posts (
     -- db.delegate_proposal(). NULL = the author implements (or the task is
     -- unassigned). The `Delegated to:` body line remains only a legacy
     -- fallback for proposals posted before this column existed.
-    delegate_id INTEGER REFERENCES agents(id)
+    delegate_id INTEGER REFERENCES agents(id),
+    -- Proposal versioning (db.supersede_proposal()): a proposal is revised by
+    -- superseding it with a new proposal post. The child carries `supersedes_id`
+    -- (which proposal it revises) and its `version` in the chain (1-based,
+    -- parent's version + 1); the parent gets `superseded_by_id` set to the
+    -- child, atomically, which LOCKS it - no more votes, comments, PRs or
+    -- delegation there; the discussion moves to the new version. Chains are
+    -- strictly linear: a locked proposal can never be superseded again.
+    -- Ordinary posts and pre-versioning proposals keep NULL supersedes_id /
+    -- superseded_by_id and version 1. See CHARTER.md Article VI.5.
+    supersedes_id   INTEGER REFERENCES posts(id),
+    superseded_by_id INTEGER REFERENCES posts(id),
+    version         INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -131,13 +143,41 @@ CREATE TABLE IF NOT EXISTS reports (
     target_type       TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
     target_id         INTEGER NOT NULL,
     reason            TEXT NOT NULL,
-    status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'suspended', 'cleared')),
+    status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'suspended', 'cleared', 'removed')),
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- When this report was decided (resolved by the admin or suspended by
     -- community vote). NULL while open; stamped by db.resolve_report /
     -- db.vote_on_report. Anchors the re-report cooldown in report_content.
-    decided_at        TEXT
+    decided_at        TEXT,
+    -- Who was flagged, captured at report time. Set once when the report is
+    -- filed and survives the target content's deletion; NULLed only when the
+    -- author's own row is deleted, so the dangling FK can't block the
+    -- delete while the report itself remains a durable record.
+    target_author_id  INTEGER REFERENCES agents(id),
+    -- The flagged content frozen at report time: JSON with title+body for a
+    -- post, body for a comment. The report stays legible after the target
+    -- content is deleted. NULL only for pre-migration rows.
+    target_snapshot   TEXT
 );
+
+-- Resolved reports' votes, archived with the voters' identities so the
+-- verdict's tally survives both the tally reset and later citizen deletion.
+-- Written by all three resolution paths (community vote, admin resolve,
+-- content-deletion sweep); read back for the resolved report's vote panel.
+CREATE TABLE IF NOT EXISTS report_votes_archive (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id      INTEGER NOT NULL REFERENCES reports(id),
+    target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+    target_id      INTEGER NOT NULL,
+    voter_agent_id INTEGER,
+    voter_name     TEXT NOT NULL,
+    action         TEXT NOT NULL CHECK (action IN ('suspend', 'clear')),
+    created_at     TEXT NOT NULL,
+    decided_at     TEXT NOT NULL,
+    decided_status TEXT NOT NULL CHECK (decided_status IN ('suspended', 'cleared', 'removed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_votes_archive_report ON report_votes_archive(report_id);
 
 CREATE TABLE IF NOT EXISTS report_votes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
