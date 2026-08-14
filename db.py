@@ -5,98 +5,28 @@ Plain functions, no MCP/HTTP-specific code. server.py just calls these
 and formats the results as tool responses. Keeping this layer separate
 means you can add a REST API or a CLI later without duplicating logic.
 
-Persistent data lives outside the git checkout (see DATA_DIR below), so
-resetting the repo never deletes the instance. Config is auto-loaded from
-<data dir>/.env (falling back to the repo's .env).
+Persistent data lives outside the git checkout (see config.py), so resetting
+the repo never deletes the instance. config.py resolves the data dir, loads
+<data dir>/.env (falling back to the repo's .env), and defines all tunables
+and paths; this file imports them.
 """
 
 from __future__ import annotations
 
-import os
 import re
 import secrets
 import sqlite3
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-REPO_DIR = Path(__file__).resolve().parent
-
-
-def _load_dotenv(path: Path) -> None:
-    """Parse a KEY=VALUE file into the environment without overriding keys
-    that are already set (process env always wins)."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
-
-
-# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
-# so the repo can be reset without losing the instance. Default: a sibling of
-# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
-# with AGENTLAND_DATA_DIR (process env only; it decides where .env is found).
-DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
-
-# Load .env files - data-dir .env first so it outranks the repo .env fallback.
-# Existing setups with only a repo .env keep working unchanged.
-_load_dotenv(Path(DATA_DIR) / ".env")
-_load_dotenv(REPO_DIR / ".env")
-
-# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
-DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
-
-DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
-SCHEMA_PATH = REPO_DIR / "schema.sql"
-
-# A DB path inside the checkout is a data-loss trap: update.sh runs
-# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
-# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
-if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
-    print(
-        f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
-        "update.sh's `git clean -xdf` deletes gitignored files like forum.db "
-        "on every deploy, so this database will be wiped. Move it to the data "
-        f"dir (e.g. {DATA_DIR}/forum.db) and fix FORUM_DB_PATH / "
-        "AGENTLAND_DATA_DIR.",
-        file=sys.stderr,
-    )
-
-
-def database_location_note() -> str:
-    """One human-readable startup line: where the forum database lives. If the
-    path resolves inside the repo, flags it - update.sh's `git clean -xdf`
-    deletes gitignored files (forum.db is one), so such a db would be wiped on
-    every deploy. Printed by server.py / viewer.py at boot."""
-    note = f"forum database: {DB_PATH}"
-    if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
-        note += (
-            f"  [WARNING: inside the repo {REPO_DIR}; git clean -xdf deletes "
-            "gitignored files, so this db is wiped on every deploy]"
-        )
-    return note
-
-
-def _ensure_db_dir() -> None:
-    """sqlite3 won't create a missing directory - make sure it exists."""
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-
-# Tunable constants (cooldowns, governance thresholds, field lengths,
-# pagination caps, timeouts, truncation widths) live in config.py with
-# documented defaults and FORUM_* overrides; imported here so this file
-# keeps enforcing them server-side.
 from config import (
     ADMIN_DETAIL_PAGE_SIZE,
     AGENT_TOKEN_BYTES,
     BODY_PREVIEW_LENGTH,
+    DATA_DIR,  # noqa: F401 - re-exported for viewer.py's admin config page and github.py's repo search skip
+    DB_PATH,
     DEFAULT_PAGE_SIZE,
     DELETION_TITLE_TRUNCATE,
     MAX_BODY_LEN,
@@ -122,12 +52,33 @@ from config import (
     REPORT_COOLDOWN_SECONDS,
     REPORT_SUSPEND_VOTES,
     REPLY_SEPARATOR,
+    REPO_DIR,
+    SCHEMA_PATH,
     SEARCH_SNIPPET_WIDTH,
     SEEN_THROTTLE_SECONDS,
     SMALL_FIX_COOLDOWN_SECONDS,
     SQLITE_BUSY_TIMEOUT_SECONDS,
     SUSPEND_DAYS,
 )
+
+
+def database_location_note() -> str:
+    """One human-readable startup line: where the forum database lives. If the
+    path resolves inside the repo, flags it - update.sh's `git clean -xdf`
+    deletes gitignored files (forum.db is one), so such a db would be wiped on
+    every deploy. Printed by server.py / viewer.py at boot."""
+    note = f"forum database: {DB_PATH}"
+    if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
+        note += (
+            f"  [WARNING: inside the repo {REPO_DIR}; git clean -xdf deletes "
+            "gitignored files, so this db is wiped on every deploy]"
+        )
+    return note
+
+
+def _ensure_db_dir() -> None:
+    """sqlite3 won't create a missing directory - make sure it exists."""
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 
 class ForumError(Exception):
