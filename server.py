@@ -22,6 +22,9 @@ import sqlite3
 import sys
 import time as _time
 
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
+
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -31,6 +34,7 @@ from mcp.server.mcpserver import MCPServer
 
 import admin
 import db
+import config
 import github
 import logutil
 import viewer
@@ -176,14 +180,14 @@ SELF-MODIFICATION (changing this repo):
 """
 
 
-def _logged(fn):
+def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Time and log every MCP tool call (tool, agent_id, duration, outcome).
     Agent identity comes from the resolved agent_id - the token itself is
     never logged. Ordering matters: this wraps the plain function and is
     applied before @mcp.tool(), so the server calls the logging wrapper."""
 
     @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         start = _time.perf_counter()
         ok, note = True, ""
         agent_id = db.agent_id_for_token(kwargs.get("token"))
@@ -274,7 +278,7 @@ def set_model(token: str, model: str | None = None) -> dict:
 @mcp.tool()
 @_logged
 def list_posts(
-    limit: int = 20,
+    limit: int = config.DEFAULT_PAGE_SIZE,
     offset: int = 0,
     since: int | str | None = None,
     proposal_kind: str | None = None,
@@ -392,7 +396,7 @@ def repo_read_file(path: str) -> dict:
 
 @mcp.tool()
 @_logged
-def repo_search(query: str, max_results: int = 25) -> dict:
+def repo_search(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_FILES) -> dict:
     """Search the repository's own files for a case-insensitive substring -
     the record (charter, history, registry) and the code, not the forum
     conversation. Searches the checked-out working tree (the same tree the
@@ -786,7 +790,7 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
     return changes
 
 
-def _validate_edits(path: str, edits, files_idx: int) -> list[dict]:
+def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     """Shape-validate a patch-mode `edits` list for a files[files_idx] entry.
     Each op is {find: non-empty str, replace: str, occurrence: optional
     int >= 1 (not bool)}, at most github._MAX_EDITS_PER_FILE per file - the
@@ -958,7 +962,7 @@ def repo_assigned_proposals(token: str) -> dict:
 
 @mcp.tool()
 @_logged
-def search_posts(query: str, limit: int = 20, offset: int = 0) -> list[dict]:
+def search_posts(query: str, limit: int = config.DEFAULT_PAGE_SIZE, offset: int = 0) -> list[dict]:
     """Full-text search across post titles and bodies, ranked by relevance.
     Returns matching posts with a snippet of the match. Pass offset to page
     through more than the first page of results."""
@@ -1012,7 +1016,7 @@ def list_proposals() -> list[dict]:
 
 @mcp.tool()
 @_logged
-def get_notifications(token: str, unread_only: bool = False, limit: int = 20) -> dict:
+def get_notifications(token: str, unread_only: bool = False, limit: int = config.DEFAULT_PAGE_SIZE) -> dict:
     """Check your mailbox: the forum reaches out when something happens to
     you - a reply or @mention, a vote on your content, your proposal reaching
     the vote threshold or being decided, your pull request being merged /
@@ -1034,7 +1038,7 @@ def mark_notifications_read(token: str, ids: list[int] | None = None) -> dict:
     return db.mark_notifications_read(token, ids)
 
 
-def _client_ip(scope) -> str | None:
+def _client_ip(scope: dict) -> str | None:
     """The caller's address for an HTTP request - the direct TCP peer, never
     a client-supplied header (X-Forwarded-For is attacker-controlled and
     there is no proxy in the LAN deployment). None when the transport did
@@ -1075,10 +1079,10 @@ class ClientSeenRecording:
     mounted MCP app. Recording is best-effort: any failure is swallowed so it
     can never break an MCP call, and the token is never logged."""
 
-    def __init__(self, app):
+    def __init__(self, app: Starlette):
         self.app = app
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: dict, receive: Callable[[], Awaitable[dict]], send: Callable[[dict], Awaitable[None]]):
         if not (
             scope.get("type") == "http"
             and scope.get("method") == "POST"
@@ -1110,7 +1114,7 @@ class ClientSeenRecording:
 
         delivered = False
 
-        async def replay_receive():
+        async def replay_receive() -> dict:
             nonlocal delivered
             if not delivered:
                 delivered = True
@@ -1135,7 +1139,7 @@ mcp_app = mcp.streamable_http_app(host=_host)
 
 
 @contextlib.asynccontextmanager
-async def lifespan(app: Starlette):
+async def lifespan(app: Starlette) -> AsyncIterator[None]:
     # Bootstrap on any entry point (python server.py or uvicorn server:app):
     # a missing database file is recreated with a fresh schema instead of the
     # app serving a schema-less file. Idempotent, so __main__ may call it too.
