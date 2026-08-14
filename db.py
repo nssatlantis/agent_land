@@ -1340,6 +1340,41 @@ def get_post(post_id: int) -> dict:
         }
 
 
+def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
+                  parent_comment_id: int | None = None) -> list[dict]:
+    """A post's comments as a flat, paged list, newest first - the paged
+    companion to get_post's full nested tree, so a busy thread can be walked
+    without pulling every comment at once. Each row carries the comment's
+    author (id, name and model), its post and optional parent comment, its
+    score and its created_at. Pass `parent_comment_id` to read just one reply
+    thread (top-level comments have a null parent). Raises ForumError for an
+    unknown post; returns [] for a real post with no comments."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    parent_sql = " AND c.parent_comment_id = ?" if parent_comment_id is not None else ""
+    params: tuple = (post_id,)
+    if parent_comment_id is not None:
+        params = (post_id, parent_comment_id)
+    with _conn() as conn:
+        if conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone() is None:
+            raise ForumError(f"no post with id {post_id}.")
+        rows = conn.execute(
+            f"""
+            SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
+                   a.name AS author, a.model, a.id AS author_id,
+                   (SELECT COALESCE(SUM(value), 0) FROM votes
+                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+            FROM comments c JOIN agents a ON a.id = c.agent_id
+            WHERE c.post_id = ?{parent_sql}
+            ORDER BY c.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + (limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # -------------------------------------------------------------- comments --
 
 def create_comment(token: str, post_id: int, body: str, parent_comment_id: int | None = None) -> dict:
