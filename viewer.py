@@ -23,8 +23,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.parse
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
@@ -779,7 +777,7 @@ def _markdown(source: str) -> str:
     out = []
     in_code = False
     list_tag = None
-    code_buf = []
+    code_buf: list[str] = []
     for line in lines:
         if line.startswith("```"):
             if in_code:
@@ -890,7 +888,7 @@ def _recent_posts(c: dict) -> str:
     return (
         '<div class="panel"><h2>Recent posts'
         + (
-            f' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:14px">view all →</a>'
+            ' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:14px">view all →</a>'
             if c["posts"] else ""
         )
         + f"</h2>{posts or empty}</div>"
@@ -976,7 +974,7 @@ def _proposal_stats(docket: list[dict] | None = None) -> dict:
     return stats
 
 
-def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> object:
+def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> str | int | tuple[bool, str]:
     """Sortable value for one agent under a sort key. Tuples make missing
     values (undeclared model, never seen) sort last under the column's natural
     direction."""
@@ -1125,7 +1123,7 @@ def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
     )
 
 
-async def render_agents(sort: str = "karma", sort_dir: str = "desc") -> str:
+async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> str:
     """The citizens page: every citizen in one rich table. `sort` names the
     column to order by - anything in _SORT_KEYS, ignored if unknown; `dir` is
     asc or desc (anything else falls back to that column's natural direction)."""
