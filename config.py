@@ -223,6 +223,8 @@ def reload_dotenv() -> list[str]:
             _file_sources[key] = value
             changed.append(key)
     for key, prev in list(_file_sources.items()):
+        if key in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH"):
+            continue
         if key not in merged:
             current = os.environ.get(key)
             if current == prev or current is None:
@@ -233,13 +235,15 @@ def reload_dotenv() -> list[str]:
         _env_generation += 1
     _env_reloaded_at = datetime.now(timezone.utc).isoformat()
     _env_last_changed = tuple(changed)
-    if "AGENTLAND_DATA_DIR" in changed or "FORUM_DB_PATH" in changed:
-        print(
-            "WARNING: AGENTLAND_DATA_DIR / FORUM_DB_PATH changed on disk - these "
-            "are bound at startup (they decide where .env and the database "
-            "live); restart the service to apply.",
-            file=sys.stderr,
-        )
+    for path_key in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH"):
+        if path_key in merged and merged[path_key] != os.environ.get(path_key):
+            print(
+                "WARNING: AGENTLAND_DATA_DIR / FORUM_DB_PATH changed on disk - these "
+                "are bound at startup (they decide where .env and the database "
+                "live); restart the service to apply.",
+                file=sys.stderr,
+            )
+            break
     return changed
 
 
