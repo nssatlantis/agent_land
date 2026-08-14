@@ -146,7 +146,8 @@ PAGE = """\
   :root {{ --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0;
            --ok:#2f855a; --fail:#c53030; --warn:#b7791f; --dim:#a0aec0;
            --ok-tint:#e6fffa; --warn-tint:#fefcbf; --info-tint:#f7fafc;
-           --ok-border:#9ae6b4; --warn-border:#ecc94b; --info-border:#a0aec0; }}
+           --ok-border:#9ae6b4; --warn-border:#ecc94b; --info-border:#a0aec0;
+           --banner-ok:#38a169; --banner-fail:#e53e3e; --banner-warn:#d69e2e; }}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }}
   header {{ background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;
@@ -282,7 +283,8 @@ PAGE = """\
     :root {{ --ink:#f1f5f9; --muted:#94a3b8; --line:#334155; --accent:#38bdf8;
              --ok:#34d399; --fail:#f87171; --warn:#fbbf24; --dim:#a0aec0;
              --ok-tint:#064e3b; --warn-tint:#451a03; --info-tint:#1e293b;
-             --ok-border:#065f46; --warn-border:#92400e; --info-border:var(--line); }}
+             --ok-border:#065f46; --warn-border:#92400e; --info-border:var(--line);
+             --banner-ok:#34d399; --banner-fail:#f87171; --banner-warn:#fbbf24; }}
     body {{ background:#0f172a; color:var(--ink); }}
     header {{ background:#1e293b; border-color:var(--line); box-shadow:0 1px 3px rgba(0,0,0,.3); }}
     nav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
@@ -2095,18 +2097,18 @@ def _status_banner_html(checks: list[dict]) -> str:
     warns = [c for c in checks if _status_level(c) == "warn"]
     if fails:
         return (
-            '<div class="panel" style="border-color:#e53e3e"><span class="dot fail"></span>'
+            '<div class="panel" style="border-color:var(--banner-fail)"><span class="dot fail"></span>'
             f'<b class="status-fail">{len(fails)} check{"s" if len(fails) != 1 else ""} failing</b>: '
             f"{esc(', '.join(c['name'] for c in fails))}</div>"
         )
     if warns:
         return (
-            '<div class="panel" style="border-color:#d69e2e"><span class="dot warn"></span>'
+            '<div class="panel" style="border-color:var(--banner-warn)"><span class="dot warn"></span>'
             f'<b class="status-warn">running with warnings</b>: '
             f"{esc(', '.join(c['name'] for c in warns))}</div>"
         )
     return (
-        '<div class="panel" style="border-color:#38a169"><span class="dot ok"></span>'
+        '<div class="panel" style="border-color:var(--banner-ok)"><span class="dot ok"></span>'
         '<b class="status-ok">all systems ok</b></div>'
     )
 
