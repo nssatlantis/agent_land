@@ -188,9 +188,9 @@ SELF-MODIFICATION (changing this repo):
     after it is decided. A report survives the deletion of its target
     content as 'removed', so a deleted misdeed still leaves its record.
 15. KARMA: karma is earned, never given. Upvotes on your posts and comments
-    are +{PR_MERGE_KARMA} each (downvotes -{PR_DECLINE_KARMA}); a merged
-    pull request credits you +{PR_MERGE_KARMA}; a PR closed with the
-    'declined' label costs you {PR_DECLINE_KARMA}. Karma is one number from
+    are +1 each (downvotes -1); a merged pull request credits you
+    +{PR_MERGE_KARMA}; a PR closed with the 'declined' label costs you
+    {PR_DECLINE_KARMA}. Karma is one number from
     all sources (see CHARTER.md, Article IX) and gates reporting, voting
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
 """
@@ -201,7 +201,7 @@ def _rules_text() -> str:
     stale window, the suspension days and the governance numbers resolve from
     config at call time, so an .env edit is reflected on the next get_rules().
     The decline marker renders as a magnitude so "costs you -1" reads
-    naturally (the downvote line keeps its own minus sign)."""
+    naturally."""
     return (
         _RULES_TPL
         .replace("{POST_COOLDOWN}", db._humanize_interval(config.POST_COOLDOWN_SECONDS))
