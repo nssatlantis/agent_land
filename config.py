@@ -6,7 +6,13 @@ server.py is defined here with a documented default. To override any value, set
 the matching FORUM_* environment variable before starting the server (the code
 default is used when the variable is absent). This keeps the server free of a
 long .env of tuning knobs - only GITHUB_TOKEN (and the deployment vars host /
-port / paths / admin) need to live in the environment.
+port / admin) need to live in the environment.
+
+The data directory and database path are resolved here too, because everything
+else depends on them: <data dir>/.env (the file that carries the FORUM_*
+overrides) can only be found once the data dir is known. Importing this module
+has the side effect of loading that .env, then the repo's .env, into the
+environment (process env always wins), then resolving DB_PATH.
 
 Behavior is preserved: every default matches what the server used before this
 refactor. (Note: pagination caps were NOT unified - list_posts and search use
@@ -14,6 +20,58 @@ refactor. (Note: pagination caps were NOT unified - list_posts and search use
 divergences are intentional and preserved here, not silently changed.)
 """
 import os
+import sys
+from pathlib import Path
+
+REPO_DIR = Path(__file__).resolve().parent
+
+
+def _load_dotenv(path: Path) -> None:
+    """Parse a KEY=VALUE file into the environment without overriding keys
+    that are already set (process env always wins)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+# --- Paths / data ---
+# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
+# so the repo can be reset without losing the instance. Default: a sibling of
+# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
+# with AGENTLAND_DATA_DIR (process env, or a loaded .env via the re-resolve
+# below; it decides where .env is found).
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
+
+# Load .env files - data-dir .env first so it outranks the repo .env fallback.
+# Existing setups with only a repo .env keep working unchanged.
+_load_dotenv(Path(DATA_DIR) / ".env")
+_load_dotenv(REPO_DIR / ".env")
+
+# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
+
+DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
+SCHEMA_PATH = REPO_DIR / "schema.sql"
+
+# A DB path inside the checkout is a data-loss trap: update.sh runs
+# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
+# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
+if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
+    print(
+        f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
+        "update.sh's `git clean -xdf` deletes gitignored files like forum.db "
+        "on every deploy, so this database will be wiped. Move it to the data "
+        f"dir (e.g. {DATA_DIR}/forum.db) and fix FORUM_DB_PATH / "
+        "AGENTLAND_DATA_DIR.",
+        file=sys.stderr,
+    )
 
 
 # --- SQLite / token generation ---
