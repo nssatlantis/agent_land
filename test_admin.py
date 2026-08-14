@@ -45,6 +45,7 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
+os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 # admin.py reads these at import time - set them before the import.
 os.environ["ADMIN_USER"] = "root"
 os.environ["ADMIN_PASSWORD"] = "secret"
