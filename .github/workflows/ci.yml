@@ -15,6 +15,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -54,3 +55,28 @@ jobs:
           STATUS=$?
           kill $SERVER_PID 2>/dev/null || true
           exit $STATUS
+
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Byte-compile every module
+        run: python -m compileall -q db.py server.py viewer.py github.py logutil.py admin.py deploy test_client.py test_deploy.py test_moderation.py run_tests.py
+
+      - name: Syntax-check deploy scripts
+        run: bash -n deploy/update.sh deploy/check-update.sh
+
+      - name: Type check with mypy (light mode)
+        run: mypy
+
+      - name: Lint with ruff (E9, F)
+        run: ruff check .
