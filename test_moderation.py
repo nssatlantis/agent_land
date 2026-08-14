@@ -2051,6 +2051,51 @@ def main():
     assert db.proposal_voters(plain["post_id"]) == [], \
         "non-proposal posts have no vote ledger"
 
+    # --- list_comments: the flat, paged view of a thread ----------------------
+    # db.list_comments() backs the MCP list_comments tool (and would back the
+    # viewer's per-page comment walk): newest-first, paged, one reply thread
+    # selectable, and a hard error for a missing post - the paged companion
+    # to get_post's unbounded nested tree. Self-contained: the merge-target
+    # post above lost most of its comments when nola's content was destroyed,
+    # so this block builds its own thread on a fresh post.
+    lc_a = db.register_agent("lc-alpha")
+    lc_b = db.register_agent("lc-beta")
+    lc_post = db.create_post(lc_a["token"], "lc thread", "flat list")
+    lc_x1 = db.create_comment(lc_b["token"], lc_post["post_id"], "first flat")
+    lc_x2 = db.create_comment(lc_a["token"], lc_post["post_id"], "second flat")
+    lc_xt = db.create_comment(lc_b["token"], lc_post["post_id"], "threaded under a",
+                              parent_comment_id=lc_x2["comment_id"])
+    lc_x3 = db.create_comment(lc_b["token"], lc_post["post_id"], "third flat")
+    lc_empty = db.create_post(lc_a["token"], "lc empty", "no comments yet")
+
+    mp = lc_post["post_id"]
+    lc_flat = db.list_comments(mp)
+    assert len(lc_flat) == 4, "the flat list sees every comment row on the post"
+    assert [c["id"] for c in lc_flat] == [lc_x3["comment_id"], lc_xt["comment_id"],
+                                          lc_x2["comment_id"], lc_x1["comment_id"]], \
+        "list_comments is newest-first like the other listers"
+    assert all("author" in c and "author_id" in c and "post_id" in c
+               and "parent_comment_id" in c and "score" in c for c in lc_flat), \
+        "each row carries author + post + parent + score for rendering"
+    assert all(c["score"] == 0 for c in lc_flat), "scores come with the rows"
+    assert lc_flat[0]["parent_comment_id"] is None, \
+        "top-level comments report a null parent"
+    assert lc_flat[1]["parent_comment_id"] == lc_x2["comment_id"], \
+        "threaded comments name their parent"
+    assert db.list_comments(mp, limit=2) == lc_flat[:2], \
+        "limit pages the list"
+    assert db.list_comments(mp, limit=2, offset=2) == lc_flat[2:4], \
+        "offset pages past the first page"
+    assert db.list_comments(mp, limit=10**6) == lc_flat, \
+        "a limit larger than the docket returns everything (clamped, not truncated)"
+    thread = db.list_comments(mp, parent_comment_id=lc_x2["comment_id"])
+    assert [c["id"] for c in thread] == [lc_xt["comment_id"]], \
+        "parent_comment_id reads just one reply thread"
+    assert "no post with id" in expect_error(db.list_comments, 999999), \
+        "an unknown post is refused, not silently empty"
+    assert db.list_comments(lc_empty["post_id"]) == [], \
+        "a real post with no comments returns an empty list"
+
     # --- record_agent_seen: the wiring target for last-seen / last-IP -------
     # db.record_agent_seen() backs the admin page's last-seen / last-IP
     # columns; the HTTP layer in server.py calls it per authenticated request.
