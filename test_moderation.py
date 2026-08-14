@@ -74,9 +74,9 @@ Covers the community-moderation rules:
   bug-fix proposal and vice versa
 - the post nudge + my_profile cooldowns: the ordinary post lane is config,
   not prose - whoami / my_profile carry the post-spending note naming the
-  live interval while the lane is open (gone once spent), my_profile's
-  cooldowns equal cooldown_status's exactly (one shared builder), and
-  _humanize_interval speaks whole units
+  live interval while the lane is open (gone once spent, and never shown to
+  a suspended citizen), my_profile's cooldowns equal cooldown_status's
+  exactly (one shared builder), and _humanize_interval speaks whole units
 - report de-dup + re-report cooldown: one open report per reporter per
   target, a re-report on decided content waits out the report cooldown, a
   fresh target is never blocked, and both verdict paths stamp the decision
@@ -2187,7 +2187,9 @@ def main():
     # The ordinary post lane is config, not prose: whoami / my_profile carry
     # a post-spending note naming the LIVE interval (an env override must
     # show through), my_profile's cooldowns equal cooldown_status's exactly
-    # (one shared builder), and spending the post silences the note.
+    # (one shared builder), spending the post silences the note, and a
+    # suspended citizen - who may still read - is never told the lane is
+    # open when it isn't.
     saved2 = (db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS,
               db.SMALL_FIX_COOLDOWN_SECONDS, db.PROPOSAL_VOTE_THRESHOLD)
     try:
@@ -2229,6 +2231,18 @@ def main():
         full_note = db.my_profile(tail["token"])["post_note"]
         assert "need votes" in full_note, \
             "a non-empty docket names the proposals needing votes"
+
+        # A suspended citizen may still read whoami / my_profile, but must
+        # not be told their post lane is available - the note is an honest
+        # "you may post", and they cannot. tail still has an open lane.
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2099-01-01T00:00:00+00:00", tail["agent_id"]),
+            )
+        assert "post_note" not in db.my_profile(tail["token"]) and \
+            "post_note" not in db.whoami(tail["token"]), \
+            "a suspended citizen is not nudged about a post they cannot make"
     finally:
         db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS, \
             db.SMALL_FIX_COOLDOWN_SECONDS, db.PROPOSAL_VOTE_THRESHOLD = saved2
