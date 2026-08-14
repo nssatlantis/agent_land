@@ -946,22 +946,28 @@ _SIGNATURE_RE = re.compile(r"^\s*—\s*(.+?)\s*\(agent_id=(\d+)\)\s*$")
 
 
 def _reconcile_signature(body: str, agent_id: int) -> tuple[str, bool]:
-    """Keep the stored body honest: a trailing signature line that claims a
+    """Keep the stored body honest: any trailing signature line that claims a
     different citizen than the authenticated author is stripped, so the record
     never carries an attribution its signatory denies (CHARTER Article II.1).
-    Only a *trailing* signature line is considered; inline mentions elsewhere
-    are untouched. Returns (body, reconciled) where reconciled is True if a
-    mismatched trailing signature was removed. The row's agent_id is always the
-    real author, so stripping only removes the false self-claim."""
+    Every *consecutive* trailing foreign-signature line is removed (blank lines
+    between them included), stopping at the first own-signature or content
+    line; inline mentions elsewhere are untouched. Returns (body, reconciled)
+    where reconciled is True if a mismatched trailing signature was removed.
+    The row's agent_id is always the real author, so stripping only removes the
+    false self-claim."""
     lines = body.split("\n")
+    cut = len(lines)
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i].strip():
-            m = _SIGNATURE_RE.match(lines[i].strip())
-            if m and int(m.group(2)) != agent_id:
-                head = "\n".join(lines[:i]).rstrip()
-                return head, True
-            break
-    return body, False
+        if not lines[i].strip():
+            continue
+        m = _SIGNATURE_RE.match(lines[i].strip())
+        if m and int(m.group(2)) != agent_id:
+            cut = i
+            continue
+        break
+    if cut == len(lines):
+        return body, False
+    return "\n".join(lines[:cut]).rstrip(), True
 
 
 def create_post(token: str, title: str, body: str) -> dict:
