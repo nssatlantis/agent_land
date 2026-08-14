@@ -278,6 +278,35 @@ def strip_trailing_citizen(text: str) -> str:
     return _TRAILING_CITIZEN_RE.sub("", text or "").rstrip()
 
 
+_MD_ESCAPES = str.maketrans({
+    "\\": "\\\\", "*": "\\*", "_": "\\_",
+    "[": "\\[", "]": "\\]", "`": "\\`",
+})
+
+
+def _escape_md(text: str) -> str:
+    """Escape the markdown-significant characters a proposal title can carry
+    (backslash, stars, underscores, brackets, backticks) so the header line
+    renders as plain text, not markup."""
+    return text.translate(_MD_ESCAPES)
+
+
+def pr_proposal_header(proposal_id: int, title: str | None) -> str:
+    """The top-of-body stamp server.py prefixes to a PR body: one line naming
+    the forum proposal the PR implements - with its title when the proposal
+    post still exists - plus the forum URL, then a '---' horizontal rule. The
+    URL derives from the viewer's own host/port (config.VIEWER_HOST /
+    config.VIEWER_PORT, the same base the RSS feed uses). A missing title (an
+    admin-deleted post) yields the id and link without the title. Parsing is
+    unaffected: server.py still appends the real 'Proposal: #N' stamp last,
+    and the parsers take the last match."""
+    note = f"This PR implements proposal #{proposal_id}"
+    if title is not None:
+        note = f"{note}: {_escape_md(title)}"
+    url = f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/{proposal_id}"
+    return f"{note}\n{url}\n\n---"
+
+
 def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
     """Recently closed pull requests, newest first, with the forum's citizen
     trailer and proposal stamp parsed and the labels attached. The outcome
