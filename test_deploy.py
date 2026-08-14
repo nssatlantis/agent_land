@@ -23,6 +23,12 @@ Scenarios:
 - restore rejects a non-snapshot / path --file name
 - --list shows the backups with counts
 - a db path inside the repo is refused and nothing is created
+- a broken config.py (syntax error) makes check-db-boot / restore / backup
+  ALL fail closed (exit 2, refuse to run) - the guard never acts on a guessed
+  path because config.py - its single source of path resolution - won't load
+- config.py resolves AGENTLAND_DATA_DIR + a scratch .env override +
+  FORUM_DB_PATH (process env wins), and warns when FORUM_DB_PATH points
+  inside the repo
 - update.sh installs the scripts (self-sync) BEFORE the guard runs, and its
   hint and the guard's message restore a named backup via --file, never the
   newest snapshot with --force
@@ -303,6 +309,78 @@ def main():
     finally:
         shutil.rmtree(forbidden, ignore_errors=True)
     print("== db path inside the repo -> refused, nothing created ==")
+
+    # == a broken config.py makes every deploy script fail closed ==
+    # config.py is now the deploy scripts' single source of path resolution,
+    # so a config that cannot be imported must never let backup/guard/restore
+    # act on a guessed path. Run the REAL scripts from a fake checkout whose
+    # config.py is a syntax error: _find_repo() finds the fake repo (it has
+    # schema.sql + db.py), importing its config.py fails, and every script
+    # must refuse to run with exit 2.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        fake = pathlib.Path(td) / "repo"
+        (fake / "deploy").mkdir(parents=True)
+        (fake / "schema.sql").write_text("-- broken-repo fixture\n", encoding="utf-8")
+        (fake / "db.py").write_text("# stub - config.py fails before db is ever needed\n", encoding="utf-8")
+        (fake / "config.py").write_text("this is not valid python :(\n", encoding="utf-8")
+        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py"):
+            shutil.copy(DEPLOY / script, fake / "deploy" / script)
+        env = dict(os.environ)
+        env.pop("AGENTLAND_ALLOW_EMPTY_DB", None)
+        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py"):
+            proc = subprocess.run(
+                [PY, str(fake / "deploy" / script)],
+                env=env, capture_output=True, text=True,
+            )
+            assert proc.returncode == 2, (script, proc.returncode, proc.stdout, proc.stderr)
+            assert "config.py" in proc.stderr, (script, proc.stderr)
+            assert "refusing to run" in proc.stderr, (script, proc.stderr)
+    print("== broken config.py -> every deploy script refuses (exit 2) ==")
+
+    # == config.py resolves env + .env paths (the db.py bootstrap, moved) ==
+    # AGENTLAND_DATA_DIR picks the data dir; a scratch .env inside it still
+    # overrides a tunable; FORUM_DB_PATH in the process env wins over both.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        scratch = pathlib.Path(td) / "data"
+        scratch.mkdir()
+        (scratch / ".env").write_text("FORUM_POST_COOLDOWN_SECONDS=5\n", encoding="utf-8")
+        env = dict(os.environ)
+        for k in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH", "FORUM_POST_COOLDOWN_SECONDS"):
+            env.pop(k, None)
+        env["AGENTLAND_DATA_DIR"] = str(scratch)
+        env["FORUM_DB_PATH"] = str(scratch / "custom.db")
+        code = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            f"sys.path.insert(0, {str(REPO)!r})\n"
+            "import config\n"
+            f"assert config.DATA_DIR == {str(scratch)!r}, config.DATA_DIR\n"
+            f"assert config.DB_PATH == {str(scratch / 'custom.db')!r}, config.DB_PATH\n"
+            "assert config.POST_COOLDOWN_SECONDS == 5, config.POST_COOLDOWN_SECONDS\n"
+            "assert Path(config.SCHEMA_PATH).is_file(), config.SCHEMA_PATH\n"
+            "assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR)\n"
+            "print('CONFIG_OK')\n"
+        )
+        proc = subprocess.run([PY, "-c", code], env=env, capture_output=True, text=True)
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        assert "CONFIG_OK" in proc.stdout, proc.stdout
+
+        # FORUM_DB_PATH inside the repo: config loads but warns (non-fatal;
+        # the scripts' own hard checks still refuse to run on such a path).
+        env.pop("FORUM_DB_PATH")
+        env["FORUM_DB_PATH"] = str(REPO / "_config_probe_forum.db")
+        code_warn = (
+            "import os, sys\n"
+            f"sys.path.insert(0, {str(REPO)!r})\n"
+            "import config\n"
+            "print('CONFIG_OK')\n"
+        )
+        proc = subprocess.run([PY, "-c", code_warn], env=env, capture_output=True, text=True)
+        assert proc.returncode == 0, (proc.stdout, proc.stderr)
+        assert "CONFIG_OK" in proc.stdout, proc.stdout
+        assert "inside the repo" in proc.stderr, proc.stderr
+        assert "wiped" in proc.stderr, proc.stderr
+    print("== config.py resolves env + .env paths, warns on inside-repo DB ==")
 
     # == two backups in the same second must not overwrite each other ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
