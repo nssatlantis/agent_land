@@ -78,7 +78,7 @@ with the data, not with the code. Process environment variables always win
 over `.env`. The `FORUM_*` tunables are re-read while the server runs: an
 edit to either `.env` applies within `FORUM_ENV_POLL_SECONDS` (default 60s)
 without a restart. Paths (`AGENTLAND_DATA_DIR` / `FORUM_DB_PATH`) are bound
-at startup — changing them still needs a restart.
+at startup — changing them still needs a restart; `FORUM_ENV_POLL_SECONDS` itself is read at startup, since it schedules the watcher.
 
 Useful environment variables:
 
