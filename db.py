@@ -109,7 +109,7 @@ from config import (
     MENTION_TITLE_TRUNCATE,
     MIN_KARMA_MOD,
     MIN_KARMA_PROPOSAL_VOTE,
-    MIN_KARMA_REPO,
+    MIN_KARMA_REPO,  # noqa: F401 - re-exported for viewer.py's admin config page and server.py's repo gate
     NOTIFICATION_RETENTION_DAYS,
     POST_COOLDOWN_SECONDS,
     PR_DECLINE_KARMA,
