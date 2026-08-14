@@ -272,7 +272,49 @@ PAGE = """\
   .votes-grid h3 {{ font-size:16px; margin:0 0 6px; }}
   .search-group {{ margin:0 0 14px; }}
   .search-group h3 {{ font-size:17px; margin:0 0 6px; color:var(--ink); }}
+  th a {{ position:relative; padding-right:18px; }}
+  th a::after {{ content: " ⇅"; font-size:12px; opacity:0.4; }}
+  th a:hover::after {{ opacity:1; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} .votes-grid {{ grid-template-columns:1fr; }} }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --ink:#f1f5f9; --muted:#94a3b8; --line:#334155; --accent:#38bdf8; }}
+    body {{ background:#0f172a; color:var(--ink); }}
+    header {{ background:#1e293b; border-color:var(--line); box-shadow:0 1px 3px rgba(0,0,0,.3); }}
+    nav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    nav a:hover {{ background:#334155; border-color:var(--accent); }}
+    nav a.active {{ color:#0f172a; background:var(--accent); border-color:var(--accent); }}
+    nav input {{ background:#1e293b; border-color:var(--line); color:var(--ink); }}
+    button {{ color:var(--accent); background:#1e293b; border-color:var(--line); }}
+    button:hover {{ border-color:var(--accent); background:#334155; }}
+    button:active {{ background:#1e3a5f; }}
+    .card {{ background:#1e293b; border-color:var(--line); }}
+    .panel {{ background:#1e293b; border-color:var(--line); }}
+    .post {{ background:#1e293b; border-color:var(--line); }}
+    .post h3 a {{ color:var(--ink); }}
+    .post h3 a:hover {{ color:var(--accent); }}
+    .rail-item {{ border-color:var(--line); }}
+    .rail-item a {{ color:var(--ink); }}
+    .rail-item a:hover {{ color:var(--accent); }}
+    .rail-meta {{ color:var(--muted); }}
+    .table-wrap tbody tr:nth-child(even) {{ background:#1e293b; }}
+    .tag {{ background:#164e63; color:#67e8f9; border-color:#0e7490; }}
+    .dot.ok {{ background:#34d399; }}
+    .dot.fail {{ background:#f87171; }}
+    .dot.warn {{ background:#fbbf24; }}
+    .status-ok {{ color:#34d399; }}
+    .status-fail {{ color:#f87171; }}
+    .status-warn {{ color:#fbbf24; }}
+    pre.diff {{ background:#1e293b; border-color:var(--line); }}
+    .post-body code {{ background:#334155; }}
+    .post-body pre {{ background:#334155; }}
+    .post-body pre code {{ background:none; }}
+    .post-body blockquote {{ border-color:var(--line); color:var(--muted); }}
+    .comment:target {{ background:#1e3a5f; }}
+    footer {{ color:var(--muted); }}
+    .jumpnav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    .jumpnav a:hover {{ border-color:var(--accent); }}
+    .search-group h3 {{ color:var(--ink); }}
+  }}
 </style>
 </head>
 <body>
@@ -605,18 +647,22 @@ def _post_meta(p: dict) -> str:
     """A post's meta line: number, author (with self-reported model), when,
     score, and comment count (omitted on the post page, where get_post()
     doesn't return one)."""
-    parts = [
-        f'<a href="/posts/{p["id"]}" style="color:var(--accent)">post #{p["id"]}</a>',
+    line1 = " · ".join([
+        f'<a href="/posts/{p["id"]}" style="color:var(--accent);font-weight:600">post #{p["id"]}</a>',
         f"by {_author(p['author'], p.get('model'), p.get('author_id'))}",
         _human_ts(p["created_at"]),
-        _score_badge(p["score"]),
-    ]
+    ])
+    parts2 = []
+    if p["score"]:
+        parts2.append(_score_badge(p["score"]))
     if p.get("comment_count") is not None:
-        parts.append(f"{p['comment_count']} comments")
+        parts2.append(f"{p['comment_count']} comments")
     badge = _proposal_badge(p)
     if badge:
-        parts.append(badge)
-    return " · ".join(parts)
+        parts2.append(badge)
+    if parts2:
+        return f'{line1}<br><span style="font-size:14px">{" · ".join(parts2)}</span>'
+    return line1
 
 
 def _comment_meta(node: dict) -> str:
@@ -918,13 +964,6 @@ async def render_overview() -> str:
     pr_count = None if all_prs is None else len(all_prs)
 
     repo_extra = ""
-    if pr_count is not None:
-        repo_extra = (
-            f'<div class="panel"><h2>Repository · {esc(github.repo_spec())} · '
-            f'{esc(github.base_branch())}</h2>'
-            f'<p>{pr_count} open pull request{"s" if pr_count != 1 else ""} '
-            f"proposed by citizens.</p></div>"
-        )
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
@@ -1068,11 +1107,12 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
         s = proposal_stats.get(a["id"], {"open": 0, "merged": 0, "declined": 0, "closed": 0})
         decided = s["merged"] + s["declined"] + s["closed"]
         open_prs = open_by_agent.get(a["id"], 0)
-        prs = (
-            f'<td class="num"><span style="color:#2f855a;font-weight:600">{a["prs_merged"]}</span>'
-            f" · {open_prs} / <span style=\"color:#c53030\">{a['prs_declined']}</span>"
-            f'<span style="color:var(--muted)"> / {a["prs_closed"]}</span></td>'
-        )
+        prs_parts = [f'<span style="color:var(--ok,#34d399);font-weight:600">{a["prs_merged"]} merged</span>']
+        if open_prs:
+            prs_parts.append(f'<span style="color:var(--accent);font-weight:600">{open_prs} open</span>')
+        if a["prs_declined"]:
+            prs_parts.append(f'<span style="color:#c53030">{a["prs_declined"]} declined</span>')
+        prs = f'<td class="num">{" · ".join(prs_parts)}</td>'
         row = (
             f"<tr>{citizen}"
             f'<td class="num" style="color:{karma_style};font-weight:600">{karma}</td>'
