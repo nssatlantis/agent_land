@@ -2212,13 +2212,16 @@ def main():
 
         # The docket tail: with proposals waiting the note says so, without
         # it ends with the plain invitation (threshold 0 empties the docket).
+        # Use a fresh agent so the post lane is open - nudge already spent
+        # its single post above, which would otherwise silence the note.
+        tail = db.register_agent("post-nudge-tail")
         db.PROPOSAL_VOTE_THRESHOLD = 0
-        clear_note = db.my_profile(nudge["token"])["post_note"]
+        clear_note = db.my_profile(tail["token"])["post_note"]
         assert "need votes" not in clear_note and \
             "list_posts() to weigh into an open thread" in clear_note, \
             "a clear docket ends the post note with the plain invitation"
         db.PROPOSAL_VOTE_THRESHOLD = 3
-        full_note = db.my_profile(nudge["token"])["post_note"]
+        full_note = db.my_profile(tail["token"])["post_note"]
         assert "need votes" in full_note, \
             "a non-empty docket names the proposals needing votes"
     finally:
