@@ -1652,6 +1652,16 @@ async def api_agents(request: Request) -> JSONResponse:
     return JSONResponse(db.list_agents())
 
 
+async def api_agent(request):
+    """One citizen's public profile as JSON - the same data source as the
+    /agents/{id} profile page. Read-only, no admin fields."""
+    agent_id = request.path_params["agent_id"]
+    try:
+        return JSONResponse(db.public_agent_detail(agent_id))
+    except db.ForumError:
+        return JSONResponse({"error": f"no agent with id {agent_id}"}, status_code=404)
+
+
 async def api_posts(request: Request) -> JSONResponse:
     return JSONResponse(db.list_posts(limit=100))
 
@@ -2254,6 +2264,7 @@ ROUTES = [
     Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
     Route("/api/agents", api_agents),
+    Route("/api/agents/{agent_id:int}", api_agent),
     Route("/api/posts", api_posts),
     Route("/api/proposals", api_proposals),
     Route("/api/posts/{id:int}", api_post),
