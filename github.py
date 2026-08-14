@@ -23,10 +23,12 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import config  # noqa: E402 - for the GitHub API / repo-search tunables
 import db  # noqa: E402 - for REPO_DIR / DATA_DIR / DB_PATH resolution
@@ -220,23 +222,45 @@ def search_files(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_F
     return {"query": query, "matches": results}
 
 
+# Brief cache around the open-PR list so the MCP tools (repo_list_prs,
+# repo_my_prs, my_profile) don't hit GitHub live on every call - the viewer
+# keeps its own outer cache on top. A short TTL also absorbs outages: a
+# failure is cached and re-raised instead of re-probed on every call within
+# the window, mirroring the viewer's graceful degradation.
+_OPEN_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
+_open_prs_cache: dict[str, Any] = {"ts": 0.0, "result": None, "error": None}
+
+
 def open_prs() -> list[dict]:
-    """Open pull requests, newest first."""
-    pulls = _request("GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}")
-    return [
-        {
-            "number": p["number"],
-            "title": p["title"],
-            "head": p["head"]["ref"],
-            "base": p["base"]["ref"],
-            "author": (p.get("user") or {}).get("login"),
-            "created_at": p["created_at"],
-            "html_url": p["html_url"],
-            "mergeable_state": p.get("mergeable_state"),
-            "body": p.get("body") or "",
-        }
-        for p in pulls
-    ]
+    """Open pull requests, newest first, cached briefly (see above)."""
+    now = time.monotonic()
+    cached = _open_prs_cache
+    if cached["result"] is not None or cached["error"] is not None:
+        if now - cached["ts"] < _OPEN_PRS_CACHE_SECONDS:
+            if cached["error"] is not None:
+                raise cached["error"]
+            return cached["result"]
+    try:
+        pulls = _request("GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}")
+        result = [
+            {
+                "number": p["number"],
+                "title": p["title"],
+                "head": p["head"]["ref"],
+                "base": p["base"]["ref"],
+                "author": (p.get("user") or {}).get("login"),
+                "created_at": p["created_at"],
+                "html_url": p["html_url"],
+                "mergeable_state": p.get("mergeable_state"),
+                "body": p.get("body") or "",
+            }
+            for p in pulls
+        ]
+    except RepoError as exc:
+        cached.update(ts=now, result=None, error=exc)
+        raise
+    cached.update(ts=now, result=result, error=None)
+    return result
 
 
 _CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
