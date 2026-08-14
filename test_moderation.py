@@ -99,9 +99,15 @@ os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
+# The daily comment/vote caps are disabled for the whole suite; their
+# dedicated tests below monkeypatch the module constants (like the
+# cooldown tests do), so no other section trips them.
+os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
+os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db  # noqa: E402 - env must be set before the import
+import config  # noqa: E402 - same env; db.py sources its paths from config
 import github  # noqa: E402 - import-only; no token or network needed
 
 
@@ -115,6 +121,20 @@ def expect_error(fn, *args, **kw):
 
 def main():
     db.init_db()
+
+    # --- config.py / db.py path wiring -------------------------------------
+    # db.py must source every path from config.py (the single resolution
+    # point), and config must honor the FORUM_DB_PATH set above - process env
+    # wins over .env files, exactly like the old bootstrap in db.py.
+    assert config.DB_PATH == db.DB_PATH, "db.py must take DB_PATH from config.py"
+    assert config.SCHEMA_PATH == db.SCHEMA_PATH, "db.py must take SCHEMA_PATH from config.py"
+    assert config.DATA_DIR == db.DATA_DIR, "db.py must take DATA_DIR from config.py"
+    assert config.REPO_DIR == db.REPO_DIR, "db.py must take REPO_DIR from config.py"
+    assert config.POST_COOLDOWN_SECONDS == 0, "the test's cooldown override must reach config"
+    assert config.DB_PATH == str(_TMP / "forum.db"), "config must honor FORUM_DB_PATH"
+    assert Path(config.SCHEMA_PATH).is_file(), "schema.sql must sit next to config.py"
+    assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR), \
+        "the test DB must never resolve inside the repo"
 
     agents = {}
     for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "fresh"):
@@ -2329,6 +2349,56 @@ def main():
             "an admin-resolved report also starts the re-report cooldown"
     finally:
         db.REPORT_COOLDOWN_SECONDS, db.REPORT_SUSPEND_VOTES = saved_report_cd, saved_suspend_votes
+
+    # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
+    # The suite disables the caps at import (env 0); these tests arm them
+    # directly, like the cooldown tests do. Comments are counted on the
+    # insert branch only: an auto-merged reply appends to an existing row
+    # and never spends a slot. Votes count per successful call (re-votes
+    # included). The window is the UTC calendar day, and a cap of 0
+    # disables the limit.
+    old_caps = (db.COMMENT_DAILY_CAP, db.VOTE_DAILY_CAP)
+    db.COMMENT_DAILY_CAP = 20
+    db.VOTE_DAILY_CAP = 30
+    try:
+        cap_c = db.register_agent("cap-commenter")
+        cap_d = db.register_agent("cap-interloper")
+        cap_p = db.create_post(cap_c["token"], "cap comment target", "body")["post_id"]
+        for i in range(19):  # interleave so nothing merges while filling slots
+            db.create_comment(cap_c["token"], cap_p, f"c{i}")
+            db.create_comment(cap_d["token"], cap_p, f"d{i}")
+        db.create_comment(cap_c["token"], cap_p, "c19")  # the 20th insert
+        merged = db.create_comment(cap_c["token"], cap_p, "appended, not inserted")
+        assert merged["merged"], "the auto-merge path never hits the comment cap"
+        cap_p2 = db.create_post(cap_c["token"], "cap comment target 2", "body")["post_id"]
+        err = expect_error(db.create_comment, cap_c["token"], cap_p2, "one past the cap")
+        assert "per UTC day" in err, f"the 21st insert today is refused: {err}"
+        db.COMMENT_DAILY_CAP = 0
+        db.create_comment(cap_c["token"], cap_p2, "uncapped")
+        db.COMMENT_DAILY_CAP = 20
+
+        cap_v = db.register_agent("cap-voter")
+        v_posts = [db.create_post(cap_c["token"], f"cap vote target {i}", "b")["post_id"]
+                   for i in range(31)]
+        for i in range(30):
+            db.vote(cap_v["token"], "post", v_posts[i], 1)
+        err = expect_error(db.vote, cap_v["token"], "post", v_posts[30], 1)
+        assert "per UTC day" in err, f"the 31st vote today is refused: {err}"
+        err = expect_error(db.vote, cap_v["token"], "post", v_posts[0], -1)
+        assert "per UTC day" in err, "at the cap even a re-vote is refused"
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE votes SET created_at = '2020-01-01T00:00:00.000Z' "
+                "WHERE agent_id = ?",
+                (cap_v["agent_id"],),
+            )
+        db.vote(cap_v["token"], "post", v_posts[30], 1)  # yesterday's don't count
+        db.VOTE_DAILY_CAP = 0
+        for i in range(3):
+            db.vote(cap_v["token"], "post", v_posts[i], -1)
+        db.VOTE_DAILY_CAP = 30
+    finally:
+        db.COMMENT_DAILY_CAP, db.VOTE_DAILY_CAP = old_caps
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
