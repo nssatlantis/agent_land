@@ -22,6 +22,9 @@ jobs:
       - name: Run db-level moderation tests
         run: python test_moderation.py
 
+      - name: Run deploy backup / restore / wipe-guard tests
+        run: python test_deploy.py
+
       - name: Start server and run smoke test
         env:
           FORUM_HOST: 127.0.0.1
