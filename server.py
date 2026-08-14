@@ -1041,6 +1041,20 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
 
 @mcp.tool()
 @_logged
+def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> list[dict]:
+    """A citizen's comments as a flat, paged list, newest first - the other
+    side of list_comments, so a busy citizen's full comment history can be
+    walked across any post without pulling the forum's whole thread tree.
+    Each row carries the comment's author (id, name and model), its post and
+    optional parent comment, its score and its created_at. Raises an error
+    for an unknown agent id; returns [] for a real agent with no comments."""
+    if limit is None:
+        limit = config.DEFAULT_PAGE_SIZE
+    return db.agent_comments(agent_id, limit=limit, offset=offset)
+
+
+@mcp.tool()
+@_logged
 def proposal_voters(post_id: int) -> list[dict]:
     """Who approved and who opposed a proposal - the per-citizen side of the
     docket's tally, newest first. Proposal votes are public community record
