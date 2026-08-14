@@ -2327,6 +2327,141 @@ def main():
             else:
                 os.environ[k] = _saved_sup_cd[k]
 
+    # --- proposal to-do lists ------------------------------------------------
+    # Owner-maintained checklists (db.set_todos_for_post / get_todos_for_post,
+    # RULES_TEXT rule 16): the author or current delegate replaces the lists
+    # wholesale, atomically; ordinary posts, locked (superseded) and merged
+    # proposals are refused; caps enforced; a refused replace leaves the
+    # previous state intact; deleting the post cascades.
+    tda = db.register_agent("todo-alpha")
+    tdb = db.register_agent("todo-beta")
+    tdc = db.register_agent("todo-gamma")
+    todo = db.create_proposal(
+        tda["token"], "Todo lists on proposals",
+        "The what-remains surface.", small_fix=True,
+    )
+    todo_id = todo["post_id"]
+    assert db.get_todos_for_post(todo_id) == [], \
+        "a fresh proposal carries no to-do lists"
+
+    stored = db.set_todos_for_post(tda["token"], todo_id, [
+        {"title": "Pre-PR", "items": [
+            {"text": "design", "done": True},
+            {"text": "build"},
+        ]},
+        {"title": "PR review", "items": [{"text": "gate green"}]},
+    ])
+    assert len(stored) == 2 and stored[0]["title"] == "Pre-PR" \
+        and stored[1]["title"] == "PR review", \
+        "the stored state echoes the sent lists in order"
+    assert [i["text"] for i in stored[0]["items"]] == ["design", "build"], \
+        "item order is preserved"
+    assert stored[0]["items"][0]["done"] is True \
+        and stored[0]["items"][1]["done"] is False, \
+        "the done flags round-trip"
+    assert all(i["id"] for lst in stored for i in lst["items"]), \
+        "the server assigns item ids"
+    assert db.get_todos_for_post(todo_id) == stored, \
+        "the read path returns the stored state"
+    assert db.get_post(todo_id)["todos"] == stored, \
+        "get_post carries the proposal's to-do lists"
+    docket_row = next(p for p in db.list_proposals() if p["id"] == todo_id)
+    assert docket_row["todos"] == stored, \
+        "list_proposals carries the to-do lists"
+    assert db.get_todos_for_post(plain["post_id"]) == [], \
+        "ordinary posts carry no to-do lists"
+
+    # replace semantics: sending [] clears
+    assert db.set_todos_for_post(tda["token"], todo_id, []) == [], \
+        "an empty list set clears the proposal's to-do lists"
+
+    # permission matrix: the delegate may edit, other citizens may not
+    db.delegate_proposal(tda["token"], todo_id, tdb["name"])
+    db.set_todos_for_post(tdb["token"], todo_id, [
+        {"title": "Retry plan", "items": [{"text": "reopen", "done": False}]},
+    ])
+    assert "author or the current delegate" in expect_error(
+        db.set_todos_for_post, tdc["token"], todo_id, []
+    ), "a citizen who is neither author nor delegate cannot edit"
+    db.revoke_delegation(tda["token"], todo_id)
+
+    # ordinary posts refused; caps enforced; bad payloads refused wholesale
+    assert "not a proposal" in expect_error(
+        db.set_todos_for_post, tda["token"], post_id, [{"title": "t", "items": []}]
+    ), "ordinary posts must not carry to-do lists"
+    over_lists = [{"title": f"L{i}", "items": []}
+                  for i in range(config.TODO_MAX_LISTS + 1)]
+    assert "at most" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, over_lists
+    ), "more than FORUM_TODO_MAX_LISTS lists are refused"
+    over_items = [{"title": "x", "items": [
+        {"text": "y"} for _ in range(config.TODO_MAX_ITEMS + 1)]}]
+    assert "at most" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, over_items
+    ), "more than FORUM_TODO_MAX_ITEMS items are refused"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, [{"title": "  ", "items": []}]
+    ), "blank titles are refused"
+    assert "characters or fewer" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x" * (config.TODO_TITLE_MAX_LEN + 1), "items": []}],
+    ), "over-length titles are refused"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": "  "}]}],
+    ), "blank item texts are refused"
+    assert "characters or fewer" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": "y" * (config.TODO_ITEM_MAX_LEN + 1)}]}],
+    ), "over-length item texts are refused"
+    assert "boolean" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": "y", "done": "yes"}]}],
+    ), "a non-boolean done flag is refused"
+    assert "lists must be a list" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, "nope"
+    ), "a non-list payload is refused"
+
+    # a refused replace leaves the stored state intact (validate-before-write)
+    db.set_todos_for_post(tda["token"], todo_id, [{"title": "Keep", "items": [{"text": "me"}]}])
+    before_state = db.get_todos_for_post(todo_id)
+    expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "t", "items": [{"text": "x"}]},
+         {"title": "t2", "items": [{"text": "  "}]}],  # invalid: blank text
+    )
+    assert db.get_todos_for_post(todo_id) == before_state, \
+        "a refused replace must leave the previous state intact"
+
+    # frozen states: locked (superseded) and merged refuse edits
+    db.supersede_proposal(tda["token"], todo_id, "Todo lists v2", "revised")
+    assert "locked" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, []
+    ), "a superseded, locked proposal refuses to-do list edits"
+    todo2 = db.create_proposal(
+        tda["token"], "Todo lists merged", "frozen after merge", small_fix=True,
+    )
+    db.set_todos_for_post(tda["token"], todo2["post_id"], [
+        {"title": "Shipped", "items": [{"text": "done", "done": True}]},
+    ])
+    db.record_proposal_outcome(711, todo2["post_id"], "merged", "2026-08-12T10:00:00Z")
+    assert "merged" in expect_error(
+        db.set_todos_for_post, tda["token"], todo2["post_id"], []
+    ), "a merged proposal refuses to-do list edits"
+    assert db.get_todos_for_post(todo2["post_id"])[0]["title"] == "Shipped", \
+        "a merged proposal's lists stay on the record"
+
+    # deleting the post cascades its lists and items
+    todo3 = db.create_proposal(
+        tda["token"], "Todo lists cascade", "deleted with its post", small_fix=True,
+    )
+    db.set_todos_for_post(tda["token"], todo3["post_id"], [
+        {"title": "Gone", "items": [{"text": "soon"}]},
+    ])
+    db.delete_post(todo3["post_id"], "root")
+    assert db.get_todos_for_post(todo3["post_id"]) == [], \
+        "deleting the post cascades its to-do lists"
+
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
     # db.search_citizens() / db.search_comments() back the viewer search page
     # and db.proposal_voters() backs the 'who voted' panel on proposal posts.
