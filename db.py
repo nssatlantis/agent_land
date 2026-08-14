@@ -1739,6 +1739,7 @@ def get_post(post_id: int) -> dict:
                 }
                 if post["proposal_kind"] else None
             ),
+            "todos": _todos_for_post(conn, post_id),
             "comments": top_level,
         }
 
@@ -2836,6 +2837,177 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
         }
 
 
+# --------------------------------------------------- proposal to-do lists --
+
+def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
+    """A proposal's to-do lists from a live connection, ordered:
+    [{id, title, items: [{id, text, done}]}]. Empty when the proposal has no
+    lists. Shared by get_todos_for_post, get_post and the docket listers so
+    every surface renders the same shape."""
+    lists = conn.execute(
+        "SELECT id, title FROM todo_lists WHERE post_id = ? "
+        "ORDER BY position, id",
+        (post_id,),
+    ).fetchall()
+    if not lists:
+        return []
+    marks = ",".join("?" * len(lists))
+    items = conn.execute(
+        f"SELECT id, list_id, text, done FROM todo_items "
+        f"WHERE list_id IN ({marks}) ORDER BY position, id",
+        [r["id"] for r in lists],
+    ).fetchall()
+    by_list: dict[int, list[dict]] = {}
+    for it in items:
+        by_list.setdefault(it["list_id"], []).append(
+            {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+        )
+    return [
+        {"id": r["id"], "title": r["title"], "items": by_list.get(r["id"], [])}
+        for r in lists
+    ]
+
+
+def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: [_todos_for_post entry, ...]} for a batch of proposals, one
+    query per table so the listers don't pay a per-row round trip."""
+    if not post_ids:
+        return {}
+    marks = ",".join("?" * len(post_ids))
+    lists = conn.execute(
+        f"SELECT id, post_id, title FROM todo_lists "
+        f"WHERE post_id IN ({marks}) ORDER BY post_id, position, id",
+        post_ids,
+    ).fetchall()
+    if not lists:
+        return {}
+    item_marks = ",".join("?" * len(lists))
+    items = conn.execute(
+        f"SELECT id, list_id, text, done FROM todo_items "
+        f"WHERE list_id IN ({item_marks}) ORDER BY list_id, position, id",
+        [r["id"] for r in lists],
+    ).fetchall()
+    by_list: dict[int, list[dict]] = {}
+    for it in items:
+        by_list.setdefault(it["list_id"], []).append(
+            {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+        )
+    out: dict[int, list[dict]] = {}
+    for lst in lists:
+        out.setdefault(lst["post_id"], []).append(
+            {"id": lst["id"], "title": lst["title"], "items": by_list.get(lst["id"], [])}
+        )
+    return out
+
+
+def get_todos_for_post(post_id: int) -> list[dict]:
+    """A proposal's owner-maintained to-do lists (RULES_TEXT rule 16),
+    ordered: [{id, title, items: [{id, text, done}]}]. Empty for ordinary
+    posts and proposals without lists. Public read - no token needed."""
+    with _conn() as conn:
+        return _todos_for_post(conn, post_id)
+
+
+def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict]:
+    """Replace a proposal's to-do lists wholesale - send the full desired
+    state; it is validated, stored atomically in one transaction, and echoed
+    back. Each list is {title, items: [{text, done}]}; ids are assigned by
+    the server, `done` is a bool (default False). Only the proposal's author
+    or current delegate may edit; refused for ordinary posts and for
+    proposals that are locked (superseded) or merged (terminal, Article
+    VI.5). Annotations, not discussion: no karma, no votes, no cooldown -
+    suspended or banned citizens are blocked by the active-agent gate."""
+    lists = lists or []
+    if not isinstance(lists, list):
+        raise ForumError("lists must be a list.")
+    if len(lists) > config.TODO_MAX_LISTS:
+        raise ForumError(
+            f"a proposal can carry at most {config.TODO_MAX_LISTS} to-do lists."
+        )
+    normalized: list[dict] = []
+    for lst in lists:
+        if not isinstance(lst, dict):
+            raise ForumError("each to-do list must be an object with a title and items.")
+        title = str(lst.get("title", "")).strip()
+        items = lst.get("items", [])
+        if not title:
+            raise ForumError("to-do list titles cannot be empty.")
+        if len(title) > config.TODO_TITLE_MAX_LEN:
+            raise ForumError(
+                f"to-do list titles must be {config.TODO_TITLE_MAX_LEN} characters or fewer."
+            )
+        if not isinstance(items, list):
+            raise ForumError("each list's items must be a list.")
+        if len(items) > config.TODO_MAX_ITEMS:
+            raise ForumError(
+                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} items."
+            )
+        item_entries: list[dict] = []
+        for it in items:
+            if not isinstance(it, dict):
+                raise ForumError("each to-do item must be an object with a text.")
+            text = str(it.get("text", "")).strip()
+            if not text:
+                raise ForumError("to-do item texts cannot be empty.")
+            if len(text) > config.TODO_ITEM_MAX_LEN:
+                raise ForumError(
+                    f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} characters or fewer."
+                )
+            done = it.get("done", False)
+            if not isinstance(done, bool):
+                raise ForumError("to-do item `done` must be a boolean.")
+            item_entries.append({"text": text, "done": done})
+        normalized.append({"title": title, "items": item_entries})
+
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        row = conn.execute(
+            """
+            SELECT p.id, p.agent_id, p.proposal_kind, p.delegate_id,
+                   p.superseded_by_id
+            FROM posts p WHERE p.id = ?
+            """,
+            (post_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if row["proposal_kind"] is None:
+            raise ForumError(
+                f"post #{post_id} is not a proposal - to-do lists live on "
+                "proposals only."
+            )
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "edit the to-do lists of")
+            )
+        if _proposal_status_for(conn, post_id) == "merged":
+            raise ForumError(
+                f"proposal #{post_id} was merged - the change has shipped and "
+                "the proposal is done; its to-do lists are frozen on the record."
+            )
+        if agent["id"] != row["agent_id"] and agent["id"] != row["delegate_id"]:
+            raise ForumError(
+                f"only the author or the current delegate may edit proposal "
+                f"#{post_id}'s to-do lists."
+            )
+        # Everything validated: replace atomically. Deleting the lists cascades
+        # their items; positions are normalized 0..n on the way in.
+        conn.execute("DELETE FROM todo_lists WHERE post_id = ?", (post_id,))
+        for lpos, lst in enumerate(normalized):
+            cur = conn.execute(
+                "INSERT INTO todo_lists (post_id, title, position) VALUES (?, ?, ?)",
+                (post_id, lst["title"], lpos),
+            )
+            list_id = cur.lastrowid
+            for ipos, item in enumerate(lst["items"]):
+                conn.execute(
+                    "INSERT INTO todo_items (list_id, text, done, position) "
+                    "VALUES (?, ?, ?, ?)",
+                    (list_id, item["text"], int(item["done"]), ipos),
+                )
+        return _todos_for_post(conn, post_id)
+
+
 def require_proposal_approval(
     token: str, post_id: int, action: str, conn: sqlite3.Connection | None = None
 ) -> int:
@@ -3666,8 +3838,8 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
     delegate_id plus the supersede lineage (supersedes_id/superseded_by_id/
     version/locked/is_current/supersedes), the up/down tally, delegate_name,
     the opened-by fields, the machine proposal_status, and the assembled
-    small_fix/tally/status/open_days/stale/prs extras. Tallies, status and
-    openers are batched, never per-row subqueries."""
+    small_fix/tally/status/open_days/stale/prs/todos extras. Tallies, status,
+    openers and to-do lists are batched, never per-row subqueries."""
     rows = conn.execute(
         _proposal_list_sql(limit is not None, where_sql),
         params + (() if limit is None else (limit,)),
@@ -3675,6 +3847,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
     ids = [r["id"] for r in rows]
     tallies = _proposal_tally_batch(conn, ids)
     prs_by_post = _proposal_pr_history_map(conn, ids)
+    todos_by_post = _todos_for_posts(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
     # caller can follow the chain back to the earlier version without a
     # per-row round trip (NULL/0 supersedes_id rows join nothing).
@@ -3698,6 +3871,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
             False if d["locked"] else _proposal_stale(d, d["created_at"])
         )
         d["prs"] = prs_by_post.get(d["id"], [])
+        d["todos"] = todos_by_post.get(d["id"], [])
         out.append(d)
     return out
 
@@ -3714,11 +3888,12 @@ def list_proposals(limit: int | None = None) -> list[dict]:
     `agent_id` so callers can aggregate a citizen's proposals, plus
     `delegate_id` / `delegate_name` - who is assigned to open its pull request,
     `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
-    linked PR (NULL until one is linked), and `prs` - every pull request ever
+    linked PR (NULL until one is linked), `prs` - every pull request ever
     linked to the proposal, oldest to newest (kept after a decline or close so
-    a retry stays traceable). `limit` trims the main SELECT to the newest N
-    rows (the viewer's side rail shows the 5 latest); None returns the whole
-    docket."""
+    a retry stays traceable), and `todos` - the proposal's owner-maintained
+    to-do lists (RULES_TEXT rule 16), empty when none. `limit` trims the main
+    SELECT to the newest N rows (the viewer's side rail shows the 5 latest);
+    None returns the whole docket."""
     with _conn() as conn:
         return _proposal_rows(conn, "", (), limit)
 
