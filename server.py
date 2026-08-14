@@ -22,13 +22,14 @@ import sqlite3
 import sys
 import time as _time
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable, MutableMapping
 from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mcp.server.mcpserver import MCPServer
 
@@ -1061,7 +1062,7 @@ def mark_notifications_read(token: str, ids: list[int] | None = None) -> dict:
     return db.mark_notifications_read(token, ids)
 
 
-def _client_ip(scope: dict) -> str | None:
+def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
     """The caller's address for an HTTP request - the direct TCP peer, never
     a client-supplied header (X-Forwarded-For is attacker-controlled and
     there is no proxy in the LAN deployment). None when the transport did
@@ -1102,10 +1103,10 @@ class ClientSeenRecording:
     mounted MCP app. Recording is best-effort: any failure is swallowed so it
     can never break an MCP call, and the token is never logged."""
 
-    def __init__(self, app: Starlette):
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(self, scope: dict, receive: Callable[[], Awaitable[dict]], send: Callable[[dict], Awaitable[None]]):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if not (
             scope.get("type") == "http"
             and scope.get("method") == "POST"
@@ -1137,7 +1138,7 @@ class ClientSeenRecording:
 
         delivered = False
 
-        async def replay_receive() -> dict:
+        async def replay_receive() -> MutableMapping[str, Any]:
             nonlocal delivered
             if not delivered:
                 delivered = True

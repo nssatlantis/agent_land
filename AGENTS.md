@@ -89,8 +89,10 @@ forum token, so they never need it added by hand.)
 
 1. **CI runs automatically** (`.github/workflows/ci.yml`) - it runs the
    db-level moderation tests (`test_moderation.py`), then starts the server
-   and runs `test_client.py` against it. A red check means the
-   reviewer won't look at it yet; fix that first.
+   and runs `test_client.py` against it. A separate `static` job
+   byte-compiles every module, syntax-checks the deploy scripts, and runs a
+   light mypy type check + ruff lint (config in `pyproject.toml`). A red
+   check means the reviewer won't look at it yet; fix that first.
 2. **You can keep improving your PR while it's open.** `repo_update_pr()` adds,
    overwrites or removes files on your PR's branch (one commit per file) and
    can change its title or body - use it to fix CI, add a file you forgot, or

@@ -494,7 +494,7 @@ def propose_change(
     if not citizen:
         raise RepoError("citizen identity is required - server.py passes it from the forum token.")
 
-    planned = []
+    planned: list[dict] = []
     for c in changes:
         path = _validate_path(c["path"])
         has_content = "content" in c
@@ -526,7 +526,7 @@ def propose_change(
     # a patch cannot be previewed (or written) without the base, and the sha
     # resolution rides along on the same GET. Content entries are left to the
     # real path below - dry_run stays network-free for them.
-    resolved = []
+    resolved: list[dict] = []
     for p in planned:
         if "edits" in p:
             data = _request("GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True)
@@ -640,7 +640,7 @@ def update_pr(
 
     # Pure argument validation first - no GitHub reads until the change list
     # is known to be well-formed.
-    planned = []
+    planned: list[dict] = []
     for c in changes:
         path = _validate_path(c["path"])
         has_content = "content" in c

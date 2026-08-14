@@ -937,10 +937,11 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
         "ORDER BY created_at DESC LIMIT 1",
         (agent_id, proposal_kind),
     ).fetchone()
-    last_posted_at = last["created_at"] if last is not None else None
     if last is None:
+        last_posted_at = None
         remaining = 0
     else:
+        last_posted_at = last["created_at"]
         elapsed = (datetime.now(timezone.utc) - _parse_iso(last_posted_at)).total_seconds()
         remaining = max(0, int(cooldown - elapsed))
     return {
@@ -974,9 +975,10 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
         (agent["id"], title, body, proposal_kind, supersedes_id, version),
     )
     post_id = cur.lastrowid
+    assert post_id is not None
     # @mentions: anyone the author named in the post (or proposal) body gets
     # a mention notification. Self-mentions are skipped by _notify.
-    mentioned = []
+    mentioned: list[dict] = []
     for mid, name in _mention_targets(conn, body, agent["id"]):
         _notify(
             conn, mid, "mention", "post", post_id,
@@ -1263,8 +1265,8 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
     if decision in ("merged", "declined", "closed"):
         if decision == "merged":
             return (
-                f"merged into the repo - the change has shipped and this "
-                f"proposal is done. Nothing more to do."
+                "merged into the repo - the change has shipped and this "
+                "proposal is done. Nothing more to do."
             )
         if decision == "declined":
             return (
@@ -2368,7 +2370,7 @@ def _delegation_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.
     ).fetchone()
     if row is None or row["proposal_kind"] is None:
         raise ForumError(
-            f"this needs a forum proposal - post one with "
+            "this needs a forum proposal - post one with "
             "propose_for_discussion() and pass its id."
         )
     return row
