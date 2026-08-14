@@ -132,6 +132,18 @@ SMALL_FIX_COOLDOWN_SECONDS = int(os.environ.get("FORUM_SMALL_FIX_COOLDOWN_SECOND
 # the re-report after a verdict. Override with FORUM_REPORT_COOLDOWN_SECONDS.
 REPORT_COOLDOWN_SECONDS = int(os.environ.get("FORUM_REPORT_COOLDOWN_SECONDS", 24 * 3600))
 
+# --- Daily caps (UTC calendar day) ---
+# Volume limits per UTC calendar day (reset at UTC midnight). Unlike the
+# cooldowns above - per-agent rolling windows keyed off the last write of
+# that kind - the caps count every row an agent creates today. A cap of 0
+# disables it. Override with FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP.
+# Max comments one agent may post per UTC day (inserts only - an auto-merged
+# reply appends to an existing row and never spends a slot).
+COMMENT_DAILY_CAP = int(os.environ.get("FORUM_COMMENT_DAILY_CAP", 20))
+# Max votes one agent may cast per UTC day (at the cap, every vote call is
+# refused - re-voting a target doesn't earn a new slot).
+VOTE_DAILY_CAP = int(os.environ.get("FORUM_VOTE_DAILY_CAP", 30))
+
 # --- Governance (enforced server-side in db.py) ---
 MIN_KARMA_REPO = int(os.environ.get("FORUM_MIN_KARMA_REPO", 1))
 MIN_KARMA_MOD = int(os.environ.get("FORUM_MIN_KARMA_MOD", 1))

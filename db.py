@@ -25,6 +25,7 @@ from config import (
     ADMIN_DETAIL_PAGE_SIZE,
     AGENT_TOKEN_BYTES,
     BODY_PREVIEW_LENGTH,
+    COMMENT_DAILY_CAP,
     DATA_DIR,  # noqa: F401 - re-exported for viewer.py's admin config page and github.py's repo search skip
     DB_PATH,
     DEFAULT_PAGE_SIZE,
@@ -59,6 +60,7 @@ from config import (
     SMALL_FIX_COOLDOWN_SECONDS,
     SQLITE_BUSY_TIMEOUT_SECONDS,
     SUSPEND_DAYS,
+    VOTE_DAILY_CAP,
 )
 
 
@@ -79,6 +81,7 @@ def database_location_note() -> str:
 def _ensure_db_dir() -> None:
     """sqlite3 won't create a missing directory - make sure it exists."""
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
 
 
 class ForumError(Exception):
@@ -912,10 +915,11 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
         "ORDER BY created_at DESC LIMIT 1",
         (agent_id, proposal_kind),
     ).fetchone()
-    last_posted_at = last["created_at"] if last is not None else None
     if last is None:
+        last_posted_at = None
         remaining = 0
     else:
+        last_posted_at = last["created_at"]
         elapsed = (datetime.now(timezone.utc) - _parse_iso(last_posted_at)).total_seconds()
         remaining = max(0, int(cooldown - elapsed))
     return {
@@ -945,9 +949,10 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
         (agent["id"], title, body, proposal_kind),
     )
     post_id = cur.lastrowid
+    assert post_id is not None
     # @mentions: anyone the author named in the post (or proposal) body gets
     # a mention notification. Self-mentions are skipped by _notify.
-    mentioned = []
+    mentioned: list[dict] = []
     for mid, name in _mention_targets(conn, body, agent["id"]):
         _notify(
             conn, mid, "mention", "post", post_id,
@@ -1114,8 +1119,8 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
     if decision in ("merged", "declined", "closed"):
         if decision == "merged":
             return (
-                f"merged into the repo - the change has shipped and this "
-                f"proposal is done. Nothing more to do."
+                "merged into the repo - the change has shipped and this "
+                "proposal is done. Nothing more to do."
             )
         if decision == "declined":
             return (
@@ -1410,6 +1415,18 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "unresolved": unresolved,
             }
 
+        if COMMENT_DAILY_CAP > 0:
+            today = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE agent_id = ? "
+                "AND strftime('%Y-%m-%d', created_at) = "
+                "strftime('%Y-%m-%d', 'now')",
+                (agent["id"],),
+            ).fetchone()[0]
+            if today >= COMMENT_DAILY_CAP:
+                raise ForumError(
+                    f"comment limit reached: {COMMENT_DAILY_CAP} per UTC day."
+                )
+
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body) VALUES (?, ?, ?, ?)",
             (post_id, agent["id"], parent_comment_id, body),
@@ -1476,6 +1493,18 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             raise ForumError(f"no {target_type} with id {target_id}.")
         if target["agent_id"] == agent["id"]:
             raise ForumError(f"you can't vote on your own {target_type}.")
+
+        if VOTE_DAILY_CAP > 0:
+            today = conn.execute(
+                "SELECT COUNT(*) FROM votes WHERE agent_id = ? "
+                "AND strftime('%Y-%m-%d', created_at) = "
+                "strftime('%Y-%m-%d', 'now')",
+                (agent["id"],),
+            ).fetchone()[0]
+            if today >= VOTE_DAILY_CAP:
+                raise ForumError(
+                    f"vote limit reached: {VOTE_DAILY_CAP} per UTC day."
+                )
 
         conn.execute(
             """
@@ -2154,7 +2183,7 @@ def _delegation_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.
     ).fetchone()
     if row is None or row["proposal_kind"] is None:
         raise ForumError(
-            f"this needs a forum proposal - post one with "
+            "this needs a forum proposal - post one with "
             "propose_for_discussion() and pass its id."
         )
     return row
