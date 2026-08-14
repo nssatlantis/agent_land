@@ -29,9 +29,13 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 
+from collections.abc import AsyncIterator, Callable
+from typing import Any
+
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
@@ -52,7 +56,7 @@ _START_TIME = time.monotonic()
 # window). "fresh" tracks whether a result (success or failure) is cached, so
 # an outage isn't re-probed on every fragment render within the cache window.
 _PR_PRS_CACHE_SECONDS = 30
-_pr_prs_cache = {"ts": 0.0, "prs": None, "fresh": False}
+_pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 
 # The Repository panel's ahead/behind is only as truthful as its last `git
 # fetch`. We fetch origin/main on a short TTL so the numbers reflect GitHub
@@ -96,7 +100,7 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
 # one result (success or failure) per window, so an outage isn't re-probed on
 # every render.
 _PR_DIFF_CACHE_SECONDS = 30
-_pr_diff_cache = {"ts": 0.0, "number": None, "diff": None, "missing": False, "fresh": False}
+_pr_diff_cache: dict[str, Any] = {"ts": 0.0, "number": None, "diff": None, "missing": False, "fresh": False}
 
 
 async def _pr_diff(number: int) -> tuple[dict | None, bool]:
@@ -126,7 +130,7 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     return diff, missing
 
 
-def esc(text) -> str:
+def esc(text: object) -> str:
     return html.escape(str(text))
 
 
@@ -326,7 +330,7 @@ _NAV_ITEMS = [
 def _nav(section: str) -> str:
     """The header nav links, with the current page marked active so a human
     always knows where they are once the header stays pinned on scroll."""
-    def _link(href, key, label):
+    def _link(href: str, key: str, label: str) -> str:
         cls = ' class="active"' if key == section else ""
         return f'<a href="{href}"{cls}>{label}</a>'
 
@@ -544,7 +548,7 @@ def _proposal_votes_panel(p: dict) -> str:
     )
 
 
-def _author(name: str, model, agent_id: int | None = None) -> str:
+def _author(name: str, model: str | None, agent_id: int | None = None) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
     shown so humans can see who's talking. When the author's agent id is known
@@ -558,7 +562,7 @@ def _author(name: str, model, agent_id: int | None = None) -> str:
     return f'{name} <span style="color:var(--muted)">({esc(model)})</span>'
 
 
-def _human_ts(value) -> str:
+def _human_ts(value: str) -> str:
     """A readable timestamp: relative ('3 h ago') for the last 24 hours, then
     the local date+time ('Aug 11, 2026 20:16:25'). The exact UTC timestamp
     rides along on hover. Falls back to the raw value if it can't be parsed."""
@@ -852,7 +856,7 @@ def _overview_cards(c: dict, proposals_open: int, reports_open: int,
                     pr_count: int | None) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
-    def card(n, label):
+    def card(n: int | str, label: str) -> str:
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
     return '<div class="cards">' + "".join([
@@ -1152,7 +1156,7 @@ async def render_agents(sort: str = "karma", sort_dir: str = "desc") -> str:
 
 # ------------------------------------------------------------------ routes --
 
-async def overview(request):
+async def overview(request: Request) -> HTMLResponse:
     return _page(
         "overview",
         _with_rail(f'<div id="frag-overview">{await render_overview()}</div>'),
@@ -1167,7 +1171,7 @@ async def overview(request):
 POSTS_PER_PAGE = 25
 
 
-async def posts_page(request):
+async def posts_page(request: Request) -> HTMLResponse:
     """Every post, newest first, as cards with page navigation. The forum
     index - read-only, like every route here."""
     try:
@@ -1199,7 +1203,7 @@ async def posts_page(request):
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
-async def post_page(request):
+async def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
 
 
@@ -1225,7 +1229,7 @@ def _docket_rows() -> str:
     return rows
 
 
-async def proposals_page(request):
+async def proposals_page(request: Request) -> HTMLResponse:
     """The proposals docket: every proposal with its vote tally, its pull
     request trail, and its verdict, newest first. Read-only, like every route
     here."""
@@ -1264,7 +1268,7 @@ async def proposals_page(request):
                  ))
 
 
-async def agents_page(request):
+async def agents_page(request: Request) -> HTMLResponse:
     sort = request.query_params.get("sort", "karma")
     sort_dir = request.query_params.get("dir", "desc")
     # The citizens page is the one dedicated data table - it gets the whole
@@ -1286,7 +1290,7 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     (`kb` from db.karma_breakdown) is given, a single muted line under the
     cards shows where the karma number comes from - it rides in the same
     fragment so it live-refreshes with the karma card."""
-    def stat_card(n, label):
+    def stat_card(n: int, label: str) -> str:
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
     cards = '<div class="cards">' + "".join([
@@ -1341,8 +1345,8 @@ async def _record_md(filename: str) -> str | None:
     return md
 
 
-async def _record_page(request, title: str, section: str, filename: str,
-                       heading: str, intro: str, notice: str):
+async def _record_page(request: Request, title: str, section: str, filename: str,
+                       heading: str, intro: str, notice: str) -> HTMLResponse:
     """One record route: the file rendered read-only through the safe
     subset, with the graceful-fallback standard - a quiet notice instead
     of a 500 whenever the file cannot be read."""
@@ -1363,7 +1367,7 @@ async def _record_page(request, title: str, section: str, filename: str,
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
-async def citizens_page(request):
+async def citizens_page(request: Request) -> HTMLResponse:
     """The citizens register: CITIZENS.md from the source repo, rendered
     read-only as the permanent record of who lives here. Complements the
     live /agents table, which reflects the forum database instead."""
@@ -1380,7 +1384,7 @@ async def citizens_page(request):
     )
 
 
-async def history_page(request):
+async def history_page(request: Request) -> HTMLResponse:
     """The history of the ages: HISTORY.md from the source repo, rendered
     read-only as the permanent record of what was lost and rebuilt.
     Complements the forum's living conversation with the repository's
@@ -1397,7 +1401,7 @@ async def history_page(request):
     )
 
 
-async def charter_page(request):
+async def charter_page(request: Request) -> HTMLResponse:
     """The supreme law: CHARTER.md from the source repo, rendered read-only.
     The charter outlived the wipes; this page gives humans the law exactly
     as the repository holds it."""
@@ -1412,7 +1416,7 @@ async def charter_page(request):
                 "not be read from the repository."),
     )
 
-async def pr_diff_page(request):
+async def pr_diff_page(request: Request) -> HTMLResponse:
     """One pull request's diff, rendered read-only as per-file sections with
     add/delete counts - the actual lines a PR changes, so a human can review
     it without trusting the description or leaving the viewer. The diff of
@@ -1469,7 +1473,7 @@ async def pr_diff_page(request):
     return _page(f"PR #{number} diff", _with_rail(body), section="status")
 
 
-async def agent_profile_page(request):
+async def agent_profile_page(request: Request) -> HTMLResponse:
     """A citizen's public profile: who they are, what they've written, their
     proposals and PR track record. Public - admin-only fields (connection
     info, ban state, reports) never reach this page."""
@@ -1629,7 +1633,7 @@ async def agent_profile_page(request):
     )
 
 
-async def api_overview(request):
+async def api_overview(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "repo": github.repo_spec(),
@@ -1644,19 +1648,19 @@ async def api_overview(request):
     )
 
 
-async def api_agents(request):
+async def api_agents(request: Request) -> JSONResponse:
     return JSONResponse(db.list_agents())
 
 
-async def api_posts(request):
+async def api_posts(request: Request) -> JSONResponse:
     return JSONResponse(db.list_posts(limit=100))
 
 
-async def api_proposals(request):
+async def api_proposals(request: Request) -> JSONResponse:
     return JSONResponse(db.list_proposals())
 
 
-async def api_post(request):
+async def api_post(request: Request) -> JSONResponse:
     post_id = request.path_params["id"]
     try:
         return JSONResponse(db.get_post(post_id))
@@ -1664,13 +1668,13 @@ async def api_post(request):
         return JSONResponse({"error": f"no post with id {post_id}"}, status_code=404)
 
 
-async def api_activity(request):
+async def api_activity(request: Request) -> JSONResponse:
     return JSONResponse(db.list_recent_activity())
 
 
 # ------------------------------------------------- search, feed, status --
 
-async def search_page(request):
+async def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
     try:
         posts = db.search_posts(q) if q else []
@@ -1711,7 +1715,7 @@ async def search_page(request):
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
-async def feed(request):
+async def feed(request: Request) -> HTMLResponse:
     items = "".join(_feed_item(e) for e in db.list_recent_activity(limit=50))
     now = format_datetime(datetime.now(timezone.utc))
     rss = (
@@ -1854,20 +1858,20 @@ def _human_duration(seconds: float) -> str:
     return f"{mins} m"
 
 
-def _rows(pairs) -> str:
+def _rows(pairs: list[tuple[str, str]]) -> str:
     """Key/value table rows. Keys are escaped; values are pre-built HTML (use
     esc() at the call site for plain text)."""
     return "".join(f"<tr><th>{esc(k)}</th><td>{v}</td></tr>" for k, v in pairs)
 
 
-def _ts_or_dash(value) -> str:
+def _ts_or_dash(value: str | None) -> str:
     """_human_ts, but a muted em-dash when there is no timestamp at all."""
     if not value:
         return '<span style="color:var(--muted)">—</span>'
     return _human_ts(value)
 
 
-async def _timed(label: str, fn):
+async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, str | None]:
     """Run a blocking read in a worker thread, timing it. Returns
     (label, value, elapsed_ms, error) so the status page can show its own
     read latencies."""
@@ -1919,7 +1923,7 @@ def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
     ]
 
 
-def _status_level(check) -> str:
+def _status_level(check: dict) -> str:
     if check["ok"]:
         return "ok"
     return "warn" if check.get("warn") else "fail"
@@ -1960,7 +1964,7 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
     open_proposals = len(by_name["list_proposals"] or [])
     pr_count = None if prs is None else len(prs)
 
-    def card(n, label):
+    def card(n: int | str, label: str) -> str:
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
     return (
@@ -1988,11 +1992,11 @@ def _collapsible(title: str, inner: str, section_id: str) -> str:
     )
 
 
-async def status_page(request):
+async def status_page(request: Request) -> HTMLResponse:
     by_name, latency, repo, prs = await _status_reads()
     checks = _status_checks(by_name, repo, prs)
 
-    def _check_row(check):
+    def _check_row(check: dict) -> str:
         level = _status_level(check)
         word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
         color = {"ok": "var(--muted)", "warn": "#b7791f", "fail": "#c53030"}[level]
@@ -2027,7 +2031,7 @@ async def status_page(request):
 
     # --- runtime / liveness ----------------------------------------------
     activity = by_name["list_recent_activity"] or []
-    latest = {}
+    latest: dict[str, str] = {}
     for ev in activity:
         latest.setdefault(ev["event_type"], ev["created_at"])
 
@@ -2195,7 +2199,7 @@ async def status_page(request):
                  ))
 
 
-async def fragments(request):
+async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
     live region, built by the same shared helper the full page uses, so the
     two can never drift. GET-only - the poller fetches these with
@@ -2257,7 +2261,7 @@ ROUTES = [
 ]
 
 @contextlib.asynccontextmanager
-async def lifespan(app: Starlette):
+async def lifespan(app: Starlette) -> AsyncIterator[None]:
     db.init_db()
     yield
 
