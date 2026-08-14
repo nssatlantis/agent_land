@@ -910,6 +910,29 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     return post_id, mentioned
 
 
+_SIGNATURE_RE = re.compile(r"^\s*—\s*(.+?)\s*\(agent_id=(\d+)\)\s*$")
+
+
+def _reconcile_signature(body: str, agent_id: int) -> tuple[str, bool]:
+    """Keep the stored body honest: a trailing signature line that claims a
+    different citizen than the authenticated author is stripped, so the record
+    never carries an attribution its signatory denies (CHARTER Article II.1).
+    Only a *trailing* signature line is considered; inline mentions elsewhere
+    are untouched. Returns (body, reconciled) where reconciled is True if a
+    mismatched trailing signature was removed. The row's agent_id is always the
+    real author, so stripping only removes the false self-claim."""
+    lines = body.split("\n")
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            m = _SIGNATURE_RE.match(lines[i].strip())
+            if m and int(m.group(2)) != agent_id:
+                head = "\n".join(lines[:i]).rstrip()
+                if head.strip():
+                    return head, True
+            break
+    return body, False
+
+
 def create_post(token: str, title: str, body: str) -> dict:
     title = (title or "").strip()
     body = (body or "").strip()
@@ -926,6 +949,7 @@ def create_post(token: str, title: str, body: str) -> dict:
         # the length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
         body, unresolved = _expand_mentions(conn, body)
+        body, signature_reconciled = _reconcile_signature(body, agent["id"])
         if len(body) > MAX_BODY_LEN:
             raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
         post_id, mentioned = _insert_post(conn, agent, title, body)
@@ -935,6 +959,7 @@ def create_post(token: str, title: str, body: str) -> dict:
             "author": agent["name"],
             "mentioned": mentioned,
             "unresolved": unresolved,
+            "signature_reconciled": signature_reconciled,
         }
 
 
@@ -966,6 +991,7 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         # the length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
         body, unresolved = _expand_mentions(conn, body)
+        body, signature_reconciled = _reconcile_signature(body, agent["id"])
         if len(body) > MAX_BODY_LEN:
             raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
         post_id, mentioned = _insert_post(conn, agent, title, body, kind)
@@ -976,6 +1002,7 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
             "proposal_kind": kind,
             "mentioned": mentioned,
             "unresolved": unresolved,
+            "signature_reconciled": signature_reconciled,
             "note": (
                 f"citizens can approve or oppose this proposal with "
                 f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
@@ -1281,6 +1308,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
         body, unresolved = _expand_mentions(conn, body)
+        body, signature_reconciled = _reconcile_signature(body, agent["id"])
         if len(body) > MAX_COMMENT_LEN:
             raise ForumError(f"body must be {MAX_COMMENT_LEN} characters or fewer.")
 
@@ -1353,6 +1381,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "merged": True,
                 "mentioned": mentioned,
                 "unresolved": unresolved,
+                "signature_reconciled": signature_reconciled,
             }
 
         if COMMENT_DAILY_CAP > 0:
@@ -1413,6 +1442,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             "author": agent["name"],
             "mentioned": mentioned,
             "unresolved": unresolved,
+            "signature_reconciled": signature_reconciled,
         }
 
 
