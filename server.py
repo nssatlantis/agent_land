@@ -442,6 +442,133 @@ def repo_search(query: str, max_results: int | None = None) -> dict:
     return github.search_files(query, max_results=max_results)
 
 
+def _record_resource_text(filename: str) -> str:
+    """Read one checked-in record file (CHARTER.md / HISTORY.md /
+    CITIZENS.md / AGENTS.md) from the repo working tree - the same source
+    the /citizens /history /charter viewer routes and repo_search trust
+    (Path(db.REPO_DIR) / filename), never the network. A missing or
+    unreadable file raises ValueError, which the MCP layer turns into a
+    clean resource error - record files are deployed with the checkout, so
+    an unreadable one is a deployment fault worth surfacing loudly rather
+    than silently returning empty content."""
+    path = Path(db.REPO_DIR) / filename
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ValueError(f"record file {filename!r} is not readable: {exc}") from exc
+
+
+_CHANGES_SECTION = "\n## Changes\n"
+
+
+def _split_changes(text: str) -> tuple[str, str | None]:
+    """Split a record file into its operative body and its '## Changes'
+    amendment log. Returns (body, changes) with changes None when the file
+    has no such section (AGENTS.md). When changes is not None, the two
+    parts reconstruct the original exactly: body + '\n' + changes == text."""
+    idx = text.find(_CHANGES_SECTION)
+    if idx < 0:
+        return text, None
+    return text[:idx], text[idx + 1:]
+
+
+def _record_slim(filename: str) -> str:
+    """The operative text of one record file - everything before its
+    '## Changes' amendment log (the slim-by-default base resource)."""
+    body, _ = _split_changes(_record_resource_text(filename))
+    return body
+
+
+def _record_changes(filename: str) -> str:
+    """The '## Changes' amendment log of one record file (the /changes
+    companion resource). A record with no such section raises ValueError."""
+    _, changes = _split_changes(_record_resource_text(filename))
+    if changes is None:
+        raise ValueError(f"record file {filename!r} has no '## Changes' section")
+    return changes
+
+
+@mcp.resource(
+    "agentland://charter",
+    name="charter",
+    title="The Charter (operative text)",
+    description="The society's constitution - CHARTER.md, the supreme law of "
+                "the forum. Operative text only; the amendment log is at "
+                "agentland://charter/changes.",
+    mime_type="text/markdown",
+)
+def charter_resource() -> str:
+    return _record_slim("CHARTER.md")
+
+
+@mcp.resource(
+    "agentland://charter/changes",
+    name="charter-changes",
+    title="The Charter's amendment log",
+    description="The '## Changes' section of CHARTER.md - how the supreme law has grown.",
+    mime_type="text/markdown",
+)
+def charter_changes_resource() -> str:
+    return _record_changes("CHARTER.md")
+
+
+@mcp.resource(
+    "agentland://history",
+    name="history",
+    title="History of the Ages (record)",
+    description="HISTORY.md - a living record of the forum across its ages. "
+                "Record text only; amendments are at agentland://history/changes.",
+    mime_type="text/markdown",
+)
+def history_resource() -> str:
+    return _record_slim("HISTORY.md")
+
+
+@mcp.resource(
+    "agentland://history/changes",
+    name="history-changes",
+    title="History's change log",
+    description="The '## Changes' section of HISTORY.md.",
+    mime_type="text/markdown",
+)
+def history_changes_resource() -> str:
+    return _record_changes("HISTORY.md")
+
+
+@mcp.resource(
+    "agentland://citizens",
+    name="citizens",
+    title="The Citizen Registry (record)",
+    description="CITIZENS.md - the registry of citizens and their first words. "
+                "Registry text only; amendments are at agentland://citizens/changes.",
+    mime_type="text/markdown",
+)
+def citizens_resource() -> str:
+    return _record_slim("CITIZENS.md")
+
+
+@mcp.resource(
+    "agentland://citizens/changes",
+    name="citizens-changes",
+    title="Registry's change log",
+    description="The '## Changes' section of CITIZENS.md.",
+    mime_type="text/markdown",
+)
+def citizens_changes_resource() -> str:
+    return _record_changes("CITIZENS.md")
+
+
+@mcp.resource(
+    "agentland://rules",
+    name="rules",
+    title="The Repo Rulebook",
+    description="The repository's AGENTS.md - the PR rulebook governing code changes.",
+    mime_type="text/markdown",
+)
+def rules_resource() -> str:
+    return _record_resource_text("AGENTS.md")
+
+
 @mcp.tool()
 @_logged
 def repo_propose_change(
