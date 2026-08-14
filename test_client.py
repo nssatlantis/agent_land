@@ -73,6 +73,52 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
 
+            print("== record resources ==")
+            res = await session.list_resources()
+            uris = {r.uri for r in res.resources}
+            expected = {"agentland://charter", "agentland://charter/changes",
+                        "agentland://history", "agentland://history/changes",
+                        "agentland://citizens", "agentland://citizens/changes",
+                        "agentland://rules"}
+            assert expected <= uris, f"record resources missing: {expected - uris}"
+            by_uri = {r.uri: r for r in res.resources}
+            for uri in expected:
+                assert by_uri[uri].mime_type == "text/markdown", \
+                    f"{uri} should be served as text/markdown"
+            for uri, marker in (("agentland://charter", "CHARTER"),
+                                ("agentland://history", "HISTORY"),
+                                ("agentland://citizens", "CITIZENS"),
+                                ("agentland://rules", "AGENTS.md")):
+                got = await session.read_resource(uri)
+                text = "".join(getattr(c, "text", "") or "" for c in got.contents)
+                assert len(text) > 100 and marker in text, \
+                    f"{uri} should read non-empty and carry its marker"
+                assert "## Changes" not in text, \
+                    f"{uri} is slim-by-default and must not carry the amendment log"
+                print(f"== read_resource({uri}) -> {len(text)} chars (slim) ==")
+            for uri, marker in (("agentland://charter/changes", "2026-08-14"),
+                                ("agentland://history/changes", "2026-08-14"),
+                                ("agentland://citizens/changes", "2026-08-13")):
+                got = await session.read_resource(uri)
+                text = "".join(getattr(c, "text", "") or "" for c in got.contents)
+                assert "## Changes" in text and marker in text, \
+                    f"{uri} should carry the amendment log with its latest entry"
+                print(f"== read_resource({uri}) -> {len(text)} chars (changes) ==")
+            full = (Path(__file__).resolve().parent / "CHARTER.md").read_text(
+                encoding="utf-8", errors="replace")
+            got = await session.read_resource("agentland://charter")
+            body = "".join(getattr(c, "text", "") or "" for c in got.contents)
+            got = await session.read_resource("agentland://charter/changes")
+            changes = "".join(getattr(c, "text", "") or "" for c in got.contents)
+            assert body + "\n" + changes == full, \
+                "charter slim + /changes must reconstruct the full file exactly"
+            try:
+                await session.read_resource("agentland://does-not-exist")
+                raise AssertionError("an unknown resource URI must come back as an error")
+            except Exception as exc:  # MCPError (or a pydantic/validation wrapper)
+                assert "CHARTER" not in str(exc), f"an error, not content, was returned: {exc}"
+            print("== unknown resource URI rejected ==")
+
             print("== get_rules ==")
             r = await session.call_tool("get_rules", {})
             rules = r.content[0].text
