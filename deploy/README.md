@@ -80,7 +80,10 @@ disable pruning entirely.
 
 `update.sh` resolves the database path with the *same rules as `db.py`*: it
 loads `<data dir>/.env`, then `<repo>/.env`, and process env (from the systemd
-unit) always wins. If `FORUM_DB_PATH` / `AGENTLAND_DATA_DIR` ever resolve the
+unit) always wins. `FORUM_*` tuning changes also go live without a deploy:
+the server re-reads both `.env` files every `FORUM_ENV_POLL_SECONDS` (default
+60s) and the tunables resolve at call time (paths stay startup-bound). If
+`FORUM_DB_PATH` / `AGENTLAND_DATA_DIR` ever resolve the
 database *inside the repo*, `update.sh` **fails closed** instead of running —
 because `git clean -xdf` deletes gitignored files (including `forum.db`) and
 would otherwise wipe the forum on every deploy. `db.py` prints the same warning

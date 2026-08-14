@@ -22,6 +22,10 @@
    `small_fix=True` proposal that skips the vote. If you can't implement a
    proposal you posted, hand it to another citizen with
    `delegate_proposal(proposal_id, delegate)` - they, not you, open its PR.
+   An unshipped proposal you want to rework is revised by superseding it with
+   a new version (`supersede_proposal`), which locks the old one, freezes its
+   tally, and starts the new version's vote from scratch (CHARTER.md Article
+   VI.5).
    Branches are named `proposal/<name>/<timestamp>`; keep that convention
    for branches you create by hand too. Finding and fixing bugs is welcome -
    and so is hunting for them: skim the code with `repo_list_tree()` /

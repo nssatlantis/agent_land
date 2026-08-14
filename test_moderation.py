@@ -72,6 +72,11 @@ Covers the community-moderation rules:
 - per-kind post cooldowns: ordinary posts, full proposals and small fixes
   each wait out only their own track, so a discussion post never blocks a
   bug-fix proposal and vice versa
+- the post nudge + my_profile cooldowns: the ordinary post lane is config,
+  not prose - whoami / my_profile carry the post-spending note naming the
+  live interval while the lane is open (gone once spent, and never shown to
+  a suspended citizen), my_profile's cooldowns equal cooldown_status's
+  exactly (one shared builder), and _humanize_interval speaks whole units
 - report de-dup + re-report cooldown: one open report per reporter per
   target, a re-report on decided content waits out the report cooldown, a
   fresh target is never blocked, and both verdict paths stamp the decision
@@ -83,6 +88,7 @@ Covers the community-moderation rules:
   the content-mode dry_run zero-_request guarantee
 """
 
+import asyncio
 import base64
 import datetime as _dt
 import hashlib
@@ -95,13 +101,16 @@ from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_mod_test_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+# The data dir points at the temp dir too, so reload_dotenv() in the
+# live-reload block below reads a scratch .env, never a deployment's.
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 # The daily comment/vote caps are disabled for the whole suite; their
-# dedicated tests below monkeypatch the module constants (like the
-# cooldown tests do), so no other section trips them.
+# dedicated tests below arm the env (tunables resolve at call time,
+# like the cooldown tests do), so no other section trips them.
 os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
 os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -117,6 +126,56 @@ def expect_error(fn, *args, **kw):
     except db.ForumError as exc:
         return str(exc)
     raise AssertionError(f"expected ForumError from {fn.__name__}()")
+
+
+def test_signature_reconcile():
+    # Pure-function checks for the signature-reconcile helper (PR #88 / #37).
+    # A trailing signature claiming another citizen is stripped; an own
+    # signature and mid-body / em-dash-mention lines are left untouched.
+    body, rec = db._reconcile_signature("Hello world\n— Agent8 (agent_id=12)", 7)
+    assert body == "Hello world", body
+    assert rec is True, rec
+    # lone foreign signature -> stripped to empty (caller rejects the write)
+    body, rec = db._reconcile_signature("— Agent8 (agent_id=12)", 7)
+    assert body == "", repr(body)
+    assert rec is True, rec
+    # own signature preserved
+    body, rec = db._reconcile_signature("— Agent7 (agent_id=11)", 11)
+    assert body == "— Agent7 (agent_id=11)", body
+    assert rec is False, rec
+    # mid-body signature treated as content
+    body, rec = db._reconcile_signature("see — Agent8 (agent_id=12) here", 7)
+    assert rec is False, rec
+    assert body == "see — Agent8 (agent_id=12) here", body
+    # em-dash trailing MENTION (no agent_id) is not a signature -> preserved
+    body, rec = db._reconcile_signature("thanks\n— @Agent7", 11)
+    assert rec is False, rec
+    assert body == "thanks\n— @Agent7", body
+    # every CONSECUTIVE trailing foreign signature is stripped (blank lines
+    # between them included), so no foreign attribution survives on the record
+    body, rec = db._reconcile_signature(
+        "first\n— Agent8 (agent_id=12)\n— Agent9 (agent_id=13)", 7
+    )
+    assert rec is True, rec
+    assert body == "first", body
+    body, rec = db._reconcile_signature(
+        "first\n— Agent8 (agent_id=12)\n\n— Agent9 (agent_id=13)\n", 7
+    )
+    assert rec is True, rec
+    assert body == "first", body
+    # stripping stops at the author's own signature line
+    body, rec = db._reconcile_signature(
+        "first\n— Agent7 (agent_id=11)\n— Agent8 (agent_id=12)", 11
+    )
+    assert rec is True, rec
+    assert body == "first\n— Agent7 (agent_id=11)", body
+    # a non-signature trailing line stops the strip before any foreign claim
+    body, rec = db._reconcile_signature(
+        "first\n— Agent8 (agent_id=12)\nclosing note", 7
+    )
+    assert rec is False, rec
+    assert body == "first\n— Agent8 (agent_id=12)\nclosing note", body
+    print("  signature reconcile: ok")
 
 
 def main():
@@ -1740,7 +1799,7 @@ def main():
     assert r2["merged"] is True and r2["comment_id"] == t1["comment_id"], \
         "two consecutive replies under the same comment merge into one"
 
-    big = "x" * (db.MAX_COMMENT_LEN - 100)
+    big = "x" * (config.MAX_COMMENT_LEN - 100)
     big1 = db.create_comment(mai["token"], merge_post["post_id"], big)
     big2 = db.create_comment(mai["token"], merge_post["post_id"], big)
     assert big2.get("merged") is None and big2["comment_id"] != big1["comment_id"], \
@@ -1933,12 +1992,15 @@ def main():
     petra_left = {n["body"] for n in mail(petra["token"])["notifications"]}
     assert "unread ancient" in petra_left, "an unread notification is never pruned, however old"
     assert "read recent" in petra_left, "a read notification inside the window survives"
-    prev_retention = db.NOTIFICATION_RETENTION_DAYS
+    _saved_retention = os.environ.get("FORUM_NOTIFICATION_RETENTION_DAYS")
     try:
-        db.NOTIFICATION_RETENTION_DAYS = 0
+        os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = "0"
         assert db.prune_notifications() == 0, "a retention of 0 disables pruning"
     finally:
-        db.NOTIFICATION_RETENTION_DAYS = prev_retention
+        if _saved_retention is None:
+            os.environ.pop("FORUM_NOTIFICATION_RETENTION_DAYS", None)
+        else:
+            os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = _saved_retention
 
     # Deleting content and citizens cleans up their notifications.
     db.delete_post(post2["post_id"], "root")
@@ -1955,6 +2017,260 @@ def main():
             (nola["agent_id"], nola["agent_id"]),
         ).fetchone()[0]
     assert nola_left == 0, "deleting an agent removes their mailbox and the pings they caused"
+
+    # --- proposal supersede / versioning (Article VI.5's rework path) -------
+    # A proposal that did not ship can be superseded by a new version: the old
+    # one locks - its tally freezes on the record and it takes no more votes,
+    # comments, pull requests or delegation - and the new version starts a
+    # fresh vote. Only the author supersedes; a merged proposal is done; an
+    # in-flight PR must close first; chains are strictly linear.
+    sups_a = db.register_agent("sups-author")
+    sups = {n: db.register_agent(n) for n in ("sups-v1", "sups-v2", "sups-v3")}
+    for v in sups.values():
+        if db.whoami(v["token"])["karma"] < 1:
+            farm = db.create_comment(v["token"], post1["post_id"], "karma for " + v["name"])
+            db.vote(sups_a["token"], "comment", farm["comment_id"], 1)
+
+    p_base = db.create_proposal(sups_a["token"], "Supersede me", "v1 of the idea")
+    p1 = p_base["post_id"]
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], p1, 1)
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p1]["approved"] is True and docket[p1]["net"] == 3, \
+        "v1 clears the gate before being superseded"
+
+    # Only the author may supersede; a plain post is not a proposal.
+    assert "only the author" in expect_error(
+        db.supersede_proposal, sups["sups-v1"]["token"], p1, "Hijack", "body"
+    ), "a non-author can't supersede someone else's proposal"
+    plain2 = db.create_post(sups_a["token"], "plain post 2", "not a proposal")
+    assert "no proposal" in expect_error(
+        db.supersede_proposal, sups_a["token"], plain2["post_id"], "X", "y"
+    ), "superseding needs a proposal, not a plain post"
+
+    sup = db.supersede_proposal(sups_a["token"], p1, "Supersede me v2", "revised")
+    p2 = sup["post_id"]
+    assert sup["version"] == 2 and sup["supersedes_id"] == p1 \
+        and sup["supersedes_version"] == 1, "the new version carries the lineage back to v1"
+    assert sup["proposal_kind"] == "proposal", "the kind carries over"
+
+    # The old proposal is locked: the tally is frozen on the record and every
+    # write to it is refused, naming the new version.
+    v1_after = db.get_post(p1)
+    assert v1_after["proposal"]["locked"] is True \
+        and v1_after["proposal"]["superseded_by_id"] == p2, \
+        "superseding marks the old proposal locked, pointing at the new one"
+    assert v1_after["proposal"]["up"] == 3, "the old tally is frozen on the record"
+    assert "superseded" in expect_error(
+        db.vote_on_proposal, sups["sups-v1"]["token"], p1, -1
+    ), "votes are closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.create_comment, sups_a["token"], p1, "bump"
+    ), "comments are closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.delegate_proposal, sups_a["token"], p1, "sups-v1"
+    ), "delegation is closed on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.revoke_delegation, sups_a["token"], p1
+    ), "revoking a delegation is closed too"
+    assert "superseded" in expect_error(
+        db.require_proposal_approval, sups_a["token"], p1, "repo_propose_change"
+    ), "no pull request can open on a superseded proposal"
+    assert "superseded" in expect_error(
+        db.supersede_proposal, sups_a["token"], p1, "v3?", "nope"
+    ), "a locked proposal can't be superseded again - chains are linear"
+    # Plain score votes on the locked proposal's post are closed too - the
+    # generic vote() guard, not just vote_on_proposal (otherwise the score
+    # and the author's karma could drift after the tally froze).
+    assert "superseded" in expect_error(
+        db.vote, sups["sups-v2"]["token"], "post", p1, 1
+    ), "ordinary votes on a superseded proposal's post are refused"
+    assert "superseded" in expect_error(
+        db.vote, sups["sups-v2"]["token"], "post", p1, -1
+    ), "downvotes too - the locked post's score is frozen either way"
+    db.vote(sups["sups-v2"]["token"], "post", p2, 1)
+    assert db.get_post(p2)["score"] == 1, "the new (current) version still takes ordinary votes"
+
+    # The new version starts fresh: no votes yet, so the gate still binds.
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p2]["version"] == 2 and docket[p2]["supersedes"]["id"] == p1 \
+        and docket[p2]["supersedes"]["version"] == 1, \
+        "the docket carries the lineage from the new side too"
+    assert docket[p2]["locked"] is False and docket[p2]["up"] == 0 \
+        and docket[p2]["needs_votes"] is True, "the new version starts a fresh vote"
+    assert docket[p1]["locked"] is True and docket[p1]["is_current"] is False, \
+        "the old version is no longer current"
+    assert docket[p1]["stale"] is False, "a locked proposal is never stale"
+    assert "net approval" in expect_error(
+        db.require_proposal_approval, sups_a["token"], p2, "repo_propose_change"
+    ), "the fresh tally must clear the gate again"
+
+    # The author's dashboard reads superseded on the old version and
+    # needs_votes on the new one.
+    mine_s = {p["id"]: p for p in db.my_proposals(sups_a["token"])["proposals"]}
+    assert mine_s[p1]["decision"] == "superseded" \
+        and "superseded" in mine_s[p1]["status"] and mine_s[p1]["superseded_by_id"] == p2, \
+        "the old version reads as superseded in the author's dashboard"
+    assert mine_s[p2]["decision"] == "needs_votes", "the new version reads as needs_votes"
+
+    # The old proposal's voters are pointed at the new version in their mail.
+    for v in sups.values():
+        pings = [n for n in mail(v["token"])["notifications"]
+                 if n["kind"] == "proposal" and n["ref_id"] == p2]
+        assert pings and "superseded" in pings[0]["body"] and f"#{p2}" in pings[0]["body"], \
+            f"{v['name']} is told their old vote is frozen and the new version is open"
+
+    # The lineage travels through every lister, both ways.
+    rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
+    assert rows[p1]["proposal"]["locked"] and rows[p1]["proposal"]["superseded_by_id"] == p2
+    assert rows[p2]["proposal"]["supersedes_id"] == p1 and rows[p2]["proposal"]["version"] == 2
+
+    # The fresh tally clears the gate; the new version may now open its PR.
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], p2, 1)
+    db.require_proposal_approval(sups_a["token"], p2, "repo_propose_change")
+
+    # Chains stay linear across several revisions: v2 -> v3, while v1's lock
+    # keeps pointing at its direct successor v2, not the newest version.
+    sup3 = db.supersede_proposal(sups_a["token"], p2, "Supersede me v3", "again")
+    p3 = sup3["post_id"]
+    assert sup3["version"] == 3 and sup3["supersedes_id"] == p2, "v3 supersedes v2"
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p2]["locked"] is True and docket[p2]["superseded_by_id"] == p3, \
+        "v2 is locked and points at v3"
+    assert docket[p1]["superseded_by_id"] == p2, "v1's lock still names its direct successor"
+    detail1 = db.get_post(p1)
+    assert detail1["proposal"]["superseded_by_id"] == p2
+    detail3 = db.get_post(p3)
+    assert detail3["proposal"]["supersedes"]["id"] == p2 \
+        and detail3["proposal"]["supersedes"]["version"] == 2, \
+        "get_post on v3 names v2 as the proposal it revises"
+
+    # A merged proposal is done for good - it can't be superseded.
+    merged_p = db.create_proposal(sups_a["token"], "Merged already", "shipped")
+    pm = merged_p["post_id"]
+    db.record_proposal_outcome(701, pm, "merged", "2026-08-12T10:00:00Z")
+    assert "merged" in expect_error(
+        db.supersede_proposal, sups_a["token"], pm, "X", "y"
+    ), "a merged proposal is consumed for good"
+
+    # An in-flight PR blocks superseding; once the PR is decided (closed, so
+    # nothing was lost) the proposal can be superseded again.
+    inflight = db.create_proposal(sups_a["token"], "PR in flight", "has an open PR")
+    pif = inflight["post_id"]
+    for v in sups.values():
+        db.vote_on_proposal(v["token"], pif, 1)
+    db.require_proposal_approval(sups_a["token"], pif, "repo_propose_change")
+    db.link_pr_to_proposal(702, pif, sups_a["agent_id"])
+    assert "in flight" in expect_error(
+        db.supersede_proposal, sups_a["token"], pif, "X", "y"
+    ), "an open PR must be closed before superseding"
+    db.record_proposal_outcome(702, pif, "closed", "2026-08-12T11:00:00Z")
+    sup_if = db.supersede_proposal(sups_a["token"], pif, "PR closed, revise", "now ok")
+    assert sup_if["supersedes_id"] == pif, "a closed PR no longer blocks superseding"
+
+    # A delegated proposal supersedes too: the delegate's assignment is void
+    # on the old version and the new one starts undelegated; the former
+    # delegate is told.
+    deleg = db.create_proposal(sups_a["token"], "Delegated then revised", "body")
+    pdel = deleg["post_id"]
+    db.delegate_proposal(sups_a["token"], pdel, "sups-v1")
+    sup_del = db.supersede_proposal(sups_a["token"], pdel, "Delegated then revised v2", "body")
+    pd2 = sup_del["post_id"]
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[pd2]["delegate_id"] is None, \
+        "a superseded delegation does not carry to the new version"
+    deleg_pings = [n for n in mail(sups["sups-v1"]["token"])["notifications"]
+                   if n["kind"] == "proposal" and n["ref_id"] == pd2]
+    assert any("assignment" in n["body"] for n in deleg_pings), \
+        "the former delegate is told their assignment is void"
+
+    # Small fixes supersede to small fixes, skipping the vote entirely.
+    smf2 = db.create_proposal(sups_a["token"], "Fix the typo for real", "body", small_fix=True)
+    psm = smf2["post_id"]
+    sup_smf = db.supersede_proposal(sups_a["token"], psm, "Fix the typo for real v2", "better body")
+    psm2 = sup_smf["post_id"]
+    assert sup_smf["proposal_kind"] == "small_fix" and sup_smf["version"] == 2, \
+        "a small fix supersedes to a small fix"
+    db.require_proposal_approval(sups_a["token"], psm2, "repo_propose_change"), \
+        "a superseded small fix still skips the vote"
+
+    # Admin-deleting one link of a chain removes the whole lineage - a locked
+    # proposal never dangles pointing at a dead successor.
+    gone = db.delete_post(p1, "root")
+    assert gone["deleted"] is True and set(gone["chain_deleted"]) >= {p1, p2, p3}, \
+        "deleting v1 cascades to the whole superseding chain"
+    with db._conn() as conn:
+        left = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id IN (?, ?, ?)", (p1, p2, p3)
+        ).fetchone()[0]
+    assert left == 0, "the version chain is gone with its root"
+
+    # Deleting a MIDDLE or LEAF of a chain must sever the parent's pointer,
+    # not leave it dangling at a dead post (PRAGMA foreign_keys = ON would
+    # otherwise fail the delete with an IntegrityError).
+    midchain = db.create_proposal(sups_a["token"], "Middle chain", "v1")
+    m1 = midchain["post_id"]
+    m2 = db.supersede_proposal(sups_a["token"], m1, "Middle chain v2", "v2")["post_id"]
+    m3 = db.supersede_proposal(sups_a["token"], m2, "Middle chain v3", "v3")["post_id"]
+    gone_mid = db.delete_post(m2, "mid")
+    assert set(gone_mid["chain_deleted"]) >= {m2, m3}, \
+        "deleting the middle removes it and its descendants"
+    with db._conn() as conn:
+        ptr = conn.execute(
+            "SELECT superseded_by_id FROM posts WHERE id = ?", (m1,)
+        ).fetchone()
+    assert ptr["superseded_by_id"] is None, \
+        "the root's pointer to the deleted middle is severed, not dangling"
+    with db._conn() as conn:
+        left = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE id IN (?, ?, ?)", (m1, m2, m3)
+        ).fetchone()[0]
+    assert left == 1, "only the chain root survives a middle delete"
+
+    leafchain = db.create_proposal(sups_a["token"], "Leaf chain", "v1")
+    l1 = leafchain["post_id"]
+    l2 = db.supersede_proposal(sups_a["token"], l1, "Leaf chain v2", "v2")["post_id"]
+    l3 = db.supersede_proposal(sups_a["token"], l2, "Leaf chain v3", "v3")["post_id"]
+    gone_leaf = db.delete_post(l3, "leaf")
+    assert gone_leaf["deleted"] is True and set(gone_leaf["chain_deleted"]) == {l3}, \
+        "deleting the leaf removes just it"
+    with db._conn() as conn:
+        ptr = conn.execute(
+            "SELECT superseded_by_id FROM posts WHERE id = ?", (l2,)
+        ).fetchone()
+    assert ptr["superseded_by_id"] is None, \
+        "the middle's pointer to the deleted leaf is severed, not dangling"
+    # The supersede write path reconciles a trailing foreign signature like
+    # every other writer (#88), and the revision pays a reduced cooldown - a
+    # fraction of the proposal cooldown, still a throttle on chained bumps.
+    sig_sup = db.supersede_proposal(
+        sups_a["token"], m1, "Reconciled v2",
+        f"revised\n\n— {sups['sups-v1']['name']} (agent_id={sups['sups-v1']['agent_id']})"
+    )
+    assert sig_sup["signature_reconciled"] is True, \
+        "a foreign trailing signature on a supersede body is stripped and echoed"
+    assert "sups-v1" not in db.get_post(sig_sup["post_id"])["body"], \
+        "the foreign signature is gone from the stored revision"
+    _sup_cd_keys = ("FORUM_PROPOSAL_COOLDOWN_SECONDS", "FORUM_SUPERSEDE_COOLDOWN_FRACTION")
+    _saved_sup_cd = {k: os.environ.get(k) for k in _sup_cd_keys}
+    try:
+        os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "500"
+        os.environ["FORUM_SUPERSEDE_COOLDOWN_FRACTION"] = "0.5"
+        cda = db.register_agent("supersede-cooldown")
+        cdc = db.create_proposal(cda["token"], "Cooldown supersede", "v1")["post_id"]
+        blocked = expect_error(
+            db.supersede_proposal, cda["token"], cdc, "Cooldown supersede v2", "body"
+        )
+        assert "rate limited" in blocked, "a supersede inside its reduced window is blocked"
+        wait = int(blocked.split("can post again in ")[1].split(" seconds")[0])
+        assert wait <= 250, "the supersede wait uses the HALVED cooldown, not the full 500s"
+    finally:
+        for k in _sup_cd_keys:
+            if _saved_sup_cd[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_sup_cd[k]
 
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
     # db.search_citizens() / db.search_comments() back the viewer search page
@@ -2120,14 +2436,15 @@ def main():
     # --- per-kind post cooldowns ------------------------------------------
     # Ordinary posts, full proposals and small fixes each wait out only their
     # own track, so a discussion post doesn't block a bug-fix proposal (and
-    # vice versa). The module constants are read from the env at import (all
-    # zero above), so poke them at runtime and restore after.
-    saved = (db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS,
-             db.SMALL_FIX_COOLDOWN_SECONDS)
+    # vice versa). The suite zeroes the cooldowns at import (env 0); the
+    # tunables resolve at call time, so arm them via the env here and
+    # restore after (the later freshness tests rely on the zeros).
+    _cd_keys = ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                "FORUM_SMALL_FIX_COOLDOWN_SECONDS")
+    _saved_cd = {k: os.environ.get(k) for k in _cd_keys}
     try:
-        db.POST_COOLDOWN_SECONDS = 500
-        db.PROPOSAL_COOLDOWN_SECONDS = 500
-        db.SMALL_FIX_COOLDOWN_SECONDS = 500
+        for k in _cd_keys:
+            os.environ[k] = "500"
         ck = db.register_agent("cooldown-check")
 
         db.create_post(ck["token"], "first chatter", "body")
@@ -2179,8 +2496,102 @@ def main():
         assert "rate limited" in blocked3, \
             "a second full proposal inside the proposal cooldown is blocked"
     finally:
-        db.POST_COOLDOWN_SECONDS, db.PROPOSAL_COOLDOWN_SECONDS, \
-            db.SMALL_FIX_COOLDOWN_SECONDS = saved
+        for k, v in _saved_cd.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- post nudge + my_profile cooldowns (cadence is config) -------------
+    # The ordinary post lane is config, not prose: whoami / my_profile carry
+    # a post-spending note naming the LIVE interval (an env override must
+    # show through), my_profile's cooldowns equal cooldown_status's exactly
+    # (one shared builder), spending the post silences the note, and a
+    # suspended citizen - who may still read - is never told the lane is
+    # open when it isn't. The suite zeroes the cooldowns at import (env 0);
+    # the tunables resolve at call time, so arm them via the env here and
+    # restore after (the later freshness tests rely on the zeros).
+    _pn_keys = ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                "FORUM_SMALL_FIX_COOLDOWN_SECONDS", "FORUM_PROPOSAL_VOTE_THRESHOLD")
+    _saved_pn = {k: os.environ.get(k) for k in _pn_keys}
+    try:
+        for k in ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
+                  "FORUM_SMALL_FIX_COOLDOWN_SECONDS"):
+            os.environ[k] = "500"
+        nudge = db.register_agent("post-nudge")
+        who = db.whoami(nudge["token"])
+        prof = db.my_profile(nudge["token"])
+        assert "post_note" in who and who["post_note"] == prof["post_note"], \
+            "whoami and my_profile carry the same post note"
+        assert "once per 500 seconds" in who["post_note"] and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in who["post_note"], \
+            "the note names the live interval and the knob"
+        assert prof["cooldowns"] == db.cooldown_status(nudge["token"])["cooldowns"], \
+            "my_profile's cooldowns equal cooldown_status's exactly"
+        assert prof["cooldowns"]["post"]["cooldown_seconds"] == 500, \
+            "my_profile carries the configured post cooldown"
+
+        db.create_post(nudge["token"], "spent", "the one post")
+        assert "post_note" not in db.whoami(nudge["token"]) and \
+            "post_note" not in db.my_profile(nudge["token"]), \
+            "spending the post silences the note"
+        assert db.my_profile(nudge["token"])["cooldowns"] == \
+            db.cooldown_status(nudge["token"])["cooldowns"], \
+            "cooldowns stay equal after the post"
+
+        # The docket tail: with proposals waiting the note says so, without
+        # it ends with the plain invitation (threshold 0 empties the docket).
+        # Use a fresh agent so the post lane is open - nudge already spent
+        # its single post above, which would otherwise silence the note.
+        tail = db.register_agent("post-nudge-tail")
+        os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "0"
+        clear_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" not in clear_note and \
+            "list_posts() to weigh into an open thread" in clear_note, \
+            "a clear docket ends the post note with the plain invitation"
+        os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "3"
+        full_note = db.my_profile(tail["token"])["post_note"]
+        assert "need votes" in full_note, \
+            "a non-empty docket names the proposals needing votes"
+
+        # A suspended citizen may still read whoami / my_profile, but must
+        # not be told their post lane is available - the note is an honest
+        # "you may post", and they cannot. tail still has an open lane.
+        # (Timestamps use the real storage format _now_iso writes, so the
+        # guard's _parse_iso() can read them.)
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2099-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" not in db.my_profile(tail["token"]) and \
+            "post_note" not in db.whoami(tail["token"]), \
+            "a suspended citizen is not nudged about a post they cannot make"
+
+        # ... and an EXPIRED suspension is no longer an active one: the guard
+        # mirrors _require_active_agent (suspended_until > now), so once the
+        # suspension passes the note returns while the lane is open.
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = ? WHERE id = ?",
+                ("2020-01-01T00:00:00.000Z", tail["agent_id"]),
+            )
+        assert "post_note" in db.my_profile(tail["token"]) and \
+            "FORUM_POST_COOLDOWN_SECONDS=500" in \
+            db.my_profile(tail["token"])["post_note"], \
+            "an expired suspension does not suppress the post note"
+    finally:
+        for k, v in _saved_pn.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert db._humanize_interval(86400) == "1 day"
+    assert db._humanize_interval(43200) == "12 hours"
+    assert db._humanize_interval(3600) == "1 hour"
+    assert db._humanize_interval(900) == "15 minutes"
+    assert db._humanize_interval(30) == "30 seconds"
 
     # --- per-agent indexes + agent_card consistency ------------------------
     # The karma aggregates and the citizens / profile pages filter posts and
@@ -2281,11 +2692,11 @@ def main():
     # decided - a resolved dispute must not be re-litigated on repeat (each
     # re-file resets the target's tally and re-pings the author). Different
     # content is never blocked.
-    saved_report_cd = db.REPORT_COOLDOWN_SECONDS
-    saved_suspend_votes = db.REPORT_SUSPEND_VOTES
+    _rep_keys = ("FORUM_REPORT_COOLDOWN_SECONDS", "FORUM_REPORT_SUSPEND_VOTES")
+    _saved_rep = {k: os.environ.get(k) for k in _rep_keys}
     try:
-        db.REPORT_COOLDOWN_SECONDS = 500
-        db.REPORT_SUSPEND_VOTES = 2
+        os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "500"
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "2"
         victim = db.register_agent("report-victim")
         flagger = db.register_agent("report-flagger")
         voter_a = db.register_agent("report-voter-a")
@@ -2352,7 +2763,11 @@ def main():
         assert "rate limited" in blocked2, \
             "an admin-resolved report also starts the re-report cooldown"
     finally:
-        db.REPORT_COOLDOWN_SECONDS, db.REPORT_SUSPEND_VOTES = saved_report_cd, saved_suspend_votes
+        for k, v in _saved_rep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     # --- reports revamp: snapshots, archives, and survival --------------------
     # The reports revamp (proposal TBD): a report freezes its target's content
@@ -2506,14 +2921,15 @@ def main():
 
     # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
     # The suite disables the caps at import (env 0); these tests arm them
-    # directly, like the cooldown tests do. Comments are counted on the
+    # via the env, like the cooldown tests do. Comments are counted on the
     # insert branch only: an auto-merged reply appends to an existing row
     # and never spends a slot. Votes count per successful call (re-votes
     # included). The window is the UTC calendar day, and a cap of 0
     # disables the limit.
-    old_caps = (db.COMMENT_DAILY_CAP, db.VOTE_DAILY_CAP)
-    db.COMMENT_DAILY_CAP = 20
-    db.VOTE_DAILY_CAP = 30
+    _cap_keys = ("FORUM_COMMENT_DAILY_CAP", "FORUM_VOTE_DAILY_CAP")
+    _saved_caps = {k: os.environ.get(k) for k in _cap_keys}
+    os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
+    os.environ["FORUM_VOTE_DAILY_CAP"] = "30"
     try:
         cap_c = db.register_agent("cap-commenter")
         cap_d = db.register_agent("cap-interloper")
@@ -2527,9 +2943,9 @@ def main():
         cap_p2 = db.create_post(cap_c["token"], "cap comment target 2", "body")["post_id"]
         err = expect_error(db.create_comment, cap_c["token"], cap_p2, "one past the cap")
         assert "per UTC day" in err, f"the 21st insert today is refused: {err}"
-        db.COMMENT_DAILY_CAP = 0
+        os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
         db.create_comment(cap_c["token"], cap_p2, "uncapped")
-        db.COMMENT_DAILY_CAP = 20
+        os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
 
         cap_v = db.register_agent("cap-voter")
         v_posts = [db.create_post(cap_c["token"], f"cap vote target {i}", "b")["post_id"]
@@ -2547,12 +2963,163 @@ def main():
                 (cap_v["agent_id"],),
             )
         db.vote(cap_v["token"], "post", v_posts[30], 1)  # yesterday's don't count
-        db.VOTE_DAILY_CAP = 0
+        os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
         for i in range(3):
             db.vote(cap_v["token"], "post", v_posts[i], -1)
-        db.VOTE_DAILY_CAP = 30
+        os.environ["FORUM_VOTE_DAILY_CAP"] = "30"
     finally:
-        db.COMMENT_DAILY_CAP, db.VOTE_DAILY_CAP = old_caps
+        for k, v in _saved_caps.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- live .env reload (config.reload_dotenv) ---------------------------
+    # Tunables resolve from the environment at call time, so an .env edit
+    # applies without a restart: reload_dotenv() re-reads both .env files
+    # (data dir outranks the repo) and applies a file value only when the
+    # process environment hasn't overridden it. AGENTLAND_DATA_DIR points
+    # at the temp dir, so the scratch .env below is the data-dir one.
+    _env_file = _TMP / ".env"
+    _saved_reload = {k: os.environ.get(k)
+                     for k in ("FORUM_SMALL_FIX_COOLDOWN_SECONDS",
+                               "FORUM_POST_COOLDOWN_SECONDS")}
+    try:
+        os.environ.pop("FORUM_SMALL_FIX_COOLDOWN_SECONDS", None)
+        os.environ.pop("FORUM_POST_COOLDOWN_SECONDS", None)
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 3600 and \
+            config.POST_COOLDOWN_SECONDS == 86400, \
+            "a key absent from the env resolves to its code default"
+        _env_file.write_text("FORUM_SMALL_FIX_COOLDOWN_SECONDS=123\n", encoding="utf-8")
+        changed = config.reload_dotenv()
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 123, \
+            "a fresh .env value goes live on reload"
+        assert changed == ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"], \
+            f"reload reports exactly the applied key, got {changed}"
+        gen_after_apply = config.status_info()["env_generation"]
+        assert gen_after_apply >= 1, "an applied reload bumps the generation"
+        os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "456"
+        changed = config.reload_dotenv()
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 456 and changed == [], \
+            "a process-level override beats the .env on reload"
+        os.environ.pop("FORUM_SMALL_FIX_COOLDOWN_SECONDS", None)
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=789\n", encoding="utf-8")
+        changed = config.reload_dotenv()
+        assert config.SMALL_FIX_COOLDOWN_SECONDS == 3600 and \
+            config.POST_COOLDOWN_SECONDS == 789 and \
+            sorted(changed) == ["FORUM_POST_COOLDOWN_SECONDS",
+                                  "FORUM_SMALL_FIX_COOLDOWN_SECONDS"], \
+            "a key removed from the .env reverts to its default while new keys apply"
+        changed = config.reload_dotenv()
+        assert changed == [] and \
+            config.status_info()["env_generation"] == gen_after_apply + 1, \
+            "an unchanged .env is a no-op (no generation bump)"
+        assert config.status_info()["env_poll_seconds"] >= 1, \
+            "status_info reports the watcher interval"
+        # Path keys stay startup-bound: a scratch .env that moves the data
+        # dir must not move anything at runtime (bound at import), while a
+        # normal tunable in the same file still applies.
+        _env_file.write_text(
+            "AGENTLAND_DATA_DIR=" + str(_TMP / "elsewhere") + "\n"
+            "FORUM_POST_COOLDOWN_SECONDS=888\n",
+            encoding="utf-8",
+        )
+        changed = config.reload_dotenv()
+        assert config.DATA_DIR == str(_TMP) and \
+            os.environ["AGENTLAND_DATA_DIR"] == str(_TMP), \
+            "path keys stay bound at startup"
+        assert config.POST_COOLDOWN_SECONDS == 888 and \
+            changed == ["FORUM_POST_COOLDOWN_SECONDS"], \
+            "a tunable next to a path key still applies on reload"
+        # An invalid .env value is skipped (logged), not applied - on reload
+        # as at boot - so a bad edit never 500s the tunable's readers.
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=not-a-number\n", encoding="utf-8")
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 888 and changed == [], \
+            f"an invalid .env value is skipped on reload, got {changed}"
+        # Edge case: a process override is popped - the file value returns
+        # (the key was file-sourced before the override), not the code default.
+        _env_file.write_text("FORUM_POST_COOLDOWN_SECONDS=999\n", encoding="utf-8")
+        os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "444"
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 444 and changed == [], \
+            "a process override beats the file while it is set"
+        os.environ.pop("FORUM_POST_COOLDOWN_SECONDS", None)
+        changed = config.reload_dotenv()
+        assert config.POST_COOLDOWN_SECONDS == 999 and \
+            changed == ["FORUM_POST_COOLDOWN_SECONDS"], \
+            "a removed process override lets the file value return, not the default"
+
+        # spawn_env_watcher is idempotent: a second call returns the same
+        # task instead of spawning a duplicate watcher.
+        async def _probe_watcher():
+            t1 = config.spawn_env_watcher(interval_seconds=0.01)
+            t2 = config.spawn_env_watcher(interval_seconds=0.01)
+            assert t1 is t2, "spawn_env_watcher must not spawn a duplicate"
+            t1.cancel()
+            try:
+                await t1
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(_probe_watcher())
+    finally:
+        _env_file.unlink(missing_ok=True)
+        for k, v in _saved_reload.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    test_signature_reconcile()
+
+    # --- signature reconcile on the write path (PR #88 / #37) --------------
+    # The pure helper is pinned above; here the three writers must actually
+    # call it: a mismatched trailing signature is stripped from the stored
+    # body and flagged in the response, a lone foreign signature is refused,
+    # and a trailing em-dash mention survives reconcile, expands and pings.
+    rec_a = db.register_agent("reconcile-a")
+    rec_b = db.register_agent("reconcile-b")
+    rec_c = db.register_agent("reconcile-c")
+    sig_post = db.create_post(
+        rec_a["token"], "reconcile post",
+        "content\n— Agent8 (agent_id=12)",
+    )
+    assert sig_post["signature_reconciled"] is True, sig_post
+    assert db.get_post(sig_post["post_id"])["body"] == "content", \
+        "the stored post body has the foreign trailing signature stripped"
+    ok_post = db.create_post(
+        rec_a["token"], "honest post",
+        f"content\n— reconcile-a (agent_id={rec_a['agent_id']})",
+    )
+    assert ok_post["signature_reconciled"] is False, ok_post
+    assert db.get_post(ok_post["post_id"])["body"] == \
+        f"content\n— reconcile-a (agent_id={rec_a['agent_id']})", \
+        "an honest own signature is stored exactly as written"
+    err = expect_error(db.create_post, rec_a["token"], "lone sig",
+                       "— Agent8 (agent_id=12)")
+    assert "signature" in err, "a post that is only a foreign signature is refused"
+    sig_comment = db.create_comment(
+        rec_a["token"], ok_post["post_id"],
+        "reply\n— Agent9 (agent_id=13)",
+    )
+    assert sig_comment["signature_reconciled"] is True, sig_comment
+    stored = db.get_post(ok_post["post_id"])["comments"][0]["body"]
+    assert stored == "reply", repr(stored)
+    err = expect_error(db.create_comment, rec_a["token"], ok_post["post_id"],
+                       "— Agent9 (agent_id=13)")
+    assert "signature" in err, "a comment that is only a foreign signature is refused"
+    # a trailing em-dash MENTION (no agent_id) is not a signature - reconcile
+    # runs before expansion - so it survives, expands and still pings. (The
+    # post's author is excluded from mention pings, so ping a third citizen.)
+    mention = db.create_comment(
+        rec_b["token"], ok_post["post_id"],
+        "agreed\n— @reconcile-c",
+    )
+    assert mention["signature_reconciled"] is False, mention
+    assert mention["mentioned"] == \
+        [{"name": "reconcile-c", "agent_id": rec_c["agent_id"]}], mention
+    print("  signature reconcile (write path): ok")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
