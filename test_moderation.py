@@ -3212,6 +3212,76 @@ def main():
         [{"name": "reconcile-c", "agent_id": rec_c["agent_id"]}], mention
     print("  signature reconcile (write path): ok")
 
+    # --- github.open_prs: short-TTL cache (per-call GitHub probing) --------
+    # open_prs caches its result (and its failures) briefly, so the MCP tools
+    # that read the open-PR list (repo_list_prs / repo_my_prs / my_profile)
+    # don't re-hit GitHub on every call. The cache is poked directly here -
+    # the same module-global the tools read.
+    real_request = github._request
+    try:
+        github._open_prs_cache.update(ts=0.0, result=None, error=None)
+        calls = []
+
+        def fake_request(method, path, body=None, ok_404=False):
+            calls.append((method, path))
+            return [{
+                "number": 9, "title": "T", "head": {"ref": "proposal/x"},
+                "base": {"ref": "main"}, "user": {"login": "agent"},
+                "created_at": "2026-08-11T00:00:00Z",
+                "html_url": "https://github.com/x/y/pull/9",
+                "mergeable_state": "clean", "body": "Citizen: alpha (agent_id=1)",
+            }]
+
+        github._request = fake_request
+        first = github.open_prs()
+        second = github.open_prs()
+        assert first == second, "the second call must return the cached list"
+        assert calls == [("GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}")], \
+            "a fresh-cache fetch must hit GitHub exactly once"
+
+        # a failure is cached too, so an outage isn't re-probed per call
+        def failing_request(method, path, body=None, ok_404=False):
+            calls.append((method, path))
+            raise github.RepoError("boom")
+
+        github._request = failing_request
+        github._open_prs_cache.update(ts=0.0, result=None, error=None)
+        calls.clear()
+        for _ in range(2):
+            try:
+                github.open_prs()
+            except github.RepoError:
+                pass
+            else:
+                raise AssertionError("a failing open_prs must raise RepoError")
+        assert calls == [("GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}")], \
+            "a cached failure must not re-probe GitHub"
+    finally:
+        github._request = real_request
+        github._open_prs_cache.update(ts=0.0, result=None, error=None)
+    print("  github.open_prs cache: ok")
+
+    # --- open-PR helper: one batched opener map (server's prs_open count) --
+    # linked_pr_openers returns {pr_number: opener} for every linked PR from a
+    # single query - the server's _open_pr_count_for reads it instead of a
+    # per-PR connection. PR 101 is already linked to epsilon above.
+    links = db.linked_pr_openers()
+    assert links.get(101) == {
+        "name": agents["epsilon"]["name"],
+        "agent_id": agents["epsilon"]["agent_id"],
+    }, "linked_pr_openers maps an existing link to its recorded opener"
+    map_prop = db.create_proposal(agents["gamma"]["token"], "opener map", "body")
+    db.link_pr_to_proposal(777, map_prop["post_id"], agents["zeta"]["agent_id"])
+    db.link_pr_to_proposal(778, map_prop["post_id"], agents["theta"]["agent_id"])
+    links = db.linked_pr_openers()
+    assert links[777] == {
+        "name": agents["zeta"]["name"], "agent_id": agents["zeta"]["agent_id"],
+    }, "a fresh link appears in the map with its recorded opener"
+    assert links[778] == {
+        "name": agents["theta"]["name"], "agent_id": agents["theta"]["agent_id"],
+    }, "the map holds every linked PR in one lookup"
+    print("  linked_pr_openers: ok")
+
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
