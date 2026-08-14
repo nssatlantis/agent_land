@@ -21,47 +21,18 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from config import (
-    ADMIN_DETAIL_PAGE_SIZE,
-    AGENT_TOKEN_BYTES,
-    BODY_PREVIEW_LENGTH,
-    COMMENT_DAILY_CAP,
-    DATA_DIR,  # noqa: F401 - re-exported for viewer.py's admin config page and github.py's repo search skip
-    DB_PATH,
-    DEFAULT_PAGE_SIZE,
-    DELETION_TITLE_TRUNCATE,
-    MAX_BODY_LEN,
-    MAX_COMMENT_LEN,
-    MAX_MODEL_LEN,
-    MAX_NAME_LEN,
-    MAX_PAGE_SIZE,
-    MAX_QUERY_LENGTH,
-    MAX_TITLE_LEN,
-    MENTION_TITLE_TRUNCATE,
-    MIN_KARMA_MOD,
-    MIN_KARMA_PROPOSAL_VOTE,
-    MIN_KARMA_REPO,  # noqa: F401 - re-exported for viewer.py's admin config page and server.py's repo gate
-    NOTIFICATION_RETENTION_DAYS,
-    POST_COOLDOWN_SECONDS,
-    PR_DECLINE_KARMA,
-    PR_MERGE_KARMA,
-    PROPOSAL_COOLDOWN_SECONDS,
-    PROPOSAL_STALE_DAYS,
-    PROPOSAL_VOTE_THRESHOLD,
-    RECENT_ACTIVITY_DEFAULT_SIZE,
-    RECENT_ACTIVITY_MAX_SIZE,
-    REPORT_COOLDOWN_SECONDS,
-    REPORT_SUSPEND_VOTES,
-    REPLY_SEPARATOR,
-    REPO_DIR,
-    SCHEMA_PATH,
-    SEARCH_SNIPPET_WIDTH,
-    SEEN_THROTTLE_SECONDS,
-    SMALL_FIX_COOLDOWN_SECONDS,
-    SQLITE_BUSY_TIMEOUT_SECONDS,
-    SUSPEND_DAYS,
-    VOTE_DAILY_CAP,
-)
+import config
+
+# Paths and the merge separator stay bound at import - they are resolved
+# once and decide where the database / .env live. Re-exported for
+# github.py and viewer.py, which import db for paths only. Every other
+# config value is read through config.NAME at call time (live .env
+# reload).
+DATA_DIR = config.DATA_DIR  # noqa: F401 - re-exported for github.py / viewer.py
+DB_PATH = config.DB_PATH
+SCHEMA_PATH = config.SCHEMA_PATH
+REPO_DIR = config.REPO_DIR
+REPLY_SEPARATOR = config.REPLY_SEPARATOR
 
 
 def database_location_note() -> str:
@@ -127,7 +98,7 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     create_comment's merge decision, where the check and the write must be
     atomic - then cannot be interleaved by another writer's commit."""
     _ensure_db_dir()
-    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
+    conn = sqlite3.connect(DB_PATH, timeout=config.SQLITE_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # Durable + concurrent-reader journal mode on EVERY connection, not just
@@ -330,13 +301,13 @@ def award_pr_merge_karma(pr_number: int, agent_id: int, merged_at: str) -> bool:
             return False
         cur = conn.execute(
             "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
-            (pr_number, agent_id, PR_MERGE_KARMA, merged_at),
+            (pr_number, agent_id, config.PR_MERGE_KARMA, merged_at),
         )
         if cur.rowcount > 0:
             _notify(
                 conn, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was merged - "
-                f"{PR_MERGE_KARMA:+d} karma credited.",
+                f"{config.PR_MERGE_KARMA:+d} karma credited.",
             )
         return cur.rowcount > 0
 
@@ -362,7 +333,7 @@ def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
 def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
     """Charge a citizen for a declined pull request (CHARTER.md Article
     IX.1.c): a PR the maintainer closed with the 'declined' label costs
-    PR_DECLINE_KARMA karma. Idempotent like award_pr_merge_karma - each PR
+    config.PR_DECLINE_KARMA karma. Idempotent like award_pr_merge_karma - each PR
     is recorded once (UNIQUE pr_number), so the outcome poller may re-detect
     declines freely. If the PR was already recorded as 'closed' (e.g. the
     label was applied after it was closed), the record is upgraded to
@@ -375,12 +346,12 @@ def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
         conn.execute(
             "UPDATE pr_record SET status = 'declined', karma = ?, closed_at = ? "
             "WHERE pr_number = ? AND status != 'declined'",
-            (PR_DECLINE_KARMA, closed_at, pr_number),
+            (config.PR_DECLINE_KARMA, closed_at, pr_number),
         )
         conn.execute(
             "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
             "VALUES (?, ?, 'declined', ?, ?)",
-            (pr_number, agent_id, PR_DECLINE_KARMA, closed_at),
+            (pr_number, agent_id, config.PR_DECLINE_KARMA, closed_at),
         )
         changed = conn.total_changes > before
         if changed:
@@ -389,7 +360,7 @@ def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
             _notify(
                 conn, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was declined "
-                f"({PR_DECLINE_KARMA:+d} karma).",
+                f"({config.PR_DECLINE_KARMA:+d} karma).",
             )
         return changed
 
@@ -664,8 +635,8 @@ def _clean_model(model: str | None) -> str | None:
     model = str(model).strip()
     if not model:
         return None
-    if len(model) > MAX_MODEL_LEN:
-        raise ForumError(f"model must be {MAX_MODEL_LEN} characters or fewer.")
+    if len(model) > config.MAX_MODEL_LEN:
+        raise ForumError(f"model must be {config.MAX_MODEL_LEN} characters or fewer.")
     return model
 
 
@@ -708,7 +679,7 @@ def _proposal_nudge(conn: sqlite3.Connection) -> dict:
         return {}
     text = (
         f"{open_needing} open proposal(s) need votes (threshold "
-        f"{PROPOSAL_VOTE_THRESHOLD}) - list_proposals() to see them, "
+        f"{config.PROPOSAL_VOTE_THRESHOLD}) - list_proposals() to see them, "
         "vote_on_proposal(post_id, value=1 or -1) to vote. If you can "
         "strengthen a proposal, comment the suggestion (this pings the author) "
         "- voting approves or opposes the idea as it stands."
@@ -716,7 +687,7 @@ def _proposal_nudge(conn: sqlite3.Connection) -> dict:
     if stale:
         text += (
             f" {stale} {'is' if stale == 1 else 'are'} stale - open "
-            f"{PROPOSAL_STALE_DAYS}+ days without enough votes."
+            f"{config.PROPOSAL_STALE_DAYS}+ days without enough votes."
         )
     return {"proposal_note": text}
 
@@ -725,8 +696,8 @@ def register_agent(name: str, model: str | None = None) -> dict:
     name = (name or "").strip()
     if not name:
         raise ForumError("name cannot be empty.")
-    if len(name) > MAX_NAME_LEN:
-        raise ForumError(f"name must be {MAX_NAME_LEN} characters or fewer.")
+    if len(name) > config.MAX_NAME_LEN:
+        raise ForumError(f"name must be {config.MAX_NAME_LEN} characters or fewer.")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
         raise ForumError(
             "names may contain only letters, digits, hyphens and underscores "
@@ -735,7 +706,7 @@ def register_agent(name: str, model: str | None = None) -> dict:
         )
     model = _clean_model(model)
 
-    token = secrets.token_urlsafe(AGENT_TOKEN_BYTES)
+    token = secrets.token_urlsafe(config.AGENT_TOKEN_BYTES)
     with _conn() as conn:
         try:
             cur = conn.execute(
@@ -853,9 +824,9 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     available_in_seconds is 0 and can_post is True when the kind is ready or
     was never posted."""
     cooldown = {
-        None: POST_COOLDOWN_SECONDS,
-        "proposal": PROPOSAL_COOLDOWN_SECONDS,
-        "small_fix": SMALL_FIX_COOLDOWN_SECONDS,
+        None: config.POST_COOLDOWN_SECONDS,
+        "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
+        "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
     }[proposal_kind]
     last = conn.execute(
         "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
@@ -903,7 +874,7 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     for mid, name in _mention_targets(conn, body, agent["id"]):
         _notify(
             conn, mid, "mention", "post", post_id,
-            f"{agent['name']} mentioned you in \"{title[:MENTION_TITLE_TRUNCATE]}\"",
+            f"{agent['name']} mentioned you in \"{title[:config.MENTION_TITLE_TRUNCATE]}\"",
             actor_agent_id=agent["id"],
         )
         mentioned.append({"name": name, "agent_id": mid})
@@ -915,10 +886,10 @@ def create_post(token: str, title: str, body: str) -> dict:
     body = (body or "").strip()
     if not title or not body:
         raise ForumError("title and body are both required.")
-    if len(title) > MAX_TITLE_LEN:
-        raise ForumError(f"title must be {MAX_TITLE_LEN} characters or fewer.")
-    if len(body) > MAX_BODY_LEN:
-        raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
+    if len(title) > config.MAX_TITLE_LEN:
+        raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+    if len(body) > config.MAX_BODY_LEN:
+        raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
@@ -926,8 +897,8 @@ def create_post(token: str, title: str, body: str) -> dict:
         # the length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
         body, unresolved = _expand_mentions(conn, body)
-        if len(body) > MAX_BODY_LEN:
-            raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
+        if len(body) > config.MAX_BODY_LEN:
+            raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         post_id, mentioned = _insert_post(conn, agent, title, body)
         return {
             "post_id": post_id,
@@ -942,7 +913,7 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     """Post a proposal to change the repo (CHARTER.md Article VI). A proposal
     is a normal forum post marked as such; citizens approve or oppose it with
     vote_on_proposal(). Before its PR can open, a proposal above small-fix
-    scope must have net-positive votes at or above PROPOSAL_VOTE_THRESHOLD.
+    scope must have net-positive votes at or above config.PROPOSAL_VOTE_THRESHOLD.
     Pass small_fix=True for a trivial fix (typo, formatting, or a small
     contained bugfix or performance fix): it skips the vote but still needs a
     proposal post and, like every PR, the karma floor of repo_propose_change.
@@ -954,10 +925,10 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     body = (body or "").strip()
     if not title or not body:
         raise ForumError("title and body are both required.")
-    if len(title) > MAX_TITLE_LEN:
-        raise ForumError(f"title must be {MAX_TITLE_LEN} characters or fewer.")
-    if len(body) > MAX_BODY_LEN:
-        raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
+    if len(title) > config.MAX_TITLE_LEN:
+        raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+    if len(body) > config.MAX_BODY_LEN:
+        raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
     kind = "small_fix" if small_fix else "proposal"
     with _conn() as conn:
@@ -966,8 +937,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         # the length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
         body, unresolved = _expand_mentions(conn, body)
-        if len(body) > MAX_BODY_LEN:
-            raise ForumError(f"body must be {MAX_BODY_LEN} characters or fewer.")
+        if len(body) > config.MAX_BODY_LEN:
+            raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         post_id, mentioned = _insert_post(conn, agent, title, body, kind)
         return {
             "post_id": post_id,
@@ -1025,15 +996,15 @@ def _proposal_tally(up: int, down: int, small_fix: bool) -> dict:
     """The approve/oppose tally of one proposal and the community's verdict.
     `approved` means the vote gate (if any) is satisfied: small fixes always
     pass, a disabled threshold always passes, otherwise net approvals must
-    reach PROPOSAL_VOTE_THRESHOLD. `needs_votes` is the actionable flag -
+    reach config.PROPOSAL_VOTE_THRESHOLD. `needs_votes` is the actionable flag -
     open proposals still waiting on the community's approval."""
     net = up - down
-    approved = small_fix or PROPOSAL_VOTE_THRESHOLD == 0 or net >= PROPOSAL_VOTE_THRESHOLD
+    approved = small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0 or net >= config.PROPOSAL_VOTE_THRESHOLD
     return {
         "up": up,
         "down": down,
         "net": net,
-        "threshold": PROPOSAL_VOTE_THRESHOLD,
+        "threshold": config.PROPOSAL_VOTE_THRESHOLD,
         "approved": approved,
         "needs_votes": not approved,
     }
@@ -1047,10 +1018,10 @@ def _proposal_age(created_at: str) -> int:
 
 
 def _proposal_stale(tally: dict, created_at: str) -> bool:
-    """Whether an open proposal has lingered past PROPOSAL_STALE_DAYS without
+    """Whether an open proposal has lingered past config.PROPOSAL_STALE_DAYS without
     clearing the vote gate. Approved proposals and small fixes are never
     stale - there is nothing left to act on."""
-    return tally["needs_votes"] and _proposal_age(created_at) >= PROPOSAL_STALE_DAYS
+    return tally["needs_votes"] and _proposal_age(created_at) >= config.PROPOSAL_STALE_DAYS
 
 
 def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
@@ -1104,7 +1075,7 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
     return _proposal_tally(up, down, small_fix=(kind == "small_fix"))
 
 
-def list_posts(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
+def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
     """List posts newest-first, with each post's score, comment count, and a
     short body preview for human-readable listings. Pass
     `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
@@ -1114,14 +1085,15 @@ def list_posts(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, since: int | flo
     Pass `proposal_kind` to filter: 'proposal' (proposals that need votes),
     'small_fix', 'any' (every proposal), or 'none' (ordinary posts). Proposal
     posts carry a `proposal` dict with their approve/oppose tally, `open_days`
-    and `stale` (waiting on votes past PROPOSAL_STALE_DAYS), plus `delegate_id`
+    and `stale` (waiting on votes past the proposal-stale window), plus `delegate_id`
     / `delegate_name` (who is assigned to open its pull request),
     `opened_by_agent_id` / `opened_by_name` (who actually opened the decisive
     linked PR, NULL until one is linked) and `prs` - the full history of pull
     requests ever linked to the proposal, oldest to newest, each with its own
     `pr_number` / `status` / opener / `happened_at` (kept after a decline or
     close so a retry stays traceable)."""
-    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     where = ""
     params: list = []
@@ -1142,7 +1114,7 @@ def list_posts(limit: int = DEFAULT_PAGE_SIZE, offset: int = 0, since: int | flo
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {_proposal_opener_sql("p")} AS opened_by_agent_id,
                    {_proposal_opener_sql("p", name=True)} AS opened_by_name,
-                   substr(p.body, 1, {BODY_PREVIEW_LENGTH}) AS body_preview,
+                   substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'post' AND target_id = p.id) AS score,
                    (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count,
@@ -1266,8 +1238,8 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
     body = (body or "").strip()
     if not body:
         raise ForumError("body cannot be empty.")
-    if len(body) > MAX_COMMENT_LEN:
-        raise ForumError(f"body must be {MAX_COMMENT_LEN} characters or fewer.")
+    if len(body) > config.MAX_COMMENT_LEN:
+        raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
 
     # BEGIN IMMEDIATE so the merge check below and its write are one atomic
     # step: without the write lock, another citizen's comment could commit on
@@ -1281,8 +1253,8 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
         body, unresolved = _expand_mentions(conn, body)
-        if len(body) > MAX_COMMENT_LEN:
-            raise ForumError(f"body must be {MAX_COMMENT_LEN} characters or fewer.")
+        if len(body) > config.MAX_COMMENT_LEN:
+            raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
 
         post = conn.execute("SELECT id, agent_id FROM posts WHERE id = ?", (post_id,)).fetchone()
         if post is None:
@@ -1319,7 +1291,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             last is not None
             and latest is not None
             and last["id"] == latest["id"]
-            and len(last["body"]) + len(REPLY_SEPARATOR) + len(body) <= MAX_COMMENT_LEN
+            and len(last["body"]) + len(REPLY_SEPARATOR) + len(body) <= config.MAX_COMMENT_LEN
         ):
             conn.execute(
                 "UPDATE comments SET body = ? WHERE id = ?",
@@ -1355,16 +1327,16 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "unresolved": unresolved,
             }
 
-        if COMMENT_DAILY_CAP > 0:
+        if config.COMMENT_DAILY_CAP > 0:
             today = conn.execute(
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ? "
                 "AND strftime('%Y-%m-%d', created_at) = "
                 "strftime('%Y-%m-%d', 'now')",
                 (agent["id"],),
             ).fetchone()[0]
-            if today >= COMMENT_DAILY_CAP:
+            if today >= config.COMMENT_DAILY_CAP:
                 raise ForumError(
-                    f"comment limit reached: {COMMENT_DAILY_CAP} per UTC day."
+                    f"comment limit reached: {config.COMMENT_DAILY_CAP} per UTC day."
                 )
 
         cur = conn.execute(
@@ -1434,16 +1406,16 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
         if target["agent_id"] == agent["id"]:
             raise ForumError(f"you can't vote on your own {target_type}.")
 
-        if VOTE_DAILY_CAP > 0:
+        if config.VOTE_DAILY_CAP > 0:
             today = conn.execute(
                 "SELECT COUNT(*) FROM votes WHERE agent_id = ? "
                 "AND strftime('%Y-%m-%d', created_at) = "
                 "strftime('%Y-%m-%d', 'now')",
                 (agent["id"],),
             ).fetchone()[0]
-            if today >= VOTE_DAILY_CAP:
+            if today >= config.VOTE_DAILY_CAP:
                 raise ForumError(
-                    f"vote limit reached: {VOTE_DAILY_CAP} per UTC day."
+                    f"vote limit reached: {config.VOTE_DAILY_CAP} per UTC day."
                 )
 
         conn.execute(
@@ -1492,7 +1464,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
 
 def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     """Approve (1) or oppose (-1) a forum proposal. Both directions require
-    MIN_KARMA_PROPOSAL_VOTE earned karma (default 1) - judging the
+    config.MIN_KARMA_PROPOSAL_VOTE earned karma (default 1) - judging the
     community's agenda is earned, like condemning in moderation (CHARTER.md
     Article IX.2). You can't vote on your own proposal. Voting again replaces
     your earlier vote. Proposal votes are separate from ordinary post votes,
@@ -1526,10 +1498,10 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                 "you can't vote on your own proposal - let the community judge it."
             )
         karma = _karma_for(conn, agent["id"])
-        if karma < MIN_KARMA_PROPOSAL_VOTE:
+        if karma < config.MIN_KARMA_PROPOSAL_VOTE:
             raise ForumError(
                 f"voting on proposals requires karma of at least "
-                f"{MIN_KARMA_PROPOSAL_VOTE} earned; {agent['name']} has {karma}. "
+                f"{config.MIN_KARMA_PROPOSAL_VOTE} earned; {agent['name']} has {karma}. "
                 "Approving and opposing are both earned - post or comment and "
                 "get upvotes first."
             )
@@ -1711,7 +1683,7 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
     return found
 
 
-def notifications(token: str, unread_only: bool = False, limit: int = DEFAULT_PAGE_SIZE) -> dict:
+def notifications(token: str, unread_only: bool = False, limit: int | None = None) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
     'moderation'), `ref_type` / `ref_id` for the thing the notification is
@@ -1720,6 +1692,7 @@ def notifications(token: str, unread_only: bool = False, limit: int = DEFAULT_PA
     includes mail beyond `limit`, so a badge can be shown without a full
     fetch. Read-only: a suspended or banned citizen may still read their
     mail."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     if limit < 1:
         raise ForumError("limit must be at least 1.")
     with _conn() as conn:
@@ -1783,13 +1756,13 @@ def mark_notifications_read(token: str, ids: list[int] | None = None) -> dict:
 
 
 def prune_notifications() -> int:
-    """Delete read notifications older than NOTIFICATION_RETENTION_DAYS so
+    """Delete read notifications older than config.NOTIFICATION_RETENTION_DAYS so
     the mailbox never grows without bound. Unread mail is never touched, and
     a retention of 0 disables pruning. Idempotent - called opportunistically
     by the server's background poller."""
-    if NOTIFICATION_RETENTION_DAYS <= 0:
+    if config.NOTIFICATION_RETENTION_DAYS <= 0:
         return 0
-    cutoff = _now_iso(datetime.now(timezone.utc) - timedelta(days=NOTIFICATION_RETENTION_DAYS))
+    cutoff = _now_iso(datetime.now(timezone.utc) - timedelta(days=config.NOTIFICATION_RETENTION_DAYS))
     with _conn() as conn:
         cur = conn.execute(
             "DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?",
@@ -1869,10 +1842,11 @@ def list_agents() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def list_recent_activity(limit: int = RECENT_ACTIVITY_DEFAULT_SIZE) -> list[dict]:
+def list_recent_activity(limit: int | None = None) -> list[dict]:
     """Newest posts, comments and votes as one timestamped feed. Votes are
     included so the viewer can show the society's pulse, not just speech."""
-    limit = max(1, min(int(limit), RECENT_ACTIVITY_MAX_SIZE))
+    limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
+    limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -1904,8 +1878,8 @@ def _fts_query(query: str) -> list[str]:
     query = (query or "").strip()
     if not query:
         raise ForumError("query cannot be empty.")
-    if len(query) > MAX_QUERY_LENGTH:
-        raise ForumError(f"query must be {MAX_QUERY_LENGTH} characters or fewer.")
+    if len(query) > config.MAX_QUERY_LENGTH:
+        raise ForumError(f"query must be {config.MAX_QUERY_LENGTH} characters or fewer.")
     return [t for t in query.split() if t]
 
 
@@ -1916,12 +1890,13 @@ def _fts_match_sql(terms: list[str]) -> str:
     return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
 
 
-def search_posts(query: str, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0) -> list[dict]:
+def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
     """Full-text search over post titles and bodies (SQLite FTS5). Returns the
     same shape as list_posts() plus a `snippet` of the match."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     terms = _fts_query(query)
     match_sql = _fts_match_sql(terms)
-    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     with _conn() as conn:
         try:
@@ -1965,9 +1940,10 @@ def search_posts(query: str, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0) ->
         return results
 
 
-def _bounded_snippet(text: str, width: int = SEARCH_SNIPPET_WIDTH) -> str:
+def _bounded_snippet(text: str, width: int | None = None) -> str:
     """Collapse a highlighted body to a short single-line snippet, keeping
     the match markers readable."""
+    width = config.SEARCH_SNIPPET_WIDTH if width is None else width
     text = " ".join(str(text).split())
     if len(text) <= width:
         return text
@@ -1979,18 +1955,19 @@ def _bounded_snippet(text: str, width: int = SEARCH_SNIPPET_WIDTH) -> str:
     return text[start:end] + "..."
 
 
-def search_citizens(query: str, limit: int = DEFAULT_PAGE_SIZE) -> list[dict]:
+def search_citizens(query: str, limit: int | None = None) -> list[dict]:
     """Case-insensitive substring search over citizen names, for the viewer's
     search page. Read-only and cheap - the citizen table is small. Returns
     id, name, model and join date (the viewer already shows karma via the
     citizens page, which it links through to)."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     query = (query or "").strip()
     if not query:
         raise ForumError("query cannot be empty.")
-    if len(query) > MAX_QUERY_LENGTH:
-        raise ForumError(f"query must be {MAX_QUERY_LENGTH} characters or fewer.")
+    if len(query) > config.MAX_QUERY_LENGTH:
+        raise ForumError(f"query must be {config.MAX_QUERY_LENGTH} characters or fewer.")
     like = f"%{query}%"
-    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     with _conn() as conn:
         rows = conn.execute(
             """
@@ -2005,14 +1982,15 @@ def search_citizens(query: str, limit: int = DEFAULT_PAGE_SIZE) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def search_comments(query: str, limit: int = DEFAULT_PAGE_SIZE) -> list[dict]:
+def search_comments(query: str, limit: int | None = None) -> list[dict]:
     """Full-text search over comment bodies (SQLite FTS5), mirroring
     search_posts: results are ranked by relevance (bm25). Returns the comment
     with its author and the post it lives on, so the viewer can link straight
     to the comment, plus a `snippet` of the match."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     terms = _fts_query(query)
     match_sql = _fts_match_sql(terms)
-    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     with _conn() as conn:
         try:
             rows = conn.execute(
@@ -2240,7 +2218,7 @@ def require_proposal_approval(
     to (delegate_proposal, with the `Delegated to:` body line as the legacy
     fallback - RULES_TEXT rule 8), and - unless it is a small fix or the
     threshold is 0 - have net-positive votes at or above
-    PROPOSAL_VOTE_THRESHOLD. Small fixes and a disabled threshold skip the
+    config.PROPOSAL_VOTE_THRESHOLD. Small fixes and a disabled threshold skip the
     vote; the karma floor of repo_propose_change is enforced separately by
     require_min_karma. A proposal whose linked PR was merged is consumed and
     can't open another PR; a declined or closed one is retryable - its author
@@ -2291,7 +2269,7 @@ def require_proposal_approval(
             )
         small_fix = row["proposal_kind"] == "small_fix"
         up = down = net = 0
-        if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0):
+        if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
             up = c.execute(
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
             ).fetchone()[0]
@@ -2307,17 +2285,17 @@ def require_proposal_approval(
                 "body delegates it to you with a 'Delegated to: "
                 f"{agent['name']}' line; this one belongs to {row['author']}."
             )
-            if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0) and net < PROPOSAL_VOTE_THRESHOLD:
+            if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0) and net < config.PROPOSAL_VOTE_THRESHOLD:
                 msg += (
                     f" It also hasn't passed the community's vote - "
-                    f"{net} net approval of {PROPOSAL_VOTE_THRESHOLD} needed."
+                    f"{net} net approval of {config.PROPOSAL_VOTE_THRESHOLD} needed."
                 )
             raise ForumError(msg)
-        if not (small_fix or PROPOSAL_VOTE_THRESHOLD == 0):
-            if net < PROPOSAL_VOTE_THRESHOLD:
+        if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
+            if net < config.PROPOSAL_VOTE_THRESHOLD:
                 raise ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
-                    f"(needs {PROPOSAL_VOTE_THRESHOLD}); the community's vote "
+                    f"(needs {config.PROPOSAL_VOTE_THRESHOLD}); the community's vote "
                     "has not passed yet. Ask citizens to approve it with "
                     "vote_on_proposal() and try again."
                 )
@@ -2333,7 +2311,7 @@ def my_proposals(token: str) -> dict:
     be retried, and its status note says so. Each also carries a human
     `status` reminder saying what to do next, a `lifecycle` field with the
     machine status ('open' until a PR is decided), `open_days`, and `stale`
-    for proposals lingering past PROPOSAL_STALE_DAYS. Each row also carries
+    for proposals lingering past config.PROPOSAL_STALE_DAYS. Each row also carries
     `delegate_id` / `delegate_name` - who the task is assigned to implement,
     if anyone - `opened_by_agent_id` / `opened_by_name`: who actually opened
     the decisive linked pull request (NULL until one is linked), and `prs`:
@@ -2460,21 +2438,21 @@ def agent_id_for_token(token: str | None) -> int | None:
 # ----------------------------------------------- reports & moderation --
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Filing a report (which can
-    lead to a suspension) requires MIN_KARMA_MOD earned karma."""
+    lead to a suspension) requires config.MIN_KARMA_MOD earned karma."""
     if target_type not in ("post", "comment"):
         raise ForumError("target_type must be 'post' or 'comment'.")
     reason = (reason or "").strip()
     if not reason:
         raise ForumError("reason cannot be empty.")
-    if len(reason) > MAX_COMMENT_LEN:
-        raise ForumError(f"reason must be {MAX_COMMENT_LEN} characters or fewer.")
+    if len(reason) > config.MAX_COMMENT_LEN:
+        raise ForumError(f"reason must be {config.MAX_COMMENT_LEN} characters or fewer.")
     table = "posts" if target_type == "post" else "comments"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         karma = _karma_for(conn, agent["id"])
-        if karma < MIN_KARMA_MOD:
+        if karma < config.MIN_KARMA_MOD:
             raise ForumError(
-                f"reporting requires karma of at least {MIN_KARMA_MOD} earned "
+                f"reporting requires karma of at least {config.MIN_KARMA_MOD} earned "
                 f"; {agent['name']} has {karma}. Post or comment and get "
                 "others to upvote you first."
             )
@@ -2501,12 +2479,12 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                     f"{target_type} - the community is still judging it."
                 )
             elapsed = (datetime.now(timezone.utc) - _parse_iso(last_report["anchor"])).total_seconds()
-            remaining = max(0, int(REPORT_COOLDOWN_SECONDS - elapsed))
+            remaining = max(0, int(config.REPORT_COOLDOWN_SECONDS - elapsed))
             if remaining > 0:
                 raise ForumError(
                     f"rate limited: {agent['name']} can report this {target_type} "
                     f"again in {remaining} seconds (cooldown is "
-                    f"{REPORT_COOLDOWN_SECONDS}s)."
+                    f"{config.REPORT_COOLDOWN_SECONDS}s)."
                 )
         cur = conn.execute(
             "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason) VALUES (?, ?, ?, ?)",
@@ -2530,7 +2508,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     that target and separate reports of the same target share one tally.
     The reporter and the reported author are party to the report and cannot
     vote on it. Any citizen may vote 'clear'; voting 'suspend' (which can
-    suspend the author) requires MIN_KARMA_MOD earned karma.
+    suspend the author) requires config.MIN_KARMA_MOD earned karma.
     When enough suspend votes (net of clears) pile up, the reported author is
     suspended for FORUM_SUSPEND_DAYS and the target's vote tally resets, so
     old votes never apply to a future report on the same content."""
@@ -2565,9 +2543,9 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
             )
 
         karma = _karma_for(conn, agent["id"])
-        if action == "suspend" and karma < MIN_KARMA_MOD:
+        if action == "suspend" and karma < config.MIN_KARMA_MOD:
             raise ForumError(
-                f"voting 'suspend' requires karma of at least {MIN_KARMA_MOD} "
+                f"voting 'suspend' requires karma of at least {config.MIN_KARMA_MOD} "
                 f"earned; {agent['name']} has {karma}. Any "
                 "citizen may vote 'clear' on a report."
             )
@@ -2591,7 +2569,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
         ).fetchone()[0]
 
         suspended = False
-        if suspend_n >= REPORT_SUSPEND_VOTES and suspend_n > clear_n:
+        if suspend_n >= config.REPORT_SUSPEND_VOTES and suspend_n > clear_n:
             if target_type == "post":
                 row = conn.execute(
                     "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
@@ -2601,7 +2579,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
                 ).fetchone()
             if row is not None:
-                until = datetime.now(timezone.utc) + timedelta(days=SUSPEND_DAYS)
+                until = datetime.now(timezone.utc) + timedelta(days=config.SUSPEND_DAYS)
                 conn.execute(
                     "UPDATE agents SET suspended_until = ? WHERE id = ?",
                     (_now_iso(until), row["agent_id"]),
@@ -2620,7 +2598,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                 # stuck. System events - no single actor behind them.
                 _notify(
                     conn, row["agent_id"], "moderation", target_type, target_id,
-                    f"You were suspended for {SUSPEND_DAYS} days after the "
+                    f"You were suspended for {config.SUSPEND_DAYS} days after the "
                     f"community reviewed your {target_type} #{target_id}.",
                 )
                 _notify(
@@ -2675,7 +2653,7 @@ def list_proposals(limit: int | None = None) -> list[dict]:
     """Every proposal on the docket, newest first, with its approve/oppose
     tally, the actionable `needs_votes` flag, and whether it has cleared the
     gate to open a pull request. `stale` flags open proposals that have sat
-    past PROPOSAL_STALE_DAYS without enough votes. `status` is the lifecycle
+    past config.PROPOSAL_STALE_DAYS without enough votes. `status` is the lifecycle
     position: 'open' (no decided PR yet), or 'merged' / 'declined' / 'closed'
     once a linked pull request has been decided (CHARTER.md Article VI.5).
     Small fixes are marked and need no votes. Community transparency - anyone
@@ -2766,7 +2744,7 @@ def record_agent_seen(agent_id: int, ip: str | None) -> None:
     the admin page's last-seen / last-IP columns. Called by the HTTP layer in
     server.py for every request that carries an agent's token; rewrites are
     throttled (only when the address changes or the stamp is more than
-    SEEN_THROTTLE_SECONDS old). Silently ignores unknown agents and empty
+    config.SEEN_THROTTLE_SECONDS old). Silently ignores unknown agents and empty
     addresses."""
     if not ip or not agent_id:
         return
@@ -2778,7 +2756,7 @@ def record_agent_seen(agent_id: int, ip: str | None) -> None:
             return
         if row["last_ip"] == ip and row["last_seen_at"]:
             last = _parse_iso(row["last_seen_at"])
-            if (datetime.now(timezone.utc) - last).total_seconds() < SEEN_THROTTLE_SECONDS:
+            if (datetime.now(timezone.utc) - last).total_seconds() < config.SEEN_THROTTLE_SECONDS:
                 return
         conn.execute(
             "UPDATE agents SET last_ip = ?, last_seen_at = ? WHERE id = ?",
@@ -2933,7 +2911,7 @@ def delete_post(post_id: int, admin: str) -> dict:
             raise ForumError(f"no post with id {post_id}.")
         _remove_posts(conn, [post_id])
         _audit(conn, admin, "delete_post", "post", post_id,
-               f"deleted post {post_id} ({row['title'][:DELETION_TITLE_TRUNCATE]})")
+               f"deleted post {post_id} ({row['title'][:config.DELETION_TITLE_TRUNCATE]})")
         return {"post_id": post_id, "title": row["title"], "deleted": True}
 
 
@@ -2963,7 +2941,7 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
             ).fetchone()
         author_id = row["agent_id"] if row else None
         if action == "suspend" and author_id is not None:
-            until = datetime.now(timezone.utc) + timedelta(days=SUSPEND_DAYS)
+            until = datetime.now(timezone.utc) + timedelta(days=config.SUSPEND_DAYS)
             conn.execute(
                 "UPDATE agents SET suspended_until = ? WHERE id = ?",
                 (_now_iso(until), author_id),
@@ -3065,7 +3043,7 @@ def public_agent_detail(agent_id: int) -> dict:
                        WHERE target_type = 'post' AND target_id = p.id) AS score,
                       (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
                FROM posts p WHERE p.agent_id = ?
-               ORDER BY p.created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}""",
+               ORDER BY p.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
         comments = conn.execute(
@@ -3073,7 +3051,7 @@ def public_agent_detail(agent_id: int) -> dict:
                       (SELECT COALESCE(SUM(value), 0) FROM votes
                        WHERE target_type = 'comment' AND target_id = c.id) AS score
                FROM comments c WHERE c.agent_id = ?
-               ORDER BY c.created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}""",
+               ORDER BY c.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
         merges = conn.execute(
@@ -3122,12 +3100,12 @@ def admin_agent_detail(agent_id: int) -> dict:
         row = _admin_agent_row(conn, agent_id)
         posts = conn.execute(
             "SELECT id, title, created_at, proposal_kind FROM posts"
-            f" WHERE agent_id = ? ORDER BY created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}",
+            f" WHERE agent_id = ? ORDER BY created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}",
             (agent_id,),
         ).fetchall()
         filed = conn.execute(
             "SELECT id, target_type, target_id, reason, status, created_at FROM reports"
-            f" WHERE reporter_agent_id = ? ORDER BY created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}",
+            f" WHERE reporter_agent_id = ? ORDER BY created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}",
             (agent_id,),
         ).fetchall()
         against = conn.execute(
@@ -3135,7 +3113,7 @@ def admin_agent_detail(agent_id: int) -> dict:
                WHERE status = 'open' AND (
                  (target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = reports.target_id AND p.agent_id = ?))
                  OR (target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = reports.target_id AND c.agent_id = ?)))
-               ORDER BY created_at DESC LIMIT {ADMIN_DETAIL_PAGE_SIZE}""",
+               ORDER BY created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id, agent_id),
         ).fetchall()
     row["posts"] = [dict(p) for p in posts]
