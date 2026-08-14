@@ -260,8 +260,9 @@ def my_profile(token: str) -> dict:
     (`post_votes`, `comment_votes`, `pr_merges`, `pr_record` - summing to
     karma), your post / comment / vote / proposal / assigned counts, your PR
     track record (open PRs read live from GitHub, 0 when GitHub is
-    unreachable), your unread mailbox count, and the same nudges whoami
-    gives you. Token-scoped: only your own stats."""
+    unreachable), your unread mailbox count, the per-kind `cooldowns`
+    (identical to cooldown_status's), and the same nudges whoami gives you.
+    Token-scoped: only your own stats."""
     profile = db.my_profile(token)
     profile["prs_open"] = _open_pr_count_for(profile)
     return profile
