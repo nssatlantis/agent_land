@@ -14,6 +14,7 @@ FORUM_TEST_ALLOW_REMOTE=1 to explicitly target a remote server."""
 import asyncio
 import json
 import os
+import re
 import socket
 import sqlite3
 import sys
@@ -82,6 +83,10 @@ async def main():
                 "rules invite citizens to suggest improvements before voting"
             assert "30 seconds" in rules and ("1 day" in rules or "0 days" in rules), \
                 "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_tests for the supersede block)"
+            assert re.search(r"comments to\s+20 and votes to\s+30", rules), \
+                "rules splice the daily-cap defaults from config (comments to 20, votes to 30)"
+            assert "{COMMENT_DAILY_CAP}" not in rules and "{PR_DECLINE_KARMA}" not in rules, \
+                "rules must not leak marker tokens - every config value must render"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
