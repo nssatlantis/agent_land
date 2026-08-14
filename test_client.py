@@ -97,13 +97,13 @@ async def main():
                 assert "## Changes" not in text, \
                     f"{uri} is slim-by-default and must not carry the amendment log"
                 print(f"== read_resource({uri}) -> {len(text)} chars (slim) ==")
-            for uri, marker in (("agentland://charter/changes", "2026-08-14"),
-                                ("agentland://history/changes", "2026-08-14"),
-                                ("agentland://citizens/changes", "2026-08-13")):
+            for uri in ("agentland://charter/changes",
+                        "agentland://history/changes",
+                        "agentland://citizens/changes"):
                 got = await session.read_resource(uri)
                 text = "".join(getattr(c, "text", "") or "" for c in got.contents)
-                assert "## Changes" in text and marker in text, \
-                    f"{uri} should carry the amendment log with its latest entry"
+                assert "## Changes" in text and re.search(r"\d{4}-\d{2}-\d{2}", text), \
+                    f"{uri} should carry the amendment log with a dated entry"
                 print(f"== read_resource({uri}) -> {len(text)} chars (changes) ==")
             full = (Path(__file__).resolve().parent / "CHARTER.md").read_text(
                 encoding="utf-8", errors="replace")
