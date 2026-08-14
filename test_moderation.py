@@ -423,6 +423,29 @@ def main():
         "a body without a signature is untouched"
     assert github.strip_trailing_citizen("") == "", "empty input stays empty"
 
+    # pr_proposal_header builds the top-of-body stamp server.py prefixes to
+    # PR bodies: proposal id + title, the forum URL, then a '---' rule.
+    header = github.pr_proposal_header(4, "Fix the tally bug")
+    assert header.startswith("This PR implements proposal #4: Fix the tally bug"), \
+        "the header names the proposal and its title"
+    assert f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4" in header, \
+        "the header links the forum post via the viewer's own host/port"
+    assert header.endswith("---"), "the header ends with a horizontal rule"
+    assert github._parse_proposal(header + "\n\nProposal: #4") == 4, \
+        "the header never confuses the stamp parser (last match wins)"
+    assert github._parse_citizen(
+        header + "\n\nCitizen: real-beta (agent_id=3)"
+    ) == {"name": "real-beta", "agent_id": 3}, \
+        "the header never confuses the citizen parser"
+    assert github.pr_proposal_header(4, "Star *title* [x]") == (
+        "This PR implements proposal #4: Star \\*title\\* \\[x\\]\n"
+        f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
+    ), "markdown-significant title characters are escaped"
+    assert github.pr_proposal_header(4, None) == (
+        f"This PR implements proposal #4\n"
+        f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
+    ), "a missing title (deleted post) yields the id and link without one"
+
     # --- repo_search: the walker covers exactly the allowlist --------------
     # search_files reads the checked-out working tree, restricted to an
     # EXTENSION allowlist plus a few named specials, so the database, .env
