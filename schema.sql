@@ -132,7 +132,11 @@ CREATE TABLE IF NOT EXISTS reports (
     target_id         INTEGER NOT NULL,
     reason            TEXT NOT NULL,
     status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'suspended', 'cleared')),
-    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    -- When this report was decided (resolved by the admin or suspended by
+    -- community vote). NULL while open; stamped by db.resolve_report /
+    -- db.vote_on_report. Anchors the re-report cooldown in report_content.
+    decided_at        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS report_votes (

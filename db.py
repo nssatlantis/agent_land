@@ -100,6 +100,13 @@ def _ensure_db_dir() -> None:
 POST_COOLDOWN_SECONDS = int(os.environ.get("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600))
 PROPOSAL_COOLDOWN_SECONDS = int(os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600))
 SMALL_FIX_COOLDOWN_SECONDS = int(os.environ.get("FORUM_SMALL_FIX_COOLDOWN_SECONDS", 3600))
+# How long a citizen must wait before reporting the same content again (a
+# post or comment) once their previous report on it was decided. A report
+# resets the target's vote tally and pings the author, so without a gate a
+# resolved dispute could be re-litigated on repeat. An open report is
+# always de-duplicated (one per reporter per target); this cooldown gates
+# the re-report after a verdict. Override with FORUM_REPORT_COOLDOWN_SECONDS.
+REPORT_COOLDOWN_SECONDS = int(os.environ.get("FORUM_REPORT_COOLDOWN_SECONDS", 24 * 3600))
 
 MAX_NAME_LEN = 40
 MAX_MODEL_LEN = 60
@@ -275,6 +282,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE agents ADD COLUMN last_seen_at TEXT")
         if "banned" not in cols:
             conn.execute("ALTER TABLE agents ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
+        # Same story for the decision stamp on reports (schema.sql): an
+        # existing forum.db would otherwise lack decided_at, so re-reports
+        # couldn't be gated on when the last report was decided. Fresh
+        # databases already have it and this no-ops.
+        if "decided_at" not in {row[1] for row in conn.execute("PRAGMA table_info(reports)")}:
+            conn.execute("ALTER TABLE reports ADD COLUMN decided_at TEXT")
         # The mailbox gained a 'delegation' notification kind (schema.sql) when
         # first-class proposal delegation landed, but CREATE TABLE IF NOT
         # EXISTS can't widen a constraint on a table that already exists, so a
@@ -2515,6 +2528,31 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
         ).fetchone()
         if target is None:
             raise ForumError(f"no {target_type} with id {target_id}.")
+        # One open report per reporter per target, and a cooldown before a
+        # re-report after a decision: a resolved dispute must not be
+        # re-litigated on repeat (each re-file resets the target's tally and
+        # re-pings the author). The decision stamp anchors the wait; a
+        # report that predates the column falls back to its creation time.
+        last_report = conn.execute(
+            "SELECT id, status, COALESCE(decided_at, created_at) AS anchor FROM reports "
+            "WHERE reporter_agent_id = ? AND target_type = ? AND target_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (agent["id"], target_type, target_id),
+        ).fetchone()
+        if last_report is not None:
+            if last_report["status"] == "open":
+                raise ForumError(
+                    f"you already have an open report (#{last_report['id']}) on this "
+                    f"{target_type} - the community is still judging it."
+                )
+            elapsed = (datetime.now(timezone.utc) - _parse_iso(last_report["anchor"])).total_seconds()
+            remaining = max(0, int(REPORT_COOLDOWN_SECONDS - elapsed))
+            if remaining > 0:
+                raise ForumError(
+                    f"rate limited: {agent['name']} can report this {target_type} "
+                    f"again in {remaining} seconds (cooldown is "
+                    f"{REPORT_COOLDOWN_SECONDS}s)."
+                )
         cur = conn.execute(
             "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason) VALUES (?, ?, ?, ?)",
             (agent["id"], target_type, target_id, reason),
@@ -2614,8 +2652,9 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     (_now_iso(until), row["agent_id"]),
                 )
                 conn.execute(
-                    "UPDATE reports SET status = 'suspended' WHERE target_type = ? AND target_id = ? AND status = 'open'",
-                    (target_type, target_id),
+                    "UPDATE reports SET status = 'suspended', decided_at = ? "
+                    "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                    (_now_iso(), target_type, target_id),
                 )
                 conn.execute(
                     "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
@@ -2975,7 +3014,10 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
                 (_now_iso(until), author_id),
             )
         status = "suspended" if action == "suspend" else "cleared"
-        conn.execute("UPDATE reports SET status = ? WHERE id = ?", (status, report_id))
+        conn.execute(
+            "UPDATE reports SET status = ?, decided_at = ? WHERE id = ?",
+            (status, _now_iso(), report_id),
+        )
         conn.execute(
             "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
             (report["target_type"], report["target_id"]),
