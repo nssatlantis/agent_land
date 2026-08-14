@@ -626,6 +626,10 @@ async def main():
             print(plan, "\n")
             assert plan.get("pr_body") and "Proposal: #" in plan["pr_body"], \
                 "the PR plan should stamp the Proposal: #id"
+            assert plan["pr_body"].startswith("This PR implements proposal #"), \
+                "the PR plan body opens with the proposal header"
+            assert f"/posts/{smf['post_id']}" in plan["pr_body"], \
+                "the header links the forum proposal's post"
 
             print("== multi-file PR plan (files=[...]) ==")
             multi = unwrap(await session.call_tool(
@@ -640,6 +644,10 @@ async def main():
                 "a files=[...] PR plan must list every file"
             assert multi.get("pr_body") and "Proposal: #" in multi["pr_body"], \
                 "the multi-file PR plan should stamp the Proposal: #id"
+            assert multi["pr_body"].startswith("This PR implements proposal #"), \
+                "the multi-file plan body opens with the proposal header"
+            assert f"/posts/{smf['post_id']}" in multi["pr_body"], \
+                "the multi-file header links the forum proposal's post"
             manifest = multi.get("content_manifest")
             assert isinstance(manifest, list) and manifest \
                 and manifest[0]["path"] == "docs/one.md" \
