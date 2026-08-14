@@ -45,10 +45,11 @@ def _authorized(request) -> bool:
         return False
     try:
         decoded = base64.b64decode(header.split(" ", 1)[1]).decode()
+        user, _, pw = decoded.partition(":")
+        return (secrets.compare_digest(user, ADMIN_USER)
+                and secrets.compare_digest(pw, ADMIN_PASSWORD))
     except Exception:
         return False
-    user, _, pw = decoded.partition(":")
-    return user == ADMIN_USER and pw == ADMIN_PASSWORD
 
 
 def _admin_user(request) -> str:
