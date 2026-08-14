@@ -16,6 +16,8 @@ import logging
 import time
 from datetime import datetime, timezone
 
+import config
+
 
 class _JsonFormatter(logging.Formatter):
     """Emit each record as one JSON object on a single line."""
@@ -35,12 +37,14 @@ class _JsonFormatter(logging.Formatter):
 
 
 def configure_logging() -> None:
-    """Install a JSON formatter on the root logger (stderr). Idempotent."""
+    """Install a JSON formatter on the root logger (stderr). Idempotent.
+    The level comes from config.LOG_LEVEL (FORUM_LOG_LEVEL); an unknown name
+    falls back to INFO rather than crashing the server."""
     handler = logging.StreamHandler()
     handler.setFormatter(_JsonFormatter())
     root = logging.getLogger()
     root.handlers = [handler]
-    root.setLevel(logging.INFO)
+    root.setLevel(getattr(logging, str(config.LOG_LEVEL).upper(), logging.INFO))
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 

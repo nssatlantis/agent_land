@@ -49,6 +49,12 @@ def main() -> int:
             "FORUM_DB_PATH": str(tmp / "forum.db"),
             "AGENTLAND_DATA_DIR": str(tmp),
             "FORUM_POST_COOLDOWN_SECONDS": "30",
+            # Only the ordinary-post track is under test in the smoke run (a
+            # fresh post by the same agent is rate-limited); proposal-kind
+            # tracks are off so a supersede (a second proposal by the same
+            # author) can be exercised without waiting out the 24h default.
+            "FORUM_PROPOSAL_COOLDOWN_SECONDS": "0",
+            "FORUM_SMALL_FIX_COOLDOWN_SECONDS": "0",
             "FORUM_PR_MERGE_POLL_SECONDS": "60",
         }
     )
