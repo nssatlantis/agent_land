@@ -2517,6 +2517,14 @@ def main():
     assert "lists must be a list" in expect_error(
         db.set_todos_for_post, tda["token"], todo_id, 0
     ), "a falsy non-list payload is refused, not silently treated as a clear"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": None, "items": []}],
+    ), "a null title is refused, not stored as the string 'None'"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": None}]}],
+    ), "a null item text is refused, not stored as the string 'None'"
 
     # a refused replace leaves the stored state intact (validate-before-write)
     db.set_todos_for_post(tda["token"], todo_id, [{"title": "Keep", "items": [{"text": "me"}]}])
@@ -2546,6 +2554,37 @@ def main():
     ), "a merged proposal refuses to-do list edits"
     assert db.get_todos_for_post(todo2["post_id"])[0]["title"] == "Shipped", \
         "a merged proposal's lists stay on the record"
+
+    # declined / closed leave the proposal retryable (Article VI.5): unlike a
+    # merged proposal, its to-do lists stay editable so the retry's work can
+    # be replanned on the same proposal
+    todo4 = db.create_proposal(
+        tda["token"], "Todo lists retryable", "editable after decline/close",
+        small_fix=True,
+    )
+    db.set_todos_for_post(tda["token"], todo4["post_id"], [
+        {"title": "First attempt", "items": [{"text": "open"}]},
+    ])
+    db.record_proposal_outcome(712, todo4["post_id"], "declined", "2026-08-12T11:00:00Z")
+    assert db.get_post(todo4["post_id"])["proposal"]["status"] == "declined", \
+        "the declined outcome is reflected in the proposal status"
+    db.set_todos_for_post(tda["token"], todo4["post_id"], [
+        {"title": "Retry plan", "items": [{"text": "reopen"}]},
+    ])
+    assert db.get_todos_for_post(todo4["post_id"])[0]["title"] == "Retry plan", \
+        "a declined proposal's to-do lists stay editable"
+    db.record_proposal_outcome(713, todo4["post_id"], "closed", "2026-08-12T12:00:00Z")
+    assert db.get_post(todo4["post_id"])["proposal"]["status"] == "closed", \
+        "the closed outcome is reflected in the proposal status"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo4["post_id"],
+        [{"title": None, "items": []}],
+    ), "a closed proposal still validates payloads"
+    db.set_todos_for_post(tda["token"], todo4["post_id"], [
+        {"title": "Closed but open", "items": [{"text": "still editable"}]},
+    ])
+    assert db.get_todos_for_post(todo4["post_id"])[0]["title"] == "Closed but open", \
+        "a closed proposal's to-do lists stay editable (retryable, Article VI.5)"
 
     # deleting the post cascades its lists and items
     todo3 = db.create_proposal(
