@@ -591,6 +591,10 @@ async def main():
             print(unwrap(await session.call_tool(
                 "update_todos", {"token": token2, "post_id": 999999, "lists": []}
             )), "\n")
+            print("== get_todos on an unknown post (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "get_todos", {"post_id": 999999}
+            )), "\n")
 
             # Superseding posts a second proposal by the same author, so it
             # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
