@@ -120,6 +120,15 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     # config: each commit is fsynced before the write returns.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    # Read-path pragmas on every connection: mmap serves reads from the OS
+    # page cache without copying through per-connection caches (silently
+    # falls back to read() where mmap is unsupported), and temp_store MEMORY
+    # keeps sort temp B-trees in RAM. Both are call-time tunables; temp_store
+    # is guarded to its valid range (anything else errors every connection).
+    conn.execute(f"PRAGMA mmap_size = {config.SQLITE_MMAP_SIZE_BYTES}")
+    temp_store = config.SQLITE_TEMP_STORE
+    if temp_store in (0, 1, 2):
+        conn.execute(f"PRAGMA temp_store = {temp_store}")
     try:
         if immediate:
             conn.execute("BEGIN IMMEDIATE")
