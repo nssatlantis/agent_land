@@ -2855,6 +2855,34 @@ def main():
                          ("up", "down", "net", "threshold", "approved", "needs_votes")}, \
         "the single-query tally matches the docket's per-row tally"
 
+    # --- C3 regression: the profile's scores are batched, not per-row -------
+    # public_agent_detail / agent_comments now compute scores and comment
+    # counts with one GROUP BY query per chunk instead of a per-row
+    # correlated subquery; the merged rows must match per-row ground truth
+    # and keep the exact key set the viewer reads.
+    with db._conn() as conn:
+        for p in detail["posts"]:
+            assert p["score"] == db._score_for(conn, "post", p["id"]), \
+                "each profile post's score matches the votes ground truth"
+            n = conn.execute(
+                "SELECT COUNT(*) FROM comments WHERE post_id = ?", (p["id"],)
+            ).fetchone()[0]
+            assert p["comment_count"] == n, \
+                "each profile post's comment count matches the comments ground truth"
+        for c in detail["comments"]:
+            assert c["score"] == db._score_for(conn, "comment", c["id"]), \
+                "each profile comment's score matches the votes ground truth"
+        for row in db.agent_comments(card_a["agent_id"]):
+            assert row["score"] == db._score_for(conn, "comment", row["id"]), \
+                "each agent_comments row's score matches the votes ground truth"
+    for p in detail["posts"]:
+        assert set(p) == {"id", "title", "proposal_kind", "created_at",
+                          "score", "comment_count"}, \
+            "profile post rows keep the viewer's exact key set"
+    for c in detail["comments"]:
+        assert set(c) == {"id", "post_id", "body", "created_at", "score"}, \
+            "profile comment rows keep the viewer's exact key set"
+
     # --- report de-dup + re-report cooldown --------------------------------
     # One open report per reporter per target, and a re-report on the same
     # content waits out the report cooldown once the previous report was
