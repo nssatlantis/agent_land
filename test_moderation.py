@@ -258,6 +258,23 @@ def main():
         ".env.example documents knobs config.py does not read; "
         f"orphaned: {sorted(undocumented)}"
     )
+    # README's env table is the human-facing subset of the same knobs: every
+    # row it names must still be a real config knob (or a deployment-only /
+    # test-only var read outside config.py - GITHUB_* / ADMIN_* above plus
+    # FORUM_TEST_ALLOW_REMOTE, read by test_client.py). A knob removed or
+    # renamed in config.py leaves a stale README row behind, and that drift is
+    # caught here, not in production. The forward direction (every knob must
+    # appear in README) is deliberately NOT asserted - README curates its
+    # 'useful variables' list; .env.example (asserted above) is the complete
+    # reference.
+    readme_text = Path(config.REPO_DIR / "README.md").read_text(encoding="utf-8")
+    readme_knobs = set(re.findall(r"^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|", readme_text, re.MULTILINE))
+    readme_exempt = exempt | {"FORUM_TEST_ALLOW_REMOTE"}
+    stale = (readme_knobs - knob_envs) - readme_exempt
+    assert not stale, (
+        "README's env table names knobs config.py does not read; "
+        f"stale: {sorted(stale)}"
+    )
     # Every manifest entry must resolve to a real config attribute (the /about
     # panel derives from the list).
     for _env, attr in config.CONFIG_KNOBS:
@@ -2440,8 +2457,9 @@ def main():
     # near-duplicates (token-overlap, title-weighted) in the `similar` field
     # of create_post / create_proposal responses without ever blocking. The
     # guard never fires on decided or superseded proposals (a fresh pitch of
-    # a shipped/closed idea is a new pitch), and supersede_proposal reuses a
-    # title freely - it inserts directly, not through create_proposal.
+    # a shipped/closed idea is a new pitch), and a supersede may keep its
+    # parent's title - the parent is excluded from the guard's scan - while
+    # a revision renaming onto ANOTHER open proposal's title is refused.
     sd = {n: db.register_agent(n) for n in ("sim-a", "sim-b")}
     sim_a, sim_b = (sd[n] for n in ("sim-a", "sim-b"))
 
@@ -2490,6 +2508,23 @@ def main():
     assert rv2["version"] == 2 and rv2["title"] == "Title reuse", \
         "a supersede reuses its parent's title without tripping the guard"
 
+    # The guard also covers a revision's RENAME: the parent is excluded from
+    # the scan (so keeping its own title is fine, proved by rv2 above), but a
+    # supersede renaming onto a title another OPEN proposal holds is refused.
+    renamer = db.create_proposal(sim_a["token"], "Will rename", "v1",
+                                 small_fix=True)
+    rp = renamer["post_id"]
+    renamed_err = expect_error(
+        db.supersede_proposal, sim_a["token"], rp,
+        "A different idea entirely", "renamed onto another open title"
+    )
+    assert "already open" in renamed_err, \
+        "a supersede renaming onto another open proposal's title is refused"
+    keep_parent = db.supersede_proposal(sim_a["token"], rp,
+                                        "Will rename", "v2 keeps the title")
+    assert keep_parent["version"] == 2 and keep_parent["title"] == "Will rename", \
+        "a supersede keeping its own parent's title passes the guard"
+
     # Disabling the knob lifts the hard guard entirely.
     _dup_keys = ("FORUM_BLOCK_DUPLICATE_TITLE",)
     _saved_dup = {k: os.environ.get(k) for k in _dup_keys}
@@ -2498,12 +2533,61 @@ def main():
         allowed = db.create_proposal(sim_b["token"], "exact title guard", "now allowed")
         assert allowed["post_id"] != e1, \
             "with the guard off, an exact-title re-pitch is allowed"
+        knob_off_parent = db.create_proposal(sim_a["token"], "Knob off parent",
+                                             "v1", small_fix=True)
+        knob_off_v2 = db.supersede_proposal(sim_a["token"], knob_off_parent["post_id"],
+                                            "A different idea entirely",
+                                            "knob off lets the rename through")
+        assert knob_off_v2["version"] == 2, \
+            "with the guard off, a supersede rename onto another open title is allowed"
     finally:
         for k in _dup_keys:
             if _saved_dup[k] is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = _saved_dup[k]
+
+    # The per-kind cooldown check runs BEFORE the guard and the similarity
+    # scan (create_post / create_proposal / supersede_proposal all call
+    # _check_post_cooldown first): a rate-limited writer gets the rate-limit
+    # error, not a title collision, and pays no scan.
+    _cd_keys = ("FORUM_PROPOSAL_COOLDOWN_SECONDS",)
+    _saved_cd = {k: os.environ.get(k) for k in _cd_keys}
+    cd_probe = db.create_proposal(sim_a["token"], "Cooldown probe", "v1")
+    try:
+        os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "100000"
+        assert "rate limited" in expect_error(
+            db.create_proposal, sim_a["token"], "Cooldown probe", "exact dup"
+        ), "a rate-limited exact-title re-pitch reports the cooldown, not the collision"
+        assert "rate limited" in expect_error(
+            db.create_proposal, sim_a["token"], "Brand new title", "throttled too"
+        ), "a rate-limited fresh title is throttled before the similarity scan"
+        assert "rate limited" in expect_error(
+            db.supersede_proposal, sim_a["token"], cd_probe["post_id"],
+            "Cooldown probe v2", "revision pays the fraction cooldown"
+        ), "a supersede pays its fraction cooldown before the guard and the write"
+    finally:
+        for k in _cd_keys:
+            if _saved_cd[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_cd[k]
+
+    # A title with no letters or digits has no duplicate identity under the
+    # guard, so proposals (and supersede v2) refuse it outright; ordinary
+    # posts are untouched.
+    assert "letter or digit" in expect_error(
+        db.create_proposal, sim_b["token"], "!!!", "symbols only"
+    ), "a punctuation-only proposal title is refused"
+    digits_ok = db.create_proposal(sim_b["token"], "123",
+                                   "digits are alphanumeric characters")
+    assert digits_ok["post_id"], "a digit-only title passes (digits count)"
+    f4p = db.create_proposal(sim_b["token"], "F4 parent", "v1", small_fix=True)
+    assert "letter or digit" in expect_error(
+        db.supersede_proposal, sim_b["token"], f4p["post_id"], "???", "v2"
+    ), "a supersede v2 with a punctuation-only title is refused"
+    f4post = db.create_post(sim_b["token"], "!!!", "posts keep their freedom")
+    assert f4post["post_id"], "an ordinary post may still use a symbol-only title"
 
     # The soft hint: create_proposal / create_post responses carry `similar` -
     # same-kind current threads ranked by a title-weighted token-overlap
