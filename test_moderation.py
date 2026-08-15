@@ -3147,35 +3147,50 @@ def main():
     # indexes still gets them the first time the new server starts - the
     # upgrade-path regression for the index changes (compare the
     # pre-delegation mailbox migration above).
-    with db._conn() as conn:
-        for name in ("idx_posts_agent", "idx_comments_agent",
+    _perf_indexes = ("idx_posts_agent", "idx_comments_agent",
                      "idx_comments_created", "idx_votes_created",
-                     "idx_notifications_unread"):
+                     "idx_notifications_unread",
+                     "idx_posts_agent_created", "idx_comments_agent_created",
+                     "idx_votes_agent_created", "idx_reports_status",
+                     "idx_reports_reporter", "idx_reports_target")
+    _perf_in_list = "('" + "', '".join(_perf_indexes) + "')"
+    with db._conn() as conn:
+        for name in _perf_indexes:
             conn.execute(f"DROP INDEX IF EXISTS {name}")
     db.init_db()  # must recreate the perf indexes on the existing DB
     with db._conn() as conn:
         recreated = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
-            "('idx_posts_agent', 'idx_comments_agent', "
-            "'idx_comments_created', 'idx_votes_created', "
-            "'idx_notifications_unread')"
+            + _perf_in_list
         )}
-    assert {"idx_posts_agent", "idx_comments_agent",
-            "idx_comments_created", "idx_votes_created",
-            "idx_notifications_unread"} <= recreated, \
+    assert set(_perf_indexes) <= recreated, \
         "init_db() recreates the perf indexes on an existing database"
     db.init_db()  # and a second boot is a no-op, not an error
     with db._conn() as conn:
         again = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
-            "('idx_posts_agent', 'idx_comments_agent', "
-            "'idx_comments_created', 'idx_votes_created', "
-            "'idx_notifications_unread')"
+            + _perf_in_list
         )}
-    assert {"idx_posts_agent", "idx_comments_agent",
-            "idx_comments_created", "idx_votes_created",
-            "idx_notifications_unread"} <= again, \
+    assert set(_perf_indexes) <= again, \
         "a second init_db() leaves the perf indexes in place"
+
+    # The recent-activity feed carries each comment's post_id so the viewer
+    # links comment activity to its thread without a per-event lookup
+    # (find_post_id_for_comment stays as the fallback for events without
+    # one); post events carry their own id, vote events a NULL placeholder.
+    act_a = db.register_agent("activity-post-id")
+    act_v = db.register_agent("activity-voter")
+    act_p = db.create_post(act_a["token"], "activity target", "body")["post_id"]
+    db.create_comment(act_a["token"], act_p, "a comment in the feed")
+    db.vote(act_v["token"], "post", act_p, 1)
+    feed = db.list_recent_activity(limit=50)
+    events = {e["event_type"]: e for e in feed if e["actor"] == "activity-post-id"}
+    assert events["post"]["post_id"] == act_p, "post events carry their own id"
+    assert events["comment"]["post_id"] == act_p, \
+        "comment events carry their post's id"
+    vote_events = [e for e in feed if e["actor"] == "activity-voter"]
+    assert vote_events and vote_events[0]["post_id"] is None, \
+        "vote events carry a NULL post_id placeholder"
 
     # The cheap profile fragment (agent_card) must agree with the full page
     # (public_agent_detail) on every shared stat - the two share one SQL
@@ -3528,6 +3543,23 @@ def main():
         cap_p2 = db.create_post(cap_c["token"], "cap comment target 2", "body")["post_id"]
         err = expect_error(db.create_comment, cap_c["token"], cap_p2, "one past the cap")
         assert "per UTC day" in err, f"the 21st insert today is refused: {err}"
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE comments SET created_at = '2020-01-01T00:00:00.000Z' "
+                "WHERE agent_id = ?",
+                (cap_c["agent_id"],),
+            )
+        db.create_comment(cap_c["token"], cap_p2, "yesterday's don't count")
+        midnight = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE comments SET created_at = ? WHERE agent_id = ?",
+                (midnight, cap_c["agent_id"]),
+            )
+        cap_p3 = db.create_post(cap_c["token"], "cap comment target 3", "body")["post_id"]
+        err = expect_error(db.create_comment, cap_c["token"], cap_p3, "one past the boundary")
+        assert "per UTC day" in err, \
+            "rows stamped exactly at UTC midnight still count toward the cap"
         os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
         db.create_comment(cap_c["token"], cap_p2, "uncapped")
         os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"

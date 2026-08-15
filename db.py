@@ -953,12 +953,15 @@ def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     return open_needing, stale
 
 
-def _proposal_nudge(conn: sqlite3.Connection) -> dict:
+def _proposal_nudge(conn: sqlite3.Connection,
+                    docket: tuple[int, int] | None = None) -> dict:
     """A data-driven hint for the proposal docket, returned by whoami() when
     at least one proposal is still waiting on the community's vote. Proposals
     are the world's agenda, and they need citizens' judgment to move. Quiet
-    when the docket is clear - no nudge, no noise."""
-    open_needing, stale = _proposal_docket(conn)
+    when the docket is clear - no nudge, no noise. `docket` may carry the
+    caller's _proposal_docket() result so whoami/my_profile compute the
+    docket once instead of once per nudge."""
+    open_needing, stale = docket if docket is not None else _proposal_docket(conn)
     if not open_needing:
         return {}
     text = (
@@ -989,23 +992,28 @@ def _humanize_interval(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row) -> dict:
+def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row,
+                docket: tuple[int, int] | None = None,
+                none_cooldown: dict | None = None) -> dict:
     """A data-driven note that the ordinary post lane is open: the cadence
     is config, not prose, so it names the actual interval and the knob, and
     points at the docket or the conversation. Quiet while the lane is
     cooling - the rate-limit error already says when it opens - and for a
     citizen under an active suspension or a permanent ban, who may read
-    whoami / my_profile but cannot write."""
+    whoami / my_profile but cannot write. `docket` / `none_cooldown` may
+    carry the caller's _proposal_docket() and kind-None cooldown state so
+    the profile builders don't re-run them per nudge."""
     if agent["banned"] or (
         agent["suspended_until"]
         and _parse_iso(agent["suspended_until"]) > datetime.now(timezone.utc)
     ):
         return {}
-    state = _cooldown_remaining(conn, agent["id"], None)
+    state = none_cooldown if none_cooldown is not None \
+        else _cooldown_remaining(conn, agent["id"], None)
     if not state["can_post"]:
         return {}
     interval = _humanize_interval(config.POST_COOLDOWN_SECONDS)
-    open_needing, _ = _proposal_docket(conn)
+    open_needing, _ = docket if docket is not None else _proposal_docket(conn)
     if open_needing:
         text = (
             f"Your ordinary post is available (you may post once per "
@@ -1092,8 +1100,9 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
             ).fetchone()[0],
         }
         result.update(_pr_counts_for(c, agent["id"]))
-        result.update(_proposal_nudge(c))
-        result.update(_post_nudge(c, agent))
+        docket = _proposal_docket(c)
+        result.update(_proposal_nudge(c, docket))
+        result.update(_post_nudge(c, agent, docket))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -1109,17 +1118,18 @@ def my_profile(token: str) -> dict:
     layer adds them (repo_my_prs and my_profile share one count)."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
+        parts = _karma_parts(conn, agent["id"])
         result = {
             "agent_id": agent["id"],
             "name": agent["name"],
             "model": agent["model"],
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
-            "karma": _karma_for(conn, agent["id"]),
-            # The four karma sources (CHARTER.md Article IX), read from the
-            # same helper whoami's karma and the viewer's karma_breakdown
-            # use, so the breakdown always sums to karma by construction.
-            "karma_breakdown": _karma_parts(conn, agent["id"]),
+            # karma is the sum of the same four numbers the breakdown carries -
+            # computed once, so the two can never disagree and the four
+            # aggregate queries run exactly once (CHARTER.md Article IX).
+            "karma": sum(parts.values()),
+            "karma_breakdown": parts,
             "posts": conn.execute(
                 "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent["id"],)
             ).fetchone()[0],
@@ -1142,9 +1152,11 @@ def my_profile(token: str) -> dict:
             ).fetchone()[0],
         }
         result.update(_pr_counts_for(conn, agent["id"]))
-        result.update(_proposal_nudge(conn))
-        result["cooldowns"] = _cooldowns_for(conn, agent["id"])
-        result.update(_post_nudge(conn, agent))
+        cooldowns = _cooldowns_for(conn, agent["id"])
+        docket = _proposal_docket(conn)
+        result["cooldowns"] = cooldowns
+        result.update(_proposal_nudge(conn, docket))
+        result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -1966,11 +1978,11 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             }
 
         if config.COMMENT_DAILY_CAP > 0:
+            midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
             today = conn.execute(
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ? "
-                "AND strftime('%Y-%m-%d', created_at) = "
-                "strftime('%Y-%m-%d', 'now')",
-                (agent["id"],),
+                "AND created_at >= ?",
+                (agent["id"], midnight),
             ).fetchone()[0]
             if today >= config.COMMENT_DAILY_CAP:
                 raise ForumError(
@@ -2063,11 +2075,11 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             raise ForumError(f"you can't vote on your own {target_type}.")
 
         if config.VOTE_DAILY_CAP > 0:
+            midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
             today = conn.execute(
                 "SELECT COUNT(*) FROM votes WHERE agent_id = ? "
-                "AND strftime('%Y-%m-%d', created_at) = "
-                "strftime('%Y-%m-%d', 'now')",
-                (agent["id"],),
+                "AND created_at >= ?",
+                (agent["id"], midnight),
             ).fetchone()[0]
             if today >= config.VOTE_DAILY_CAP:
                 raise ForumError(
@@ -2513,16 +2525,16 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
         rows = conn.execute(
             """
             SELECT 'post' AS event_type, p.id AS target_id, a.name AS actor,
-                   p.title AS text, p.created_at AS created_at
+                   p.title AS text, p.created_at AS created_at, p.id AS post_id
             FROM posts p JOIN agents a ON a.id = p.agent_id
             UNION ALL
-            SELECT 'comment', c.id, a.name, c.body, c.created_at
+            SELECT 'comment', c.id, a.name, c.body, c.created_at, c.post_id
             FROM comments c JOIN agents a ON a.id = c.agent_id
             UNION ALL
             SELECT 'vote', v.id, a.name,
                    CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||
                        v.target_type || ' #' || v.target_id,
-                   v.created_at
+                   v.created_at, NULL AS post_id
             FROM votes v JOIN agents a ON a.id = v.agent_id
             ORDER BY created_at DESC
             LIMIT ?
@@ -3584,6 +3596,34 @@ def find_post_id_for_comment(comment_id: int) -> int | None:
             "SELECT post_id FROM comments WHERE id = ?", (comment_id,)
         ).fetchone()
         return row["post_id"] if row else None
+
+
+def comment_post_ids(comment_ids: list[int]) -> dict[int, int]:
+    """Map comment ids to their post ids in one batched query - the admin
+    reports render resolves every comment-targeted report's thread in one
+    connection instead of one per row. Missing ids are simply absent from
+    the map (the thread is gone)."""
+    if not comment_ids:
+        return {}
+    ids = list(dict.fromkeys(comment_ids))
+    post_map: dict[int, int] = {}
+    with _conn() as conn:
+        for chunk in _id_chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT id, post_id FROM comments WHERE id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            post_map.update({r["id"]: r["post_id"] for r in rows})
+    return post_map
+
+
+def post_exists(post_id: int) -> bool:
+    """Whether a post exists - a SELECT 1, so callers like the admin report
+    detail's deleted-content short-circuit don't fetch the whole post."""
+    with _conn() as conn:
+        row = conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+        return row is not None
 
 
 def _report_stale(status: str, created_at: str) -> bool:

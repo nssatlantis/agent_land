@@ -798,7 +798,7 @@ def _activity_line(e: dict) -> str:
     if e["event_type"] == "post":
         label = f'<a href="/posts/{e["target_id"]}" style="color:var(--accent)">post #{e["target_id"]}</a>'
     elif e["event_type"] == "comment":
-        post_id = db.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or db.find_post_id_for_comment(e["target_id"])
         href = f"/posts/{post_id}" if post_id else "#"
         label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
     else:
@@ -1961,7 +1961,7 @@ def _feed_item(e: dict) -> str:
         title = f"post: {e['text']}"
         body = f"{e['actor']} posted."
     elif e["event_type"] == "comment":
-        post_id = db.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or db.find_post_id_for_comment(e["target_id"])
         url = _abs(f"/posts/{post_id}") if post_id else _abs("/")
         title = f"comment by {e['actor']}"
         body = e["text"]
@@ -2107,10 +2107,19 @@ async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, st
         return label, None, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}"
 
 
-async def _status_reads() -> tuple[dict, dict, dict, list | None]:
+async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | None]:
     """The status page's shared reads: (by_name, latency, repo, prs). Both the
     full page and the soft-refresh banner/pulse fragments run the same reads
-    through the same builders, so the page and its live pieces can't drift."""
+    through the same builders, so the page and its live pieces can't drift.
+    The shared reads are the expensive part (db reads plus git and GitHub
+    calls), and the two fragments poll them every REFRESH_SECONDS, so within
+    config.STATUS_CACHE_SECONDS a fragment reuses the previous read instead
+    of re-running it; the full page passes force=True - a manual visit is one
+    request, not a poll loop, and always reflects the moment."""
+    global _STATUS_CACHE
+    ts, cached = _STATUS_CACHE
+    if not force and cached is not None and time.monotonic() - ts < config.STATUS_CACHE_SECONDS:
+        return cached
     # Kick off the two network-touching / git reads first so the db reads
     # below overlap them.
     repo_task = asyncio.create_task(asyncio.to_thread(_git_sync_status))
@@ -2130,7 +2139,20 @@ async def _status_reads() -> tuple[dict, dict, dict, list | None]:
     by_name = {label: value for label, value, _, _ in reads}
     repo = await repo_task
     prs = await prs_task
-    return by_name, latency, repo, prs
+    result = (by_name, latency, repo, prs)
+    _STATUS_CACHE = (time.monotonic(), result)
+    return result
+
+
+# The status page's shared reads are the expensive ones (db reads plus git
+# and GitHub calls), and the soft-refresh banner and pulse fragments poll
+# them every REFRESH_SECONDS. A short TTL lets the two fragments share one
+# read while the full page always reads fresh - it is one request, not a
+# poll loop (see _status_reads' force flag). The cache is a single module
+# global and assumes one server process (asyncio is single-threaded, so no
+# lock is needed); under a multi-worker deploy each worker would hold its
+# own cache, which a 5s TTL makes harmlessly eventually-consistent.
+_STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
 
 def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
@@ -2236,7 +2258,7 @@ def _show_more(count: int, inner: str) -> str:
 
 
 async def status_page(request: Request) -> HTMLResponse:
-    by_name, latency, repo, prs = await _status_reads()
+    by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)
 
     def _check_row(check: dict) -> str:
