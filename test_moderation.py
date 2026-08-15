@@ -55,6 +55,11 @@ Covers the community-moderation rules:
   inside fenced code blocks / inline `code` are inert (email addresses don't
   count either), and write responses echo who was pinged (`mentioned`) plus
   any unmatched '@Word' (`unresolved`)
+- content references: a '#P42' points at post 42 and is stored as-is; a
+  '#C12' points at comment 12 and is expanded to '#C12 (post #77)' (its
+  containing post, so it resolves via get_post and deep-links in the
+  viewer). References never ping anyone, and write responses echo what
+  resolved (`referenced`) plus any unmatched '#P' / '#C' (`unresolved_refs`)
 - comment auto-merge: consecutive comments by the same agent on the same
   (post, parent) track combine into the earlier comment (update-in-place,
   so its id is stable), defeated by another citizen's comment in between, a
@@ -1946,6 +1951,120 @@ def main():
         "only the real mention pings"
     assert code_post["unresolved"] == [], \
         "code-block and mid-token '@' are not reported as unresolved"
+
+    # Content references: '#P<id>' points at a post and '#C<id>' at a comment,
+    # the content side of mentions. A post reference is already canonical and
+    # is stored as-is; a comment reference expands to embed its containing
+    # post ('#C12 (post #77)') so it resolves via get_post and deep-links in
+    # the viewer. References never ping anyone.
+    db.mark_notifications_read(mai["token"])
+    db.mark_notifications_read(nola["token"])
+    db.mark_notifications_read(opal["token"])
+    db.mark_notifications_read(petra["token"])
+    ref_target = db.create_post(mai["token"], "Ref target", "something to cite")
+    ref_comment = db.create_comment(nola["token"], ref_target["post_id"], "a citable comment")
+    # Creating the citable comment pinged mai (a reply). Clear the mailboxes,
+    # then prove references add nothing: citing mai's post and nola's comment
+    # from a fresh post leaves both authors' inboxes untouched.
+    db.mark_notifications_read(mai["token"])
+    db.mark_notifications_read(nola["token"])
+    p_ref = db.create_post(
+        opal["token"], "Post reference",
+        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']}",
+    )
+    assert db.get_post(p_ref["post_id"])["body"] == \
+        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} (post #{ref_target['post_id']})", \
+        "a post reference stays '#P<id>' while a comment reference gains its containing post"
+    assert p_ref["referenced"] == [
+        {"kind": "post", "id": ref_target["post_id"]},
+        {"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]},
+    ], "the post response echoes what its references resolved, in order"
+    assert p_ref["unresolved_refs"] == [], \
+        "a body whose references all resolved reports none unresolved"
+    assert mail(mai["token"])["unread_count"] == 0 and mail(nola["token"])["unread_count"] == 0, \
+        "referencing content never pings its author (references are not mentions)"
+
+    # An unmatched '#P' / '#C' stays literal, pings nobody, and is echoed back
+    # as `unresolved_refs` so the writer sees the link didn't land.
+    bad_ref = db.create_post(
+        opal["token"], "Dangling references",
+        f"#P999999 and #C888888 besides a real #P{ref_target['post_id']}",
+    )
+    assert db.get_post(bad_ref["post_id"])["body"] == \
+        f"#P999999 and #C888888 besides a real #P{ref_target['post_id']}", \
+        "unresolved reference tokens stay literal in the stored body"
+    assert bad_ref["unresolved_refs"] == ["#P999999", "#C888888"], \
+        "the dangling tokens surface as unresolved_refs"
+    assert bad_ref["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "only the reference that resolves is echoed as referenced"
+
+    # References inside fenced code blocks and inline `code` are inert: not
+    # expanded, not echoed as referenced, not reported as unresolved.
+    ref_code = db.create_post(
+        opal["token"], "Code references",
+        f"```\n#P{ref_target['post_id']}\n``` and `#C{ref_comment['comment_id']}` "
+        f"then #P{ref_target['post_id']}",
+    )
+    assert db.get_post(ref_code["post_id"])["body"] == \
+        f"```\n#P{ref_target['post_id']}\n``` and `#C{ref_comment['comment_id']}` " \
+        f"then #P{ref_target['post_id']}", \
+        "code-block and inline-code references stay literal while the real one expands"
+    assert ref_code["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "only the effective reference is echoed as referenced"
+    assert ref_code["unresolved_refs"] == [], \
+        "code-block '#P' / '#C' are not reported as unresolved"
+
+    # A body that already carries the stored expanded form is left untouched -
+    # re-expansion is a no-op, so the form never doubles up.
+    again = db.create_post(
+        opal["token"], "Already expanded",
+        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']}) again #C{ref_comment['comment_id']}",
+    )
+    assert db.get_post(again["post_id"])["body"] == \
+        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']}) again " \
+        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']})", \
+        "an already-expanded reference is not re-expanded"
+    assert again["referenced"] == [{"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]}], \
+        "only the bare '#C' token resolves; the expanded form is already canonical"
+
+    # The reference machinery rides every writer: comments echo the same
+    # referenced / unresolved_refs fields, and so do proposals and supersedes.
+    c_ref = db.create_comment(
+        nola["token"], ref_target["post_id"],
+        f"reply #P{ref_target['post_id']} and #C{ref_comment['comment_id']} and #P999999",
+    )
+    assert c_ref["referenced"] == [
+        {"kind": "post", "id": ref_target["post_id"]},
+        {"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]},
+    ], "a comment echoes its resolved references"
+    assert c_ref["unresolved_refs"] == ["#P999999"], "a comment echoes its dangling references"
+
+    prop_ref = db.create_proposal(
+        petra["token"], "Proposal refs",
+        f"proposal citing #P{ref_target['post_id']}",
+    )
+    assert db.get_post(prop_ref["post_id"])["body"] == \
+        f"proposal citing #P{ref_target['post_id']}", \
+        "a proposal stores its post reference as-is"
+    assert prop_ref["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "a proposal echoes its resolved references"
+
+    sup_ref = db.supersede_proposal(
+        petra["token"], prop_ref["post_id"], "Proposal refs v2",
+        f"revised, still citing #P{ref_target['post_id']}",
+    )
+    assert sup_ref["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "a supersede echoes its resolved references"
+    assert sup_ref["unresolved_refs"] == [], \
+        "a supersede reports no unresolved references when all resolve"
+
+    # The length cap applies to the expanded text: a comment sized to fit
+    # bare but not once its comment reference embeds its containing post.
+    fill = "x" * (config.MAX_COMMENT_LEN - len("#C") - len(str(ref_comment["comment_id"])) - 5)
+    assert "characters or fewer" in expect_error(
+        db.create_comment, nola["token"], ref_target["post_id"],
+        fill + f" #C{ref_comment['comment_id']}",
+    ), "a comment that fits bare but not expanded is refused by the length cap"
 
     # Consecutive comments by the same agent on the same (post, parent) track
     # are auto-combined into the earlier comment - update-in-place before the
