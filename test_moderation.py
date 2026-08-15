@@ -3370,6 +3370,160 @@ def main():
     }, "the map holds every linked PR in one lookup"
     print("  linked_pr_openers: ok")
 
+    # --- stale reports: the sweep auto-resolves leaning-clear business --------
+    # resolve_stale_reports() mirrors the proposals' stale flag: an open report
+    # past FORUM_REPORT_STALE_DAYS that the community leaned toward clearing
+    # (clears >= suspends) is auto-resolved - votes archived under each report
+    # id (the reports revamp's invariant), the frozen author and every reporter
+    # notified - while a report leaning toward suspension (suspends > clears)
+    # stays open for the admin with its tally. A verdict decides every open
+    # report on the target, fresh siblings included, so nothing is swallowed
+    # silently (PR #98 review). Idempotent. The reports are backdated by
+    # direct UPDATE (never +00:00); tunables resolve at call time, so the
+    # 5-day window is set per block.
+    _stale_keys = ("FORUM_REPORT_STALE_DAYS", "FORUM_REPORT_SUSPEND_VOTES")
+    _saved_stale = {k: os.environ.get(k) for k in _stale_keys}
+    os.environ["FORUM_REPORT_STALE_DAYS"] = "5"
+    os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "2"
+    try:
+        rs_a = db.register_agent("rs-alpha")     # content author
+        rs_b = db.register_agent("rs-beta")      # reporter + clear vote
+        rs_c = db.register_agent("rs-gamma")     # sibling reporter + suspend
+        rs_d = db.register_agent("rs-delta")     # stay/tie/empty reporter
+        rs_e = db.register_agent("rs-epsilon")   # tie suspender + fresh flag
+        rs_clear_post = db.create_post(rs_a["token"], "rs clear post", "body")["post_id"]
+        rs_stay_post = db.create_post(rs_a["token"], "rs stay post", "body")["post_id"]
+        rs_tie_post = db.create_post(rs_a["token"], "rs tie post", "body")["post_id"]
+        rs_empty_post = db.create_post(rs_a["token"], "rs empty post", "body")["post_id"]
+        # Karma farms: filing reports and voting 'suspend' need earned karma.
+        farm1 = db.create_comment(rs_b["token"], rs_clear_post, "farm 1")
+        db.vote(rs_c["token"], "comment", farm1["comment_id"], 1)    # rs_b karma 1
+        farm2 = db.create_comment(rs_c["token"], rs_clear_post, "farm 2")
+        db.vote(rs_b["token"], "comment", farm2["comment_id"], 1)    # rs_c karma 1
+        farm3 = db.create_comment(rs_d["token"], rs_clear_post, "farm 3")
+        db.vote(rs_b["token"], "comment", farm3["comment_id"], 1)    # rs_d karma 1
+        farm4 = db.create_comment(rs_e["token"], rs_clear_post, "farm 4")
+        db.vote(rs_b["token"], "comment", farm4["comment_id"], 1)    # rs_e karma 1
+        rs_clear = db.report_content(rs_b["token"], "post", rs_clear_post, "leans clear")
+        rs_sibling = db.report_content(rs_c["token"], "post", rs_clear_post, "sibling flag")
+        rs_stay = db.report_content(rs_d["token"], "post", rs_stay_post, "leans suspend")
+        rs_tie = db.report_content(rs_d["token"], "post", rs_tie_post, "tie target")
+        rs_empty = db.report_content(rs_d["token"], "post", rs_empty_post, "no votes")
+        old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=6)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE reports SET created_at = ? WHERE id IN (?, ?, ?, ?, ?)",
+                (old, rs_clear["report_id"], rs_sibling["report_id"],
+                 rs_stay["report_id"], rs_tie["report_id"], rs_empty["report_id"]),
+            )
+        # A fresh sibling on the clear target: filed now, not stale - but the
+        # target verdict still decides it, and its reporter is told (the
+        # sweep must not swallow fresh siblings silently).
+        rs_fresh = db.report_content(rs_e["token"], "post", rs_clear_post, "fresh sibling")
+        docket = {r["id"]: r for r in db.list_reports()}
+        for rid in (rs_clear["report_id"], rs_sibling["report_id"], rs_stay["report_id"],
+                    rs_tie["report_id"], rs_empty["report_id"]):
+            assert docket[rid]["stale"] is True, \
+                "open reports past the window are flagged stale on the docket"
+        assert docket[rs_fresh["report_id"]]["stale"] is False, \
+            "a fresh sibling is not stale - the flag is about age"
+        # rs_c condemns the lean-clear report; rs_b clears the sibling;
+        # rs_b condemns the lean-suspend one; the tie gets one of each.
+        db.vote_on_report(rs_c["token"], rs_clear["report_id"], "suspend")
+        db.vote_on_report(rs_b["token"], rs_sibling["report_id"], "clear")
+        db.vote_on_report(rs_b["token"], rs_stay["report_id"], "suspend")
+        db.vote_on_report(rs_e["token"], rs_tie["report_id"], "suspend")
+        db.vote_on_report(rs_c["token"], rs_tie["report_id"], "clear")
+        assert db.resolve_stale_reports() == 5, \
+            "the sweep clears both stale reports on the clear target, its fresh " \
+            "sibling, the tie and the no-vote report - 5 reports in all"
+        state = {r["id"]: r for r in db.list_reports()}
+        assert state[rs_clear["report_id"]]["status"] == "cleared" and \
+            state[rs_sibling["report_id"]]["status"] == "cleared", \
+            "clears >= suspends auto-resolves every stale report on the target"
+        assert state[rs_fresh["report_id"]]["status"] == "cleared", \
+            "a fresh sibling shares the target verdict"
+        assert state[rs_fresh["report_id"]]["stale"] is False, \
+            "a resolved report is no longer stale"
+        assert state[rs_stay["report_id"]]["status"] == "open", \
+            "suspends > clears keeps a stale report open for the admin"
+        assert state[rs_stay["report_id"]]["suspend_votes"] == 1, \
+            "the leaning-suspend report keeps its tally across the sweep"
+        assert state[rs_tie["report_id"]]["status"] == "cleared", \
+            "a stale tie (clears == suspends) is cleared, not left hanging"
+        assert state[rs_empty["report_id"]]["status"] == "cleared", \
+            "a stale report with no votes is cleared (0 >= 0)"
+        with db._conn() as conn:
+            live_clear = conn.execute(
+                "SELECT COUNT(*) FROM report_votes WHERE target_id = ?",
+                (rs_clear_post,),
+            ).fetchone()[0]
+            live_stay = conn.execute(
+                "SELECT COUNT(*) FROM report_votes WHERE target_id = ?",
+                (rs_stay_post,),
+            ).fetchone()[0]
+            archived = {
+                row["report_id"]: row["n"] for row in conn.execute(
+                    "SELECT report_id, COUNT(*) AS n FROM report_votes_archive "
+                    "GROUP BY report_id"
+                ).fetchall()
+            }
+        assert live_clear == 0, "the auto-clear wipes the cleared target's votes"
+        assert live_stay == 1, "the staying target's tally survives untouched"
+        assert archived.get(rs_clear["report_id"]) == 2 and \
+            archived.get(rs_sibling["report_id"]) == 2 and \
+            archived.get(rs_fresh["report_id"]) == 2, \
+            "the target's votes are archived under every report it decided"
+        assert archived.get(rs_tie["report_id"]) == 2, \
+            "the tie's two votes are archived under its report id"
+        assert archived.get(rs_empty["report_id"]) in (None, 0), \
+            "a no-vote report archives nothing"
+        # Both sides of every auto-resolution were told - and the report that
+        # stayed open was not.
+        author_mail = db.notifications(rs_a["token"])["notifications"]
+        cleared_targets = {rs_clear_post, rs_tie_post, rs_empty_post}
+        for tid in cleared_targets:
+            assert any(n["kind"] == "moderation" and n["ref_type"] == "post"
+                       and n["ref_id"] == tid and "resolved as cleared" in n["body"]
+                       for n in author_mail), \
+                f"the author is told their content #{tid} was auto-cleared"
+        assert not any(n["kind"] == "moderation" and n["ref_type"] == "post"
+                       and n["ref_id"] == rs_stay_post and "resolved as cleared" in n["body"]
+                       for n in author_mail), \
+            "a still-open report gets no auto-resolution notice"
+        reporter_of = {
+            rs_clear["report_id"]: rs_b["token"],
+            rs_sibling["report_id"]: rs_c["token"],
+            rs_tie["report_id"]: rs_d["token"],
+            rs_empty["report_id"]: rs_d["token"],
+            rs_fresh["report_id"]: rs_e["token"],
+        }
+        for rid, rtoken in reporter_of.items():
+            assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
+                       and n["ref_id"] == rid and "resolved as cleared" in n["body"]
+                       for n in db.notifications(rtoken)["notifications"]), \
+                f"every cleared report's reporter is notified (report #{rid})"
+        assert not any(n["kind"] == "moderation" and n["ref_type"] == "report"
+                       and n["ref_id"] == rs_stay["report_id"]
+                       for n in db.notifications(rs_d["token"])["notifications"]), \
+            "a report that stays open for the admin notifies its reporter of nothing"
+        assert db.resolve_stale_reports() == 0, \
+            "a second sweep is a no-op - no open+stale+leaning-clear remains"
+        resolved = {r["id"] for r in db.list_reports(status="resolved")}
+        assert {rs_clear["report_id"], rs_sibling["report_id"], rs_tie["report_id"],
+                rs_empty["report_id"], rs_fresh["report_id"]} <= resolved, \
+            "auto-cleared reports show up under list_reports(status='resolved')"
+        assert rs_stay["report_id"] not in resolved, \
+            "the staying report is not resolved"
+    finally:
+        for k, v in _saved_stale.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 

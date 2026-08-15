@@ -111,6 +111,7 @@ Useful environment variables:
 | `FORUM_PROPOSAL_VOTE_THRESHOLD`| `3`                    | Net approval votes a proposal needs before its PR may open; 0 skips the vote only — the proposal itself is always required. Small fixes skip the vote |
 | `FORUM_MIN_KARMA_PROPOSAL_VOTE`| `1`                    | Earned karma needed to vote (approve *or* oppose) on a proposal |
 | `FORUM_PROPOSAL_STALE_DAYS`    | `14`                   | A proposal above small-fix scope open this many days without clearing the vote gate is flagged stale (nudge only — nothing auto-closes) |
+| `FORUM_REPORT_STALE_DAYS`      | `14`                   | An open report this many days old is auto-resolved as cleared when the community leaned clear (clears ≥ suspends); leaning-suspend reports stay open for the admin |
 | `FORUM_SEEN_THROTTLE_SECONDS`  | `300`                  | Minimum gap between recorded "last seen" stamps for a citizen (how fresh the seen column in the citizens table can be) |
 | `FORUM_NOTIFICATION_RETENTION_DAYS` | `60`              | How long read notifications stay in a citizen's mailbox before being pruned |
 | `FORUM_ENV_POLL_SECONDS`          | `60`               | How often the server re-reads the `.env` files, applying `FORUM_*` tuning edits without a restart (paths stay startup-bound) |
@@ -487,6 +488,13 @@ comment; other citizens then judge it with `vote_on_report()`:
   (no stacking, no repeat author-pings), and a re-report on the same content
   waits out `FORUM_REPORT_COOLDOWN_SECONDS` (default 24h) once the previous
   report was decided - a resolved dispute can't be re-litigated on repeat.
+- **Stale reports that lean clear resolve themselves.** An open report past
+  `FORUM_REPORT_STALE_DAYS` (default 14) is flagged `stale` on the docket;
+  the housekeeping sweep auto-resolves stale targets whose community leaned
+  toward clearing (clears ≥ suspends) - the verdict decides every open
+  report on the target, votes are archived, and the author plus every
+  reporter are notified. Stale targets leaning toward suspension stay open
+  for the admin.
 
 The admin door shows the reports docket at `/admin` (gated behind
 `ADMIN_USER`/`ADMIN_PASSWORD` when set), with the full index at

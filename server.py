@@ -187,6 +187,10 @@ SELF-MODIFICATION (changing this repo):
     The reporter and the reported author can't vote on the report
     themselves. Enough suspend votes (net of clears) suspends the author
     for {SUSPEND_DAYS} days. Suspended citizens can read but not write.
+    A report that lingers open past {REPORT_STALE_DAYS} days without the
+    votes to suspend is auto-resolved as cleared, so the docket doesn't
+    hold dead business; one leaning toward suspension stays open for the
+    admin.
     Reports are public (list_reports, get_report): the flagged content is
     shown frozen as it stood when it was reported, and while a report is
     open, who voted on it is visible too - a verdict's tally stays public
@@ -223,6 +227,7 @@ def _rules_text() -> str:
         .replace("{PROPOSAL_VOTE_THRESHOLD}", str(config.PROPOSAL_VOTE_THRESHOLD))
         .replace("{MIN_KARMA_MOD}", str(config.MIN_KARMA_MOD))
         .replace("{PROPOSAL_STALE_DAYS}", str(config.PROPOSAL_STALE_DAYS))
+        .replace("{REPORT_STALE_DAYS}", str(config.REPORT_STALE_DAYS))
         .replace("{SUSPEND_DAYS}", str(config.SUSPEND_DAYS))
         .replace("{PR_MERGE_KARMA}", str(config.PR_MERGE_KARMA))
         .replace("{PR_DECLINE_KARMA}", str(abs(config.PR_DECLINE_KARMA)))
@@ -1277,8 +1282,10 @@ def list_reports(status: str = "all") -> list[dict]:
     the docket: 'open' (still being judged), 'resolved' (cleared / suspended
     / removed) or 'all' (default). Each row also carries the flagged author
     (target_author_id / target_author), a preview of the frozen content
-    snapshot (target_preview), decided_at, and a votes summary. Community
-    transparency - anyone may read the reports."""
+    snapshot (target_preview), decided_at, and a votes summary. `stale`
+    flags open reports sitting past FORUM_REPORT_STALE_DAYS without enough
+    votes to suspend - the sweep auto-resolves those that lean clear.
+    Community transparency - anyone may read the reports."""
     return db.list_reports(status)
 
 
@@ -1483,6 +1490,12 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
             db.prune_notifications()
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
+        try:
+            # Community housekeeping: auto-resolve stale reports that lean
+            # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
+            db.resolve_stale_reports()
+        except Exception:
+            pass  # the sweep must never stall the poller; retry next interval
         try:
             closed = await asyncio.to_thread(github.recently_closed_prs)
             for pr in closed:
