@@ -3283,6 +3283,18 @@ def find_post_id_for_comment(comment_id: int) -> int | None:
         return row["post_id"] if row else None
 
 
+def _report_stale(status: str, created_at: str) -> bool:
+    """Whether an open report has lingered past config.REPORT_STALE_DAYS
+    without the community suspending its target - mirroring the proposals'
+    stale flag, so the docket shows which old business the sweep is about to
+    auto-resolve (leaning clear) versus still waiting on the admin (leaning
+    toward suspension)."""
+    if status != "open":
+        return False
+    delta = datetime.now(timezone.utc) - _parse_iso(created_at)
+    return max(0, delta.days) >= config.REPORT_STALE_DAYS
+
+
 def list_reports(status: str = "all") -> list[dict]:
     """All reports, newest first, with current vote tallies and status.
     Tallies are per-target (shared by every report on the same target).
@@ -3295,6 +3307,10 @@ def list_reports(status: str = "all") -> list[dict]:
     (`target_preview`), `decided_at`, and a `votes` summary - additive
     fields; the existing keys (`id`, `status`, `reporter`, `suspend_votes`,
     `clear_votes`, ...) are untouched so older callers keep working.
+    `stale` flags open reports sitting past config.REPORT_STALE_DAYS without
+    enough votes to suspend - the sweep auto-resolves those that lean clear
+    (clears >= suspends), while reports leaning toward suspension stay open
+    for the admin.
     Note the deliberate shape split: rows here are flat (`target_author` is
     the flagged author's name string, `votes` is a {'suspend', 'clear'}
     tally); the rich form - `target_author` as a dict and `votes` as a list
@@ -3331,8 +3347,84 @@ def list_reports(status: str = "all") -> list[dict]:
             d["votes"] = {"suspend": d["suspend_votes"], "clear": d["clear_votes"]}
             d["target_preview"] = _snapshot_preview(d["target_snapshot"])
             d.pop("target_snapshot", None)
+            d["stale"] = _report_stale(d["status"], d["created_at"])
             reports.append(d)
         return reports
+
+
+def resolve_stale_reports() -> int:
+    """Community housekeeping: open reports that have sat past
+    config.REPORT_STALE_DAYS are auto-resolved when the community leaned
+    toward clearing them (clear votes >= suspend votes) - the suspension
+    threshold was never reached, so the content stays up and an open flag
+    with no chance of condemnation is just noise. Reports leaning toward
+    suspension (suspend votes > clear votes) stay open for the admin.
+    A verdict on a target decides every open report on it (mirroring
+    vote_on_report / resolve_report): the community's votes are archived
+    under each report's id, every report is recorded 'cleared' with a
+    decided_at stamp, the content author (frozen at report time) and every
+    reporter are notified, and the number of reports cleared is returned.
+    Idempotent: once cleared nothing is open+stale+leaning-clear anymore,
+    so a second sweep returns 0."""
+    cleared = 0
+    with _conn() as conn:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=config.REPORT_STALE_DAYS)
+        stale_open = [
+            r for r in conn.execute(
+                "SELECT id, target_type, target_id, reporter_agent_id, created_at "
+                "FROM reports WHERE status = 'open'"
+            ).fetchall()
+            if _parse_iso(r["created_at"]) <= cutoff
+        ]
+        by_target: dict[tuple[str, int], list[sqlite3.Row]] = {}
+        for r in stale_open:
+            by_target.setdefault((r["target_type"], r["target_id"]), []).append(r)
+        for (target_type, target_id), _stale in by_target.items():
+            tally = {row["action"]: row["n"] for row in conn.execute(
+                "SELECT action, COUNT(*) AS n FROM report_votes "
+                "WHERE target_type = ? AND target_id = ? GROUP BY action",
+                (target_type, target_id),
+            ).fetchall()}
+            if tally.get("suspend", 0) > tally.get("clear", 0):
+                continue
+            # The verdict decides every open report on the target - a fresh
+            # sibling shares the tally, so it shares the resolution (and its
+            # reporter is told), exactly like vote_on_report / resolve_report.
+            open_on_target = conn.execute(
+                "SELECT id, reporter_agent_id, target_author_id FROM reports "
+                "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                (target_type, target_id),
+            ).fetchall()
+            decided_at = _now_iso()
+            _archive_report_votes(
+                conn,
+                [r["id"] for r in open_on_target],
+                target_type, target_id, decided_at, "cleared",
+            )
+            conn.execute(
+                "UPDATE reports SET status = 'cleared', decided_at = ? "
+                "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                (decided_at, target_type, target_id),
+            )
+            # The author is frozen at report time - a deleted account or
+            # deleted content never defeats the notice.
+            author_id = open_on_target[0]["target_author_id"]
+            if author_id is not None:
+                _notify(
+                    conn, author_id, "moderation", target_type, target_id,
+                    f"The report on your {target_type} #{target_id} was resolved as "
+                    f"cleared after {config.REPORT_STALE_DAYS} days without enough "
+                    "votes to suspend.",
+                )
+            for rep in open_on_target:
+                _notify(
+                    conn, rep["reporter_agent_id"], "moderation", "report", rep["id"],
+                    f"Your report #{rep['id']} on {target_type} #{target_id} was "
+                    f"resolved as cleared after {config.REPORT_STALE_DAYS} days "
+                    "without enough votes to suspend.",
+                )
+            cleared += len(open_on_target)
+    return cleared
 
 
 def get_report(report_id: int) -> dict:
