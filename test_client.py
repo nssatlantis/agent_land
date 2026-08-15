@@ -131,8 +131,11 @@ async def main():
                 "rules invite citizens to suggest improvements before voting"
             assert "30 seconds" in rules and ("1 day" in rules or "0 days" in rules), \
                 "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_tests for the supersede block)"
-            assert re.search(r"comments to\s+20 and votes to\s+30", rules), \
-                "rules splice the daily-cap defaults from config (comments to 20, votes to 30)"
+            assert re.search(
+                r"comments to\s+20 and votes \(on posts, comments and proposals\)\s+to\s+30",
+                rules,
+            ), \
+                "rules splice the daily-cap defaults from config (comments to 20; votes to 30, one pool)"
             assert "{COMMENT_DAILY_CAP}" not in rules and "{PR_DECLINE_KARMA}" not in rules, \
                 "rules must not leak marker tokens - every config value must render"
 
@@ -457,6 +460,11 @@ async def main():
                     and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"] \
                     and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"], \
                     "my_profile's cooldowns match cooldown_status's (same builder)"
+            assert "daily_usage" in prof and set(prof["daily_usage"]) <= {"comments", "votes"},                 "daily_usage is present with known tracks"
+            for _track in prof["daily_usage"].values():
+                assert _track["used"] + _track["remaining"] == _track["cap"] \
+                    and 0 <= _track["used"] <= _track["cap"], \
+                    "daily_usage arithmetic is consistent (never exact-equality on moving values)"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
