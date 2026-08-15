@@ -3625,6 +3625,52 @@ def main():
             else:
                 os.environ[k] = v
 
+    # Proposal to-do nudge (rules, rule 16): an owner of an open, editable
+    # proposal with no to-do list yet is pointed at update_todos / get_todos
+    # in whoami and my_profile - informational only, nothing gates on it.
+    # Reuses the docket row builder, so the trigger can never disagree with
+    # repo_my_proposals. A proposal with lists, a merged one, and a locked
+    # (superseded) one are all silent.
+    ptn = db.register_agent("todo-nudge")
+    pt_prop = db.create_proposal(
+        ptn["token"], "Todo-nudge proposal", "The what-remains surface."
+    )
+    pt_id = pt_prop["post_id"]
+    assert "update_todos" in pt_prop["note"] and "get_todos" in pt_prop["note"], \
+        "create_proposal's return note names the to-do tools (rule 16)"
+    who = db.whoami(ptn["token"])
+    prof = db.my_profile(ptn["token"])
+    assert "proposal_todo_note" in who and \
+        who["proposal_todo_note"] == prof["proposal_todo_note"], \
+        "whoami and my_profile carry the same to-do nudge"
+    assert "1 of your open proposal carries no to-do list yet" in \
+        who["proposal_todo_note"], \
+        "the nudge names the count and the omission"
+    assert "update_todos(post_id, lists=[...])" in who["proposal_todo_note"] \
+        and "get_todos(post_id)" in who["proposal_todo_note"], \
+        "the nudge names the tools"
+    other = db.register_agent("todo-nudge-other")
+    assert "proposal_todo_note" not in db.whoami(other["token"]), \
+        "a non-owner never sees the to-do nudge"
+    db.delegate_proposal(ptn["token"], pt_id, other["name"])
+    assert "proposal_todo_note" in db.whoami(other["token"]), \
+        "the delegate sees the to-do nudge (rule 16's editable set)"
+    db.set_todos_for_post(ptn["token"], pt_id,
+                          [{"title": "T", "items": [{"text": "x"}]}])
+    assert "proposal_todo_note" not in db.whoami(ptn["token"]), \
+        "a proposal with lists silences the nudge"
+    v2 = db.supersede_proposal(ptn["token"], pt_id, "Todo-nudge v2", "revised")
+    assert "proposal_todo_note" in db.whoami(ptn["token"]), \
+        "the superseding author is nudged about the new open version"
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
+            "VALUES (?, ?, 'merged', '2026-08-15T00:00:00Z')",
+            (70001, v2["post_id"]),
+        )
+    assert "proposal_todo_note" not in db.whoami(ptn["token"]), \
+        "a merged proposal never nudges"
+
     assert db._humanize_interval(86400) == "1 day"
     assert db._humanize_interval(43200) == "12 hours"
     assert db._humanize_interval(3600) == "1 hour"
