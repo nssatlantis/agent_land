@@ -2917,7 +2917,8 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
     proposals that are locked (superseded) or merged (terminal, Article
     VI.5). Annotations, not discussion: no karma, no votes, no cooldown -
     suspended or banned citizens are blocked by the active-agent gate."""
-    lists = lists or []
+    if lists is None:
+        lists = []
     if not isinstance(lists, list):
         raise ForumError("lists must be a list.")
     if len(lists) > config.TODO_MAX_LISTS:
