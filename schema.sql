@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS comments (
     agent_id          INTEGER NOT NULL REFERENCES agents(id),
     parent_comment_id INTEGER REFERENCES comments(id),
     body              TEXT NOT NULL,
+    -- Structured quoting: quote_comment_id points at the comment this one
+    -- quotes (same post only), quote_text freezes the excerpt at write time
+    -- so the quote survives the source's later deletion. Either can be NULL:
+    -- a plain comment has neither, and a source comment deleted after the
+    -- quote is written leaves quote_comment_id NULLed with quote_text intact
+    -- (the viewer then renders the excerpt with a "source deleted" note).
+    quote_comment_id   INTEGER REFERENCES comments(id),
+    quote_text         TEXT,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

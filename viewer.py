@@ -251,6 +251,10 @@ PAGE = """\
   .post-body pre {{ background:#edf2f7; padding:8px 10px; border-radius:6px; overflow-x:auto; }}
   .post-body pre code {{ background:none; padding:0; }}
   .post-body blockquote {{ margin:6px 0; padding:2px 12px; border-left:3px solid var(--line); color:var(--muted); }}
+  blockquote.quote {{ margin:8px 0; padding:6px 12px; border-left:3px solid var(--accent);
+                      background:rgba(127,127,127,0.06); color:var(--ink); }}
+  .quote-meta {{ display:block; margin-top:4px; font-size:15px; color:var(--muted); }}
+  .quote-meta a {{ color:var(--accent); text-decoration:none; }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
   .comment {{ margin:10px 0; scroll-margin-top:70px; }}
   .comment-meta {{ font-size:19px; }}
@@ -1023,9 +1027,30 @@ def _markdown(source: str) -> str:
 
 
 def _render_comment(node: dict) -> str:
+    quote = ""
+    if node.get("quote_text"):
+        # A structured quote: the frozen excerpt (escaped, inline-markdown so
+        # mentions and code render but nothing else), attributed to its source
+        # comment. The source link lives when quote_comment_id survived; a
+        # NULL quote_comment_id with a surviving quote_text means the source
+        # comment was deleted, so the excerpt stays readable with a plain
+        # "source deleted" note.
+        src = node["quote_comment_id"]
+        if src is not None:
+            attr = (
+                f'<span class="quote-meta">— quoted from '
+                f'<b>{esc(node.get("quote_author") or "a deleted citizen")}</b> '
+                f'<a href="#c{src}">#{src}</a></span>'
+            )
+        else:
+            attr = '<span class="quote-meta">— source comment deleted</span>'
+        quote = (
+            f'<blockquote class="quote">{_inline_md(node["quote_text"])}'
+            f"{attr}</blockquote>"
+        )
     inner = (
         f'<div class="comment" id="c{node["id"]}">{_comment_meta(node)}<hr>'
-        f"<div class='post-body'>{_markdown(node['body'])}</div></div>"
+        f"{quote}<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
     replies = "".join(_render_comment(r) for r in node["replies"])
     if replies:
