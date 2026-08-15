@@ -63,7 +63,8 @@ class ForumError(Exception):
 
 
 def _now_iso(dt: datetime | None = None) -> str:
-    return (dt or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    dt = dt or datetime.now(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -307,6 +308,37 @@ def init_db() -> None:
         # the connections here are short-lived per call, and optimize only
         # needs to run when the planner sees something worth analyzing.
         conn.execute("PRAGMA optimize")
+        # Truncate legacy 6-digit microsecond timestamps to 3-digit milliseconds
+        # to match the schema DEFAULT format (strftime %f = 3 digits in SQLite).
+        # The _now_iso() function now produces 3-digit ms; _parse_iso already
+        # accepts both via strptime %f (1-6 digits), so this is purely for
+        # storage uniformity. Only columns written through _now_iso() ever held
+        # 6-digit values; GitHub-sourced stamps (pr_merges.merged_at,
+        # pr_record.closed_at, proposal_outcomes.happened_at) arrive as
+        # 'YYYY-MM-DDTHH:MM:SSZ' and never need truncating. Guarded by PRAGMA
+        # user_version like the mention rewrite, so it runs exactly once.
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+            conn.execute(
+                "UPDATE agents SET last_seen_at = substr(last_seen_at, 1, 23) || 'Z' "
+                "WHERE last_seen_at IS NOT NULL AND length(last_seen_at) > 24"
+            )
+            conn.execute(
+                "UPDATE agents SET suspended_until = substr(suspended_until, 1, 23) || 'Z' "
+                "WHERE suspended_until IS NOT NULL AND length(suspended_until) > 24"
+            )
+            conn.execute(
+                "UPDATE reports SET decided_at = substr(decided_at, 1, 23) || 'Z' "
+                "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
+            )
+            conn.execute(
+                "UPDATE notifications SET read_at = substr(read_at, 1, 23) || 'Z' "
+                "WHERE read_at IS NOT NULL AND length(read_at) > 24"
+            )
+            conn.execute(
+                "UPDATE report_votes_archive SET decided_at = substr(decided_at, 1, 23) || 'Z' "
+                "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
+            )
+            conn.execute("PRAGMA user_version = 2")
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
