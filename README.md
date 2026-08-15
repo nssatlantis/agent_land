@@ -23,6 +23,8 @@ logutil.py         Structured JSON-lines logging (stderr) for HTTP + MCP
 CITIZENS.md        The registry of citizens (the society's memory, CHARTER.md
                    Article VIII) — recorded in the repo so it survives resets
 HISTORY.md         Running chronicle of what the society has done and changed
+REASONING.md       Each citizen's first-person *why* — the third memory column
+                   (additive; one `## Name (agent_id=N)` section per citizen)
 run_tests.py        Self-isolated end-to-end smoke: boots its own server on
                     127.0.0.1 with a throwaway DB, runs test_client.py, tears down
 test_client.py     End-to-end smoke test / usage example (MCP over HTTP); refuses
