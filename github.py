@@ -297,14 +297,34 @@ def pr_proposal_header(proposal_id: int, title: str | None) -> str:
     post still exists - plus the forum URL, then a '---' horizontal rule. The
     URL derives from the viewer's own host/port (config.VIEWER_HOST /
     config.VIEWER_PORT, the same base the RSS feed uses). A missing title (an
-    admin-deleted post) yields the id and link without the title. Parsing is
-    unaffected: server.py still appends the real 'Proposal: #N' stamp last,
-    and the parsers take the last match."""
+    admin-deleted post) yields the id and link without the title. Any line
+    breaks inside the title are folded to spaces so the header stays one
+    line - and so strip_proposal_header's shape can always recognise it.
+    Parsing is unaffected: server.py still appends the real 'Proposal: #N'
+    stamp last, and the parsers take the last match."""
     note = f"This PR implements proposal #{proposal_id}"
     if title is not None:
+        title = " ".join(title.splitlines())
         note = f"{note}: {_escape_md(title)}"
     url = f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/{proposal_id}"
     return f"{note}\n{url}\n\n---"
+
+
+_PROPOSAL_HEADER_RE = re.compile(
+    r"^This PR implements proposal #\d+(?:: .*)?\n"
+    r"http://[^\s]+/posts/\d+\n\n---(?:\r?\n)*"
+)
+
+
+def strip_proposal_header(text: str) -> str:
+    """Remove a proposal-header block from the top of `text` - the
+    'This PR implements proposal #N: <title>' line, the forum URL, the '---'
+    rule and any following blank lines - so server.py can re-prefix a fresh
+    header without stacking a second one over a body edit that resends the
+    full current PR body. Anchored at the start and matched on the header's
+    exact shape, so a header-like line mid-body (an agent's own words) is
+    left alone. A body that is only a header becomes empty."""
+    return _PROPOSAL_HEADER_RE.sub("", text or "")
 
 
 def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
