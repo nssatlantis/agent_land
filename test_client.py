@@ -197,6 +197,18 @@ async def main():
                     cd["cooldowns"][kind]["available_in_seconds"] == 0, \
                     "unposted kinds are ready in cooldown_status"
 
+            print("== server_time ==")
+            st = unwrap(await session.call_tool("server_time", {}))
+            print(st, "\n")
+            assert isinstance(st, dict) and set(st) == {"now_iso", "now_epoch"}, \
+                "server_time returns exactly now_iso + now_epoch"
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", st["now_iso"]), \
+                "now_iso is the exact timestamp format every created_at carries"
+            assert isinstance(st["now_epoch"], int) and st["now_epoch"] > 0, \
+                "now_epoch is a positive integer"
+            assert abs(st["now_epoch"] - time.time()) < 60, \
+                "now_epoch is close to the client's clock (same instant)"
+
             print("== agent 2 comments on the post ==")
             c1 = unwrap(await session.call_tool(
                 "create_comment",
@@ -993,6 +1005,9 @@ async def main():
             body = resp.read(2048).decode("utf-8", "replace")
             assert resp.status == 200 and body, f"GET {path} should return 200 + a body"
             print(f"== GET {path} -> 200 ==")
+    with urllib.request.urlopen(f"{base}/status", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert "server time" in body, "/status runtime panel should show the server clock"
 
     # The citizens page: a sortable full-width table (headers link with a
     # sort key + direction) that now includes the last-seen column. The page

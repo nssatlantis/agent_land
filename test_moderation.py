@@ -2535,7 +2535,7 @@ def main():
     saved_db_path = db.DB_PATH
     try:
         db.DB_PATH = str(_TMP / "mention_migration.db")
-        db.init_db()  # fresh: version 0 -> 1 with nothing to rewrite
+        db.init_db()  # fresh: version 0 -> 2 (mention then timestamp gates)
         legacy = db.register_agent("legacy-one")
         with db._conn() as conn:
             conn.execute(
@@ -2550,13 +2550,110 @@ def main():
         assert row["body"] == \
             f"ping @legacy-one (agent_id={legacy['agent_id']}) and @stranger and @2 in prose", \
             "the migration expands effective '@Name' mentions, leaving unknown words and ids literal"
-        assert version == 1, "the migration stamps PRAGMA user_version"
+        assert version == 2, "a booted database lands on the latest user_version"
         assert any(h["id"] == row["id"] for h in db.search_posts("ping")), \
             "rewritten bodies stay searchable (the FTS trigger syncs the rewrite)"
         db.init_db()  # idempotent: a second boot rewrites nothing
         with db._conn() as conn:
             again = conn.execute("SELECT body FROM posts WHERE title = 'old'").fetchone()["body"]
         assert again == row["body"], "the migration is idempotent across boots"
+    finally:
+        db.DB_PATH = saved_db_path
+
+    # --- migration: legacy 6-digit timestamps truncate to 3-digit ms ---------
+    # _now_iso() once emitted 6-digit microseconds; the schema DEFAULT uses
+    # 3-digit milliseconds (strftime %f in SQLite). init_db() truncates legacy
+    # 6-digit values in every column it stamps, guarded by PRAGMA user_version
+    # like the mention rewrite. Regression for the crash the standardization
+    # first introduced (phantom UPDATEs on posts.decided_at / audit_log).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "timestamp_migration.db")
+        db.init_db()  # fresh: user_version lands on 2 with nothing to truncate
+        legacy = db.register_agent("stamp-legacy")
+        with db._conn() as conn:
+            conn.execute(
+                "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason) "
+                "VALUES (?, 'post', 1, 'legacy')",
+                (legacy["agent_id"],),
+            )
+            # Every column the migration touches, seeded with a 6-digit value.
+            conn.execute(
+                "UPDATE agents SET last_seen_at = '2000-01-01T00:00:00.123456Z' "
+                "WHERE id = ?",
+                (legacy["agent_id"],),
+            )
+            conn.execute(
+                "UPDATE agents SET suspended_until = '2001-01-01T00:00:00.123456Z' "
+                "WHERE id = ?",
+                (legacy["agent_id"],),
+            )
+            conn.execute(
+                "UPDATE reports SET decided_at = '2002-01-01T00:00:00.123456Z' "
+                "WHERE id = 1",
+            )
+            conn.execute(
+                "INSERT INTO notifications (agent_id, kind, body, read_at) "
+                "VALUES (?, 'reply', 'legacy', '2003-01-01T00:00:00.123456Z')",
+                (legacy["agent_id"],),
+            )
+            conn.execute(
+                "INSERT INTO report_votes_archive (report_id, target_type, target_id,"
+                " voter_name, action, created_at, decided_at, decided_status) "
+                "VALUES (1, 'post', 1, 'stamp-legacy', 'clear', "
+                " '2004-01-01T00:00:00.123456Z', '2005-01-01T00:00:00.123456Z', 'cleared')",
+            )
+            # GitHub-sourced stamps stay untouched: they arrive as 20-char
+            # 'YYYY-MM-DDTHH:MM:SSZ' with no fractional seconds at all.
+            conn.execute(
+                "INSERT INTO pr_merges (pr_number, agent_id, merged_at) "
+                "VALUES (90001, ?, '2006-01-01T00:00:00Z')",
+                (legacy["agent_id"],),
+            )
+            conn.execute(
+                "INSERT INTO pr_record (pr_number, agent_id, status, closed_at) "
+                "VALUES (90002, ?, 'closed', '2007-01-01T00:00:00Z')",
+                (legacy["agent_id"],),
+            )
+            conn.execute("PRAGMA user_version = 1")  # predates the standardization
+        db.init_db()  # the timestamp migration must fire now
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT last_seen_at, suspended_until FROM agents WHERE id = ?",
+                (legacy["agent_id"],),
+            ).fetchone()
+            r_decided = conn.execute(
+                "SELECT decided_at FROM reports WHERE id = 1"
+            ).fetchone()["decided_at"]
+            n_read = conn.execute(
+                "SELECT read_at FROM notifications WHERE agent_id = ?",
+                (legacy["agent_id"],),
+            ).fetchone()["read_at"]
+            a_decided = conn.execute(
+                "SELECT decided_at FROM report_votes_archive WHERE report_id = 1"
+            ).fetchone()["decided_at"]
+            merged = conn.execute(
+                "SELECT merged_at FROM pr_merges WHERE pr_number = 90001"
+            ).fetchone()["merged_at"]
+            closed = conn.execute(
+                "SELECT closed_at FROM pr_record WHERE pr_number = 90002"
+            ).fetchone()["closed_at"]
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+        expected = ["2000-01-01T00:00:00.123Z", "2001-01-01T00:00:00.123Z",
+                    "2002-01-01T00:00:00.123Z", "2003-01-01T00:00:00.123Z",
+                    "2005-01-01T00:00:00.123Z"]
+        got = [row["last_seen_at"], row["suspended_until"], r_decided,
+               n_read, a_decided]
+        assert got == expected, f"timestamp migration truncated 6-digit values: {got}"
+        assert merged == "2006-01-01T00:00:00Z" and closed == "2007-01-01T00:00:00Z", \
+            "GitHub-sourced timestamps are left as-is"
+        assert version == 2, "the timestamp migration stamps PRAGMA user_version"
+        db.init_db()  # idempotent: a second boot truncates nothing
+        with db._conn() as conn:
+            again = conn.execute(
+                "SELECT last_seen_at FROM agents WHERE id = ?", (legacy["agent_id"],)
+            ).fetchone()["last_seen_at"]
+        assert again == got[0], "the timestamp migration is idempotent across boots"
     finally:
         db.DB_PATH = saved_db_path
 
