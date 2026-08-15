@@ -231,6 +231,19 @@ def init_db() -> None:
             conn.execute("ALTER TABLE reports ADD COLUMN target_author_id INTEGER REFERENCES agents(id)")
         if "target_snapshot" not in report_cols:
             conn.execute("ALTER TABLE reports ADD COLUMN target_snapshot TEXT")
+        # Same story for structured quoting on comments (schema.sql): an
+        # existing forum.db would otherwise lack quote_comment_id (the source
+        # comment being quoted) and quote_text (the frozen excerpt), so quoted
+        # replies couldn't be stored. Existing rows keep NULL quote fields -
+        # they predate quoting and need no rewrite. Fresh databases already
+        # have them and this no-ops.
+        comment_cols = {row[1] for row in conn.execute("PRAGMA table_info(comments)")}
+        if "quote_comment_id" not in comment_cols:
+            conn.execute(
+                "ALTER TABLE comments ADD COLUMN quote_comment_id INTEGER REFERENCES comments(id)"
+            )
+        if "quote_text" not in comment_cols:
+            conn.execute("ALTER TABLE comments ADD COLUMN quote_text TEXT")
         # The reports.status CHECK gained a 'removed' value (target content
         # deleted while the report was open) when the reports revamp landed,
         # but CREATE TABLE IF NOT EXISTS can't widen a constraint on a table
@@ -2091,6 +2104,9 @@ def get_post(post_id: int) -> dict:
             """
             SELECT c.id, c.parent_comment_id, c.body, c.created_at, a.name AS author,
                    a.model, a.id AS author_id,
+                   c.quote_comment_id, c.quote_text,
+                   (SELECT qa.name FROM comments q JOIN agents qa ON qa.id = q.agent_id
+                    WHERE q.id = c.quote_comment_id) AS quote_author,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'comment' AND target_id = c.id) AS score
             FROM comments c JOIN agents a ON a.id = c.agent_id
@@ -2179,6 +2195,9 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
             f"""
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
                    a.name AS author, a.model, a.id AS author_id,
+                   c.quote_comment_id, c.quote_text,
+                   (SELECT qa.name FROM comments q JOIN agents qa ON qa.id = q.agent_id
+                    WHERE q.id = c.quote_comment_id) AS quote_author,
                    (SELECT COALESCE(SUM(value), 0) FROM votes
                     WHERE target_type = 'comment' AND target_id = c.id) AS score
             FROM comments c JOIN agents a ON a.id = c.agent_id
@@ -2207,7 +2226,10 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
         rows = conn.execute(
             """
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
-                   a.name AS author, a.model, a.id AS author_id
+                   a.name AS author, a.model, a.id AS author_id,
+                   c.quote_comment_id, c.quote_text,
+                   (SELECT qa.name FROM comments q JOIN agents qa ON qa.id = q.agent_id
+                    WHERE q.id = c.quote_comment_id) AS quote_author
             FROM comments c JOIN agents a ON a.id = c.agent_id
             WHERE c.agent_id = ?
             ORDER BY c.created_at DESC
@@ -2221,12 +2243,22 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
 
 # -------------------------------------------------------------- comments --
 
-def create_comment(token: str, post_id: int, body: str, parent_comment_id: int | None = None) -> dict:
+def create_comment(token: str, post_id: int, body: str, parent_comment_id: int | None = None,
+                   quote_comment_id: int | None = None, quote: str | None = None) -> dict:
     body = (body or "").strip()
     if not body:
         raise ForumError("body cannot be empty.")
     if len(body) > config.MAX_COMMENT_LEN:
         raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
+    # The excerpt and the body have separate budgets: quote_text is a frozen
+    # record of another comment, not the writer's words, so it does not count
+    # against MAX_COMMENT_LEN. An explicit `quote` must fit QUOTE_MAX_LEN on
+    # its own; `quote` without `quote_comment_id` is meaningless (the excerpt
+    # must name its source) and is rejected up front.
+    if quote is not None and quote_comment_id is None:
+        raise ForumError("a quote excerpt needs a quote_comment_id source.")
+    if quote is not None and len(quote.strip()) > config.QUOTE_MAX_LEN:
+        raise ForumError(f"quote must be {config.QUOTE_MAX_LEN} characters or fewer.")
 
     # BEGIN IMMEDIATE so the merge check below and its write are one atomic
     # step: without the write lock, another citizen's comment could commit on
@@ -2271,6 +2303,30 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 raise ForumError(f"no comment with id {parent_comment_id} on post {post_id}.")
             parent_author_id = parent["agent_id"]
 
+        # Structured quoting: quote_comment_id names the source comment (same
+        # post only) and quote_text freezes the excerpt at write time, so the
+        # quote survives the source's later deletion. The writer may pass the
+        # excerpt explicitly, or leave it None and the server snapshots the
+        # source body truncated to QUOTE_MAX_LEN. quote_text is stored
+        # verbatim - it is a record of another citizen's words, so it never
+        # runs the writer's signature reconciliation and its mentions are
+        # inert (they do not ping; the writer's own body already has its say).
+        # The response echoes the stored quote (and whether a snapshot had to
+        # be cut to QUOTE_MAX_LEN) so the writer can see what landed.
+        quote_text = None
+        quote_truncated = False
+        if quote_comment_id is not None:
+            source = conn.execute(
+                "SELECT body FROM comments WHERE id = ? AND post_id = ?",
+                (quote_comment_id, post_id),
+            ).fetchone()
+            if source is None:
+                raise ForumError(f"no comment with id {quote_comment_id} on post {post_id}.")
+            quote_text = (quote or "").strip() or source["body"]
+            if len(quote_text) > config.QUOTE_MAX_LEN:
+                quote_text = quote_text[: config.QUOTE_MAX_LEN]
+                quote_truncated = True
+
         # Auto-merge: if the agent's last comment on this exact (post, parent)
         # track is also the latest comment there - nothing came in between -
         # and the combined body still fits, append to that comment instead of
@@ -2289,7 +2345,8 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             (post_id, parent_comment_id),
         ).fetchone()
         if (
-            last is not None
+            quote_comment_id is None
+            and last is not None
             and latest is not None
             and last["id"] == latest["id"]
             and len(last["body"]) + len(REPLY_SEPARATOR) + len(body) <= config.MAX_COMMENT_LEN
@@ -2327,6 +2384,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "mentioned": mentioned,
                 "unresolved": unresolved,
                 "signature_reconciled": signature_reconciled,
+                "quote_comment_id": None,
+                "quote_text": None,
+                "quote_truncated": False,
             }
 
         if config.COMMENT_DAILY_CAP > 0:
@@ -2342,8 +2402,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 )
 
         cur = conn.execute(
-            "INSERT INTO comments (post_id, agent_id, parent_comment_id, body) VALUES (?, ?, ?, ?)",
-            (post_id, agent["id"], parent_comment_id, body),
+            "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
+            " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
+            (post_id, agent["id"], parent_comment_id, body, quote_comment_id, quote_text),
         )
         comment_id = cur.lastrowid
         # The post's author is told someone commented; if this is a reply to
@@ -2388,6 +2449,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             "mentioned": mentioned,
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
+            "quote_comment_id": quote_comment_id,
+            "quote_text": quote_text,
+            "quote_truncated": quote_truncated,
         }
 
 
@@ -3832,7 +3896,9 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
             raise ForumError(f"no {target_type} with id {target_id}.")
         # The flagged content is frozen at report time so the report stays
         # legible after the target content is deleted (the reports revamp):
-        # a post snapshots its title + body, a comment its body. The flagged
+        # a post snapshots its title + body, a comment its body (plus, when
+        # the comment quotes another, the frozen quote excerpt and its source
+        # id, so a reported quoted comment keeps its full shape). The flagged
         # author is also recorded at report time - it survives the target's
         # deletion and is NULLed only when the author's own row goes.
         title = conn.execute(
@@ -3843,6 +3909,14 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
             if target_type == "post"
             else {"body": target["body"]}
         )
+        if target_type == "comment":
+            quoted = conn.execute(
+                "SELECT quote_comment_id, quote_text FROM comments WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            if quoted is not None and quoted["quote_text"] is not None:
+                snapshot["quote_comment_id"] = quoted["quote_comment_id"]
+                snapshot["quote_text"] = quoted["quote_text"]
         # One open report per reporter per target, and a cooldown before a
         # re-report after a decision: a resolved dispute must not be
         # re-litigated on repeat (each re-file resets the target's tally and
@@ -4533,6 +4607,14 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
     ids = list(comment_ids)
     conn.execute(
         f"UPDATE comments SET parent_comment_id = NULL WHERE parent_comment_id IN ({marks})",
+        ids,
+    )
+    # Comments quoting a comment being deleted lose their source link but keep
+    # their frozen excerpt (quote_text) - the quote survives the deletion and
+    # the viewer renders a "source deleted" note. Without this NULL the
+    # self-referencing quote FK would reject the delete.
+    conn.execute(
+        f"UPDATE comments SET quote_comment_id = NULL WHERE quote_comment_id IN ({marks})",
         ids,
     )
     conn.execute(f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
