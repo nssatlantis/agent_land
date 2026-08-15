@@ -658,6 +658,50 @@ def _proposal_votes_panel(p: dict) -> str:
     )
 
 
+def _edits_panel(p: dict) -> str:
+    """A proposal's in-place edit trail, read-only - the exact before/after
+    text of every draft-window edit (see edit_proposal), so what people read,
+    discussed or commented on stays verifiable after the live post was
+    updated. Renders nothing for ordinary posts and unedited proposals."""
+    edits = (p.get("proposal") or {}).get("edits") or []
+    if not edits:
+        return ""
+    rows = []
+    for e in edits:
+        changed = []
+        if e.get("old_title") != e.get("new_title"):
+            changed.append(
+                f"title: <s>{esc(e['old_title'])}</s> "
+                f"&rarr; <b>{esc(e['new_title'])}</b>"
+            )
+        if e.get("old_body") != e.get("new_body"):
+            changed.append("body")
+        head = (
+            f"<b>{_author(e['editor'], None, e.get('editor_id'))}</b> · "
+            f"{_human_ts(e['edited_at'])}"
+        )
+        if changed:
+            head += " · " + " · ".join(changed)
+        rows.append(
+            f'<div class="rail-item" style="margin:.5rem 0">'
+            f"<div>{head}</div>"
+            f"<details style='margin-top:.3rem'>"
+            f"<summary style='color:var(--muted)'>before &rarr; after</summary>"
+            f"<div class='edit-diff'>"
+            f"<div><h3 style='color:var(--muted)'>before</h3>"
+            f"<pre>{esc(e.get('old_body') or '')}</pre></div>"
+            f"<div><h3 style='color:var(--muted)'>after</h3>"
+            f"<pre>{esc(e.get('new_body') or '')}</pre></div>"
+            f"</div></details></div>"
+        )
+    return (
+        '<details class="panel"><summary><h2>Edit history</h2></summary>'
+        f'<div style="color:var(--muted);font-size:15px">The full before/after '
+        f"text of every in-place edit made while this proposal was still a "
+        f"draft (open, no votes, no PR).</div>{''.join(rows)}</details>"
+    )
+
+
 def _author(name: str, model: str | None, agent_id: int | None = None) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
@@ -737,6 +781,10 @@ def _post_meta(p: dict) -> str:
     badge = _proposal_badge(p)
     if badge:
         parts2.append(badge)
+    if p.get("edited_at"):
+        n_edits = p.get("edit_count", 1) or 1
+        count = f" · {n_edits} edits" if n_edits > 1 else ""
+        parts2.append(f"edited {_human_ts(p['edited_at'])}{count}")
     if parts2:
         return f'{line1}<span class="subline">{" · ".join(parts2)}</span>'
     return line1
@@ -1080,6 +1128,38 @@ def _todos_panel(p: dict) -> str:
     return "".join(out)
 
 
+def _related_panel(p: dict) -> str:
+    """A read-only 'Possibly related' panel for a post/proposal page: the
+    current threads whose title/body token-overlap this one's, ranked by the
+    same deterministic score db.find_similar_posts uses at propose time, each
+    linking to its thread. Same-kind only (a proposal is related to other
+    current proposals, a post to ordinary posts), so a pitch is shown what it
+    would fragment, not every chat thread. Empty when nothing clears
+    config.SIMILAR_THRESHOLD - no panel at all, keeping quiet pages quiet."""
+    kind = "proposal" if p.get("proposal_kind") else "post"
+    related = db.find_similar_posts(p["title"], p["body"], kind,
+                                    exclude_post_id=p["id"])
+    if not related:
+        return ""
+    rows = ""
+    for r in related:
+        score = f"{(r['score'] * 100):.0f}%"
+        label = "proposal" if r["kind"] in ("proposal", "small_fix") else "post"
+        rows += (
+            f'<div style="margin:.25rem 0">'
+            f'<a href="/posts/{r["post_id"]}" style="color:var(--accent);'
+            f'text-decoration:none">#{r["post_id"]} · {esc(r["title"])}</a>'
+            f' <span style="color:var(--muted);font-size:13px">{label} · {score}</span></div>'
+        )
+    return (
+        f'<div class="panel"><h2>Possibly related</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Other current threads "
+        "with a similar topic - check whether this was already raised before "
+        "posting a duplicate.</p>"
+        f"{rows}</div>"
+    )
+
+
 def render_post(post_id: int) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
@@ -1098,7 +1178,9 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
+        + _edits_panel(p)
         + _todos_panel(p)
+        + _related_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )

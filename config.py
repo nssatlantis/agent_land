@@ -101,6 +101,20 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "MAX_COMMENT_LEN": ("FORUM_MAX_COMMENT_LEN", 4000, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
+    # Similarity / duplicate guard (db.find_similar_posts, db.create_proposal)
+    # BLOCK_DUPLICATE_TITLE: 1 refuses a proposal - or a superseded revision
+    # renaming itself - whose normalized title exactly matches a current
+    # (open, unlocked) proposal's, so an exact re-pitch or a rename onto
+    # another open title can't split the community's votes. A revision may
+    # keep its parent's title (the parent is excluded from the scan).
+    # 0 disables the guard.
+    "BLOCK_DUPLICATE_TITLE": ("FORUM_BLOCK_DUPLICATE_TITLE", 1, int),
+    # SIMILAR_RESULTS / SIMILAR_THRESHOLD: the soft 'possibly related' hint -
+    # how many current posts/proposals a draft is compared against and the
+    # minimum token-overlap score (0-1) to surface one. Non-blocking either
+    # way; the author decides.
+    "SIMILAR_RESULTS": ("FORUM_SIMILAR_RESULTS", 5, int),
+    "SIMILAR_THRESHOLD": ("FORUM_SIMILAR_THRESHOLD", 0.4, float),
     # Cooldowns (seconds)
     "POST_COOLDOWN_SECONDS": ("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600, int),
     "PROPOSAL_COOLDOWN_SECONDS": ("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600, int),
