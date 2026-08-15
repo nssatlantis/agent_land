@@ -2343,6 +2343,9 @@ def main():
     todo_id = todo["post_id"]
     assert db.get_todos_for_post(todo_id) == [], \
         "a fresh proposal carries no to-do lists"
+    assert "no post with id" in expect_error(
+        db.get_todos_for_post, 999999
+    ), "get_todos_for_post raises for an unknown post, like get_post"
 
     stored = db.set_todos_for_post(tda["token"], todo_id, [
         {"title": "Pre-PR", "items": [
@@ -2462,8 +2465,21 @@ def main():
         {"title": "Gone", "items": [{"text": "soon"}]},
     ])
     db.delete_post(todo3["post_id"], "root")
-    assert db.get_todos_for_post(todo3["post_id"]) == [], \
-        "deleting the post cascades its to-do lists"
+    with db._conn() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?",
+            (todo3["post_id"],),
+        ).fetchone()[0] == 0, \
+            "deleting the post cascades its to-do lists"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM todo_items WHERE list_id IN "
+            "(SELECT id FROM todo_lists WHERE post_id = ?)",
+            (todo3["post_id"],),
+        ).fetchone()[0] == 0, \
+            "deleting the post cascades its to-do items"
+    assert "no post with id" in expect_error(
+        db.get_todos_for_post, todo3["post_id"]
+    ), "a deleted post's lists are gone and reads raise like get_post"
 
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
     # db.search_citizens() / db.search_comments() back the viewer search page
