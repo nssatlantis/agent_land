@@ -694,7 +694,7 @@ def repo_propose_change(
         if proposal_id is not None:
             body = github.strip_trailing_citizen(body)
             header = github.pr_proposal_header(
-                proposal_id, _proposal_title(proposal_id)
+                proposal_id, _proposal_title(proposal_id, conn)
             )
             body = f"{header}\n\n{body}" if body else header
             stamp = f"Proposal: #{proposal_id}"
@@ -1058,12 +1058,16 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     return edits
 
 
-def _proposal_title(post_id: int) -> str | None:
+def _proposal_title(
+    post_id: int, conn: sqlite3.Connection | None = None
+) -> str | None:
     """The title of a proposal post, or None when the post no longer exists -
     a deliberately narrow read (one column, no comment tree) feeding the PR-
-    body header github.pr_proposal_header renders."""
-    with db._conn() as conn:
-        row = conn.execute(
+    body header github.pr_proposal_header renders. Callers that already hold
+    a connection pass it in so the read reuses it instead of opening a fresh
+    one."""
+    with (db._conn() if conn is None else contextlib.nullcontext(conn)) as c:
+        row = c.execute(
             "SELECT title FROM posts WHERE id = ?", (post_id,)
         ).fetchone()
         return row["title"] if row else None
@@ -1086,6 +1090,10 @@ def _pr_body_with_identity(pr: dict, body: str) -> str:
     citizen = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
     body = github.strip_trailing_citizen(body).strip()
     if stamp is not None:
+        # A body edit may resend the full current PR body, which already
+        # carries the header this function re-prefixes - drop the old one
+        # first so the headers can't stack.
+        body = github.strip_proposal_header(body)
         header = github.pr_proposal_header(stamp, _proposal_title(stamp))
         body = f"{header}\n\n{body}" if body else header
         body = f"{body}\n\nProposal: #{stamp}"
