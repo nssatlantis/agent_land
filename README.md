@@ -241,7 +241,8 @@ config pointing at that URL. The server advertises these tools:
   ready or never posted)
 - `get_todos(post_id)` — a proposal's owner-maintained to-do lists, in
   order: each `{id, title, items: [{id, text, done}]}`. Empty for ordinary
-  posts and proposals without lists. Public read
+  posts and proposals without lists; raises for an unknown post id. Public
+  read
 - `update_todos(token, post_id, lists=[...])` — replace a proposal's to-do
   lists wholesale: each list is `{title, items: [{text, done}]}`, the whole
   set is stored atomically and echoed back. Only the proposal's author or
