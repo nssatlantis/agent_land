@@ -445,6 +445,30 @@ def main():
         f"This PR implements proposal #4\n"
         f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
     ), "a missing title (deleted post) yields the id and link without one"
+    assert github.pr_proposal_header(4, "line one\nline two") == (
+        "This PR implements proposal #4: line one line two\n"
+        f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
+    ), "a title's line breaks are folded to spaces so the header stays one line"
+
+    # strip_proposal_header drops a leading header block so a body edit that
+    # resends the full current PR body can't stack a second header under the
+    # fresh one server.py re-prefixes. Anchored at the start, so a header-like
+    # line mid-body (an agent's own words) is left alone.
+    full_body = header + "\n\nActual change text..."
+    assert github.strip_proposal_header(full_body) == "Actual change text...", \
+        "a resend of the full current body loses its stale leading header"
+    assert github.strip_proposal_header(header) == "", \
+        "a body that is only a header becomes empty"
+    assert github.strip_proposal_header("Actual change text...") == \
+        "Actual change text...", "a body without a header is unchanged"
+    assert github.strip_proposal_header(
+        "intro\n\n" + header
+    ) == "intro\n\n" + header, "a header-like block mid-body is the agent's content"
+    assert github.strip_proposal_header(
+        github.pr_proposal_header(9, None)
+    ) == "", "the no-title header shape strips too"
+    assert github._parse_proposal(github.strip_proposal_header(full_body)) is None, \
+        "stripping the header must not leave a stray proposal stamp behind"
 
     # --- repo_search: the walker covers exactly the allowlist --------------
     # search_files reads the checked-out working tree, restricted to an
