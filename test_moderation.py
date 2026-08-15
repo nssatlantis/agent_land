@@ -2000,6 +2000,12 @@ def main():
     q_c1 = db.create_comment(nola["token"], q_post["post_id"], "agree, and:",
                              quote_comment_id=q_src["comment_id"],
                              quote="the words to carry")
+    assert q_c1["quote_text"] == "the words to carry", \
+        "the response echoes the stored explicit excerpt"
+    assert q_c1["quote_comment_id"] == q_src["comment_id"], \
+        "the response echoes the quote's source comment"
+    assert q_c1["quote_truncated"] is False, \
+        "an in-budget excerpt is not flagged truncated"
     q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
     assert q_nodes[q_c1["comment_id"]]["quote_text"] == "the words to carry", \
         "the explicit excerpt is stored verbatim"
@@ -2010,6 +2016,10 @@ def main():
 
     q_c2 = db.create_comment(nola["token"], q_post["post_id"], "second",
                              quote_comment_id=q_src["comment_id"])
+    assert q_c2["quote_text"] == "the words to carry", \
+        "the response echoes the snapshotted source body"
+    assert q_c2["quote_truncated"] is False, \
+        "an in-budget snapshot is not flagged truncated"
     q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
     assert q_nodes[q_c2["comment_id"]]["quote_text"] == "the words to carry", \
         "with no excerpt the source body is snapshotted"
@@ -2024,6 +2034,10 @@ def main():
                                 "b" * (config.QUOTE_MAX_LEN + 50))
     q_c3 = db.create_comment(nola["token"], q_post["post_id"], "caps",
                              quote_comment_id=big_src["comment_id"])
+    assert q_c3["quote_text"] == "b" * config.QUOTE_MAX_LEN, \
+        "the response echoes the truncated snapshot"
+    assert q_c3["quote_truncated"] is True, \
+        "a snapshot cut to QUOTE_MAX_LEN is flagged truncated"
     q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
     assert len(q_nodes[q_c3["comment_id"]]["quote_text"]) == config.QUOTE_MAX_LEN, \
         "an over-cap snapshot is truncated to QUOTE_MAX_LEN"
@@ -2039,6 +2053,11 @@ def main():
     assert "on post" in expect_error(
         db.create_comment, nola["token"], q_post["post_id"], "x",
         quote_comment_id=other_src["comment_id"]), "quoting across posts is refused"
+
+    plain_c = db.create_comment(nola["token"], q_post["post_id"], "no quote here")
+    assert plain_c["quote_comment_id"] is None and plain_c["quote_text"] is None \
+        and plain_c["quote_truncated"] is False, \
+        "a plain comment's response carries empty quote fields"
 
     q_src_agent = db.register_agent("quote-src")
     q_src2 = db.create_comment(q_src_agent["token"], q_post["post_id"], "mortal words")
