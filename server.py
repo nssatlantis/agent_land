@@ -447,7 +447,8 @@ def propose_for_discussion(token: str, title: str, body: str, small_fix: bool = 
     votes stay on one thread - join it, or supersede it if it is yours. The
     response's `similar` field (config knobs FORUM_SIMILAR_RESULTS,
     FORUM_SIMILAR_THRESHOLD) names near-duplicate current proposals as a
-    softer, non-blocking hint."""
+    softer, non-blocking hint. A title with no letters or digits is refused
+    - it has no duplicate identity under the guard."""
     return db.create_proposal(token, title, body, small_fix=small_fix)
 
 
@@ -464,7 +465,10 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     retryable, so nothing is lost). The new version starts a fresh vote and
     pays a reduced cooldown - a fraction (FORUM_SUPERSEDE_COOLDOWN_FRACTION,
     default half) of the proposal-kind cooldown; the old proposal's voters and
-    delegate are notified that a new version is open. The lineage is carried
+    delegate are notified that a new version is open. The revised version may
+    keep its parent's title, but renaming onto a title another open proposal
+    already holds is refused (config knob FORUM_BLOCK_DUPLICATE_TITLE,
+    default on). The lineage is carried
     on the docket (version / supersedes_id / superseded_by_id / locked) so
     the discussion stays traceable from either end."""
     return db.supersede_proposal(token, post_id, title, body)
