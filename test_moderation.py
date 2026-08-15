@@ -1989,6 +1989,71 @@ def main():
                    for n in opal_inbox["notifications"]), \
         "the post author gets no comment-mention ping on the merged comment"
 
+    # --- structured quoting (quote_comment_id + quote) -----------------------
+    # A comment may carry a frozen excerpt of an earlier comment on the same
+    # post: quote_comment_id links the source (resolved to the source author's
+    # name on read), quote_text stores the excerpt (explicit, or a server-side
+    # snapshot of the source body). The excerpt has its own budget
+    # (QUOTE_MAX_LEN) and is stored content - it pings nobody.
+    q_post = db.create_post(mai["token"], "Quote target", "one post")
+    q_src = db.create_comment(petra["token"], q_post["post_id"], "the words to carry")
+    q_c1 = db.create_comment(nola["token"], q_post["post_id"], "agree, and:",
+                             quote_comment_id=q_src["comment_id"],
+                             quote="the words to carry")
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    assert q_nodes[q_c1["comment_id"]]["quote_text"] == "the words to carry", \
+        "the explicit excerpt is stored verbatim"
+    assert q_nodes[q_c1["comment_id"]]["quote_comment_id"] == q_src["comment_id"], \
+        "the quote links its source comment"
+    assert q_nodes[q_c1["comment_id"]]["quote_author"] == "petra", \
+        "read paths resolve the source author's name live"
+
+    q_c2 = db.create_comment(nola["token"], q_post["post_id"], "second",
+                             quote_comment_id=q_src["comment_id"])
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    assert q_nodes[q_c2["comment_id"]]["quote_text"] == "the words to carry", \
+        "with no excerpt the source body is snapshotted"
+    assert q_c2.get("merged") is None and q_c2["comment_id"] != q_c1["comment_id"], \
+        "a quoted comment is its own comment, never auto-combined"
+
+    over = expect_error(db.create_comment, nola["token"], q_post["post_id"],
+                        "x", quote_comment_id=q_src["comment_id"],
+                        quote="z" * (config.QUOTE_MAX_LEN + 1))
+    assert "characters or fewer" in over, over
+    big_src = db.create_comment(petra["token"], q_post["post_id"],
+                                "b" * (config.QUOTE_MAX_LEN + 50))
+    q_c3 = db.create_comment(nola["token"], q_post["post_id"], "caps",
+                             quote_comment_id=big_src["comment_id"])
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    assert len(q_nodes[q_c3["comment_id"]]["quote_text"]) == config.QUOTE_MAX_LEN, \
+        "an over-cap snapshot is truncated to QUOTE_MAX_LEN"
+
+    assert "quote_comment_id source" in expect_error(
+        db.create_comment, nola["token"], q_post["post_id"], "x", quote="orphan"), \
+        "an excerpt without its source comment is refused"
+    assert "no comment with id" in expect_error(
+        db.create_comment, nola["token"], q_post["post_id"], "x",
+        quote_comment_id=999999), "a missing source comment is refused"
+    other_post = db.create_post(mai["token"], "Other post", "elsewhere")
+    other_src = db.create_comment(petra["token"], other_post["post_id"], "far away")
+    assert "on post" in expect_error(
+        db.create_comment, nola["token"], q_post["post_id"], "x",
+        quote_comment_id=other_src["comment_id"]), "quoting across posts is refused"
+
+    q_src_agent = db.register_agent("quote-src")
+    q_src2 = db.create_comment(q_src_agent["token"], q_post["post_id"], "mortal words")
+    q_c4 = db.create_comment(nola["token"], q_post["post_id"], "immortal reply",
+                             quote_comment_id=q_src2["comment_id"])
+    db.delete_agent(q_src_agent["agent_id"], "root", destroy_content=True)
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    q_after = q_nodes[q_c4["comment_id"]]
+    assert q_after["quote_text"] == "mortal words", \
+        "the quote text survives its source's deletion"
+    assert q_after["quote_comment_id"] is None, \
+        "a deleted source severs the quote link (FK integrity)"
+    assert q_after["quote_author"] is None, \
+        "a deleted source resolves no author"
+
     # Concurrent writers on one track must not corrupt the merge: create_comment
     # holds the write lock from the merge check to its write as one atomic step
     # (BEGIN IMMEDIATE), so a stale "nothing came in between" decision can never
@@ -2854,6 +2919,47 @@ def main():
         with db._conn() as conn:
             again = conn.execute("SELECT body FROM posts WHERE title = 'old'").fetchone()["body"]
         assert again == row["body"], "the migration is idempotent across boots"
+    finally:
+        db.DB_PATH = saved_db_path
+
+    # --- migration: quote columns on comments -------------------------------
+    # Structured quoting added comments.quote_comment_id (self-referential FK)
+    # and comments.quote_text. A pre-quote comments table must gain both
+    # columns idempotently via ALTER TABLE, and quoting must work against the
+    # migrated table.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "quote_migration.db")
+        db.init_db()
+        legacy = db.register_agent("quote-legacy")
+        with db._conn() as conn:
+            conn.execute("DROP TABLE comments")
+            conn.execute(
+                "CREATE TABLE comments ("
+                " id                INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " post_id           INTEGER NOT NULL REFERENCES posts(id),"
+                " agent_id          INTEGER NOT NULL REFERENCES agents(id),"
+                " parent_comment_id INTEGER REFERENCES comments(id),"
+                " body              TEXT NOT NULL,"
+                " created_at        TEXT NOT NULL DEFAULT "
+                "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+                " score             INTEGER NOT NULL DEFAULT 0)"
+            )
+        db.init_db()  # the migration must fire now
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(comments)")}
+        assert {"quote_comment_id", "quote_text"} <= cols, \
+            "init_db adds the quote columns to a pre-quote comments table"
+        mig_post = db.create_post(legacy["token"], "Migrated quote", "x")
+        mig_src = db.create_comment(legacy["token"], mig_post["post_id"], "src")
+        mig_q = db.create_comment(legacy["token"], mig_post["post_id"], "reply",
+                                  quote_comment_id=mig_src["comment_id"])
+        assert mig_q["comment_id"] != mig_src["comment_id"], \
+            "quoting works against the migrated table"
+        db.init_db()  # idempotent: a second boot adds nothing
+        with db._conn() as conn:
+            cols2 = {r["name"] for r in conn.execute("PRAGMA table_info(comments)")}
+        assert cols2 == cols, "the quote-column migration is idempotent"
     finally:
         db.DB_PATH = saved_db_path
 
