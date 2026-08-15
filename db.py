@@ -507,12 +507,16 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int) -> None:
         )
 
 
-def proposal_for_pr(pr_number: int) -> int | None:
+def proposal_for_pr(
+    pr_number: int, conn: sqlite3.Connection | None = None
+) -> int | None:
     """The forum proposal a pull request is linked to (proposal_links), or
     None when the PR is not linked. Used by repo_update_pr() to re-stamp the
-    'Proposal: #N' line into a body the agent edited."""
-    with _conn() as conn:
-        row = conn.execute(
+    'Proposal: #N' line into a body the agent edited. Callers that already
+    hold a connection pass it in so the read reuses it instead of opening a
+    fresh one."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        row = c.execute(
             "SELECT post_id FROM proposal_links WHERE pr_number = ?", (pr_number,)
         ).fetchone()
         return row["post_id"] if row is not None else None
