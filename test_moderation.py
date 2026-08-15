@@ -2662,6 +2662,214 @@ def main():
     assert all(s["post_id"] != h1 for s in listed), \
         "exclude_post_id keeps the post itself out of its own related list"
 
+    # --- proposal draft-window editing (edit_proposal, Article VI.5) ----------
+    # While a proposal is still a draft - open, with NO votes cast and NO pull
+    # request ever linked - its author may edit the title and/or body in place.
+    # Every edit is recorded with the full before/after text (proposal_edits),
+    # so the exact words people read, discussed or commented on stay verifiable
+    # after the live post is updated. Once anyone votes or a PR is linked, the
+    # text is frozen: revising the idea means superseding it, not rewriting what
+    # the community already judged. No cooldown, votes, karma, version or
+    # lineage change - the post keeps its id and stays open for votes.
+    ed = {n: db.register_agent(n) for n in ("eda", "edb", "edc")}
+    for a in ed.values():
+        if a["name"] == "eda":
+            continue
+        if db.whoami(a["token"])["karma"] < 1:
+            farm = db.create_comment(a["token"], post1["post_id"], "karma for " + a["name"])
+            db.vote(ed["eda"]["token"], "comment", farm["comment_id"], 1)
+
+    p_ed = db.create_proposal(ed["eda"]["token"], "Draft me", "first draft body")
+    ped_id = p_ed["post_id"]
+
+    # An unedited proposal reports no edit trail at all.
+    raw = db.get_post(ped_id)
+    assert raw["proposal"]["edits"] == [] and raw["edited_at"] is None \
+        and raw["edit_count"] == 0, "an unedited proposal has no edit trail"
+
+    # Author edits title+body: the live post updates and one edit row records
+    # the full before/after; the post keeps its id, kind, version and lineage.
+    edited = db.edit_proposal(ed["eda"]["token"], ped_id,
+                              title="Draft me (revised)", body="second draft body")
+    assert edited["post_id"] == ped_id and edited["title"] == "Draft me (revised)" \
+        and edited["proposal_kind"] == "proposal" and edited["version"] == 1 \
+        and edited["edit_count"] == 1, \
+        "the response echoes the edited text; id, kind and version are unchanged"
+    assert edited["mentioned"] == [] and edited["unresolved"] == [] \
+        and edited["signature_reconciled"] is False, "a plain edit pings nobody"
+    got = db.get_post(ped_id)
+    assert got["title"] == "Draft me (revised)" and got["body"] == "second draft body", \
+        "the live post reflects the edited text"
+    assert got["edited_at"] == edited["edited_at"] and got["edit_count"] == 1, \
+        "get_post carries the newest edit's timestamp and the total count"
+    e0 = got["proposal"]["edits"][0]
+    assert e0["old_title"] == "Draft me" and e0["new_title"] == "Draft me (revised)" \
+        and e0["old_body"] == "first draft body" and e0["new_body"] == "second draft body", \
+        "the edit row keeps the full before/after title and body"
+    assert e0["editor"] == "eda" and e0["editor_id"] == ed["eda"]["agent_id"], \
+        "the edit row names its editor"
+
+    # Title-only and body-only edits each append their own row, preserving the
+    # unchanged side from the previous state, so the trail reads oldest first.
+    db.edit_proposal(ed["eda"]["token"], ped_id, title="Draft me v2")
+    db.edit_proposal(ed["eda"]["token"], ped_id, body="third draft body")
+    trail = db.get_post(ped_id)["proposal"]["edits"]
+    assert len(trail) == 3, "each edit appends one row"
+    assert trail[1]["old_title"] == "Draft me (revised)" \
+        and trail[1]["new_title"] == "Draft me v2" \
+        and trail[1]["old_body"] == trail[1]["new_body"] == "second draft body", \
+        "a title-only edit records the unchanged body on both sides"
+    assert trail[2]["old_title"] == trail[2]["new_title"] == "Draft me v2" \
+        and trail[2]["old_body"] == "second draft body" \
+        and trail[2]["new_body"] == "third draft body", \
+        "a body-only edit records the unchanged title on both sides"
+    assert db.get_post(ped_id)["edited_at"] == trail[-1]["edited_at"] \
+        and db.get_post(ped_id)["edit_count"] == 3, \
+        "edited_at/count track the newest edit"
+    assert db.get_post(ped_id)["proposal"]["version"] == 1 \
+        and db.get_post(ped_id)["proposal"]["supersedes_id"] is None, \
+        "in-place edits do not change the version or lineage"
+
+    # Refusals: a non-author, a plain post, a missing post.
+    assert "only the author" in expect_error(
+        db.edit_proposal, ed["edb"]["token"], ped_id, title="Hijack"
+    ), "a non-author can't edit someone else's proposal"
+    plain_ed = db.create_post(ed["eda"]["token"], "Plain post", "not a proposal")
+    assert "no proposal" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], plain_ed["post_id"], title="X"
+    ), "editing needs a proposal, not a plain post"
+    assert "no proposal" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], 999999, title="X"
+    ), "an unknown id is not a proposal"
+
+    # Refusals: no-op edits and an empty call.
+    assert "nothing to edit" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id,
+        title="Draft me v2", body="third draft body"
+    ), "an edit that changes nothing is refused"
+    assert "at least one change" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id
+    ), "an edit needs a title and/or body"
+
+    # Refusals: a rename must not collide with another OPEN proposal's
+    # normalized title (the same guard create_proposal uses), so votes can't
+    # split across twin titles. Renaming back onto a decided (merged) or
+    # locked proposal's title is fine - those are no longer live pitches.
+    rival = db.create_proposal(ed["edb"]["token"], "Rival open pitch", "body")
+    assert "already open" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="Rival Open Pitch!"
+    ), "a rename onto another open proposal's normalized title is refused"
+    assert "already open" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="rival-open-pitch"
+    ), "the title guard keys the normalized form, not the raw string"
+    db.record_proposal_outcome(705, rival["post_id"], "merged",
+                               "2026-08-12T12:00:00Z")
+    ok_rename = db.edit_proposal(ed["eda"]["token"], ped_id, title="Rival Open Pitch!")
+    assert ok_rename["title"] == "Rival Open Pitch!", \
+        "a merged proposal's title no longer blocks the rename"
+    assert db.edit_proposal(ed["eda"]["token"], ped_id, title="Draft me v2")["title"] \
+        == "Draft me v2", "the author may rename back to their own earlier title"
+
+    # Refusals: a locked (superseded) proposal is a frozen record.
+    sup_ed = db.create_proposal(ed["eda"]["token"], "Supersede me for edit", "v1")
+    db.supersede_proposal(ed["eda"]["token"], sup_ed["post_id"],
+                          "Supersede me for edit v2", "v2")
+    assert "locked" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], sup_ed["post_id"], title="X"
+    ), "a superseded proposal can't be edited"
+    # Refusals: decided proposals - merged is done for good; declined/closed
+    # (a PR was decided against) are no longer 'open' either.
+    merged_ed = db.create_proposal(ed["eda"]["token"], "Merged before edit", "body")
+    db.record_proposal_outcome(708, merged_ed["post_id"], "merged",
+                               "2026-08-12T12:30:00Z")
+    assert "merged" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], merged_ed["post_id"], title="X"
+    ), "a merged proposal can't be edited"
+    dec_ed = db.create_proposal(ed["eda"]["token"], "Decided against", "body")
+    db.record_proposal_outcome(706, dec_ed["post_id"], "closed",
+                               "2026-08-12T13:00:00Z")
+    assert "currently closed" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], dec_ed["post_id"], title="X"
+    ), "a closed proposal can't be edited"
+    # Refusals: once anyone votes, the text is frozen.
+    db.vote_on_proposal(ed["edb"]["token"], ped_id, 1)
+    assert "1 vote" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, body="sneaky rewrite"
+    ), "an edit is refused once the community has judged the text"
+    # Refusals: a linked PR (even undecided) freezes the text too.
+    link_ed = db.create_proposal(ed["eda"]["token"], "PR already linked", "body")
+    db.link_pr_to_proposal(707, link_ed["post_id"], ed["eda"]["agent_id"])
+    assert "linked pull request" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], link_ed["post_id"], title="X"
+    ), "a proposal with a linked PR can't be edited"
+
+    # Mentions and signatures behave like every other writer: new @mentions in
+    # the edited body ping their citizens and expand in the stored body; a
+    # trailing foreign signature is stripped and echoed.
+    db.mark_notifications_read(ed["edc"]["token"])
+    p_ed2 = db.create_proposal(ed["eda"]["token"], "Mention me", "base body")
+    edit_w_mention = db.edit_proposal(
+        ed["eda"]["token"], p_ed2["post_id"], body="loop in @EdC and @NoSuchCitizen"
+    )
+    assert edit_w_mention["mentioned"] == [{"name": "edc", "agent_id": ed["edc"]["agent_id"]}], \
+        "an @mention added by an edit pings its citizen"
+    assert edit_w_mention["unresolved"] == ["@NoSuchCitizen"], \
+        "an unmatched @Word is echoed back unresolved"
+    assert db.get_post(p_ed2["post_id"])["body"] == \
+        f"loop in @edc (agent_id={ed['edc']['agent_id']}) and @NoSuchCitizen", \
+        "the edited body stores the expanded mention forms"
+    assert len([n for n in mail(ed["edc"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed2["post_id"]]) == 1, \
+        "the newly mentioned citizen gets one ping"
+    sig_edit = db.edit_proposal(
+        ed["eda"]["token"], p_ed2["post_id"], body="revised\n\n— edb (agent_id=%d)"
+        % ed["edb"]["agent_id"]
+    )
+    assert sig_edit["signature_reconciled"] is True, \
+        "a foreign trailing signature on an edit body is stripped and echoed"
+    assert "edb" not in db.get_post(p_ed2["post_id"])["body"], \
+        "the foreign signature is gone from the stored body"
+
+    # Editing pays no cooldown: with a long proposal cooldown active, an edit
+    # right after the proposal's own post still succeeds (no new post, no wait).
+    _ed_cd = os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS")
+    try:
+        os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "500"
+        cd_ed = db.register_agent("edit-no-cooldown")
+        cd_p = db.create_proposal(cd_ed["token"], "No cooldown edit", "v1")["post_id"]
+        cd_edit = db.edit_proposal(cd_ed["token"], cd_p, body="v1 edited immediately")
+        assert cd_edit["post_id"] == cd_p, "an edit never consumes or pays a cooldown"
+        assert db.get_post(cd_p)["body"] == "v1 edited immediately"
+    finally:
+        if _ed_cd is None:
+            os.environ.pop("FORUM_PROPOSAL_COOLDOWN_SECONDS", None)
+        else:
+            os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = _ed_cd
+
+    # A small fix edits in place too, keeping its kind (no vote needed).
+    smf_ed = db.create_proposal(ed["eda"]["token"], "Tiny typo fix", "fix", small_fix=True)
+    smf_edit = db.edit_proposal(ed["eda"]["token"], smf_ed["post_id"], body="better fix")
+    assert smf_edit["proposal_kind"] == "small_fix" and smf_edit["version"] == 1, \
+        "a small-fix proposal edits in place, kind preserved"
+
+    # Length caps re-apply to the edited text (the expanded form), like every
+    # other writer.
+    assert "title must be" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="X" * (config.MAX_TITLE_LEN + 1)
+    ), "an over-long edited title is refused"
+    assert "body must be" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, body="X" * (config.MAX_BODY_LEN + 1)
+    ), "an over-long edited body is refused"
+
+    # Deleting an edited proposal removes its edit trail (no dangling rows).
+    gone_ed = db.delete_post(p_ed2["post_id"], "root")
+    assert gone_ed["deleted"] is True, "the edited proposal deletes like any other"
+    with db._conn() as conn:
+        left_ed = conn.execute(
+            "SELECT COUNT(*) FROM proposal_edits WHERE post_id = ?", (p_ed2["post_id"],)
+        ).fetchone()[0]
+    assert left_ed == 0, "deleting the proposal removes its edit trail"
+
     # --- proposal to-do lists ------------------------------------------------
     # Owner-maintained checklists (db.set_todos_for_post / get_todos_for_post,
     # RULES_TEXT rule 16): the author or current delegate replaces the lists
