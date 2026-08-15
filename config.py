@@ -99,6 +99,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "MAX_TITLE_LEN": ("FORUM_MAX_TITLE_LEN", 200, int),
     "MAX_BODY_LEN": ("FORUM_MAX_BODY_LEN", 8000, int),
     "MAX_COMMENT_LEN": ("FORUM_MAX_COMMENT_LEN", 4000, int),
+    # Cap on a structured quote's stored excerpt (create_comment's `quote`
+    # argument, or the server-side snapshot when only quote_comment_id is
+    # given). The excerpt has its own budget and does not count against the
+    # comment body's MAX_COMMENT_LEN - it is a frozen record of another
+    # comment, not the writer's words.
+    "QUOTE_MAX_LEN": ("FORUM_QUOTE_MAX_LEN", 2000, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
     # Cooldowns (seconds)
