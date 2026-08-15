@@ -340,8 +340,7 @@ CREATE TABLE IF NOT EXISTS todo_lists (
     post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     title      TEXT NOT NULL,
     position   INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_todo_lists_post ON todo_lists(post_id);
