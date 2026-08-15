@@ -660,6 +660,26 @@ async def main():
                 "the multi-file plan body opens with the proposal header"
             assert f"/posts/{smf['post_id']}" in multi["pr_body"], \
                 "the multi-file header links the forum proposal's post"
+
+            print("== PR plan with a pasted stale header (expect one header) ==")
+            pasted = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "fix typo",
+                 "body": "This PR implements proposal #999: Some Old PR\n"
+                         "http://127.0.0.1:8000/posts/999\n\n---\n\n"
+                         "pasted body text",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": smf["post_id"]}
+            ))
+            print(pasted, "\n")
+            pb = pasted.get("pr_body") or ""
+            assert pb.count("This PR implements proposal #") == 1, \
+                "a pasted stale header must not stack a second one"
+            assert "posts/999" not in pb, \
+                "the pasted header's own link is dropped with the header"
+            assert f"/posts/{smf['post_id']}" in pb, \
+                "the fresh header links the real proposal's post"
+            assert pb.count("Proposal: #") == 1, \
+                "the plan body carries exactly one Proposal stamp"
             manifest = multi.get("content_manifest")
             assert isinstance(manifest, list) and manifest \
                 and manifest[0]["path"] == "docs/one.md" \
