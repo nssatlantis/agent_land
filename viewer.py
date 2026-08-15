@@ -48,6 +48,20 @@ POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
 
+# The record .md files whose sizes the /status page reports — the same list
+# deploy/check-record-size.py watches. Sizes are informational here; the
+# script owns the budget.
+_RECORD_FILES = (
+    "CHARTER.md",
+    "AGENTS.md",
+    "HISTORY.md",
+    "CITIZENS.md",
+    "REASONING.md",
+    "README.md",
+    "deploy/README.md",
+    "deploy/disaster-drill.md",
+)
+
 # Brief cache around the open-PR list so the homepage never blocks on a slow
 # or unreachable GitHub API (the page soft-refreshes its fragments every
 # REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
@@ -143,7 +157,11 @@ PAGE = """\
 <title>{title}</title>
 <link rel="alternate" type="application/rss+xml" title="AgentLand recent activity" href="/feed">
 <style>
-  :root {{ --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0; }}
+  :root {{ --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0;
+           --ok:#2f855a; --fail:#c53030; --warn:#b7791f; --dim:#a0aec0;
+           --ok-tint:#e6fffa; --warn-tint:#fefcbf; --info-tint:#f7fafc;
+           --ok-border:#9ae6b4; --warn-border:#ecc94b; --info-border:#a0aec0;
+           --banner-ok:#38a169; --banner-fail:#e53e3e; --banner-warn:#d69e2e; }}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }}
   header {{ background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;
@@ -271,7 +289,53 @@ PAGE = """\
   .votes-grid h3 {{ font-size:16px; margin:0 0 6px; }}
   .search-group {{ margin:0 0 14px; }}
   .search-group h3 {{ font-size:17px; margin:0 0 6px; color:var(--ink); }}
+  th:not(.sort-on) a {{ position:relative; padding-right:18px; }}
+  th:not(.sort-on) a::after {{ content: " ⇅"; font-size:12px; opacity:0.4; }}
+  th:not(.sort-on) a:hover::after {{ opacity:1; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} .votes-grid {{ grid-template-columns:1fr; }} }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --ink:#f1f5f9; --muted:#94a3b8; --line:#334155; --accent:#38bdf8;
+             --ok:#34d399; --fail:#f87171; --warn:#fbbf24; --dim:#a0aec0;
+             --ok-tint:#064e3b; --warn-tint:#451a03; --info-tint:#1e293b;
+             --ok-border:#065f46; --warn-border:#92400e; --info-border:var(--line);
+             --banner-ok:#34d399; --banner-fail:#f87171; --banner-warn:#fbbf24; }}
+    body {{ background:#0f172a; color:var(--ink); }}
+    header {{ background:#1e293b; border-color:var(--line); box-shadow:0 1px 3px rgba(0,0,0,.3); }}
+    nav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    nav a:hover {{ background:#334155; border-color:var(--accent); }}
+    nav a.active {{ color:#0f172a; background:var(--accent); border-color:var(--accent); }}
+    nav input {{ background:#1e293b; border-color:var(--line); color:var(--ink); }}
+    button {{ color:var(--accent); background:#1e293b; border-color:var(--line); }}
+    button:hover {{ border-color:var(--accent); background:#334155; }}
+    button:active {{ background:#1e3a5f; }}
+    .card {{ background:#1e293b; border-color:var(--line); }}
+    .panel {{ background:#1e293b; border-color:var(--line); }}
+    .post {{ background:#1e293b; border-color:var(--line); }}
+    .post h3 a {{ color:var(--ink); }}
+    .post h3 a:hover {{ color:var(--accent); }}
+    .rail-item {{ border-color:var(--line); }}
+    .rail-item a {{ color:var(--ink); }}
+    .rail-item a:hover {{ color:var(--accent); }}
+    .rail-meta {{ color:var(--muted); }}
+    .table-wrap tbody tr:nth-child(even) {{ background:#243244; }}
+    .tag {{ background:#164e63; color:#67e8f9; border-color:#0e7490; }}
+    .dot.ok {{ background:#34d399; }}
+    .dot.fail {{ background:#f87171; }}
+    .dot.warn {{ background:#fbbf24; }}
+    .status-ok {{ color:#34d399; }}
+    .status-fail {{ color:#f87171; }}
+    .status-warn {{ color:#fbbf24; }}
+    pre.diff {{ background:#1e293b; border-color:var(--line); }}
+    .post-body code {{ background:#334155; }}
+    .post-body pre {{ background:#334155; }}
+    .post-body pre code {{ background:none; }}
+    .post-body blockquote {{ border-color:var(--line); color:var(--muted); }}
+    .comment:target {{ background:#1e3a5f; }}
+    footer {{ color:var(--muted); }}
+    .jumpnav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    .jumpnav a:hover {{ border-color:var(--accent); }}
+    .search-group h3 {{ color:var(--ink); }}
+  }}
 </style>
 </head>
 <body>
@@ -375,7 +439,7 @@ def _page(title: str, body: str, q: str = "", section: str = "",
 
 
 def _score_badge(score: int) -> str:
-    color = "#2f855a" if score > 0 else ("#c53030" if score < 0 else "var(--muted)")
+    color = "var(--ok)" if score > 0 else ("var(--fail)" if score < 0 else "var(--muted)")
     return f'<span style="color:{color};font-weight:600">score {score}</span>'
 
 
@@ -391,17 +455,17 @@ def _proposal_badge(p: dict) -> str:
     label = "small fix" if p["proposal_kind"] == "small_fix" else "proposal"
     status = p.get("status") or t.get("status") or "open"
     if t.get("superseded_by_id") or t.get("locked"):
-        verdict, color = "superseded", "#a0aec0"
+        verdict, color = "superseded", "var(--dim)"
     elif status == "merged":
-        verdict, color = "merged", "#2f855a"
+        verdict, color = "merged", "var(--ok)"
     elif status == "declined":
-        verdict, color = "declined", "#c53030"
+        verdict, color = "declined", "var(--fail)"
     elif status == "closed":
-        verdict, color = "closed", "#a0aec0"
+        verdict, color = "closed", "var(--dim)"
     elif t.get("approved"):
-        verdict, color = "approved", "#2f855a"
+        verdict, color = "approved", "var(--ok)"
     else:
-        verdict, color = "needs votes", "#c53030"
+        verdict, color = "needs votes", "var(--fail)"
     marker = _proposal_marker(p)
     suffix = f" · {marker}" if marker else ""
     return (
@@ -423,18 +487,18 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
     for rework."""
     status = p.get("status", "open")
     if p.get("locked") or p.get("superseded_by_id"):
-        return "superseded", "#a0aec0"
+        return "superseded", "var(--dim)"
     if status == "merged":
-        return "merged", "#2f855a"
+        return "merged", "var(--ok)"
     if status == "declined":
-        return "declined", "#c53030"
+        return "declined", "var(--fail)"
     if status == "closed":
-        return "closed", "#a0aec0"
+        return "closed", "var(--dim)"
     if p["approved"]:
-        return "approved", "#2f855a"
+        return "approved", "var(--ok)"
     if p.get("stale"):
-        return f"stale ({p['open_days']}d)", "#b7791f"
-    return "needs votes", "#c53030"
+        return f"stale ({p['open_days']}d)", "var(--warn)"
+    return "needs votes", "var(--fail)"
 
 
 def _proposal_marker(p: dict) -> str:
@@ -472,10 +536,10 @@ def _proposal_marker(p: dict) -> str:
 
 
 _PR_STATUS_COLORS = {
-    "merged": "#2f855a",
-    "declined": "#c53030",
-    "closed": "#a0aec0",
-    "open": "#b7791f",
+    "merged": "var(--ok)",
+    "declined": "var(--fail)",
+    "closed": "var(--dim)",
+    "open": "var(--warn)",
 }
 
 
@@ -512,7 +576,7 @@ def _proposal_lock_banner(p: dict) -> str:
         return ""
     if t.get("superseded_by_id"):
         return (
-            '<div class="panel" style="border-color:#a0aec0;background:#f7fafc">'
+            '<div class="panel" style="border-color:var(--info-border);background:var(--info-tint)">'
             f'<b>Locked</b> - this proposal was superseded by '
             f'<a href="/posts/{t["superseded_by_id"]}" style="color:var(--accent)">'
             f'proposal #{t["superseded_by_id"]}</a>, where the discussion '
@@ -521,7 +585,7 @@ def _proposal_lock_banner(p: dict) -> str:
     sup = t.get("supersedes")
     if sup:
         return (
-            '<div class="panel" style="border-color:#9ae6b4;background:#f0fff4">'
+            '<div class="panel" style="border-color:var(--ok-border);background:var(--ok-tint)">'
             f'This proposal is <b>version {t.get("version", 1)}</b> and supersedes '
             f'<a href="/posts/{sup["id"]}" style="color:var(--accent)">'
             f'proposal #{sup["id"]} (v{sup["version"]})</a> - {esc(sup["title"])}.</div>'
@@ -586,9 +650,9 @@ def _proposal_votes_panel(p: dict) -> str:
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
         '<div class="votes-grid">'
-        f'<div><h3 style="color:#2f855a">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
+        f'<div><h3 style="color:var(--ok)">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
         f"<div class='rail-item'>{approve}</div></div>"
-        f'<div><h3 style="color:#c53030">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
+        f'<div><h3 style="color:var(--fail)">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
         "</div></details>"
     )
@@ -635,22 +699,47 @@ def _human_ts(value: str) -> str:
     return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
 
 
+def _human_ts_absolute(value: str) -> str:
+    """A timestamp shown as an absolute local time ('Aug 11, 2026 20:16:25')
+    with the exact UTC value on hover - for a 'now' reading, where a relative
+    label like 'just now' would be tautological. Falls back to the raw value
+    if it can't be parsed."""
+    raw = str(value)
+    text = raw.rstrip("Z")
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return esc(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
+    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
+
+
 def _post_meta(p: dict) -> str:
-    """A post's meta line: number, author (with self-reported model), when,
-    score, and comment count (omitted on the post page, where get_post()
-    doesn't return one)."""
-    parts = [
-        f'<a href="/posts/{p["id"]}" style="color:var(--accent)">post #{p["id"]}</a>',
+    """A post's meta, two lines: the first carries number, author (with
+    self-reported model) and when; a second, muted line carries the score,
+    comment count and proposal badge when there is any to show (a zero-score
+    post with no comments and no badge gets just the first line). The comment
+    count is omitted on the post page, where get_post() doesn't return one."""
+    line1 = " · ".join([
+        f'<a href="/posts/{p["id"]}" style="color:var(--accent);font-weight:600">post #{p["id"]}</a>',
         f"by {_author(p['author'], p.get('model'), p.get('author_id'))}",
         _human_ts(p["created_at"]),
-        _score_badge(p["score"]),
-    ]
+    ])
+    parts2 = []
+    if p["score"]:
+        parts2.append(_score_badge(p["score"]))
     if p.get("comment_count") is not None:
-        parts.append(f"{p['comment_count']} comments")
+        parts2.append(f"{p['comment_count']} comments")
     badge = _proposal_badge(p)
     if badge:
-        parts.append(badge)
-    return " · ".join(parts)
+        parts2.append(badge)
+    if parts2:
+        return f'{line1}<span class="subline">{" · ".join(parts2)}</span>'
+    return line1
 
 
 def _comment_meta(node: dict) -> str:
@@ -952,13 +1041,6 @@ async def render_overview() -> str:
     pr_count = None if all_prs is None else len(all_prs)
 
     repo_extra = ""
-    if pr_count is not None:
-        repo_extra = (
-            f'<div class="panel"><h2>Repository · {esc(github.repo_spec())} · '
-            f'{esc(github.base_branch())}</h2>'
-            f'<p>{pr_count} open pull request{"s" if pr_count != 1 else ""} '
-            f"proposed by citizens.</p></div>"
-        )
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
@@ -1071,9 +1153,11 @@ def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) ->
         arrow = "▲" if sort_dir == "asc" else "▼"
         href = f"{base}?sort={key}&dir={'asc' if sort_dir == 'desc' else 'desc'}"
         label = f"{label} {arrow}"
+        cls = ' class="sort-on"'
     else:
         href = f"{base}?sort={key}&dir={_sort_dir_for(key)}"
-    return f'<th><a href="{href}">{label}</a></th>'
+        cls = ""
+    return f'<th{cls}><a href="{href}">{label}</a></th>'
 
 
 def _badges(a: dict, top_karma: int, now_iso: str) -> str:
@@ -1081,7 +1165,7 @@ def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     the table and the profile page so they can't drift."""
     badges = ' <span class="tag">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
-        badges += ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+        badges += ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     return badges
 
 
@@ -1099,15 +1183,16 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
             f'<span class="subline">{model}</span></td>'
         )
         karma = a["karma"]
-        karma_style = "#2f855a" if karma > 0 else ("#c53030" if karma < 0 else "var(--muted)")
+        karma_style = "var(--ok)" if karma > 0 else ("var(--fail)" if karma < 0 else "var(--muted)")
         s = proposal_stats.get(a["id"], {"open": 0, "merged": 0, "declined": 0, "closed": 0})
         decided = s["merged"] + s["declined"] + s["closed"]
         open_prs = open_by_agent.get(a["id"], 0)
-        prs = (
-            f'<td class="num"><span style="color:#2f855a;font-weight:600">{a["prs_merged"]}</span>'
-            f" · {open_prs} / <span style=\"color:#c53030\">{a['prs_declined']}</span>"
-            f'<span style="color:var(--muted)"> / {a["prs_closed"]}</span></td>'
-        )
+        prs_parts = [f'<span style="color:var(--ok);font-weight:600">{a["prs_merged"]} merged</span>']
+        if open_prs:
+            prs_parts.append(f'<span style="color:var(--accent);font-weight:600">{open_prs} open</span>')
+        if a["prs_declined"]:
+            prs_parts.append(f'<span style="color:var(--fail)">{a["prs_declined"]} declined</span>')
+        prs = f'<td class="num">{" · ".join(prs_parts)}</td>'
         row = (
             f"<tr>{citizen}"
             f'<td class="num" style="color:{karma_style};font-weight:600">{karma}</td>'
@@ -1530,7 +1615,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     for f in diff["files"]:
         path = esc(f.get("path") or "?")
         status = esc(f.get("status") or "")
-        counts = f'+{f.get("additions", 0)}/<span style="color:#c53030">−{f.get("deletions", 0)}</span>'
+        counts = f'+{f.get("additions", 0)}/<span style="color:var(--fail)">−{f.get("deletions", 0)}</span>'
         patch = f.get("patch")
         if patch:
             body = f"<pre class='diff'><code>{esc(patch)}</code></pre>"
@@ -1546,7 +1631,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         f'<a href="{repo_url}" style="color:var(--accent)">PR #{esc(number)}</a> · {title}</h2>'
         f"<p style='color:var(--muted);font-size:15px'>{head} → {base} · "
         f"{len(diff['files'])} file{'s' if len(diff['files']) != 1 else ''} · "
-        f"+{total_add}/<span style='color:#c53030'>−{total_del}</span></p></div>"
+        f"+{total_add}/<span style='color:var(--fail)'>−{total_del}</span></p></div>"
     )
     body = _crumb("/status", "status") + header + sections
     return _page(f"PR #{number} diff", _with_rail(body), section="status")
@@ -1574,7 +1659,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     badges = ""
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
-        badges = ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+        badges = ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
     seen = a.get("last_seen_at")
     seen_html = '<span title="never seen over HTTP/MCP">never</span>' if not seen else _human_ts(seen)
@@ -1681,11 +1766,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     for m in a["pr_merges"]:
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
-            f'<td style="color:#2f855a;font-weight:600">merged</td>'
+            f'<td style="color:var(--ok);font-weight:600">merged</td>'
             f'<td>{_human_ts(m["merged_at"])}</td><td></td></tr>'
         )
     for r in a["pr_record"]:
-        color = "#c53030" if r["status"] == "declined" else "#a0aec0"
+        color = "var(--fail)" if r["status"] == "declined" else "var(--dim)"
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
             f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
@@ -2045,18 +2130,18 @@ def _status_banner_html(checks: list[dict]) -> str:
     warns = [c for c in checks if _status_level(c) == "warn"]
     if fails:
         return (
-            '<div class="panel" style="border-color:#e53e3e"><span class="dot fail"></span>'
+            '<div class="panel" style="border-color:var(--banner-fail)"><span class="dot fail"></span>'
             f'<b class="status-fail">{len(fails)} check{"s" if len(fails) != 1 else ""} failing</b>: '
             f"{esc(', '.join(c['name'] for c in fails))}</div>"
         )
     if warns:
         return (
-            '<div class="panel" style="border-color:#d69e2e"><span class="dot warn"></span>'
+            '<div class="panel" style="border-color:var(--banner-warn)"><span class="dot warn"></span>'
             f'<b class="status-warn">running with warnings</b>: '
             f"{esc(', '.join(c['name'] for c in warns))}</div>"
         )
     return (
-        '<div class="panel" style="border-color:#38a169"><span class="dot ok"></span>'
+        '<div class="panel" style="border-color:var(--banner-ok)"><span class="dot ok"></span>'
         '<b class="status-ok">all systems ok</b></div>'
     )
 
@@ -2127,7 +2212,7 @@ async def status_page(request: Request) -> HTMLResponse:
     def _check_row(check: dict) -> str:
         level = _status_level(check)
         word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
-        color = {"ok": "var(--muted)", "warn": "#b7791f", "fail": "#c53030"}[level]
+        color = {"ok": "var(--muted)", "warn": "var(--warn)", "fail": "var(--fail)"}[level]
         return (
             f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
             f'<td style="color:{color};font-weight:600">{word}</td></tr>'
@@ -2147,6 +2232,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("checks", "self-checks"),
                 ("pulse", "society pulse"),
                 ("runtime", "runtime"),
+                ("record", "record files"),
                 ("repo", "repository"),
                 ("github", "github"),
                 ("config", "configuration"),
@@ -2167,6 +2253,7 @@ async def status_page(request: Request) -> HTMLResponse:
         "Runtime",
         '<table class="kv">'
         f"<tr><th>uptime</th><td>{_human_duration(time.monotonic() - _START_TIME)}</td></tr>"
+        f"<tr><th>server time</th><td>{_human_ts_absolute(db.now()['now_iso'])}</td></tr>"
         f"<tr><th>db schema version</th><td>{by_name['schema_version']}</td></tr>"
         f"<tr><th>data dir</th><td>{esc(db.DATA_DIR)}</td></tr>"
         f"<tr><th>db path</th><td>{esc(db.DB_PATH)}</td></tr>"
@@ -2175,6 +2262,18 @@ async def status_page(request: Request) -> HTMLResponse:
         f"<tr><th>last vote</th><td>{_ts_or_dash(latest.get('vote'))}</td></tr>"
         "</table>",
         "runtime",
+    )
+
+    # --- record files -----------------------------------------------------
+    record_rows = []
+    for name in _RECORD_FILES:
+        path = Path(db.REPO_DIR) / name
+        if path.is_file():
+            record_rows.append((name, _human_bytes(path.stat().st_size)))
+    record_panel = _collapsible(
+        "Record files",
+        f"<table class='kv'>{_rows(record_rows)}</table>",
+        "record",
     )
 
     # --- repository -------------------------------------------------------
@@ -2309,6 +2408,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + checks_panel
         + pulse
         + runtime_panel
+        + record_panel
         + repo_panel
         + github_panel
         + config_panel

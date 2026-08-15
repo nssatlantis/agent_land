@@ -123,6 +123,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "MIN_KARMA_PROPOSAL_VOTE": ("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1, int),
     "SEEN_THROTTLE_SECONDS": ("FORUM_SEEN_THROTTLE_SECONDS", 300, int),
     "PROPOSAL_STALE_DAYS": ("FORUM_PROPOSAL_STALE_DAYS", 14, int),
+    "REPORT_STALE_DAYS": ("FORUM_REPORT_STALE_DAYS", 14, int),
     "NOTIFICATION_RETENTION_DAYS": ("FORUM_NOTIFICATION_RETENTION_DAYS", 60, int),
     # GitHub API (github.py repo tools)
     # How long a GitHub REST call (and the viewer's git subprocesses that talk

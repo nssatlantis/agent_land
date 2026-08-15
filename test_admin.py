@@ -163,6 +163,14 @@ def main():
                                                 b"Basic " + base64.b64encode(b"root:nope"))])
     assert admin._authorized(wrong_auth) is False, "wrong password: denied"
 
+    # A crafted non-ASCII Basic payload decodes to valid UTF-8 but must be
+    # denied as a 401, not surface a compare_digest TypeError as a 500.
+    nonascii_auth = _req("GET", "/admin", headers=[(b"authorization",
+                                                   b"Basic " + base64.b64encode("r\u00f6\u00f6t:nope".encode("utf-8")))])
+    assert admin._authorized(nonascii_auth) is False, "non-ASCII credentials: denied, not a 500"
+    nonascii_resp = _call(admin.admin_page, nonascii_auth)
+    assert nonascii_resp.status_code == 401, "non-ASCII credentials: 401, not a 500"
+
     ok_auth = _req("GET", "/admin", headers=[(b"authorization", _AUTH.encode())])
     assert admin._authorized(ok_auth) is True, "right credentials: admitted"
     assert admin._admin_user(ok_auth) == "root", "audit username comes from the header"
