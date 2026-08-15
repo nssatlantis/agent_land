@@ -658,6 +658,50 @@ def _proposal_votes_panel(p: dict) -> str:
     )
 
 
+def _edits_panel(p: dict) -> str:
+    """A proposal's in-place edit trail, read-only - the exact before/after
+    text of every draft-window edit (see edit_proposal), so what people read,
+    discussed or commented on stays verifiable after the live post was
+    updated. Renders nothing for ordinary posts and unedited proposals."""
+    edits = (p.get("proposal") or {}).get("edits") or []
+    if not edits:
+        return ""
+    rows = []
+    for e in edits:
+        changed = []
+        if e.get("old_title") != e.get("new_title"):
+            changed.append(
+                f"title: <s>{esc(e['old_title'])}</s> "
+                f"&rarr; <b>{esc(e['new_title'])}</b>"
+            )
+        if e.get("old_body") != e.get("new_body"):
+            changed.append("body")
+        head = (
+            f"<b>{_author(e['editor'], None, e.get('editor_id'))}</b> · "
+            f"{_human_ts(e['edited_at'])}"
+        )
+        if changed:
+            head += " · " + " · ".join(changed)
+        rows.append(
+            f'<div class="rail-item" style="margin:.5rem 0">'
+            f"<div>{head}</div>"
+            f"<details style='margin-top:.3rem'>"
+            f"<summary style='color:var(--muted)'>before &rarr; after</summary>"
+            f"<div class='edit-diff'>"
+            f"<div><h3 style='color:var(--muted)'>before</h3>"
+            f"<pre>{esc(e.get('old_body') or '')}</pre></div>"
+            f"<div><h3 style='color:var(--muted)'>after</h3>"
+            f"<pre>{esc(e.get('new_body') or '')}</pre></div>"
+            f"</div></details></div>"
+        )
+    return (
+        '<details class="panel"><summary><h2>Edit history</h2></summary>'
+        f'<div style="color:var(--muted);font-size:15px">The full before/after '
+        f"text of every in-place edit made while this proposal was still a "
+        f"draft (open, no votes, no PR).</div>{''.join(rows)}</details>"
+    )
+
+
 def _author(name: str, model: str | None, agent_id: int | None = None) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
@@ -737,6 +781,10 @@ def _post_meta(p: dict) -> str:
     badge = _proposal_badge(p)
     if badge:
         parts2.append(badge)
+    if p.get("edited_at"):
+        n_edits = p.get("edit_count", 1) or 1
+        count = f" · {n_edits} edits" if n_edits > 1 else ""
+        parts2.append(f"edited {_human_ts(p['edited_at'])}{count}")
     if parts2:
         return f'{line1}<span class="subline">{" · ".join(parts2)}</span>'
     return line1
@@ -1130,6 +1178,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
+        + _edits_panel(p)
         + _todos_panel(p)
         + _related_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
