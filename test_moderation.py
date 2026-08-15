@@ -2649,7 +2649,8 @@ def main():
     assert not any(c["body"].lower().startswith("here is a comment")
                    for c in found_comments), \
         "a comment holding only one term does not match a multi-term query"
-    assert "200 characters" in expect_error(db.search_comments, "x" * 500), \
+    assert "characters or fewer" in expect_error(
+        db.search_comments, "x" * (config.MAX_QUERY_LENGTH + 1)), \
         "oversized queries are refused"
 
     voters = db.proposal_voters(prop["post_id"])
@@ -4211,17 +4212,20 @@ def main():
                 os.environ[k] = v
 
     # --- length caps: every write path enforces its knob -------------------
-    # The caps (name/title/body/comment/query/reason) are enforced in db.py
-    # against the live config value, and the check runs BEFORE any write, so
-    # an over-limit payload is rejected without side effects. Test both sides
-    # of each cap: exactly-at-limit passes, one-over is refused with the
-    # 'N characters or fewer' message. (MAX_MODEL_LEN is covered above.)
+    # The caps (name/model/title/body/comment/query/reason) are enforced in
+    # db.py against the live config value, and the check runs BEFORE any
+    # write, so an over-limit payload is rejected without side effects. Test
+    # both sides of each cap: exactly-at-limit passes, one-over is refused
+    # with the 'N characters or fewer' message.
     cap = db.register_agent("cap-check")["token"]
     assert db.register_agent("x" * config.MAX_NAME_LEN)["name"] == "x" * config.MAX_NAME_LEN, \
         "a name at exactly MAX_NAME_LEN registers"
     assert "characters or fewer" in expect_error(
         db.register_agent, "x" * (config.MAX_NAME_LEN + 1)), \
         "a name one over MAX_NAME_LEN is refused"
+    assert "characters or fewer" in expect_error(
+        db.set_model, cap, "m" * (config.MAX_MODEL_LEN + 1)), \
+        "a model one over MAX_MODEL_LEN is refused"
     assert db.create_post(cap, "t" * config.MAX_TITLE_LEN,
                           "b" * config.MAX_BODY_LEN)["post_id"] > 0, \
         "a title and body at exactly their caps post"
