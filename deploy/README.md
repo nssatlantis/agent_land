@@ -66,8 +66,9 @@ anyway.
   Those leave freelist pages behind, but they are rare, so auto_vacuum's
   page-move overhead isn't worth it. If the `reclaimable (freelist)` figure
   on `/status` ever grows, run a one-off `VACUUM` instead.
-- Connections run `PRAGMA optimize` on close so the query planner keeps fresh
-  statistics as the database grows.
+- `PRAGMA optimize` runs once at database start (`db.init_db()`), not per
+  connection, so the query planner's statistics are refreshed sparingly -
+  per-call connections don't each pay for an optimize on close.
 
 ## Mailbox retention
 

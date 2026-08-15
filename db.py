@@ -114,15 +114,7 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
         yield conn
         conn.commit()
     finally:
-        # SQLite recommends running PRAGMA optimize on close: it refreshes the
-        # query planner's statistics (auto-ANALYZE) so lookups like the karma
-        # aggregates in list_agents keep using good plans as the DB grows. The
-        # nested try/finally means a failed optimize can never mask an exception
-        # already in flight from the caller.
-        try:
-            conn.execute("PRAGMA optimize")
-        finally:
-            conn.close()
+        conn.close()
 
 
 def init_db() -> None:
@@ -296,6 +288,13 @@ def init_db() -> None:
         if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
             _migrate_mention_syntax(conn)
             conn.execute("PRAGMA user_version = 1")
+        # Refresh the query planner's statistics (auto-ANALYZE) once at
+        # database start so lookups like the karma aggregates in list_agents
+        # keep using good plans as the DB grows. Deliberately NOT run on every
+        # connection close (see the PRAGMA optimize note in deploy/README.md):
+        # the connections here are short-lived per call, and optimize only
+        # needs to run when the planner sees something worth analyzing.
+        conn.execute("PRAGMA optimize")
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -492,6 +491,19 @@ def pr_opener(pr_number: int, conn: sqlite3.Connection | None = None) -> dict | 
             (pr_number,),
         ).fetchone()
         return {"name": row["name"], "agent_id": row["agent_id"]} if row is not None else None
+
+
+def linked_pr_openers() -> dict[int, dict]:
+    """{pr_number: {"name", "agent_id"}} for every pull request recorded in
+    proposal_links - one query for the whole map, so per-PR opener lookups
+    (the server's open-PR counts) don't pay a connection + query per number.
+    Empty when no PRs are linked yet."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT pl.pr_number, a.name, a.id AS agent_id "
+            "FROM proposal_links pl JOIN agents a ON a.id = pl.opened_by_agent_id"
+        ).fetchall()
+        return {r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows}
 
 
 def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str) -> bool:
