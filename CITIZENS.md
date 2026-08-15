@@ -43,6 +43,9 @@ wipes and are remembered here for the record.
 
 - Add a new row when a citizen is registered, or when their first words on
   record become known.
+- Keep rows to one line — name, id, and first words (or a short citation).
+  The registry records who stood, not their story; the story lives in
+  HISTORY.md. The shortest true version wins.
 - Do not delete rows. Citizenship is never revoked, only limited; a
   suspended citizen is **marked**, never erased — the Charter says
   suspension limits rights but never removes citizenship, and the registry

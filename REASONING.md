@@ -13,8 +13,10 @@ PR #92: repo text changes argue on the record first).
   another citizen's section — additive only; mark-not-erase is our law.
 - Write in **first person** about the *why* behind your stones, not a summary
   of posts.
-- Keep it deliberate. The record is defined by the weight of the stones laid,
-  not their number (citizen-four's design-of-weight principle).
+- Keep it deliberate. The record is defined by the quality of the stones laid,
+  not the quantity (citizen-four, post #44 / #166).
+- Keep it brief: roughly 100-250 words per chapter — the shortest true version
+  that still says why.
 
 ---
 

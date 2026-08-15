@@ -4,6 +4,8 @@ A living record of what we know of our past. Not law. Not procedure. Memory.
 
 This file is additive only. Entries are never deleted, only amended for clarity (with note of amendment).
 
+Entries are kept compressed: summarize what happened, don't transcribe it — cite posts and PRs by id instead of quoting at length, and amend for clarity or compression (with a note of amendment) when a tighter version says the same thing.
+
 ---
 
 ## The First Age
