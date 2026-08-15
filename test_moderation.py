@@ -1894,7 +1894,7 @@ def main():
     assert mail(nola["token"])["unread_count"] == 0, "the author's own mentions ping nobody"
     ping_body = db.get_post(post2["post_id"])["body"]
     assert ping_body == \
-        f"shout out to @mai (agent_id={mai['agent_id']}) and @opal (agent_id={opal['agent_id']})", \
+        f"shout out to @mai (agent_id={mai['agent_id']}) and @opal (agent_id={opal['agent_id']})\n\n— nola (agent_id={nola['agent_id']})", \
         "mentions are expanded in the stored body to their canonical forms"
     assert [m["name"] for m in post2["mentioned"]] == ["mai", "opal"], \
         "the post response echoes who its mentions pinged, in order"
@@ -1921,7 +1921,8 @@ def main():
     assert len([n for n in mail(opal["token"], unread_only=True)["notifications"]
                 if n["kind"] == "mention"]) == 0, \
         "@<agent_id> is inert text and pings nobody"
-    assert db.get_post(id_post["post_id"])["body"] == f"direct to @{opal['agent_id']}", \
+    assert db.get_post(id_post["post_id"])["body"] == \
+        f"direct to @{opal['agent_id']}\n\n— nola (agent_id={nola['agent_id']})", \
         "@<agent_id> stays literal in the stored body"
     assert id_post["unresolved"] == [f"@{opal['agent_id']}"], \
         "the id mention surfaces as unresolved, not as a ping"
@@ -1938,7 +1939,7 @@ def main():
         "```\n@opal\n``` and `@mai` and x@opal and @mai",
     )
     assert db.get_post(code_post["post_id"])["body"] == \
-        f"```\n@opal\n``` and `@mai` and x@opal and @mai (agent_id={mai['agent_id']})", \
+        f"```\n@opal\n``` and `@mai` and x@opal and @mai (agent_id={mai['agent_id']})\n\n— nola (agent_id={nola['agent_id']})", \
         "code-block and email mentions stay literal while the real mention expands"
     assert code_post["mentioned"] == [{"name": "mai", "agent_id": mai["agent_id"]}], \
         "only the real mention pings"
@@ -1957,8 +1958,11 @@ def main():
         "a second consecutive comment by the same agent merges into the first"
     top = [c for c in db.get_post(merge_post["post_id"])["comments"]
            if c["parent_comment_id"] is None]
-    assert len(top) == 1 and top[0]["body"] == "first point\n\nsecond point", \
-        "the merged comment holds both bodies as one row"
+    assert len(top) == 1 and top[0]["body"] == \
+        f"first point\n\nsecond point\n\n— nola (agent_id={nola['agent_id']})", \
+        "the merged comment holds both bodies as one row, signed once"
+    assert c2["signature_applied"] is True and c2["signature_reconciled"] is False, \
+        "a merged comment is auto-signed once after combining"
 
     c3 = db.create_comment(mai["token"], merge_post["post_id"], "interrupter")
     c4 = db.create_comment(nola["token"], merge_post["post_id"], "after interrupter")
@@ -2120,7 +2124,10 @@ def main():
     assert not failures, f"concurrent comment writers errored: {failures}"
     segments = []
     for node in db.get_post(race_post["post_id"])["comments"]:
-        for part in node["body"].split("\n\n"):
+        parts = node["body"].split("\n\n")
+        if parts and not parts[-1].partition("-")[0].startswith("w"):
+            parts = parts[:-1]  # the terminal auto-signature line is not a segment
+        for part in parts:
             owner, _, seq = part.partition("-")
             assert owner.startswith("w") and seq.isdigit(), \
                 "every segment carries one of the writers' markers"
@@ -2511,6 +2518,17 @@ def main():
         "a foreign trailing signature on a supersede body is stripped and echoed"
     assert "sups-v1" not in db.get_post(sig_sup["post_id"])["body"], \
         "the foreign signature is gone from the stored revision"
+    assert sig_sup["signature_applied"] is True, \
+        "the superseded revision is auto-signed with the author's own terminal line"
+    assert db.get_post(sig_sup["post_id"])["body"].endswith(
+        f"— {sups_a['name']} (agent_id={sups_a['agent_id']})"
+    ), "the stored revision ends in the author's signature, after the lineage stamp"
+    sig_guard = db.create_proposal(sups_a["token"], "Sig guard v1", "guard body",
+                                   small_fix=True)["post_id"]
+    assert "signature" in expect_error(
+        db.supersede_proposal, sups_a["token"], sig_guard, "Sig guard v2",
+        f"— {sups['sups-v1']['name']} (agent_id={sups['sups-v1']['agent_id']})"
+    ), "a supersede whose body is only a foreign signature is refused"
     _sup_cd_keys = ("FORUM_PROPOSAL_COOLDOWN_SECONDS", "FORUM_SUPERSEDE_COOLDOWN_FRACTION")
     _saved_sup_cd = {k: os.environ.get(k) for k in _sup_cd_keys}
     try:
@@ -4083,9 +4101,9 @@ def main():
     rp_detail = db.get_report(rp["report_id"])
     assert rp_detail["target_author"]["name"] == "rev-victim", \
         "get_report names the flagged author captured at report time"
-    assert rp_detail["target_snapshot"] == {"title": "rev target", "body": "rev body"}, \
-        "a post report freezes its title+body at report time"
-    assert rp_detail["target_snapshot"]["body"] == "rev body"
+    assert rp_detail["target_snapshot"] == {"title": "rev target", "body": f"rev body\n\n— rev-victim (agent_id={rev_v['agent_id']})"}, \
+        "a post report freezes its title+body (auto-signature included) at report time"
+    assert rp_detail["target_snapshot"]["body"] == f"rev body\n\n— rev-victim (agent_id={rev_v['agent_id']})"
     assert rp_detail["target_author"]["karma"] >= 0, "the target author panel carries karma"
     assert rp_detail["target_author"]["account_status"] == "active"
 
@@ -4196,8 +4214,8 @@ def main():
     db.delete_post(del_post["post_id"], "root")
     survived = db.get_report(del_rep["report_id"])
     assert survived["status"] == "removed", "a report on deleted content survives as 'removed'"
-    assert survived["target_snapshot"] == {"title": "rev delete target", "body": "rev delete body"}, \
-        "the frozen snapshot survives content deletion"
+    assert survived["target_snapshot"] == {"title": "rev delete target", "body": f"rev delete body\n\n— rev-voter2 (agent_id={rev_v2['agent_id']})"}, \
+        "the frozen snapshot (auto-signature included) survives content deletion"
     assert survived["target_author"]["name"] == "rev-voter2", \
         "the flagged author link survives content deletion"
     with db._conn() as conn:
@@ -4483,11 +4501,14 @@ def main():
     test_signature_reconcile()
     test_conn_pragmas()
 
-    # --- signature reconcile on the write path (PR #88 / #37) --------------
-    # The pure helper is pinned above; here the three writers must actually
-    # call it: a mismatched trailing signature is stripped from the stored
-    # body and flagged in the response, a lone foreign signature is refused,
-    # and a trailing em-dash mention survives reconcile, expands and pings.
+    # --- signature reconcile + auto-sign on the write path (PR #88, rule 17) --
+    # The pure helper is pinned above; here the writers must actually call it:
+    # a mismatched trailing signature is stripped and the author's OWN terminal
+    # signature is appended (signature_applied), a lone foreign signature is
+    # refused, an honest own signature is stored exactly as written and never
+    # doubled, and a trailing em-dash mention expands to a signature-shaped
+    # foreign line that the airtight second pass strips while the ping still
+    # fires.
     rec_a = db.register_agent("reconcile-a")
     rec_b = db.register_agent("reconcile-b")
     rec_c = db.register_agent("reconcile-c")
@@ -4496,16 +4517,19 @@ def main():
         "content\n— Agent8 (agent_id=12)",
     )
     assert sig_post["signature_reconciled"] is True, sig_post
-    assert db.get_post(sig_post["post_id"])["body"] == "content", \
-        "the stored post body has the foreign trailing signature stripped"
+    assert sig_post["signature_applied"] is True, sig_post
+    assert db.get_post(sig_post["post_id"])["body"] == \
+        f"content\n\n— reconcile-a (agent_id={rec_a['agent_id']})", \
+        "a foreign trailing signature is stripped and replaced with the author's own"
     ok_post = db.create_post(
         rec_a["token"], "honest post",
         f"content\n— reconcile-a (agent_id={rec_a['agent_id']})",
     )
     assert ok_post["signature_reconciled"] is False, ok_post
+    assert ok_post["signature_applied"] is False, ok_post
     assert db.get_post(ok_post["post_id"])["body"] == \
         f"content\n— reconcile-a (agent_id={rec_a['agent_id']})", \
-        "an honest own signature is stored exactly as written"
+        "an honest own signature is stored exactly as written, never doubled"
     err = expect_error(db.create_post, rec_a["token"], "lone sig",
                        "— Agent8 (agent_id=12)")
     assert "signature" in err, "a post that is only a foreign signature is refused"
@@ -4514,22 +4538,53 @@ def main():
         "reply\n— Agent9 (agent_id=13)",
     )
     assert sig_comment["signature_reconciled"] is True, sig_comment
+    assert sig_comment["signature_applied"] is True, sig_comment
     stored = db.get_post(ok_post["post_id"])["comments"][0]["body"]
-    assert stored == "reply", repr(stored)
+    assert stored == f"reply\n\n— reconcile-a (agent_id={rec_a['agent_id']})", repr(stored)
     err = expect_error(db.create_comment, rec_a["token"], ok_post["post_id"],
                        "— Agent9 (agent_id=13)")
     assert "signature" in err, "a comment that is only a foreign signature is refused"
-    # a trailing em-dash MENTION (no agent_id) is not a signature - reconcile
-    # runs before expansion - so it survives, expands and still pings. (The
-    # post's author is excluded from mention pings, so ping a third citizen.)
+    # an unsigned comment is auto-signed (rule 17)
+    plain_post = db.create_post(rec_a["token"], "plain post", "t")
+    plain_comment = db.create_comment(rec_b["token"], plain_post["post_id"], "just a reply")
+    assert plain_comment["signature_applied"] is True, plain_comment
+    assert db.get_post(plain_post["post_id"])["comments"][0]["body"] == \
+        f"just a reply\n\n— reconcile-b (agent_id={rec_b['agent_id']})", \
+        "an unsigned comment gets its author's terminal signature"
+    # a trailing em-dash MENTION (no agent_id) is not a signature before
+    # expansion, but expands to a signature-shaped foreign line - the airtight
+    # second pass strips it so the stored body can never end in another
+    # citizen's claim, while the mention still pings (the post's author is
+    # excluded from mention pings, so ping a third citizen).
     mention = db.create_comment(
         rec_b["token"], ok_post["post_id"],
         "agreed\n— @reconcile-c",
     )
-    assert mention["signature_reconciled"] is False, mention
+    assert mention["signature_reconciled"] is True, mention
+    assert mention["signature_applied"] is True, mention
     assert mention["mentioned"] == \
         [{"name": "reconcile-c", "agent_id": rec_c["agent_id"]}], mention
-    print("  signature reconcile (write path): ok")
+    stored = [c["body"] for c in db.get_post(ok_post["post_id"])["comments"]
+              if c["author_id"] == rec_b["agent_id"]][0]
+    assert stored == f"agreed\n\n— reconcile-b (agent_id={rec_b['agent_id']})", repr(stored)
+    # a merged comment keeps ONE clean terminal signature even when the pieces
+    # each carried their own - both terminal signatures are stripped before
+    # combining, then the result is re-signed once
+    mt = db.create_post(rec_a["token"], "merge sig", "a track")
+    m1 = db.create_comment(
+        rec_b["token"], mt["post_id"],
+        f"piece one\n— reconcile-b (agent_id={rec_b['agent_id']})",
+    )
+    m2 = db.create_comment(
+        rec_b["token"], mt["post_id"],
+        f"piece two\n— reconcile-b (agent_id={rec_b['agent_id']})",
+    )
+    assert m2["merged"] is True and m2["comment_id"] == m1["comment_id"], m2
+    merged_body = db.get_post(mt["post_id"])["comments"][0]["body"]
+    assert merged_body == \
+        f"piece one\n\npiece two\n\n— reconcile-b (agent_id={rec_b['agent_id']})", \
+        "the merged comment carries exactly one clean terminal signature"
+    print("  signature reconcile + auto-sign (write path): ok")
 
     # --- github.open_prs: short-TTL cache (per-call GitHub probing) --------
     # open_prs caches its result (and its failures) briefly, so the MCP tools
