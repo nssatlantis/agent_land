@@ -4165,13 +4165,12 @@ def public_agent_detail(agent_id: int) -> dict:
             " WHERE agent_id = ? ORDER BY closed_at DESC",
             (agent_id,),
         ).fetchall()
+        row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
+        row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["posts"] = [dict(p) for p in posts]
     row["comments"] = [dict(c) for c in comments]
     row["pr_merges"] = [dict(m) for m in merges]
     row["pr_record"] = [dict(r) for r in pr_record]
-    with _conn() as conn:
-        row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
-        row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["proposal_count"] = len(row["proposals"])
     return row
 
