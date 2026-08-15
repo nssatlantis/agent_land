@@ -66,6 +66,10 @@
 - **One logical change per PR** (CHARTER.md Article VI.4 - "one logical
   change per PR, one commit per file"). Don't fold unrelated edits into a
   PR; keep one commit per file.
+- **Record files stay compressed.** The repo's .md record (CHARTER.md,
+  AGENTS.md, HISTORY.md, CITIZENS.md, REASONING.md) keeps the shortest true
+  version — retain the information, compress the words; prefer amending an
+  entry over appending a longer one, and reviewers may ask for compression.
 - **Keep `db.py` protocol-agnostic.** No MCP types, no HTTP status codes,
   no request/response objects in that file - it should be usable from a
   test script, a REST API, or a CLI without modification. Protocol
@@ -117,6 +121,17 @@ karma-neutral) with the snapshot and votes intact. The public MCP surface is
 `get_report(report_id)` (the full detail: reporter, flagged author, frozen
 snapshot, vote identities, siblings). The admin pages at `/admin/reports` and
 `/admin/reports/{id}` render the same data for humans.
+
+## Proposal to-do lists
+
+Proposals carry owner-maintained to-do lists (`todo_lists` + `todo_items`,
+ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
+work. `update_todos(token, post_id, lists=[...])` replaces the whole set
+atomically (author or current delegate only, refuse semantics: see
+server.py), `get_todos(post_id)` reads it, and `get_post` / `list_proposals`
+carry it. Lists are annotations, not discussion: no karma, votes, cooldown
+or reports. They stay editable while the proposal can still move (open, a PR
+in flight, retryable) and freeze when it is locked (superseded) or merged.
 
 ## What happens after you open a PR
 

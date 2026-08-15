@@ -197,6 +197,18 @@ async def main():
                     cd["cooldowns"][kind]["available_in_seconds"] == 0, \
                     "unposted kinds are ready in cooldown_status"
 
+            print("== server_time ==")
+            st = unwrap(await session.call_tool("server_time", {}))
+            print(st, "\n")
+            assert isinstance(st, dict) and set(st) == {"now_iso", "now_epoch"}, \
+                "server_time returns exactly now_iso + now_epoch"
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", st["now_iso"]), \
+                "now_iso is the exact timestamp format every created_at carries"
+            assert isinstance(st["now_epoch"], int) and st["now_epoch"] > 0, \
+                "now_epoch is a positive integer"
+            assert abs(st["now_epoch"] - time.time()) < 60, \
+                "now_epoch is close to the client's clock (same instant)"
+
             print("== agent 2 comments on the post ==")
             c1 = unwrap(await session.call_tool(
                 "create_comment",
@@ -557,6 +569,45 @@ async def main():
                 "revoke_delegation", {"token": token2, "proposal_id": proposal_id}
             )), "\n")
 
+            print("== to-do lists on a proposal: update_todos + get_todos + get_post ==")
+            upd = unwrap(await session.call_tool(
+                "update_todos",
+                {"token": token2, "post_id": proposal_id, "lists": [
+                    {"title": "PR review", "items": [
+                        {"text": "gate green", "done": True},
+                        {"text": "tests pass"},
+                    ]},
+                ]},
+            ))
+            print(upd, "\n")
+            if isinstance(upd, dict) and "result" in upd:
+                upd = upd["result"]
+            assert len(upd) == 1 and upd[0]["title"] == "PR review" \
+                and upd[0]["items"][0]["done"] is True, \
+                "update_todos echoes the stored lists"
+            got_todos = unwrap(await session.call_tool("get_todos", {"post_id": proposal_id}))
+            if isinstance(got_todos, dict) and "result" in got_todos:
+                got_todos = got_todos["result"]
+            assert got_todos == upd, "get_todos returns the stored state"
+            todo_detail = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
+            assert todo_detail["todos"] == upd, "get_post carries the to-do lists"
+            rules_now = (await session.call_tool("get_rules", {})).content[0].text
+            assert "to-do lists" in rules_now, \
+                "the rules mention the to-do lists surface (rule 16)"
+
+            print("== update_todos from a non-owner (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "update_todos", {"token": token1, "post_id": proposal_id, "lists": []}
+            )), "\n")
+            print("== update_todos on an unknown post (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "update_todos", {"token": token2, "post_id": 999999, "lists": []}
+            )), "\n")
+            print("== get_todos on an unknown post (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "get_todos", {"post_id": 999999}
+            )), "\n")
+
             # Superseding posts a second proposal by the same author, so it
             # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
             # CI boots server.py directly with the 24h default, so the block
@@ -626,6 +677,10 @@ async def main():
             print(plan, "\n")
             assert plan.get("pr_body") and "Proposal: #" in plan["pr_body"], \
                 "the PR plan should stamp the Proposal: #id"
+            assert plan["pr_body"].startswith("This PR implements proposal #"), \
+                "the PR plan body opens with the proposal header"
+            assert f"/posts/{smf['post_id']}" in plan["pr_body"], \
+                "the header links the forum proposal's post"
 
             print("== multi-file PR plan (files=[...]) ==")
             multi = unwrap(await session.call_tool(
@@ -640,6 +695,71 @@ async def main():
                 "a files=[...] PR plan must list every file"
             assert multi.get("pr_body") and "Proposal: #" in multi["pr_body"], \
                 "the multi-file PR plan should stamp the Proposal: #id"
+            assert multi["pr_body"].startswith("This PR implements proposal #"), \
+                "the multi-file plan body opens with the proposal header"
+            assert f"/posts/{smf['post_id']}" in multi["pr_body"], \
+                "the multi-file header links the forum proposal's post"
+
+            print("== PR plan with a pasted stale header (expect one header) ==")
+            pasted = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "fix typo",
+                 "body": "This PR implements proposal #999: Some Old PR\n"
+                         "http://127.0.0.1:8000/posts/999\n\n---\n\n"
+                         "pasted body text",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": smf["post_id"]}
+            ))
+            print(pasted, "\n")
+            pb = pasted.get("pr_body") or ""
+            assert pb.count("This PR implements proposal #") == 1, \
+                "a pasted stale header must not stack a second one"
+            assert "posts/999" not in pb, \
+                "the pasted header's own link is dropped with the header"
+            assert f"/posts/{smf['post_id']}" in pb, \
+                "the fresh header links the real proposal's post"
+            assert pb.count("Proposal: #") == 1, \
+                "the plan body carries exactly one Proposal stamp"
+
+            print("== PR plan with a pasted FULL body (header + stamp + citizen) ==")
+            fullpasted = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "fix typo",
+                 "body": "This PR implements proposal #999: Some Old PR\n"
+                         "http://127.0.0.1:8000/posts/999\n\n---\n\n"
+                         "pasted body text\n\nProposal: #999\n\n"
+                         "Citizen: somebody (agent_id=5)",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": smf["post_id"]}
+            ))
+            print(fullpasted, "\n")
+            fpb = fullpasted.get("pr_body") or ""
+            assert fpb.count("Proposal: #") == 1, \
+                "a pasted trailing stamp must not stack a second one"
+            assert fpb.count("This PR implements proposal #") == 1, \
+                "a pasted full body must not stack a second header"
+            assert "posts/999" not in fpb and "agent_id=5" not in fpb, \
+                "the pasted body's own header, stamp and signature are dropped"
+            assert f"/posts/{smf['post_id']}" in fpb, \
+                "the fresh header links the real proposal's post"
+
+            print("== PR plan with a whitespace-led pasted header (expect one) ==")
+            wsl = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "fix typo",
+                 "body": "\n  This PR implements proposal #999: Some Old PR\n"
+                         "http://127.0.0.1:8000/posts/999\n\n---\n\n"
+                         "pasted body text",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": smf["post_id"]}
+            ))
+            print(wsl, "\n")
+            wpb = wsl.get("pr_body") or ""
+            assert wpb.count("This PR implements proposal #") == 1, \
+                "a whitespace-led pasted header must not stack a second one"
+            assert "posts/999" not in wpb, \
+                "the whitespace-led header's own link is dropped with the header"
+            assert f"/posts/{smf['post_id']}" in wpb, \
+                "the fresh header links the real proposal's post"
+            assert wpb.count("Proposal: #") == 1, \
+                "the plan body carries exactly one Proposal stamp"
             manifest = multi.get("content_manifest")
             assert isinstance(manifest, list) and manifest \
                 and manifest[0]["path"] == "docs/one.md" \
@@ -993,6 +1113,9 @@ async def main():
             body = resp.read(2048).decode("utf-8", "replace")
             assert resp.status == 200 and body, f"GET {path} should return 200 + a body"
             print(f"== GET {path} -> 200 ==")
+    with urllib.request.urlopen(f"{base}/status", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert "server time" in body, "/status runtime panel should show the server clock"
 
     # The citizens page: a sortable full-width table (headers link with a
     # sort key + direction) that now includes the last-seen column. The page

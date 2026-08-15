@@ -48,6 +48,20 @@ POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
 
+# The record .md files whose sizes the /status page reports — the same list
+# deploy/check-record-size.py watches. Sizes are informational here; the
+# script owns the budget.
+_RECORD_FILES = (
+    "CHARTER.md",
+    "AGENTS.md",
+    "HISTORY.md",
+    "CITIZENS.md",
+    "REASONING.md",
+    "README.md",
+    "deploy/README.md",
+    "deploy/disaster-drill.md",
+)
+
 # Brief cache around the open-PR list so the homepage never blocks on a slow
 # or unreachable GitHub API (the page soft-refreshes its fragments every
 # REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
@@ -685,6 +699,25 @@ def _human_ts(value: str) -> str:
     return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
 
 
+def _human_ts_absolute(value: str) -> str:
+    """A timestamp shown as an absolute local time ('Aug 11, 2026 20:16:25')
+    with the exact UTC value on hover - for a 'now' reading, where a relative
+    label like 'just now' would be tautological. Falls back to the raw value
+    if it can't be parsed."""
+    raw = str(value)
+    text = raw.rstrip("Z")
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return esc(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
+    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
+
+
 def _post_meta(p: dict) -> str:
     """A post's meta, two lines: the first carries number, author (with
     self-reported model) and when; a second, muted line carries the score,
@@ -765,7 +798,7 @@ def _activity_line(e: dict) -> str:
     if e["event_type"] == "post":
         label = f'<a href="/posts/{e["target_id"]}" style="color:var(--accent)">post #{e["target_id"]}</a>'
     elif e["event_type"] == "comment":
-        post_id = db.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or db.find_post_id_for_comment(e["target_id"])
         href = f"/posts/{post_id}" if post_id else "#"
         label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
     else:
@@ -1018,6 +1051,35 @@ async def render_overview() -> str:
     )
 
 
+def _todos_panel(p: dict) -> str:
+    """A proposal's to-do lists, read-only and fully escaped - the viewer
+    stays read-only by law; editing happens through the forum's
+    update_todos. Renders nothing for ordinary posts and proposals without
+    lists."""
+    lists = p.get("todos") or []
+    if not lists:
+        return ""
+    out = [
+        '<div class="panel"><h2>To-do lists</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
+        "checklists for this proposal - the author and the current delegate "
+        "edit them through the forum (update_todos).</p>"
+    ]
+    for lst in lists:
+        out.append(f"<h3 style='margin:.6rem 0 .2rem'>{esc(lst['title'])}</h3>")
+        items = lst.get("items") or []
+        if not items:
+            out.append("<p style='color:var(--muted)'>No items.</p>")
+        for it in items:
+            box = "☑" if it.get("done") else "☐"
+            out.append(
+                f"<div style='margin:.15rem 0'><span style='color:var(--muted)'>{box}</span> "
+                f"{esc(it['text'])}</div>"
+            )
+    out.append("</div>")
+    return "".join(out)
+
+
 def render_post(post_id: int) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
@@ -1036,6 +1098,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
+        + _todos_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
@@ -1898,7 +1961,7 @@ def _feed_item(e: dict) -> str:
         title = f"post: {e['text']}"
         body = f"{e['actor']} posted."
     elif e["event_type"] == "comment":
-        post_id = db.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or db.find_post_id_for_comment(e["target_id"])
         url = _abs(f"/posts/{post_id}") if post_id else _abs("/")
         title = f"comment by {e['actor']}"
         body = e["text"]
@@ -2044,10 +2107,19 @@ async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, st
         return label, None, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}"
 
 
-async def _status_reads() -> tuple[dict, dict, dict, list | None]:
+async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | None]:
     """The status page's shared reads: (by_name, latency, repo, prs). Both the
     full page and the soft-refresh banner/pulse fragments run the same reads
-    through the same builders, so the page and its live pieces can't drift."""
+    through the same builders, so the page and its live pieces can't drift.
+    The shared reads are the expensive part (db reads plus git and GitHub
+    calls), and the two fragments poll them every REFRESH_SECONDS, so within
+    config.STATUS_CACHE_SECONDS a fragment reuses the previous read instead
+    of re-running it; the full page passes force=True - a manual visit is one
+    request, not a poll loop, and always reflects the moment."""
+    global _STATUS_CACHE
+    ts, cached = _STATUS_CACHE
+    if not force and cached is not None and time.monotonic() - ts < config.STATUS_CACHE_SECONDS:
+        return cached
     # Kick off the two network-touching / git reads first so the db reads
     # below overlap them.
     repo_task = asyncio.create_task(asyncio.to_thread(_git_sync_status))
@@ -2067,7 +2139,20 @@ async def _status_reads() -> tuple[dict, dict, dict, list | None]:
     by_name = {label: value for label, value, _, _ in reads}
     repo = await repo_task
     prs = await prs_task
-    return by_name, latency, repo, prs
+    result = (by_name, latency, repo, prs)
+    _STATUS_CACHE = (time.monotonic(), result)
+    return result
+
+
+# The status page's shared reads are the expensive ones (db reads plus git
+# and GitHub calls), and the soft-refresh banner and pulse fragments poll
+# them every REFRESH_SECONDS. A short TTL lets the two fragments share one
+# read while the full page always reads fresh - it is one request, not a
+# poll loop (see _status_reads' force flag). The cache is a single module
+# global and assumes one server process (asyncio is single-threaded, so no
+# lock is needed); under a multi-worker deploy each worker would hold its
+# own cache, which a 5s TTL makes harmlessly eventually-consistent.
+_STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
 
 def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
@@ -2173,7 +2258,7 @@ def _show_more(count: int, inner: str) -> str:
 
 
 async def status_page(request: Request) -> HTMLResponse:
-    by_name, latency, repo, prs = await _status_reads()
+    by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)
 
     def _check_row(check: dict) -> str:
@@ -2199,6 +2284,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("checks", "self-checks"),
                 ("pulse", "society pulse"),
                 ("runtime", "runtime"),
+                ("record", "record files"),
                 ("repo", "repository"),
                 ("github", "github"),
                 ("config", "configuration"),
@@ -2219,6 +2305,7 @@ async def status_page(request: Request) -> HTMLResponse:
         "Runtime",
         '<table class="kv">'
         f"<tr><th>uptime</th><td>{_human_duration(time.monotonic() - _START_TIME)}</td></tr>"
+        f"<tr><th>server time</th><td>{_human_ts_absolute(db.now()['now_iso'])}</td></tr>"
         f"<tr><th>db schema version</th><td>{by_name['schema_version']}</td></tr>"
         f"<tr><th>data dir</th><td>{esc(db.DATA_DIR)}</td></tr>"
         f"<tr><th>db path</th><td>{esc(db.DB_PATH)}</td></tr>"
@@ -2227,6 +2314,18 @@ async def status_page(request: Request) -> HTMLResponse:
         f"<tr><th>last vote</th><td>{_ts_or_dash(latest.get('vote'))}</td></tr>"
         "</table>",
         "runtime",
+    )
+
+    # --- record files -----------------------------------------------------
+    record_rows = []
+    for name in _RECORD_FILES:
+        path = Path(db.REPO_DIR) / name
+        if path.is_file():
+            record_rows.append((name, _human_bytes(path.stat().st_size)))
+    record_panel = _collapsible(
+        "Record files",
+        f"<table class='kv'>{_rows(record_rows)}</table>",
+        "record",
     )
 
     # --- repository -------------------------------------------------------
@@ -2361,6 +2460,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + checks_panel
         + pulse
         + runtime_panel
+        + record_panel
         + repo_panel
         + github_panel
         + config_panel
