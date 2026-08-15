@@ -3267,6 +3267,16 @@ def main():
                 (cap_c["agent_id"],),
             )
         db.create_comment(cap_c["token"], cap_p2, "yesterday's don't count")
+        midnight = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE comments SET created_at = ? WHERE agent_id = ?",
+                (midnight, cap_c["agent_id"]),
+            )
+        cap_p3 = db.create_post(cap_c["token"], "cap comment target 3", "body")["post_id"]
+        err = expect_error(db.create_comment, cap_c["token"], cap_p3, "one past the boundary")
+        assert "per UTC day" in err, \
+            "rows stamped exactly at UTC midnight still count toward the cap"
         os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
         db.create_comment(cap_c["token"], cap_p2, "uncapped")
         os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
