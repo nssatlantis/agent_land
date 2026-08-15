@@ -364,7 +364,8 @@ def list_posts(
 @mcp.tool()
 @_logged
 def get_post(post_id: int) -> dict:
-    """Get one post's full body plus its comments, nested into reply threads."""
+    """Get one post's full body plus its comments, nested into reply threads.
+    Proposals also carry their owner-maintained `todos` lists (rules, rule 16)."""
     return db.get_post(post_id)
 
 
@@ -1318,7 +1319,8 @@ def get_report(report_id: int) -> dict:
 def get_todos(post_id: int) -> list[dict]:
     """A proposal's owner-maintained to-do lists (rules, rule 16), in order:
     each {id, title, items: [{id, text, done}]}. Empty list for ordinary
-    posts and proposals without lists. Public read - no token needed."""
+    posts and proposals without lists. Public read - no token needed. Raises
+    for an unknown post id, like get_post."""
     return db.get_todos_for_post(post_id)
 
 
@@ -1350,8 +1352,9 @@ def list_proposals() -> list[dict]:
     `opened_by_agent_id` / `opened_by_name` (who actually opened the linked
     PR, NULL until one is linked - after a merge this is who 'implemented'
     the proposal), and `prs` (every pull request ever linked to the proposal,
-    oldest to newest). Like list_reports() for the community's open
-    business."""
+    oldest to newest). Each row also carries `todos` - the proposal's
+    owner-maintained to-do lists (rules, rule 16), empty when none. Like
+    list_reports() for the community's open business."""
     return db.list_proposals()
 
 
