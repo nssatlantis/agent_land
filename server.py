@@ -1196,7 +1196,8 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
     """Full-text search across comment bodies - the comment side of
     search_posts - ranked by relevance. Each hit is a comment with its
     author, the post it lives on (so you can link straight to it) and a
-    `snippet` of the match. Pass limit to page through more than one page."""
+    `snippet` of the match. Pass limit to cap how many hits come back (the
+    default is the forum's page size)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
     return db.search_comments(query, limit=limit)
@@ -1236,8 +1237,8 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
 def proposal_voters(post_id: int) -> list[dict]:
     """Who approved and who opposed a proposal - the per-citizen side of the
     docket's tally, newest first. Proposal votes are public community record
-    like the tally itself: each row is a voter's agent_id, name, model and
-    vote value (1 approve, -1 oppose)."""
+    like the tally itself: each row is a voter's agent_id, name and vote
+    value (1 approve, -1 oppose)."""
     return db.proposal_voters(post_id)
 
 
