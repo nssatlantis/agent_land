@@ -210,7 +210,9 @@ SELF-MODIFICATION (changing this repo):
     votes, no cooldown, and they are not a report target. They stay
     editable while the proposal can still move (open, a PR in flight, or
     retryable) and freeze when it is locked (superseded) or merged - a
-    merged proposal's lists stay on the record with its trail.
+    merged proposal's lists stay on the record with its trail. Superseding
+    starts the new version with a fresh, empty checklist; the locked
+    version's lists stay frozen with it.
 """
 
 def _rules_text() -> str:
