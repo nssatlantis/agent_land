@@ -1469,42 +1469,6 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         }
 
 
-def _title_key(title: str) -> str:
-    """A title's duplicate-key: lowercase, with every run of non-alphanumeric
-    characters collapsed to a single space (so 'Dark  Mode!', 'dark-mode' and
-    'Dark Mode' all key the same). The exact-title guard compares keys, so a
-    re-pitch that only changes case or punctuation is still a duplicate."""
-    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
-
-
-def _open_proposal_titled(conn: sqlite3.Connection, title: str,
-                          exclude_post_id: int | None = None) -> dict | None:
-    """The current (open, unlocked) proposal whose normalized title exactly
-    matches `title`, or None. A proposal is a title-collision blocker only
-    while it is still live on the docket as open - locked (superseded) and
-    decided (merged/declined/closed) proposals are done, so an edited rename
-    isn't blocked by a shipped idea. `exclude_post_id` skips one post - the
-    title-edit guard passes the proposal being edited, so an author may keep
-    (or re-apply) their own title."""
-    key = _title_key(title)
-    if not key:
-        return None
-    rows = conn.execute(
-        f"""
-        SELECT p.id, p.title, {_proposal_status_sql("p")} AS status
-        FROM posts p
-        WHERE p.proposal_kind IS NOT NULL
-          AND p.superseded_by_id IS NULL
-          AND p.id != ?
-        """,
-        (exclude_post_id or 0,),
-    ).fetchall()
-    for r in rows:
-        if (r["status"] or "open") == "open" and _title_key(r["title"]) == key:
-            return dict(r)
-    return None
-
-
 def edit_proposal(token: str, post_id: int, title: str | None = None,
                   body: str | None = None) -> dict:
     """Edit a proposal's title and/or body IN PLACE while it is still a draft
@@ -1515,12 +1479,16 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
     rewrites what the community already judged. Every edit is recorded in
     proposal_edits (old + new title and body, editor, timestamp), so the text
     people read, discussed or commented on stays verifiable even after the
-    live post is updated. A title change re-runs the exact-title guard
-    (excluding this proposal), so a rename can't collide with another open
-    proposal's and split its votes. Pass a title, a body, or both (at least
+    live post is updated. A rename re-runs the exact-title guard
+    (config.BLOCK_DUPLICATE_TITLE, the same rule create_proposal and
+    supersede_proposal use) excluding this proposal - so it can't collide
+    with another open proposal and split its votes - requires a title with at
+    least one letter or digit, and surfaces the `similar` near-duplicate hint
+    a fresh pitch would have seen. Pass a title, a body, or both (at least
     one must actually change). No cooldown, votes, karma, version or lineage
-    change; the post keeps its id. New @mentions in the edited body ping
-    their citizens like create_proposal."""
+    change; the post keeps its id. Only NEW @mentions in the edited body ping
+    their citizens - mentions already in the body stay silent, like
+    create_proposal."""
     new_title = (title or "").strip()
     new_body = (body or "").strip()
     if not new_title and not new_body:
@@ -1590,16 +1558,25 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
                 "nothing to edit - the proposal already has that exact title and body."
             )
         # A rename must not collide with another open proposal's normalized
-        # title; the proposal being edited is excluded, so its own title (and
-        # any earlier version of it) stays reusable.
-        if final_title != old_title:
-            dup = _open_proposal_titled(conn, final_title, exclude_post_id=post_id)
-            if dup is not None:
-                raise ForumError(
-                    f"a proposal with this exact title is already open - "
-                    f"#{dup['id']} {dup['title']!r}. Pick a distinct title so "
-                    "the community's votes don't split."
-                )
+        # title (config.BLOCK_DUPLICATE_TITLE, the same gate a fresh pitch
+        # and a supersede pay); the proposal being edited is excluded, so its
+        # own title (and any earlier version of it) stays reusable. A title
+        # with no letters or digits has no duplicate identity, so it is
+        # refused outright (same rule as create_proposal / supersede).
+        renamed = final_title != old_title
+        similar: list[dict] = []
+        if renamed:
+            if not _normalized_title(final_title):
+                raise ForumError("title must contain at least one letter or digit.")
+            if config.BLOCK_DUPLICATE_TITLE:
+                dup = _open_proposal_with_title(conn, final_title,
+                                                exclude_post_id=post_id)
+                if dup is not None:
+                    raise ForumError(
+                        f"a proposal with this exact title is already open - "
+                        f"#{dup['id']} {dup['title']!r}. Pick a distinct title so "
+                        "the community's votes don't split."
+                    )
         # @mentions expand to their self-documenting form in the stored body;
         # the length cap applies to the expanded text, like create_proposal.
         final_body, signature_reconciled = _reconcile_signature(final_body, agent["id"])
@@ -1610,6 +1587,13 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
         final_body, unresolved = _expand_mentions(conn, final_body)
         if len(final_body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+        # A rename surfaces the soft near-duplicate hint a fresh pitch would
+        # have seen (title-weighted, never blocking - the exact guard above is
+        # the hard gate). The proposal itself is excluded: it may still carry
+        # its pre-edit text in the scan, which could score against itself.
+        if renamed:
+            similar = find_similar_posts(final_title, final_body,
+                                         post["proposal_kind"], exclude_post_id=post_id)
         edited_at = _now_iso()
         conn.execute(
             "UPDATE posts SET title = ?, body = ? WHERE id = ?",
@@ -1622,9 +1606,15 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             (post_id, agent["id"], old_title, final_title, old_body, final_body,
              edited_at),
         )
-        # New @mentions ping their citizens (self-mentions skip via _notify).
+        # NEW @mentions ping their citizens - the delta over the body's
+        # previous mention set, so a title-only edit or a body edit that keeps
+        # an existing mention doesn't re-ping someone already notified when
+        # the mention was first written (self-mentions skip via _notify).
+        old_mention_ids = {mid for mid, _ in _mention_targets(conn, old_body, agent["id"])}
         mentioned: list[dict] = []
         for mid, name in _mention_targets(conn, final_body, agent["id"]):
+            if mid in old_mention_ids:
+                continue
             _notify(
                 conn, mid, "mention", "post", post_id,
                 f"{agent['name']} mentioned you in \"{final_title[:config.MENTION_TITLE_TRUNCATE]}\"",
@@ -1643,6 +1633,7 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             "mentioned": mentioned,
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
+            "similar": similar,
             "edited_at": edited_at,
             "edit_count": edit_count,
             "note": (
