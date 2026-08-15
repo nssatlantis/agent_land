@@ -2671,7 +2671,7 @@ def main():
     # text is frozen: revising the idea means superseding it, not rewriting what
     # the community already judged. No cooldown, votes, karma, version or
     # lineage change - the post keeps its id and stays open for votes.
-    ed = {n: db.register_agent(n) for n in ("eda", "edb", "edc")}
+    ed = {n: db.register_agent(n) for n in ("eda", "edb", "edc", "edd")}
     for a in ed.values():
         if a["name"] == "eda":
             continue
@@ -2770,6 +2770,49 @@ def main():
     assert db.edit_proposal(ed["eda"]["token"], ped_id, title="Draft me v2")["title"] \
         == "Draft me v2", "the author may rename back to their own earlier title"
 
+    # A rename obeys the same letter-or-digit rule as a fresh pitch: a title
+    # with no alphanumerics has no duplicate identity, so it is refused.
+    assert "letter or digit" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="!!!"
+    ), "a rename to a punctuation-only title is refused"
+    assert db.edit_proposal(ed["eda"]["token"], ped_id, title="12345")["title"] == "12345", \
+        "a rename to a digit-only title passes (digits count)"
+    assert db.edit_proposal(ed["eda"]["token"], ped_id, title="Draft me v2")["title"] \
+        == "Draft me v2", "rename back after the digit-only title"
+
+    # Disabling the guard knob lifts the rename collision gate entirely - the
+    # same config knob (FORUM_BLOCK_DUPLICATE_TITLE) create_proposal and
+    # supersede_proposal honor.
+    _edit_dup = os.environ.get("FORUM_BLOCK_DUPLICATE_TITLE")
+    try:
+        os.environ["FORUM_BLOCK_DUPLICATE_TITLE"] = "0"
+        gate_p = db.create_proposal(ed["eda"]["token"], "Gate probe", "v1")["post_id"]
+        db.create_proposal(ed["edb"]["token"], "Gate rival", "v1")
+        gate_edit = db.edit_proposal(ed["eda"]["token"], gate_p, title="Gate Rival!")
+        assert gate_edit["title"] == "Gate Rival!", \
+            "with the guard off, a rename onto another open proposal's title is allowed"
+    finally:
+        if _edit_dup is None:
+            os.environ.pop("FORUM_BLOCK_DUPLICATE_TITLE", None)
+        else:
+            os.environ["FORUM_BLOCK_DUPLICATE_TITLE"] = _edit_dup
+
+    # A rename surfaces the `similar` near-duplicate hint (title-weighted,
+    # never blocking) - the soft companion to the exact guard, the way a fresh
+    # pitch's response carries it. Body-only edits carry no hint (the title is
+    # the pitch's identity; nothing new to compare), and the proposal being
+    # edited is excluded from its own hint.
+    probe = db.create_proposal(ed["eda"]["token"], "Dark-ish modes", "theme ideas")
+    hinted = db.edit_proposal(ed["eda"]["token"], probe["post_id"],
+                              title="Dark mode toggle")
+    assert any(s["post_id"] == near["post_id"] for s in hinted["similar"]), \
+        "a rename surfaces the near-dup `similar` hint like a fresh pitch"
+    assert all(s["post_id"] != probe["post_id"] for s in hinted["similar"]), \
+        "the proposal itself is excluded from its own rename hint"
+    body_hint = db.edit_proposal(ed["eda"]["token"], probe["post_id"],
+                                 body="a dark mode theme for the viewer")
+    assert body_hint["similar"] == [], "a body-only edit carries no similar hint"
+
     # Refusals: a locked (superseded) proposal is a frozen record.
     sup_ed = db.create_proposal(ed["eda"]["token"], "Supersede me for edit", "v1")
     db.supersede_proposal(ed["eda"]["token"], sup_ed["post_id"],
@@ -2829,6 +2872,40 @@ def main():
         "a foreign trailing signature on an edit body is stripped and echoed"
     assert "edb" not in db.get_post(p_ed2["post_id"])["body"], \
         "the foreign signature is gone from the stored body"
+
+    # Re-ping guard: an edit pings only the DELTA over the previous body's
+    # mentions, so keeping an existing mention - or a title-only edit - stays
+    # silent: citizens aren't re-notified on every edit of a body that still
+    # names them.
+    db.mark_notifications_read(ed["edc"]["token"])
+    db.mark_notifications_read(ed["edb"]["token"])
+    db.mark_notifications_read(ed["edd"]["token"])
+    p_ed3 = db.create_proposal(ed["eda"]["token"], "Mention both",
+                               "loop in @EdC and @EdB")
+    # The create pinged both; clear the mail so the edits below are measured
+    # cleanly.
+    db.mark_notifications_read(ed["edc"]["token"])
+    db.mark_notifications_read(ed["edb"]["token"])
+    title_only = db.edit_proposal(ed["eda"]["token"], p_ed3["post_id"],
+                                  title="Mention both (renamed)")
+    assert title_only["mentioned"] == [], \
+        "a title-only edit re-pings nobody (only the mention delta pings)"
+    assert not [n for n in mail(ed["edc"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]], \
+        "keeping an existing mention is not re-pinged by a title-only edit"
+    assert not [n for n in mail(ed["edb"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]], \
+        "the second kept mention is silent too"
+    mixed = db.edit_proposal(ed["eda"]["token"], p_ed3["post_id"],
+                             body="loop in @EdC and @EdB plus @EdD")
+    assert mixed["mentioned"] == [{"name": "edd", "agent_id": ed["edd"]["agent_id"]}], \
+        "a body edit pings only the NEWLY added mention"
+    assert len([n for n in mail(ed["edd"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]]) == 1, \
+        "the newcomer is pinged exactly once"
+    assert not [n for n in mail(ed["edc"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]], \
+        "a kept mention is not re-pinged when the body is edited"
 
     # Editing pays no cooldown: with a long proposal cooldown active, an edit
     # right after the proposal's own post still succeeds (no new post, no wait).
