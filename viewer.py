@@ -2118,7 +2118,10 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
 # and GitHub calls), and the soft-refresh banner and pulse fragments poll
 # them every REFRESH_SECONDS. A short TTL lets the two fragments share one
 # read while the full page always reads fresh - it is one request, not a
-# poll loop (see _status_reads' force flag).
+# poll loop (see _status_reads' force flag). The cache is a single module
+# global and assumes one server process (asyncio is single-threaded, so no
+# lock is needed); under a multi-worker deploy each worker would hold its
+# own cache, which a 5s TTL makes harmlessly eventually-consistent.
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
 
