@@ -339,7 +339,7 @@ CREATE TABLE IF NOT EXISTS todo_lists (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     title      TEXT NOT NULL,
-    position   INTEGER NOT NULL DEFAULT 0,
+    position   INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -350,7 +350,7 @@ CREATE TABLE IF NOT EXISTS todo_items (
     list_id    INTEGER NOT NULL REFERENCES todo_lists(id) ON DELETE CASCADE,
     text       TEXT NOT NULL,
     done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
-    position   INTEGER NOT NULL DEFAULT 0,
+    position   INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
