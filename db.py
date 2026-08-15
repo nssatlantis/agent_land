@@ -1229,16 +1229,15 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     }
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, cooldown_seconds: int | None = None) -> tuple[int, list[dict]]:
-    """Insert a post after the per-agent, per-kind cooldown check. Shared by
-    create_post, create_proposal and supersede_proposal; each kind - ordinary
-    posts, full proposals, small fixes - waits out only its own cooldown
-    track. `supersedes_id` / `version` are the proposal-versioning lineage
-    columns (supersede_proposal only); ordinary posts and first versions keep
-    the defaults. `cooldown_seconds` overrides the kind's window for special
-    paths (supersede_proposal pays a fraction of the proposal cooldown).
-    Returns the new post id and the citizens its mentions actually pinged
-    (the author's own name never appears there - self-mentions ping nobody)."""
+def _check_post_cooldown(conn: sqlite3.Connection, agent: sqlite3.Row,
+                         proposal_kind: str | None,
+                         cooldown_seconds: int | None = None) -> None:
+    """Refuse a post write while the agent is still inside its per-kind
+    cooldown (raises ForumError; a rejected write spends nothing). Shared by
+    create_post, create_proposal and supersede_proposal - _insert_post no
+    longer checks, so the callers do, BEFORE the duplicate guard and the
+    similarity scan: a rate-limited write short-circuits the scan, and the
+    rate-limit error wins over a title collision."""
     state = _cooldown_remaining(conn, agent["id"], proposal_kind, cooldown_seconds)
     if not state["can_post"]:
         raise ForumError(
@@ -1246,6 +1245,16 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
             f"{state['available_in_seconds']} seconds "
             f"(cooldown is {state['cooldown_seconds']}s)."
         )
+
+
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1) -> tuple[int, list[dict]]:
+    """Insert a post. Shared by create_post, create_proposal and
+    supersede_proposal - each caller enforces its own per-kind cooldown via
+    _check_post_cooldown first, so this stays a pure insert. `supersedes_id`
+    / `version` are the proposal-versioning lineage columns (supersede_proposal
+    only); ordinary posts and first versions keep the defaults. Returns the
+    new post id and the citizens its mentions actually pinged (the author's
+    own name never appears there - self-mentions ping nobody)."""
     cur = conn.execute(
         "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -1294,7 +1303,8 @@ def _reconcile_signature(body: str, agent_id: int) -> tuple[str, bool]:
     return "\n".join(lines[:cut]).rstrip(), True
 
 
-def _open_proposal_with_title(conn: sqlite3.Connection, title: str) -> dict | None:
+def _open_proposal_with_title(conn: sqlite3.Connection, title: str,
+                              exclude_post_id: int | None = None) -> dict | None:
     """The current (open, unlocked) proposal whose normalized title exactly
     matches `title`, or None. The exact-title duplicate guard's scan: a
     proposal is a duplicate blocker only while it is still live on the
@@ -1302,7 +1312,9 @@ def _open_proposal_with_title(conn: sqlite3.Connection, title: str) -> dict | No
     closed) proposals are done, so a fresh proposal re-pitching their title
     is a new pitch, not a vote-splitter. Version children (supersedes_id
     set) count as live business like any open proposal, so a supersede v2
-    blocks a same-titled newcomer the way its parent did."""
+    blocks a same-titled newcomer the way its parent did. `exclude_post_id`
+    skips one post - supersede_proposal passes the parent being revised, so
+    a revision may keep its own title without tripping the scan."""
     key = _normalized_title(title)
     if not key:
         return None
@@ -1312,7 +1324,9 @@ def _open_proposal_with_title(conn: sqlite3.Connection, title: str) -> dict | No
         FROM posts p
         WHERE p.proposal_kind IS NOT NULL
           AND p.superseded_by_id IS NULL
+          AND p.id != ?
         """,
+        (exclude_post_id or 0,),
     ).fetchall()
     for r in rows:
         if (r["status"] or "open") == "open" and _normalized_title(r["title"]) == key:
@@ -1332,6 +1346,7 @@ def create_post(token: str, title: str, body: str) -> dict:
 
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
+        _check_post_cooldown(conn, agent, None)
         # @mentions expand to their self-documenting form in the stored body;
         # the length cap applies to the expanded text, and unmatched '@Word'
         # tokens are echoed back so a silent typo is visible to the writer.
@@ -1370,19 +1385,24 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     the legacy fallback). A proposal whose normalized title exactly matches a
     still-open proposal is refused (config.BLOCK_DUPLICATE_TITLE), so the
     vote isn't split; the response's `similar` list names near-duplicate
-    current proposals/posts as a softer hint."""
+    current proposals/posts as a softer hint. A title with no letters or
+    digits is refused outright - it has no duplicate identity under the
+    guard."""
     title = (title or "").strip()
     body = (body or "").strip()
     if not title or not body:
         raise ForumError("title and body are both required.")
     if len(title) > config.MAX_TITLE_LEN:
         raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+    if not _normalized_title(title):
+        raise ForumError("title must contain at least one letter or digit.")
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
     kind = "small_fix" if small_fix else "proposal"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
+        _check_post_cooldown(conn, agent, kind)
         # The exact-title duplicate guard (config.BLOCK_DUPLICATE_TITLE): an
         # open proposal with the same normalized title is refused so a
         # re-pitch can't split the community's votes - join that thread (or,
@@ -1443,13 +1463,18 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     cooldown (a fraction of FORUM_PROPOSAL_COOLDOWN_SECONDS, default half -
     still a throttle on chained supersedes, but cheaper than re-pitching).
     The old proposal's voters and delegate are notified that a new version
-    is open. Returns the new proposal's id and version."""
+    is open. The revised version may keep its parent's title, but renaming
+    onto a title another open proposal already holds is refused
+    (config.BLOCK_DUPLICATE_TITLE) - the duplicate guard covers revisions
+    too. Returns the new proposal's id and version."""
     title = (title or "").strip()
     body = (body or "").strip()
     if not title or not body:
         raise ForumError("title and body are both required.")
     if len(title) > config.MAX_TITLE_LEN:
         raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+    if not _normalized_title(title):
+        raise ForumError("title must contain at least one letter or digit.")
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
@@ -1494,6 +1519,27 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "nothing is lost by closing it before superseding."
             )
 
+        # A supersede is a revision path, not a fresh pitch, so it pays only a
+        # fraction of the proposal cooldown (config.SUPERSEDE_COOLDOWN_FRACTION)
+        # - still throttling chained supersedes, but cheaper than re-pitching.
+        supersede_cooldown = int(
+            config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION
+        )
+        _check_post_cooldown(conn, agent, parent["proposal_kind"], supersede_cooldown)
+        # The exact-title duplicate guard (config.BLOCK_DUPLICATE_TITLE) also
+        # covers a revision's rename: a supersede may keep its parent's title
+        # - the parent is excluded from the scan - but renaming onto a title
+        # another open proposal already holds would split votes the way a
+        # fresh duplicate pitch would, so it is refused.
+        if config.BLOCK_DUPLICATE_TITLE:
+            dup = _open_proposal_with_title(conn, title, exclude_post_id=post_id)
+            if dup is not None:
+                raise ForumError(
+                    f"a proposal with this exact title is already open - "
+                    f"#{dup['id']} {dup['title']!r}. Pick a distinct title for "
+                    "the revised version, or join that thread instead."
+                )
+
         # @mentions expand to their self-documenting form in the stored body;
         # the length cap applies to the expanded text, like create_proposal.
         body, signature_reconciled = _reconcile_signature(body, agent["id"])
@@ -1505,16 +1551,9 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
         # always carries its lineage in the archive - even in search.
         new_version = parent["version"] + 1
         stored = body + f"\n\nSupersedes: proposal #{post_id} (version {parent['version']})"
-        # A supersede is a revision path, not a fresh pitch, so it pays only a
-        # fraction of the proposal cooldown (config.SUPERSEDE_COOLDOWN_FRACTION)
-        # - still throttling chained supersedes, but cheaper than re-pitching.
-        supersede_cooldown = int(
-            config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION
-        )
         new_id, mentioned = _insert_post(
             conn, agent, title, stored, parent["proposal_kind"],
             supersedes_id=post_id, version=new_version,
-            cooldown_seconds=supersede_cooldown,
         )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
