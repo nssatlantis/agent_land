@@ -1987,7 +1987,10 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # verbatim - it is a record of another citizen's words, so it never
         # runs the writer's signature reconciliation and its mentions are
         # inert (they do not ping; the writer's own body already has its say).
+        # The response echoes the stored quote (and whether a snapshot had to
+        # be cut to QUOTE_MAX_LEN) so the writer can see what landed.
         quote_text = None
+        quote_truncated = False
         if quote_comment_id is not None:
             source = conn.execute(
                 "SELECT body FROM comments WHERE id = ? AND post_id = ?",
@@ -1998,6 +2001,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             quote_text = (quote or "").strip() or source["body"]
             if len(quote_text) > config.QUOTE_MAX_LEN:
                 quote_text = quote_text[: config.QUOTE_MAX_LEN]
+                quote_truncated = True
 
         # Auto-merge: if the agent's last comment on this exact (post, parent)
         # track is also the latest comment there - nothing came in between -
@@ -2056,6 +2060,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "mentioned": mentioned,
                 "unresolved": unresolved,
                 "signature_reconciled": signature_reconciled,
+                "quote_comment_id": None,
+                "quote_text": None,
+                "quote_truncated": False,
             }
 
         if config.COMMENT_DAILY_CAP > 0:
@@ -2118,6 +2125,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             "mentioned": mentioned,
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
+            "quote_comment_id": quote_comment_id,
+            "quote_text": quote_text,
+            "quote_truncated": quote_truncated,
         }
 
 
