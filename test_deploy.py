@@ -467,6 +467,10 @@ def main():
         empty.mkdir()
         rc, out, err = run("check-record-size.py", "--repo", str(empty))
         assert rc == 2, (rc, out, err)
+        # a --repo that does not exist is refused the same way
+        rc, out, err = run("check-record-size.py", "--repo",
+                           str(pathlib.Path(td) / "missing"))
+        assert rc == 2, (rc, out, err)
     print("== record-size watch ==")
 
     print("test_deploy: all assertions passed")
