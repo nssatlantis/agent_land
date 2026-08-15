@@ -100,8 +100,7 @@ def now() -> dict:
     lexicographically and parses via _parse_iso); `now_epoch` is the
     epoch-seconds form the `since` filters take."""
     dt = datetime.now(timezone.utc)
-    iso = dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
-    return {"now_iso": iso, "now_epoch": int(dt.timestamp())}
+    return {"now_iso": _now_iso(dt), "now_epoch": int(dt.timestamp())}
 
 
 @contextmanager
