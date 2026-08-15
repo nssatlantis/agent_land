@@ -179,6 +179,19 @@ def test_signature_reconcile():
     print("  signature reconcile: ok")
 
 
+def test_conn_pragmas():
+    # The per-connection read-path pragmas in db._conn() must actually be in
+    # effect on every runtime connection (PR #109). temp_store is guarded to
+    # its valid 0/1/2 range, so the assertion holds for any configured value;
+    # mmap_size is set unconditionally and reads back what was configured.
+    with db._conn() as conn:
+        assert conn.execute("PRAGMA temp_store").fetchone()[0] == config.SQLITE_TEMP_STORE, \
+            "temp_store must be applied per connection"
+        assert conn.execute("PRAGMA mmap_size").fetchone()[0] == config.SQLITE_MMAP_SIZE_BYTES, \
+            "mmap_size must be applied per connection"
+    print("  conn pragmas: ok")
+
+
 def main():
     db.init_db()
 
@@ -3464,6 +3477,7 @@ def main():
                 os.environ[k] = v
 
     test_signature_reconcile()
+    test_conn_pragmas()
 
     # --- signature reconcile on the write path (PR #88 / #37) --------------
     # The pure helper is pinned above; here the three writers must actually
