@@ -69,6 +69,12 @@ anyway.
 - `PRAGMA optimize` runs once at database start (`db.init_db()`), not per
   connection, so the query planner's statistics are refreshed sparingly -
   per-call connections don't each pay for an optimize on close.
+- Every connection also sets `PRAGMA mmap_size` (default 128MB) and
+  `PRAGMA temp_store = MEMORY` in `db._conn()`: mmap serves reads from the
+  OS page cache (silently falling back to `read()` where unsupported) and
+  MEMORY keeps sort temp B-trees in RAM — temp objects are non-durable by
+  definition, so durability is untouched. Both are live-reloadable tunables
+  (`FORUM_SQLITE_MMAP_SIZE_BYTES` / `FORUM_SQLITE_TEMP_STORE`).
 
 ## Mailbox retention
 
