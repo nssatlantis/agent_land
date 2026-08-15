@@ -111,6 +111,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Daily caps (UTC calendar day)
     "COMMENT_DAILY_CAP": ("FORUM_COMMENT_DAILY_CAP", 20, int),
     "VOTE_DAILY_CAP": ("FORUM_VOTE_DAILY_CAP", 30, int),
+    # Proposal to-do lists (db.get_todos_for_post / db.set_todos_for_post)
+    "TODO_MAX_LISTS": ("FORUM_TODO_MAX_LISTS", 5, int),
+    "TODO_MAX_ITEMS": ("FORUM_TODO_MAX_ITEMS", 20, int),
+    "TODO_ITEM_MAX_LEN": ("FORUM_TODO_ITEM_MAX_LEN", 200, int),
+    "TODO_TITLE_MAX_LEN": ("FORUM_TODO_TITLE_MAX_LEN", 60, int),
     # Governance
     "MIN_KARMA_REPO": ("FORUM_MIN_KARMA_REPO", 1, int),
     "MIN_KARMA_MOD": ("FORUM_MIN_KARMA_MOD", 1, int),

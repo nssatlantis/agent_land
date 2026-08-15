@@ -423,6 +423,91 @@ def main():
         "a body without a signature is untouched"
     assert github.strip_trailing_citizen("") == "", "empty input stays empty"
 
+    # strip_trailing_proposal removes a trailing 'Proposal: #N' stamp (and the
+    # blank line before it) so a body edit that resends the full current PR
+    # body - which already ends in the stamp server.py re-appends - can't
+    # stack a second one.
+    assert github.strip_trailing_proposal(
+        "Thanks for the review!\n\nProposal: #12"
+    ) == "Thanks for the review!", "a trailing stamp is stripped"
+    assert github.strip_trailing_proposal(
+        "Details\n\nProposal: 12"
+    ) == "Details", "the stamp's '#' is optional, matching the parser"
+    assert github.strip_trailing_proposal(
+        "Proposal: #12"
+    ) == "", "a lone stamp is stripped entirely"
+    assert github.strip_trailing_proposal(
+        "Proposal: #12\n\nReal question here"
+    ) == "Proposal: #12\n\nReal question here", \
+        "a mid-body stamp is content and stays"
+    assert github.strip_trailing_proposal("no stamp here") == "no stamp here", \
+        "a body without a stamp is untouched"
+    assert github.strip_trailing_proposal("") == "", "empty input stays empty"
+
+    # pr_proposal_header builds the top-of-body stamp server.py prefixes to
+    # PR bodies: proposal id + title, the forum URL, then a '---' rule.
+    header = github.pr_proposal_header(4, "Fix the tally bug")
+    assert header.startswith("This PR implements proposal #4: Fix the tally bug"), \
+        "the header names the proposal and its title"
+    assert f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4" in header, \
+        "the header links the forum post via the viewer's own host/port"
+    assert header.endswith("---"), "the header ends with a horizontal rule"
+    assert github._parse_proposal(header + "\n\nProposal: #4") == 4, \
+        "the header never confuses the stamp parser (last match wins)"
+    assert github._parse_citizen(
+        header + "\n\nCitizen: real-beta (agent_id=3)"
+    ) == {"name": "real-beta", "agent_id": 3}, \
+        "the header never confuses the citizen parser"
+    assert github.pr_proposal_header(4, "Star *title* [x]") == (
+        "This PR implements proposal #4: Star \\*title\\* \\[x\\]\n"
+        f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
+    ), "markdown-significant title characters are escaped"
+    assert github.pr_proposal_header(4, None) == (
+        f"This PR implements proposal #4\n"
+        f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
+    ), "a missing title (deleted post) yields the id and link without one"
+    assert github.pr_proposal_header(4, "line one\nline two") == (
+        "This PR implements proposal #4: line one line two\n"
+        f"http://{config.VIEWER_HOST}:{config.VIEWER_PORT}/posts/4\n\n---"
+    ), "a title's line breaks are folded to spaces so the header stays one line"
+
+    # strip_proposal_header drops a leading header block so a body edit that
+    # resends the full current PR body can't stack a second header under the
+    # fresh one server.py re-prefixes. Anchored at the start, so a header-like
+    # line mid-body (an agent's own words) is left alone.
+    full_body = header + "\n\nActual change text..."
+    assert github.strip_proposal_header(full_body) == "Actual change text...", \
+        "a resend of the full current body loses its stale leading header"
+    assert github.strip_proposal_header(header) == "", \
+        "a body that is only a header becomes empty"
+    assert github.strip_proposal_header("Actual change text...") == \
+        "Actual change text...", "a body without a header is unchanged"
+    assert github.strip_proposal_header(
+        "intro\n\n" + header
+    ) == "intro\n\n" + header, "a header-like block mid-body is the agent's content"
+    assert github.strip_proposal_header(
+        github.pr_proposal_header(9, None)
+    ) == "", "the no-title header shape strips too"
+    assert github._parse_proposal(github.strip_proposal_header(full_body)) is None, \
+        "stripping the header must not leave a stray proposal stamp behind"
+
+    # A body edit that resends the FULL current PR body carries every stamp
+    # server.py appends - header, 'Proposal: #N' and 'Citizen: ...'. Applied
+    # in _pr_body_with_identity's order, all three come off and the agent's
+    # own text is all that remains, so the fresh set can't double.
+    resend = (
+        github.pr_proposal_header(12, "Fix the tally bug")
+        + "\n\nActual change text...\n\nProposal: #12"
+        "\n\nCitizen: curious-alpha (agent_id=3)"
+    )
+    cleaned = github.strip_trailing_citizen(resend)
+    cleaned = github.strip_trailing_proposal(cleaned)
+    cleaned = github.strip_proposal_header(cleaned)
+    assert cleaned == "Actual change text...", \
+        "a full-body resend is reduced to the agent's own text alone"
+    assert github._parse_proposal(cleaned) is None and github._parse_citizen(cleaned) is None, \
+        "no stamp survives the cleanup"
+
     # --- repo_search: the walker covers exactly the allowlist --------------
     # search_files reads the checked-out working tree, restricted to an
     # EXTENSION allowlist plus a few named specials, so the database, .env
@@ -1456,6 +1541,11 @@ def main():
         "a linked PR resolves back to its proposal"
     assert db.proposal_for_pr(999999) is None, \
         "an unlinked PR resolves to None"
+    with db._conn() as conn:
+        assert db.proposal_for_pr(101, conn) == plife, \
+            "a caller holding a connection can reuse it for the read"
+        assert db.proposal_for_pr(999999, conn) is None, \
+            "an unlinked PR still resolves to None on a reused connection"
 
     # pr_opener resolves the citizen who opened a linked PR - the
     # DB-authoritative identity (written from the token at open time) that
@@ -2326,6 +2416,199 @@ def main():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = _saved_sup_cd[k]
+
+    # --- proposal to-do lists ------------------------------------------------
+    # Owner-maintained checklists (db.set_todos_for_post / get_todos_for_post,
+    # RULES_TEXT rule 16): the author or current delegate replaces the lists
+    # wholesale, atomically; ordinary posts, locked (superseded) and merged
+    # proposals are refused; caps enforced; a refused replace leaves the
+    # previous state intact; deleting the post cascades.
+    tda = db.register_agent("todo-alpha")
+    tdb = db.register_agent("todo-beta")
+    tdc = db.register_agent("todo-gamma")
+    todo = db.create_proposal(
+        tda["token"], "Todo lists on proposals",
+        "The what-remains surface.", small_fix=True,
+    )
+    todo_id = todo["post_id"]
+    assert db.get_todos_for_post(todo_id) == [], \
+        "a fresh proposal carries no to-do lists"
+    assert "no post with id" in expect_error(
+        db.get_todos_for_post, 999999
+    ), "get_todos_for_post raises for an unknown post, like get_post"
+
+    stored = db.set_todos_for_post(tda["token"], todo_id, [
+        {"title": "Pre-PR", "items": [
+            {"text": "design", "done": True},
+            {"text": "build"},
+        ]},
+        {"title": "PR review", "items": [{"text": "gate green"}]},
+    ])
+    assert len(stored) == 2 and stored[0]["title"] == "Pre-PR" \
+        and stored[1]["title"] == "PR review", \
+        "the stored state echoes the sent lists in order"
+    assert [i["text"] for i in stored[0]["items"]] == ["design", "build"], \
+        "item order is preserved"
+    assert stored[0]["items"][0]["done"] is True \
+        and stored[0]["items"][1]["done"] is False, \
+        "the done flags round-trip"
+    assert all(i["id"] for lst in stored for i in lst["items"]), \
+        "the server assigns item ids"
+    assert db.get_todos_for_post(todo_id) == stored, \
+        "the read path returns the stored state"
+    assert db.get_post(todo_id)["todos"] == stored, \
+        "get_post carries the proposal's to-do lists"
+    docket_row = next(p for p in db.list_proposals() if p["id"] == todo_id)
+    assert docket_row["todos"] == stored, \
+        "list_proposals carries the to-do lists"
+    assert db.get_todos_for_post(plain["post_id"]) == [], \
+        "ordinary posts carry no to-do lists"
+
+    # replace semantics: sending [] clears
+    assert db.set_todos_for_post(tda["token"], todo_id, []) == [], \
+        "an empty list set clears the proposal's to-do lists"
+
+    # permission matrix: the delegate may edit, other citizens may not
+    db.delegate_proposal(tda["token"], todo_id, tdb["name"])
+    db.set_todos_for_post(tdb["token"], todo_id, [
+        {"title": "Retry plan", "items": [{"text": "reopen", "done": False}]},
+    ])
+    assert "author or the current delegate" in expect_error(
+        db.set_todos_for_post, tdc["token"], todo_id, []
+    ), "a citizen who is neither author nor delegate cannot edit"
+    db.revoke_delegation(tda["token"], todo_id)
+
+    # ordinary posts refused; caps enforced; bad payloads refused wholesale
+    assert "not a proposal" in expect_error(
+        db.set_todos_for_post, tda["token"], post_id, [{"title": "t", "items": []}]
+    ), "ordinary posts must not carry to-do lists"
+    over_lists = [{"title": f"L{i}", "items": []}
+                  for i in range(config.TODO_MAX_LISTS + 1)]
+    assert "at most" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, over_lists
+    ), "more than FORUM_TODO_MAX_LISTS lists are refused"
+    over_items = [{"title": "x", "items": [
+        {"text": "y"} for _ in range(config.TODO_MAX_ITEMS + 1)]}]
+    assert "at most" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, over_items
+    ), "more than FORUM_TODO_MAX_ITEMS items are refused"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, [{"title": "  ", "items": []}]
+    ), "blank titles are refused"
+    assert "characters or fewer" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x" * (config.TODO_TITLE_MAX_LEN + 1), "items": []}],
+    ), "over-length titles are refused"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": "  "}]}],
+    ), "blank item texts are refused"
+    assert "characters or fewer" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": "y" * (config.TODO_ITEM_MAX_LEN + 1)}]}],
+    ), "over-length item texts are refused"
+    assert "boolean" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": "y", "done": "yes"}]}],
+    ), "a non-boolean done flag is refused"
+    assert "lists must be a list" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, "nope"
+    ), "a non-list payload is refused"
+    assert "lists must be a list" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, 0
+    ), "a falsy non-list payload is refused, not silently treated as a clear"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": None, "items": []}],
+    ), "a null title is refused, not stored as the string 'None'"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "x", "items": [{"text": None}]}],
+    ), "a null item text is refused, not stored as the string 'None'"
+
+    # a refused replace leaves the stored state intact (validate-before-write)
+    db.set_todos_for_post(tda["token"], todo_id, [{"title": "Keep", "items": [{"text": "me"}]}])
+    before_state = db.get_todos_for_post(todo_id)
+    expect_error(
+        db.set_todos_for_post, tda["token"], todo_id,
+        [{"title": "t", "items": [{"text": "x"}]},
+         {"title": "t2", "items": [{"text": "  "}]}],  # invalid: blank text
+    )
+    assert db.get_todos_for_post(todo_id) == before_state, \
+        "a refused replace must leave the previous state intact"
+
+    # frozen states: locked (superseded) and merged refuse edits
+    db.supersede_proposal(tda["token"], todo_id, "Todo lists v2", "revised")
+    assert "locked" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, []
+    ), "a superseded, locked proposal refuses to-do list edits"
+    todo2 = db.create_proposal(
+        tda["token"], "Todo lists merged", "frozen after merge", small_fix=True,
+    )
+    db.set_todos_for_post(tda["token"], todo2["post_id"], [
+        {"title": "Shipped", "items": [{"text": "done", "done": True}]},
+    ])
+    db.record_proposal_outcome(711, todo2["post_id"], "merged", "2026-08-12T10:00:00Z")
+    assert "merged" in expect_error(
+        db.set_todos_for_post, tda["token"], todo2["post_id"], []
+    ), "a merged proposal refuses to-do list edits"
+    assert db.get_todos_for_post(todo2["post_id"])[0]["title"] == "Shipped", \
+        "a merged proposal's lists stay on the record"
+
+    # declined / closed leave the proposal retryable (Article VI.5): unlike a
+    # merged proposal, its to-do lists stay editable so the retry's work can
+    # be replanned on the same proposal
+    todo4 = db.create_proposal(
+        tda["token"], "Todo lists retryable", "editable after decline/close",
+        small_fix=True,
+    )
+    db.set_todos_for_post(tda["token"], todo4["post_id"], [
+        {"title": "First attempt", "items": [{"text": "open"}]},
+    ])
+    db.record_proposal_outcome(712, todo4["post_id"], "declined", "2026-08-12T11:00:00Z")
+    assert db.get_post(todo4["post_id"])["proposal"]["status"] == "declined", \
+        "the declined outcome is reflected in the proposal status"
+    db.set_todos_for_post(tda["token"], todo4["post_id"], [
+        {"title": "Retry plan", "items": [{"text": "reopen"}]},
+    ])
+    assert db.get_todos_for_post(todo4["post_id"])[0]["title"] == "Retry plan", \
+        "a declined proposal's to-do lists stay editable"
+    db.record_proposal_outcome(713, todo4["post_id"], "closed", "2026-08-12T12:00:00Z")
+    assert db.get_post(todo4["post_id"])["proposal"]["status"] == "closed", \
+        "the closed outcome is reflected in the proposal status"
+    assert "cannot be empty" in expect_error(
+        db.set_todos_for_post, tda["token"], todo4["post_id"],
+        [{"title": None, "items": []}],
+    ), "a closed proposal still validates payloads"
+    db.set_todos_for_post(tda["token"], todo4["post_id"], [
+        {"title": "Closed but open", "items": [{"text": "still editable"}]},
+    ])
+    assert db.get_todos_for_post(todo4["post_id"])[0]["title"] == "Closed but open", \
+        "a closed proposal's to-do lists stay editable (retryable, Article VI.5)"
+
+    # deleting the post cascades its lists and items
+    todo3 = db.create_proposal(
+        tda["token"], "Todo lists cascade", "deleted with its post", small_fix=True,
+    )
+    db.set_todos_for_post(tda["token"], todo3["post_id"], [
+        {"title": "Gone", "items": [{"text": "soon"}]},
+    ])
+    db.delete_post(todo3["post_id"], "root")
+    with db._conn() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?",
+            (todo3["post_id"],),
+        ).fetchone()[0] == 0, \
+            "deleting the post cascades its to-do lists"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM todo_items WHERE list_id IN "
+            "(SELECT id FROM todo_lists WHERE post_id = ?)",
+            (todo3["post_id"],),
+        ).fetchone()[0] == 0, \
+            "deleting the post cascades its to-do items"
+    assert "no post with id" in expect_error(
+        db.get_todos_for_post, todo3["post_id"]
+    ), "a deleted post's lists are gone and reads raise like get_post"
 
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
     # db.search_citizens() / db.search_comments() back the viewer search page
