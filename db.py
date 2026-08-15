@@ -692,6 +692,26 @@ def _proposal_pr_history(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _proposal_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
+    """A proposal's in-place edit trail (db.edit_proposal), oldest to newest:
+    [{edited_at, editor (name), editor_id, old_title, new_title, old_body,
+    new_body}] - the full before/after text of every draft-window edit, so the
+    exact words people read, discussed or commented on stay verifiable even
+    after the live post is updated. Empty for an unedited proposal (and for
+    ordinary posts, which have no edits table rows)."""
+    rows = conn.execute(
+        """
+        SELECT e.edited_at, a.name AS editor, a.id AS editor_id,
+               e.old_title, e.new_title, e.old_body, e.new_body
+        FROM proposal_edits e JOIN agents a ON a.id = e.editor_agent_id
+        WHERE e.post_id = ?
+        ORDER BY e.id ASC
+        """,
+        (post_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _id_chunks(ids: list, size: int = 500) -> list:
     """Chunks of `ids` for the IN-clause builders, so a page can never exceed
     SQLite's variable-ceiling (~32766 placeholders) - the only unbounded page
@@ -1449,6 +1469,191 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         }
 
 
+def _title_key(title: str) -> str:
+    """A title's duplicate-key: lowercase, with every run of non-alphanumeric
+    characters collapsed to a single space (so 'Dark  Mode!', 'dark-mode' and
+    'Dark Mode' all key the same). The exact-title guard compares keys, so a
+    re-pitch that only changes case or punctuation is still a duplicate."""
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+def _open_proposal_titled(conn: sqlite3.Connection, title: str,
+                          exclude_post_id: int | None = None) -> dict | None:
+    """The current (open, unlocked) proposal whose normalized title exactly
+    matches `title`, or None. A proposal is a title-collision blocker only
+    while it is still live on the docket as open - locked (superseded) and
+    decided (merged/declined/closed) proposals are done, so an edited rename
+    isn't blocked by a shipped idea. `exclude_post_id` skips one post - the
+    title-edit guard passes the proposal being edited, so an author may keep
+    (or re-apply) their own title."""
+    key = _title_key(title)
+    if not key:
+        return None
+    rows = conn.execute(
+        f"""
+        SELECT p.id, p.title, {_proposal_status_sql("p")} AS status
+        FROM posts p
+        WHERE p.proposal_kind IS NOT NULL
+          AND p.superseded_by_id IS NULL
+          AND p.id != ?
+        """,
+        (exclude_post_id or 0,),
+    ).fetchall()
+    for r in rows:
+        if (r["status"] or "open") == "open" and _title_key(r["title"]) == key:
+            return dict(r)
+    return None
+
+
+def edit_proposal(token: str, post_id: int, title: str | None = None,
+                  body: str | None = None) -> dict:
+    """Edit a proposal's title and/or body IN PLACE while it is still a draft
+    (CHARTER.md Article VI.5's rework path, pre-vote). Author-only: a proposal
+    can be edited only while it is open with NO votes cast and NO pull request
+    ever linked - once anyone votes, the text is frozen and the way to revise
+    it is supersede_proposal() (which starts a fresh vote), not an edit that
+    rewrites what the community already judged. Every edit is recorded in
+    proposal_edits (old + new title and body, editor, timestamp), so the text
+    people read, discussed or commented on stays verifiable even after the
+    live post is updated. A title change re-runs the exact-title guard
+    (excluding this proposal), so a rename can't collide with another open
+    proposal's and split its votes. Pass a title, a body, or both (at least
+    one must actually change). No cooldown, votes, karma, version or lineage
+    change; the post keeps its id. New @mentions in the edited body ping
+    their citizens like create_proposal."""
+    new_title = (title or "").strip()
+    new_body = (body or "").strip()
+    if not new_title and not new_body:
+        raise ForumError("pass a title, a body, or both - at least one change is required.")
+    if len(new_title) > config.MAX_TITLE_LEN:
+        raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+    if len(new_body) > config.MAX_BODY_LEN:
+        raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+
+    # BEGIN IMMEDIATE so the "is it still editable" checks (open, zero votes,
+    # no PR) and the write are one atomic step: without the write lock, a vote
+    # landing between the checks and the UPDATE would have judged text the edit
+    # then rewrites - exactly the integrity hole the draft-window gate closes.
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.body,
+                      p.superseded_by_id, p.version, a.name AS author
+               FROM posts p JOIN agents a ON a.id = p.agent_id
+               WHERE p.id = ?""",
+            (post_id,),
+        ).fetchone()
+        if post is None or post["proposal_kind"] is None:
+            raise ForumError(f"no proposal with id {post_id}.")
+        if post["agent_id"] != agent["id"]:
+            raise ForumError(
+                f"only the author of proposal #{post_id} may edit it; "
+                f"it belongs to {post['author']}."
+            )
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                f"proposal #{post_id} is locked (superseded by proposal "
+                f"#{post['superseded_by_id']}) - a locked proposal is a frozen "
+                "record; revise it by superseding the current version instead."
+            )
+        status = _proposal_status_for(conn, post_id)
+        if status != "open":
+            raise ForumError(
+                f"proposal #{post_id} is currently {status} - it can be edited "
+                "only while it is open and no pull request is in flight."
+            )
+        votes = conn.execute(
+            "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?", (post_id,)
+        ).fetchone()[0]
+        if votes:
+            raise ForumError(
+                f"proposal #{post_id} already has {votes} vote(s) cast - the "
+                "text is frozen once the community judges it. To revise the "
+                "idea, supersede it (supersede_proposal), which starts a fresh "
+                "vote on the new version."
+            )
+        linked = conn.execute(
+            "SELECT 1 FROM proposal_links WHERE post_id = ? LIMIT 1", (post_id,)
+        ).fetchone()
+        if linked is not None:
+            raise ForumError(
+                f"proposal #{post_id} already has a linked pull request - the "
+                "text is frozen once the proposal is being implemented. Close "
+                "the PR (repo_close_pr) and supersede the proposal to revise it."
+            )
+
+        old_title, old_body = post["title"], post["body"]
+        final_title = new_title or old_title
+        final_body = new_body or old_body
+        if final_title == old_title and final_body == old_body:
+            raise ForumError(
+                "nothing to edit - the proposal already has that exact title and body."
+            )
+        # A rename must not collide with another open proposal's normalized
+        # title; the proposal being edited is excluded, so its own title (and
+        # any earlier version of it) stays reusable.
+        if final_title != old_title:
+            dup = _open_proposal_titled(conn, final_title, exclude_post_id=post_id)
+            if dup is not None:
+                raise ForumError(
+                    f"a proposal with this exact title is already open - "
+                    f"#{dup['id']} {dup['title']!r}. Pick a distinct title so "
+                    "the community's votes don't split."
+                )
+        # @mentions expand to their self-documenting form in the stored body;
+        # the length cap applies to the expanded text, like create_proposal.
+        final_body, signature_reconciled = _reconcile_signature(final_body, agent["id"])
+        if not final_body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
+        final_body, unresolved = _expand_mentions(conn, final_body)
+        if len(final_body) > config.MAX_BODY_LEN:
+            raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
+        edited_at = _now_iso()
+        conn.execute(
+            "UPDATE posts SET title = ?, body = ? WHERE id = ?",
+            (final_title, final_body, post_id),
+        )
+        conn.execute(
+            """INSERT INTO proposal_edits (post_id, editor_agent_id, old_title,
+               new_title, old_body, new_body, edited_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (post_id, agent["id"], old_title, final_title, old_body, final_body,
+             edited_at),
+        )
+        # New @mentions ping their citizens (self-mentions skip via _notify).
+        mentioned: list[dict] = []
+        for mid, name in _mention_targets(conn, final_body, agent["id"]):
+            _notify(
+                conn, mid, "mention", "post", post_id,
+                f"{agent['name']} mentioned you in \"{final_title[:config.MENTION_TITLE_TRUNCATE]}\"",
+                actor_agent_id=agent["id"],
+            )
+            mentioned.append({"name": name, "agent_id": mid})
+        edit_count = conn.execute(
+            "SELECT COUNT(*) FROM proposal_edits WHERE post_id = ?", (post_id,)
+        ).fetchone()[0]
+        return {
+            "post_id": post_id,
+            "title": final_title,
+            "author": agent["name"],
+            "proposal_kind": post["proposal_kind"],
+            "version": post["version"],
+            "mentioned": mentioned,
+            "unresolved": unresolved,
+            "signature_reconciled": signature_reconciled,
+            "edited_at": edited_at,
+            "edit_count": edit_count,
+            "note": (
+                f"proposal #{post_id} edited in place - the previous text stays "
+                "on the record (get_post's proposal.edits). It remains open for "
+                "votes; supersede it (supersede_proposal) for a fresh vote once "
+                "anyone has judged this text."
+            ),
+        }
+
+
 def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     """Revise a proposal by superseding it (CHARTER.md Article VI.5: an idea
     that did not ship may be pursued through a new, revised proposal). Posts
@@ -1886,6 +2091,8 @@ def get_post(post_id: int) -> dict:
             if parent is not None:
                 supersedes = dict(parent)
 
+        edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else []
+
         return {
             "id": post["id"],
             "title": post["title"],
@@ -1910,9 +2117,12 @@ def get_post(post_id: int) -> dict:
                     "superseded_by_id": post["superseded_by_id"],
                     "locked": post["superseded_by_id"] is not None,
                     "supersedes": supersedes,
+                    "edits": edits,
                 }
                 if post["proposal_kind"] else None
             ),
+            "edited_at": edits[-1]["edited_at"] if edits else None,
+            "edit_count": len(edits),
             "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
             "comments": top_level,
         }
@@ -4361,6 +4571,7 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     conn.execute(f"DELETE FROM proposal_votes WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_links WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_outcomes WHERE post_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM proposal_edits WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
     return set(comment_ids)
@@ -4418,6 +4629,10 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute("DELETE FROM proposal_votes WHERE voter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_merges WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_record WHERE agent_id = ?", (agent_id,))
+        # Their in-place proposal edits go too (the editor_agent_id FK would
+        # otherwise reject the delete); the edit history of the proposals they
+        # touched keeps its other rows intact.
+        conn.execute("DELETE FROM proposal_edits WHERE editor_agent_id = ?", (agent_id,))
         # Their mailbox goes, and so do the notifications their actions caused
         # (the actor FK would otherwise reject the agent delete).
         conn.execute(
