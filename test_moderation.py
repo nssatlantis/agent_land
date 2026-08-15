@@ -2769,27 +2769,32 @@ def main():
     # pre-delegation mailbox migration above).
     with db._conn() as conn:
         for name in ("idx_posts_agent", "idx_comments_agent",
-                     "idx_comments_created", "idx_votes_created"):
+                     "idx_comments_created", "idx_votes_created",
+                     "idx_notifications_unread"):
             conn.execute(f"DROP INDEX IF EXISTS {name}")
-    db.init_db()  # must recreate the four perf indexes on the existing DB
+    db.init_db()  # must recreate the perf indexes on the existing DB
     with db._conn() as conn:
         recreated = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
             "('idx_posts_agent', 'idx_comments_agent', "
-            "'idx_comments_created', 'idx_votes_created')"
+            "'idx_comments_created', 'idx_votes_created', "
+            "'idx_notifications_unread')"
         )}
     assert {"idx_posts_agent", "idx_comments_agent",
-            "idx_comments_created", "idx_votes_created"} <= recreated, \
+            "idx_comments_created", "idx_votes_created",
+            "idx_notifications_unread"} <= recreated, \
         "init_db() recreates the perf indexes on an existing database"
     db.init_db()  # and a second boot is a no-op, not an error
     with db._conn() as conn:
         again = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
             "('idx_posts_agent', 'idx_comments_agent', "
-            "'idx_comments_created', 'idx_votes_created')"
+            "'idx_comments_created', 'idx_votes_created', "
+            "'idx_notifications_unread')"
         )}
     assert {"idx_posts_agent", "idx_comments_agent",
-            "idx_comments_created", "idx_votes_created"} <= again, \
+            "idx_comments_created", "idx_votes_created",
+            "idx_notifications_unread"} <= again, \
         "a second init_db() leaves the perf indexes in place"
 
     # The cheap profile fragment (agent_card) must agree with the full page
@@ -2828,6 +2833,27 @@ def main():
     assert kb["post_votes"] == 1 and kb["comment_votes"] == 1 and \
         kb["pr_merges"] == 0 and kb["pr_record"] == 0, \
         "the fresh citizen's karma is exactly the two upvotes"
+
+    # --- C1 regression: the profile's lists equal the filtered docket --------
+    # public_agent_detail now fetches its proposals / assigned rows with
+    # targeted WHERE clauses instead of scanning the whole docket in Python;
+    # the output must be byte-identical to filtering the full docket.
+    full_docket = db.list_proposals()
+    assert detail["proposals"] == [p for p in full_docket if p["agent_id"] == card_a["agent_id"]], \
+        "the profile's proposals match the filtered docket"
+    assert detail["assigned"] == [p for p in full_docket if p.get("delegate_id") == card_a["agent_id"]], \
+        "the profile's assigned list matches the filtered docket"
+    assert detail["proposal_count"] == len(detail["proposals"]) == 1, \
+        "the profile counts exactly the fresh citizen's proposal"
+
+    # --- C2 regression: the single-query tally matches the docket ------------
+    with db._conn() as conn:
+        prop_id = detail["proposals"][0]["id"]
+        one_query = db._proposal_tally_for(conn, prop_id, "proposal")
+    docket_row = detail["proposals"][0]
+    assert one_query == {k: docket_row[k] for k in
+                         ("up", "down", "net", "threshold", "approved", "needs_votes")}, \
+        "the single-query tally matches the docket's per-row tally"
 
     # --- report de-dup + re-report cooldown --------------------------------
     # One open report per reporter per target, and a re-report on the same
