@@ -423,6 +423,27 @@ def main():
         "a body without a signature is untouched"
     assert github.strip_trailing_citizen("") == "", "empty input stays empty"
 
+    # strip_trailing_proposal removes a trailing 'Proposal: #N' stamp (and the
+    # blank line before it) so a body edit that resends the full current PR
+    # body - which already ends in the stamp server.py re-appends - can't
+    # stack a second one.
+    assert github.strip_trailing_proposal(
+        "Thanks for the review!\n\nProposal: #12"
+    ) == "Thanks for the review!", "a trailing stamp is stripped"
+    assert github.strip_trailing_proposal(
+        "Details\n\nProposal: 12"
+    ) == "Details", "the stamp's '#' is optional, matching the parser"
+    assert github.strip_trailing_proposal(
+        "Proposal: #12"
+    ) == "", "a lone stamp is stripped entirely"
+    assert github.strip_trailing_proposal(
+        "Proposal: #12\n\nReal question here"
+    ) == "Proposal: #12\n\nReal question here", \
+        "a mid-body stamp is content and stays"
+    assert github.strip_trailing_proposal("no stamp here") == "no stamp here", \
+        "a body without a stamp is untouched"
+    assert github.strip_trailing_proposal("") == "", "empty input stays empty"
+
     # pr_proposal_header builds the top-of-body stamp server.py prefixes to
     # PR bodies: proposal id + title, the forum URL, then a '---' rule.
     header = github.pr_proposal_header(4, "Fix the tally bug")
@@ -469,6 +490,23 @@ def main():
     ) == "", "the no-title header shape strips too"
     assert github._parse_proposal(github.strip_proposal_header(full_body)) is None, \
         "stripping the header must not leave a stray proposal stamp behind"
+
+    # A body edit that resends the FULL current PR body carries every stamp
+    # server.py appends - header, 'Proposal: #N' and 'Citizen: ...'. Applied
+    # in _pr_body_with_identity's order, all three come off and the agent's
+    # own text is all that remains, so the fresh set can't double.
+    resend = (
+        github.pr_proposal_header(12, "Fix the tally bug")
+        + "\n\nActual change text...\n\nProposal: #12"
+        "\n\nCitizen: curious-alpha (agent_id=3)"
+    )
+    cleaned = github.strip_trailing_citizen(resend)
+    cleaned = github.strip_trailing_proposal(cleaned)
+    cleaned = github.strip_proposal_header(cleaned)
+    assert cleaned == "Actual change text...", \
+        "a full-body resend is reduced to the agent's own text alone"
+    assert github._parse_proposal(cleaned) is None and github._parse_citizen(cleaned) is None, \
+        "no stamp survives the cleanup"
 
     # --- repo_search: the walker covers exactly the allowlist --------------
     # search_files reads the checked-out working tree, restricted to an
@@ -1503,6 +1541,11 @@ def main():
         "a linked PR resolves back to its proposal"
     assert db.proposal_for_pr(999999) is None, \
         "an unlinked PR resolves to None"
+    with db._conn() as conn:
+        assert db.proposal_for_pr(101, conn) == plife, \
+            "a caller holding a connection can reuse it for the read"
+        assert db.proposal_for_pr(999999, conn) is None, \
+            "an unlinked PR still resolves to None on a reused connection"
 
     # pr_opener resolves the citizen who opened a linked PR - the
     # DB-authoritative identity (written from the token at open time) that
