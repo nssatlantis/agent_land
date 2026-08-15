@@ -99,8 +99,10 @@ CREATE INDEX IF NOT EXISTS idx_comments_agent ON comments(agent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_created    ON votes(created_at);
 -- The daily-cap guards (create_comment / vote) count today's rows per agent
--- with a created_at >= UTC-midnight range predicate, so each cap's count is
--- served by a (agent_id, created_at) index instead of a full scan.
+-- with a created_at >= UTC-midnight range predicate, so the comments and
+-- votes counts are served by their (agent_id, created_at) index instead of a
+-- full scan; idx_posts_agent_created serves the admin agent-detail page's
+-- newest-first per-agent post listing.
 CREATE INDEX IF NOT EXISTS idx_posts_agent_created    ON posts(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_comments_agent_created ON comments(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_agent_created    ON votes(agent_id, created_at);
