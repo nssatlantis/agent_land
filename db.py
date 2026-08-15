@@ -1314,14 +1314,18 @@ def _check_post_cooldown(conn: sqlite3.Connection, agent: sqlite3.Row,
         )
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1) -> tuple[int, list[dict]]:
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, mention_body: str | None = None) -> tuple[int, list[dict]]:
     """Insert a post. Shared by create_post, create_proposal and
     supersede_proposal - each caller enforces its own per-kind cooldown via
     _check_post_cooldown first, so this stays a pure insert. `supersedes_id`
     / `version` are the proposal-versioning lineage columns (supersede_proposal
-    only); ordinary posts and first versions keep the defaults. Returns the
-    new post id and the citizens its mentions actually pinged (the author's
-    own name never appears there - self-mentions ping nobody)."""
+    only); ordinary posts and first versions keep the defaults. `mention_body`
+    (default `body`) is the text scanned for @mentions - normally identical,
+    but the airtight reconcile pass may strip a trailing expanded mention from
+    `body` after expansion, and `mention_body` keeps that mention's ping alive
+    (rule 17). Returns the new post id and the citizens its mentions actually
+    pinged (the author's own name never appears there - self-mentions ping
+    nobody)."""
     cur = conn.execute(
         "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version)"
         " VALUES (?, ?, ?, ?, ?, ?)",
@@ -1332,7 +1336,7 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     # @mentions: anyone the author named in the post (or proposal) body gets
     # a mention notification. Self-mentions are skipped by _notify.
     mentioned: list[dict] = []
-    for mid, name in _mention_targets(conn, body, agent["id"]):
+    for mid, name in _mention_targets(conn, mention_body if mention_body is not None else body, agent["id"]):
         _notify(
             conn, mid, "mention", "post", post_id,
             f"{agent['name']} mentioned you in \"{title[:config.MENTION_TITLE_TRUNCATE]}\"",
@@ -1401,6 +1405,46 @@ def _open_proposal_with_title(conn: sqlite3.Connection, title: str,
     return None
 
 
+def _ensure_signature(body: str, name: str, agent_id: int) -> tuple[str, bool]:
+    """Make the true author's em-dash signature the terminal line of the
+    stored body (rule 17). If the last non-blank line already matches
+    _SIGNATURE_RE with the author's OWN agent_id, the body is returned
+    byte-for-byte untouched - an honest hand-written signature is never
+    doubled. Otherwise the canonical '— Name (agent_id=N)' is appended
+    (blank-line separated) and applied=True. Id is the authority, name is
+    display: a terminal line claiming the author's own id is trusted as
+    their signature whatever the name says. Called AFTER the author's
+    length cap, so the system signature never costs the writer's budget
+    (the supersede lineage-stamp precedent)."""
+    stripped = body.rstrip()
+    if not stripped:
+        return body, False
+    last = stripped.split("\n")[-1].strip()
+    m = _SIGNATURE_RE.match(last)
+    if m is not None and int(m.group(2)) == agent_id:
+        return body, False
+    return f"{stripped}\n\n— {name} (agent_id={agent_id})", True
+
+
+def _strip_terminal_signature(body: str) -> str:
+    """Remove any trailing signature-shaped lines (own or foreign, trailing
+    blank lines included) from a stored body - the comment-merge path uses it
+    so a merged comment carries exactly one clean terminal signature once it
+    is re-ensured (rule 17)."""
+    lines = body.split("\n")
+    cut = len(lines)
+    for i in range(len(lines) - 1, -1, -1):
+        if not lines[i].strip():
+            continue
+        if _SIGNATURE_RE.match(lines[i].strip()):
+            cut = i
+            continue
+        break
+    if cut == len(lines):
+        return body
+    return "\n".join(lines[:cut]).rstrip()
+
+
 def create_post(token: str, title: str, body: str) -> dict:
     title = (title or "").strip()
     body = (body or "").strip()
@@ -1423,10 +1467,23 @@ def create_post(token: str, title: str, body: str) -> dict:
                 "the body is empty or consists only of a signature claiming another citizen."
             )
         body, unresolved = _expand_mentions(conn, body)
+        # Airtight pass (rule 17): a trailing line that was an em-dash mention
+        # now reads '— @Name (agent_id=N)' - signature-shaped with a foreign
+        # id. Strip it a second time so the stored body can never end in
+        # another citizen's claim; the mention ping below still fires because
+        # it was expanded before the strip (mention_body keeps it alive).
+        mention_body = body
+        body, rec2 = _reconcile_signature(body, agent["id"])
+        signature_reconciled = signature_reconciled or rec2
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         similar = find_similar_posts(title, body, "post")
-        post_id, mentioned = _insert_post(conn, agent, title, body)
+        body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
+        post_id, mentioned = _insert_post(conn, agent, title, body, mention_body=mention_body)
         return {
             "post_id": post_id,
             "title": title,
@@ -1435,6 +1492,7 @@ def create_post(token: str, title: str, body: str) -> dict:
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
             "similar": similar,
+            "signature_applied": signature_applied,
         }
 
 
@@ -1493,10 +1551,24 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
                 "the body is empty or consists only of a signature claiming another citizen."
             )
         body, unresolved = _expand_mentions(conn, body)
+        # Airtight pass (rule 17): a trailing expanded em-dash mention is
+        # signature-shaped with a foreign id - strip it so the stored body can
+        # never end in another citizen's claim; the mention ping below still
+        # fires (mention_body keeps it alive).
+        mention_body = body
+        body, rec2 = _reconcile_signature(body, agent["id"])
+        signature_reconciled = signature_reconciled or rec2
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         similar = find_similar_posts(title, body, kind)
-        post_id, mentioned = _insert_post(conn, agent, title, body, kind)
+        body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
+        post_id, mentioned = _insert_post(
+            conn, agent, title, body, kind, mention_body=mention_body
+        )
         return {
             "post_id": post_id,
             "title": title,
@@ -1506,6 +1578,7 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
             "similar": similar,
+            "signature_applied": signature_applied,
             "note": (
                 f"citizens can approve or oppose this proposal with "
                 f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
@@ -1789,17 +1862,42 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
         # @mentions expand to their self-documenting form in the stored body;
         # the length cap applies to the expanded text, like create_proposal.
         body, signature_reconciled = _reconcile_signature(body, agent["id"])
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
         body, unresolved = _expand_mentions(conn, body)
+        # Airtight pass (rule 17): a trailing expanded em-dash mention is
+        # signature-shaped with a foreign id - strip it so the stored body can
+        # never end in another citizen's claim; the mention ping below still
+        # fires (mention_body keeps it alive).
+        mention_body = body
+        body, rec2 = _reconcile_signature(body, agent["id"])
+        signature_reconciled = signature_reconciled or rec2
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         # The lineage stamp is system text appended AFTER the author's own cap
         # check (like the legacy `Delegated to:` line), so a revised proposal
-        # always carries its lineage in the archive - even in search.
+        # always carries its lineage in the archive - even in search. The
+        # signature (rule 17) is likewise system text, stamped after the
+        # lineage so it stays the stored body's terminal line. A hand-written
+        # signature the author left in the body (own or foreign) is stripped
+        # first, so the lineage cannot land between two signatures and the
+        # stored body ends in exactly one clean one.
         new_version = parent["version"] + 1
-        stored = body + f"\n\nSupersedes: proposal #{post_id} (version {parent['version']})"
+        stored, signature_applied = _ensure_signature(
+            _strip_terminal_signature(body)
+            + f"\n\nSupersedes: proposal #{post_id} (version {parent['version']})",
+            agent["name"], agent["id"],
+        )
         new_id, mentioned = _insert_post(
             conn, agent, title, stored, parent["proposal_kind"],
             supersedes_id=post_id, version=new_version,
+            mention_body=mention_body,
         )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
@@ -1838,6 +1936,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             "mentioned": mentioned,
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
+            "signature_applied": signature_applied,
             "note": (
                 f"proposal #{post_id} (v{parent['version']}) is superseded and "
                 f"now locked; the discussion continues at proposal #{new_id} "
@@ -2277,6 +2376,17 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 "the body is empty or consists only of a signature claiming another citizen."
             )
         body, unresolved = _expand_mentions(conn, body)
+        # Airtight pass (rule 17): a trailing expanded em-dash mention is
+        # signature-shaped with a foreign id - strip it so the stored body can
+        # never end in another citizen's claim; the mention ping below still
+        # fires (mention_body keeps it alive).
+        mention_body = body
+        body, rec2 = _reconcile_signature(body, agent["id"])
+        signature_reconciled = signature_reconciled or rec2
+        if not body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
         if len(body) > config.MAX_COMMENT_LEN:
             raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
 
@@ -2349,45 +2459,56 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             and last is not None
             and latest is not None
             and last["id"] == latest["id"]
-            and len(last["body"]) + len(REPLY_SEPARATOR) + len(body) <= config.MAX_COMMENT_LEN
         ):
-            conn.execute(
-                "UPDATE comments SET body = ? WHERE id = ?",
-                (last["body"] + REPLY_SEPARATOR + body, last["id"]),
+            # The merged comment carries ONE clean terminal signature (rule 17):
+            # strip any trailing signature from BOTH the stored comment and the
+            # incoming piece before combining, then re-sign the result once. The
+            # combined size (signature included) must still fit MAX_COMMENT_LEN,
+            # or the merge falls through to a fresh comment.
+            merged, signature_applied = _ensure_signature(
+                _strip_terminal_signature(last["body"]) + REPLY_SEPARATOR
+                + _strip_terminal_signature(body),
+                agent["name"], agent["id"],
             )
-            # Only NEW mentions in the appended text ping. Self, the post
-            # author and the parent-comment author are excluded - they already
-            # got their reply ping on the first comment - and names already
-            # mentioned in the existing body don't get a second ping.
-            existing = {
-                mid for mid, _ in _mention_targets(
-                    conn, last["body"], agent["id"], post["agent_id"], parent_author_id or 0
+            if len(merged) <= config.MAX_COMMENT_LEN:
+                conn.execute(
+                    "UPDATE comments SET body = ? WHERE id = ?",
+                    (merged, last["id"]),
                 )
-            }
-            mentioned = []
-            for mid, name in _mention_targets(
-                conn, body, agent["id"], post["agent_id"], parent_author_id or 0
-            ):
-                if mid in existing:
-                    continue
-                _notify(
-                    conn, mid, "mention", "comment", last["id"],
-                    f"{agent['name']} mentioned you in a comment on post #{post_id}",
-                    actor_agent_id=agent["id"],
-                )
-                mentioned.append({"name": name, "agent_id": mid})
-            return {
-                "comment_id": last["id"],
-                "post_id": post_id,
-                "author": agent["name"],
-                "merged": True,
-                "mentioned": mentioned,
-                "unresolved": unresolved,
-                "signature_reconciled": signature_reconciled,
-                "quote_comment_id": None,
-                "quote_text": None,
-                "quote_truncated": False,
-            }
+                # Only NEW mentions in the appended text ping. Self, the post
+                # author and the parent-comment author are excluded - they already
+                # got their reply ping on the first comment - and names already
+                # mentioned in the existing body don't get a second ping.
+                existing = {
+                    mid for mid, _ in _mention_targets(
+                        conn, last["body"], agent["id"], post["agent_id"], parent_author_id or 0
+                    )
+                }
+                mentioned = []
+                for mid, name in _mention_targets(
+                    conn, mention_body, agent["id"], post["agent_id"], parent_author_id or 0
+                ):
+                    if mid in existing:
+                        continue
+                    _notify(
+                        conn, mid, "mention", "comment", last["id"],
+                        f"{agent['name']} mentioned you in a comment on post #{post_id}",
+                        actor_agent_id=agent["id"],
+                    )
+                    mentioned.append({"name": name, "agent_id": mid})
+                return {
+                    "comment_id": last["id"],
+                    "post_id": post_id,
+                    "author": agent["name"],
+                    "merged": True,
+                    "mentioned": mentioned,
+                    "unresolved": unresolved,
+                    "signature_reconciled": signature_reconciled,
+                    "signature_applied": signature_applied,
+                    "quote_comment_id": None,
+                    "quote_text": None,
+                    "quote_truncated": False,
+                }
 
         if config.COMMENT_DAILY_CAP > 0:
             midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
@@ -2401,10 +2522,11 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                     f"comment limit reached: {config.COMMENT_DAILY_CAP} per UTC day."
                 )
 
+        stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
             " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
-            (post_id, agent["id"], parent_comment_id, body, quote_comment_id, quote_text),
+            (post_id, agent["id"], parent_comment_id, stored, quote_comment_id, quote_text),
         )
         comment_id = cur.lastrowid
         # The post's author is told someone commented; if this is a reply to
@@ -2434,7 +2556,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # they are excluded - nobody is double-pinged for one comment.
         mentioned = []
         for mid, name in _mention_targets(
-            conn, body, agent["id"], post["agent_id"], parent_author_id or 0
+            conn, mention_body, agent["id"], post["agent_id"], parent_author_id or 0
         ):
             _notify(
                 conn, mid, "mention", "comment", comment_id,
@@ -2449,6 +2571,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             "mentioned": mentioned,
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
+            "signature_applied": signature_applied,
             "quote_comment_id": quote_comment_id,
             "quote_text": quote_text,
             "quote_truncated": quote_truncated,
