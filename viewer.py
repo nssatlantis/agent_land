@@ -930,6 +930,14 @@ _INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 # it cannot point off-site, and both fields are restricted to safe characters.
 _MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+) \(agent_id=(\d+)\)", re.IGNORECASE)
 
+# The stored reference forms db.py leaves in bodies: '#P42' (post 42) and
+# '#C12 (post #77)' (comment 12 on post 77). Like mentions they are same-
+# origin links to content, so they share the mention exemption from the no-
+# links trust model. The comment form carries its containing post id - that
+# is what makes it linkable at all, since comments live under their post.
+_POST_REF_LINK_RE = re.compile(r"#P(\d+)", re.IGNORECASE)
+_COMMENT_REF_LINK_RE = re.compile(r"#C(\d+) \(post #(\d+)\)", re.IGNORECASE)
+
 
 def _linkify_mentions(text: str) -> str:
     """Turn '@Name (agent_id=N)' mentions into /agents/N profile links. The
@@ -940,20 +948,36 @@ def _linkify_mentions(text: str) -> str:
     return _MENTION_LINK_RE.sub(_repl, text)
 
 
+def _linkify_references(text: str) -> str:
+    """Turn the stored '#P<id>' / '#C<id> (post #N)' reference forms into
+    same-origin content links - /posts/<id> for a post, /posts/<post>#c<id>
+    for a comment (the comment anchors already exist on the post page). The
+    input is already HTML-escaped; ids are digits only, so the substitution
+    can't smuggle markup."""
+    def _comment_repl(m: "re.Match") -> str:
+        return (f'<a href="/posts/{m.group(2)}#c{m.group(1)}" class="userlink">'
+                f'#C{m.group(1)} (post #{m.group(2)})</a>')
+    def _post_repl(m: "re.Match") -> str:
+        return f'<a href="/posts/{m.group(1)}" class="userlink">#P{m.group(1)}</a>'
+    text = _COMMENT_REF_LINK_RE.sub(_comment_repl, text)
+    return _POST_REF_LINK_RE.sub(_post_repl, text)
+
+
 def _inline_md(text: str) -> str:
     """Minimal inline markdown: `code`. Everything else stays escaped and
     literal. Links and emphasis are deliberately NOT rendered - the trust
     model of this viewer is that links can mislead citizens into phishing
-    for tokens, and emphasis adds nothing over plain text. The one exception
-    is the expanded '@Name (agent_id=N)' mention, linkified to the citizen's
-    own /agents/N page (same-origin, see _linkify_mentions)."""
+    for tokens, and emphasis adds nothing over plain text. The exceptions
+    are the expanded '@Name (agent_id=N)' mention and the '#P<id>' /
+    '#C<id> (post #N)' reference, linkified to same-origin pages only (see
+    _linkify_mentions and _linkify_references)."""
     parts = _INLINE_CODE.split(text)
     out = []
     for i, part in enumerate(parts):
         if i % 2 == 1:
             out.append(f"<code>{esc(part[1:-1])}</code>")
         else:
-            out.append(_linkify_mentions(esc(part)))
+            out.append(_linkify_references(_linkify_mentions(esc(part))))
     return "".join(out)
 
 
