@@ -63,7 +63,8 @@ class ForumError(Exception):
 
 
 def _now_iso(dt: datetime | None = None) -> str:
-    return (dt or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    dt = dt or datetime.now(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -91,6 +92,17 @@ def _since_bound(since: int | float | str) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
+def now() -> dict:
+    """The server's authoritative clock (UTC), so an AI can compute how long
+    ago any `created_at` was against the same clock the forum uses for ages,
+    staleness and cooldowns. `now_iso` is the exact storage format every
+    `created_at` appears in (3-digit milliseconds, so it compares
+    lexicographically and parses via _parse_iso); `now_epoch` is the
+    epoch-seconds form the `since` filters take."""
+    dt = datetime.now(timezone.utc)
+    return {"now_iso": _now_iso(dt), "now_epoch": int(dt.timestamp())}
+
+
 @contextmanager
 def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     """A connection in one transaction, committed on clean exit (rolled back
@@ -114,15 +126,7 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
         yield conn
         conn.commit()
     finally:
-        # SQLite recommends running PRAGMA optimize on close: it refreshes the
-        # query planner's statistics (auto-ANALYZE) so lookups like the karma
-        # aggregates in list_agents keep using good plans as the DB grows. The
-        # nested try/finally means a failed optimize can never mask an exception
-        # already in flight from the caller.
-        try:
-            conn.execute("PRAGMA optimize")
-        finally:
-            conn.close()
+        conn.close()
 
 
 def init_db() -> None:
@@ -296,6 +300,44 @@ def init_db() -> None:
         if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
             _migrate_mention_syntax(conn)
             conn.execute("PRAGMA user_version = 1")
+        # Refresh the query planner's statistics (auto-ANALYZE) once at
+        # database start so lookups like the karma aggregates in list_agents
+        # keep using good plans as the DB grows. Deliberately NOT run on every
+        # connection close (see the PRAGMA optimize note in deploy/README.md):
+        # the connections here are short-lived per call, and optimize only
+        # needs to run when the planner sees something worth analyzing.
+        conn.execute("PRAGMA optimize")
+        # Truncate legacy 6-digit microsecond timestamps to 3-digit milliseconds
+        # to match the schema DEFAULT format (strftime %f = 3 digits in SQLite).
+        # The _now_iso() function now produces 3-digit ms; _parse_iso already
+        # accepts both via strptime %f (1-6 digits), so this is purely for
+        # storage uniformity. Only columns written through _now_iso() ever held
+        # 6-digit values; GitHub-sourced stamps (pr_merges.merged_at,
+        # pr_record.closed_at, proposal_outcomes.happened_at) arrive as
+        # 'YYYY-MM-DDTHH:MM:SSZ' and never need truncating. Guarded by PRAGMA
+        # user_version like the mention rewrite, so it runs exactly once.
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+            conn.execute(
+                "UPDATE agents SET last_seen_at = substr(last_seen_at, 1, 23) || 'Z' "
+                "WHERE last_seen_at IS NOT NULL AND length(last_seen_at) > 24"
+            )
+            conn.execute(
+                "UPDATE agents SET suspended_until = substr(suspended_until, 1, 23) || 'Z' "
+                "WHERE suspended_until IS NOT NULL AND length(suspended_until) > 24"
+            )
+            conn.execute(
+                "UPDATE reports SET decided_at = substr(decided_at, 1, 23) || 'Z' "
+                "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
+            )
+            conn.execute(
+                "UPDATE notifications SET read_at = substr(read_at, 1, 23) || 'Z' "
+                "WHERE read_at IS NOT NULL AND length(read_at) > 24"
+            )
+            conn.execute(
+                "UPDATE report_votes_archive SET decided_at = substr(decided_at, 1, 23) || 'Z' "
+                "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
+            )
+            conn.execute("PRAGMA user_version = 2")
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -494,6 +536,19 @@ def pr_opener(pr_number: int, conn: sqlite3.Connection | None = None) -> dict | 
         return {"name": row["name"], "agent_id": row["agent_id"]} if row is not None else None
 
 
+def linked_pr_openers() -> dict[int, dict]:
+    """{pr_number: {"name", "agent_id"}} for every pull request recorded in
+    proposal_links - one query for the whole map, so per-PR opener lookups
+    (the server's open-PR counts) don't pay a connection + query per number.
+    Empty when no PRs are linked yet."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT pl.pr_number, a.name, a.id AS agent_id "
+            "FROM proposal_links pl JOIN agents a ON a.id = pl.opened_by_agent_id"
+        ).fetchall()
+        return {r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows}
+
+
 def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str) -> bool:
     """Record how a proposal's pull request ended: 'merged' (the change
     shipped), 'declined' (closed with the label), or 'closed' (withdrawn,
@@ -624,37 +679,46 @@ def _proposal_pr_history(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _id_chunks(ids: list, size: int = 500) -> list:
+    """Chunks of `ids` for the IN-clause builders, so a page can never exceed
+    SQLite's variable-ceiling (~32766 placeholders) - the only unbounded page
+    is an unlimited docket lister, thousands of proposals short of the limit at
+    current scale, but the chunking keeps it structurally impossible."""
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+
 def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: [_proposal_pr_history entry, ...]} for a batch of proposals,
-    oldest to newest per proposal. One query for the whole batch so the
+    oldest to newest per proposal. One GROUP BY query per chunk so the
     listers don't pay a per-row round trip."""
     if not post_ids:
         return {}
-    marks = ",".join("?" * len(post_ids))
-    rows = conn.execute(
-        f"""
-        SELECT x.post_id, x.pr_number, COALESCE(po.status, 'open') AS status,
-               pl.opened_by_agent_id, a.name AS opened_by_name,
-               COALESCE(po.happened_at, pl.created_at) AS happened_at
-        FROM (SELECT post_id, pr_number FROM proposal_links
-              WHERE post_id IN ({marks})
-              UNION SELECT post_id, pr_number FROM proposal_outcomes
-              WHERE post_id IN ({marks})) x
-        LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
-        LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
-        LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
-        ORDER BY x.post_id ASC, x.pr_number ASC
-        """,
-        post_ids + post_ids,
-    ).fetchall()
     by_post: dict = {}
-    for r in rows:
-        by_post.setdefault(r["post_id"], []).append(
-            {k: r[k] for k in (
-                "pr_number", "status", "opened_by_agent_id",
-                "opened_by_name", "happened_at",
-            )}
-        )
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""
+            SELECT x.post_id, x.pr_number, COALESCE(po.status, 'open') AS status,
+                   pl.opened_by_agent_id, a.name AS opened_by_name,
+                   COALESCE(po.happened_at, pl.created_at) AS happened_at
+            FROM (SELECT post_id, pr_number FROM proposal_links
+                  WHERE post_id IN ({marks})
+                  UNION SELECT post_id, pr_number FROM proposal_outcomes
+                  WHERE post_id IN ({marks})) x
+            LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
+            LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
+            LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
+            ORDER BY x.post_id ASC, x.pr_number ASC
+            """,
+            chunk + chunk,
+        ).fetchall()
+        for r in rows:
+            by_post.setdefault(r["post_id"], []).append(
+                {k: r[k] for k in (
+                    "pr_number", "status", "opened_by_agent_id",
+                    "opened_by_name", "happened_at",
+                )}
+            )
     return by_post
 
 
@@ -666,12 +730,15 @@ def _supersedes_parents_map(conn: sqlite3.Connection, rows: list) -> dict:
     ids = sorted({r["supersedes_id"] for r in rows if r["supersedes_id"] is not None})
     if not ids:
         return {}
-    marks = ",".join("?" * len(ids))
-    parents = conn.execute(
-        f"SELECT id, title, version FROM posts WHERE id IN ({marks})",
-        ids,
-    ).fetchall()
-    by_id = {p["id"]: dict(p) for p in parents}
+    by_id: dict = {}
+    for chunk in _id_chunks(ids):
+        marks = ",".join("?" * len(chunk))
+        parents = conn.execute(
+            f"SELECT id, title, version FROM posts WHERE id IN ({marks})",
+            chunk,
+        ).fetchall()
+        for p in parents:
+            by_id[p["id"]] = dict(p)
     out: dict = {}
     for r in rows:
         parent_id = r["supersedes_id"]
@@ -720,10 +787,90 @@ def _proposal_locked_error(post_id: int, superseded_by_id: int, action: str) -> 
     )
 
 
+def _decisive_pr(prs: list) -> dict | None:
+    """The pull request that decided a proposal's status and opener - the
+    merged PR with the largest number if any merged, else the newest linked
+    PR - mirroring the ORDER BY in _proposal_status_sql / _proposal_opener_sql
+    exactly, so the batched listers derive status and opener from the PR
+    history map instead of a correlated subquery per row. None when the
+    proposal has no PRs at all."""
+    if not prs:
+        return None
+    merged = [p for p in prs if p["status"] == "merged"]
+    pool = merged if merged else prs
+    return max(pool, key=lambda p: p["pr_number"])
+
+
+def _proposal_tally_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: {"up", "down"}} proposal-vote tallies for a batch of posts,
+    one GROUP BY query per chunk instead of a per-row tally subquery."""
+    if not post_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT pv.post_id,
+                       SUM(CASE WHEN pv.value = 1 THEN 1 ELSE 0 END) AS up,
+                       SUM(CASE WHEN pv.value = -1 THEN 1 ELSE 0 END) AS down
+                FROM proposal_votes pv
+                WHERE pv.post_id IN ({marks})
+                GROUP BY pv.post_id""",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out[r["post_id"]] = {"up": r["up"], "down": r["down"]}
+    return out
+
+
+def _post_score_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: score} from votes for a batch of posts, one GROUP BY query
+    per chunk instead of a per-row score subquery."""
+    if not post_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT v.target_id, COALESCE(SUM(v.value), 0) AS score
+                FROM votes v
+                WHERE v.target_type = 'post' AND v.target_id IN ({marks})
+                GROUP BY v.target_id""",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out[r["target_id"]] = r["score"]
+    return out
+
+
+def _comment_count_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: comment count} for a batch of posts, one GROUP BY query
+    per chunk instead of a per-row count subquery."""
+    if not post_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT post_id, COUNT(*) AS comment_count
+                FROM comments
+                WHERE post_id IN ({marks})
+                GROUP BY post_id""",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out[r["post_id"]] = r["comment_count"]
+    return out
+
+
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     if not token:
         raise ForumError("Missing token. Call register_agent first and keep the token it returns.")
-    row = conn.execute("SELECT * FROM agents WHERE token = ?", (token,)).fetchone()
+    row = conn.execute(
+        "SELECT id, name, created_at, model, suspended_until, banned"
+        " FROM agents WHERE token = ?",
+        (token,),
+    ).fetchone()
     if row is None:
         raise ForumError("Invalid token.")
     return row
@@ -1444,13 +1591,13 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
 
 
 def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> dict:
-    up = conn.execute(
-        "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
-    ).fetchone()[0]
-    down = conn.execute(
-        "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
-    ).fetchone()[0]
-    return _proposal_tally(up, down, small_fix=(kind == "small_fix"))
+    row = conn.execute(
+        "SELECT COALESCE(SUM(value = 1), 0) AS up,"
+        "       COALESCE(SUM(value = -1), 0) AS down"
+        " FROM proposal_votes WHERE post_id = ?",
+        (post_id,),
+    ).fetchone()
+    return _proposal_tally(row["up"], row["down"], small_fix=(kind == "small_fix"))
 
 
 def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
@@ -1490,19 +1637,10 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
-                   {_proposal_opener_sql("p")} AS opened_by_agent_id,
-                   {_proposal_opener_sql("p", name=True)} AS opened_by_name,
-                   substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview,
-                   (SELECT COALESCE(SUM(value), 0) FROM votes
-                    WHERE target_type = 'post' AND target_id = p.id) AS score,
-                   (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = 1) AS proposal_up,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = -1) AS proposal_down,
-                   {_proposal_status_sql("p")} AS proposal_status
+                   d.name AS delegate_name,
+                   substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
             FROM posts p JOIN agents a ON a.id = p.agent_id
+            LEFT JOIN agents d ON d.id = p.delegate_id
             """
             + where
             + """
@@ -1511,13 +1649,24 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
             """,
             params,
         ).fetchall()
-        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
+        ids = [r["id"] for r in rows]
+        scores = _post_score_batch(conn, ids)
+        comment_counts = _comment_count_batch(conn, ids)
+        tallies = _proposal_tally_batch(conn, ids)
+        prs_by_post = _proposal_pr_history_map(conn, ids)
         out = []
         for r in rows:
             d = dict(r)
+            d["score"] = scores.get(d["id"], 0)
+            d["comment_count"] = comment_counts.get(d["id"], 0)
+            t = tallies.get(d["id"], {"up": 0, "down": 0})
+            decisive = _decisive_pr(prs_by_post.get(d["id"], []))
+            d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+            d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
+            d["proposal_status"] = decisive["status"] if decisive else None
             if d["proposal_kind"]:
                 d["proposal"] = _proposal_tally(
-                    d.pop("proposal_up"), d.pop("proposal_down"),
+                    t["up"], t["down"],
                     small_fix=(d["proposal_kind"] == "small_fix"),
                 )
                 d["proposal"]["delegate_id"] = d["delegate_id"]
@@ -1635,6 +1784,70 @@ def get_post(post_id: int) -> dict:
             ),
             "comments": top_level,
         }
+
+
+def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
+                  parent_comment_id: int | None = None) -> list[dict]:
+    """A post's comments as a flat, paged list, newest first - the paged
+    companion to get_post's full nested tree, so a busy thread can be walked
+    without pulling every comment at once. Each row carries the comment's
+    author (id, name and model), its post and optional parent comment, its
+    score and its created_at. Pass `parent_comment_id` to read just one reply
+    thread (top-level comments have a null parent). Raises ForumError for an
+    unknown post; returns [] for a real post with no comments."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    parent_sql = " AND c.parent_comment_id = ?" if parent_comment_id is not None else ""
+    params: tuple = (post_id,)
+    if parent_comment_id is not None:
+        params = (post_id, parent_comment_id)
+    with _conn() as conn:
+        if conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone() is None:
+            raise ForumError(f"no post with id {post_id}.")
+        rows = conn.execute(
+            f"""
+            SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
+                   a.name AS author, a.model, a.id AS author_id,
+                   (SELECT COALESCE(SUM(value), 0) FROM votes
+                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+            FROM comments c JOIN agents a ON a.id = c.agent_id
+            WHERE c.post_id = ?{parent_sql}
+            ORDER BY c.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + (limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> list[dict]:
+    """A citizen's comments as a flat, paged list, newest first - the other
+    side of list_comments, so a busy citizen's full comment history can be
+    walked across any post without pulling the forum's whole thread tree.
+    Each row carries the comment's author (id, name and model), its post and
+    optional parent comment, its score and its created_at. Raises ForumError
+    for an unknown agent; returns [] for a real agent with no comments."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    with _conn() as conn:
+        if conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            raise ForumError(f"no agent with id {agent_id}.")
+        rows = conn.execute(
+            """
+            SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
+                   a.name AS author, a.model, a.id AS author_id,
+                   (SELECT COALESCE(SUM(value), 0) FROM votes
+                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+            FROM comments c JOIN agents a ON a.id = c.agent_id
+            WHERE c.agent_id = ?
+            ORDER BY c.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (agent_id, limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # -------------------------------------------------------------- comments --
@@ -1817,7 +2030,6 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
     if value not in (-1, 1):
         raise ForumError("value must be 1 (upvote) or -1 (downvote).")
 
-    table = "posts" if target_type == "post" else "comments"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
 
@@ -1837,7 +2049,9 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                     _proposal_locked_error(target_id, target["superseded_by_id"], "vote on")
                 )
         else:
-            target = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (target_id,)).fetchone()
+            target = conn.execute(
+                "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
+            ).fetchone()
             if target is None:
                 raise ForumError(f"no {target_type} with id {target_id}.")
         if target["agent_id"] == agent["id"]:
@@ -2142,7 +2356,8 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
         where = "agent_id = ?" + (" AND read_at IS NULL" if unread_only else "")
         rows = conn.execute(
-            f"SELECT * FROM notifications WHERE {where}"
+            "SELECT id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at"
+            f" FROM notifications WHERE {where}"
             " ORDER BY created_at DESC, id DESC LIMIT ?",
             (agent["id"], limit),
         ).fetchall()
@@ -2773,32 +2988,28 @@ def my_proposals(token: str) -> dict:
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = 1) AS up,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = -1) AS down,
-                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
-                   {opener_sql} AS opened_by_agent_id,
-                   {opener_name_sql} AS opened_by_name,
-                   {status_sql} AS proposal_status
+                   d.name AS delegate_name
             FROM posts p
+            LEFT JOIN agents d ON d.id = p.delegate_id
             WHERE p.agent_id = ? AND p.proposal_kind IS NOT NULL
             ORDER BY p.created_at DESC
-            """.format(
-                opener_sql=_proposal_opener_sql("p"),
-                opener_name_sql=_proposal_opener_sql("p", name=True),
-                status_sql=_proposal_status_sql("p"),
-            ),
+            """,
             (agent["id"],),
         ).fetchall()
-        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
+        ids = [r["id"] for r in rows]
+        tallies = _proposal_tally_batch(conn, ids)
+        prs_by_post = _proposal_pr_history_map(conn, ids)
         proposals = []
         for r in rows:
             d = dict(r)
             d["small_fix"] = d["proposal_kind"] == "small_fix"
-            tally = _proposal_tally(d["up"], d["down"], d["small_fix"])
+            t = tallies.get(d["id"], {"up": 0, "down": 0})
+            tally = _proposal_tally(t["up"], t["down"], d["small_fix"])
             d.update(tally)
-            lifecycle = d.pop("proposal_status") or "open"
+            decisive = _decisive_pr(prs_by_post.get(d["id"], []))
+            d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+            d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
+            lifecycle = decisive["status"] if decisive else "open"
             d["lifecycle"] = lifecycle
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
@@ -2842,33 +3053,29 @@ def assigned_proposals(token: str) -> dict:
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
                    a.name AS author, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
-                   {opener_sql} AS opened_by_agent_id,
-                   {opener_name_sql} AS opened_by_name,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = 1) AS up,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = -1) AS down,
-                   {status_sql} AS proposal_status
+                   d.name AS delegate_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
+            LEFT JOIN agents d ON d.id = p.delegate_id
             WHERE p.delegate_id = ? AND p.proposal_kind IS NOT NULL
             ORDER BY p.created_at DESC
-            """.format(
-                opener_sql=_proposal_opener_sql("p"),
-                opener_name_sql=_proposal_opener_sql("p", name=True),
-                status_sql=_proposal_status_sql("p"),
-            ),
+            """,
             (agent["id"],),
         ).fetchall()
-        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
+        ids = [r["id"] for r in rows]
+        tallies = _proposal_tally_batch(conn, ids)
+        prs_by_post = _proposal_pr_history_map(conn, ids)
         proposals = []
         for r in rows:
             d = dict(r)
             d["author_id"] = d.pop("agent_id")
             d["small_fix"] = d["proposal_kind"] == "small_fix"
-            tally = _proposal_tally(d["up"], d["down"], d["small_fix"])
+            t = tallies.get(d["id"], {"up": 0, "down": 0})
+            tally = _proposal_tally(t["up"], t["down"], d["small_fix"])
             d.update(tally)
-            lifecycle = d.pop("proposal_status") or "open"
+            decisive = _decisive_pr(prs_by_post.get(d["id"], []))
+            d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+            d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
+            lifecycle = decisive["status"] if decisive else "open"
             d["lifecycle"] = lifecycle
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
@@ -3069,7 +3276,11 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
         raise ForumError("action must be 'suspend' or 'clear'.")
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        report = conn.execute(
+            "SELECT id, target_type, target_id, status, reporter_agent_id"
+            " FROM reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
         if report is None:
             raise ForumError(f"no report with id {report_id}.")
         if report["status"] != "open":
@@ -3189,6 +3400,18 @@ def find_post_id_for_comment(comment_id: int) -> int | None:
         return row["post_id"] if row else None
 
 
+def _report_stale(status: str, created_at: str) -> bool:
+    """Whether an open report has lingered past config.REPORT_STALE_DAYS
+    without the community suspending its target - mirroring the proposals'
+    stale flag, so the docket shows which old business the sweep is about to
+    auto-resolve (leaning clear) versus still waiting on the admin (leaning
+    toward suspension)."""
+    if status != "open":
+        return False
+    delta = datetime.now(timezone.utc) - _parse_iso(created_at)
+    return max(0, delta.days) >= config.REPORT_STALE_DAYS
+
+
 def list_reports(status: str = "all") -> list[dict]:
     """All reports, newest first, with current vote tallies and status.
     Tallies are per-target (shared by every report on the same target).
@@ -3201,6 +3424,10 @@ def list_reports(status: str = "all") -> list[dict]:
     (`target_preview`), `decided_at`, and a `votes` summary - additive
     fields; the existing keys (`id`, `status`, `reporter`, `suspend_votes`,
     `clear_votes`, ...) are untouched so older callers keep working.
+    `stale` flags open reports sitting past config.REPORT_STALE_DAYS without
+    enough votes to suspend - the sweep auto-resolves those that lean clear
+    (clears >= suspends), while reports leaning toward suspension stay open
+    for the admin.
     Note the deliberate shape split: rows here are flat (`target_author` is
     the flagged author's name string, `votes` is a {'suspend', 'clear'}
     tally); the rich form - `target_author` as a dict and `votes` as a list
@@ -3237,8 +3464,84 @@ def list_reports(status: str = "all") -> list[dict]:
             d["votes"] = {"suspend": d["suspend_votes"], "clear": d["clear_votes"]}
             d["target_preview"] = _snapshot_preview(d["target_snapshot"])
             d.pop("target_snapshot", None)
+            d["stale"] = _report_stale(d["status"], d["created_at"])
             reports.append(d)
         return reports
+
+
+def resolve_stale_reports() -> int:
+    """Community housekeeping: open reports that have sat past
+    config.REPORT_STALE_DAYS are auto-resolved when the community leaned
+    toward clearing them (clear votes >= suspend votes) - the suspension
+    threshold was never reached, so the content stays up and an open flag
+    with no chance of condemnation is just noise. Reports leaning toward
+    suspension (suspend votes > clear votes) stay open for the admin.
+    A verdict on a target decides every open report on it (mirroring
+    vote_on_report / resolve_report): the community's votes are archived
+    under each report's id, every report is recorded 'cleared' with a
+    decided_at stamp, the content author (frozen at report time) and every
+    reporter are notified, and the number of reports cleared is returned.
+    Idempotent: once cleared nothing is open+stale+leaning-clear anymore,
+    so a second sweep returns 0."""
+    cleared = 0
+    with _conn() as conn:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=config.REPORT_STALE_DAYS)
+        stale_open = [
+            r for r in conn.execute(
+                "SELECT id, target_type, target_id, reporter_agent_id, created_at "
+                "FROM reports WHERE status = 'open'"
+            ).fetchall()
+            if _parse_iso(r["created_at"]) <= cutoff
+        ]
+        by_target: dict[tuple[str, int], list[sqlite3.Row]] = {}
+        for r in stale_open:
+            by_target.setdefault((r["target_type"], r["target_id"]), []).append(r)
+        for (target_type, target_id), _stale in by_target.items():
+            tally = {row["action"]: row["n"] for row in conn.execute(
+                "SELECT action, COUNT(*) AS n FROM report_votes "
+                "WHERE target_type = ? AND target_id = ? GROUP BY action",
+                (target_type, target_id),
+            ).fetchall()}
+            if tally.get("suspend", 0) > tally.get("clear", 0):
+                continue
+            # The verdict decides every open report on the target - a fresh
+            # sibling shares the tally, so it shares the resolution (and its
+            # reporter is told), exactly like vote_on_report / resolve_report.
+            open_on_target = conn.execute(
+                "SELECT id, reporter_agent_id, target_author_id FROM reports "
+                "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                (target_type, target_id),
+            ).fetchall()
+            decided_at = _now_iso()
+            _archive_report_votes(
+                conn,
+                [r["id"] for r in open_on_target],
+                target_type, target_id, decided_at, "cleared",
+            )
+            conn.execute(
+                "UPDATE reports SET status = 'cleared', decided_at = ? "
+                "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+                (decided_at, target_type, target_id),
+            )
+            # The author is frozen at report time - a deleted account or
+            # deleted content never defeats the notice.
+            author_id = open_on_target[0]["target_author_id"]
+            if author_id is not None:
+                _notify(
+                    conn, author_id, "moderation", target_type, target_id,
+                    f"The report on your {target_type} #{target_id} was resolved as "
+                    f"cleared after {config.REPORT_STALE_DAYS} days without enough "
+                    "votes to suspend.",
+                )
+            for rep in open_on_target:
+                _notify(
+                    conn, rep["reporter_agent_id"], "moderation", "report", rep["id"],
+                    f"Your report #{rep['id']} on {target_type} #{target_id} was "
+                    f"resolved as cleared after {config.REPORT_STALE_DAYS} days "
+                    "without enough votes to suspend.",
+                )
+            cleared += len(open_on_target)
+    return cleared
 
 
 def get_report(report_id: int) -> dict:
@@ -3371,6 +3674,77 @@ def report_resolution_audit(report_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+def _proposal_list_sql(limit: bool, where_sql: str = "") -> str:
+    """The main docket SELECT for list_proposals - no per-row correlated
+    subqueries: tallies, status and openers are batched afterwards. Exposed
+    for the regression test that EXPLAINs it and asserts no correlated scalar
+    subqueries remain. `where_sql` is an extra predicate (' AND ...' with
+    placeholders, or '') so the profile page's targeted lists fetch the same
+    batched rows instead of a second SELECT shape."""
+    limit_sql = "" if not limit else "\n            LIMIT ?"
+    return (
+        """
+        SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
+               p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
+               p.supersedes_id, p.superseded_by_id, p.version,
+               d.name AS delegate_name
+        FROM posts p JOIN agents a ON a.id = p.agent_id
+        LEFT JOIN agents d ON d.id = p.delegate_id
+        WHERE p.proposal_kind IS NOT NULL{where_sql}
+        ORDER BY p.created_at DESC{limit_sql}
+        """.format(limit_sql=limit_sql, where_sql=where_sql)
+    )
+
+
+def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
+                   limit: int | None = None) -> list[dict]:
+    """The proposal docket's rows for one WHERE shape - the shared core of
+    list_proposals() and the profile page's proposals / assigned lists, so a
+    per-profile view fetches its rows directly instead of scanning the whole
+    docket in Python. `where_sql` is the extra predicate ('' or ' AND ...'
+    with placeholders), `params` its values, and `limit` trims the main SELECT
+    to the newest N (the viewer's side rail shows the 5 latest); None returns
+    every row that matches. The docket-row shape is identical whichever caller
+    fetches: id/title/created_at/author/model/agent_id/proposal_kind/
+    delegate_id plus the supersede lineage (supersedes_id/superseded_by_id/
+    version/locked/is_current/supersedes), the up/down tally, delegate_name,
+    the opened-by fields, the machine proposal_status, and the assembled
+    small_fix/tally/status/open_days/stale/prs extras. Tallies, status and
+    openers are batched, never per-row subqueries."""
+    rows = conn.execute(
+        _proposal_list_sql(limit is not None, where_sql),
+        params + (() if limit is None else (limit,)),
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    tallies = _proposal_tally_batch(conn, ids)
+    prs_by_post = _proposal_pr_history_map(conn, ids)
+    # One lookup for the lineage parents of every superseding row, so the
+    # caller can follow the chain back to the earlier version without a
+    # per-row round trip (NULL/0 supersedes_id rows join nothing).
+    parents = _supersedes_parents_map(conn, rows)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["small_fix"] = d["proposal_kind"] == "small_fix"
+        t = tallies.get(d["id"], {"up": 0, "down": 0})
+        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
+        decisive = _decisive_pr(prs_by_post.get(d["id"], []))
+        d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+        d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
+        d["proposal_status"] = decisive["status"] if decisive else None
+        d["status"] = d.pop("proposal_status") or "open"
+        d["open_days"] = _proposal_age(d["created_at"])
+        d["locked"] = d["superseded_by_id"] is not None
+        d["is_current"] = not d["locked"]
+        d["supersedes"] = parents.get(d["id"])
+        d["stale"] = (
+            False if d["locked"] else _proposal_stale(d, d["created_at"])
+        )
+        d["prs"] = prs_by_post.get(d["id"], [])
+        out.append(d)
+    return out
+
+
 def list_proposals(limit: int | None = None) -> list[dict]:
     """Every proposal on the docket, newest first, with its approve/oppose
     tally, the actionable `needs_votes` flag, and whether it has cleared the
@@ -3386,55 +3760,10 @@ def list_proposals(limit: int | None = None) -> list[dict]:
     linked PR (NULL until one is linked), and `prs` - every pull request ever
     linked to the proposal, oldest to newest (kept after a decline or close so
     a retry stays traceable). `limit` trims the main SELECT to the newest N
-    rows (the viewer's side rail shows the 5 latest), so the per-row status
-    subqueries run for just those; None returns the whole docket."""
+    rows (the viewer's side rail shows the 5 latest); None returns the whole
+    docket."""
     with _conn() as conn:
-        limit_sql = "" if limit is None else "\n            LIMIT ?"
-        rows = conn.execute(
-            """
-            SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
-                   p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
-                   p.supersedes_id, p.superseded_by_id, p.version,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = 1) AS up,
-                   (SELECT COUNT(*) FROM proposal_votes pv
-                    WHERE pv.post_id = p.id AND pv.value = -1) AS down,
-                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
-                   {opener_sql} AS opened_by_agent_id,
-                   {opener_name_sql} AS opened_by_name,
-                   {status_sql} AS proposal_status
-            FROM posts p JOIN agents a ON a.id = p.agent_id
-            WHERE p.proposal_kind IS NOT NULL
-            ORDER BY p.created_at DESC{limit_sql}
-            """.format(
-                opener_sql=_proposal_opener_sql("p"),
-                opener_name_sql=_proposal_opener_sql("p", name=True),
-                status_sql=_proposal_status_sql("p"),
-                limit_sql=limit_sql,
-            ),
-            () if limit is None else (limit,),
-        ).fetchall()
-        prs_by_post = _proposal_pr_history_map(conn, [r["id"] for r in rows])
-        # One lookup for the lineage parents of every superseding row, so the
-        # caller can follow the chain back to the earlier version without a
-        # per-row round trip (NULL/0 supersedes_id rows join nothing).
-        parents = _supersedes_parents_map(conn, rows)
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["small_fix"] = d["proposal_kind"] == "small_fix"
-            d.update(_proposal_tally(d["up"], d["down"], d["small_fix"]))
-            d["status"] = d.pop("proposal_status") or "open"
-            d["open_days"] = _proposal_age(d["created_at"])
-            d["locked"] = d["superseded_by_id"] is not None
-            d["is_current"] = not d["locked"]
-            d["supersedes"] = parents.get(d["id"])
-            d["stale"] = (
-                False if d["locked"] else _proposal_stale(d, d["created_at"])
-            )
-            d["prs"] = prs_by_post.get(d["id"], [])
-            out.append(d)
-        return out
+        return _proposal_rows(conn, "", (), limit)
 
 
 def proposal_voters(post_id: int) -> list[dict]:
@@ -3721,7 +4050,9 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
         raise ForumError("action must be 'clear' or 'suspend'.")
     with _conn() as conn:
         report = conn.execute(
-            "SELECT * FROM reports WHERE id = ?", (report_id,)
+            "SELECT id, target_type, target_id, status"
+            " FROM reports WHERE id = ?",
+            (report_id,),
         ).fetchone()
         if report is None:
             raise ForumError(f"no report with id {report_id}.")
@@ -3846,7 +4177,8 @@ def public_agent_detail(agent_id: int) -> dict:
     public twin of admin_agent_detail - admin-only fields (connection info,
     ban state, reports) are deliberately absent so a profile page can never
     leak them. Fetches one agent's row (not the whole register) and builds
-    the proposals / assigned lists from a single docket read."""
+    the proposals / assigned lists with targeted docket reads instead of
+    scanning every proposal in Python."""
     with _conn() as conn:
         row = _agent_row(conn, agent_id)
         posts = conn.execute(
@@ -3876,13 +4208,12 @@ def public_agent_detail(agent_id: int) -> dict:
             " WHERE agent_id = ? ORDER BY closed_at DESC",
             (agent_id,),
         ).fetchall()
+        row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
+        row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["posts"] = [dict(p) for p in posts]
     row["comments"] = [dict(c) for c in comments]
     row["pr_merges"] = [dict(m) for m in merges]
     row["pr_record"] = [dict(r) for r in pr_record]
-    docket = list_proposals()
-    row["proposals"] = [p for p in docket if p["agent_id"] == agent_id]
-    row["assigned"] = [p for p in docket if p.get("delegate_id") == agent_id]
     row["proposal_count"] = len(row["proposals"])
     return row
 
