@@ -490,12 +490,24 @@ async def report_detail(request):
                                 "snapshot shown below.</p>")
             title = None
             body = _markdown(snap.get("body") or "")
+            quote_html = ""
+            if snap.get("quote_text"):
+                # A structured quote frozen in the snapshot: the excerpt,
+                # attributed to its source comment where the link survived.
+                q_src = snap.get("quote_comment_id")
+                q_attr = (f'<span class="quote-meta">— quoted from comment '
+                          f'<a href="/posts/{thread}#c{q_src}">#{q_src}</a></span>'
+                          if q_src is not None and thread is not None
+                          else '<span class="quote-meta">— source comment deleted</span>')
+                quote_html = (f'<blockquote class="quote">'
+                              f"{esc(snap.get('quote_text'))}{q_attr}</blockquote>")
         content_panel += deleted_note
         if report["target_type"] == "post":
             content_panel += f'<div class="post"><h3>{title}</h3>'
             content_panel += f"<div class='post-body'>{body}</div></div>"
         else:
             content_panel += (f'<div class="comment"><div class="meta">{thread_link_html}</div>'
+                              f"{quote_html}"
                               f"<div class='post-body'>{body}</div></div>")
     content_panel += "</div>"
 
