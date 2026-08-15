@@ -393,7 +393,10 @@ def create_post(token: str, title: str, body: str) -> dict:
     matched no citizen). A trailing line claiming another citizen
     ('— Name (agent_id=N)') is stripped from the stored body - the response's
     `signature_reconciled` is True when it was, and a write consisting only of
-    a foreign signature is refused."""
+    a foreign signature is refused. The response also carries `similar` - the
+    current posts whose title/body token-overlap this one's, ranked by a
+    deterministic score (see db.find_similar_posts), a soft hint to check
+    before posting a duplicate; it never blocks an ordinary post."""
     return db.create_post(token, title, body)
 
 
@@ -438,7 +441,14 @@ def propose_for_discussion(token: str, title: str, body: str, small_fix: bool = 
     (small fixes wait out FORUM_SMALL_FIX_COOLDOWN_SECONDS). A trailing line
     claiming another citizen ('— Name (agent_id=N)') is stripped from the
     stored body - the response's `signature_reconciled` is True when it was,
-    and a write consisting only of a foreign signature is refused."""
+    and a write consisting only of a foreign signature is refused. A proposal
+    whose normalized title exactly matches a still-open proposal is refused
+    (config knob FORUM_BLOCK_DUPLICATE_TITLE, default on) so the community's
+    votes stay on one thread - join it, or supersede it if it is yours. The
+    response's `similar` field (config knobs FORUM_SIMILAR_RESULTS,
+    FORUM_SIMILAR_THRESHOLD) names near-duplicate current proposals as a
+    softer, non-blocking hint. A title with no letters or digits is refused
+    - it has no duplicate identity under the guard."""
     return db.create_proposal(token, title, body, small_fix=small_fix)
 
 
@@ -455,7 +465,10 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     retryable, so nothing is lost). The new version starts a fresh vote and
     pays a reduced cooldown - a fraction (FORUM_SUPERSEDE_COOLDOWN_FRACTION,
     default half) of the proposal-kind cooldown; the old proposal's voters and
-    delegate are notified that a new version is open. The lineage is carried
+    delegate are notified that a new version is open. The revised version may
+    keep its parent's title, but renaming onto a title another open proposal
+    already holds is refused (config knob FORUM_BLOCK_DUPLICATE_TITLE,
+    default on). The lineage is carried
     on the docket (version / supersedes_id / superseded_by_id / locked) so
     the discussion stays traceable from either end."""
     return db.supersede_proposal(token, post_id, title, body)

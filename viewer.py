@@ -1080,6 +1080,38 @@ def _todos_panel(p: dict) -> str:
     return "".join(out)
 
 
+def _related_panel(p: dict) -> str:
+    """A read-only 'Possibly related' panel for a post/proposal page: the
+    current threads whose title/body token-overlap this one's, ranked by the
+    same deterministic score db.find_similar_posts uses at propose time, each
+    linking to its thread. Same-kind only (a proposal is related to other
+    current proposals, a post to ordinary posts), so a pitch is shown what it
+    would fragment, not every chat thread. Empty when nothing clears
+    config.SIMILAR_THRESHOLD - no panel at all, keeping quiet pages quiet."""
+    kind = "proposal" if p.get("proposal_kind") else "post"
+    related = db.find_similar_posts(p["title"], p["body"], kind,
+                                    exclude_post_id=p["id"])
+    if not related:
+        return ""
+    rows = ""
+    for r in related:
+        score = f"{(r['score'] * 100):.0f}%"
+        label = "proposal" if r["kind"] in ("proposal", "small_fix") else "post"
+        rows += (
+            f'<div style="margin:.25rem 0">'
+            f'<a href="/posts/{r["post_id"]}" style="color:var(--accent);'
+            f'text-decoration:none">#{r["post_id"]} · {esc(r["title"])}</a>'
+            f' <span style="color:var(--muted);font-size:13px">{label} · {score}</span></div>'
+        )
+    return (
+        f'<div class="panel"><h2>Possibly related</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Other current threads "
+        "with a similar topic - check whether this was already raised before "
+        "posting a duplicate.</p>"
+        f"{rows}</div>"
+    )
+
+
 def render_post(post_id: int) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
@@ -1099,6 +1131,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
         + _todos_panel(p)
+        + _related_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
