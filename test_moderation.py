@@ -3366,6 +3366,68 @@ def main():
             else:
                 os.environ[k] = v
 
+    # --- governance knobs: env override changes enforcement at call time ----
+    # The _TUNING registry resolves config.SUSPEND_DAYS / PR_MERGE_KARMA /
+    # PR_DECLINE_KARMA / MIN_KARMA_MOD / MIN_KARMA_REPO from the environment
+    # on every call, so arming an env value must change the ENFORCEMENT, not
+    # just the number reported. Each knob is armed to a distinctive value,
+    # its behavior asserted, then the environment is restored in `finally`.
+    _knob_keys = ("FORUM_SUSPEND_DAYS", "FORUM_PR_MERGE_KARMA",
+                  "FORUM_PR_DECLINE_KARMA", "FORUM_MIN_KARMA_MOD",
+                  "FORUM_MIN_KARMA_REPO")
+    _saved_knobs = {k: os.environ.get(k) for k in _knob_keys}
+    try:
+        os.environ["FORUM_SUSPEND_DAYS"] = "3"
+        os.environ["FORUM_PR_MERGE_KARMA"] = "5"
+        os.environ["FORUM_PR_DECLINE_KARMA"] = "-3"
+        os.environ["FORUM_MIN_KARMA_MOD"] = "0"
+        os.environ["FORUM_MIN_KARMA_REPO"] = "0"
+        # MIN_KARMA_MOD 0 unlocks reporting for a 0-karma agent, and the
+        # suspension length reflects the armed SUSPEND_DAYS.
+        knob_a = db.register_agent("knob-a")     # content author (suspend target)
+        knob_b = db.register_agent("knob-b")     # 0-karma reporter
+        knob_post = db.create_post(knob_a["token"], "knob target", "body")["post_id"]
+        rep = db.report_content(knob_b["token"], "post", knob_post, "knob flag")
+        db.resolve_report(rep["report_id"], "root", "suspend")
+        with db._conn() as conn:
+            until = conn.execute(
+                "SELECT suspended_until FROM agents WHERE id = ?", (knob_a["agent_id"],)
+            ).fetchone()[0]
+        delta = db._parse_iso(until) - _dt.datetime.now(_dt.timezone.utc)
+        assert _dt.timedelta(days=2) < delta < _dt.timedelta(days=4), \
+            f"suspended_until reflects the armed SUSPEND_DAYS=3, got {delta}"
+        # PR_MERGE_KARMA 5 credits +5, PR_DECLINE_KARMA -3 charges -3.
+        knob_c = db.register_agent("knob-c")
+        assert db.award_pr_merge_karma(401, knob_c["agent_id"], "2026-08-11T00:00:00Z") is True
+        assert db.whoami(knob_c["token"])["karma"] == 5, \
+            "armed PR_MERGE_KARMA=5 credits exactly +5"
+        assert db.record_pr_decline(402, knob_c["agent_id"], "2026-08-11T01:00:00Z") is True
+        assert db.whoami(knob_c["token"])["karma"] == 2, \
+            "armed PR_DECLINE_KARMA=-3 charges exactly -3"
+        # MIN_KARMA_REPO 0 disables the gate (0 karma passes); 10 re-arms it.
+        db.require_min_karma(knob_b["token"], config.MIN_KARMA_REPO, "knob action")
+        os.environ["FORUM_MIN_KARMA_REPO"] = "10"
+        err = expect_error(
+            db.require_min_karma, knob_b["token"], config.MIN_KARMA_REPO, "knob action"
+        )
+        assert "karma of at least 10" in err, f"armed MIN_KARMA_REPO=10 blocks 0 karma: {err}"
+        # MIN_KARMA_MOD 1 refuses a 0-karma reporter on fresh content.
+        knob_d = db.register_agent("knob-d")
+        os.environ["FORUM_MIN_KARMA_MOD"] = "1"
+        knob_post2 = db.create_post(knob_b["token"], "knob target 2", "body")["post_id"]
+        err = expect_error(
+            db.report_content, knob_d["token"], "post", knob_post2, "nope"
+        )
+        assert "reporting requires karma" in err, \
+            f"armed MIN_KARMA_MOD=1 refuses a 0-karma reporter: {err}"
+    finally:
+        for k, v in _saved_knobs.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    print("  governance knob overrides: ok")
+
     # --- live .env reload (config.reload_dotenv) ---------------------------
     # Tunables resolve from the environment at call time, so an .env edit
     # applies without a restart: reload_dotenv() re-reads both .env files
@@ -3562,6 +3624,150 @@ def main():
         github._open_prs_cache.update(ts=0.0, result=None, error=None)
     print("  github.open_prs cache: ok")
 
+    # --- github pure helpers: path validation, markdown, base64, status -----
+    # These network-free helpers are exercised only through their callers
+    # today; pin their contracts directly so a regressions is caught at the
+    # unit, not via a full PR flow.
+    #
+    # _validate_path: relative, no traversal, no leading slash, no empty
+    # segments - the guard standing between user input and the contents API.
+    assert github._validate_path("db.py") == "db.py"
+    assert github._validate_path("src/util/thing.py") == "src/util/thing.py"
+    for bad in ("", "  ", "/etc/passwd", "../secret", "a/../b", "a//b", "a/./b", "a/", "a/.."):
+        try:
+            github._validate_path(bad)
+        except github.RepoError as exc:
+            assert "path" in str(exc), (bad, exc)
+        else:
+            raise AssertionError(f"_validate_path must reject {bad!r}")
+    # _escape_md: backslash-escape the markdown-significant chars so a title
+    # with stars/underscores/brackets/backticks renders as plain text.
+    assert github._escape_md("a*b_c[d]e`f`g\\h") == \
+        "a\\*b\\_c\\[d\\]e\\`f\\`g\\\\h", github._escape_md("a*b_c[d]e`f`g\\h")
+    assert github._escape_md("plain text") == "plain text"
+    assert github._escape_md("") == ""
+    # _decode_content_text: base64 round-trip; non-UTF-8 bytes are binary and
+    # patch mode must refuse them (read_file instead serves a note).
+    assert github._decode_content_text("a.py", {"content": base64.b64encode(
+        "hello\n".encode("utf-8")).decode("ascii")}) == "hello\n"
+    try:
+        github._decode_content_text("a.py", {"content": base64.b64encode(
+            b"\xff\xfe\x00").decode("ascii")})
+        raise AssertionError("binary content must be refused by patch decode")
+    except github.RepoError as exc:
+        assert "not UTF-8" in str(exc) and "binary" in str(exc), str(exc)
+    try:
+        github._decode_content_text("a.py", None)
+        raise AssertionError("a missing file must be refused by patch decode")
+    except github.RepoError as exc:
+        assert "use 'content' to create" in str(exc), str(exc)
+    # _combined_status: maps the commit-status API to a green/red shape, and
+    # never raises when GitHub is unreachable (a failure -> None, so the PR
+    # view degrades instead of erroring).
+    real_request = github._request
+    try:
+        calls = []
+        github._request = lambda method, path, body=None, ok_404=False: (
+            calls.append((method, path)) or {"state": "failure", "total_count": 1}
+        )
+        assert github._combined_status("abc123") == {"state": "failure", "total_count": 1}
+        github._request = lambda method, path, body=None, ok_404=False: (
+            calls.append((method, path)) or {"state": "success", "total_count": 0}
+        )
+        assert github._combined_status("abc123") == {"state": "success", "total_count": 0}
+        github._request = lambda method, path, body=None, ok_404=False: (
+            calls.append((method, path)) or (_ for _ in ()).throw(github.RepoError("down"))
+        )
+        assert github._combined_status("abc123") is None, \
+            "an unreachable GitHub must degrade to None, not raise"
+    finally:
+        github._request = real_request
+    assert calls == [("GET", "commits/abc123/status")] * 3, \
+        "every status read hits the same commit-status endpoint"
+    print("  github pure helpers: ok")
+
+    # --- github.recently_closed_prs: parse the poller's input shape ---------
+    # The outcome poller reads closed PRs and classifies each one. The parse
+    # runs through the same fake _request as open_prs; assert the mapping
+    # (citizen trailer, proposal stamp, labels) reaches the returned rows.
+    real_request = github._request
+    try:
+        calls = []
+        github._request = lambda method, path, body=None, ok_404=False: (
+            calls.append((method, path)) or [
+                {"number": 5, "title": "t", "user": {"login": "bob"},
+                 "merged_at": "2026-08-11T00:00:00Z", "closed_at": "2026-08-11T01:00:00Z",
+                 "labels": [{"name": "declined"}],
+                 "body": "stuff\n\nCitizen: curious-alpha (agent_id=3)\n\nProposal: #4"},
+                {"number": 6, "title": "u", "user": {"login": "alice"},
+                 "merged_at": None, "closed_at": "2026-08-11T02:00:00Z",
+                 "labels": [], "body": "human-made, no trailer"},
+            ]
+        )
+        closed = github.recently_closed_prs(per_page=2)
+        assert calls == [("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=2")], \
+            "recently_closed_prs hits the closed-pulls endpoint with the page size"
+        assert closed[0]["number"] == 5 and closed[0]["merged_at"] == "2026-08-11T00:00:00Z", closed[0]
+        assert closed[0]["labels"] == ["declined"], closed[0]
+        assert closed[0]["citizen"] == {"name": "curious-alpha", "agent_id": 3}, closed[0]
+        assert closed[0]["proposal_post_id"] == 4, closed[0]
+        assert closed[1]["citizen"] is None and closed[1]["proposal_post_id"] is None, \
+            "a PR without a Citizen trailer maps to no citizen / proposal"
+    finally:
+        github._request = real_request
+    print("  github.recently_closed_prs: ok")
+
+    # --- repo_spec / base_branch: the wired identity ------------------------
+    # The tools' target repo is config/process-env driven; these are the pure
+    # reads every repo tool reports through (and the viewer's api_overview).
+    assert github.repo_spec(), "the tools must be wired to a repo slug"
+    assert "/" in github.repo_spec(), "the repo slug must be owner/name"
+    assert github.base_branch() == github.GITHUB_BASE_BRANCH, \
+        "base_branch must match github's configured GITHUB_BASE_BRANCH"
+    print("  github repo_spec/base_branch: ok")
+
+    # --- db helpers: direct reads used by the viewer / diagnostics ---------
+    # These read-only helpers are wired into the viewer and admin routes; the
+    # MCP surface only reaches them indirectly. Pin their shapes directly so
+    # a shape regression is caught at the unit.
+    #
+    # list_recent_activity: one timestamped feed of posts/comments/votes,
+    # newest first, bounded by config.RECENT_ACTIVITY_MAX_SIZE.
+    feed = db.list_recent_activity()
+    assert feed and isinstance(feed, list), "the activity feed must not be empty"
+    assert set(feed[0]) >= {"event_type", "target_id", "actor", "text", "created_at"}, \
+        "every activity row carries the five feed fields"
+    assert feed[0]["created_at"] >= feed[-1]["created_at"], \
+        "the activity feed is newest first"
+    assert db.list_recent_activity(limit=0) == db.list_recent_activity(limit=1), \
+        "limit 0 clamps to the minimum of 1"
+    assert len(db.list_recent_activity(limit=1)) == 1, "limit is honored"
+    assert len(db.list_recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
+        "the feed is bounded by RECENT_ACTIVITY_MAX_SIZE"
+    # find_post_id_for_comment: the reverse link from a comment to its post.
+    some_comment = db.get_post(post_id)["comments"][0]["id"]
+    assert db.find_post_id_for_comment(some_comment) == post_id, \
+        "a comment resolves back to its post"
+    assert db.find_post_id_for_comment(999999) is None, \
+        "an unknown comment resolves to None"
+    # schema_version / integrity_ok: the diagnostics the overview route shows.
+    assert isinstance(db.schema_version(), int), "schema_version is an int"
+    assert db.integrity_ok() is True, "a freshly created test DB passes quick_check"
+    # report_resolution_audit: reads the admin_actions trail for a manual
+    # resolve_report; a report decided by community vote has no such row.
+    audit_victim = db.register_agent("audit-victim")
+    audit_target = db.create_post(audit_victim["token"], "audit target", "body")
+    audited = db.report_content(agents["gamma"]["token"], "post", audit_target["post_id"], "for audit")
+    assert db.report_resolution_audit(audited["report_id"]) is None, \
+        "an undecided report has no manual-resolution row"
+    with db._conn() as conn:
+        db._audit(conn, "maintainer", "resolve_report", "report", audited["report_id"], "manual")
+    trail = db.report_resolution_audit(audited["report_id"])
+    assert trail is not None and trail["admin_user"] == "maintainer", \
+        "a manual resolution is attributed from the audit trail"
+    assert trail["detail"] == "manual", trail
+    print("  db read helpers: ok")
+
     # --- open-PR helper: one batched opener map (server's prs_open count) --
     # linked_pr_openers returns {pr_number: opener} for every linked PR from a
     # single query - the server's _open_pr_count_for reads it instead of a
@@ -3736,6 +3942,41 @@ def main():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    # --- length caps: every write path enforces its knob -------------------
+    # The caps (name/title/body/comment/query/reason) are enforced in db.py
+    # against the live config value, and the check runs BEFORE any write, so
+    # an over-limit payload is rejected without side effects. Test both sides
+    # of each cap: exactly-at-limit passes, one-over is refused with the
+    # 'N characters or fewer' message. (MAX_MODEL_LEN is covered above.)
+    cap = db.register_agent("cap-check")["token"]
+    assert db.register_agent("x" * config.MAX_NAME_LEN)["name"] == "x" * config.MAX_NAME_LEN, \
+        "a name at exactly MAX_NAME_LEN registers"
+    assert "characters or fewer" in expect_error(
+        db.register_agent, "x" * (config.MAX_NAME_LEN + 1)), \
+        "a name one over MAX_NAME_LEN is refused"
+    assert db.create_post(cap, "t" * config.MAX_TITLE_LEN,
+                          "b" * config.MAX_BODY_LEN)["post_id"] > 0, \
+        "a title and body at exactly their caps post"
+    assert "characters or fewer" in expect_error(
+        db.create_post, cap, "t" * (config.MAX_TITLE_LEN + 1), "b"), \
+        "a title one over MAX_TITLE_LEN is refused"
+    assert "characters or fewer" in expect_error(
+        db.create_post, cap, "t", "b" * (config.MAX_BODY_LEN + 1)), \
+        "a body one over MAX_BODY_LEN is refused"
+    assert "characters or fewer" in expect_error(
+        db.create_proposal, cap, "t" * (config.MAX_TITLE_LEN + 1), "b"), \
+        "a proposal title one over MAX_TITLE_LEN is refused"
+    assert "characters or fewer" in expect_error(
+        db.create_comment, cap, post_id, "c" * (config.MAX_COMMENT_LEN + 1)), \
+        "a comment one over MAX_COMMENT_LEN is refused"
+    assert "characters or fewer" in expect_error(
+        db.report_content, cap, "post", post_id, "r" * (config.MAX_COMMENT_LEN + 1)), \
+        "a report reason one over MAX_COMMENT_LEN is refused"
+    assert "characters or fewer" in expect_error(
+        db.search_posts, "q" * (config.MAX_QUERY_LENGTH + 1)), \
+        "a search_posts query one over MAX_QUERY_LENGTH is refused"
+    print("  length caps: ok")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
