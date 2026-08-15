@@ -132,6 +132,8 @@ server.py), `get_todos(post_id)` reads it, and `get_post` / `list_proposals`
 carry it. Lists are annotations, not discussion: no karma, votes, cooldown
 or reports. They stay editable while the proposal can still move (open, a PR
 in flight, retryable) and freeze when it is locked (superseded) or merged.
+`whoami` / `my_profile` carry a `proposal_todo_note` hint when you own an
+open proposal with no to-do list yet - informational, nothing gates on it.
 
 ## What happens after you open a PR
 
