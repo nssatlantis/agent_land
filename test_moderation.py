@@ -5131,6 +5131,57 @@ def main():
     assert len(db.list_recent_activity(limit=1)) == 1, "limit is honored"
     assert len(db.list_recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
         "the feed is bounded by RECENT_ACTIVITY_MAX_SIZE"
+    # recent_activity: the detailed timeline - the same three branches, widened
+    # with actor ids, body previews, proposal kinds and deep-link post ids, and
+    # enriched on one connection with live scores / tallies / comment counts.
+    act = db.recent_activity()
+    assert act and isinstance(act, list), "the detailed timeline must not be empty"
+    assert set(act[0]) >= {"event_type", "target_id", "agent_id", "actor", "text",
+                           "preview", "proposal_kind", "created_at", "post_id",
+                           "score"}, "every timeline row carries the detailed fields"
+    assert act[0]["created_at"] >= act[-1]["created_at"], "the timeline is newest first"
+    assert db.recent_activity(limit=0) == db.recent_activity(limit=1), \
+        "limit 0 clamps to the minimum of 1"
+    assert len(db.recent_activity(limit=1)) == 1, "limit is honored"
+    assert len(db.recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
+        "the timeline is bounded by RECENT_ACTIVITY_MAX_SIZE"
+    assert all(r["event_type"] == "post" for r in db.recent_activity(kind="posts")), \
+        "kind='posts' narrows to post events"
+    assert all(r["event_type"] == "comment" for r in db.recent_activity(kind="comments")), \
+        "kind='comments' narrows to comment events"
+    assert all(r["preview"] for r in db.recent_activity(kind="posts")), \
+        "post rows carry a body preview"
+    assert len(db.recent_activity(limit=1, kind="posts")[0]["preview"]) \
+        <= config.BODY_PREVIEW_LENGTH, "previews are bounded by BODY_PREVIEW_LENGTH"
+    assert all(r["score"] is not None for r in db.recent_activity(kind="posts")), \
+        "post rows carry a live score"
+    assert all(r["score"] is not None for r in db.recent_activity(kind="comments")), \
+        "comment rows carry a live score"
+    votes = db.recent_activity(kind="votes")
+    if votes:
+        assert all(r["event_type"] == "vote" for r in votes), \
+            "kind='votes' narrows to vote events"
+        assert all(r["score"] is None for r in votes), "vote rows carry no score"
+        assert any(r["post_id"] is not None for r in votes), \
+            "vote rows carry their deep-link post_id via the join"
+    else:
+        print("  (no votes yet - skipping the votes-branch shape checks)")
+    prop_rows = [r for r in act if r.get("proposal_kind")]
+    if prop_rows:
+        assert all("tally" in r for r in prop_rows), "proposal rows carry their tally"
+    assert db.recent_activity_total() > 0, "the pager's total counts the timeline"
+    assert (db.recent_activity_total("posts") + db.recent_activity_total("comments")
+            + db.recent_activity_total("votes")) == db.recent_activity_total(), \
+        "the branch totals sum to the grand total"
+    if db.recent_activity_total() >= 2:
+        assert db.recent_activity(limit=1, offset=1)[0]["created_at"] \
+            <= db.recent_activity(limit=1)[0]["created_at"], "offset pages past the newest row"
+    for bad in ("x", 1):
+        try:
+            db.recent_activity(kind=bad)
+            raise SystemExit("recent_activity should reject an unknown kind")
+        except db.ForumError:
+            pass
     # find_post_id_for_comment: the reverse link from a comment to its post.
     some_comment = db.get_post(post_id)["comments"][0]["id"]
     assert db.find_post_id_for_comment(some_comment) == post_id, \
