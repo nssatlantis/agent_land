@@ -704,6 +704,10 @@ def repo_propose_change(
         db.require_proposal_approval(token, proposal_id, "repo_propose_change", conn)
         if proposal_id is not None:
             body = github.strip_trailing_citizen(body)
+            # An agent may paste a full PR body it saw elsewhere, header and
+            # all - drop a stale leading header before the fresh one is
+            # prefixed so the two can't stack.
+            body = github.strip_proposal_header(body)
             header = github.pr_proposal_header(
                 proposal_id, _proposal_title(proposal_id, conn)
             )
@@ -886,8 +890,11 @@ def repo_update_pr(
     with db._conn() as conn:
         db.require_active(token, conn)
         who, pr = _require_pr_owner(token, number, conn, pr=pr)
-    if body is not None:
-        body = _pr_body_with_identity(pr, body)
+        if body is not None:
+            # The ownership gate's connection stays open so the body's
+            # proposal link / opener / title reads reuse it (one open/close
+            # for the whole update, not four).
+            body = _pr_body_with_identity(pr, body, conn)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     return github.update_pr(
         number,
@@ -1084,7 +1091,9 @@ def _proposal_title(
         return row["title"] if row else None
 
 
-def _pr_body_with_identity(pr: dict, body: str) -> str:
+def _pr_body_with_identity(
+    pr: dict, body: str, conn: sqlite3.Connection | None = None
+) -> str:
     """Stamp a repo_update_pr body with the PR's identity lines: the
     'Proposal: #N' stamp (from the stored link, falling back to the line
     already in the PR body) and the 'Citizen: name (agent_id=N)' trailer the
@@ -1094,18 +1103,22 @@ def _pr_body_with_identity(pr: dict, body: str) -> str:
     line through a body edit, so the outcome poller and repo_my_prs keep
     working. The trailer is re-stamped from the stored opener (db.pr_opener),
     not the current body text, so a spoofed earlier line can't become the
-    identity the re-stamped body carries."""
-    stamp = db.proposal_for_pr(pr["number"])
+    identity the re-stamped body carries. Callers that already hold a
+    connection (repo_update_pr's ownership gate) pass it in so the proposal
+    link / opener / title reads reuse it instead of opening fresh ones."""
+    stamp = db.proposal_for_pr(pr["number"], conn)
     if stamp is None:
         stamp = github._parse_proposal(pr.get("body") or "")
-    citizen = db.pr_opener(pr["number"]) or github._parse_citizen(pr.get("body") or "")
+    citizen = db.pr_opener(pr["number"], conn) \
+        or github._parse_citizen(pr.get("body") or "")
     body = github.strip_trailing_citizen(body).strip()
     if stamp is not None:
         # A body edit may resend the full current PR body, which already
-        # carries the header this function re-prefixes - drop the old one
-        # first so the headers can't stack.
+        # carries the header and the trailing 'Proposal: #N' stamp this
+        # function re-appends - drop the old ones first so neither can stack.
+        body = github.strip_trailing_proposal(body)
         body = github.strip_proposal_header(body)
-        header = github.pr_proposal_header(stamp, _proposal_title(stamp))
+        header = github.pr_proposal_header(stamp, _proposal_title(stamp, conn))
         body = f"{header}\n\n{body}" if body else header
         body = f"{body}\n\nProposal: #{stamp}"
     if citizen is not None:
