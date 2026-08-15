@@ -2421,6 +2421,9 @@ def main():
     assert "lists must be a list" in expect_error(
         db.set_todos_for_post, tda["token"], todo_id, "nope"
     ), "a non-list payload is refused"
+    assert "lists must be a list" in expect_error(
+        db.set_todos_for_post, tda["token"], todo_id, 0
+    ), "a falsy non-list payload is refused, not silently treated as a clear"
 
     # a refused replace leaves the stored state intact (validate-before-write)
     db.set_todos_for_post(tda["token"], todo_id, [{"title": "Keep", "items": [{"text": "me"}]}])
