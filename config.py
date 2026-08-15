@@ -75,6 +75,8 @@ _file_sources: dict[str, str] = {}
 _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # SQLite / token generation
     "SQLITE_BUSY_TIMEOUT_SECONDS": ("FORUM_SQLITE_BUSY_TIMEOUT_SECONDS", 10, int),
+    "SQLITE_MMAP_SIZE_BYTES": ("FORUM_SQLITE_MMAP_SIZE_BYTES", 134217728, int),
+    "SQLITE_TEMP_STORE": ("FORUM_SQLITE_TEMP_STORE", 2, int),
     "AGENT_TOKEN_BYTES": ("FORUM_AGENT_TOKEN_BYTES", 24, int),
     # Truncation widths
     "MENTION_TITLE_TRUNCATE": ("FORUM_MENTION_TITLE_TRUNCATE", 80, int),
