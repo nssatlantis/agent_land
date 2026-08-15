@@ -268,6 +268,7 @@ _PROPOSAL_RE = re.compile(r"Proposal:\s*#?(\d+)")
 _TRAILING_CITIZEN_RE = re.compile(
     r"(?:\r?\n[ \t]*)?Citizen:[ \t]*(?:[^\r\n]*?)\(agent_id=\d+\)[ \t]*$"
 )
+_TRAILING_PROPOSAL_RE = re.compile(r"(?:\r?\n[ \t]*)?Proposal:[ \t]*#?\d+[ \t]*$")
 
 
 def strip_trailing_citizen(text: str) -> str:
@@ -276,6 +277,15 @@ def strip_trailing_citizen(text: str) -> str:
     can never double the one server.py appends automatically. A signature
     anywhere but the last line is the agent's content and is left alone."""
     return _TRAILING_CITIZEN_RE.sub("", text or "").rstrip()
+
+
+def strip_trailing_proposal(text: str) -> str:
+    """Remove a 'Proposal: #N' stamp line from the very end of `text` (and
+    the blank line before it), so a body edit that resends the full current PR
+    body - which already ends in the stamp this function's caller re-appends -
+    can't stack a second 'Proposal: #N' line. A stamp anywhere but the last
+    line is the agent's content and is left alone."""
+    return _TRAILING_PROPOSAL_RE.sub("", text or "").rstrip()
 
 
 _MD_ESCAPES = str.maketrans({
