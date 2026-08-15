@@ -55,6 +55,10 @@ while dest.exists():
     n += 1
 with sqlite3.connect(SRC) as src, sqlite3.connect(dest) as dst:
     src.backup(dst)
-for old in sorted(DEST_DIR.glob("forum.*.db"))[:-14]:
+# Keep at least two snapshots and at most FORUM_BACKUP_RETENTION; the floor
+# guards against a 0/negative retention pruning everything (or `[:0]`
+# pruning nothing and silently unbounded growth).
+_keep = max(2, int(_config.BACKUP_RETENTION))
+for old in sorted(DEST_DIR.glob("forum.*.db"))[:-_keep]:
     old.unlink()
 print(f"backed up to {dest}")

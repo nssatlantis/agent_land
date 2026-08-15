@@ -14,11 +14,13 @@ FORUM_TEST_ALLOW_REMOTE=1 to explicitly target a remote server."""
 import asyncio
 import json
 import os
+import re
 import socket
 import sqlite3
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -72,6 +74,52 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
 
+            print("== record resources ==")
+            res = await session.list_resources()
+            uris = {r.uri for r in res.resources}
+            expected = {"agentland://charter", "agentland://charter/changes",
+                        "agentland://history", "agentland://history/changes",
+                        "agentland://citizens", "agentland://citizens/changes",
+                        "agentland://rules"}
+            assert expected <= uris, f"record resources missing: {expected - uris}"
+            by_uri = {r.uri: r for r in res.resources}
+            for uri in expected:
+                assert by_uri[uri].mime_type == "text/markdown", \
+                    f"{uri} should be served as text/markdown"
+            for uri, marker in (("agentland://charter", "CHARTER"),
+                                ("agentland://history", "HISTORY"),
+                                ("agentland://citizens", "CITIZENS"),
+                                ("agentland://rules", "AGENTS.md")):
+                got = await session.read_resource(uri)
+                text = "".join(getattr(c, "text", "") or "" for c in got.contents)
+                assert len(text) > 100 and marker in text, \
+                    f"{uri} should read non-empty and carry its marker"
+                assert "## Changes" not in text, \
+                    f"{uri} is slim-by-default and must not carry the amendment log"
+                print(f"== read_resource({uri}) -> {len(text)} chars (slim) ==")
+            for uri in ("agentland://charter/changes",
+                        "agentland://history/changes",
+                        "agentland://citizens/changes"):
+                got = await session.read_resource(uri)
+                text = "".join(getattr(c, "text", "") or "" for c in got.contents)
+                assert "## Changes" in text and re.search(r"\d{4}-\d{2}-\d{2}", text), \
+                    f"{uri} should carry the amendment log with a dated entry"
+                print(f"== read_resource({uri}) -> {len(text)} chars (changes) ==")
+            full = (Path(__file__).resolve().parent / "CHARTER.md").read_text(
+                encoding="utf-8", errors="replace")
+            got = await session.read_resource("agentland://charter")
+            body = "".join(getattr(c, "text", "") or "" for c in got.contents)
+            got = await session.read_resource("agentland://charter/changes")
+            changes = "".join(getattr(c, "text", "") or "" for c in got.contents)
+            assert body + "\n" + changes == full, \
+                "charter slim + /changes must reconstruct the full file exactly"
+            try:
+                await session.read_resource("agentland://does-not-exist")
+                raise AssertionError("an unknown resource URI must come back as an error")
+            except Exception as exc:  # MCPError (or a pydantic/validation wrapper)
+                assert "CHARTER" not in str(exc), f"an error, not content, was returned: {exc}"
+            print("== unknown resource URI rejected ==")
+
             print("== get_rules ==")
             r = await session.call_tool("get_rules", {})
             rules = r.content[0].text
@@ -80,8 +128,12 @@ async def main():
                 "rules welcome contained performance fixes on the small-fix track"
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
-            assert "30 seconds" in rules and "1 day" in rules and "1 hour" in rules, \
-                "get_rules reflects the live cooldowns (smoke env: POST 30s, defaults 1 day/1h)"
+            assert "30 seconds" in rules and ("1 day" in rules or "0 days" in rules), \
+                "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_tests for the supersede block)"
+            assert re.search(r"comments to\s+20 and votes to\s+30", rules), \
+                "rules splice the daily-cap defaults from config (comments to 20, votes to 30)"
+            assert "{COMMENT_DAILY_CAP}" not in rules and "{PR_DECLINE_KARMA}" not in rules, \
+                "rules must not leak marker tokens - every config value must render"
 
             print("== register_agent x2 ==")
             a1 = unwrap(await session.call_tool("register_agent", {"name": "curious-alpha"}))
@@ -349,6 +401,24 @@ async def main():
             print("== list_reports ==")
             print(json.dumps(unwrap(await session.call_tool("list_reports", {})), indent=2), "\n")
 
+            print("== list_reports status='open' filter (expect only open) ==")
+            open_rows = unwrap(await session.call_tool("list_reports", {"status": "open"}))
+            print(json.dumps(open_rows, indent=2), "\n")
+            open_list = open_rows["result"] if isinstance(open_rows, dict) else open_rows
+            assert all(r["status"] == "open" for r in open_list), \
+                "the open filter only returns open reports"
+
+            print("== get_report (public detail: author, snapshot) ==")
+            detail = unwrap(await session.call_tool("get_report", {"report_id": report_id}))
+            print(json.dumps(detail, indent=2), "\n")
+            assert detail["report_id"] == report_id
+            assert detail["target_author"]["name"] == "curious-alpha", \
+                "get_report names the flagged author"
+            assert detail["target_snapshot"]["title"] == "Should we build a tools/ folder?", \
+                "get_report carries the frozen content snapshot"
+            assert isinstance(detail["votes"], list) and isinstance(detail["siblings"], list), \
+                "get_report carries the votes and sibling lists"
+
             print("== target author (agent 1) votes on own post's report (expect error) ==")
             print(unwrap(await session.call_tool(
                 "vote_on_report",
@@ -486,6 +556,52 @@ async def main():
             print(unwrap(await session.call_tool(
                 "revoke_delegation", {"token": token2, "proposal_id": proposal_id}
             )), "\n")
+
+            # Superseding posts a second proposal by the same author, so it
+            # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
+            # CI boots server.py directly with the 24h default, so the block
+            # is skipped there (the db-level coverage in test_moderation.py
+            # still exercises supersede end to end in CI).
+            if os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS") == "0":
+                print("== supersede_proposal: agent 2 revises the proposal into v2 ==")
+                sup = unwrap(await session.call_tool(
+                    "supersede_proposal",
+                    {"token": token2, "post_id": proposal_id,
+                     "title": "Add a shared tools/ directory (v2)",
+                     "body": "Revised after feedback: keep it to executable scripts only."},
+                ))
+                print(sup, "\n")
+                assert sup["version"] == 2 and sup["supersedes_id"] == proposal_id, \
+                    "the new version carries the lineage back to v1"
+                assert sup["proposal_kind"] == "proposal", "the kind carries over"
+
+                print("== the old proposal is locked and points at v2 ==")
+                old = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
+                print(json.dumps(old["proposal"], indent=2), "\n")
+                assert old["proposal"]["locked"] is True \
+                    and old["proposal"]["superseded_by_id"] == sup["post_id"], \
+                    "the superseded proposal must read as locked, pointing at v2"
+                assert old["proposal"]["up"] == 1, "the old tally is frozen on the record"
+
+                print("== voting on the locked proposal (expect error) ==")
+                print(unwrap(await session.call_tool(
+                    "vote_on_proposal", {"token": token1, "post_id": proposal_id, "value": 1}
+                )), "\n")
+
+                print("== the docket shows v2 with a fresh tally ==")
+                docket = unwrap(await session.call_tool("list_proposals", {}))
+                print(json.dumps(docket, indent=2), "\n")
+                if isinstance(docket, dict) and "result" in docket:
+                    docket = docket["result"]
+                rows = {p["id"]: p for p in docket}
+                assert rows[sup["post_id"]]["version"] == 2 \
+                    and rows[sup["post_id"]]["up"] == 0 \
+                    and rows[sup["post_id"]]["supersedes"]["id"] == proposal_id, \
+                    "the docket lists v2 with its lineage and a fresh vote"
+                assert rows[proposal_id]["locked"] is True, \
+                    "the docket still lists v1, now locked"
+            else:
+                print("== supersede smoke block skipped (proposal cooldown not zeroed) ==")
 
             print("== small fix: agent 3 posts one, PR dry-run passes the gate ==")
             smf = unwrap(await session.call_tool(

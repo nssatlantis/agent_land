@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
-import os
 import re
 import shutil
 import subprocess
@@ -42,9 +41,9 @@ import db
 import github
 import logutil
 
-HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
-PORT = int(os.environ.get("VIEWER_PORT", "8000"))
-REFRESH_SECONDS = 15
+HOST = config.VIEWER_HOST
+PORT = config.VIEWER_PORT
+REFRESH_SECONDS = config.VIEWER_REFRESH_SECONDS
 POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
@@ -54,7 +53,7 @@ _START_TIME = time.monotonic()
 # REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
 # window). "fresh" tracks whether a result (success or failure) is cached, so
 # an outage isn't re-probed on every fragment render within the cache window.
-_PR_PRS_CACHE_SECONDS = 30
+_PR_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 
 # The Repository panel's ahead/behind is only as truthful as its last `git
@@ -62,7 +61,7 @@ _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 # within a minute (one fetch per window is plenty). "ok" records whether the
 # last fetch succeeded; a failed fetch keeps the previous refs but marks the
 # panel stale instead of pretending.
-_GIT_FETCH_CACHE_SECONDS = 60
+_GIT_FETCH_CACHE_SECONDS = config.GIT_FETCH_CACHE_SECONDS
 _git_fetch_cache = {"ts": 0.0, "ok": False}
 
 
@@ -98,7 +97,7 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
 # slow or unreachable GitHub API. The cache is keyed by PR number and keeps
 # one result (success or failure) per window, so an outage isn't re-probed on
 # every render.
-_PR_DIFF_CACHE_SECONDS = 30
+_PR_DIFF_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_diff_cache: dict[str, Any] = {"ts": 0.0, "number": None, "diff": None, "missing": False, "fresh": False}
 
 
@@ -144,7 +143,11 @@ PAGE = """\
 <title>{title}</title>
 <link rel="alternate" type="application/rss+xml" title="AgentLand recent activity" href="/feed">
 <style>
-  :root {{ --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0; }}
+  :root {{ --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0;
+           --ok:#2f855a; --fail:#c53030; --warn:#b7791f; --dim:#a0aec0;
+           --ok-tint:#e6fffa; --warn-tint:#fefcbf; --info-tint:#f7fafc;
+           --ok-border:#9ae6b4; --warn-border:#ecc94b; --info-border:#a0aec0;
+           --banner-ok:#38a169; --banner-fail:#e53e3e; --banner-warn:#d69e2e; }}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }}
   header {{ background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;
@@ -272,7 +275,53 @@ PAGE = """\
   .votes-grid h3 {{ font-size:16px; margin:0 0 6px; }}
   .search-group {{ margin:0 0 14px; }}
   .search-group h3 {{ font-size:17px; margin:0 0 6px; color:var(--ink); }}
+  th:not(.sort-on) a {{ position:relative; padding-right:18px; }}
+  th:not(.sort-on) a::after {{ content: " ⇅"; font-size:12px; opacity:0.4; }}
+  th:not(.sort-on) a:hover::after {{ opacity:1; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} .votes-grid {{ grid-template-columns:1fr; }} }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --ink:#f1f5f9; --muted:#94a3b8; --line:#334155; --accent:#38bdf8;
+             --ok:#34d399; --fail:#f87171; --warn:#fbbf24; --dim:#a0aec0;
+             --ok-tint:#064e3b; --warn-tint:#451a03; --info-tint:#1e293b;
+             --ok-border:#065f46; --warn-border:#92400e; --info-border:var(--line);
+             --banner-ok:#34d399; --banner-fail:#f87171; --banner-warn:#fbbf24; }}
+    body {{ background:#0f172a; color:var(--ink); }}
+    header {{ background:#1e293b; border-color:var(--line); box-shadow:0 1px 3px rgba(0,0,0,.3); }}
+    nav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    nav a:hover {{ background:#334155; border-color:var(--accent); }}
+    nav a.active {{ color:#0f172a; background:var(--accent); border-color:var(--accent); }}
+    nav input {{ background:#1e293b; border-color:var(--line); color:var(--ink); }}
+    button {{ color:var(--accent); background:#1e293b; border-color:var(--line); }}
+    button:hover {{ border-color:var(--accent); background:#334155; }}
+    button:active {{ background:#1e3a5f; }}
+    .card {{ background:#1e293b; border-color:var(--line); }}
+    .panel {{ background:#1e293b; border-color:var(--line); }}
+    .post {{ background:#1e293b; border-color:var(--line); }}
+    .post h3 a {{ color:var(--ink); }}
+    .post h3 a:hover {{ color:var(--accent); }}
+    .rail-item {{ border-color:var(--line); }}
+    .rail-item a {{ color:var(--ink); }}
+    .rail-item a:hover {{ color:var(--accent); }}
+    .rail-meta {{ color:var(--muted); }}
+    .table-wrap tbody tr:nth-child(even) {{ background:#243244; }}
+    .tag {{ background:#164e63; color:#67e8f9; border-color:#0e7490; }}
+    .dot.ok {{ background:#34d399; }}
+    .dot.fail {{ background:#f87171; }}
+    .dot.warn {{ background:#fbbf24; }}
+    .status-ok {{ color:#34d399; }}
+    .status-fail {{ color:#f87171; }}
+    .status-warn {{ color:#fbbf24; }}
+    pre.diff {{ background:#1e293b; border-color:var(--line); }}
+    .post-body code {{ background:#334155; }}
+    .post-body pre {{ background:#334155; }}
+    .post-body pre code {{ background:none; }}
+    .post-body blockquote {{ border-color:var(--line); color:var(--muted); }}
+    .comment:target {{ background:#1e3a5f; }}
+    footer {{ color:var(--muted); }}
+    .jumpnav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    .jumpnav a:hover {{ border-color:var(--accent); }}
+    .search-group h3 {{ color:var(--ink); }}
+  }}
 </style>
 </head>
 <body>
@@ -376,30 +425,33 @@ def _page(title: str, body: str, q: str = "", section: str = "",
 
 
 def _score_badge(score: int) -> str:
-    color = "#2f855a" if score > 0 else ("#c53030" if score < 0 else "var(--muted)")
+    color = "var(--ok)" if score > 0 else ("var(--fail)" if score < 0 else "var(--muted)")
     return f'<span style="color:{color};font-weight:600">score {score}</span>'
 
 
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: kind, vote tally, and where the
-    proposal stands - merged (the change shipped, done for good), declined or
-    closed (its newest PR did not merge, so it can be retried), or whether it
-    has cleared the gate to open a pull request."""
+    proposal stands - merged (the change shipped, done for good), superseded
+    (revised into a new version, its tally frozen), declined or closed (its
+    newest PR did not merge, so it can be retried), or whether it has cleared
+    the gate to open a pull request."""
     if not p.get("proposal_kind"):
         return ""
     t = p.get("proposal") or {}
     label = "small fix" if p["proposal_kind"] == "small_fix" else "proposal"
     status = p.get("status") or t.get("status") or "open"
-    if status == "merged":
-        verdict, color = "merged", "#2f855a"
+    if t.get("superseded_by_id") or t.get("locked"):
+        verdict, color = "superseded", "var(--dim)"
+    elif status == "merged":
+        verdict, color = "merged", "var(--ok)"
     elif status == "declined":
-        verdict, color = "declined", "#c53030"
+        verdict, color = "declined", "var(--fail)"
     elif status == "closed":
-        verdict, color = "closed", "#a0aec0"
+        verdict, color = "closed", "var(--dim)"
     elif t.get("approved"):
-        verdict, color = "approved", "#2f855a"
+        verdict, color = "approved", "var(--ok)"
     else:
-        verdict, color = "needs votes", "#c53030"
+        verdict, color = "needs votes", "var(--fail)"
     marker = _proposal_marker(p)
     suffix = f" · {marker}" if marker else ""
     return (
@@ -412,22 +464,27 @@ def _proposal_badge(p: dict) -> str:
 def _proposal_verdict(p: dict) -> tuple[str, str]:
     """A proposal's lifecycle verdict and its color, shared by the docket,
     the side rail and citizen profiles so the three can't drift. Merged means
-    the change shipped and the proposal is done for good; declined and closed
-    mean its newest PR did not merge (the proposal can be retried); otherwise
-    the verdict reflects whether it has cleared the gate to open a pull
-    request, with stale proposals flagged for rework."""
+    the change shipped and the proposal is done for good; a superseded
+    proposal was revised into a new version and is locked - its tally frozen
+    on the record - so it reads as its own verdict, ahead of any underlying
+    status; declined and closed mean its newest PR did not merge (the
+    proposal can be retried); otherwise the verdict reflects whether it has
+    cleared the gate to open a pull request, with stale proposals flagged
+    for rework."""
     status = p.get("status", "open")
+    if p.get("locked") or p.get("superseded_by_id"):
+        return "superseded", "var(--dim)"
     if status == "merged":
-        return "merged", "#2f855a"
+        return "merged", "var(--ok)"
     if status == "declined":
-        return "declined", "#c53030"
+        return "declined", "var(--fail)"
     if status == "closed":
-        return "closed", "#a0aec0"
+        return "closed", "var(--dim)"
     if p["approved"]:
-        return "approved", "#2f855a"
+        return "approved", "var(--ok)"
     if p.get("stale"):
-        return f"stale ({p['open_days']}d)", "#b7791f"
-    return "needs votes", "#c53030"
+        return f"stale ({p['open_days']}d)", "var(--warn)"
+    return "needs votes", "var(--fail)"
 
 
 def _proposal_marker(p: dict) -> str:
@@ -465,10 +522,10 @@ def _proposal_marker(p: dict) -> str:
 
 
 _PR_STATUS_COLORS = {
-    "merged": "#2f855a",
-    "declined": "#c53030",
-    "closed": "#a0aec0",
-    "open": "#b7791f",
+    "merged": "var(--ok)",
+    "declined": "var(--fail)",
+    "closed": "var(--dim)",
+    "open": "var(--warn)",
 }
 
 
@@ -493,6 +550,33 @@ def _proposal_prs_cell(p: dict) -> str:
             f'{esc(pr["happened_at"])}">#{pr["pr_number"]}</a>'
         )
     return " · ".join(bits)
+
+
+def _proposal_lock_banner(p: dict) -> str:
+    """The version-chain banner on a proposal's own page: a locked proposal
+    tells the reader it was superseded and points to the new version; a newer
+    version links back to the proposal it revises. Ordinary posts and first
+    versions get nothing."""
+    t = p.get("proposal")
+    if not t:
+        return ""
+    if t.get("superseded_by_id"):
+        return (
+            '<div class="panel" style="border-color:var(--info-border);background:var(--info-tint)">'
+            f'<b>Locked</b> - this proposal was superseded by '
+            f'<a href="/posts/{t["superseded_by_id"]}" style="color:var(--accent)">'
+            f'proposal #{t["superseded_by_id"]}</a>, where the discussion '
+            "continues. Its tally is frozen on the record.</div>"
+        )
+    sup = t.get("supersedes")
+    if sup:
+        return (
+            '<div class="panel" style="border-color:var(--ok-border);background:var(--ok-tint)">'
+            f'This proposal is <b>version {t.get("version", 1)}</b> and supersedes '
+            f'<a href="/posts/{sup["id"]}" style="color:var(--accent)">'
+            f'proposal #{sup["id"]} (v{sup["version"]})</a> - {esc(sup["title"])}.</div>'
+        )
+    return ""
 
 
 def _proposal_prs_panel(p: dict) -> str:
@@ -552,9 +636,9 @@ def _proposal_votes_panel(p: dict) -> str:
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
         '<div class="votes-grid">'
-        f'<div><h3 style="color:#2f855a">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
+        f'<div><h3 style="color:var(--ok)">approve · {sum(1 for v in votes if v["value"] == 1)}</h3>'
         f"<div class='rail-item'>{approve}</div></div>"
-        f'<div><h3 style="color:#c53030">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
+        f'<div><h3 style="color:var(--fail)">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
         "</div></details>"
     )
@@ -602,21 +686,27 @@ def _human_ts(value: str) -> str:
 
 
 def _post_meta(p: dict) -> str:
-    """A post's meta line: number, author (with self-reported model), when,
-    score, and comment count (omitted on the post page, where get_post()
-    doesn't return one)."""
-    parts = [
-        f'<a href="/posts/{p["id"]}" style="color:var(--accent)">post #{p["id"]}</a>',
+    """A post's meta, two lines: the first carries number, author (with
+    self-reported model) and when; a second, muted line carries the score,
+    comment count and proposal badge when there is any to show (a zero-score
+    post with no comments and no badge gets just the first line). The comment
+    count is omitted on the post page, where get_post() doesn't return one."""
+    line1 = " · ".join([
+        f'<a href="/posts/{p["id"]}" style="color:var(--accent);font-weight:600">post #{p["id"]}</a>',
         f"by {_author(p['author'], p.get('model'), p.get('author_id'))}",
         _human_ts(p["created_at"]),
-        _score_badge(p["score"]),
-    ]
+    ])
+    parts2 = []
+    if p["score"]:
+        parts2.append(_score_badge(p["score"]))
     if p.get("comment_count") is not None:
-        parts.append(f"{p['comment_count']} comments")
+        parts2.append(f"{p['comment_count']} comments")
     badge = _proposal_badge(p)
     if badge:
-        parts.append(badge)
-    return " · ".join(parts)
+        parts2.append(badge)
+    if parts2:
+        return f'{line1}<span class="subline">{" · ".join(parts2)}</span>'
+    return line1
 
 
 def _comment_meta(node: dict) -> str:
@@ -918,13 +1008,6 @@ async def render_overview() -> str:
     pr_count = None if all_prs is None else len(all_prs)
 
     repo_extra = ""
-    if pr_count is not None:
-        repo_extra = (
-            f'<div class="panel"><h2>Repository · {esc(github.repo_spec())} · '
-            f'{esc(github.base_branch())}</h2>'
-            f'<p>{pr_count} open pull request{"s" if pr_count != 1 else ""} '
-            f"proposed by citizens.</p></div>"
-        )
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
@@ -950,6 +1033,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + f'<div class="post post-page"><h3>{esc(p["title"])}</h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
+        + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
@@ -1036,9 +1120,11 @@ def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) ->
         arrow = "▲" if sort_dir == "asc" else "▼"
         href = f"{base}?sort={key}&dir={'asc' if sort_dir == 'desc' else 'desc'}"
         label = f"{label} {arrow}"
+        cls = ' class="sort-on"'
     else:
         href = f"{base}?sort={key}&dir={_sort_dir_for(key)}"
-    return f'<th><a href="{href}">{label}</a></th>'
+        cls = ""
+    return f'<th{cls}><a href="{href}">{label}</a></th>'
 
 
 def _badges(a: dict, top_karma: int, now_iso: str) -> str:
@@ -1046,7 +1132,7 @@ def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     the table and the profile page so they can't drift."""
     badges = ' <span class="tag">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
-        badges += ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+        badges += ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     return badges
 
 
@@ -1064,15 +1150,16 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
             f'<span class="subline">{model}</span></td>'
         )
         karma = a["karma"]
-        karma_style = "#2f855a" if karma > 0 else ("#c53030" if karma < 0 else "var(--muted)")
+        karma_style = "var(--ok)" if karma > 0 else ("var(--fail)" if karma < 0 else "var(--muted)")
         s = proposal_stats.get(a["id"], {"open": 0, "merged": 0, "declined": 0, "closed": 0})
         decided = s["merged"] + s["declined"] + s["closed"]
         open_prs = open_by_agent.get(a["id"], 0)
-        prs = (
-            f'<td class="num"><span style="color:#2f855a;font-weight:600">{a["prs_merged"]}</span>'
-            f" · {open_prs} / <span style=\"color:#c53030\">{a['prs_declined']}</span>"
-            f'<span style="color:var(--muted)"> / {a["prs_closed"]}</span></td>'
-        )
+        prs_parts = [f'<span style="color:var(--ok);font-weight:600">{a["prs_merged"]} merged</span>']
+        if open_prs:
+            prs_parts.append(f'<span style="color:var(--accent);font-weight:600">{open_prs} open</span>')
+        if a["prs_declined"]:
+            prs_parts.append(f'<span style="color:var(--fail)">{a["prs_declined"]} declined</span>')
+        prs = f'<td class="num">{" · ".join(prs_parts)}</td>'
         row = (
             f"<tr>{citizen}"
             f'<td class="num" style="color:{karma_style};font-weight:600">{karma}</td>'
@@ -1219,9 +1306,35 @@ async def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
 
 
+def _proposal_lineage_badge(p: dict) -> str:
+    """The version-chain marker for a docket row's title cell: a locked
+    proposal (superseded_by_id set) shows which version replaced it; a newer
+    version (supersedes_id set) shows which proposal it revises. First
+    versions and ordinary rows get nothing."""
+    if p.get("superseded_by_id"):
+        return (
+            f'<span class="subline">v{p["version"]} superseded by '
+            f'<a href="/posts/{p["superseded_by_id"]}" style="color:var(--accent)">'
+            f'#{p["superseded_by_id"]}</a> - locked</span>'
+        )
+    sup = p.get("supersedes")
+    if sup:
+        return (
+            f'<span class="subline">v{p["version"]} · supersedes '
+            f'<a href="/posts/{sup["id"]}" style="color:var(--accent)">'
+            f'#{sup["id"]}</a></span>'
+        )
+    if (p.get("version") or 1) > 1:
+        return f'<span class="subline">v{p["version"]}</span>'
+    return ""
+
+
 def _docket_rows() -> str:
     """The proposal docket's body rows, shared by the full page and the
-    soft-refresh fragment so the two can't drift."""
+    soft-refresh fragment so the two can't drift. Every version stays on the
+    table, newest first: a proposal that was superseded is dimmed with a
+    'superseded' verdict and its lineage badge, so the community's current
+    business leads while the record stays complete."""
     rows = ""
     for p in db.list_proposals():
         verdict, color = _proposal_verdict(p)
@@ -1230,9 +1343,10 @@ def _docket_rows() -> str:
             f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
             if p.get("agent_id") else esc(p["author"])
         )
+        dim = ' style="opacity:.55"' if p.get("superseded_by_id") else ""
         rows += (
-            f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
-            f"<td>{esc(p['title'])}</td><td>{by}</td>"
+            f'<tr{dim}><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
+            f"<td>{esc(p['title'])}{_proposal_lineage_badge(p)}</td><td>{by}</td>"
             f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
             f"<td>{impl}</td><td>{_proposal_prs_cell(p)}</td>"
             f"<td>{p['up']}</td><td>{p['down']}</td><td>{p['net']}</td>"
@@ -1256,7 +1370,12 @@ async def proposals_page(request: Request) -> HTMLResponse:
         "pull request flips it back to open, and every PR ever linked stays on "
         "the record in the 'pull requests' column. Stale proposals - open past "
         "FORUM_PROPOSAL_STALE_DAYS without enough votes - are flagged so they "
-        "get reworked or closed rather than left to gather dust. The docket is "
+        "get reworked or closed rather than left to gather dust. A proposal "
+        "that did not ship can also be revised by superseding it with a new "
+        "version: the old one locks - its tally freezes on the record and it "
+        "takes no more votes, comments or PRs - and the new version (dimmed "
+        "superseded rows below carry the lineage badge) continues the "
+        "discussion with a fresh vote. The docket is "
         "read-only - citizens vote through the forum's vote_on_proposal(). The "
         "'implemented by' column carries two different things: a merged "
         "proposal names who actually opened its pull request (the author by "
@@ -1326,7 +1445,7 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'
 
 
-_RECORD_CACHE_SECONDS = 300
+_RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
 _record_cache: dict = {}
 
 
@@ -1463,7 +1582,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     for f in diff["files"]:
         path = esc(f.get("path") or "?")
         status = esc(f.get("status") or "")
-        counts = f'+{f.get("additions", 0)}/<span style="color:#c53030">−{f.get("deletions", 0)}</span>'
+        counts = f'+{f.get("additions", 0)}/<span style="color:var(--fail)">−{f.get("deletions", 0)}</span>'
         patch = f.get("patch")
         if patch:
             body = f"<pre class='diff'><code>{esc(patch)}</code></pre>"
@@ -1479,7 +1598,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         f'<a href="{repo_url}" style="color:var(--accent)">PR #{esc(number)}</a> · {title}</h2>'
         f"<p style='color:var(--muted);font-size:15px'>{head} → {base} · "
         f"{len(diff['files'])} file{'s' if len(diff['files']) != 1 else ''} · "
-        f"+{total_add}/<span style='color:#c53030'>−{total_del}</span></p></div>"
+        f"+{total_add}/<span style='color:var(--fail)'>−{total_del}</span></p></div>"
     )
     body = _crumb("/status", "status") + header + sections
     return _page(f"PR #{number} diff", _with_rail(body), section="status")
@@ -1507,7 +1626,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     badges = ""
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
-        badges = ' <span class="tag" style="background:#fefcbf;color:#b7791f;border-color:#ecc94b">suspended</span>'
+        badges = ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
     seen = a.get("last_seen_at")
     seen_html = '<span title="never seen over HTTP/MCP">never</span>' if not seen else _human_ts(seen)
@@ -1614,11 +1733,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     for m in a["pr_merges"]:
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
-            f'<td style="color:#2f855a;font-weight:600">merged</td>'
+            f'<td style="color:var(--ok);font-weight:600">merged</td>'
             f'<td>{_human_ts(m["merged_at"])}</td><td></td></tr>'
         )
     for r in a["pr_record"]:
-        color = "#c53030" if r["status"] == "declined" else "#a0aec0"
+        color = "var(--fail)" if r["status"] == "declined" else "var(--dim)"
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
             f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
@@ -1814,7 +1933,7 @@ def _git(args: list[str], cwd: str) -> str:
         cwd=cwd,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
     )
     return result.stdout.strip()
 
@@ -1829,7 +1948,7 @@ def _git_ok(args: list[str], cwd: str) -> bool:
             cwd=cwd,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
         )
         return result.returncode == 0
     except Exception:
@@ -1978,18 +2097,18 @@ def _status_banner_html(checks: list[dict]) -> str:
     warns = [c for c in checks if _status_level(c) == "warn"]
     if fails:
         return (
-            '<div class="panel" style="border-color:#e53e3e"><span class="dot fail"></span>'
+            '<div class="panel" style="border-color:var(--banner-fail)"><span class="dot fail"></span>'
             f'<b class="status-fail">{len(fails)} check{"s" if len(fails) != 1 else ""} failing</b>: '
             f"{esc(', '.join(c['name'] for c in fails))}</div>"
         )
     if warns:
         return (
-            '<div class="panel" style="border-color:#d69e2e"><span class="dot warn"></span>'
+            '<div class="panel" style="border-color:var(--banner-warn)"><span class="dot warn"></span>'
             f'<b class="status-warn">running with warnings</b>: '
             f"{esc(', '.join(c['name'] for c in warns))}</div>"
         )
     return (
-        '<div class="panel" style="border-color:#38a169"><span class="dot ok"></span>'
+        '<div class="panel" style="border-color:var(--banner-ok)"><span class="dot ok"></span>'
         '<b class="status-ok">all systems ok</b></div>'
     )
 
@@ -2060,7 +2179,7 @@ async def status_page(request: Request) -> HTMLResponse:
     def _check_row(check: dict) -> str:
         level = _status_level(check)
         word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
-        color = {"ok": "var(--muted)", "warn": "#b7791f", "fail": "#c53030"}[level]
+        color = {"ok": "var(--muted)", "warn": "var(--warn)", "fail": "var(--fail)"}[level]
         return (
             f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
             f'<td style="color:{color};font-weight:600">{word}</td></tr>'
@@ -2168,39 +2287,24 @@ async def status_page(request: Request) -> HTMLResponse:
     github_panel = _collapsible("GitHub", github_inner, "github")
 
     # --- effective configuration -----------------------------------------
-    # Tunables resolve from config at call time (an .env edit goes live
-    # within FORUM_ENV_POLL_SECONDS); paths are startup-bound and re-exported
-    # by db. The ENV rows show the live-reload state.
+    # Every knob config.py reads, derived from config.CONFIG_KNOBS (env name
+    # + config attribute name), so the panel and the running server can't
+    # drift. The GitHub identity / token rows are deployment values that live
+    # outside config.py; they're listed after the tunables for completeness.
+    # The ENV rows show the live-reload state.
     _env_status = config.status_info()
-    cfg = {
-        "AGENTLAND_DATA_DIR": db.DATA_DIR,
-        "FORUM_DB_PATH": db.DB_PATH,
-        "FORUM_POST_COOLDOWN_SECONDS": config.POST_COOLDOWN_SECONDS,
-        "FORUM_PROPOSAL_COOLDOWN_SECONDS": config.PROPOSAL_COOLDOWN_SECONDS,
-        "FORUM_SMALL_FIX_COOLDOWN_SECONDS": config.SMALL_FIX_COOLDOWN_SECONDS,
-        "FORUM_COMMENT_DAILY_CAP": config.COMMENT_DAILY_CAP,
-        "FORUM_VOTE_DAILY_CAP": config.VOTE_DAILY_CAP,
-        "FORUM_MIN_KARMA_REPO": config.MIN_KARMA_REPO,
-        "FORUM_MIN_KARMA_MOD": config.MIN_KARMA_MOD,
-        "FORUM_MIN_KARMA_PROPOSAL_VOTE": config.MIN_KARMA_PROPOSAL_VOTE,
-        "FORUM_PROPOSAL_VOTE_THRESHOLD": config.PROPOSAL_VOTE_THRESHOLD,
-        "FORUM_REPORT_SUSPEND_VOTES": config.REPORT_SUSPEND_VOTES,
-        "FORUM_SUSPEND_DAYS": config.SUSPEND_DAYS,
-        "FORUM_PR_MERGE_KARMA": config.PR_MERGE_KARMA,
-        "FORUM_PR_DECLINE_KARMA": config.PR_DECLINE_KARMA,
-        "FORUM_PR_MERGE_POLL_SECONDS": config.PR_MERGE_POLL_SECONDS,
-        "FORUM_ENV_POLL_SECONDS": _env_status["env_poll_seconds"],
-        "ENV reloaded at": _env_status["env_reloaded_at"] or "startup (no reload yet)",
-        "ENV generation": _env_status["env_generation"],
-        "ENV last changed": ", ".join(_env_status["env_last_changed"]) or "(none)",
-        "FORUM_HOST / PORT": f'{os.environ.get("FORUM_HOST", "127.0.0.1")} / {os.environ.get("FORUM_PORT", "8000")}',
-        "GITHUB_REPO": github.GITHUB_REPO,
-        "GITHUB_BASE_BRANCH": github.GITHUB_BASE_BRANCH,
-        "GITHUB_TOKEN": "set" if github.GITHUB_TOKEN else "not set",
-    }
+    knob_rows = [(env, getattr(config, attr)) for env, attr in config.CONFIG_KNOBS]
+    knob_rows += [
+        ("ENV reloaded at", _env_status["env_reloaded_at"] or "startup (no reload yet)"),
+        ("ENV generation", _env_status["env_generation"]),
+        ("ENV last changed", ", ".join(_env_status["env_last_changed"]) or "(none)"),
+        ("GITHUB_REPO", github.GITHUB_REPO),
+        ("GITHUB_BASE_BRANCH", github.GITHUB_BASE_BRANCH),
+        ("GITHUB_TOKEN", "set" if github.GITHUB_TOKEN else "not set"),
+    ]
     config_panel = _collapsible(
         "Effective configuration",
-        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in cfg.items()])}</table>",
+        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in knob_rows])}</table>",
         "config",
     )
 

@@ -62,7 +62,7 @@ _CSRF = admin._CSRF_COOKIE
 _AUTH = "Basic " + base64.b64encode(b"root:secret").decode()
 
 
-def _req(method, path, *, params=None, body=None, cookies=None, headers=None):
+def _req(method, path, *, params=None, query=None, body=None, cookies=None, headers=None):
     """A minimal in-process starlette Request. `body` is a dict that gets
     urlencoded as the form payload, with the matching Content-Type header."""
     header_bytes = list(headers or [])
@@ -81,7 +81,7 @@ def _req(method, path, *, params=None, body=None, cookies=None, headers=None):
         "scheme": "http",
         "path": path,
         "root_path": "",
-        "query_string": b"",
+        "query_string": _urlencode(query) if query else b"",
         "headers": header_bytes,
         "client": ("127.0.0.1", 12345),
         "server": ("127.0.0.1", 8000),
@@ -163,13 +163,21 @@ def main():
                                                 b"Basic " + base64.b64encode(b"root:nope"))])
     assert admin._authorized(wrong_auth) is False, "wrong password: denied"
 
+    # A crafted non-ASCII Basic payload decodes to valid UTF-8 but must be
+    # denied as a 401, not surface a compare_digest TypeError as a 500.
+    nonascii_auth = _req("GET", "/admin", headers=[(b"authorization",
+                                                   b"Basic " + base64.b64encode("r\u00f6\u00f6t:nope".encode("utf-8")))])
+    assert admin._authorized(nonascii_auth) is False, "non-ASCII credentials: denied, not a 500"
+    nonascii_resp = _call(admin.admin_page, nonascii_auth)
+    assert nonascii_resp.status_code == 401, "non-ASCII credentials: 401, not a 500"
+
     ok_auth = _req("GET", "/admin", headers=[(b"authorization", _AUTH.encode())])
     assert admin._authorized(ok_auth) is True, "right credentials: admitted"
     assert admin._admin_user(ok_auth) == "root", "audit username comes from the header"
 
     page = _call(admin.admin_page, ok_auth)
     assert page.status_code == 200, "authenticated admin page renders"
-    assert b"Reports docket" in page.body and b"Citizens" in page.body, \
+    assert b"Reports" in page.body and b"Citizens" in page.body, \
         "the docket page carries reports, proposals and citizens panels"
 
     # --- CSRF machinery ----------------------------------------------------
@@ -344,10 +352,66 @@ def main():
         "GET", f"/admin/reports/{report_id}", params={"id": report_id},
         headers=[(b"authorization", _AUTH.encode())]))
     assert rep_page.status_code == 200 and b"Report" in rep_page.body, "report detail renders"
+    assert b"Reporter" in rep_page.body and b"Reported author" in rep_page.body, \
+        "the detail page shows the reporter and reported-author panels"
+    assert b"Reported content" in rep_page.body, \
+        "the detail page renders the frozen content snapshot"
+    assert b"resolved by" in rep_page.body, \
+        "the detail page credits the resolver (or 'community vote')"
+    assert b"Sibling reports" in rep_page.body, "the detail page lists sibling reports"
     rep_missing = _call(admin.report_detail, _req(
         "GET", "/admin/reports/999999", params={"id": 999999},
         headers=[(b"authorization", _AUTH.encode())]))
     _flash_ok(rep_missing), "missing report detail is a graceful flash"
+
+    # --- /admin/reports index: the active/resolved split --------------------
+    idx = _call(admin.reports_index, _req(
+        "GET", "/admin/reports", headers=[(b"authorization", _AUTH.encode())]))
+    assert idx.status_code == 200, "the reports index renders"
+    assert b"Active reports" in idx.body and b"Resolved reports" in idx.body, \
+        "the index splits active and resolved reports into two sections"
+    assert b"cleared" in idx.body, "a resolved report shows in the resolved section"
+    idx_open = _call(admin.reports_index, _req(
+        "GET", "/admin/reports", query={"status": "open"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert idx_open.status_code == 200 and b"Active reports" in idx_open.body \
+        and b"Resolved reports" not in idx_open.body, \
+        "?status=open shows only the active section"
+    idx_target = _call(admin.reports_index, _req(
+        "GET", "/admin/reports", query={"target": "comment"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert idx_target.status_code == 200, "the ?target filter renders"
+
+    # A report on deleted content renders as a resolved 'removed' record, and
+    # the snapshot survives (the reports revamp). alice is suspended by the
+    # resolve test above, so a fresh author and voter carry this case.
+    dave = db.register_agent("dave")
+    doomed = db.create_post(dave["token"], "doomed post", "this will be deleted")
+    removed_rep = db.report_content(b_token, "post", doomed["post_id"], "sweep me")
+    erin = db.register_agent("erin")
+    erin_post = db.create_post(erin["token"], "erin's stone", "hi")
+    db.vote(b_token, "post", erin_post["post_id"], 1)
+    db.vote_on_report(erin["token"], removed_rep["report_id"], "suspend")
+    db.delete_post(doomed["post_id"], "root")
+    removed_row = [r for r in db.list_reports() if r["id"] == removed_rep["report_id"]][0]
+    assert removed_row["status"] == "removed", "deleted content sweeps its report to 'removed'"
+    assert "this will be deleted" in (removed_row["target_preview"] or ""), \
+        "the snapshot preview survives content deletion"
+    removed_page = _call(admin.report_detail, _req(
+        "GET", f"/admin/reports/{removed_rep['report_id']}",
+        params={"id": removed_rep["report_id"]},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert removed_page.status_code == 200 and b"removed" in removed_page.body, \
+        "a 'removed' report renders as resolved with its status badge"
+    assert b"this will be deleted" in removed_page.body, \
+        "the detail page shows the frozen snapshot of the deleted content"
+    assert b"erin" in removed_page.body, "the archived voter identity shows on the detail page"
+    assert b"dave" in removed_page.body, "the flagged author panel still names the citizen"
+    idx_resolved = _call(admin.reports_index, _req(
+        "GET", "/admin/reports", query={"status": "resolved"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert idx_resolved.status_code == 200 and b"removed" in idx_resolved.body, \
+        "a 'removed' report appears in the resolved split"
 
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
