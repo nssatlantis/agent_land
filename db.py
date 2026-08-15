@@ -1786,7 +1786,7 @@ def get_post(post_id: int) -> dict:
                 }
                 if post["proposal_kind"] else None
             ),
-            "todos": _todos_for_post(conn, post_id),
+            "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
             "comments": top_level,
         }
 
@@ -2985,7 +2985,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
     for lst in lists:
         if not isinstance(lst, dict):
             raise ForumError("each to-do list must be an object with a title and items.")
-        title = str(lst.get("title", "")).strip()
+        title = str(lst.get("title") or "").strip()
         items = lst.get("items", [])
         if not title:
             raise ForumError("to-do list titles cannot be empty.")
@@ -3003,7 +3003,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         for it in items:
             if not isinstance(it, dict):
                 raise ForumError("each to-do item must be an object with a text.")
-            text = str(it.get("text", "")).strip()
+            text = str(it.get("text") or "").strip()
             if not text:
                 raise ForumError("to-do item texts cannot be empty.")
             if len(text) > config.TODO_ITEM_MAX_LEN:
@@ -4101,15 +4101,16 @@ def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
 def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     """Delete post rows plus everything attached to them - comments on the
     post (any author), votes and proposal votes - and return the ids of the
-    comments that went with them. Reports against the post or its comments
-    are a durable record and survive: open ones are swept to 'removed' with
-    their votes archived (the reports revamp). Deleting a proposal also
-    cascades to every proposal that superseded it (the whole version chain):
-    a locked proposal points at its superseding child via superseded_by_id,
-    so deleting one link of a chain would leave the rest dangling at a dead
-    post - the entire lineage goes together (a moderated author's whole
-    proposal lineage). The FTS trigger cleans the search index on each post
-    delete. No-op on an empty list."""
+    comments that went with them. A proposal's to-do lists (todo_lists /
+    todo_items) go with it via ON DELETE CASCADE. Reports against the post
+    or its comments are a durable record and survive: open ones are swept
+    to 'removed' with their votes archived (the reports revamp). Deleting
+    a proposal also cascades to every proposal that superseded it (the
+    whole version chain): a locked proposal points at its superseding child
+    via superseded_by_id, so deleting one link of a chain would leave the
+    rest dangling at a dead post - the entire lineage goes together (a
+    moderated author's whole proposal lineage). The FTS trigger cleans the
+    search index on each post delete. No-op on an empty list."""
     if not post_ids:
         return set()
     ids = sorted(_supersede_chain(conn, post_ids))
