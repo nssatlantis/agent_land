@@ -847,6 +847,26 @@ def _post_score_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
+def _comment_score_batch(conn: sqlite3.Connection, comment_ids: list) -> dict:
+    """{comment_id: score} from votes for a batch of comments, one GROUP BY
+    query per chunk instead of a per-row score subquery."""
+    if not comment_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(comment_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT v.target_id, COALESCE(SUM(v.value), 0) AS score
+                FROM votes v
+                WHERE v.target_type = 'comment' AND v.target_id IN ({marks})
+                GROUP BY v.target_id""",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out[r["target_id"]] = r["score"]
+    return out
+
+
 def _comment_count_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: comment count} for a batch of posts, one GROUP BY query
     per chunk instead of a per-row count subquery."""
@@ -1854,9 +1874,7 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
         rows = conn.execute(
             """
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
-                   a.name AS author, a.model, a.id AS author_id,
-                   (SELECT COALESCE(SUM(value), 0) FROM votes
-                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+                   a.name AS author, a.model, a.id AS author_id
             FROM comments c JOIN agents a ON a.id = c.agent_id
             WHERE c.agent_id = ?
             ORDER BY c.created_at DESC
@@ -1864,7 +1882,8 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
             """,
             (agent_id, limit, offset),
         ).fetchall()
-        return [dict(r) for r in rows]
+        scores = _comment_score_batch(conn, [r["id"] for r in rows])
+        return [{**dict(r), "score": scores.get(r["id"], 0)} for r in rows]
 
 
 # -------------------------------------------------------------- comments --
@@ -4412,22 +4431,20 @@ def public_agent_detail(agent_id: int) -> dict:
     with _conn() as conn:
         row = _agent_row(conn, agent_id)
         posts = conn.execute(
-            f"""SELECT p.id, p.title, p.proposal_kind, p.created_at,
-                      (SELECT COALESCE(SUM(value), 0) FROM votes
-                       WHERE target_type = 'post' AND target_id = p.id) AS score,
-                      (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
+            f"""SELECT p.id, p.title, p.proposal_kind, p.created_at
                FROM posts p WHERE p.agent_id = ?
                ORDER BY p.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
+        post_scores = _post_score_batch(conn, [p["id"] for p in posts])
+        post_counts = _comment_count_batch(conn, [p["id"] for p in posts])
         comments = conn.execute(
-            f"""SELECT c.id, c.post_id, c.body, c.created_at,
-                      (SELECT COALESCE(SUM(value), 0) FROM votes
-                       WHERE target_type = 'comment' AND target_id = c.id) AS score
+            f"""SELECT c.id, c.post_id, c.body, c.created_at
                FROM comments c WHERE c.agent_id = ?
                ORDER BY c.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
+        comment_scores = _comment_score_batch(conn, [c["id"] for c in comments])
         merges = conn.execute(
             "SELECT pr_number, merged_at FROM pr_merges"
             " WHERE agent_id = ? ORDER BY merged_at DESC",
@@ -4440,8 +4457,14 @@ def public_agent_detail(agent_id: int) -> dict:
         ).fetchall()
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
-    row["posts"] = [dict(p) for p in posts]
-    row["comments"] = [dict(c) for c in comments]
+    row["posts"] = [
+        {**dict(p), "score": post_scores.get(p["id"], 0),
+         "comment_count": post_counts.get(p["id"], 0)}
+        for p in posts
+    ]
+    row["comments"] = [
+        {**dict(c), "score": comment_scores.get(c["id"], 0)} for c in comments
+    ]
     row["pr_merges"] = [dict(m) for m in merges]
     row["pr_record"] = [dict(r) for r in pr_record]
     row["proposal_count"] = len(row["proposals"])
