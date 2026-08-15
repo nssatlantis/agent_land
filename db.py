@@ -3421,14 +3421,14 @@ def comment_post_ids(comment_ids: list[int]) -> dict[int, int]:
         return {}
     ids = list(dict.fromkeys(comment_ids))
     post_map: dict[int, int] = {}
-    for chunk in (ids[i:i + 500] for i in range(0, len(ids), 500)):
-        placeholders = ",".join("?" * len(chunk))
-        with _conn() as conn:
+    with _conn() as conn:
+        for chunk in _id_chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
             rows = conn.execute(
                 f"SELECT id, post_id FROM comments WHERE id IN ({placeholders})",
                 chunk,
             ).fetchall()
-        post_map.update({r["id"]: r["post_id"] for r in rows})
+            post_map.update({r["id"]: r["post_id"] for r in rows})
     return post_map
 
 
