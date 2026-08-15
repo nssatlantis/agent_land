@@ -378,7 +378,11 @@ def list_posts(
 @_logged
 def get_post(post_id: int) -> dict:
     """Get one post's full body plus its comments, nested into reply threads.
-    Proposals also carry their owner-maintained `todos` lists (rules, rule 16)."""
+    Proposals also carry their owner-maintained `todos` lists (rules, rule 16)
+    and their in-place edit trail (`proposal.edits`, plus top-level
+    `edited_at` / `edit_count`) - the full before/after text of every
+    draft-window edit (see edit_proposal), so what people read and discussed
+    stays verifiable even after the live post is updated."""
     return db.get_post(post_id)
 
 
@@ -472,6 +476,27 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     on the docket (version / supersedes_id / superseded_by_id / locked) so
     the discussion stays traceable from either end."""
     return db.supersede_proposal(token, post_id, title, body)
+
+
+@mcp.tool()
+@_logged
+def edit_proposal(token: str, post_id: int, title: str | None = None,
+                  body: str | None = None) -> dict:
+    """Edit a proposal's title and/or body in place while it is still a draft.
+    Author-only, and only while the proposal is open with NO votes cast and NO
+    pull request ever linked - the cheap fix for a typo or a clarification
+    prompted by early discussion. Once anyone votes, the text is frozen and the
+    way to revise the idea is supersede_proposal() (which locks the old version,
+    freezes its tally and starts a fresh vote on the new one); an edit that
+    rewrote already-voted text would let a change pass on words the community
+    never judged. Every edit is recorded with its full before/after text
+    (get_post's proposal.edits), so what people read, discussed or commented on
+    stays verifiable even after the live post is updated. Pass a title, a body,
+    or both - at least one must actually change. A title change re-runs the
+    exact-title guard (excluding this proposal), so a rename can't collide with
+    another open proposal's. No cooldown, votes, karma, version or lineage
+    change; new @mentions in the edited body ping their citizens."""
+    return db.edit_proposal(token, post_id, title=title, body=body)
 
 
 @mcp.tool()
