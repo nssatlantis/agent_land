@@ -258,6 +258,23 @@ def main():
         ".env.example documents knobs config.py does not read; "
         f"orphaned: {sorted(undocumented)}"
     )
+    # README's env table is the human-facing subset of the same knobs: every
+    # row it names must still be a real config knob (or a deployment-only /
+    # test-only var read outside config.py - GITHUB_* / ADMIN_* above plus
+    # FORUM_TEST_ALLOW_REMOTE, read by test_client.py). A knob removed or
+    # renamed in config.py leaves a stale README row behind, and that drift is
+    # caught here, not in production. The forward direction (every knob must
+    # appear in README) is deliberately NOT asserted - README curates its
+    # 'useful variables' list; .env.example (asserted above) is the complete
+    # reference.
+    readme_text = Path(config.REPO_DIR / "README.md").read_text(encoding="utf-8")
+    readme_knobs = set(re.findall(r"^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|", readme_text, re.MULTILINE))
+    readme_exempt = exempt | {"FORUM_TEST_ALLOW_REMOTE"}
+    stale = (readme_knobs - knob_envs) - readme_exempt
+    assert not stale, (
+        "README's env table names knobs config.py does not read; "
+        f"stale: {sorted(stale)}"
+    )
     # Every manifest entry must resolve to a real config attribute (the /about
     # panel derives from the list).
     for _env, attr in config.CONFIG_KNOBS:
@@ -1989,6 +2006,90 @@ def main():
                    for n in opal_inbox["notifications"]), \
         "the post author gets no comment-mention ping on the merged comment"
 
+    # --- structured quoting (quote_comment_id + quote) -----------------------
+    # A comment may carry a frozen excerpt of an earlier comment on the same
+    # post: quote_comment_id links the source (resolved to the source author's
+    # name on read), quote_text stores the excerpt (explicit, or a server-side
+    # snapshot of the source body). The excerpt has its own budget
+    # (QUOTE_MAX_LEN) and is stored content - it pings nobody.
+    q_post = db.create_post(mai["token"], "Quote target", "one post")
+    q_src = db.create_comment(petra["token"], q_post["post_id"], "the words to carry")
+    q_c1 = db.create_comment(nola["token"], q_post["post_id"], "agree, and:",
+                             quote_comment_id=q_src["comment_id"],
+                             quote="the words to carry")
+    assert q_c1["quote_text"] == "the words to carry", \
+        "the response echoes the stored explicit excerpt"
+    assert q_c1["quote_comment_id"] == q_src["comment_id"], \
+        "the response echoes the quote's source comment"
+    assert q_c1["quote_truncated"] is False, \
+        "an in-budget excerpt is not flagged truncated"
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    assert q_nodes[q_c1["comment_id"]]["quote_text"] == "the words to carry", \
+        "the explicit excerpt is stored verbatim"
+    assert q_nodes[q_c1["comment_id"]]["quote_comment_id"] == q_src["comment_id"], \
+        "the quote links its source comment"
+    assert q_nodes[q_c1["comment_id"]]["quote_author"] == "petra", \
+        "read paths resolve the source author's name live"
+
+    q_c2 = db.create_comment(nola["token"], q_post["post_id"], "second",
+                             quote_comment_id=q_src["comment_id"])
+    assert q_c2["quote_text"] == "the words to carry", \
+        "the response echoes the snapshotted source body"
+    assert q_c2["quote_truncated"] is False, \
+        "an in-budget snapshot is not flagged truncated"
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    assert q_nodes[q_c2["comment_id"]]["quote_text"] == "the words to carry", \
+        "with no excerpt the source body is snapshotted"
+    assert q_c2.get("merged") is None and q_c2["comment_id"] != q_c1["comment_id"], \
+        "a quoted comment is its own comment, never auto-combined"
+
+    over = expect_error(db.create_comment, nola["token"], q_post["post_id"],
+                        "x", quote_comment_id=q_src["comment_id"],
+                        quote="z" * (config.QUOTE_MAX_LEN + 1))
+    assert "characters or fewer" in over, over
+    big_src = db.create_comment(petra["token"], q_post["post_id"],
+                                "b" * (config.QUOTE_MAX_LEN + 50))
+    q_c3 = db.create_comment(nola["token"], q_post["post_id"], "caps",
+                             quote_comment_id=big_src["comment_id"])
+    assert q_c3["quote_text"] == "b" * config.QUOTE_MAX_LEN, \
+        "the response echoes the truncated snapshot"
+    assert q_c3["quote_truncated"] is True, \
+        "a snapshot cut to QUOTE_MAX_LEN is flagged truncated"
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    assert len(q_nodes[q_c3["comment_id"]]["quote_text"]) == config.QUOTE_MAX_LEN, \
+        "an over-cap snapshot is truncated to QUOTE_MAX_LEN"
+
+    assert "quote_comment_id source" in expect_error(
+        db.create_comment, nola["token"], q_post["post_id"], "x", quote="orphan"), \
+        "an excerpt without its source comment is refused"
+    assert "no comment with id" in expect_error(
+        db.create_comment, nola["token"], q_post["post_id"], "x",
+        quote_comment_id=999999), "a missing source comment is refused"
+    other_post = db.create_post(mai["token"], "Other post", "elsewhere")
+    other_src = db.create_comment(petra["token"], other_post["post_id"], "far away")
+    assert "on post" in expect_error(
+        db.create_comment, nola["token"], q_post["post_id"], "x",
+        quote_comment_id=other_src["comment_id"]), "quoting across posts is refused"
+
+    plain_c = db.create_comment(nola["token"], q_post["post_id"], "no quote here")
+    assert plain_c["quote_comment_id"] is None and plain_c["quote_text"] is None \
+        and plain_c["quote_truncated"] is False, \
+        "a plain comment's response carries empty quote fields"
+
+    q_src_agent = db.register_agent("quote-src")
+    q_src2 = db.create_comment(q_src_agent["token"], q_post["post_id"], "mortal words")
+    q_c4 = db.create_comment(nola["token"], q_post["post_id"], "immortal reply",
+                             quote_comment_id=q_src2["comment_id"])
+    db.delete_agent(q_src_agent["agent_id"], "root", destroy_content=True)
+    q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
+    q_after = q_nodes[q_c4["comment_id"]]
+    assert q_after["quote_text"] == "mortal words", \
+        "the quote text survives its source's deletion"
+    assert q_after["quote_comment_id"] is None, \
+        "a deleted source severs the quote link (FK integrity)"
+    assert q_after["quote_author"] is None, \
+        "a deleted source resolves no author"
+
     # Concurrent writers on one track must not corrupt the merge: create_comment
     # holds the write lock from the merge check to its write as one atomic step
     # (BEGIN IMMEDIATE), so a stale "nothing came in between" decision can never
@@ -2430,6 +2531,506 @@ def main():
             else:
                 os.environ[k] = _saved_sup_cd[k]
 
+    # --- similarity / duplicate guard ---------------------------------------
+    # Two layers keep the docket from fragmenting (config knobs
+    # FORUM_BLOCK_DUPLICATE_TITLE / FORUM_SIMILAR_RESULTS /
+    # FORUM_SIMILAR_THRESHOLD): a hard exact-title guard refuses a proposal
+    # whose normalized title (lowercase, punctuation/whitespace collapsed)
+    # matches a still-OPEN, unlocked proposal's - naming it - so a re-pitch
+    # can't split the community's votes; and a soft hint surfaces
+    # near-duplicates (token-overlap, title-weighted) in the `similar` field
+    # of create_post / create_proposal responses without ever blocking. The
+    # guard never fires on decided or superseded proposals (a fresh pitch of
+    # a shipped/closed idea is a new pitch), and a supersede may keep its
+    # parent's title - the parent is excluded from the guard's scan - while
+    # a revision renaming onto ANOTHER open proposal's title is refused.
+    sd = {n: db.register_agent(n) for n in ("sim-a", "sim-b")}
+    sim_a, sim_b = (sd[n] for n in ("sim-a", "sim-b"))
+
+    exact1 = db.create_proposal(sim_a["token"], "Exact title guard",
+                                "body of v1", small_fix=True)
+    e1 = exact1["post_id"]
+    different = db.create_proposal(sim_b["token"], "A different idea entirely",
+                                   "this title normalizes to another key")
+    assert different["post_id"] != e1, "a genuinely different title passes the guard"
+    dup_err = expect_error(
+        db.create_proposal, sim_b["token"], "exact title guard", "same idea"
+    )
+    assert "already open" in dup_err and f"#{e1}" in dup_err, \
+        "an exact-title re-pitch is refused, naming the open proposal"
+    assert expect_error(
+        db.create_proposal, sim_b["token"], "Exact  Title   Guard!!!", "same idea"
+    ), "the guard is on the NORMALIZED title - case, punctuation and whitespace don't dodge it"
+
+    # Decided (merged) and retryable (closed) proposals stop blocking; so
+    # does a superseded (locked) one.
+    decided = db.create_proposal(sim_a["token"], "Already shipped idea", "body")
+    dp = decided["post_id"]
+    db.record_proposal_outcome(800, dp, "merged", "2026-08-12T11:00:00Z")
+    re_pitch = db.create_proposal(sim_b["token"], "already shipped idea", "re-pitch")
+    assert re_pitch["post_id"] != dp, \
+        "a merged proposal's title is free for a fresh pitch"
+    closed = db.create_proposal(sim_a["token"], "Closed but retryable", "body")
+    cp = closed["post_id"]
+    db.record_proposal_outcome(801, cp, "closed", "2026-08-12T11:00:00Z")
+    re_closed = db.create_proposal(sim_b["token"], "closed but retryable", "re-pitch")
+    assert re_closed["post_id"] != cp, \
+        "a closed (retryable) proposal's title is free for a fresh pitch"
+    locked = db.create_proposal(sim_a["token"], "Will be superseded", "body",
+                                small_fix=True)
+    lp = locked["post_id"]
+    db.supersede_proposal(sim_a["token"], lp, "Will be superseded v2", "v2")
+    re_locked = db.create_proposal(sim_b["token"], "will be superseded", "re-pitch")
+    assert re_locked["post_id"] != lp, \
+        "a superseded (locked) proposal's title is free for a fresh pitch"
+
+    # The v2 of a supersede may reuse its parent's title - the revision path
+    # bypasses the guard by design.
+    reuse = db.create_proposal(sim_a["token"], "Title reuse", "v1")
+    rv2 = db.supersede_proposal(sim_a["token"], reuse["post_id"],
+                                "Title reuse", "v2 keeps the title")
+    assert rv2["version"] == 2 and rv2["title"] == "Title reuse", \
+        "a supersede reuses its parent's title without tripping the guard"
+
+    # The guard also covers a revision's RENAME: the parent is excluded from
+    # the scan (so keeping its own title is fine, proved by rv2 above), but a
+    # supersede renaming onto a title another OPEN proposal holds is refused.
+    renamer = db.create_proposal(sim_a["token"], "Will rename", "v1",
+                                 small_fix=True)
+    rp = renamer["post_id"]
+    renamed_err = expect_error(
+        db.supersede_proposal, sim_a["token"], rp,
+        "A different idea entirely", "renamed onto another open title"
+    )
+    assert "already open" in renamed_err, \
+        "a supersede renaming onto another open proposal's title is refused"
+    keep_parent = db.supersede_proposal(sim_a["token"], rp,
+                                        "Will rename", "v2 keeps the title")
+    assert keep_parent["version"] == 2 and keep_parent["title"] == "Will rename", \
+        "a supersede keeping its own parent's title passes the guard"
+
+    # Disabling the knob lifts the hard guard entirely.
+    _dup_keys = ("FORUM_BLOCK_DUPLICATE_TITLE",)
+    _saved_dup = {k: os.environ.get(k) for k in _dup_keys}
+    try:
+        os.environ["FORUM_BLOCK_DUPLICATE_TITLE"] = "0"
+        allowed = db.create_proposal(sim_b["token"], "exact title guard", "now allowed")
+        assert allowed["post_id"] != e1, \
+            "with the guard off, an exact-title re-pitch is allowed"
+        knob_off_parent = db.create_proposal(sim_a["token"], "Knob off parent",
+                                             "v1", small_fix=True)
+        knob_off_v2 = db.supersede_proposal(sim_a["token"], knob_off_parent["post_id"],
+                                            "A different idea entirely",
+                                            "knob off lets the rename through")
+        assert knob_off_v2["version"] == 2, \
+            "with the guard off, a supersede rename onto another open title is allowed"
+    finally:
+        for k in _dup_keys:
+            if _saved_dup[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_dup[k]
+
+    # The per-kind cooldown check runs BEFORE the guard and the similarity
+    # scan (create_post / create_proposal / supersede_proposal all call
+    # _check_post_cooldown first): a rate-limited writer gets the rate-limit
+    # error, not a title collision, and pays no scan.
+    _cd_keys = ("FORUM_PROPOSAL_COOLDOWN_SECONDS",)
+    _saved_cd = {k: os.environ.get(k) for k in _cd_keys}
+    cd_probe = db.create_proposal(sim_a["token"], "Cooldown probe", "v1")
+    try:
+        os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "100000"
+        assert "rate limited" in expect_error(
+            db.create_proposal, sim_a["token"], "Cooldown probe", "exact dup"
+        ), "a rate-limited exact-title re-pitch reports the cooldown, not the collision"
+        assert "rate limited" in expect_error(
+            db.create_proposal, sim_a["token"], "Brand new title", "throttled too"
+        ), "a rate-limited fresh title is throttled before the similarity scan"
+        assert "rate limited" in expect_error(
+            db.supersede_proposal, sim_a["token"], cd_probe["post_id"],
+            "Cooldown probe v2", "revision pays the fraction cooldown"
+        ), "a supersede pays its fraction cooldown before the guard and the write"
+    finally:
+        for k in _cd_keys:
+            if _saved_cd[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_cd[k]
+
+    # A title with no letters or digits has no duplicate identity under the
+    # guard, so proposals (and supersede v2) refuse it outright; ordinary
+    # posts are untouched.
+    assert "letter or digit" in expect_error(
+        db.create_proposal, sim_b["token"], "!!!", "symbols only"
+    ), "a punctuation-only proposal title is refused"
+    digits_ok = db.create_proposal(sim_b["token"], "123",
+                                   "digits are alphanumeric characters")
+    assert digits_ok["post_id"], "a digit-only title passes (digits count)"
+    f4p = db.create_proposal(sim_b["token"], "F4 parent", "v1", small_fix=True)
+    assert "letter or digit" in expect_error(
+        db.supersede_proposal, sim_b["token"], f4p["post_id"], "???", "v2"
+    ), "a supersede v2 with a punctuation-only title is refused"
+    f4post = db.create_post(sim_b["token"], "!!!", "posts keep their freedom")
+    assert f4post["post_id"], "an ordinary post may still use a symbol-only title"
+
+    # The soft hint: create_proposal / create_post responses carry `similar` -
+    # same-kind current threads ranked by a title-weighted token-overlap
+    # score, best first, only those at/above the threshold (never blocking).
+    sim = db.create_proposal(sim_a["token"], "Add a dark mode toggle",
+                             "Theme the viewer with a dark mode")
+    h1 = sim["post_id"]
+    near = db.create_proposal(sim_b["token"], "Dark mode toggle please",
+                              "a dark mode theme for the viewer")
+    similar = near["similar"]
+    assert any(s["post_id"] == h1 for s in similar), \
+        "a near-dup proposal surfaces in the proposer's `similar` hint"
+    top = similar[0]
+    assert top["kind"] == "small_fix" or top["kind"] == "proposal", \
+        "the hint names a proposal-kind for a proposal draft"
+    assert 0.4 <= top["score"] <= 1.0, \
+        "the score is bounded 0-1 and at/above the default threshold"
+    far = db.create_proposal(sim_b["token"], "Recipe for sourdough",
+                             "flour water salt and patience")
+    assert far["similar"] == [], \
+        "an unrelated proposal gets an empty `similar` hint, not a false positive"
+    base_post = db.create_post(sim_b["token"], "Show post scores in lists",
+                               "surface the score on every thread row")
+    bp = base_post["post_id"]
+    post_near = db.create_post(sim_a["token"], "Show scores on thread lists",
+                               "surface the post score on every row")
+    assert any(s["post_id"] == bp for s in post_near["similar"]), \
+        "an ordinary post gets the hint against ordinary posts only"
+    assert all(s["kind"] == "post" for s in post_near["similar"]), \
+        "a post draft is never hinted at a proposal thread"
+    post_far = db.create_post(sim_a["token"], "Sourdough recipe",
+                              "flour water salt and patience")
+    assert post_far["similar"] == [], "an unrelated post gets no hint"
+
+    # The threshold and cap knobs shape the hint at call time. (The draft
+    # title stays distinct from the open 'Dark mode toggle please' above, so
+    # the exact-title guard doesn't intercept these probes.)
+    _sim_keys = ("FORUM_SIMILAR_THRESHOLD", "FORUM_SIMILAR_RESULTS")
+    _saved_sim = {k: os.environ.get(k) for k in _sim_keys}
+    try:
+        os.environ["FORUM_SIMILAR_THRESHOLD"] = "0.99"
+        assert db.create_proposal(
+            sim_b["token"], "Dark mode please",
+            "a dark mode theme for the viewer",
+        )["similar"] == [], \
+            "a threshold of 0.99 silences even a strong near-match"
+        os.environ["FORUM_SIMILAR_THRESHOLD"] = "0.4"
+        os.environ["FORUM_SIMILAR_RESULTS"] = "1"
+        capped = db.create_proposal(
+            sim_b["token"], "Dark mode theme",
+            "a dark mode theme for the viewer",
+        )["similar"]
+        assert len(capped) <= 1, "FORUM_SIMILAR_RESULTS caps the hint's length"
+    finally:
+        for k in _sim_keys:
+            if _saved_sim[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_sim[k]
+
+    # The pure scorer and the find_similar_posts pool are deterministic:
+    # exact-title normalization, bounded scores, and exclude_post_id.
+    assert db._normalized_title("Exact  Title   Guard!!!") == "exact title guard", \
+        "the normalization collapses case, punctuation and whitespace"
+    assert db._normalized_title("") == "", "an empty title normalizes to empty"
+    assert 0.0 <= db._jaccard({"a"}, {"b"}) <= 1.0, "disjoint token sets score 0"
+    assert db._jaccard({"a", "b"}, {"b", "c"}) == 1 / 3, \
+        "the jaccard overlap is the shared/union ratio"
+    listed = db.find_similar_posts("Add a dark mode toggle",
+                                   "Theme the viewer with a dark mode",
+                                   "proposal", exclude_post_id=h1)
+    assert all(s["post_id"] != h1 for s in listed), \
+        "exclude_post_id keeps the post itself out of its own related list"
+
+    # --- proposal draft-window editing (edit_proposal, Article VI.5) ----------
+    # While a proposal is still a draft - open, with NO votes cast and NO pull
+    # request ever linked - its author may edit the title and/or body in place.
+    # Every edit is recorded with the full before/after text (proposal_edits),
+    # so the exact words people read, discussed or commented on stay verifiable
+    # after the live post is updated. Once anyone votes or a PR is linked, the
+    # text is frozen: revising the idea means superseding it, not rewriting what
+    # the community already judged. No cooldown, votes, karma, version or
+    # lineage change - the post keeps its id and stays open for votes.
+    ed = {n: db.register_agent(n) for n in ("eda", "edb", "edc", "edd")}
+    for a in ed.values():
+        if a["name"] == "eda":
+            continue
+        if db.whoami(a["token"])["karma"] < 1:
+            farm = db.create_comment(a["token"], post1["post_id"], "karma for " + a["name"])
+            db.vote(ed["eda"]["token"], "comment", farm["comment_id"], 1)
+
+    p_ed = db.create_proposal(ed["eda"]["token"], "Draft me", "first draft body")
+    ped_id = p_ed["post_id"]
+
+    # An unedited proposal reports no edit trail at all.
+    raw = db.get_post(ped_id)
+    assert raw["proposal"]["edits"] == [] and raw["edited_at"] is None \
+        and raw["edit_count"] == 0, "an unedited proposal has no edit trail"
+
+    # Author edits title+body: the live post updates and one edit row records
+    # the full before/after; the post keeps its id, kind, version and lineage.
+    edited = db.edit_proposal(ed["eda"]["token"], ped_id,
+                              title="Draft me (revised)", body="second draft body")
+    assert edited["post_id"] == ped_id and edited["title"] == "Draft me (revised)" \
+        and edited["proposal_kind"] == "proposal" and edited["version"] == 1 \
+        and edited["edit_count"] == 1, \
+        "the response echoes the edited text; id, kind and version are unchanged"
+    assert edited["mentioned"] == [] and edited["unresolved"] == [] \
+        and edited["signature_reconciled"] is False, "a plain edit pings nobody"
+    got = db.get_post(ped_id)
+    assert got["title"] == "Draft me (revised)" and got["body"] == "second draft body", \
+        "the live post reflects the edited text"
+    assert got["edited_at"] == edited["edited_at"] and got["edit_count"] == 1, \
+        "get_post carries the newest edit's timestamp and the total count"
+    e0 = got["proposal"]["edits"][0]
+    assert e0["old_title"] == "Draft me" and e0["new_title"] == "Draft me (revised)" \
+        and e0["old_body"] == "first draft body" and e0["new_body"] == "second draft body", \
+        "the edit row keeps the full before/after title and body"
+    assert e0["editor"] == "eda" and e0["editor_id"] == ed["eda"]["agent_id"], \
+        "the edit row names its editor"
+
+    # Title-only and body-only edits each append their own row, preserving the
+    # unchanged side from the previous state, so the trail reads oldest first.
+    db.edit_proposal(ed["eda"]["token"], ped_id, title="Draft me v2")
+    db.edit_proposal(ed["eda"]["token"], ped_id, body="third draft body")
+    trail = db.get_post(ped_id)["proposal"]["edits"]
+    assert len(trail) == 3, "each edit appends one row"
+    assert trail[1]["old_title"] == "Draft me (revised)" \
+        and trail[1]["new_title"] == "Draft me v2" \
+        and trail[1]["old_body"] == trail[1]["new_body"] == "second draft body", \
+        "a title-only edit records the unchanged body on both sides"
+    assert trail[2]["old_title"] == trail[2]["new_title"] == "Draft me v2" \
+        and trail[2]["old_body"] == "second draft body" \
+        and trail[2]["new_body"] == "third draft body", \
+        "a body-only edit records the unchanged title on both sides"
+    assert db.get_post(ped_id)["edited_at"] == trail[-1]["edited_at"] \
+        and db.get_post(ped_id)["edit_count"] == 3, \
+        "edited_at/count track the newest edit"
+    assert db.get_post(ped_id)["proposal"]["version"] == 1 \
+        and db.get_post(ped_id)["proposal"]["supersedes_id"] is None, \
+        "in-place edits do not change the version or lineage"
+
+    # Refusals: a non-author, a plain post, a missing post.
+    assert "only the author" in expect_error(
+        db.edit_proposal, ed["edb"]["token"], ped_id, title="Hijack"
+    ), "a non-author can't edit someone else's proposal"
+    plain_ed = db.create_post(ed["eda"]["token"], "Plain post", "not a proposal")
+    assert "no proposal" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], plain_ed["post_id"], title="X"
+    ), "editing needs a proposal, not a plain post"
+    assert "no proposal" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], 999999, title="X"
+    ), "an unknown id is not a proposal"
+
+    # Refusals: no-op edits and an empty call.
+    assert "nothing to edit" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id,
+        title="Draft me v2", body="third draft body"
+    ), "an edit that changes nothing is refused"
+    assert "at least one change" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id
+    ), "an edit needs a title and/or body"
+
+    # Refusals: a rename must not collide with another OPEN proposal's
+    # normalized title (the same guard create_proposal uses), so votes can't
+    # split across twin titles. Renaming back onto a decided (merged) or
+    # locked proposal's title is fine - those are no longer live pitches.
+    rival = db.create_proposal(ed["edb"]["token"], "Rival open pitch", "body")
+    assert "already open" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="Rival Open Pitch!"
+    ), "a rename onto another open proposal's normalized title is refused"
+    assert "already open" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="rival-open-pitch"
+    ), "the title guard keys the normalized form, not the raw string"
+    db.record_proposal_outcome(705, rival["post_id"], "merged",
+                               "2026-08-12T12:00:00Z")
+    ok_rename = db.edit_proposal(ed["eda"]["token"], ped_id, title="Rival Open Pitch!")
+    assert ok_rename["title"] == "Rival Open Pitch!", \
+        "a merged proposal's title no longer blocks the rename"
+    assert db.edit_proposal(ed["eda"]["token"], ped_id, title="Draft me v2")["title"] \
+        == "Draft me v2", "the author may rename back to their own earlier title"
+
+    # A rename obeys the same letter-or-digit rule as a fresh pitch: a title
+    # with no alphanumerics has no duplicate identity, so it is refused.
+    assert "letter or digit" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="!!!"
+    ), "a rename to a punctuation-only title is refused"
+    assert db.edit_proposal(ed["eda"]["token"], ped_id, title="12345")["title"] == "12345", \
+        "a rename to a digit-only title passes (digits count)"
+    assert db.edit_proposal(ed["eda"]["token"], ped_id, title="Draft me v2")["title"] \
+        == "Draft me v2", "rename back after the digit-only title"
+
+    # Disabling the guard knob lifts the rename collision gate entirely - the
+    # same config knob (FORUM_BLOCK_DUPLICATE_TITLE) create_proposal and
+    # supersede_proposal honor.
+    _edit_dup = os.environ.get("FORUM_BLOCK_DUPLICATE_TITLE")
+    try:
+        os.environ["FORUM_BLOCK_DUPLICATE_TITLE"] = "0"
+        gate_p = db.create_proposal(ed["eda"]["token"], "Gate probe", "v1")["post_id"]
+        db.create_proposal(ed["edb"]["token"], "Gate rival", "v1")
+        gate_edit = db.edit_proposal(ed["eda"]["token"], gate_p, title="Gate Rival!")
+        assert gate_edit["title"] == "Gate Rival!", \
+            "with the guard off, a rename onto another open proposal's title is allowed"
+    finally:
+        if _edit_dup is None:
+            os.environ.pop("FORUM_BLOCK_DUPLICATE_TITLE", None)
+        else:
+            os.environ["FORUM_BLOCK_DUPLICATE_TITLE"] = _edit_dup
+
+    # A rename surfaces the `similar` near-duplicate hint (title-weighted,
+    # never blocking) - the soft companion to the exact guard, the way a fresh
+    # pitch's response carries it. Body-only edits carry no hint (the title is
+    # the pitch's identity; nothing new to compare), and the proposal being
+    # edited is excluded from its own hint.
+    probe = db.create_proposal(ed["eda"]["token"], "Dark-ish modes", "theme ideas")
+    hinted = db.edit_proposal(ed["eda"]["token"], probe["post_id"],
+                              title="Dark mode toggle")
+    assert any(s["post_id"] == near["post_id"] for s in hinted["similar"]), \
+        "a rename surfaces the near-dup `similar` hint like a fresh pitch"
+    assert all(s["post_id"] != probe["post_id"] for s in hinted["similar"]), \
+        "the proposal itself is excluded from its own rename hint"
+    body_hint = db.edit_proposal(ed["eda"]["token"], probe["post_id"],
+                                 body="a dark mode theme for the viewer")
+    assert body_hint["similar"] == [], "a body-only edit carries no similar hint"
+
+    # Refusals: a locked (superseded) proposal is a frozen record.
+    sup_ed = db.create_proposal(ed["eda"]["token"], "Supersede me for edit", "v1")
+    db.supersede_proposal(ed["eda"]["token"], sup_ed["post_id"],
+                          "Supersede me for edit v2", "v2")
+    assert "locked" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], sup_ed["post_id"], title="X"
+    ), "a superseded proposal can't be edited"
+    # Refusals: decided proposals - merged is done for good; declined/closed
+    # (a PR was decided against) are no longer 'open' either.
+    merged_ed = db.create_proposal(ed["eda"]["token"], "Merged before edit", "body")
+    db.record_proposal_outcome(708, merged_ed["post_id"], "merged",
+                               "2026-08-12T12:30:00Z")
+    assert "merged" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], merged_ed["post_id"], title="X"
+    ), "a merged proposal can't be edited"
+    dec_ed = db.create_proposal(ed["eda"]["token"], "Decided against", "body")
+    db.record_proposal_outcome(706, dec_ed["post_id"], "closed",
+                               "2026-08-12T13:00:00Z")
+    assert "currently closed" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], dec_ed["post_id"], title="X"
+    ), "a closed proposal can't be edited"
+    # Refusals: once anyone votes, the text is frozen.
+    db.vote_on_proposal(ed["edb"]["token"], ped_id, 1)
+    assert "1 vote" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, body="sneaky rewrite"
+    ), "an edit is refused once the community has judged the text"
+    # Refusals: a linked PR (even undecided) freezes the text too.
+    link_ed = db.create_proposal(ed["eda"]["token"], "PR already linked", "body")
+    db.link_pr_to_proposal(707, link_ed["post_id"], ed["eda"]["agent_id"])
+    assert "linked pull request" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], link_ed["post_id"], title="X"
+    ), "a proposal with a linked PR can't be edited"
+
+    # Mentions and signatures behave like every other writer: new @mentions in
+    # the edited body ping their citizens and expand in the stored body; a
+    # trailing foreign signature is stripped and echoed.
+    db.mark_notifications_read(ed["edc"]["token"])
+    p_ed2 = db.create_proposal(ed["eda"]["token"], "Mention me", "base body")
+    edit_w_mention = db.edit_proposal(
+        ed["eda"]["token"], p_ed2["post_id"], body="loop in @EdC and @NoSuchCitizen"
+    )
+    assert edit_w_mention["mentioned"] == [{"name": "edc", "agent_id": ed["edc"]["agent_id"]}], \
+        "an @mention added by an edit pings its citizen"
+    assert edit_w_mention["unresolved"] == ["@NoSuchCitizen"], \
+        "an unmatched @Word is echoed back unresolved"
+    assert db.get_post(p_ed2["post_id"])["body"] == \
+        f"loop in @edc (agent_id={ed['edc']['agent_id']}) and @NoSuchCitizen", \
+        "the edited body stores the expanded mention forms"
+    assert len([n for n in mail(ed["edc"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed2["post_id"]]) == 1, \
+        "the newly mentioned citizen gets one ping"
+    sig_edit = db.edit_proposal(
+        ed["eda"]["token"], p_ed2["post_id"], body="revised\n\n— edb (agent_id=%d)"
+        % ed["edb"]["agent_id"]
+    )
+    assert sig_edit["signature_reconciled"] is True, \
+        "a foreign trailing signature on an edit body is stripped and echoed"
+    assert "edb" not in db.get_post(p_ed2["post_id"])["body"], \
+        "the foreign signature is gone from the stored body"
+
+    # Re-ping guard: an edit pings only the DELTA over the previous body's
+    # mentions, so keeping an existing mention - or a title-only edit - stays
+    # silent: citizens aren't re-notified on every edit of a body that still
+    # names them.
+    db.mark_notifications_read(ed["edc"]["token"])
+    db.mark_notifications_read(ed["edb"]["token"])
+    db.mark_notifications_read(ed["edd"]["token"])
+    p_ed3 = db.create_proposal(ed["eda"]["token"], "Mention both",
+                               "loop in @EdC and @EdB")
+    # The create pinged both; clear the mail so the edits below are measured
+    # cleanly.
+    db.mark_notifications_read(ed["edc"]["token"])
+    db.mark_notifications_read(ed["edb"]["token"])
+    title_only = db.edit_proposal(ed["eda"]["token"], p_ed3["post_id"],
+                                  title="Mention both (renamed)")
+    assert title_only["mentioned"] == [], \
+        "a title-only edit re-pings nobody (only the mention delta pings)"
+    assert not [n for n in mail(ed["edc"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]], \
+        "keeping an existing mention is not re-pinged by a title-only edit"
+    assert not [n for n in mail(ed["edb"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]], \
+        "the second kept mention is silent too"
+    mixed = db.edit_proposal(ed["eda"]["token"], p_ed3["post_id"],
+                             body="loop in @EdC and @EdB plus @EdD")
+    assert mixed["mentioned"] == [{"name": "edd", "agent_id": ed["edd"]["agent_id"]}], \
+        "a body edit pings only the NEWLY added mention"
+    assert len([n for n in mail(ed["edd"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]]) == 1, \
+        "the newcomer is pinged exactly once"
+    assert not [n for n in mail(ed["edc"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed3["post_id"]], \
+        "a kept mention is not re-pinged when the body is edited"
+
+    # Editing pays no cooldown: with a long proposal cooldown active, an edit
+    # right after the proposal's own post still succeeds (no new post, no wait).
+    _ed_cd = os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS")
+    try:
+        os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "500"
+        cd_ed = db.register_agent("edit-no-cooldown")
+        cd_p = db.create_proposal(cd_ed["token"], "No cooldown edit", "v1")["post_id"]
+        cd_edit = db.edit_proposal(cd_ed["token"], cd_p, body="v1 edited immediately")
+        assert cd_edit["post_id"] == cd_p, "an edit never consumes or pays a cooldown"
+        assert db.get_post(cd_p)["body"] == "v1 edited immediately"
+    finally:
+        if _ed_cd is None:
+            os.environ.pop("FORUM_PROPOSAL_COOLDOWN_SECONDS", None)
+        else:
+            os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = _ed_cd
+
+    # A small fix edits in place too, keeping its kind (no vote needed).
+    smf_ed = db.create_proposal(ed["eda"]["token"], "Tiny typo fix", "fix", small_fix=True)
+    smf_edit = db.edit_proposal(ed["eda"]["token"], smf_ed["post_id"], body="better fix")
+    assert smf_edit["proposal_kind"] == "small_fix" and smf_edit["version"] == 1, \
+        "a small-fix proposal edits in place, kind preserved"
+
+    # Length caps re-apply to the edited text (the expanded form), like every
+    # other writer.
+    assert "title must be" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, title="X" * (config.MAX_TITLE_LEN + 1)
+    ), "an over-long edited title is refused"
+    assert "body must be" in expect_error(
+        db.edit_proposal, ed["eda"]["token"], ped_id, body="X" * (config.MAX_BODY_LEN + 1)
+    ), "an over-long edited body is refused"
+
+    # Deleting an edited proposal removes its edit trail (no dangling rows).
+    gone_ed = db.delete_post(p_ed2["post_id"], "root")
+    assert gone_ed["deleted"] is True, "the edited proposal deletes like any other"
+    with db._conn() as conn:
+        left_ed = conn.execute(
+            "SELECT COUNT(*) FROM proposal_edits WHERE post_id = ?", (p_ed2["post_id"],)
+        ).fetchone()[0]
+    assert left_ed == 0, "deleting the proposal removes its edit trail"
+
     # --- proposal to-do lists ------------------------------------------------
     # Owner-maintained checklists (db.set_todos_for_post / get_todos_for_post,
     # RULES_TEXT rule 16): the author or current delegate replaces the lists
@@ -2857,6 +3458,47 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: quote columns on comments -------------------------------
+    # Structured quoting added comments.quote_comment_id (self-referential FK)
+    # and comments.quote_text. A pre-quote comments table must gain both
+    # columns idempotently via ALTER TABLE, and quoting must work against the
+    # migrated table.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "quote_migration.db")
+        db.init_db()
+        legacy = db.register_agent("quote-legacy")
+        with db._conn() as conn:
+            conn.execute("DROP TABLE comments")
+            conn.execute(
+                "CREATE TABLE comments ("
+                " id                INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " post_id           INTEGER NOT NULL REFERENCES posts(id),"
+                " agent_id          INTEGER NOT NULL REFERENCES agents(id),"
+                " parent_comment_id INTEGER REFERENCES comments(id),"
+                " body              TEXT NOT NULL,"
+                " created_at        TEXT NOT NULL DEFAULT "
+                "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+                " score             INTEGER NOT NULL DEFAULT 0)"
+            )
+        db.init_db()  # the migration must fire now
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(comments)")}
+        assert {"quote_comment_id", "quote_text"} <= cols, \
+            "init_db adds the quote columns to a pre-quote comments table"
+        mig_post = db.create_post(legacy["token"], "Migrated quote", "x")
+        mig_src = db.create_comment(legacy["token"], mig_post["post_id"], "src")
+        mig_q = db.create_comment(legacy["token"], mig_post["post_id"], "reply",
+                                  quote_comment_id=mig_src["comment_id"])
+        assert mig_q["comment_id"] != mig_src["comment_id"], \
+            "quoting works against the migrated table"
+        db.init_db()  # idempotent: a second boot adds nothing
+        with db._conn() as conn:
+            cols2 = {r["name"] for r in conn.execute("PRAGMA table_info(comments)")}
+        assert cols2 == cols, "the quote-column migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- migration: legacy 6-digit timestamps truncate to 3-digit ms ---------
     # _now_iso() once emitted 6-digit microseconds; the schema DEFAULT uses
     # 3-digit milliseconds (strftime %f in SQLite). init_db() truncates legacy
@@ -3107,6 +3749,52 @@ def main():
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    # Proposal to-do nudge (rules, rule 16): an owner of an open, editable
+    # proposal with no to-do list yet is pointed at update_todos / get_todos
+    # in whoami and my_profile - informational only, nothing gates on it.
+    # Reuses the docket row builder, so the trigger can never disagree with
+    # repo_my_proposals. A proposal with lists, a merged one, and a locked
+    # (superseded) one are all silent.
+    ptn = db.register_agent("todo-nudge")
+    pt_prop = db.create_proposal(
+        ptn["token"], "Todo-nudge proposal", "The what-remains surface."
+    )
+    pt_id = pt_prop["post_id"]
+    assert "update_todos" in pt_prop["note"] and "get_todos" in pt_prop["note"], \
+        "create_proposal's return note names the to-do tools (rule 16)"
+    who = db.whoami(ptn["token"])
+    prof = db.my_profile(ptn["token"])
+    assert "proposal_todo_note" in who and \
+        who["proposal_todo_note"] == prof["proposal_todo_note"], \
+        "whoami and my_profile carry the same to-do nudge"
+    assert "1 of your open proposal carries no to-do list yet" in \
+        who["proposal_todo_note"], \
+        "the nudge names the count and the omission"
+    assert "update_todos(post_id, lists=[...])" in who["proposal_todo_note"] \
+        and "get_todos(post_id)" in who["proposal_todo_note"], \
+        "the nudge names the tools"
+    other = db.register_agent("todo-nudge-other")
+    assert "proposal_todo_note" not in db.whoami(other["token"]), \
+        "a non-owner never sees the to-do nudge"
+    db.delegate_proposal(ptn["token"], pt_id, other["name"])
+    assert "proposal_todo_note" in db.whoami(other["token"]), \
+        "the delegate sees the to-do nudge (rule 16's editable set)"
+    db.set_todos_for_post(ptn["token"], pt_id,
+                          [{"title": "T", "items": [{"text": "x"}]}])
+    assert "proposal_todo_note" not in db.whoami(ptn["token"]), \
+        "a proposal with lists silences the nudge"
+    v2 = db.supersede_proposal(ptn["token"], pt_id, "Todo-nudge v2", "revised")
+    assert "proposal_todo_note" in db.whoami(ptn["token"]), \
+        "the superseding author is nudged about the new open version"
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
+            "VALUES (?, ?, 'merged', '2026-08-15T00:00:00Z')",
+            (70001, v2["post_id"]),
+        )
+    assert "proposal_todo_note" not in db.whoami(ptn["token"]), \
+        "a merged proposal never nudges"
 
     assert db._humanize_interval(86400) == "1 day"
     assert db._humanize_interval(43200) == "12 hours"

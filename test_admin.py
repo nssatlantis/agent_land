@@ -413,6 +413,25 @@ def main():
     assert idx_resolved.status_code == 200 and b"removed" in idx_resolved.body, \
         "a 'removed' report appears in the resolved split"
 
+    # A report on a quoted comment freezes the quote fields in its snapshot,
+    # so the admin detail page can render what the flagged comment quoted.
+    frank = db.register_agent("frank")
+    f_post = db.create_post(frank["token"], "frank's post", "thread")
+    quote_src = db.create_comment(frank["token"], f_post["post_id"], "original words")
+    quote_comment = db.create_comment(
+        b_token, f_post["post_id"], "quoting", quote_comment_id=quote_src["comment_id"])
+    quoted_rep = db.report_content(b_token, "comment", quote_comment["comment_id"], "flagged")
+    qr = db.get_report(quoted_rep["report_id"])
+    assert qr["target_snapshot"].get("quote_comment_id") == quote_src["comment_id"] \
+        and qr["target_snapshot"].get("quote_text") == "original words", \
+        "a comment report's snapshot carries the quote fields"
+    quoted_page = _call(admin.report_detail, _req(
+        "GET", f"/admin/reports/{quoted_rep['report_id']}",
+        params={"id": quoted_rep["report_id"]},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert quoted_page.status_code == 200 and b"original words" in quoted_page.body, \
+        "the report detail renders the flagged comment's quote"
+
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
     by_action = {}

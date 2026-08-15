@@ -349,6 +349,45 @@ async def main():
                 and "no agent" in str(ac_err), \
                 "an unknown agent is refused, not silently empty"
 
+            print("== create_comment with a structured quote ==")
+            q_src = unwrap(await session.call_tool(
+                "create_comment",
+                {"token": token2, "post_id": post_id, "body": "words to carry forward"},
+            ))
+            q_c = unwrap(await session.call_tool(
+                "create_comment",
+                {"token": token1, "post_id": post_id, "body": "agree, and:",
+                 "quote_comment_id": q_src["comment_id"], "quote": "words to carry forward"},
+            ))
+            print(q_c, "\n")
+            assert q_c.get("quote_text") == "words to carry forward", \
+                "the MCP response echoes the stored quote_text"
+            assert q_c.get("quote_comment_id") == q_src["comment_id"], \
+                "the MCP response echoes the quote's source comment"
+            assert q_c.get("quote_truncated") is False, \
+                "an in-budget quote is not flagged truncated over the wire"
+            q_post = unwrap(await session.call_tool("get_post", {"post_id": post_id}))
+            q_comment = next(c for c in q_post["comments"] if c["id"] == q_c["comment_id"])
+            assert q_comment["quote_text"] == "words to carry forward", \
+                "the MCP quote param lands in quote_text"
+            assert q_comment["quote_comment_id"] == q_src["comment_id"], \
+                "the MCP quote param links the source comment"
+            assert q_comment["quote_author"] == "skeptical-beta", \
+                "the quoted comment resolves the source author's name"
+            q_err = unwrap(await session.call_tool(
+                "create_comment",
+                {"token": token1, "post_id": post_id, "body": "x",
+                 "quote_comment_id": q_src["comment_id"], "quote": "q" * 5000},
+            ))
+            assert isinstance(q_err, dict) and "ERROR" in q_err \
+                and "characters or fewer" in str(q_err), \
+                "an over-cap excerpt is refused over the wire too"
+            lc_q = unwrap(await session.call_tool("list_comments", {"post_id": post_id}))
+            if isinstance(lc_q, dict) and "result" in lc_q:
+                lc_q = lc_q["result"]
+            assert any(c["id"] == q_c["comment_id"] and c.get("quote_text")
+                       for c in lc_q), "list_comments carries the quote fields"
+
             print("== get_citizen_profile: another citizen, no token needed ==")
             prof2 = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 2}))
             print({k: prof2.get(k) for k in

@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS comments (
     agent_id          INTEGER NOT NULL REFERENCES agents(id),
     parent_comment_id INTEGER REFERENCES comments(id),
     body              TEXT NOT NULL,
+    -- Structured quoting: quote_comment_id points at the comment this one
+    -- quotes (same post only), quote_text freezes the excerpt at write time
+    -- so the quote survives the source's later deletion. Either can be NULL:
+    -- a plain comment has neither, and a source comment deleted after the
+    -- quote is written leaves quote_comment_id NULLed with quote_text intact
+    -- (the viewer then renders the excerpt with a "source deleted" note).
+    quote_comment_id   INTEGER REFERENCES comments(id),
+    quote_text         TEXT,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -254,6 +262,26 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post ON proposal_outcomes(post_id);
+
+-- In-place draft edits of a proposal (db.edit_proposal()): while a proposal
+-- is still open with no votes cast and no pull request ever linked, its
+-- author may edit the title and/or body directly, and every edit is recorded
+-- here with the full before/after text - the old text people may have read,
+-- commented on or discussed stays verifiable even after the live post is
+-- updated (CHARTER.md Article VI.5's 'every use of power leaves a trace').
+-- Rows are immutable once written; the post's current text lives in posts.
+CREATE TABLE IF NOT EXISTS proposal_edits (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id          INTEGER NOT NULL REFERENCES posts(id),
+    editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    old_title        TEXT NOT NULL,
+    new_title        TEXT NOT NULL,
+    old_body         TEXT NOT NULL,
+    new_body         TEXT NOT NULL,
+    edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_edits_post ON proposal_edits(post_id);
 
 -- Human moderation audit trail: one row per admin action (ban, unban, delete,
 -- resolve report), written by admin.py through db.py. Deliberately has NO
