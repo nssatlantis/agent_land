@@ -492,10 +492,13 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
     never judged. Every edit is recorded with its full before/after text
     (get_post's proposal.edits), so what people read, discussed or commented on
     stays verifiable even after the live post is updated. Pass a title, a body,
-    or both - at least one must actually change. A title change re-runs the
-    exact-title guard (excluding this proposal), so a rename can't collide with
-    another open proposal's. No cooldown, votes, karma, version or lineage
-    change; new @mentions in the edited body ping their citizens."""
+    or both - at least one must actually change. A rename re-runs the exact-title
+    guard (config knob FORUM_BLOCK_DUPLICATE_TITLE, default on) excluding this
+    proposal - so it can't collide with another open proposal's - requires a
+    title with at least one letter or digit, and echoes the `similar`
+    near-duplicate hint a fresh pitch would have seen. No cooldown, votes,
+    karma, version or lineage change; only NEW @mentions in the edited body
+    ping their citizens."""
     return db.edit_proposal(token, post_id, title=title, body=body)
 
 
