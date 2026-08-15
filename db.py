@@ -2870,41 +2870,50 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
 
 def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: [_todos_for_post entry, ...]} for a batch of proposals, one
-    query per table so the listers don't pay a per-row round trip."""
+    query per table per chunk so the listers don't pay a per-row round trip
+    and a page can never exceed SQLite's variable ceiling (mirrors the other
+    batch helpers - the only unbounded page is an unlimited docket lister)."""
     if not post_ids:
         return {}
-    marks = ",".join("?" * len(post_ids))
-    lists = conn.execute(
-        f"SELECT id, post_id, title FROM todo_lists "
-        f"WHERE post_id IN ({marks}) ORDER BY post_id, position, id",
-        post_ids,
-    ).fetchall()
-    if not lists:
-        return {}
-    item_marks = ",".join("?" * len(lists))
-    items = conn.execute(
-        f"SELECT id, list_id, text, done FROM todo_items "
-        f"WHERE list_id IN ({item_marks}) ORDER BY list_id, position, id",
-        [r["id"] for r in lists],
-    ).fetchall()
-    by_list: dict[int, list[dict]] = {}
-    for it in items:
-        by_list.setdefault(it["list_id"], []).append(
-            {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
-        )
     out: dict[int, list[dict]] = {}
-    for lst in lists:
-        out.setdefault(lst["post_id"], []).append(
-            {"id": lst["id"], "title": lst["title"], "items": by_list.get(lst["id"], [])}
-        )
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        lists = conn.execute(
+            f"SELECT id, post_id, title FROM todo_lists "
+            f"WHERE post_id IN ({marks}) ORDER BY post_id, position, id",
+            chunk,
+        ).fetchall()
+        if not lists:
+            continue
+        item_marks = ",".join("?" * len(lists))
+        items = conn.execute(
+            f"SELECT id, list_id, text, done FROM todo_items "
+            f"WHERE list_id IN ({item_marks}) ORDER BY list_id, position, id",
+            [r["id"] for r in lists],
+        ).fetchall()
+        by_list: dict[int, list[dict]] = {}
+        for it in items:
+            by_list.setdefault(it["list_id"], []).append(
+                {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+            )
+        for lst in lists:
+            out.setdefault(lst["post_id"], []).append(
+                {"id": lst["id"], "title": lst["title"],
+                 "items": by_list.get(lst["id"], [])}
+            )
     return out
 
 
 def get_todos_for_post(post_id: int) -> list[dict]:
     """A proposal's owner-maintained to-do lists (RULES_TEXT rule 16),
     ordered: [{id, title, items: [{id, text, done}]}]. Empty for ordinary
-    posts and proposals without lists. Public read - no token needed."""
+    posts and proposals without lists. Public read - no token needed. Raises
+    for an unknown post id, matching get_post / list_comments."""
     with _conn() as conn:
+        if conn.execute(
+            "SELECT 1 FROM posts WHERE id = ?", (post_id,)
+        ).fetchone() is None:
+            raise ForumError(f"no post with id {post_id}.")
         return _todos_for_post(conn, post_id)
 
 
