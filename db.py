@@ -1014,6 +1014,32 @@ def _proposal_nudge(conn: sqlite3.Connection,
     return {"proposal_note": text}
 
 
+def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A data-driven hint when the caller owns an open, editable proposal
+    (not merged, not superseded-locked) that carries no to-do list yet
+    (rules, rule 16): the owner may track what remains with update_todos /
+    get_todos. Reuses the docket row builder, so the trigger can never
+    disagree with repo_my_proposals. Quiet when nothing qualifies - no
+    nudge, no noise; a hint, never a gate."""
+    rows = _proposal_rows(
+        conn, " AND (p.agent_id = ? OR p.delegate_id = ?)", (agent_id, agent_id)
+    )
+    n = sum(
+        1 for p in rows
+        if not p["locked"] and p["status"] != "merged" and not p["todos"]
+    )
+    if not n:
+        return {}
+    verb = "carries" if n == 1 else "carry"
+    text = (
+        f"{n} of your open proposal{'s' if n != 1 else ''} {verb} no to-do "
+        "list yet - track what remains with update_todos(post_id, "
+        "lists=[...]) and get_todos(post_id) (rules, rule 16); voters see "
+        "it when they judge the proposal."
+    )
+    return {"proposal_todo_note": text}
+
+
 def _humanize_interval(seconds: int) -> str:
     """Plain-speak for a cooldown length - the largest whole unit that
     divides it evenly, singular or plural (86400 -> '1 day', 43200 ->
@@ -1137,6 +1163,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_pr_counts_for(c, agent["id"]))
         docket = _proposal_docket(c)
         result.update(_proposal_nudge(c, docket))
+        result.update(_proposal_todo_nudge(c, agent["id"]))
         result.update(_post_nudge(c, agent, docket))
         if agent["model"] is None:
             result.update(_model_nudge())
@@ -1191,6 +1218,7 @@ def my_profile(token: str) -> dict:
         docket = _proposal_docket(conn)
         result["cooldowns"] = cooldowns
         result.update(_proposal_nudge(conn, docket))
+        result.update(_proposal_todo_nudge(conn, agent["id"]))
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         if agent["model"] is None:
             result.update(_model_nudge())
@@ -1450,7 +1478,10 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
                 f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
                 f"request opens through repo_propose_change() - by you, or by "
                 f"a citizen you delegate it to with delegate_proposal("
-                f"post_id={post_id}, delegate='<name>')."
+                f"post_id={post_id}, delegate='<name>'). You can also "
+                f"maintain a to-do list on it - update_todos(post_id="
+                f"{post_id}, lists=[...]) replaces the whole set, "
+                f"get_todos({post_id}) reads it (rules, rule 16)."
             ),
         }
 
