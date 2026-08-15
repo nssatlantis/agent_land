@@ -680,6 +680,47 @@ async def main():
                 "the fresh header links the real proposal's post"
             assert pb.count("Proposal: #") == 1, \
                 "the plan body carries exactly one Proposal stamp"
+
+            print("== PR plan with a pasted FULL body (header + stamp + citizen) ==")
+            fullpasted = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "fix typo",
+                 "body": "This PR implements proposal #999: Some Old PR\n"
+                         "http://127.0.0.1:8000/posts/999\n\n---\n\n"
+                         "pasted body text\n\nProposal: #999\n\n"
+                         "Citizen: somebody (agent_id=5)",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": smf["post_id"]}
+            ))
+            print(fullpasted, "\n")
+            fpb = fullpasted.get("pr_body") or ""
+            assert fpb.count("Proposal: #") == 1, \
+                "a pasted trailing stamp must not stack a second one"
+            assert fpb.count("This PR implements proposal #") == 1, \
+                "a pasted full body must not stack a second header"
+            assert "posts/999" not in fpb and "agent_id=5" not in fpb, \
+                "the pasted body's own header, stamp and signature are dropped"
+            assert f"/posts/{smf['post_id']}" in fpb, \
+                "the fresh header links the real proposal's post"
+
+            print("== PR plan with a whitespace-led pasted header (expect one) ==")
+            wsl = unwrap(await session.call_tool(
+                "repo_propose_change", {"token": token3, "title": "fix typo",
+                 "body": "\n  This PR implements proposal #999: Some Old PR\n"
+                         "http://127.0.0.1:8000/posts/999\n\n---\n\n"
+                         "pasted body text",
+                 "file_path": "README.md", "content": "# x", "dry_run": True,
+                 "proposal_id": smf["post_id"]}
+            ))
+            print(wsl, "\n")
+            wpb = wsl.get("pr_body") or ""
+            assert wpb.count("This PR implements proposal #") == 1, \
+                "a whitespace-led pasted header must not stack a second one"
+            assert "posts/999" not in wpb, \
+                "the whitespace-led header's own link is dropped with the header"
+            assert f"/posts/{smf['post_id']}" in wpb, \
+                "the fresh header links the real proposal's post"
+            assert wpb.count("Proposal: #") == 1, \
+                "the plan body carries exactly one Proposal stamp"
             manifest = multi.get("content_manifest")
             assert isinstance(manifest, list) and manifest \
                 and manifest[0]["path"] == "docs/one.md" \
