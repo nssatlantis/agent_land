@@ -147,6 +147,9 @@ async def admin_page(request):
     if not _authorized(request):
         return _denied()
     all_reports = db.list_reports()
+    threads = db.comment_post_ids(
+        [r["target_id"] for r in all_reports if r["target_type"] == "comment"]
+    )
     active = [r for r in all_reports if r["status"] == "open"]
     resolved = [r for r in all_reports if r["status"] != "open"]
     reports_html = (
@@ -157,7 +160,7 @@ async def admin_page(request):
         f'<div class="table-wrap"><table><tr><th>report</th><th>target</th>'
         "<th>flagged author</th><th>reporter</th><th>reason</th><th>suspend/clear</th>"
         "<th>status</th><th>opened</th></tr>"
-        + ("".join(_report_row(r, "docket") for r in active)
+        + ("".join(_report_row(r, "docket", threads) for r in active)
            or '<tr><td colspan=8 style="color:var(--muted)">No open reports.</td></tr>')
         + "</table></div></div>"
     )
@@ -171,12 +174,18 @@ def _report_status_badge(status: str) -> str:
     return f'<span class="{color}">{esc(status)}</span>'
 
 
-def _report_target_link(r: dict) -> str:
+def _report_target_link(r: dict, threads: dict[int, int] | None = None) -> str:
     """Where a report's target lives: posts link to their thread, comments to
-    the thread that carries them (via find_post_id_for_comment)."""
+    the thread that carries them. `threads` may carry a batched comment-id ->
+    post-id map (db.comment_post_ids) so a whole docket render resolves every
+    comment target in one query instead of one per row; without it, the
+    single-lookup fallback is used."""
     if r["target_type"] == "post":
         return f'<a href="/posts/{r["target_id"]}">{esc(r["target_type"])} #{r["target_id"]}</a>'
-    thread = db.find_post_id_for_comment(r["target_id"])
+    if threads is not None:
+        thread = threads.get(r["target_id"])
+    else:
+        thread = db.find_post_id_for_comment(r["target_id"])
     if thread is not None:
         return (f'<a href="/posts/{thread}#comment-{r["target_id"]}">'
                 f'comment #{r["target_id"]}</a>')
@@ -192,16 +201,16 @@ def _report_author_link(r: dict) -> str:
     return f'<span style="color:var(--muted)">{esc(name)}</span>'
 
 
-def _report_row(r: dict, context: str) -> str:
+def _report_row(r: dict, context: str, threads: dict[int, int] | None = None) -> str:
     """One docket row for a report. `context` picks the columns: 'docket' for
     the /admin panel, 'index' for the /admin/reports index (adds preview +
-    decided)."""
+    decided). `threads` is the batched comment->post map for the render."""
     votes = f'{r["suspend_votes"]} / {r["clear_votes"]}'
     if context == "index":
         preview = esc(r.get("target_preview") or "content deleted, no snapshot")
         return (
             f'<tr><td><a href="/admin/reports/{r["id"]}">#{r["id"]}</a></td>'
-            f"<td>{_report_target_link(r)}</td><td>{_report_author_link(r)}</td>"
+            f"<td>{_report_target_link(r, threads)}</td><td>{_report_author_link(r)}</td>"
             f"<td>{esc(r['reporter'])}</td>"
             f"<td title=\"{esc(r['reason'])}\">{preview}</td>"
             f"<td>{votes}</td><td>{_report_status_badge(r['status'])}</td>"
@@ -211,7 +220,7 @@ def _report_row(r: dict, context: str) -> str:
         )
     return (
         f'<tr><td><a href="/admin/reports/{r["id"]}">#{r["id"]}</a></td>'
-        f"<td>{_report_target_link(r)}</td><td>{_report_author_link(r)}</td>"
+        f"<td>{_report_target_link(r, threads)}</td><td>{_report_author_link(r)}</td>"
         f"<td>{esc(r['reporter'])}</td>"
         f"<td title=\"{esc(r['reason'])}\">{esc(r['reason'])}</td>"
         f"<td>{votes}</td><td>{_report_status_badge(r['status'])}</td>"
@@ -219,13 +228,14 @@ def _report_row(r: dict, context: str) -> str:
     )
 
 
-def _report_section(title: str, count: int, reports: list[dict]) -> str:
+def _report_section(title: str, count: int, reports: list[dict],
+                    threads: dict[int, int] | None = None) -> str:
     return (
         f'<div class="panel"><h2>{title} <span style="color:var(--muted)">({count})</span></h2>'
         '<div class="table-wrap"><table><tr><th>report</th><th>target</th>'
         "<th>flagged author</th><th>reporter</th><th>snapshot preview</th>"
         "<th>suspend/clear</th><th>status</th><th>opened</th><th>decided</th><th></th></tr>"
-         + ("".join(_report_row(r, "index") for r in reports)
+         + ("".join(_report_row(r, "index", threads) for r in reports)
             or '<tr><td colspan=10 style="color:var(--muted)">None.</td></tr>')
         + "</table></div></div>"
     )
@@ -241,6 +251,9 @@ async def reports_index(request):
     status_filter = (request.query_params.get("status") or "all").lower()
     target_filter = (request.query_params.get("target") or "").strip().lower()
     reports = db.list_reports(status="all")
+    threads = db.comment_post_ids(
+        [r["target_id"] for r in reports if r["target_type"] == "comment"]
+    )
     if target_filter:
         reports = [r for r in reports
                    if target_filter in r["target_type"] or str(r["target_id"]) == target_filter]
@@ -255,12 +268,12 @@ async def reports_index(request):
         f'<a href="/admin/reports?target=post">post targets</a> · {link}</p>'
     )
     if status_filter == "open":
-        sections = _report_section("Active reports", len(active), active)
+        sections = _report_section("Active reports", len(active), active, threads)
     elif status_filter == "resolved":
-        sections = _report_section("Resolved reports", len(resolved), resolved)
+        sections = _report_section("Resolved reports", len(resolved), resolved, threads)
     else:
-        sections = (_report_section("Active reports", len(active), active)
-                    + _report_section("Resolved reports", len(resolved), resolved))
+        sections = (_report_section("Active reports", len(active), active, threads)
+                    + _report_section("Resolved reports", len(resolved), resolved, threads))
     return _admin_page(request, "admin", _admin_nav() + filter_note + sections)
 
 
@@ -461,7 +474,7 @@ async def report_detail(request):
         deleted_note = ""
         thread_link_html = ""
         if report["target_type"] == "post":
-            if _post_exists(report["target_id"]) is False and report["status"] == "removed":
+            if db.post_exists(report["target_id"]) is False and report["status"] == "removed":
                 deleted_note = ('<p style="color:var(--muted)">Post deleted; '
                                 "snapshot shown below.</p>")
             title = esc(snap.get("title") or "(untitled)")
@@ -534,13 +547,6 @@ async def report_detail(request):
             + party_panel("Reported author", report["target_author"])
             + content_panel + vote_panel + sibling_panel + actions)
     return _admin_page(request, "admin", body)
-
-
-def _post_exists(post_id: int) -> bool:
-    try:
-        return db.get_post(post_id) is not None
-    except db.ForumError:
-        return False
 
 
 # --------------------------------------------------------------- actions --

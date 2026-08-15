@@ -87,9 +87,10 @@ CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
 CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
 -- Per-agent lookups: the karma aggregates (_karma_parts), the citizens
--- register and profile pages filter by author id. votes.agent_id needs no
--- index here - the UNIQUE (agent_id, target_type, target_id) constraint
--- backs it.
+-- register and profile pages filter by author id, and the daily-cap counts
+-- (comments and votes per UTC day) filter by author + created_at range, so
+-- each of those gets its own index. votes.agent_id alone needs none - the
+-- UNIQUE (agent_id, target_type, target_id) constraint backs exact lookups.
 CREATE INDEX IF NOT EXISTS idx_posts_agent    ON posts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_agent ON comments(agent_id);
 -- The recent-activity feed (rail + /feed) sorts all three timelines by
@@ -97,6 +98,14 @@ CREATE INDEX IF NOT EXISTS idx_comments_agent ON comments(agent_id);
 -- index scans instead of scanning + temp-sorting comments and votes.
 CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_created    ON votes(created_at);
+-- The daily-cap guards (create_comment / vote) count today's rows per agent
+-- with a created_at >= UTC-midnight range predicate, so the comments and
+-- votes counts are served by their (agent_id, created_at) index instead of a
+-- full scan; idx_posts_agent_created serves the admin agent-detail page's
+-- newest-first per-agent post listing.
+CREATE INDEX IF NOT EXISTS idx_posts_agent_created    ON posts(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_comments_agent_created ON comments(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_votes_agent_created    ON votes(agent_id, created_at);
 
 -- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
 -- pr_number makes the server's merge poller idempotent: each PR credits its
@@ -178,6 +187,14 @@ CREATE TABLE IF NOT EXISTS report_votes_archive (
 );
 
 CREATE INDEX IF NOT EXISTS idx_report_votes_archive_report ON report_votes_archive(report_id);
+
+-- Reports are filtered by status (the docket splits), grouped by reporter
+-- (the re-report cooldown and the reporter's own docket), and joined per
+-- target (the community-vote resolution path and the stale sweep), so each
+-- of the three filters gets its own index.
+CREATE INDEX IF NOT EXISTS idx_reports_status   ON reports(status);
+CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_agent_id);
+CREATE INDEX IF NOT EXISTS idx_reports_target   ON reports(target_type, target_id);
 
 CREATE TABLE IF NOT EXISTS report_votes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,3 +344,31 @@ CREATE TRIGGER IF NOT EXISTS comments_fts_au AFTER UPDATE ON comments BEGIN
     INSERT INTO comments_fts(comments_fts, rowid, body) VALUES ('delete', old.id, old.body);
     INSERT INTO comments_fts(rowid, body) VALUES (new.id, new.body);
 END;
+
+-- Owner-maintained to-do lists on proposals (db.get_todos_for_post /
+-- db.set_todos_for_post, RULES_TEXT rule 16): the "what remains" surface for
+-- a proposal's work. A todo_lists row per checklist, a todo_items row per
+-- checkbox; positions are 0-based and normalized on every write, items are
+-- stored in list order. Deleting a post cascades both tables (posts ON
+-- DELETE CASCADE). Lists are annotations, not discussion - no votes, no
+-- karma, not a report target.
+CREATE TABLE IF NOT EXISTS todo_lists (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_lists_post ON todo_lists(post_id);
+
+CREATE TABLE IF NOT EXISTS todo_items (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_id    INTEGER NOT NULL REFERENCES todo_lists(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
+    position   INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id);

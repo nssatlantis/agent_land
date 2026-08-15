@@ -569,6 +569,45 @@ async def main():
                 "revoke_delegation", {"token": token2, "proposal_id": proposal_id}
             )), "\n")
 
+            print("== to-do lists on a proposal: update_todos + get_todos + get_post ==")
+            upd = unwrap(await session.call_tool(
+                "update_todos",
+                {"token": token2, "post_id": proposal_id, "lists": [
+                    {"title": "PR review", "items": [
+                        {"text": "gate green", "done": True},
+                        {"text": "tests pass"},
+                    ]},
+                ]},
+            ))
+            print(upd, "\n")
+            if isinstance(upd, dict) and "result" in upd:
+                upd = upd["result"]
+            assert len(upd) == 1 and upd[0]["title"] == "PR review" \
+                and upd[0]["items"][0]["done"] is True, \
+                "update_todos echoes the stored lists"
+            got_todos = unwrap(await session.call_tool("get_todos", {"post_id": proposal_id}))
+            if isinstance(got_todos, dict) and "result" in got_todos:
+                got_todos = got_todos["result"]
+            assert got_todos == upd, "get_todos returns the stored state"
+            todo_detail = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
+            assert todo_detail["todos"] == upd, "get_post carries the to-do lists"
+            rules_now = (await session.call_tool("get_rules", {})).content[0].text
+            assert "to-do lists" in rules_now, \
+                "the rules mention the to-do lists surface (rule 16)"
+
+            print("== update_todos from a non-owner (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "update_todos", {"token": token1, "post_id": proposal_id, "lists": []}
+            )), "\n")
+            print("== update_todos on an unknown post (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "update_todos", {"token": token2, "post_id": 999999, "lists": []}
+            )), "\n")
+            print("== get_todos on an unknown post (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "get_todos", {"post_id": 999999}
+            )), "\n")
+
             # Superseding posts a second proposal by the same author, so it
             # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
             # CI boots server.py directly with the 24h default, so the block

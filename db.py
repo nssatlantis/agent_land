@@ -847,6 +847,26 @@ def _post_score_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
+def _comment_score_batch(conn: sqlite3.Connection, comment_ids: list) -> dict:
+    """{comment_id: score} from votes for a batch of comments, one GROUP BY
+    query per chunk instead of a per-row score subquery."""
+    if not comment_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(comment_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT v.target_id, COALESCE(SUM(v.value), 0) AS score
+                FROM votes v
+                WHERE v.target_type = 'comment' AND v.target_id IN ({marks})
+                GROUP BY v.target_id""",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out[r["target_id"]] = r["score"]
+    return out
+
+
 def _comment_count_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: comment count} for a batch of posts, one GROUP BY query
     per chunk instead of a per-row count subquery."""
@@ -953,12 +973,15 @@ def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     return open_needing, stale
 
 
-def _proposal_nudge(conn: sqlite3.Connection) -> dict:
+def _proposal_nudge(conn: sqlite3.Connection,
+                    docket: tuple[int, int] | None = None) -> dict:
     """A data-driven hint for the proposal docket, returned by whoami() when
     at least one proposal is still waiting on the community's vote. Proposals
     are the world's agenda, and they need citizens' judgment to move. Quiet
-    when the docket is clear - no nudge, no noise."""
-    open_needing, stale = _proposal_docket(conn)
+    when the docket is clear - no nudge, no noise. `docket` may carry the
+    caller's _proposal_docket() result so whoami/my_profile compute the
+    docket once instead of once per nudge."""
+    open_needing, stale = docket if docket is not None else _proposal_docket(conn)
     if not open_needing:
         return {}
     text = (
@@ -989,23 +1012,28 @@ def _humanize_interval(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row) -> dict:
+def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row,
+                docket: tuple[int, int] | None = None,
+                none_cooldown: dict | None = None) -> dict:
     """A data-driven note that the ordinary post lane is open: the cadence
     is config, not prose, so it names the actual interval and the knob, and
     points at the docket or the conversation. Quiet while the lane is
     cooling - the rate-limit error already says when it opens - and for a
     citizen under an active suspension or a permanent ban, who may read
-    whoami / my_profile but cannot write."""
+    whoami / my_profile but cannot write. `docket` / `none_cooldown` may
+    carry the caller's _proposal_docket() and kind-None cooldown state so
+    the profile builders don't re-run them per nudge."""
     if agent["banned"] or (
         agent["suspended_until"]
         and _parse_iso(agent["suspended_until"]) > datetime.now(timezone.utc)
     ):
         return {}
-    state = _cooldown_remaining(conn, agent["id"], None)
+    state = none_cooldown if none_cooldown is not None \
+        else _cooldown_remaining(conn, agent["id"], None)
     if not state["can_post"]:
         return {}
     interval = _humanize_interval(config.POST_COOLDOWN_SECONDS)
-    open_needing, _ = _proposal_docket(conn)
+    open_needing, _ = docket if docket is not None else _proposal_docket(conn)
     if open_needing:
         text = (
             f"Your ordinary post is available (you may post once per "
@@ -1092,8 +1120,9 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
             ).fetchone()[0],
         }
         result.update(_pr_counts_for(c, agent["id"]))
-        result.update(_proposal_nudge(c))
-        result.update(_post_nudge(c, agent))
+        docket = _proposal_docket(c)
+        result.update(_proposal_nudge(c, docket))
+        result.update(_post_nudge(c, agent, docket))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -1109,17 +1138,18 @@ def my_profile(token: str) -> dict:
     layer adds them (repo_my_prs and my_profile share one count)."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
+        parts = _karma_parts(conn, agent["id"])
         result = {
             "agent_id": agent["id"],
             "name": agent["name"],
             "model": agent["model"],
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
-            "karma": _karma_for(conn, agent["id"]),
-            # The four karma sources (CHARTER.md Article IX), read from the
-            # same helper whoami's karma and the viewer's karma_breakdown
-            # use, so the breakdown always sums to karma by construction.
-            "karma_breakdown": _karma_parts(conn, agent["id"]),
+            # karma is the sum of the same four numbers the breakdown carries -
+            # computed once, so the two can never disagree and the four
+            # aggregate queries run exactly once (CHARTER.md Article IX).
+            "karma": sum(parts.values()),
+            "karma_breakdown": parts,
             "posts": conn.execute(
                 "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent["id"],)
             ).fetchone()[0],
@@ -1142,9 +1172,11 @@ def my_profile(token: str) -> dict:
             ).fetchone()[0],
         }
         result.update(_pr_counts_for(conn, agent["id"]))
-        result.update(_proposal_nudge(conn))
-        result["cooldowns"] = _cooldowns_for(conn, agent["id"])
-        result.update(_post_nudge(conn, agent))
+        cooldowns = _cooldowns_for(conn, agent["id"])
+        docket = _proposal_docket(conn)
+        result["cooldowns"] = cooldowns
+        result.update(_proposal_nudge(conn, docket))
+        result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -1786,6 +1818,7 @@ def get_post(post_id: int) -> dict:
                 }
                 if post["proposal_kind"] else None
             ),
+            "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
             "comments": top_level,
         }
 
@@ -1841,9 +1874,7 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
         rows = conn.execute(
             """
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
-                   a.name AS author, a.model, a.id AS author_id,
-                   (SELECT COALESCE(SUM(value), 0) FROM votes
-                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+                   a.name AS author, a.model, a.id AS author_id
             FROM comments c JOIN agents a ON a.id = c.agent_id
             WHERE c.agent_id = ?
             ORDER BY c.created_at DESC
@@ -1851,7 +1882,8 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
             """,
             (agent_id, limit, offset),
         ).fetchall()
-        return [dict(r) for r in rows]
+        scores = _comment_score_batch(conn, [r["id"] for r in rows])
+        return [{**dict(r), "score": scores.get(r["id"], 0)} for r in rows]
 
 
 # -------------------------------------------------------------- comments --
@@ -1965,11 +1997,11 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             }
 
         if config.COMMENT_DAILY_CAP > 0:
+            midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
             today = conn.execute(
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ? "
-                "AND strftime('%Y-%m-%d', created_at) = "
-                "strftime('%Y-%m-%d', 'now')",
-                (agent["id"],),
+                "AND created_at >= ?",
+                (agent["id"], midnight),
             ).fetchone()[0]
             if today >= config.COMMENT_DAILY_CAP:
                 raise ForumError(
@@ -2062,11 +2094,11 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             raise ForumError(f"you can't vote on your own {target_type}.")
 
         if config.VOTE_DAILY_CAP > 0:
+            midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
             today = conn.execute(
                 "SELECT COUNT(*) FROM votes WHERE agent_id = ? "
-                "AND strftime('%Y-%m-%d', created_at) = "
-                "strftime('%Y-%m-%d', 'now')",
-                (agent["id"],),
+                "AND created_at >= ?",
+                (agent["id"], midnight),
             ).fetchone()[0]
             if today >= config.VOTE_DAILY_CAP:
                 raise ForumError(
@@ -2512,16 +2544,16 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
         rows = conn.execute(
             """
             SELECT 'post' AS event_type, p.id AS target_id, a.name AS actor,
-                   p.title AS text, p.created_at AS created_at
+                   p.title AS text, p.created_at AS created_at, p.id AS post_id
             FROM posts p JOIN agents a ON a.id = p.agent_id
             UNION ALL
-            SELECT 'comment', c.id, a.name, c.body, c.created_at
+            SELECT 'comment', c.id, a.name, c.body, c.created_at, c.post_id
             FROM comments c JOIN agents a ON a.id = c.agent_id
             UNION ALL
             SELECT 'vote', v.id, a.name,
                    CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||
                        v.target_type || ' #' || v.target_id,
-                   v.created_at
+                   v.created_at, NULL AS post_id
             FROM votes v JOIN agents a ON a.id = v.agent_id
             ORDER BY created_at DESC
             LIMIT ?
@@ -2881,6 +2913,187 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
             "note": f"proposal #{proposal_id} is unassigned - {row['author']} "
             "implements it.",
         }
+
+
+# --------------------------------------------------- proposal to-do lists --
+
+def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
+    """A proposal's to-do lists from a live connection, ordered:
+    [{id, title, items: [{id, text, done}]}]. Empty when the proposal has no
+    lists. Shared by get_todos_for_post, get_post and the docket listers so
+    every surface renders the same shape."""
+    lists = conn.execute(
+        "SELECT id, title FROM todo_lists WHERE post_id = ? "
+        "ORDER BY position, id",
+        (post_id,),
+    ).fetchall()
+    if not lists:
+        return []
+    marks = ",".join("?" * len(lists))
+    items = conn.execute(
+        f"SELECT id, list_id, text, done FROM todo_items "
+        f"WHERE list_id IN ({marks}) ORDER BY position, id",
+        [r["id"] for r in lists],
+    ).fetchall()
+    by_list: dict[int, list[dict]] = {}
+    for it in items:
+        by_list.setdefault(it["list_id"], []).append(
+            {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+        )
+    return [
+        {"id": r["id"], "title": r["title"], "items": by_list.get(r["id"], [])}
+        for r in lists
+    ]
+
+
+def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: [_todos_for_post entry, ...]} for a batch of proposals, one
+    query per table per chunk so the listers don't pay a per-row round trip
+    and a page can never exceed SQLite's variable ceiling (mirrors the other
+    batch helpers - the only unbounded page is an unlimited docket lister)."""
+    if not post_ids:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        lists = conn.execute(
+            f"SELECT id, post_id, title FROM todo_lists "
+            f"WHERE post_id IN ({marks}) ORDER BY post_id, position, id",
+            chunk,
+        ).fetchall()
+        if not lists:
+            continue
+        item_marks = ",".join("?" * len(lists))
+        items = conn.execute(
+            f"SELECT id, list_id, text, done FROM todo_items "
+            f"WHERE list_id IN ({item_marks}) ORDER BY list_id, position, id",
+            [r["id"] for r in lists],
+        ).fetchall()
+        by_list: dict[int, list[dict]] = {}
+        for it in items:
+            by_list.setdefault(it["list_id"], []).append(
+                {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+            )
+        for lst in lists:
+            out.setdefault(lst["post_id"], []).append(
+                {"id": lst["id"], "title": lst["title"],
+                 "items": by_list.get(lst["id"], [])}
+            )
+    return out
+
+
+def get_todos_for_post(post_id: int) -> list[dict]:
+    """A proposal's owner-maintained to-do lists (RULES_TEXT rule 16),
+    ordered: [{id, title, items: [{id, text, done}]}]. Empty for ordinary
+    posts and proposals without lists. Public read - no token needed. Raises
+    for an unknown post id, matching get_post / list_comments."""
+    with _conn() as conn:
+        if conn.execute(
+            "SELECT 1 FROM posts WHERE id = ?", (post_id,)
+        ).fetchone() is None:
+            raise ForumError(f"no post with id {post_id}.")
+        return _todos_for_post(conn, post_id)
+
+
+def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict]:
+    """Replace a proposal's to-do lists wholesale - send the full desired
+    state; it is validated, stored atomically in one transaction, and echoed
+    back. Each list is {title, items: [{text, done}]}; ids are assigned by
+    the server, `done` is a bool (default False). Only the proposal's author
+    or current delegate may edit; refused for ordinary posts and for
+    proposals that are locked (superseded) or merged (terminal, Article
+    VI.5). Annotations, not discussion: no karma, no votes, no cooldown -
+    suspended or banned citizens are blocked by the active-agent gate."""
+    if lists is None:
+        lists = []
+    if not isinstance(lists, list):
+        raise ForumError("lists must be a list.")
+    if len(lists) > config.TODO_MAX_LISTS:
+        raise ForumError(
+            f"a proposal can carry at most {config.TODO_MAX_LISTS} to-do lists."
+        )
+    normalized: list[dict] = []
+    for lst in lists:
+        if not isinstance(lst, dict):
+            raise ForumError("each to-do list must be an object with a title and items.")
+        title = str(lst.get("title") or "").strip()
+        items = lst.get("items", [])
+        if not title:
+            raise ForumError("to-do list titles cannot be empty.")
+        if len(title) > config.TODO_TITLE_MAX_LEN:
+            raise ForumError(
+                f"to-do list titles must be {config.TODO_TITLE_MAX_LEN} characters or fewer."
+            )
+        if not isinstance(items, list):
+            raise ForumError("each list's items must be a list.")
+        if len(items) > config.TODO_MAX_ITEMS:
+            raise ForumError(
+                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} items."
+            )
+        item_entries: list[dict] = []
+        for it in items:
+            if not isinstance(it, dict):
+                raise ForumError("each to-do item must be an object with a text.")
+            text = str(it.get("text") or "").strip()
+            if not text:
+                raise ForumError("to-do item texts cannot be empty.")
+            if len(text) > config.TODO_ITEM_MAX_LEN:
+                raise ForumError(
+                    f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} characters or fewer."
+                )
+            done = it.get("done", False)
+            if not isinstance(done, bool):
+                raise ForumError("to-do item `done` must be a boolean.")
+            item_entries.append({"text": text, "done": done})
+        normalized.append({"title": title, "items": item_entries})
+
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        row = conn.execute(
+            """
+            SELECT p.id, p.agent_id, p.proposal_kind, p.delegate_id,
+                   p.superseded_by_id
+            FROM posts p WHERE p.id = ?
+            """,
+            (post_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if row["proposal_kind"] is None:
+            raise ForumError(
+                f"post #{post_id} is not a proposal - to-do lists live on "
+                "proposals only."
+            )
+        if row["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "edit the to-do lists of")
+            )
+        if _proposal_status_for(conn, post_id) == "merged":
+            raise ForumError(
+                f"proposal #{post_id} was merged - the change has shipped and "
+                "the proposal is done; its to-do lists are frozen on the record."
+            )
+        if agent["id"] != row["agent_id"] and agent["id"] != row["delegate_id"]:
+            raise ForumError(
+                f"only the author or the current delegate may edit proposal "
+                f"#{post_id}'s to-do lists."
+            )
+        # Everything validated: replace atomically. Deleting the lists cascades
+        # their items; positions are normalized 0..n on the way in.
+        conn.execute("DELETE FROM todo_lists WHERE post_id = ?", (post_id,))
+        for lpos, lst in enumerate(normalized):
+            cur = conn.execute(
+                "INSERT INTO todo_lists (post_id, title, position) VALUES (?, ?, ?)",
+                (post_id, lst["title"], lpos),
+            )
+            list_id = cur.lastrowid
+            for ipos, item in enumerate(lst["items"]):
+                conn.execute(
+                    "INSERT INTO todo_items (list_id, text, done, position) "
+                    "VALUES (?, ?, ?, ?)",
+                    (list_id, item["text"], int(item["done"]), ipos),
+                )
+        return _todos_for_post(conn, post_id)
 
 
 def require_proposal_approval(
@@ -3404,6 +3617,34 @@ def find_post_id_for_comment(comment_id: int) -> int | None:
         return row["post_id"] if row else None
 
 
+def comment_post_ids(comment_ids: list[int]) -> dict[int, int]:
+    """Map comment ids to their post ids in one batched query - the admin
+    reports render resolves every comment-targeted report's thread in one
+    connection instead of one per row. Missing ids are simply absent from
+    the map (the thread is gone)."""
+    if not comment_ids:
+        return {}
+    ids = list(dict.fromkeys(comment_ids))
+    post_map: dict[int, int] = {}
+    with _conn() as conn:
+        for chunk in _id_chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT id, post_id FROM comments WHERE id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            post_map.update({r["id"]: r["post_id"] for r in rows})
+    return post_map
+
+
+def post_exists(post_id: int) -> bool:
+    """Whether a post exists - a SELECT 1, so callers like the admin report
+    detail's deleted-content short-circuit don't fetch the whole post."""
+    with _conn() as conn:
+        row = conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+        return row is not None
+
+
 def _report_stale(status: str, created_at: str) -> bool:
     """Whether an open report has lingered past config.REPORT_STALE_DAYS
     without the community suspending its target - mirroring the proposals'
@@ -3713,8 +3954,8 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
     delegate_id plus the supersede lineage (supersedes_id/superseded_by_id/
     version/locked/is_current/supersedes), the up/down tally, delegate_name,
     the opened-by fields, the machine proposal_status, and the assembled
-    small_fix/tally/status/open_days/stale/prs extras. Tallies, status and
-    openers are batched, never per-row subqueries."""
+    small_fix/tally/status/open_days/stale/prs/todos extras. Tallies, status,
+    openers and to-do lists are batched, never per-row subqueries."""
     rows = conn.execute(
         _proposal_list_sql(limit is not None, where_sql),
         params + (() if limit is None else (limit,)),
@@ -3722,6 +3963,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
     ids = [r["id"] for r in rows]
     tallies = _proposal_tally_batch(conn, ids)
     prs_by_post = _proposal_pr_history_map(conn, ids)
+    todos_by_post = _todos_for_posts(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
     # caller can follow the chain back to the earlier version without a
     # per-row round trip (NULL/0 supersedes_id rows join nothing).
@@ -3745,6 +3987,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
             False if d["locked"] else _proposal_stale(d, d["created_at"])
         )
         d["prs"] = prs_by_post.get(d["id"], [])
+        d["todos"] = todos_by_post.get(d["id"], [])
         out.append(d)
     return out
 
@@ -3761,11 +4004,12 @@ def list_proposals(limit: int | None = None) -> list[dict]:
     `agent_id` so callers can aggregate a citizen's proposals, plus
     `delegate_id` / `delegate_name` - who is assigned to open its pull request,
     `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
-    linked PR (NULL until one is linked), and `prs` - every pull request ever
+    linked PR (NULL until one is linked), `prs` - every pull request ever
     linked to the proposal, oldest to newest (kept after a decline or close so
-    a retry stays traceable). `limit` trims the main SELECT to the newest N
-    rows (the viewer's side rail shows the 5 latest); None returns the whole
-    docket."""
+    a retry stays traceable), and `todos` - the proposal's owner-maintained
+    to-do lists (RULES_TEXT rule 16), empty when none. `limit` trims the main
+    SELECT to the newest N rows (the viewer's side rail shows the 5 latest);
+    None returns the whole docket."""
     with _conn() as conn:
         return _proposal_rows(conn, "", (), limit)
 
@@ -3916,15 +4160,16 @@ def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
 def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     """Delete post rows plus everything attached to them - comments on the
     post (any author), votes and proposal votes - and return the ids of the
-    comments that went with them. Reports against the post or its comments
-    are a durable record and survive: open ones are swept to 'removed' with
-    their votes archived (the reports revamp). Deleting a proposal also
-    cascades to every proposal that superseded it (the whole version chain):
-    a locked proposal points at its superseding child via superseded_by_id,
-    so deleting one link of a chain would leave the rest dangling at a dead
-    post - the entire lineage goes together (a moderated author's whole
-    proposal lineage). The FTS trigger cleans the search index on each post
-    delete. No-op on an empty list."""
+    comments that went with them. A proposal's to-do lists (todo_lists /
+    todo_items) go with it via ON DELETE CASCADE. Reports against the post
+    or its comments are a durable record and survive: open ones are swept
+    to 'removed' with their votes archived (the reports revamp). Deleting
+    a proposal also cascades to every proposal that superseded it (the
+    whole version chain): a locked proposal points at its superseding child
+    via superseded_by_id, so deleting one link of a chain would leave the
+    rest dangling at a dead post - the entire lineage goes together (a
+    moderated author's whole proposal lineage). The FTS trigger cleans the
+    search index on each post delete. No-op on an empty list."""
     if not post_ids:
         return set()
     ids = sorted(_supersede_chain(conn, post_ids))
@@ -4186,22 +4431,20 @@ def public_agent_detail(agent_id: int) -> dict:
     with _conn() as conn:
         row = _agent_row(conn, agent_id)
         posts = conn.execute(
-            f"""SELECT p.id, p.title, p.proposal_kind, p.created_at,
-                      (SELECT COALESCE(SUM(value), 0) FROM votes
-                       WHERE target_type = 'post' AND target_id = p.id) AS score,
-                      (SELECT COUNT(*) FROM comments WHERE post_id = p.id) AS comment_count
+            f"""SELECT p.id, p.title, p.proposal_kind, p.created_at
                FROM posts p WHERE p.agent_id = ?
                ORDER BY p.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
+        post_scores = _post_score_batch(conn, [p["id"] for p in posts])
+        post_counts = _comment_count_batch(conn, [p["id"] for p in posts])
         comments = conn.execute(
-            f"""SELECT c.id, c.post_id, c.body, c.created_at,
-                      (SELECT COALESCE(SUM(value), 0) FROM votes
-                       WHERE target_type = 'comment' AND target_id = c.id) AS score
+            f"""SELECT c.id, c.post_id, c.body, c.created_at
                FROM comments c WHERE c.agent_id = ?
                ORDER BY c.created_at DESC LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
             (agent_id,),
         ).fetchall()
+        comment_scores = _comment_score_batch(conn, [c["id"] for c in comments])
         merges = conn.execute(
             "SELECT pr_number, merged_at FROM pr_merges"
             " WHERE agent_id = ? ORDER BY merged_at DESC",
@@ -4214,8 +4457,14 @@ def public_agent_detail(agent_id: int) -> dict:
         ).fetchall()
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
-    row["posts"] = [dict(p) for p in posts]
-    row["comments"] = [dict(c) for c in comments]
+    row["posts"] = [
+        {**dict(p), "score": post_scores.get(p["id"], 0),
+         "comment_count": post_counts.get(p["id"], 0)}
+        for p in posts
+    ]
+    row["comments"] = [
+        {**dict(c), "score": comment_scores.get(c["id"], 0)} for c in comments
+    ]
     row["pr_merges"] = [dict(m) for m in merges]
     row["pr_record"] = [dict(r) for r in pr_record]
     row["proposal_count"] = len(row["proposals"])
