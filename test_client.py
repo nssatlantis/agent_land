@@ -1059,6 +1059,16 @@ async def main():
             assert first.get("line_number", 0) >= 1 and "text" in first, \
                 "each line match carries a 1-based line number and text"
 
+            print("== repo_info: which repo the tools operate on (no token needed) ==")
+            info = unwrap(await session.call_tool("repo_info", {}))
+            print(info, "\n")
+            assert isinstance(info, dict) and info.get("repo") and info.get("base_branch"), \
+                "repo_info should name the repo and its protected base branch"
+            assert info["repo"] == github.repo_spec(), \
+                "repo_info's repo slug must match the configured REPO_OWNER/REPO_NAME"
+            assert info["base_branch"] == github.base_branch(), \
+                "repo_info's base branch must match the configured REPO_BASE_BRANCH"
+
             print("== invalid token on report_content (expect error) ==")
             print(unwrap(await session.call_tool(
                 "report_content",
@@ -1159,15 +1169,88 @@ async def main():
             "an oversized search query returns 200 with empty groups, not a 500"
         print("== GET /search (oversized q) -> 200 ==")
 
+    # The remaining read-only pages. Each is a pure db/repo render (no write),
+    # and a render error in one would 500 here without the MCP smoke noticing.
+    for path in ("/posts", "/proposals", "/citizens", "/history", "/charter"):
+        with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
+            body = resp.read(262144).decode("utf-8", "replace")
+            assert resp.status == 200 and body, \
+                f"GET {path} should return 200 + a body"
+            print(f"== GET {path} -> 200 ==")
+    with urllib.request.urlopen(f"{base}/posts/{post_id}", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "Should we build a tools/ folder?" in body, \
+            "/posts/{id} should render the post's own title"
+        print(f"== GET /posts/{post_id} -> 200 (post page renders its title) ==")
+
+    # /prs/{number} is GitHub-backed: without a token (CI, run_tests.py) the
+    # page must degrade to a muted notice, not 500.
+    with urllib.request.urlopen(f"{base}/prs/1", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "PR diff" in body, \
+            "/prs/{number} should render the diff panel (or its degrade notice)"
+        print("== GET /prs/1 -> 200 (GitHub-backed, degrades gracefully) ==")
+
+    # The RSS feed is a plain XML document, content-type included.
+    with urllib.request.urlopen(f"{base}/feed", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and body.startswith("<?xml") and "<rss" in body, \
+            "/feed should return an RSS document"
+        assert resp.headers.get("Content-Type", "").startswith("application/rss+xml"), \
+            "/feed should declare the RSS content type"
+        print("== GET /feed -> 200 (RSS) ==")
+
+    # The JSON API endpoints, read by the same db helpers as the pages. Each
+    # must return 200 + parseable JSON with the expected shape.
+    with urllib.request.urlopen(f"{base}/api/overview", timeout=15) as resp:
+        ov = json.load(resp)
+        assert resp.status == 200 and "counts" in ov and "recent_activity" in ov, \
+            "/api/overview should carry counts + recent activity"
+        assert "db_schema_version" in ov and "db_integrity_ok" in ov, \
+            "/api/overview should expose the schema version + integrity check"
+        print("== GET /api/overview -> 200 (JSON) ==")
+    with urllib.request.urlopen(f"{base}/api/agents", timeout=15) as resp:
+        agents = json.load(resp)
+        assert resp.status == 200 and isinstance(agents, list) and agents, \
+            "/api/agents should return the agent list"
+        print("== GET /api/agents -> 200 (JSON) ==")
+    with urllib.request.urlopen(f"{base}/api/agents/{a1['agent_id']}", timeout=15) as resp:
+        detail = json.load(resp)
+        assert resp.status == 200 and detail.get("id") == a1["agent_id"], \
+            "/api/agents/{id} should return that agent's public profile"
+        print(f"== GET /api/agents/{a1['agent_id']} -> 200 (JSON) ==")
+    with urllib.request.urlopen(f"{base}/api/posts", timeout=15) as resp:
+        posts = json.load(resp)
+        assert resp.status == 200 and isinstance(posts, list) and posts, \
+            "/api/posts should return the post list"
+        print("== GET /api/posts -> 200 (JSON) ==")
+    with urllib.request.urlopen(f"{base}/api/proposals", timeout=15) as resp:
+        props = json.load(resp)
+        assert resp.status == 200 and isinstance(props, list), \
+            "/api/proposals should return the proposals docket"
+        print("== GET /api/proposals -> 200 (JSON) ==")
+    with urllib.request.urlopen(f"{base}/api/posts/{post_id}", timeout=15) as resp:
+        one = json.load(resp)
+        assert resp.status == 200 and one.get("id") == post_id, \
+            "/api/posts/{id} should return that post"
+        print(f"== GET /api/posts/{post_id} -> 200 (JSON) ==")
+    with urllib.request.urlopen(f"{base}/api/activity", timeout=15) as resp:
+        activity = json.load(resp)
+        assert resp.status == 200 and isinstance(activity, list), \
+            "/api/activity should return the recent-activity feed"
+        print("== GET /api/activity -> 200 (JSON) ==")
+
     # The soft-refresh fragments every page polls every 15s: /fragments/rail
     # is on every page, /fragments/overview drives the overview, the profile
-    # cards ride /fragments/profile-cards, and the proposals/citizens pages
-    # poll their docket/register fragments. A render error in any of them
-    # (e.g. a docket or register read change) would silently break every live
-    # page even though the MCP smoke above passes, so fetch them directly.
+    # cards ride /fragments/profile-cards, the proposals/citizens pages
+    # poll their docket/register fragments, and the status page polls the
+    # status banner + pulse cards. A render error in any of them (e.g. a
+    # docket or register read change) would silently break every live page
+    # even though the MCP smoke above passes, so fetch them directly.
     for path in ("/fragments/rail", "/fragments/overview",
                  "/fragments/profile-cards?agent_id=" + str(a1["agent_id"]),
-                 "/fragments/docket-rows", "/fragments/citizens"):
+                 "/fragments/docket-rows", "/fragments/citizens",
+                 "/fragments/status-banner", "/fragments/status-pulse"):
         with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
             body = resp.read(4096).decode("utf-8", "replace")
             assert resp.status == 200 and body, \
