@@ -703,17 +703,7 @@ def repo_propose_change(
             )
         db.require_proposal_approval(token, proposal_id, "repo_propose_change", conn)
         if proposal_id is not None:
-            body = github.strip_trailing_citizen(body)
-            # An agent may paste a full PR body it saw elsewhere, header and
-            # all - drop a stale leading header before the fresh one is
-            # prefixed so the two can't stack.
-            body = github.strip_proposal_header(body)
-            header = github.pr_proposal_header(
-                proposal_id, _proposal_title(proposal_id, conn)
-            )
-            body = f"{header}\n\n{body}" if body else header
-            stamp = f"Proposal: #{proposal_id}"
-            body = f"{body}\n\n{stamp}"
+            body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
@@ -1091,6 +1081,25 @@ def _proposal_title(
         return row["title"] if row else None
 
 
+def _body_with_proposal_identity(
+    body: str, proposal_id: int, conn: sqlite3.Connection | None = None
+) -> str:
+    """Rebuild a PR body around its proposal identity: strip any pasted
+    identity lines the caller's body may carry - a trailing 'Citizen: ...'
+    signature, a trailing 'Proposal: #N' stamp, and a leading proposal header
+    (an agent may paste a full PR body it saw elsewhere, header and stamps
+    and all) - then attach a fresh header and 'Proposal: #N' stamp. The
+    strip-then-rebuild core shared by repo_propose_change's create path and
+    _pr_body_with_identity's update path, so the two can never drift: both
+    call this and both get the same deduped result."""
+    body = github.strip_trailing_citizen(body).strip()
+    body = github.strip_trailing_proposal(body)
+    body = github.strip_proposal_header(body)
+    header = github.pr_proposal_header(proposal_id, _proposal_title(proposal_id, conn))
+    body = f"{header}\n\n{body}" if body else header
+    return f"{body}\n\nProposal: #{proposal_id}"
+
+
 def _pr_body_with_identity(
     pr: dict, body: str, conn: sqlite3.Connection | None = None
 ) -> str:
@@ -1105,7 +1114,9 @@ def _pr_body_with_identity(
     not the current body text, so a spoofed earlier line can't become the
     identity the re-stamped body carries. Callers that already hold a
     connection (repo_update_pr's ownership gate) pass it in so the proposal
-    link / opener / title reads reuse it instead of opening fresh ones."""
+    link / opener / title reads reuse it instead of opening fresh ones. The
+    header + stamp rebuild shares one helper with the create path
+    (_body_with_proposal_identity), so the two can't drift."""
     stamp = db.proposal_for_pr(pr["number"], conn)
     if stamp is None:
         stamp = github._parse_proposal(pr.get("body") or "")
@@ -1113,14 +1124,7 @@ def _pr_body_with_identity(
         or github._parse_citizen(pr.get("body") or "")
     body = github.strip_trailing_citizen(body).strip()
     if stamp is not None:
-        # A body edit may resend the full current PR body, which already
-        # carries the header and the trailing 'Proposal: #N' stamp this
-        # function re-appends - drop the old ones first so neither can stack.
-        body = github.strip_trailing_proposal(body)
-        body = github.strip_proposal_header(body)
-        header = github.pr_proposal_header(stamp, _proposal_title(stamp, conn))
-        body = f"{header}\n\n{body}" if body else header
-        body = f"{body}\n\nProposal: #{stamp}"
+        body = _body_with_proposal_identity(body, stamp, conn)
     if citizen is not None:
         body = (
             f"{body}\n\nCitizen: {citizen['name']} (agent_id={citizen['agent_id']})"
