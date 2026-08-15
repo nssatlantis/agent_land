@@ -109,7 +109,13 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     on error). Pass immediate=True to take the write lock up front with
     BEGIN IMMEDIATE: a read-then-write sequence on that connection - like
     create_comment's merge decision, where the check and the write must be
-    atomic - then cannot be interleaved by another writer's commit."""
+    atomic - then cannot be interleaved by another writer's commit.
+
+    Note: karma is COMPUTED, not stored. There is no agents.karma column
+    (schema.sql confirms this); _karma_parts() aggregates net votes from
+    the votes table, PR credits from pr_merges, and decline costs from
+    pr_record on every read. Write contention on karma paths is therefore
+    on those source-table upserts, not on any karma column."""
     _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH, timeout=config.SQLITE_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
@@ -453,7 +459,7 @@ def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
     label was applied after it was closed), the record is upgraded to
     'declined' and the penalty applies. Returns False if already declined or
     the agent no longer exists (e.g. the forum was reset after the PR)."""
-    with _conn() as conn:
+    with _conn(immediate=True) as conn:
         if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
             return False
         before = conn.total_changes
