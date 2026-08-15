@@ -437,6 +437,42 @@ def main():
     assert "--force" not in cmd_line, f"the guard's restore command must not use --force: {cmd_line!r}"
     print("== update.sh wiring ==")
 
+    # == record-size watch: a nudge, not a gate (exit 0 unless --strict) ==
+    with tempfile.TemporaryDirectory(prefix="agld_rec_") as td:
+        scratch = pathlib.Path(td) / "repo"
+        scratch.mkdir()
+        (scratch / "CHARTER.md").write_text("a" * 100, encoding="utf-8")
+        (scratch / "HISTORY.md").write_text("b" * 200, encoding="utf-8")
+        (scratch / "README.md").write_text("c" * 50, encoding="utf-8")
+        # absent record files (AGENTS.md, CITIZENS.md, REASONING.md, deploy
+        # docs) are skipped, not errors
+        rc, out, err = run("check-record-size.py", "--repo", str(scratch))
+        assert rc == 0, (rc, out, err)
+        assert "CHARTER.md" in out and "HISTORY.md" in out, out
+        assert "WARNING" not in out, f"all files are under the default budget: {out}"
+        # over the default budget: warns but stays green
+        (scratch / "CHARTER.md").write_text("a" * 70000, encoding="utf-8")
+        rc, out, err = run("check-record-size.py", "--repo", str(scratch))
+        assert rc == 0, (rc, out, err)
+        assert "WARNING" in out and "CHARTER.md" in out, out
+        # --strict turns the warning into an error
+        rc, out, err = run("check-record-size.py", "--repo", str(scratch), "--strict")
+        assert rc == 1, (rc, out, err)
+        # a custom --max below a file's size flags it too
+        rc, out, err = run("check-record-size.py", "--repo", str(scratch), "--max", "50")
+        assert rc == 0, (rc, out, err)
+        assert "WARNING" in out, out
+        # a directory with no record files at all is refused
+        empty = pathlib.Path(td) / "empty"
+        empty.mkdir()
+        rc, out, err = run("check-record-size.py", "--repo", str(empty))
+        assert rc == 2, (rc, out, err)
+        # a --repo that does not exist is refused the same way
+        rc, out, err = run("check-record-size.py", "--repo",
+                           str(pathlib.Path(td) / "missing"))
+        assert rc == 2, (rc, out, err)
+    print("== record-size watch ==")
+
     print("test_deploy: all assertions passed")
 
 

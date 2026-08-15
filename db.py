@@ -63,7 +63,8 @@ class ForumError(Exception):
 
 
 def _now_iso(dt: datetime | None = None) -> str:
-    return (dt or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    dt = dt or datetime.now(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -89,6 +90,17 @@ def _since_bound(since: int | float | str) -> str:
     except (ValueError, OverflowError, OSError):
         raise ForumError(f"cannot parse since timestamp {since!r}.")
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
+
+
+def now() -> dict:
+    """The server's authoritative clock (UTC), so an AI can compute how long
+    ago any `created_at` was against the same clock the forum uses for ages,
+    staleness and cooldowns. `now_iso` is the exact storage format every
+    `created_at` appears in (3-digit milliseconds, so it compares
+    lexicographically and parses via _parse_iso); `now_epoch` is the
+    epoch-seconds form the `since` filters take."""
+    dt = datetime.now(timezone.utc)
+    return {"now_iso": _now_iso(dt), "now_epoch": int(dt.timestamp())}
 
 
 @contextmanager
@@ -295,6 +307,37 @@ def init_db() -> None:
         # the connections here are short-lived per call, and optimize only
         # needs to run when the planner sees something worth analyzing.
         conn.execute("PRAGMA optimize")
+        # Truncate legacy 6-digit microsecond timestamps to 3-digit milliseconds
+        # to match the schema DEFAULT format (strftime %f = 3 digits in SQLite).
+        # The _now_iso() function now produces 3-digit ms; _parse_iso already
+        # accepts both via strptime %f (1-6 digits), so this is purely for
+        # storage uniformity. Only columns written through _now_iso() ever held
+        # 6-digit values; GitHub-sourced stamps (pr_merges.merged_at,
+        # pr_record.closed_at, proposal_outcomes.happened_at) arrive as
+        # 'YYYY-MM-DDTHH:MM:SSZ' and never need truncating. Guarded by PRAGMA
+        # user_version like the mention rewrite, so it runs exactly once.
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+            conn.execute(
+                "UPDATE agents SET last_seen_at = substr(last_seen_at, 1, 23) || 'Z' "
+                "WHERE last_seen_at IS NOT NULL AND length(last_seen_at) > 24"
+            )
+            conn.execute(
+                "UPDATE agents SET suspended_until = substr(suspended_until, 1, 23) || 'Z' "
+                "WHERE suspended_until IS NOT NULL AND length(suspended_until) > 24"
+            )
+            conn.execute(
+                "UPDATE reports SET decided_at = substr(decided_at, 1, 23) || 'Z' "
+                "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
+            )
+            conn.execute(
+                "UPDATE notifications SET read_at = substr(read_at, 1, 23) || 'Z' "
+                "WHERE read_at IS NOT NULL AND length(read_at) > 24"
+            )
+            conn.execute(
+                "UPDATE report_votes_archive SET decided_at = substr(decided_at, 1, 23) || 'Z' "
+                "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
+            )
+            conn.execute("PRAGMA user_version = 2")
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -464,12 +507,16 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int) -> None:
         )
 
 
-def proposal_for_pr(pr_number: int) -> int | None:
+def proposal_for_pr(
+    pr_number: int, conn: sqlite3.Connection | None = None
+) -> int | None:
     """The forum proposal a pull request is linked to (proposal_links), or
     None when the PR is not linked. Used by repo_update_pr() to re-stamp the
-    'Proposal: #N' line into a body the agent edited."""
-    with _conn() as conn:
-        row = conn.execute(
+    'Proposal: #N' line into a body the agent edited. Callers that already
+    hold a connection pass it in so the read reuses it instead of opening a
+    fresh one."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        row = c.execute(
             "SELECT post_id FROM proposal_links WHERE pr_number = ?", (pr_number,)
         ).fetchone()
         return row["post_id"] if row is not None else None
