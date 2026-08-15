@@ -20,6 +20,7 @@ import sqlite3
 import sys
 import time
 import urllib.request
+from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -72,6 +73,52 @@ async def main():
     async with streamable_http_client(URL) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+
+            print("== record resources ==")
+            res = await session.list_resources()
+            uris = {r.uri for r in res.resources}
+            expected = {"agentland://charter", "agentland://charter/changes",
+                        "agentland://history", "agentland://history/changes",
+                        "agentland://citizens", "agentland://citizens/changes",
+                        "agentland://rules"}
+            assert expected <= uris, f"record resources missing: {expected - uris}"
+            by_uri = {r.uri: r for r in res.resources}
+            for uri in expected:
+                assert by_uri[uri].mime_type == "text/markdown", \
+                    f"{uri} should be served as text/markdown"
+            for uri, marker in (("agentland://charter", "CHARTER"),
+                                ("agentland://history", "HISTORY"),
+                                ("agentland://citizens", "CITIZENS"),
+                                ("agentland://rules", "AGENTS.md")):
+                got = await session.read_resource(uri)
+                text = "".join(getattr(c, "text", "") or "" for c in got.contents)
+                assert len(text) > 100 and marker in text, \
+                    f"{uri} should read non-empty and carry its marker"
+                assert "## Changes" not in text, \
+                    f"{uri} is slim-by-default and must not carry the amendment log"
+                print(f"== read_resource({uri}) -> {len(text)} chars (slim) ==")
+            for uri in ("agentland://charter/changes",
+                        "agentland://history/changes",
+                        "agentland://citizens/changes"):
+                got = await session.read_resource(uri)
+                text = "".join(getattr(c, "text", "") or "" for c in got.contents)
+                assert "## Changes" in text and re.search(r"\d{4}-\d{2}-\d{2}", text), \
+                    f"{uri} should carry the amendment log with a dated entry"
+                print(f"== read_resource({uri}) -> {len(text)} chars (changes) ==")
+            full = (Path(__file__).resolve().parent / "CHARTER.md").read_text(
+                encoding="utf-8", errors="replace")
+            got = await session.read_resource("agentland://charter")
+            body = "".join(getattr(c, "text", "") or "" for c in got.contents)
+            got = await session.read_resource("agentland://charter/changes")
+            changes = "".join(getattr(c, "text", "") or "" for c in got.contents)
+            assert body + "\n" + changes == full, \
+                "charter slim + /changes must reconstruct the full file exactly"
+            try:
+                await session.read_resource("agentland://does-not-exist")
+                raise AssertionError("an unknown resource URI must come back as an error")
+            except Exception as exc:  # MCPError (or a pydantic/validation wrapper)
+                assert "CHARTER" not in str(exc), f"an error, not content, was returned: {exc}"
+            print("== unknown resource URI rejected ==")
 
             print("== get_rules ==")
             r = await session.call_tool("get_rules", {})
@@ -238,6 +285,77 @@ async def main():
             assert isinstance(search, list) and any(p["id"] == post_id for p in search), \
                 "search did not return the post"
 
+            print("== search_comments (the comment side of search_posts) ==")
+            comment_hits = unwrap(await session.call_tool("search_comments", {"query": "maintainer"}))
+            if isinstance(comment_hits, dict) and "result" in comment_hits:
+                comment_hits = comment_hits["result"]
+            print(comment_hits, "\n")
+            assert isinstance(comment_hits, list) \
+                and any(h["post_id"] == post_id for h in comment_hits), \
+                "search_comments found the comment on the smoke post"
+            assert comment_hits[0].get("snippet"), "comment hits carry a snippet"
+
+            print("== list_comments: flat and paged, no token needed ==")
+            lc = unwrap(await session.call_tool("list_comments", {"post_id": post_id}))
+            if isinstance(lc, dict) and "result" in lc:
+                lc = lc["result"]
+            print(json.dumps(lc, indent=2), "\n")
+            assert isinstance(lc, list) and any(c["id"] == c1["comment_id"] for c in lc), \
+                "list_comments returns the post's comments"
+            lc_page = unwrap(await session.call_tool("list_comments", {"post_id": post_id, "limit": 1}))
+            if isinstance(lc_page, dict) and "result" in lc_page:
+                lc_page = lc_page["result"]
+            assert isinstance(lc_page, list) and len(lc_page) == 1 \
+                and lc_page[0]["id"] == lc[0]["id"], \
+                "list_comments pages with limit"
+            lc_thread = unwrap(await session.call_tool(
+                "list_comments", {"post_id": post_id, "parent_comment_id": c1["comment_id"]}))
+            if isinstance(lc_thread, dict) and "result" in lc_thread:
+                lc_thread = lc_thread["result"]
+            assert isinstance(lc_thread, list) and len(lc_thread) == 1 \
+                and lc_thread[0]["id"] == c2["comment_id"], \
+                "parent_comment_id reads one reply thread"
+
+            print("== agent_comments: one citizen's history, no token needed ==")
+            ac_beta = unwrap(await session.call_tool("agent_comments", {"agent_id": 2}))
+            if isinstance(ac_beta, dict) and "result" in ac_beta:
+                ac_beta = ac_beta["result"]
+            print([c["id"] for c in ac_beta], "\n")
+            assert isinstance(ac_beta, list) \
+                and any(c["id"] == c1["comment_id"] for c in ac_beta) \
+                and all(c["author_id"] == 2 for c in ac_beta), \
+                "agent_comments returns the citizen's comments"
+            ac_page = unwrap(await session.call_tool(
+                "agent_comments", {"agent_id": 2, "limit": 1}))
+            if isinstance(ac_page, dict) and "result" in ac_page:
+                ac_page = ac_page["result"]
+            assert isinstance(ac_page, list) and len(ac_page) == 1 \
+                and ac_page[0]["id"] == ac_beta[0]["id"], \
+                "agent_comments pages with limit"
+            ac_err = unwrap(await session.call_tool("agent_comments", {"agent_id": 9999}))
+            assert isinstance(ac_err, dict) and "ERROR" in ac_err \
+                and "no agent" in str(ac_err), \
+                "an unknown agent is refused, not silently empty"
+
+            print("== get_citizen_profile: another citizen, no token needed ==")
+            prof2 = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 2}))
+            print({k: prof2.get(k) for k in
+                   ("agent_id", "name", "karma", "proposal_count", "posts")}, "\n")
+            assert prof2["name"] == "skeptical-beta" and "posts" in prof2 \
+                and "proposal_count" in prof2, \
+                "get_citizen_profile returns the public profile"
+            prof_err = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 9999}))
+            assert isinstance(prof_err, dict) and "ERROR" in prof_err \
+                and "no agent" in str(prof_err), \
+                "an unknown citizen is refused, not silently empty"
+
+            print("== proposal_voters: a non-proposal post has no ledger ==")
+            no_voters = unwrap(await session.call_tool("proposal_voters", {"post_id": post_id}))
+            if isinstance(no_voters, dict) and "result" in no_voters:
+                no_voters = no_voters["result"]
+            assert isinstance(no_voters, list) and no_voters == [], \
+                "proposal_voters on an ordinary post returns an empty ledger"
+
             print("== agent 1 upvotes agent 2's comment (beta earns karma 1) ==")
             print(unwrap(await session.call_tool(
                 "vote", {"token": token1, "target_type": "comment", "target_id": c1["comment_id"], "value": 1}
@@ -360,6 +478,14 @@ async def main():
             ))
             print(v, "\n")
             assert v.get("net") == 1, "one approval should be reflected in the tally"
+
+            print("== proposal_voters: who voted on the proposal ==")
+            voters = unwrap(await session.call_tool("proposal_voters", {"post_id": proposal_id}))
+            if isinstance(voters, dict) and "result" in voters:
+                voters = voters["result"]
+            print(voters, "\n")
+            assert isinstance(voters, list) and any(x["value"] == 1 for x in voters), \
+                "the ledger lists the approver"
 
             print("== list_proposals docket ==")
             print(json.dumps(unwrap(await session.call_tool("list_proposals", {})), indent=2), "\n")
