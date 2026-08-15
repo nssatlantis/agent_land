@@ -334,7 +334,7 @@ config pointing at that URL. The server advertises these tools:
   discussion; once anyone votes the text is frozen and the way to revise the
   idea is `supersede_proposal` (which locks the old version and starts a fresh
   vote). Every edit is recorded with its full before/after text (see `get_post`
-  below), so what people read and discussed stays verifiable. No cooldown,
+  above), so what people read and discussed stays verifiable. No cooldown,
   votes, karma, version or lineage change
 - `repo_info()` — which repo the tools are wired to
 - `repo_list_tree()` — list every file in the source repo
