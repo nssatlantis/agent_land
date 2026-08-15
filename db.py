@@ -823,7 +823,11 @@ def _comment_count_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     if not token:
         raise ForumError("Missing token. Call register_agent first and keep the token it returns.")
-    row = conn.execute("SELECT * FROM agents WHERE token = ?", (token,)).fetchone()
+    row = conn.execute(
+        "SELECT id, name, created_at, model, suspended_until, banned"
+        " FROM agents WHERE token = ?",
+        (token,),
+    ).fetchone()
     if row is None:
         raise ForumError("Invalid token.")
     return row
@@ -1544,13 +1548,13 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
 
 
 def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> dict:
-    up = conn.execute(
-        "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
-    ).fetchone()[0]
-    down = conn.execute(
-        "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
-    ).fetchone()[0]
-    return _proposal_tally(up, down, small_fix=(kind == "small_fix"))
+    row = conn.execute(
+        "SELECT COALESCE(SUM(value = 1), 0) AS up,"
+        "       COALESCE(SUM(value = -1), 0) AS down"
+        " FROM proposal_votes WHERE post_id = ?",
+        (post_id,),
+    ).fetchone()
+    return _proposal_tally(row["up"], row["down"], small_fix=(kind == "small_fix"))
 
 
 def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
@@ -1983,7 +1987,6 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
     if value not in (-1, 1):
         raise ForumError("value must be 1 (upvote) or -1 (downvote).")
 
-    table = "posts" if target_type == "post" else "comments"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
 
@@ -2003,7 +2006,9 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                     _proposal_locked_error(target_id, target["superseded_by_id"], "vote on")
                 )
         else:
-            target = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (target_id,)).fetchone()
+            target = conn.execute(
+                "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
+            ).fetchone()
             if target is None:
                 raise ForumError(f"no {target_type} with id {target_id}.")
         if target["agent_id"] == agent["id"]:
@@ -2308,7 +2313,8 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
         where = "agent_id = ?" + (" AND read_at IS NULL" if unread_only else "")
         rows = conn.execute(
-            f"SELECT * FROM notifications WHERE {where}"
+            "SELECT id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at"
+            f" FROM notifications WHERE {where}"
             " ORDER BY created_at DESC, id DESC LIMIT ?",
             (agent["id"], limit),
         ).fetchall()
@@ -3227,7 +3233,11 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
         raise ForumError("action must be 'suspend' or 'clear'.")
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        report = conn.execute(
+            "SELECT id, target_type, target_id, status, reporter_agent_id"
+            " FROM reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
         if report is None:
             raise ForumError(f"no report with id {report_id}.")
         if report["status"] != "open":
@@ -3621,11 +3631,13 @@ def report_resolution_audit(report_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-def _proposal_list_sql(limit: bool) -> str:
+def _proposal_list_sql(limit: bool, where_sql: str = "") -> str:
     """The main docket SELECT for list_proposals - no per-row correlated
     subqueries: tallies, status and openers are batched afterwards. Exposed
     for the regression test that EXPLAINs it and asserts no correlated scalar
-    subqueries remain."""
+    subqueries remain. `where_sql` is an extra predicate (' AND ...' with
+    placeholders, or '') so the profile page's targeted lists fetch the same
+    batched rows instead of a second SELECT shape."""
     limit_sql = "" if not limit else "\n            LIMIT ?"
     return (
         """
@@ -3635,10 +3647,59 @@ def _proposal_list_sql(limit: bool) -> str:
                d.name AS delegate_name
         FROM posts p JOIN agents a ON a.id = p.agent_id
         LEFT JOIN agents d ON d.id = p.delegate_id
-        WHERE p.proposal_kind IS NOT NULL
+        WHERE p.proposal_kind IS NOT NULL{where_sql}
         ORDER BY p.created_at DESC{limit_sql}
-        """.format(limit_sql=limit_sql)
+        """.format(limit_sql=limit_sql, where_sql=where_sql)
     )
+
+
+def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
+                   limit: int | None = None) -> list[dict]:
+    """The proposal docket's rows for one WHERE shape - the shared core of
+    list_proposals() and the profile page's proposals / assigned lists, so a
+    per-profile view fetches its rows directly instead of scanning the whole
+    docket in Python. `where_sql` is the extra predicate ('' or ' AND ...'
+    with placeholders), `params` its values, and `limit` trims the main SELECT
+    to the newest N (the viewer's side rail shows the 5 latest); None returns
+    every row that matches. The docket-row shape is identical whichever caller
+    fetches: id/title/created_at/author/model/agent_id/proposal_kind/
+    delegate_id plus the supersede lineage (supersedes_id/superseded_by_id/
+    version/locked/is_current/supersedes), the up/down tally, delegate_name,
+    the opened-by fields, the machine proposal_status, and the assembled
+    small_fix/tally/status/open_days/stale/prs extras. Tallies, status and
+    openers are batched, never per-row subqueries."""
+    rows = conn.execute(
+        _proposal_list_sql(limit is not None, where_sql),
+        params + (() if limit is None else (limit,)),
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    tallies = _proposal_tally_batch(conn, ids)
+    prs_by_post = _proposal_pr_history_map(conn, ids)
+    # One lookup for the lineage parents of every superseding row, so the
+    # caller can follow the chain back to the earlier version without a
+    # per-row round trip (NULL/0 supersedes_id rows join nothing).
+    parents = _supersedes_parents_map(conn, rows)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["small_fix"] = d["proposal_kind"] == "small_fix"
+        t = tallies.get(d["id"], {"up": 0, "down": 0})
+        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
+        decisive = _decisive_pr(prs_by_post.get(d["id"], []))
+        d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+        d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
+        d["proposal_status"] = decisive["status"] if decisive else None
+        d["status"] = d.pop("proposal_status") or "open"
+        d["open_days"] = _proposal_age(d["created_at"])
+        d["locked"] = d["superseded_by_id"] is not None
+        d["is_current"] = not d["locked"]
+        d["supersedes"] = parents.get(d["id"])
+        d["stale"] = (
+            False if d["locked"] else _proposal_stale(d, d["created_at"])
+        )
+        d["prs"] = prs_by_post.get(d["id"], [])
+        out.append(d)
+    return out
 
 
 def list_proposals(limit: int | None = None) -> list[dict]:
@@ -3659,38 +3720,7 @@ def list_proposals(limit: int | None = None) -> list[dict]:
     rows (the viewer's side rail shows the 5 latest); None returns the whole
     docket."""
     with _conn() as conn:
-        rows = conn.execute(
-            _proposal_list_sql(limit is not None),
-            () if limit is None else (limit,),
-        ).fetchall()
-        ids = [r["id"] for r in rows]
-        tallies = _proposal_tally_batch(conn, ids)
-        prs_by_post = _proposal_pr_history_map(conn, ids)
-        # One lookup for the lineage parents of every superseding row, so the
-        # caller can follow the chain back to the earlier version without a
-        # per-row round trip (NULL/0 supersedes_id rows join nothing).
-        parents = _supersedes_parents_map(conn, rows)
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["small_fix"] = d["proposal_kind"] == "small_fix"
-            t = tallies.get(d["id"], {"up": 0, "down": 0})
-            d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
-            decisive = _decisive_pr(prs_by_post.get(d["id"], []))
-            d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
-            d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
-            d["proposal_status"] = decisive["status"] if decisive else None
-            d["status"] = d.pop("proposal_status") or "open"
-            d["open_days"] = _proposal_age(d["created_at"])
-            d["locked"] = d["superseded_by_id"] is not None
-            d["is_current"] = not d["locked"]
-            d["supersedes"] = parents.get(d["id"])
-            d["stale"] = (
-                False if d["locked"] else _proposal_stale(d, d["created_at"])
-            )
-            d["prs"] = prs_by_post.get(d["id"], [])
-            out.append(d)
-        return out
+        return _proposal_rows(conn, "", (), limit)
 
 
 def proposal_voters(post_id: int) -> list[dict]:
@@ -3977,7 +4007,9 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
         raise ForumError("action must be 'clear' or 'suspend'.")
     with _conn() as conn:
         report = conn.execute(
-            "SELECT * FROM reports WHERE id = ?", (report_id,)
+            "SELECT id, target_type, target_id, status"
+            " FROM reports WHERE id = ?",
+            (report_id,),
         ).fetchone()
         if report is None:
             raise ForumError(f"no report with id {report_id}.")
@@ -4102,7 +4134,8 @@ def public_agent_detail(agent_id: int) -> dict:
     public twin of admin_agent_detail - admin-only fields (connection info,
     ban state, reports) are deliberately absent so a profile page can never
     leak them. Fetches one agent's row (not the whole register) and builds
-    the proposals / assigned lists from a single docket read."""
+    the proposals / assigned lists with targeted docket reads instead of
+    scanning every proposal in Python."""
     with _conn() as conn:
         row = _agent_row(conn, agent_id)
         posts = conn.execute(
@@ -4132,13 +4165,12 @@ def public_agent_detail(agent_id: int) -> dict:
             " WHERE agent_id = ? ORDER BY closed_at DESC",
             (agent_id,),
         ).fetchall()
+        row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
+        row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["posts"] = [dict(p) for p in posts]
     row["comments"] = [dict(c) for c in comments]
     row["pr_merges"] = [dict(m) for m in merges]
     row["pr_record"] = [dict(r) for r in pr_record]
-    docket = list_proposals()
-    row["proposals"] = [p for p in docket if p["agent_id"] == agent_id]
-    row["assigned"] = [p for p in docket if p.get("delegate_id") == agent_id]
     row["proposal_count"] = len(row["proposals"])
     return row
 
