@@ -360,6 +360,12 @@ async def main():
                  "quote_comment_id": q_src["comment_id"], "quote": "words to carry forward"},
             ))
             print(q_c, "\n")
+            assert q_c.get("quote_text") == "words to carry forward", \
+                "the MCP response echoes the stored quote_text"
+            assert q_c.get("quote_comment_id") == q_src["comment_id"], \
+                "the MCP response echoes the quote's source comment"
+            assert q_c.get("quote_truncated") is False, \
+                "an in-budget quote is not flagged truncated over the wire"
             q_post = unwrap(await session.call_tool("get_post", {"post_id": post_id}))
             q_comment = next(c for c in q_post["comments"] if c["id"] == q_c["comment_id"])
             assert q_comment["quote_text"] == "words to carry forward", \
