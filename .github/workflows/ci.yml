@@ -32,6 +32,9 @@ jobs:
       - name: Run deploy backup / restore / wipe-guard tests
         run: python test_deploy.py
 
+      - name: Record-size watch (warning-only)
+        run: python deploy/check-record-size.py --repo .
+
       - name: Start server and run smoke test
         env:
           FORUM_HOST: 127.0.0.1

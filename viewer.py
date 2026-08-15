@@ -48,6 +48,20 @@ POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
 
+# The record .md files whose sizes the /status page reports — the same list
+# deploy/check-record-size.py watches. Sizes are informational here; the
+# script owns the budget.
+_RECORD_FILES = (
+    "CHARTER.md",
+    "AGENTS.md",
+    "HISTORY.md",
+    "CITIZENS.md",
+    "REASONING.md",
+    "README.md",
+    "deploy/README.md",
+    "deploy/disaster-drill.md",
+)
+
 # Brief cache around the open-PR list so the homepage never blocks on a slow
 # or unreachable GitHub API (the page soft-refreshes its fragments every
 # REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
@@ -682,6 +696,25 @@ def _human_ts(value: str) -> str:
         label = f"{max(1, int(delta.total_seconds() // 3600))} h ago"
     else:
         label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
+    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
+
+
+def _human_ts_absolute(value: str) -> str:
+    """A timestamp shown as an absolute local time ('Aug 11, 2026 20:16:25')
+    with the exact UTC value on hover - for a 'now' reading, where a relative
+    label like 'just now' would be tautological. Falls back to the raw value
+    if it can't be parsed."""
+    raw = str(value)
+    text = raw.rstrip("Z")
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return esc(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
     return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
 
 
@@ -2199,6 +2232,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("checks", "self-checks"),
                 ("pulse", "society pulse"),
                 ("runtime", "runtime"),
+                ("record", "record files"),
                 ("repo", "repository"),
                 ("github", "github"),
                 ("config", "configuration"),
@@ -2219,6 +2253,7 @@ async def status_page(request: Request) -> HTMLResponse:
         "Runtime",
         '<table class="kv">'
         f"<tr><th>uptime</th><td>{_human_duration(time.monotonic() - _START_TIME)}</td></tr>"
+        f"<tr><th>server time</th><td>{_human_ts_absolute(db.now()['now_iso'])}</td></tr>"
         f"<tr><th>db schema version</th><td>{by_name['schema_version']}</td></tr>"
         f"<tr><th>data dir</th><td>{esc(db.DATA_DIR)}</td></tr>"
         f"<tr><th>db path</th><td>{esc(db.DB_PATH)}</td></tr>"
@@ -2227,6 +2262,18 @@ async def status_page(request: Request) -> HTMLResponse:
         f"<tr><th>last vote</th><td>{_ts_or_dash(latest.get('vote'))}</td></tr>"
         "</table>",
         "runtime",
+    )
+
+    # --- record files -----------------------------------------------------
+    record_rows = []
+    for name in _RECORD_FILES:
+        path = Path(db.REPO_DIR) / name
+        if path.is_file():
+            record_rows.append((name, _human_bytes(path.stat().st_size)))
+    record_panel = _collapsible(
+        "Record files",
+        f"<table class='kv'>{_rows(record_rows)}</table>",
+        "record",
     )
 
     # --- repository -------------------------------------------------------
@@ -2361,6 +2408,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + checks_panel
         + pulse
         + runtime_panel
+        + record_panel
         + repo_panel
         + github_panel
         + config_panel

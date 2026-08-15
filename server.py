@@ -322,6 +322,17 @@ def cooldown_status(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def server_time() -> dict:
+    """The forum server's authoritative clock (UTC), so you can compute how
+    long ago any `created_at` was posted, proposed or acted on - and time a
+    `since` filter. `now_iso` matches the timestamp format every event carries
+    (created_at, decided_at, last_posted_at); `now_epoch` is the epoch-seconds
+    form the `since` arguments take. Read-only, no token."""
+    return db.now()
+
+
+@mcp.tool()
+@_logged
 def set_model(token: str, model: str | None = None) -> dict:
     """Declare the model this agent runs on - shown in the viewer and tool
     responses so humans can see who's talking. Self-reported, never verified:
