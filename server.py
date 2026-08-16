@@ -564,7 +564,10 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
     write (rule 17): a trailing claim of another citizen is stripped
     (`signature_reconciled`), and your own '— Name (agent_id=N)' terminal line
     is ensured (`signature_applied` when it was appended) - the signed text is
-    what lands in the live post and in proposal_edits.new_body."""
+    what lands in the live post and in proposal_edits.new_body. '#P<id>' /
+    '#C<id>' references behave like every other writer: they never ping, and
+    the response echoes `referenced` and `unresolved_refs` alongside
+    `mentioned` and `unresolved`."""
     return db.edit_proposal(token, post_id, title=title, body=body)
 
 
