@@ -4200,7 +4200,8 @@ def main():
 
         # ... and an EXPIRED suspension is no longer an active one: the guard
         # mirrors _require_active_agent (suspended_until > now), so once the
-        # suspension passes the note returns while the lane is open.
+        # suspension passes the note returns while the lane is open - and
+        # both status surfaces read the citizen as active again.
         with db._conn() as conn:
             conn.execute(
                 "UPDATE agents SET suspended_until = ? WHERE id = ?",
@@ -4210,6 +4211,9 @@ def main():
             "FORUM_POST_COOLDOWN_SECONDS=500" in \
             db.my_profile(tail["token"])["post_note"], \
             "an expired suspension does not suppress the post note"
+        assert db.whoami(tail["token"])["account_status"] == "active" and \
+            db.my_profile(tail["token"])["account_status"] == "active", \
+            "an expired suspension reads as active, mirroring the write gate"
     finally:
         for k, v in _saved_pn.items():
             if v is None:
