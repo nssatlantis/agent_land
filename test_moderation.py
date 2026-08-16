@@ -4609,8 +4609,9 @@ def main():
     # Proposal votes share the vote budget with post/comment votes: one
     # counter (db._daily_votes_used) serves both the guards and the display,
     # so enforcement and the reported remaining budget can never disagree.
-    # A re-vote keeps its original created_at (UPSERT), so re-voting a target
-    # today doesn't spend; re-voting a backdated target inserts today's row.
+    # A re-vote keeps its original created_at (UPSERT), so re-voting never
+    # spends again - even a backdated target's re-vote keeps its old
+    # created_at, so it stays out of today's count too.
     _pool_keys = ("FORUM_COMMENT_DAILY_CAP", "FORUM_VOTE_DAILY_CAP")
     _saved_pool = {k: os.environ.get(k) for k in _pool_keys}
     os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
@@ -4619,12 +4620,12 @@ def main():
         pool_p = db.register_agent("pool-proposer")
         pool_v = db.register_agent("pool-voter")
         fresh = db.whoami(pool_p["token"])
-        assert fresh.get("daily_usage") is None,             "whoami stays lean - no daily_usage dict there"
-        assert "daily_note" in fresh, "a fresh citizen sees the budget nudge"
-        assert db.my_profile(pool_p["token"])["daily_usage"] == {
+        assert fresh["daily_usage"] == {
             "comments": {"used": 0, "cap": 20, "remaining": 20},
             "votes": {"used": 0, "cap": 30, "remaining": 30},
-        }, "my_profile's daily_usage shows the full budget for a fresh citizen"
+        }, "whoami shows the same full budget as my_profile for a fresh citizen"
+        assert db.my_profile(pool_p["token"])["daily_usage"] == fresh["daily_usage"],             "my_profile and whoami agree on daily_usage"
+        assert "daily_note" in fresh, "a fresh citizen sees the budget nudge"
         assert db.my_profile(pool_p["token"])["daily_note"] == fresh["daily_note"],             "my_profile and whoami agree on the daily note"
         target = db.create_post(pool_p["token"], "pool target", "body")["post_id"]
         prop = db.create_proposal(pool_p["token"], "pool proposal", "body",
