@@ -1844,6 +1844,78 @@ def main():
             "SELECT COUNT(*) FROM proposal_links WHERE post_id = ?", (p_three,)
         ).fetchone()[0] == 0, "deleting a proposal must clear its PR links"
 
+    # --- docket tabs, sorts, and the view predicate (PR #74) ---
+    # The docket's tabs are lenses over the same predicate the counts use, so
+    # the tab labels can never disagree with the rows they count. Each fixture
+    # below lands in exactly the views its state promises: a stale proposal
+    # also needs votes, a merged small fix also appears under small fixes, and
+    # a superseded (locked) proposal appears only under All.
+    t1 = db.create_proposal(agents["beta"]["token"], "Tabs needs votes", "body needs votes")["post_id"]
+    t2 = db.create_proposal(agents["gamma"]["token"], "Tabs approved", "body approved")["post_id"]
+    for tk in (agents["epsilon"], agents["zeta"], agents["eta"]):
+        db.vote_on_proposal(tk["token"], t2, 1)
+    t3 = db.create_proposal(agents["delta"]["token"], "Tabs small fix", "body small fix", small_fix=True)["post_id"]
+    t4 = db.create_proposal(agents["epsilon"]["token"], "Tabs merged", "body merged")["post_id"]
+    for tk in (agents["beta"], agents["gamma"], agents["zeta"]):
+        db.vote_on_proposal(tk["token"], t4, 1)
+    db.link_pr_to_proposal(8501, t4, agents["epsilon"]["agent_id"])
+    db.record_proposal_outcome(8501, t4, "merged", "2026-08-12T14:00:00Z")
+    t5 = db.create_proposal(agents["zeta"]["token"], "Tabs stale", "body stale")["post_id"]
+    aged = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    with db._conn() as conn:
+        conn.execute("UPDATE posts SET created_at = ? WHERE id = ?", (aged, t5))
+    t6 = db.create_proposal(agents["theta"]["token"], "Tabs merged small fix", "body msf", small_fix=True)["post_id"]
+    db.link_pr_to_proposal(8502, t6, agents["theta"]["agent_id"])
+    db.record_proposal_outcome(8502, t6, "merged", "2026-08-12T14:00:00Z")
+    t7 = db.create_proposal(agents["beta"]["token"], "Tabs superseded", "body superseded")["post_id"]
+    v2 = db.supersede_proposal(agents["beta"]["token"], t7, "Tabs superseded v2", "body v2")
+    t8 = v2["post_id"]
+
+    counts = db.proposal_docket_counts()
+    for view in ("all", "needs_votes", "approved", "stale", "merged", "small_fix"):
+        assert counts[view] == len(db.list_proposals(view=view)), \
+            f"tab count must equal the rows it labels ({view})"
+    ids_of = lambda view: {p["id"] for p in db.list_proposals(view=view)}
+    all_ids = ids_of("all")
+    for fid in (t1, t2, t3, t4, t5, t6, t7, t8):
+        assert fid in all_ids, "every fixture is on the docket"
+    assert t1 in ids_of("needs_votes") and t1 not in ids_of("stale"), \
+        "a fresh unvoted proposal only needs votes"
+    assert t2 in ids_of("approved") and t2 not in ids_of("needs_votes"), \
+        "an approved proposal leaves the needs-votes tab"
+    assert t3 in ids_of("small_fix") and t3 not in ids_of("approved"), \
+        "small fixes live on their own tab, not under approved"
+    assert t4 in ids_of("merged") and t4 not in ids_of("needs_votes"), \
+        "a merged proposal is terminal on the merged tab"
+    assert t5 in ids_of("stale") and t5 in ids_of("needs_votes"), \
+        "a stale proposal is a lens that also needs votes"
+    assert t6 in ids_of("merged") and t6 in ids_of("small_fix"), \
+        "a merged small fix appears under both merged and small fixes"
+    assert t7 not in ids_of("needs_votes") and t7 not in ids_of("approved") \
+        and t7 not in ids_of("stale") and t7 not in ids_of("merged") \
+        and t7 not in ids_of("small_fix"), \
+        "a superseded proposal appears only under All"
+
+    # Top sort orders by net descending, tying newest-first; body_preview
+    # truncates at the knob; limit/offset page; bogus view/sort are refused.
+    top = db.list_proposals(sort="top")
+    nets = [p["net"] for p in top]
+    assert nets == sorted(nets, reverse=True), "top sort orders by net descending"
+    for a, b in zip(top, top[1:]):
+        if a["net"] == b["net"]:
+            assert db._parse_iso(a["created_at"]) >= db._parse_iso(b["created_at"]), \
+                "equal nets tiebreak newest-first"
+    long = db.create_proposal(agents["theta"]["token"], "Tabs long body", "x" * 500)["post_id"]
+    previews = {p["id"]: p["body_preview"] for p in db.list_proposals()}
+    assert previews[long] == "x" * config.BODY_PREVIEW_LENGTH, \
+        "body_preview truncates at the knob"
+    all_rows = db.list_proposals()
+    assert db.list_proposals(limit=5, offset=0) == all_rows[:5] \
+        and db.list_proposals(limit=5, offset=5) == all_rows[5:10], \
+        "limit/offset page the docket"
+    assert "view must be one of" in expect_error(db.list_proposals, view="bogus")
+    assert "sort must be" in expect_error(db.list_proposals, sort="bogus")
+
     # --- human-admin functions (driven through db.py as admin.py calls them) --
     victim = db.register_agent("admin-victim")
     helper = db.register_agent("admin-helper")
