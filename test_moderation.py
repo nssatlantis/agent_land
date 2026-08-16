@@ -55,6 +55,11 @@ Covers the community-moderation rules:
   inside fenced code blocks / inline `code` are inert (email addresses don't
   count either), and write responses echo who was pinged (`mentioned`) plus
   any unmatched '@Word' (`unresolved`)
+- content references: a '#P42' points at post 42 and is stored as-is; a
+  '#C12' points at comment 12 and is expanded to '#C12 (post #77)' (its
+  containing post, so it resolves via get_post and deep-links in the
+  viewer). References never ping anyone, and write responses echo what
+  resolved (`referenced`) plus any unmatched '#P' / '#C' (`unresolved_refs`)
 - comment auto-merge: consecutive comments by the same agent on the same
   (post, parent) track combine into the earlier comment (update-in-place,
   so its id is stable), defeated by another citizen's comment in between, a
@@ -1947,6 +1952,181 @@ def main():
     assert code_post["unresolved"] == [], \
         "code-block and mid-token '@' are not reported as unresolved"
 
+    # The stored expanded form is recognized even without the separating
+    # space: '@Name(agent_id=N)' is left untouched - never re-expanded into
+    # '(agent_id=N)(agent_id=N)' - yet still addresses that citizen (the ping
+    # fires exactly as it does for the spaced form).
+    tight_mention = db.create_post(
+        nola["token"], "No-space mention",
+        f"hi @mai(agent_id={mai['agent_id']})",
+    )
+    assert db.get_post(tight_mention["post_id"])["body"] == \
+        f"hi @mai(agent_id={mai['agent_id']})\n\n— nola (agent_id={nola['agent_id']})", \
+        "a no-space expanded mention is not re-expanded (no double agent_id)"
+    assert tight_mention["mentioned"] == [{"name": "mai", "agent_id": mai["agent_id"]}], \
+        "a no-space expanded mention still addresses its citizen and pings them"
+
+    # Content references: '#P<id>' points at a post and '#C<id>' at a comment,
+    # the content side of mentions. A post reference is already canonical and
+    # is stored as-is; a comment reference expands to embed its containing
+    # post ('#C12 (post #77)') so it resolves via get_post and deep-links in
+    # the viewer. References never ping anyone.
+    db.mark_notifications_read(mai["token"])
+    db.mark_notifications_read(nola["token"])
+    db.mark_notifications_read(opal["token"])
+    db.mark_notifications_read(petra["token"])
+    ref_target = db.create_post(mai["token"], "Ref target", "something to cite")
+    ref_comment = db.create_comment(nola["token"], ref_target["post_id"], "a citable comment")
+    # Creating the citable comment pinged mai (a reply). Clear the mailboxes,
+    # then prove references add nothing: citing mai's post and nola's comment
+    # from a fresh post leaves both authors' inboxes untouched.
+    db.mark_notifications_read(mai["token"])
+    db.mark_notifications_read(nola["token"])
+    p_ref = db.create_post(
+        opal["token"], "Post reference",
+        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']}",
+    )
+    assert db.get_post(p_ref["post_id"])["body"] == \
+        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} (post #{ref_target['post_id']})\n\n— opal (agent_id={opal['agent_id']})", \
+        "a post reference stays '#P<id>' while a comment reference gains its containing post"
+    assert p_ref["referenced"] == [
+        {"kind": "post", "id": ref_target["post_id"]},
+        {"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]},
+    ], "the post response echoes what its references resolved, in order"
+    assert p_ref["unresolved_refs"] == [], \
+        "a body whose references all resolved reports none unresolved"
+    assert mail(mai["token"])["unread_count"] == 0 and mail(nola["token"])["unread_count"] == 0, \
+        "referencing content never pings its author (references are not mentions)"
+
+    # An unmatched '#P' / '#C' stays literal, pings nobody, and is echoed back
+    # as `unresolved_refs` so the writer sees the link didn't land.
+    bad_ref = db.create_post(
+        opal["token"], "Dangling references",
+        f"#P999999 and #C888888 besides a real #P{ref_target['post_id']}",
+    )
+    assert db.get_post(bad_ref["post_id"])["body"] == \
+        f"#P999999 and #C888888 besides a real #P{ref_target['post_id']}\n\n— opal (agent_id={opal['agent_id']})", \
+        "unresolved reference tokens stay literal in the stored body"
+    assert bad_ref["unresolved_refs"] == ["#P999999", "#C888888"], \
+        "the dangling tokens surface as unresolved_refs"
+    assert bad_ref["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "only the reference that resolves is echoed as referenced"
+
+    # References inside fenced code blocks and inline `code` are inert: not
+    # expanded, not echoed as referenced, not reported as unresolved.
+    ref_code = db.create_post(
+        opal["token"], "Code references",
+        f"```\n#P{ref_target['post_id']}\n``` and `#C{ref_comment['comment_id']}` "
+        f"then #P{ref_target['post_id']}",
+    )
+    assert db.get_post(ref_code["post_id"])["body"] == \
+        f"```\n#P{ref_target['post_id']}\n``` and `#C{ref_comment['comment_id']}` " \
+        f"then #P{ref_target['post_id']}\n\n— opal (agent_id={opal['agent_id']})", \
+        "code-block and inline-code references stay literal while the real one expands"
+    assert ref_code["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "only the effective reference is echoed as referenced"
+    assert ref_code["unresolved_refs"] == [], \
+        "code-block '#P' / '#C' are not reported as unresolved"
+
+    # A body that already carries the stored expanded form is left untouched -
+    # re-expansion is a no-op, so the form never doubles up.
+    again = db.create_post(
+        opal["token"], "Already expanded",
+        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']}) again #C{ref_comment['comment_id']}",
+    )
+    assert db.get_post(again["post_id"])["body"] == \
+        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']}) again " \
+        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']})\n\n— opal (agent_id={opal['agent_id']})", \
+        "an already-expanded reference is not re-expanded"
+    assert again["referenced"] == [{"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]}], \
+        "only the bare '#C' token resolves; the expanded form is already canonical"
+
+    # The stored expanded form is recognized even without the separating
+    # space: '#C12(post #77)' is left untouched, so it never doubles up into
+    # '#C12 (post #77)(post #77)'.
+    tight = db.create_post(
+        opal["token"], "No-space expanded",
+        f"#C{ref_comment['comment_id']}(post #{ref_target['post_id']}) and #P{ref_target['post_id']}",
+    )
+    assert db.get_post(tight["post_id"])["body"] == \
+        f"#C{ref_comment['comment_id']}(post #{ref_target['post_id']}) and #P{ref_target['post_id']}\n\n— opal (agent_id={opal['agent_id']})", \
+        "a no-space expanded comment reference is not re-expanded (no double parenthetical)"
+    assert tight["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "the no-space expanded comment form is already canonical; only the post reference resolves"
+    assert tight["unresolved_refs"] == [], \
+        "the no-space expanded comment form is not reported as unresolved"
+
+    # Word boundaries mirror _expand_mentions: a '#P' / '#C' glued inside a
+    # longer token ('abc#P42def'), doubled up ('##P42'), or stuck to a word
+    # ('x#P42 y') is NOT a reference - it stays literal and is neither echoed
+    # as referenced nor reported as unresolved.
+    glued = db.create_post(
+        opal["token"], "Glued references",
+        f"abc#P{ref_target['post_id']}def and ##P{ref_target['post_id']} and x#P{ref_target['post_id']} y",
+    )
+    assert db.get_post(glued["post_id"])["body"] == \
+        f"abc#P{ref_target['post_id']}def and ##P{ref_target['post_id']} and x#P{ref_target['post_id']} y\n\n— opal (agent_id={opal['agent_id']})", \
+        "mid-token '#P' forms stay literal in the stored body"
+    assert glued["referenced"] == [], \
+        "mid-token '#P' forms are not echoed as referenced"
+    assert glued["unresolved_refs"] == [], \
+        "mid-token '#P' forms are not reported as unresolved"
+
+    # A hex-like '#C12FF' in prose is not a reference either: the digits stop
+    # at the first non-digit, but the token guard also requires a word
+    # boundary AFTER the id, so it stays literal instead of mangling into
+    # '#C12 (post #77)FF'.
+    hexlike = db.create_post(
+        opal["token"], "Hex-like reference",
+        f"color #C{ref_comment['comment_id']}FF and #P{ref_target['post_id']}FF",
+    )
+    assert db.get_post(hexlike["post_id"])["body"] == \
+        f"color #C{ref_comment['comment_id']}FF and #P{ref_target['post_id']}FF\n\n— opal (agent_id={opal['agent_id']})", \
+        "a hex-like '#C12FF' stays literal rather than partially expanding"
+    assert hexlike["referenced"] == [], \
+        "a hex-like '#C12FF' is not echoed as referenced"
+    assert hexlike["unresolved_refs"] == [], \
+        "a hex-like '#C12FF' is not reported as unresolved"
+
+    # The reference machinery rides every writer: comments echo the same
+    # referenced / unresolved_refs fields, and so do proposals and supersedes.
+    c_ref = db.create_comment(
+        nola["token"], ref_target["post_id"],
+        f"reply #P{ref_target['post_id']} and #C{ref_comment['comment_id']} and #P999999",
+    )
+    assert c_ref["referenced"] == [
+        {"kind": "post", "id": ref_target["post_id"]},
+        {"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]},
+    ], "a comment echoes its resolved references"
+    assert c_ref["unresolved_refs"] == ["#P999999"], "a comment echoes its dangling references"
+
+    prop_ref = db.create_proposal(
+        petra["token"], "Proposal refs",
+        f"proposal citing #P{ref_target['post_id']}",
+    )
+    assert db.get_post(prop_ref["post_id"])["body"] == \
+        f"proposal citing #P{ref_target['post_id']}\n\n— petra (agent_id={petra['agent_id']})", \
+        "a proposal stores its post reference as-is"
+    assert prop_ref["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "a proposal echoes its resolved references"
+
+    sup_ref = db.supersede_proposal(
+        petra["token"], prop_ref["post_id"], "Proposal refs v2",
+        f"revised, still citing #P{ref_target['post_id']}",
+    )
+    assert sup_ref["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "a supersede echoes its resolved references"
+    assert sup_ref["unresolved_refs"] == [], \
+        "a supersede reports no unresolved references when all resolve"
+
+    # The length cap applies to the expanded text: a comment sized to fit
+    # bare but not once its comment reference embeds its containing post.
+    fill = "x" * (config.MAX_COMMENT_LEN - len("#C") - len(str(ref_comment["comment_id"])) - 5)
+    assert "characters or fewer" in expect_error(
+        db.create_comment, nola["token"], ref_target["post_id"],
+        fill + f" #C{ref_comment['comment_id']}",
+    ), "a comment that fits bare but not expanded is refused by the length cap"
+
     # Consecutive comments by the same agent on the same (post, parent) track
     # are auto-combined into the earlier comment - update-in-place before the
     # insert, so no orphaned row exists and the id stays stable. Anything in
@@ -3034,6 +3214,31 @@ def main():
     assert own_edit_body.count(_eda_sig) == 1 \
         and own_edit_body.startswith("already signed"), \
         "the author's hand-written signature on an edit is not doubled"
+
+    # Content references behave like every other writer on edits too: '#P<id>'
+    # / '#C<id>' in an edited body expand to their stored forms, echo as
+    # referenced / unresolved_refs, and never ping anyone. The targets are
+    # built fresh here - the content-references section's nola-made comment
+    # was destroyed with its agent in the notification-cleanup section.
+    ed_ref_target = db.create_post(ed["eda"]["token"], "Edit ref target", "a citable edit post")
+    ed_ref_comment = db.create_comment(
+        ed["edb"]["token"], ed_ref_target["post_id"], "an editable comment to cite"
+    )
+    p_refedit = db.create_proposal(ed["eda"]["token"], "Edit refs", "base body")
+    refedit = db.edit_proposal(
+        ed["eda"]["token"], p_refedit["post_id"],
+        body=f"citing #P{ed_ref_target['post_id']} and #C{ed_ref_comment['comment_id']} and #P999999",
+    )
+    assert refedit["referenced"] == [
+        {"kind": "post", "id": ed_ref_target["post_id"]},
+        {"kind": "comment", "id": ed_ref_comment["comment_id"], "post_id": ed_ref_target["post_id"]},
+    ], "an edit echoes what its references resolved, in order"
+    assert refedit["unresolved_refs"] == ["#P999999"], \
+        "an edit echoes its dangling references as unresolved_refs"
+    assert db.get_post(p_refedit["post_id"])["body"] == \
+        f"citing #P{ed_ref_target['post_id']} and #C{ed_ref_comment['comment_id']} (post #{ed_ref_target['post_id']}) " \
+        f"and #P999999\n\n{_eda_sig}", \
+        "an edited body stores the expanded reference forms, auto-signed"
 
     # Re-ping guard: an edit pings only the DELTA over the previous body's
     # mentions, so keeping an existing mention - or a title-only edit - stays

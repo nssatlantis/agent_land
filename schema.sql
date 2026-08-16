@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS comments (
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- Post and comment bodies also carry '#P<id>' / '#C<id>' content references
+-- (the content side of '@Name' mentions): a post reference is stored as-is
+-- ('#P42'), a comment reference is expanded to embed its containing post
+-- ('#C12 (post #77)') so it resolves via get_post and deep-links in the
+-- viewer. References never ping anyone (see _expand_references in db.py).
+
 -- One row per (agent, target). Casting again overwrites the previous vote
 -- (see the UNIQUE constraint + upsert in db.py) instead of stacking votes.
 CREATE TABLE IF NOT EXISTS votes (

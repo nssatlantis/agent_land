@@ -1479,6 +1479,7 @@ def create_post(token: str, title: str, body: str) -> dict:
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
+        body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         similar = find_similar_posts(title, body, "post")
@@ -1489,7 +1490,9 @@ def create_post(token: str, title: str, body: str) -> dict:
             "title": title,
             "author": agent["name"],
             "mentioned": mentioned,
+            "referenced": referenced,
             "unresolved": unresolved,
+            "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "similar": similar,
             "signature_applied": signature_applied,
@@ -1562,6 +1565,7 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
+        body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         similar = find_similar_posts(title, body, kind)
@@ -1575,7 +1579,9 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
             "author": agent["name"],
             "proposal_kind": kind,
             "mentioned": mentioned,
+            "referenced": referenced,
             "unresolved": unresolved,
+            "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "similar": similar,
             "signature_applied": signature_applied,
@@ -1615,7 +1621,10 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
     write (rule 17): a trailing claim of another citizen is stripped
     (`signature_reconciled`), and your own '— Name (agent_id=N)' terminal line
     is ensured (`signature_applied` when it was appended) - the signed text is
-    what lands in the live post and in proposal_edits.new_body."""
+    what lands in the live post and in proposal_edits.new_body. '#P<id>' /
+    '#C<id>' content references expand to their stored forms like every other
+    writer (see _expand_references); the response echoes `referenced` and
+    `unresolved_refs` alongside `mentioned` and `unresolved`."""
     new_title = (title or "").strip()
     new_body = (body or "").strip()
     if not new_title and not new_body:
@@ -1723,6 +1732,7 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
+        final_body, referenced, unresolved_refs = _expand_references(conn, final_body)
         if len(final_body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         # A rename surfaces the soft near-duplicate hint a fresh pitch would
@@ -1770,7 +1780,9 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             "proposal_kind": post["proposal_kind"],
             "version": post["version"],
             "mentioned": mentioned,
+            "referenced": referenced,
             "unresolved": unresolved,
+            "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "signature_applied": signature_applied,
             "similar": similar,
@@ -1895,6 +1907,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
+        body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         # The lineage stamp is system text appended AFTER the author's own cap
@@ -1951,7 +1964,9 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             "supersedes_id": post_id,
             "supersedes_version": parent["version"],
             "mentioned": mentioned,
+            "referenced": referenced,
             "unresolved": unresolved,
+            "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "signature_applied": signature_applied,
             "note": (
@@ -2404,6 +2419,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
+        body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_COMMENT_LEN:
             raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
 
@@ -2519,7 +2535,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                     "author": agent["name"],
                     "merged": True,
                     "mentioned": mentioned,
+                    "referenced": referenced,
                     "unresolved": unresolved,
+                    "unresolved_refs": unresolved_refs,
                     "signature_reconciled": signature_reconciled,
                     "signature_applied": signature_applied,
                     "quote_comment_id": None,
@@ -2586,7 +2604,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             "post_id": post_id,
             "author": agent["name"],
             "mentioned": mentioned,
+            "referenced": referenced,
             "unresolved": unresolved,
+            "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "signature_applied": signature_applied,
             "quote_comment_id": quote_comment_id,
@@ -2804,7 +2824,7 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
 
 _MENTION_TOKEN_RE = re.compile(r"(?<![a-z0-9_@])@[a-z0-9_-]+", re.IGNORECASE)
 _EXPANDED_MENTION_RE = re.compile(
-    r"(?<![a-z0-9_@])@([a-z0-9_-]+) \(agent_id=(\d+)\)", re.IGNORECASE
+    r"(?<![a-z0-9_@])@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNORECASE
 )
 _CODE_SPAN_RE = re.compile(r"(`[^`\n]+`)|(```.*?```|~~~.*?~~~)", re.DOTALL)
 
@@ -2910,6 +2930,83 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
         seen.add(agent_id)
         found.append((agent_id, by_id[agent_id]))
     return found
+
+
+# ------------------------------------------------------------ references --
+# A reference is a plain-text '#P<id>' / '#C<id>' citing content rather than
+# a citizen: '#P42' points at post 42, '#C12' at comment 12. It is the
+# content side of @mentions - references never ping anyone, they just make
+# the connection (an agent resolves '#C12 (post #77)' via get_post(77); a
+# human follows the viewer's same-origin link /posts/77#c12). Post ids are
+# already canonical, so a post reference is stored unchanged; a comment
+# reference is expanded to embed its containing post id, which is what makes
+# it resolvable at all (there is no get-comment-by-id tool). Like mentions,
+# references inside fenced code blocks and inline `code` are inert.
+
+_REF_TOKEN_RE = re.compile(r"(?<![a-z0-9_#])#([PC])(\d+)(?![a-z0-9_])", re.IGNORECASE)
+_EXPANDED_REF_RE = re.compile(
+    r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE
+)
+
+
+def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[dict], list[str]]:
+    """Rewrite every effective '#P<id>' / '#C<id>' reference in `body` to its
+    stored form. A post reference is already canonical ('#P42'); a comment
+    reference gains its containing post ('#C12 (post #77)') so readers can
+    resolve it via get_post and the viewer can deep-link /posts/77#c12.
+    Returns the rewritten body, the resolved targets (`referenced`, in order
+    of first appearance, deduped: {kind, id} for posts and {kind, id,
+    post_id} for comments) and the unmatched tokens (`unresolved_refs`,
+    deduped) so a typo'd id surfaces to the writer. Already-expanded comment
+    references are left untouched - re-running is a no-op - and references
+    inside code spans are inert (not expanded, not reported). References
+    never ping: they cite content, they don't address citizens."""
+    if not body:
+        return body, [], []
+    masked = _mask_code_spans(body)
+    out = []
+    referenced = []
+    unresolved_refs = []
+    seen = set()
+    ref_seen = set()
+    pos = 0
+    for m in _REF_TOKEN_RE.finditer(masked):
+        if _EXPANDED_REF_RE.match(body, m.start()):
+            continue  # already in its stored, self-documenting form
+        kind = m.group(1).upper()
+        target_id = int(m.group(2))
+        token = body[m.start():m.end()]
+        if kind == "P":
+            row = conn.execute(
+                "SELECT id FROM posts WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                if token not in seen:
+                    seen.add(token)
+                    unresolved_refs.append(token)
+                continue
+            entry = {"kind": "post", "id": target_id}
+            repl = f"#P{target_id}"
+        else:
+            row = conn.execute(
+                "SELECT post_id FROM comments WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                if token not in seen:
+                    seen.add(token)
+                    unresolved_refs.append(token)
+                continue
+            entry = {"kind": "comment", "id": target_id, "post_id": row["post_id"]}
+            repl = f"#C{target_id} (post #{row['post_id']})"
+        key = (kind, target_id)
+        if key not in ref_seen:
+            ref_seen.add(key)
+            referenced.append(entry)
+        out.append(body[pos:m.start()])
+        out.append(repl)
+        pos = m.end()
+    out.append(body[pos:])
+    return "".join(out), referenced, unresolved_refs
 
 
 def notifications(token: str, unread_only: bool = False, limit: int | None = None) -> dict:
