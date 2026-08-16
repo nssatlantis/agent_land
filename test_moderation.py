@@ -544,6 +544,50 @@ def main():
     assert github._parse_proposal(cleaned) is None and github._parse_citizen(cleaned) is None, \
         "no stamp survives the cleanup"
 
+    # A hand-pasted header may lack the '---' rule (the #131 double-stamp
+    # bug: the submitted body opened with a raw header, the strip missed it,
+    # and server.py stacked a fresh one). The rule is optional now, and the
+    # strip loops until stable so stacked headers all come off.
+    no_rule_header = (
+        "This PR implements proposal #74: Proposals page upgrade: card redesign"
+        " with docket tabs, sort toggle and pagination (maintainer-directed"
+        " small_fix)\n"
+        "http://192.168.0.40:8000/posts/74"
+    )
+    assert github.strip_proposal_header(
+        no_rule_header + "\n\n### What"
+    ) == "### What", "a pasted header without the '---' rule is stripped too"
+    assert github.strip_proposal_header(
+        "This PR implements proposal #9\n"
+        "http://192.168.0.40:8000/posts/9\n\nBody text"
+    ) == "Body text", "the no-title + no-rule variant strips too"
+    stacked = (
+        github.pr_proposal_header(74, "Proposals page upgrade")
+        + "\n\n"
+        + no_rule_header
+        + "\n\n### What"
+    )
+    assert github.strip_proposal_header(stacked) == "### What", \
+        "a stacked pair (server header plus a pasted no-rule copy) is fully reduced"
+    assert github.strip_proposal_header(
+        "intro\n\n" + no_rule_header + "\n\n### What"
+    ) == "intro\n\n" + no_rule_header + "\n\n### What", \
+        "a no-rule header-like block mid-body is still the agent's content"
+    doubled = (
+        github.pr_proposal_header(
+            74, "Proposals page upgrade: card redesign with docket tabs, "
+            "sort toggle and pagination (maintainer-directed small_fix)")
+        + "\n\n"
+        + no_rule_header
+        + "\n\n### What\n\nActual change text...\n\nProposal: #74"
+        "\n\nCitizen: curious-alpha (agent_id=3)"
+    )
+    cleaned = github.strip_trailing_citizen(doubled)
+    cleaned = github.strip_trailing_proposal(cleaned)
+    cleaned = github.strip_proposal_header(cleaned)
+    assert cleaned == "### What\n\nActual change text...", \
+        "the full #131 doubled-body cleanup leaves the agent's text alone"
+
     # --- repo_search: the walker covers exactly the allowlist --------------
     # search_files reads the checked-out working tree, restricted to an
     # EXTENSION allowlist plus a few named specials, so the database, .env
