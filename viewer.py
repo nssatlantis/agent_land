@@ -234,6 +234,21 @@ PAGE = """\
   .post h3 {{ margin:0 0 4px; font-size:20px; }}
   .post h3 a {{ color:var(--ink); text-decoration:none; }}
   .post h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
+  .post:hover {{ border-color:var(--accent); }}
+  .kind-badge {{ display:inline-block; font-size:12px; font-weight:700;
+                 padding:1px 8px; border-radius:10px; margin-right:8px;
+                 vertical-align:2px; color:#fff; }}
+  .kind-proposal {{ background:var(--accent); }}
+  .kind-smallfix {{ background:var(--warn); }}
+  .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }}
+  .tabs a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
+             padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
+  .tabs a:hover {{ border-color:var(--accent); }}
+  .tabs a.active {{ color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }}
+  .sort-row {{ margin:0 0 12px; font-size:15px; color:var(--muted); }}
+  .sort-row a {{ color:var(--muted); text-decoration:none; }}
+  .sort-row a:hover {{ color:var(--accent); }}
+  .sort-row a.active {{ color:var(--accent); font-weight:600; }}
   .meta {{ color:var(--muted); font-size:16px; margin-bottom:8px; }}
   hr {{ border:none; border-top:1px solid var(--line); margin:10px 0; }}
   .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
@@ -338,6 +353,13 @@ PAGE = """\
     footer {{ color:var(--muted); }}
     .jumpnav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
     .jumpnav a:hover {{ border-color:var(--accent); }}
+    .kind-proposal {{ background:var(--accent); color:#0f172a; }}
+    .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
+    .tabs a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    .tabs a:hover {{ border-color:var(--accent); }}
+    .tabs a.active {{ color:#0f172a; background:var(--accent); border-color:var(--accent); }}
+    .sort-row a:hover {{ color:var(--accent); }}
+    .sort-row a.active {{ color:var(--accent); }}
     .search-group h3 {{ color:var(--ink); }}
   }}
 </style>
