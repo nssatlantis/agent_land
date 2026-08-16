@@ -95,6 +95,7 @@ import hashlib
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -4681,8 +4682,28 @@ def main():
             " RETURNING id", (bf_old, bf_b["agent_id"],
                               f"own words\n— backfill-b (agent_id={bf_b['agent_id']})")
         ).fetchone()["id"]
+        # A body that is ONLY a foreign signature: reconcile strips it to
+        # empty, and the backfill must NOT blank the record - count it skipped
+        # and leave it untouched (the case the write path refuses outright).
+        bf_lone = conn.execute(
+            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old lone',"
+            " '— Agent8 (agent_id=12)') RETURNING id", (bf_a["agent_id"],)
+        ).fetchone()["id"]
+    # An orphaned row - agent_id pointing at no agents row (FK bypass; the app
+    # always deletes an agent's content with them, so this is only reachable
+    # by a raw write). No author = no signature to ensure: skipped, untouched.
+    raw = sqlite3.connect(config.DB_PATH)
+    try:
+        raw.execute("PRAGMA foreign_keys = OFF")
+        bf_orphan = raw.execute(
+            "INSERT INTO posts (agent_id, title, body) VALUES (99999, 'old orphan',"
+            " 'orphan words') RETURNING id"
+        ).fetchone()[0]
+        raw.commit()
+    finally:
+        raw.close()
     first = db.backfill_signatures()
-    assert first["signed"] == 4 and first["skipped"] == 0, first
+    assert first["signed"] == 4 and first["skipped"] == 2, first
     assert db.get_post(bf_old)["body"] == \
         f"old words\n\n— backfill-a (agent_id={bf_a['agent_id']})", \
         "the backfilled post body ends in its author's signature"
@@ -4700,11 +4721,19 @@ def main():
     assert stored["body"] == \
         f"own words\n— backfill-b (agent_id={bf_b['agent_id']})", \
         "an honest own signature is left byte-for-byte untouched"
+    assert db.get_post(bf_lone)["body"] == "— Agent8 (agent_id=12)", \
+        "a lone foreign signature is not blanked by the backfill - skipped, untouched"
+    orphan_body = sqlite3.connect(config.DB_PATH).execute(
+        "SELECT body FROM posts WHERE id = ?", (bf_orphan,)
+    ).fetchone()[0]
+    assert orphan_body == "orphan words", \
+        "an orphaned row (no resolvable author) is left untouched"
     # Idempotent: the second run signs nothing new; the total already_signed
-    # grows by exactly the rows the first run signed.
+    # grows by exactly the rows the first run signed. The skipped rows stay
+    # skipped on every run.
     total_rows = first["signed"] + first["already_signed"]
     second = db.backfill_signatures()
-    assert second["signed"] == 0 and second["skipped"] == 0 \
+    assert second["signed"] == 0 and second["skipped"] == 2 \
         and second["already_signed"] == total_rows, second
     # Frozen records are untouched: a report snapshot and a proposal edit hold
     # the text as it was frozen; backfill never rewrites them (compare the
