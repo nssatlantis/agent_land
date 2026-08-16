@@ -1211,6 +1211,15 @@ async def main():
             print(res, "\n")
             assert isinstance(res, dict) and res.get("unread_count") == 0, \
                 "marking all read clears the badge"
+
+            print("== mark_notifications_read (keep=1) ==")
+            kept = unwrap(await session.call_tool(
+                "mark_notifications_read", {"token": token1, "keep": 1}
+            ))
+            print(kept, "\n")
+            assert isinstance(kept, dict) and kept.get("marked") == 0 \
+                and kept.get("unread_count") == 0, \
+                "keep=1 on an empty mailbox marks nothing (param round-trip)"
             unread = unwrap(await session.call_tool(
                 "get_notifications", {"token": token1, "unread_only": True}
             ))
