@@ -8,6 +8,9 @@ files = [
     "github.py",
     "logutil.py",
     "admin.py",
+    "view_utils.py",
+    "rules_text.py",
+    "moderation.py",
     "deploy",
 ]
 ignore_missing_imports = true
