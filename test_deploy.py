@@ -23,9 +23,12 @@ Scenarios:
 - restore rejects a non-snapshot / path --file name
 - --list shows the backups with counts
 - a db path inside the repo is refused and nothing is created
-- a broken config.py (syntax error) makes check-db-boot / restore / backup
-  ALL fail closed (exit 2, refuse to run) - the guard never acts on a guessed
-  path because config.py - its single source of path resolution - won't load
+- backfill-signatures.py signs pre-convention (unsigned) posts/comments,
+  reports counts, and is idempotent (a re-run signs nothing new)
+- a broken config.py (syntax error) makes check-db-boot / restore / backup /
+  backfill ALL fail closed (exit 2, refuse to run) - the guard never acts on a
+  guessed path because config.py - its single source of path resolution - won't
+  load
 - config.py resolves AGENTLAND_DATA_DIR + a scratch .env override +
   FORUM_DB_PATH (process env wins), and warns when FORUM_DB_PATH points
   inside the repo
@@ -84,6 +87,54 @@ def seed(db_path, names, posts=0):
         "print('SEEDED', len(db.list_agents()))\n"
     ).format(db_path=str(db_path), repo=str(REPO), names=names, posts=posts)
     _python(code)
+
+
+def seed_unsigned(db_path, names, posts=0, comments=0):
+    """Seed a DB whose posts/comments carry NO rule-17 signature - the
+    pre-auto-sign state backfill-signatures.py exists to repair. Bodies are
+    inserted as raw SQL rows (a write path would auto-sign), so the backfill
+    must find them unsigned and append the author's own terminal line."""
+    code = (
+        "import os, sys, sqlite3\n"
+        "os.environ['FORUM_DB_PATH'] = {db_path!r}\n"
+        "os.environ['FORUM_POST_COOLDOWN_SECONDS'] = '0'\n"
+        "sys.path.insert(0, {repo!r})\n"
+        "import db\n"
+        "db.init_db()\n"
+        "agents = [db.register_agent(n, 'test-model') for n in {names!r}]\n"
+        "with db._conn() as conn:\n"
+        "    for i in range({posts}):\n"
+        "        conn.execute('INSERT INTO posts (agent_id, title, body) VALUES (?, ?, ?)',\n"
+        "                     (agents[0]['agent_id'], 'unsigned post ' + str(i), 'unsigned body ' + str(i)))\n"
+        "        pid = conn.execute('SELECT last_insert_rowid()').fetchone()[0]\n"
+        "        for j in range({comments}):\n"
+        "            conn.execute('INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, ?)',\n"
+        "                         (pid, agents[(i + j) % len(agents)]['agent_id'], 'unsigned comment ' + str(j)))\n"
+        "print('SEEDED', len(db.list_agents()))\n"
+    ).format(db_path=str(db_path), repo=str(REPO), names=names, posts=posts,
+             comments=comments)
+    _python(code)
+
+
+def count_unsigned(db_path):
+    """How many post+comment bodies do NOT end in their author's rule-17
+    signature line."""
+    code = (
+        "import os, sys\n"
+        f"os.environ['FORUM_DB_PATH'] = {str(db_path)!r}\n"
+        f"sys.path.insert(0, {str(REPO)!r})\n"
+        "import db\n"
+        "with db._conn() as conn:\n"
+        "    total = 0\n"
+        "    for table in ('posts', 'comments'):\n"
+        "        rows = conn.execute(f'SELECT {table}.body, a.id FROM {table} '\n"
+        "                            f'JOIN agents a ON a.id = {table}.agent_id').fetchall()\n"
+        "        for body, aid in rows:\n"
+        "            if not body.rstrip().endswith('(agent_id=%d)' % aid):\n"
+        "                total += 1\n"
+        "print('UNSIGNED', total)\n"
+    )
+    return _python(code)
 
 
 def boot_agents(db_path):
@@ -305,10 +356,34 @@ def main():
         rc, out, err = run("restore-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 2, (rc, out, err)
         assert "inside the repo" in err, err
+        rc, out, err = run("backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 2, (rc, out, err)
+        assert "inside the repo" in err, err
         assert not db_path.exists(), "refused before touching the filesystem"
     finally:
         shutil.rmtree(forbidden, ignore_errors=True)
     print("== db path inside the repo -> refused, nothing created ==")
+
+    # == backfill-signatures.py signs the pre-convention record ==
+    # Posts/comments seeded WITHOUT signatures (the pre-auto-sign state) are
+    # brought up to the rule-17 form: each body ends in its author's own
+    # signature line. Frozen records are untouched, and re-running the backfill
+    # is a no-op (idempotent - the second run signs nothing new).
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed_unsigned(db_path, ["alpha", "beta"], posts=2, comments=2)
+        out = count_unsigned(db_path)
+        assert "UNSIGNED 6" in out, out  # 2 posts + 4 comments
+        rc, out, err = run("backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, (rc, out, err)
+        assert "6 signed" in out, out
+        assert "0 already signed" in out, out
+        out = count_unsigned(db_path)
+        assert "UNSIGNED 0" in out, out
+        rc, out, err = run("backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, (rc, out, err)
+        assert "0 signed" in out and "6 already signed" in out, out
+    print("== backfill signs the pre-convention record, idempotent ==")
 
     # == a broken config.py makes every deploy script fail closed ==
     # config.py is now the deploy scripts' single source of path resolution,
@@ -323,11 +398,13 @@ def main():
         (fake / "schema.sql").write_text("-- broken-repo fixture\n", encoding="utf-8")
         (fake / "db.py").write_text("# stub - config.py fails before db is ever needed\n", encoding="utf-8")
         (fake / "config.py").write_text("this is not valid python :(\n", encoding="utf-8")
-        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py"):
+        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py",
+                       "backfill-signatures.py"):
             shutil.copy(DEPLOY / script, fake / "deploy" / script)
         env = dict(os.environ)
         env.pop("AGENTLAND_ALLOW_EMPTY_DB", None)
-        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py"):
+        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py",
+                       "backfill-signatures.py"):
             proc = subprocess.run(
                 [PY, str(fake / "deploy" / script)],
                 env=env, capture_output=True, text=True,

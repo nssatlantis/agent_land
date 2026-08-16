@@ -422,9 +422,10 @@ def main():
         b_token, f_post["post_id"], "quoting", quote_comment_id=quote_src["comment_id"])
     quoted_rep = db.report_content(b_token, "comment", quote_comment["comment_id"], "flagged")
     qr = db.get_report(quoted_rep["report_id"])
+    _q_src_body = f"original words\n\n— frank (agent_id={frank['agent_id']})"
     assert qr["target_snapshot"].get("quote_comment_id") == quote_src["comment_id"] \
-        and qr["target_snapshot"].get("quote_text") == "original words", \
-        "a comment report's snapshot carries the quote fields"
+        and qr["target_snapshot"].get("quote_text") == _q_src_body, \
+        "a comment report's snapshot carries the quote fields (signed source body)"
     quoted_page = _call(admin.report_detail, _req(
         "GET", f"/admin/reports/{quoted_rep['report_id']}",
         params={"id": quoted_rep["report_id"]},
