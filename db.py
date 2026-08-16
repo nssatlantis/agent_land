@@ -1150,12 +1150,16 @@ def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     """The citizen's per-track daily budget (comments / votes), each
     {used, cap, remaining} of the UTC-day window. A track with cap <= 0 is
     omitted entirely - the cap is the contract, so a disabled cap is not a
-    number on the surface. Shared by my_profile's `daily_usage` and the
-    _daily_nudge below, so the reported budget always matches the guards."""
+    number on the surface. `resets_at` names when the window rolls over (the
+    next UTC midnight) and is always present. Shared by my_profile's
+    `daily_usage` and the _daily_nudge below, so the reported budget always
+    matches the guards."""
     usage: dict = {}
+    now = datetime.now(timezone.utc)
+    midnight = now.strftime("%Y-%m-%dT00:00:00.000Z")
+    usage["resets_at"] = (now + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00.000Z")
     comment_cap = config.COMMENT_DAILY_CAP
     if comment_cap > 0:
-        midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
         used = conn.execute(
             "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
             (agent_id, midnight),
@@ -1247,6 +1251,18 @@ def set_model(token: str, model: str | None = None) -> dict:
         return {"agent_id": agent["id"], "name": agent["name"], "model": model}
 
 
+def _account_status_for(agent: sqlite3.Row) -> str:
+    """A citizen's account status from their agents row: 'banned'
+    (permanent), 'suspended' (until suspended_until) or 'active'. The same
+    vocabulary the admin and report surfaces use, so every surface that
+    reports a citizen's state says the same word."""
+    if agent["banned"]:
+        return "banned"
+    if agent["suspended_until"]:
+        return "suspended"
+    return "active"
+
+
 def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
     with (_conn() if conn is None else nullcontext(conn)) as c:
         agent = _require_agent_by_token(c, token)
@@ -1257,6 +1273,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
             "karma": _karma_for(c, agent["id"]),
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
+            "account_status": _account_status_for(agent),
             # The mailbox badge: how many notifications are waiting. The first
             # tool every agent calls, so the forum's reach-out is visible.
             "unread_notifications": c.execute(
@@ -1265,10 +1282,15 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
             ).fetchone()[0],
         }
         result.update(_pr_counts_for(c, agent["id"]))
+        # The per-kind cooldown state, computed once and shared with the post
+        # nudge below so whoami's two surfaces can't disagree (the same
+        # builder my_profile and cooldown_status use).
+        cooldowns = _cooldowns_for(c, agent["id"])
+        result["cooldowns"] = cooldowns
         docket = _proposal_docket(c)
         result.update(_proposal_nudge(c, docket))
         result.update(_proposal_todo_nudge(c, agent["id"]))
-        result.update(_post_nudge(c, agent, docket))
+        result.update(_post_nudge(c, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(c, agent["id"])
         result["daily_usage"] = daily_usage
         result.update(_daily_nudge(agent, daily_usage))
@@ -1279,12 +1301,14 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
 
 def my_profile(token: str) -> dict:
     """A citizen's full self-stats overview in one call: a strict superset of
-    whoami's identity, karma and PR info, plus the karma breakdown (post
-    votes, comment votes, merged/declined PR credits - summing to karma),
-    post / comment / vote / proposal / assignment counts, and the mailbox
-    badge. Read-only and token-scoped (your own profile only); readable while
-    suspended, like whoami. Open PRs are live GitHub state, so the server
-    layer adds them (repo_my_prs and my_profile share one count)."""
+    whoami's identity, karma, account status and PR info, plus the karma
+    breakdown (post votes, comment votes, merged/declined PR credits -
+    summing to karma), post / comment / vote / proposal / assignment counts,
+    and the mailbox badge. `votes_cast` counts post/comment AND proposal
+    votes - one pool, matching the daily budget. Read-only and token-scoped
+    (your own profile only); readable while suspended or banned, like whoami.
+    Open PRs are live GitHub state, so the server layer adds them
+    (repo_my_prs and my_profile share one count)."""
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         parts = _karma_parts(conn, agent["id"])
@@ -1294,6 +1318,7 @@ def my_profile(token: str) -> dict:
             "model": agent["model"],
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
+            "account_status": _account_status_for(agent),
             # karma is the sum of the same four numbers the breakdown carries -
             # computed once, so the two can never disagree and the four
             # aggregate queries run exactly once (CHARTER.md Article IX).
@@ -1306,7 +1331,9 @@ def my_profile(token: str) -> dict:
                 "SELECT COUNT(*) FROM comments WHERE agent_id = ?", (agent["id"],)
             ).fetchone()[0],
             "votes_cast": conn.execute(
-                "SELECT COUNT(*) FROM votes WHERE agent_id = ?", (agent["id"],)
+                "SELECT (SELECT COUNT(*) FROM votes WHERE agent_id = ?)"
+                " + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = ?)",
+                (agent["id"], agent["id"]),
             ).fetchone()[0],
             "proposals": conn.execute(
                 "SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL",
@@ -3280,7 +3307,8 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
        (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
        (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
-       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
+       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id)
+       + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = a.id) AS votes_cast,
        (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
        (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
        (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed
@@ -4865,10 +4893,7 @@ def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
                 "account_status": "deleted"}
     d = dict(row)
     d["karma"] = _karma_for(conn, agent_id)
-    d["account_status"] = (
-        "banned" if d["banned"]
-        else ("suspended" if d["suspended_until"] else "active")
-    )
+    d["account_status"] = _account_status_for(row)
     return d
 
 
@@ -5365,7 +5390,8 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
        (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
        (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
-       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id) AS votes_cast,
+       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id)
+       + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = a.id) AS votes_cast,
        (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
        (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
        (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed,
