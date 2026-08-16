@@ -1567,11 +1567,14 @@ def main():
     # post_kind_counts drives the /posts tabs and stays consistent with the
     # same list_posts filters the tabs use.
     counts = db.post_kind_counts()
-    assert counts["posts"] == len(db.list_posts(proposal_kind="none")), \
+    assert counts["posts"] == len(db.list_posts(proposal_kind="none",
+                                                limit=config.MAX_PAGE_SIZE)), \
         "post_kind_counts must agree with the 'none' filter"
-    assert counts["proposals"] == len(db.list_posts(proposal_kind="proposal")), \
+    assert counts["proposals"] == len(db.list_posts(proposal_kind="proposal",
+                                                    limit=config.MAX_PAGE_SIZE)), \
         "post_kind_counts must agree with the 'proposal' filter"
-    assert counts["small_fixes"] == len(db.list_posts(proposal_kind="small_fix")), \
+    assert counts["small_fixes"] == len(db.list_posts(proposal_kind="small_fix",
+                                                      limit=config.MAX_PAGE_SIZE)), \
         "post_kind_counts must agree with the 'small_fix' filter"
     assert counts["total"] == counts["posts"] + counts["proposals"] + counts["small_fixes"], \
         "the per-kind counts must sum to the total"
