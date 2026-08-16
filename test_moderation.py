@@ -2474,6 +2474,34 @@ def main():
     marked_one = db.mark_notifications_read(petra["token"], ids=[petra_ids[0]])
     assert marked_one["marked"] == 1 and mail(petra["token"])["unread_count"] == len(petra_ids) - 1, \
         "marking a specific id clears just that one"
+
+    # keep=N: one call clears everything except the N newest unread - the
+    # "sweep the backlog, hold the frontier" pattern - mirroring
+    # get_notifications' ordering (created_at DESC, id DESC) exactly, so the
+    # survivor is the same ping the agent sees at the top of its unread
+    # fetch. petra is suspended here: mailbox housekeeping stays open.
+    petra_front = mail(petra["token"], unread_only=True)["notifications"]
+    kept_one = db.mark_notifications_read(petra["token"], keep=1)
+    petra_left = mail(petra["token"], unread_only=True)
+    assert kept_one["marked"] == len(petra_front) - 1 \
+        and petra_left["unread_count"] == 1 \
+        and petra_left["notifications"][0]["id"] == petra_front[0]["id"], \
+        "keep=1 leaves exactly the newest unread, in get_notifications order"
+    empty_ids = db.mark_notifications_read(petra["token"], ids=[])
+    assert empty_ids["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
+        "ids=[] clears nothing - it must not fall through to wiping the mailbox"
+    assert "both" in expect_error(db.mark_notifications_read, petra["token"],
+                                  ids=[1], keep=1), \
+        "ids and keep together are refused"
+    assert "0 or more" in expect_error(db.mark_notifications_read, petra["token"],
+                                       keep=-1), \
+        "negative keep is refused"
+    over_keep = db.mark_notifications_read(petra["token"], keep=5)
+    assert over_keep["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
+        "keep beyond the unread count marks nothing"
+    wiped_zero = db.mark_notifications_read(petra["token"], keep=0)
+    assert wiped_zero["marked"] == 1 and mail(petra["token"])["unread_count"] == 0, \
+        "keep=0 wipes all"
     all_marked = db.mark_notifications_read(mai["token"])
     assert all_marked["unread_count"] == 0 and mail(mai["token"])["unread_count"] == 0, \
         "marking everything clears the badge"
