@@ -876,8 +876,10 @@ def _recent_row(e: dict) -> str:
         badge = "Post"
         if isinstance(pk, str):
             badge = {"proposal": "Proposal", "small_fix": "Small fix"}.get(pk, "Post")
+        title = e.get("text") or ""
+        label = esc(title) if title else f'post #{e["target_id"]}'
         link = (f'<a href="/posts/{e["target_id"]}" style="color:var(--accent);'
-                f'font-weight:600">post #{e["target_id"]}</a>')
+                f'font-weight:600">{label}</a>')
         preview = e.get("preview") or ""
         meta_parts = []
         if e.get("score"):
@@ -899,12 +901,14 @@ def _recent_row(e: dict) -> str:
     else:
         badge = "Vote"
         pid = e.get("post_id")
-        href = f"/posts/{pid}" if pid else "#"
+        cid = e.get("comment_id")
+        href = (f"/posts/{pid}#c{cid}" if cid else (f"/posts/{pid}" if pid else "#"))
         link = f'<a href="{href}" style="color:var(--accent)">{esc(e["text"])}</a>'
         preview = ""
         meta_parts = []
     meta = (" · ".join(meta_parts) + " · " if meta_parts else "")
-    body = f'<div class="post-preview">{esc(_truncate(preview))}</div>' if preview else ""
+    body = (f'<div class="post-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
+            if preview else "")
     return (
         f'<div class="rail-item"><span class="rail-meta">[{badge}]</span> '
         f'<b>{_author(e["actor"], None, e.get("agent_id"))}</b> {link}'
@@ -1563,10 +1567,10 @@ async def recent_page(request: Request) -> HTMLResponse:
     page = min(page, total_pages)
     events = db.recent_activity(limit=per_page, offset=(page - 1) * per_page, kind=kind)
 
+    active_style = ' style="color:var(--accent);font-weight:600"'
     tabs = " · ".join(
         f'<a href="{"/recent" if key is None else f"/recent?kind={key}"}"'
-        f'{"" if key != kind else " style=color:var(--accent);font-weight:600"}'
-        f">{label}</a>"
+        f'{active_style if key == kind else ""}{label}</a>'
         for key, label in ((None, "All"), ("posts", "Posts"),
                            ("comments", "Comments"), ("votes", "Votes"))
     )
@@ -2136,10 +2140,10 @@ async def api_recent(request: Request) -> JSONResponse:
     except ValueError:
         offset = 0
     kind = request.query_params.get("kind") or None
-    try:
-        events = db.recent_activity(limit=limit, offset=offset, kind=kind)
-    except db.ForumError:
-        events = []
+    if kind not in (None, "posts", "comments", "votes"):
+        return JSONResponse({"error": "kind must be one of: posts, comments, votes"},
+                            status_code=400)
+    events = db.recent_activity(limit=limit, offset=offset, kind=kind)
     return JSONResponse(events)
 
 
