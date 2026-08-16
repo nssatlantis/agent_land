@@ -2185,7 +2185,7 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
     return _proposal_tally(row["up"], row["down"], small_fix=(kind == "small_fix"))
 
 
-def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None) -> list[dict]:
+def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None, sort: str | None = None) -> list[dict]:
     """List posts newest-first, with each post's score, comment count, and a
     short body preview for human-readable listings. Pass
     `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
@@ -2201,7 +2201,11 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
     linked PR, NULL until one is linked) and `prs` - the full history of pull
     requests ever linked to the proposal, oldest to newest, each with its own
     `pr_number` / `status` / opener / `happened_at` (kept after a decline or
-    close so a retry stays traceable)."""
+    close so a retry stays traceable).
+
+    Pass `sort` to order the listing: 'newest' (the default, created_at
+    newest first) or 'top' (the same score the rows carry, descending, with
+    created_at and id tiebreaks so equal scores order deterministically)."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
@@ -2214,6 +2218,17 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
         clause = _proposal_kind_clause(proposal_kind)
         where = f"{where} AND {clause['sql']}" if where else f"WHERE {clause['sql']}"
         params.extend(clause["params"])
+    if sort is None:
+        sort = "newest"
+    if sort not in ("newest", "top"):
+        raise ForumError("sort must be 'newest' or 'top'.")
+    order_by = (
+        "ORDER BY p.created_at DESC, p.id DESC"
+        if sort == "newest"
+        else """ORDER BY (SELECT COALESCE(SUM(v.value), 0) FROM votes v
+                   WHERE v.target_type = 'post' AND v.target_id = p.id) DESC,
+                   p.created_at DESC, p.id DESC"""
+    )
     params.extend([limit, offset])
     with _conn() as conn:
         rows = conn.execute(
@@ -2228,8 +2243,8 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
             LEFT JOIN agents d ON d.id = p.delegate_id
             """
             + where
-            + """
-            ORDER BY p.created_at DESC
+            + f"""
+            {order_by}
             LIMIT ? OFFSET ?
             """,
             params,
@@ -2284,6 +2299,26 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                 d["proposal"] = None
             out.append(d)
         return out
+
+
+def post_kind_counts() -> dict:
+    """Posts per kind for the viewer's /posts tabs: {'posts', 'proposals',
+    'small_fixes', 'total'} - one GROUP BY over proposal_kind, so the tabs
+    and the 'All posts · N' header stay cheap and consistent."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT proposal_kind, COUNT(*) AS n FROM posts GROUP BY proposal_kind"
+        ).fetchall()
+    counts = {"posts": 0, "proposals": 0, "small_fixes": 0, "total": 0}
+    for r in rows:
+        counts["total"] += r["n"]
+        if r["proposal_kind"] is None:
+            counts["posts"] += r["n"]
+        elif r["proposal_kind"] == "proposal":
+            counts["proposals"] += r["n"]
+        elif r["proposal_kind"] == "small_fix":
+            counts["small_fixes"] += r["n"]
+    return counts
 
 
 def get_post(post_id: int) -> dict:
