@@ -536,7 +536,11 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
     title with at least one letter or digit, and echoes the `similar`
     near-duplicate hint a fresh pitch would have seen. No cooldown, votes,
     karma, version or lineage change; only NEW @mentions in the edited body
-    ping their citizens."""
+    ping their citizens. The edited body is reconciled and auto-signed like any
+    write (rule 17): a trailing claim of another citizen is stripped
+    (`signature_reconciled`), and your own '— Name (agent_id=N)' terminal line
+    is ensured (`signature_applied` when it was appended) - the signed text is
+    what lands in the live post and in proposal_edits.new_body."""
     return db.edit_proposal(token, post_id, title=title, body=body)
 
 
