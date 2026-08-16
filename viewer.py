@@ -928,15 +928,18 @@ _INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 # comment bodies. The one link this viewer renders - a same-origin citizen
 # profile link - is deliberately exempt from the no-links trust model below:
 # it cannot point off-site, and both fields are restricted to safe characters.
-_MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+) \(agent_id=(\d+)\)", re.IGNORECASE)
+_MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNORECASE)
 
 # The stored reference forms db.py leaves in bodies: '#P42' (post 42) and
 # '#C12 (post #77)' (comment 12 on post 77). Like mentions they are same-
 # origin links to content, so they share the mention exemption from the no-
 # links trust model. The comment form carries its containing post id - that
 # is what makes it linkable at all, since comments live under their post.
-_POST_REF_LINK_RE = re.compile(r"#P(\d+)", re.IGNORECASE)
-_COMMENT_REF_LINK_RE = re.compile(r"#C(\d+) \(post #(\d+)\)", re.IGNORECASE)
+# Both regexes mirror the word boundaries db.py enforces when it decides what
+# counts as a reference (_REF_TOKEN_RE / _EXPANDED_REF_RE), so prose like
+# 'abc#P42def' or '##P42' - which db never expands - renders without a link.
+_POST_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#P(\d+)(?![a-z0-9_])", re.IGNORECASE)
+_COMMENT_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE)
 
 
 def _linkify_mentions(text: str) -> str:
