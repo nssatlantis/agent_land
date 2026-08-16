@@ -12,11 +12,11 @@ from db import (
     _conn,
     _id_chunks,
     _karma_for,
-    _notify,
     _now_iso,
     _parse_iso,
     _require_active_agent,
 )
+from notifications import _notify
 
 # ----------------------------------------------- reports & moderation --
 
