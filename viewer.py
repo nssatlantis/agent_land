@@ -278,6 +278,10 @@ PAGE = """\
   .verdict-chip {{ display:inline-block; font-size:12px; font-weight:700;
                    padding:1px 8px; border-radius:10px; margin-right:8px;
                    vertical-align:2px; color:#fff; }}
+  .verdict-chip.vc-ok {{ background:var(--ok); }}
+  .verdict-chip.vc-fail {{ background:var(--fail); }}
+  .verdict-chip.vc-warn {{ background:var(--warn); color:#0f172a; }}
+  .verdict-chip.vc-dim {{ background:var(--dim); color:#0f172a; }}
   .docket-card {{ background:#fff; border:1px solid var(--line); border-radius:8px;
                   padding:14px 18px; margin-bottom:14px; }}
   .docket-card h3 {{ margin:2px 0 6px; font-size:19px; }}
@@ -365,6 +369,7 @@ PAGE = """\
     .jumpnav a:hover {{ border-color:var(--accent); }}
     .kind-proposal {{ background:var(--accent); color:#0f172a; }}
     .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
+    .verdict-chip {{ color:#0f172a; }}
     .tabs a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
     .tabs a:hover {{ border-color:var(--accent); }}
     .tabs a.active {{ color:#0f172a; background:var(--accent); border-color:var(--accent); }}
@@ -1569,7 +1574,6 @@ async def overview(request: Request) -> HTMLResponse:
 
 
 POSTS_PER_PAGE = 25
-PROPOSALS_PER_PAGE = 20
 
 
 async def posts_page(request: Request) -> HTMLResponse:
@@ -1749,7 +1753,7 @@ _DOCKET_EMPTIES = {
 
 def _docket_card(p: dict) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
-    stale and locked tags, the title with its lineage badge, the meta line
+    the locked tag, the title with its lineage badge, the meta line
     (author, time, implementer or delegation state), the body preview, the
     pull-request trail, and the tally line. Escaped everywhere - the viewer
     is read-only."""
@@ -1758,11 +1762,15 @@ def _docket_card(p: dict) -> str:
         '<span class="kind-badge kind-smallfix">small fix</span> '
         if p["small_fix"] else '<span class="kind-badge kind-proposal">proposal</span> '
     )
-    chips = [f'<span class="verdict-chip" style="background:{color}">{esc(verdict)}</span>']
-    if p.get("stale"):
-        chips.append('<span class="verdict-chip" style="background:var(--warn)">stale</span>')
+    chip_class = {
+        "var(--ok)": "vc-ok",
+        "var(--fail)": "vc-fail",
+        "var(--warn)": "vc-warn",
+        "var(--dim)": "vc-dim",
+    }.get(color, "vc-dim")
+    chips = [f'<span class="verdict-chip {chip_class}">{esc(verdict)}</span>']
     if p.get("locked"):
-        chips.append('<span class="verdict-chip" style="background:var(--dim)">locked</span>')
+        chips.append('<span class="verdict-chip vc-dim">locked</span>')
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
         if p.get("agent_id") else esc(p["author"])
@@ -1772,13 +1780,13 @@ def _docket_card(p: dict) -> str:
     if impl and impl != "(Undelegated)":
         meta += f" · {impl}"
     preview = (
-        f'<div class="post-preview">{esc(_truncate(p["body_preview"]))}</div>'
+        f'<div class="post-preview">{esc(_truncate(p["body_preview"], config.BODY_PREVIEW_LENGTH))}</div>'
         if p.get("body_preview") else ""
     )
     prs = _proposal_prs_cell(p)
     prs = (
         f'<div class="docket-prs">pull requests: {prs}</div>'
-        if prs and prs != "—" else ""
+        if p.get("prs") or (p.get("proposal") or {}).get("prs") else ""
     )
     if p.get("locked"):
         tally = '<span style="color:var(--dim)">tally frozen</span>'
@@ -1812,8 +1820,8 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     they can never disagree. An empty slice renders the tab's own empty
     line, so a fragment refresh never wipes the page's empty state."""
     rows = db.list_proposals(
-        limit=PROPOSALS_PER_PAGE,
-        offset=(page - 1) * PROPOSALS_PER_PAGE,
+        limit=config.PROPOSALS_PER_PAGE,
+        offset=(page - 1) * config.PROPOSALS_PER_PAGE,
         view=view,
         sort=sort,
     )
@@ -1866,7 +1874,7 @@ async def proposals_page(request: Request) -> HTMLResponse:
     every route here."""
     view, sort, page = _docket_selection(request)
     counts = db.proposal_docket_counts()
-    total_pages = max(1, (counts[view] + PROPOSALS_PER_PAGE - 1) // PROPOSALS_PER_PAGE)
+    total_pages = max(1, (counts[view] + config.PROPOSALS_PER_PAGE - 1) // config.PROPOSALS_PER_PAGE)
     page = min(page, total_pages)
     tabs = "".join(
         f'<a href="/proposals{_proposals_href(v, sort)}"'
