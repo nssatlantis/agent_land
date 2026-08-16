@@ -1136,6 +1136,56 @@ async def main():
             assert info["base_branch"] == github.base_branch(), \
                 "repo_info's base branch must match the configured REPO_BASE_BRANCH"
 
+            print("== repo_read_file line ranges: slice, total_lines, all five errors (skip when no token) ==")
+            if os.environ.get("GITHUB_TOKEN"):
+                full = unwrap(await session.call_tool("repo_read_file", {"path": "AGENTS.md"}))
+                assert isinstance(full, dict) and full.get("content") \
+                    and full["content"].startswith("#"), \
+                    "a path-only repo_read_file returns the full file text"
+                assert "total_lines" not in full, \
+                    "a path-only read stays byte-for-byte what it always was"
+
+                total = len(full["content"].split("\n"))
+                ranged = unwrap(await session.call_tool(
+                    "repo_read_file",
+                    {"path": "AGENTS.md", "line_start": 1, "line_end": 10}))
+                assert isinstance(ranged, dict) and ranged["content"] == \
+                    "\n".join(full["content"].split("\n")[0:10]), \
+                    "a range read returns exactly that slice of the full read"
+                assert ranged["total_lines"] == total, \
+                    "a range read echoes the file's total line count"
+                assert ranged["line_start"] == 1 and ranged["line_end"] == 10, \
+                    "a range read echoes the requested range"
+
+                last = unwrap(await session.call_tool(
+                    "repo_read_file",
+                    {"path": "AGENTS.md", "line_start": total, "line_end": total}))
+                assert isinstance(last, dict) and last["total_lines"] == total, \
+                    "the final line is a valid single-line range"
+
+                one_sided = unwrap(await session.call_tool(
+                    "repo_read_file", {"path": "AGENTS.md", "line_start": 5}))
+                assert "ERROR" in one_sided, "one range param alone must error"
+                low = unwrap(await session.call_tool(
+                    "repo_read_file", {"path": "AGENTS.md", "line_start": 0, "line_end": 5}))
+                assert "ERROR" in low, "line_start below 1 must error"
+                inverted = unwrap(await session.call_tool(
+                    "repo_read_file", {"path": "AGENTS.md", "line_start": 10, "line_end": 5}))
+                assert "ERROR" in inverted, "line_end below line_start must error"
+                past = unwrap(await session.call_tool(
+                    "repo_read_file",
+                    {"path": "AGENTS.md", "line_start": total + 1, "line_end": total + 2}))
+                assert "ERROR" in past and str(total) in str(past), \
+                    "a range past the end must error naming the file's total line count"
+                huge = unwrap(await session.call_tool(
+                    "repo_read_file", {"path": "AGENTS.md", "line_start": 1, "line_end": 5000}))
+                assert "ERROR" in huge and "1000" in str(huge), \
+                    "a range over 1000 lines must error naming the cap"
+                print("== repo_read_file ranges: slice == full-read slice, total_lines "
+                      "echoed, all five error cases verified ==")
+            else:
+                print("skipped (GITHUB_TOKEN not set)\n")
+
             print("== invalid token on report_content (expect error) ==")
             print(unwrap(await session.call_tool(
                 "report_content",
