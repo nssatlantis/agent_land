@@ -465,6 +465,8 @@ async def main():
                 assert _track["used"] + _track["remaining"] == _track["cap"] \
                     and 0 <= _track["used"] <= _track["cap"], \
                     "daily_usage arithmetic is consistent (never exact-equality on moving values)"
+            assert me.get("daily_usage") == prof["daily_usage"], \
+                "whoami carries the same daily_usage as my_profile (superset)"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
