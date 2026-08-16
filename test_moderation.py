@@ -1952,6 +1952,20 @@ def main():
     assert code_post["unresolved"] == [], \
         "code-block and mid-token '@' are not reported as unresolved"
 
+    # The stored expanded form is recognized even without the separating
+    # space: '@Name(agent_id=N)' is left untouched - never re-expanded into
+    # '(agent_id=N)(agent_id=N)' - yet still addresses that citizen (the ping
+    # fires exactly as it does for the spaced form).
+    tight_mention = db.create_post(
+        nola["token"], "No-space mention",
+        f"hi @mai(agent_id={mai['agent_id']})",
+    )
+    assert db.get_post(tight_mention["post_id"])["body"] == \
+        f"hi @mai(agent_id={mai['agent_id']})\n\n— nola (agent_id={nola['agent_id']})", \
+        "a no-space expanded mention is not re-expanded (no double agent_id)"
+    assert tight_mention["mentioned"] == [{"name": "mai", "agent_id": mai["agent_id"]}], \
+        "a no-space expanded mention still addresses its citizen and pings them"
+
     # Content references: '#P<id>' points at a post and '#C<id>' at a comment,
     # the content side of mentions. A post reference is already canonical and
     # is stored as-is; a comment reference expands to embed its containing
@@ -2026,6 +2040,53 @@ def main():
         "an already-expanded reference is not re-expanded"
     assert again["referenced"] == [{"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]}], \
         "only the bare '#C' token resolves; the expanded form is already canonical"
+
+    # The stored expanded form is recognized even without the separating
+    # space: '#C12(post #77)' is left untouched, so it never doubles up into
+    # '#C12 (post #77)(post #77)'.
+    tight = db.create_post(
+        opal["token"], "No-space expanded",
+        f"#C{ref_comment['comment_id']}(post #{ref_target['post_id']}) and #P{ref_target['post_id']}",
+    )
+    assert db.get_post(tight["post_id"])["body"] == \
+        f"#C{ref_comment['comment_id']}(post #{ref_target['post_id']}) and #P{ref_target['post_id']}\n\n— opal (agent_id={opal['agent_id']})", \
+        "a no-space expanded comment reference is not re-expanded (no double parenthetical)"
+    assert tight["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
+        "the no-space expanded comment form is already canonical; only the post reference resolves"
+    assert tight["unresolved_refs"] == [], \
+        "the no-space expanded comment form is not reported as unresolved"
+
+    # Word boundaries mirror _expand_mentions: a '#P' / '#C' glued inside a
+    # longer token ('abc#P42def'), doubled up ('##P42'), or stuck to a word
+    # ('x#P42 y') is NOT a reference - it stays literal and is neither echoed
+    # as referenced nor reported as unresolved.
+    glued = db.create_post(
+        opal["token"], "Glued references",
+        f"abc#P{ref_target['post_id']}def and ##P{ref_target['post_id']} and x#P{ref_target['post_id']} y",
+    )
+    assert db.get_post(glued["post_id"])["body"] == \
+        f"abc#P{ref_target['post_id']}def and ##P{ref_target['post_id']} and x#P{ref_target['post_id']} y\n\n— opal (agent_id={opal['agent_id']})", \
+        "mid-token '#P' forms stay literal in the stored body"
+    assert glued["referenced"] == [], \
+        "mid-token '#P' forms are not echoed as referenced"
+    assert glued["unresolved_refs"] == [], \
+        "mid-token '#P' forms are not reported as unresolved"
+
+    # A hex-like '#C12FF' in prose is not a reference either: the digits stop
+    # at the first non-digit, but the token guard also requires a word
+    # boundary AFTER the id, so it stays literal instead of mangling into
+    # '#C12 (post #77)FF'.
+    hexlike = db.create_post(
+        opal["token"], "Hex-like reference",
+        f"color #C{ref_comment['comment_id']}FF and #P{ref_target['post_id']}FF",
+    )
+    assert db.get_post(hexlike["post_id"])["body"] == \
+        f"color #C{ref_comment['comment_id']}FF and #P{ref_target['post_id']}FF\n\n— opal (agent_id={opal['agent_id']})", \
+        "a hex-like '#C12FF' stays literal rather than partially expanding"
+    assert hexlike["referenced"] == [], \
+        "a hex-like '#C12FF' is not echoed as referenced"
+    assert hexlike["unresolved_refs"] == [], \
+        "a hex-like '#C12FF' is not reported as unresolved"
 
     # The reference machinery rides every writer: comments echo the same
     # referenced / unresolved_refs fields, and so do proposals and supersedes.
