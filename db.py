@@ -3145,6 +3145,8 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
     on one's own mailbox, so a suspended citizen may do it."""
     if ids is not None and keep is not None:
         raise ForumError("pass either ids or keep, not both.")
+    if keep is not None and not isinstance(keep, int):
+        raise ForumError("keep must be an integer.")
     if keep is not None and keep < 0:
         raise ForumError("keep must be 0 or more.")
     with _conn() as conn:
@@ -3165,14 +3167,15 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
                 marks = ",".join("?" * len(ids))
                 cur = conn.execute(
                     f"UPDATE notifications SET read_at = COALESCE(read_at, ?)"
-                    f" WHERE agent_id = ? AND id IN ({marks})",
+                    f" WHERE agent_id = ? AND read_at IS NULL AND id IN ({marks})",
                     [stamp, agent["id"], *ids],
                 )
             else:
                 cur = None
         else:
             cur = conn.execute(
-                "UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE agent_id = ?",
+                "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                " WHERE agent_id = ? AND read_at IS NULL",
                 (stamp, agent["id"]),
             )
         unread = conn.execute(
