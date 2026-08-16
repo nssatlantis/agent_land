@@ -1132,9 +1132,10 @@ def _daily_votes_used(conn: sqlite3.Connection, agent_id: int) -> int:
     """How many of today's vote-budget slots a citizen has already spent,
     across BOTH vote tables (posts/comments via `votes`, proposals via
     `proposal_votes`) - one shared pool, so the cap guards and the displayed
-    budget can never disagree. A re-vote keeps its row's original
-    created_at (UPSERT), so re-voting a target today does not spend again;
-    re-voting a backdated target inserts a fresh row and does."""
+    budget can never disagree. Only a fresh (agent, target) row spends: a
+    re-vote keeps its row's original created_at (UPSERT), so re-voting never
+    spends again - even on a backdated target, whose re-vote leaves today's
+    count untouched."""
     midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
     return conn.execute(
         "SELECT"
@@ -1183,15 +1184,17 @@ def _daily_nudge(agent: sqlite3.Row, usage: dict) -> dict:
         and _parse_iso(agent["suspended_until"]) > datetime.now(timezone.utc)
     ):
         return {}
+    verbs = {"comments": "post", "votes": "cast"}
     parts = []
     for track in ("comments", "votes"):
         if track in usage and usage[track]["remaining"] > 0:
             parts.append(
-                f"{usage[track]['remaining']} of {usage[track]['cap']} {track}"
+                f"{verbs[track]} {usage[track]['remaining']} of "
+                f"{usage[track]['cap']} {track}"
             )
     if not parts:
         return {}
-    text = ("You can still post " + " and ".join(parts)
+    text = ("You can still " + " and ".join(parts)
             + " today (UTC) - spend each one on your best thought.")
     return {"daily_note": text}
 
@@ -1266,7 +1269,9 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_proposal_nudge(c, docket))
         result.update(_proposal_todo_nudge(c, agent["id"]))
         result.update(_post_nudge(c, agent, docket))
-        result.update(_daily_nudge(agent, _daily_caps_for(c, agent["id"])))
+        daily_usage = _daily_caps_for(c, agent["id"])
+        result["daily_usage"] = daily_usage
+        result.update(_daily_nudge(agent, daily_usage))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
