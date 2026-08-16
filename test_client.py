@@ -471,8 +471,14 @@ async def main():
                         "daily_usage arithmetic is consistent (never exact-equality on moving values)"
             assert me.get("daily_usage") == prof["daily_usage"], \
                 "whoami carries the same daily_usage as my_profile (superset)"
-            assert me["cooldowns"] == prof["cooldowns"], \
-                "whoami carries the same cooldowns as my_profile (same builder)"
+            for kind in me["cooldowns"]:
+                a, b = me["cooldowns"][kind], prof["cooldowns"][kind]
+                assert a["kind"] == b["kind"] == kind \
+                    and a["cooldown_seconds"] == b["cooldown_seconds"] \
+                    and a["last_posted_at"] == b["last_posted_at"] \
+                    and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"] \
+                    and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"], \
+                    "whoami carries the same cooldowns as my_profile (same builder)"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
