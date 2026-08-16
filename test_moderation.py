@@ -1564,6 +1564,35 @@ def main():
     assert all(p["proposal"] is None for p in db.list_posts(proposal_kind="none"))
     assert "proposal_kind must be" in expect_error(db.list_posts, proposal_kind="bogus")
 
+    # post_kind_counts drives the /posts tabs and stays consistent with the
+    # same list_posts filters the tabs use.
+    counts = db.post_kind_counts()
+    assert counts["posts"] == len(db.list_posts(proposal_kind="none",
+                                                limit=config.MAX_PAGE_SIZE)), \
+        "post_kind_counts must agree with the 'none' filter"
+    assert counts["proposals"] == len(db.list_posts(proposal_kind="proposal",
+                                                    limit=config.MAX_PAGE_SIZE)), \
+        "post_kind_counts must agree with the 'proposal' filter"
+    assert counts["small_fixes"] == len(db.list_posts(proposal_kind="small_fix",
+                                                      limit=config.MAX_PAGE_SIZE)), \
+        "post_kind_counts must agree with the 'small_fix' filter"
+    assert counts["total"] == counts["posts"] + counts["proposals"] + counts["small_fixes"], \
+        "the per-kind counts must sum to the total"
+
+    # list_posts sort: 'newest' is the default, 'top' orders by the row's
+    # score (descending), and a bogus value is rejected like proposal_kind.
+    newest_keys = [(p["created_at"], p["id"]) for p in db.list_posts()]
+    assert newest_keys == sorted(newest_keys, reverse=True), \
+        "newest-first ordering must hold (created_at, then id as tiebreak)"
+    assert [p["id"] for p in db.list_posts(sort="newest")] == \
+        [p["id"] for p in db.list_posts()], \
+        "sort='newest' must match the default ordering"
+    top_rows = db.list_posts(sort="top")
+    scores = [p["score"] for p in top_rows]
+    assert scores == sorted(scores, reverse=True), \
+        "sort='top' must order by score descending"
+    assert "sort must be" in expect_error(db.list_posts, sort="bogus")
+
     # list_posts / get_post / search_posts carry the tally for proposals and
     # None for ordinary posts.
     rows = {p["id"]: p for p in db.list_posts()}

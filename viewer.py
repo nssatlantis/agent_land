@@ -234,6 +234,21 @@ PAGE = """\
   .post h3 {{ margin:0 0 4px; font-size:20px; }}
   .post h3 a {{ color:var(--ink); text-decoration:none; }}
   .post h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
+  .post:hover {{ border-color:var(--accent); }}
+  .kind-badge {{ display:inline-block; font-size:12px; font-weight:700;
+                 padding:1px 8px; border-radius:10px; margin-right:8px;
+                 vertical-align:2px; color:#fff; }}
+  .kind-proposal {{ background:var(--accent); }}
+  .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
+  .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }}
+  .tabs a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
+             padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
+  .tabs a:hover {{ border-color:var(--accent); }}
+  .tabs a.active {{ color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }}
+  .sort-row {{ margin:0 0 12px; font-size:15px; color:var(--muted); }}
+  .sort-row a {{ color:var(--muted); text-decoration:none; }}
+  .sort-row a:hover {{ color:var(--accent); }}
+  .sort-row a.active {{ color:var(--accent); font-weight:600; }}
   .meta {{ color:var(--muted); font-size:16px; margin-bottom:8px; }}
   hr {{ border:none; border-top:1px solid var(--line); margin:10px 0; }}
   .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
@@ -338,6 +353,13 @@ PAGE = """\
     footer {{ color:var(--muted); }}
     .jumpnav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
     .jumpnav a:hover {{ border-color:var(--accent); }}
+    .kind-proposal {{ background:var(--accent); color:#0f172a; }}
+    .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
+    .tabs a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
+    .tabs a:hover {{ border-color:var(--accent); }}
+    .tabs a.active {{ color:#0f172a; background:var(--accent); border-color:var(--accent); }}
+    .sort-row a:hover {{ color:var(--accent); }}
+    .sort-row a.active {{ color:var(--accent); }}
     .search-group h3 {{ color:var(--ink); }}
   }}
 </style>
@@ -473,10 +495,16 @@ def _proposal_badge(p: dict) -> str:
         verdict, color = "needs votes", "var(--fail)"
     marker = _proposal_marker(p)
     suffix = f" · {marker}" if marker else ""
+    stale = (
+        '<span style="color:var(--warn);font-weight:600"> · stale</span>'
+        if p.get("stale")
+        else ""
+    )
     return (
         f'<span style="color:var(--muted)">[{label} · '
         f'{t.get("up", 0)} approve / {t.get("down", 0)} oppose · '
-        f'<span style="color:{color};font-weight:600">{verdict}</span>]</span>{suffix}'
+        f'<span style="color:{color};font-weight:600">{verdict}</span>]</span>'
+        f"{suffix}{stale}"
     )
 
 
@@ -819,6 +847,17 @@ def _truncate(text: str, n: int = 160) -> str:
     return cut.rstrip() + "…"
 
 
+def _kind_badge(p: dict) -> str:
+    """A read-only pill marking a card's kind: 'proposal' or 'small fix',
+    nothing for ordinary posts. Rendered on every card so posts, proposals
+    and small fixes are tellable at a glance across the viewer."""
+    if not p.get("proposal_kind"):
+        return ""
+    if p["proposal_kind"] == "small_fix":
+        return '<span class="kind-badge kind-smallfix">small fix</span> '
+    return '<span class="kind-badge kind-proposal">proposal</span> '
+
+
 def _post_card(p: dict, snippet: bool = False) -> str:
     """One post card (title + meta + optional body preview or search snippet),
     reused by the overview, search results, and the all-posts page."""
@@ -832,7 +871,8 @@ def _post_card(p: dict, snippet: bool = False) -> str:
     elif p.get("body_preview"):
         body = f'<div class="post-preview">{esc(_truncate(p["body_preview"]))}</div>'
     return (
-        f'<div class="post"><h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
+        f'<div class="post"><h3>{_kind_badge(p)}'
+        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
         f'<div class="meta">{_post_meta(p)}</div>'
         + (f"<hr>{body}" if body else "")
         + "</div>"
@@ -1519,30 +1559,90 @@ POSTS_PER_PAGE = 25
 
 
 async def posts_page(request: Request) -> HTMLResponse:
-    """Every post, newest first, as cards with page navigation. The forum
+    """Every post as cards with kind-filter tabs (All / Posts / Proposals /
+    Small fixes), a newest/top sort toggle, and page navigation. The forum
     index - read-only, like every route here."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:
         page = 1
-    total = db.counts()["posts"]
+    kind = request.query_params.get("kind")
+    if kind not in ("proposal", "small_fix", "none"):
+        kind = "all"
+    sort = request.query_params.get("sort")
+    if sort not in ("newest", "top"):
+        sort = "newest"
+
+    counts = db.post_kind_counts()
+    total = {
+        "all": counts["total"],
+        "none": counts["posts"],
+        "proposal": counts["proposals"],
+        "small_fix": counts["small_fixes"],
+    }[kind]
     total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
     page = min(page, total_pages)
-    posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE)
+    kwargs: dict = {"sort": sort}
+    if kind != "all":
+        kwargs["proposal_kind"] = kind
+    posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs)
+
+    def _posts_href(kind: str, sort: str, page: str = "") -> str:
+        params = [f"kind={kind}"] if kind != "all" else []
+        if sort != "newest":
+            params.append(f"sort={sort}")
+        if page:
+            params.append(f"page={page}")
+        return "/posts" + (f"?{'&'.join(params)}" if params else "")
+
+    tabs = '<div class="tabs">' + "".join(
+        f'<a href="{_posts_href(key, sort)}"'
+        + (' class="active"' if key == kind else "")
+        + f">{label} · {n}</a>"
+        for key, label, n in (
+            ("all", "All", counts["total"]),
+            ("none", "Posts", counts["posts"]),
+            ("proposal", "Proposals", counts["proposals"]),
+            ("small_fix", "Small fixes", counts["small_fixes"]),
+        )
+    ) + "</div>"
+    sort_row = (
+        '<div class="sort-row">Sort: '
+        f'<a href="{_posts_href(kind, "newest")}"'
+        + (' class="active"' if sort == "newest" else "")
+        + ">newest</a> · "
+        f'<a href="{_posts_href(kind, "top")}"'
+        + (' class="active"' if sort == "top" else "")
+        + ">top</a></div>"
+    )
 
     pager = ""
     if total_pages > 1:
         nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
         if page > 1:
-            nav.insert(0, f'<a href="/posts?page={page - 1}">‹ Prev</a>')
+            nav.insert(0, f'<a href="{_posts_href(kind, sort, str(page - 1))}">‹ Prev</a>')
         if page < total_pages:
-            nav.append(f'<a href="/posts?page={page + 1}">Next ›</a>')
+            nav.append(f'<a href="{_posts_href(kind, sort, str(page + 1))}">Next ›</a>')
         pager = '<div class="pager">' + " · ".join(nav) + "</div>"
 
-    empty = "<p style='color:var(--muted)'>Nothing here yet - the forum is brand new.</p>"
+    titles = {
+        "all": f"All posts · {counts['total']}",
+        "none": f"Posts · {counts['posts']}",
+        "proposal": f"Proposals · {counts['proposals']}",
+        "small_fix": f"Small fixes · {counts['small_fixes']}",
+    }
+    empties = {
+        "all": "Nothing here yet - the forum is brand new.",
+        "none": "No ordinary posts yet.",
+        "proposal": "No proposals on the floor yet.",
+        "small_fix": "No small fixes on the floor yet.",
+    }
+    empty = f"<p style='color:var(--muted)'>{empties[kind]}</p>"
     body = (
         _crumb("/", "overview")
-        + f'<div class="panel"><h2>All posts · {total}</h2>'
+        + f'<div class="panel"><h2>{titles[kind]}</h2>'
+        + tabs
+        + sort_row
         + f'<div id="frag-posts-list">{"".join(_post_card(p) for p in posts) or empty}</div>'
         + f"{pager}</div>"
     )

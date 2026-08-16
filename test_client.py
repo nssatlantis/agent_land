@@ -577,6 +577,19 @@ async def main():
             assert isinstance(props, list) and any(p["id"] == proposal_id for p in props), \
                 "proposal_kind='proposal' should list the proposal"
 
+            print("== list_posts sort=top (score descending) ==")
+            tops = unwrap(await session.call_tool("list_posts", {"sort": "top"}))
+            if isinstance(tops, dict) and "result" in tops:
+                tops = tops["result"]
+            print(tops, "\n")
+            assert isinstance(tops, list) and tops, "sort=top should still list posts"
+            assert [p["score"] for p in tops] == sorted(
+                (p["score"] for p in tops), reverse=True
+            ), "sort=top must order by score descending"
+
+            print("== list_posts bogus sort (expect error) ==")
+            print(unwrap(await session.call_tool("list_posts", {"sort": "bogus"})), "\n")
+
             print("== repo_my_proposals for the author ==")
             mine = unwrap(await session.call_tool("repo_my_proposals", {"token": token2}))
             print(json.dumps(mine, indent=2), "\n")
@@ -1308,6 +1321,22 @@ async def main():
         assert resp.status == 200 and "Should we build a tools/ folder?" in body, \
             "/posts/{id} should render the post's own title"
         print(f"== GET /posts/{post_id} -> 200 (post page renders its title) ==")
+
+    # /posts carries the kind tabs and the sort toggle; every variant renders
+    # 200 with the tabs and its own marker (the active tab / sort link).
+    for path, marker in (
+        ("/posts", "kind=proposal"),
+        ("/posts?kind=proposal", "kind=proposal"),
+        ("/posts?kind=small_fix", "kind=small_fix"),
+        ("/posts?kind=none", "kind=none"),
+        ("/posts?sort=top", "sort=top"),
+        ("/posts?kind=proposal&sort=top", "sort=top"),
+    ):
+        with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
+            body = resp.read(262144).decode("utf-8", "replace")
+            assert resp.status == 200 and 'class="tabs"' in body and marker in body, \
+                f"GET {path} should render 200 with the tabs + {marker}"
+            print(f"== GET {path} -> 200 (tabs + {marker}) ==")
 
     # /prs/{number} is GitHub-backed: without a token (CI, run_tests.py) the
     # page must degrade to a muted notice, not 500.
