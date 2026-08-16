@@ -1559,7 +1559,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     the proposal), `prs` (every pull request ever linked to the proposal,
     oldest to newest), `todos` (the proposal's owner-maintained to-do lists,
     rules rule 16, empty when none), and a short `body_preview` (the first
-    FORUM_BODY_PREVIEW_LENGTH characters). Pass `view` to filter by docket
+    config.BODY_PREVIEW_LENGTH characters). Pass `view` to filter by docket
     tab - 'all', 'needs_votes', 'approved', 'stale', 'merged' or 'small_fix'
     - and `sort` for 'newest' (default) or 'top' (highest net first, then
     newest). Limit and offset page the result. Like list_reports() for the
