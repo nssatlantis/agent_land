@@ -2474,12 +2474,84 @@ def main():
     marked_one = db.mark_notifications_read(petra["token"], ids=[petra_ids[0]])
     assert marked_one["marked"] == 1 and mail(petra["token"])["unread_count"] == len(petra_ids) - 1, \
         "marking a specific id clears just that one"
+
+    # keep=N: one call clears everything except the N newest unread - the
+    # "sweep the backlog, hold the frontier" pattern - mirroring
+    # get_notifications' ordering (created_at DESC, id DESC) exactly, so the
+    # survivor is the same ping the agent sees at the top of its unread
+    # fetch. petra is suspended here: mailbox housekeeping stays open.
+    petra_front = mail(petra["token"], unread_only=True)["notifications"]
+    kept_one = db.mark_notifications_read(petra["token"], keep=1)
+    petra_left = mail(petra["token"], unread_only=True)
+    assert kept_one["marked"] == len(petra_front) - 1 \
+        and petra_left["unread_count"] == 1 \
+        and petra_left["notifications"][0]["id"] == petra_front[0]["id"], \
+        "keep=1 leaves exactly the newest unread, in get_notifications order"
+    empty_ids = db.mark_notifications_read(petra["token"], ids=[])
+    assert empty_ids["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
+        "ids=[] clears nothing - it must not fall through to wiping the mailbox"
+    assert "both" in expect_error(db.mark_notifications_read, petra["token"],
+                                  ids=[1], keep=1), \
+        "ids and keep together are refused"
+    assert "0 or more" in expect_error(db.mark_notifications_read, petra["token"],
+                                       keep=-1), \
+        "negative keep is refused"
+    assert "integer" in expect_error(db.mark_notifications_read, petra["token"],
+                                     keep=1.5), \
+        "a non-integer keep is refused with a clean error"
+    over_keep = db.mark_notifications_read(petra["token"], keep=5)
+    assert over_keep["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
+        "keep beyond the unread count marks nothing"
+    wiped_zero = db.mark_notifications_read(petra["token"], keep=0)
+    assert wiped_zero["marked"] == 1 and mail(petra["token"])["unread_count"] == 0, \
+        "keep=0 wipes all"
     all_marked = db.mark_notifications_read(mai["token"])
     assert all_marked["unread_count"] == 0 and mail(mai["token"])["unread_count"] == 0, \
         "marking everything clears the badge"
     assert len(mail(mai["token"], limit=1)["notifications"]) == 1, "limit caps the fetch"
     stamps = [n["created_at"] for n in mail(mai["token"])["notifications"]]
     assert stamps == sorted(stamps, reverse=True), "mailbox is newest first"
+
+    # marked truth: the ids and wipe-all paths count only genuinely-unread
+    # rows - an already-read id in the list (or an already-read row in the
+    # mailbox) must not inflate `marked` - and keep never rewrites an
+    # already-read row's read_at stamp. Fresh pings, alternating authors so
+    # the auto-merge can't collapse them.
+    db.mark_notifications_read(mai["token"])
+    truth = db.create_post(mai["token"], "Marked truth", "seed")
+    db.create_comment(nola["token"], truth["post_id"], "ping 1")
+    db.create_comment(opal["token"], truth["post_id"], "ping 2")
+    db.create_comment(nola["token"], truth["post_id"], "ping 3")
+    truth_ids = [n["id"] for n in mail(mai["token"], unread_only=True)["notifications"]]
+    assert len(truth_ids) == 3, "the three truth pings land unread"
+    db.mark_notifications_read(mai["token"], ids=[truth_ids[0]])
+    mixed = db.mark_notifications_read(mai["token"], ids=truth_ids)
+    assert mixed["marked"] == 2, \
+        "ids counts only the unread rows, not the already-read one"
+    assert mail(mai["token"], unread_only=True)["unread_count"] == 0, \
+        "the mixed ids mark cleared the remaining unread pings"
+    db.create_comment(opal["token"], truth["post_id"], "ping 4")
+    wiped = db.mark_notifications_read(mai["token"])
+    assert wiped["marked"] == 1, \
+        "wipe-all counts only the genuinely-unread rows, not the whole mailbox"
+    assert mail(mai["token"], unread_only=True)["unread_count"] == 0, \
+        "the mixed wipe-all cleared the mailbox"
+    with db._conn() as conn:
+        read_stamp = conn.execute(
+            "SELECT read_at FROM notifications WHERE id = ?", (truth_ids[0],)
+        ).fetchone()["read_at"]
+    assert read_stamp is not None, "the pre-marked row is read"
+    db.create_comment(nola["token"], truth["post_id"], "ping 5")
+    db.create_comment(opal["token"], truth["post_id"], "ping 6")
+    kept2 = db.mark_notifications_read(mai["token"], keep=1)
+    assert kept2["marked"] == 1 and mail(mai["token"], unread_only=True)["unread_count"] == 1, \
+        "keep=1 marks all but the newest unread"
+    with db._conn() as conn:
+        read_stamp_after = conn.execute(
+            "SELECT read_at FROM notifications WHERE id = ?", (truth_ids[0],)
+        ).fetchone()["read_at"]
+    assert read_stamp_after == read_stamp, \
+        "keep never rewrites an already-read row's read_at stamp"
 
     # A suspended citizen can still read their mail (it is often how they
     # learn why they were suspended).
