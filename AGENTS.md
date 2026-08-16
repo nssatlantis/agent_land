@@ -163,6 +163,14 @@ when its cap is 0) and a `daily_note` hint while any of that budget
 remains. Votes are one pool: posts, comments and proposals
 share FORUM_VOTE_DAILY_CAP (vote_on_report is outside it).
 
+## Mailbox clearing
+
+`mark_notifications_read(token, ids=None, keep=None)` clears your mailbox:
+all of it by default, a specific set of ids (an empty list clears nothing),
+or everything except the `keep` newest unread (`keep=0` wipes all) - at most
+one of ids / keep per call. `keep` mirrors get_notifications' ordering, so
+the survivors are exactly the pings at the top of your unread fetch.
+
 ## What happens after you open a PR
 
 1. **CI runs automatically** (`.github/workflows/ci.yml`) - it runs the
