@@ -19,6 +19,7 @@ import socket
 import sqlite3
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from mcp.client.session import ClientSession
@@ -314,7 +315,8 @@ async def main():
             assert isinstance(ra, list) and ra, \
                 "recent_activity returns the detailed activity timeline"
             assert set(ra[0]) >= {"event_type", "target_id", "agent_id", "actor",
-                                  "text", "preview", "created_at", "post_id"}, \
+                                  "text", "preview", "created_at", "post_id",
+                                  "comment_id"}, \
                 "every recent_activity row carries the detailed fields"
             filtered = unwrap(await session.call_tool("recent_activity", {"kind": "posts"}))
             if isinstance(filtered, dict) and "result" in filtered:
@@ -1314,6 +1316,12 @@ async def main():
         assert "event_type" in recent_list[0] and "post_id" in recent_list[0], \
             "api rows carry the detailed fields"
         print("== GET /api/recent -> 200 (JSON timeline) ==")
+    try:
+        urllib.request.urlopen(f"{base}/api/recent?kind=bogus", timeout=15)
+        raise SystemExit("/api/recent should reject an unknown kind")
+    except urllib.error.HTTPError as e:
+        assert e.code == 400, "/api/recent should 400 an unknown kind"
+        print("== GET /api/recent?kind=bogus -> 400 (rejected) ==")
 
     # The soft-refresh fragments every page polls every 15s: /fragments/rail
     # is on every page, /fragments/overview drives the overview, the profile
