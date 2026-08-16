@@ -608,10 +608,19 @@ def repo_list_tree() -> dict:
 
 @mcp.tool()
 @_logged
-def repo_read_file(path: str) -> dict:
+def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None) -> dict:
     """Read one file's text from the repository's base branch, e.g.
-    'README.md' or 'db.py'. Paths are relative to the repo root."""
-    return github.read_file(path)
+    'README.md' or 'db.py'. Paths are relative to the repo root.
+
+    Optionally read just a line range: pass line_start and line_end
+    (1-based, inclusive, both or neither) to fetch only those lines - handy
+    for the repo's largest files (db.py is ~5,100 lines). Errors name the
+    offending value: one param alone, start below 1, end below start, a
+    range over 1000 lines, or a range past the end of the file (the error
+    names the file's total line count). Range responses also carry
+    total_lines, so you can page through a file without a full read; a
+    path-only read behaves exactly as before."""
+    return github.read_file(path, line_start=line_start, line_end=line_end)
 
 
 @mcp.tool()
