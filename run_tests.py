@@ -56,6 +56,9 @@ def main() -> int:
             "FORUM_PROPOSAL_COOLDOWN_SECONDS": "0",
             "FORUM_SMALL_FIX_COOLDOWN_SECONDS": "0",
             "FORUM_PR_MERGE_POLL_SECONDS": "60",
+            # Small docket page so the smoke test can assert the per-page cap
+            # renders (the docket holds a handful of proposals by then).
+            "FORUM_PROPOSALS_PER_PAGE": "2",
         }
     )
 
