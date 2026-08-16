@@ -379,6 +379,7 @@ def list_posts(
     offset: int = 0,
     since: int | str | None = None,
     proposal_kind: str | None = None,
+    sort: str | None = None,
 ) -> list[dict]:
     """List recent posts newest-first, with each post's score, comment count
     and (for proposals) its vote tally.
@@ -388,10 +389,13 @@ def list_posts(
     (e.g. "2026-08-01T00:00:00.000Z", the same format `created_at` appears in).
 
     Pass `proposal_kind` to filter: 'proposal', 'small_fix', 'any' (every
-    proposal) or 'none' (ordinary posts)."""
+    proposal) or 'none' (ordinary posts).
+
+    Pass `sort` to order the listing: 'newest' (the default) or 'top' (the
+    row's score, descending)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
-    return db.list_posts(limit=limit, offset=offset, since=since, proposal_kind=proposal_kind)
+    return db.list_posts(limit=limit, offset=offset, since=since, proposal_kind=proposal_kind, sort=sort)
 
 
 @mcp.tool()
