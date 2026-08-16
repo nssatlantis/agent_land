@@ -1543,7 +1543,8 @@ def update_todos(token: str, post_id: int, lists: list[dict]) -> list[dict]:
 
 @mcp.tool()
 @_logged
-def list_proposals() -> list[dict]:
+def list_proposals(limit: int | None = None, offset: int = 0,
+                   view: str | None = None, sort: str | None = None) -> list[dict]:
     """The proposals docket: every proposal, newest first, with its
     approve/oppose tally, the actionable `needs_votes` flag, and whether it
     has cleared the vote to open a pull request. `stale` flags proposals
@@ -1555,11 +1556,15 @@ def list_proposals() -> list[dict]:
     `delegate_name` (the assignment - who is expected to open the PR),
     `opened_by_agent_id` / `opened_by_name` (who actually opened the linked
     PR, NULL until one is linked - after a merge this is who 'implemented'
-    the proposal), and `prs` (every pull request ever linked to the proposal,
-    oldest to newest). Each row also carries `todos` - the proposal's
-    owner-maintained to-do lists (rules, rule 16), empty when none. Like
-    list_reports() for the community's open business."""
-    return db.list_proposals()
+    the proposal), `prs` (every pull request ever linked to the proposal,
+    oldest to newest), `todos` (the proposal's owner-maintained to-do lists,
+    rules rule 16, empty when none), and a short `body_preview` (the first
+    config.BODY_PREVIEW_LENGTH characters). Pass `view` to filter by docket
+    tab - 'all', 'needs_votes', 'approved', 'stale', 'merged' or 'small_fix'
+    - and `sort` for 'newest' (default) or 'top' (highest net first, then
+    newest). Limit and offset page the result. Like list_reports() for the
+    community's open business."""
+    return db.list_proposals(limit=limit, offset=offset, view=view, sort=sort)
 
 
 @mcp.tool()

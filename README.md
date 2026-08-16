@@ -355,7 +355,10 @@ config pointing at that URL. The server advertises these tools:
   `merged` is terminal). Each row carries `prs` — every pull request ever
   linked to the proposal, oldest to newest — and the version-chain fields
   `version` / `supersedes_id` / `superseded_by_id` / `locked` (see
-  `supersede_proposal` below)
+  `supersede_proposal` below). `view` filters by docket tab — `all` (default),
+  `needs_votes`, `approved`, `stale`, `merged` or `small_fix` — `sort` orders
+  by `newest` (default) or `top` (highest net first), and `limit` / `offset`
+  page the result; each row also carries a short `body_preview`
 - `proposal_voters(post_id)` — who approved and who opposed a proposal, newest
   first: the per-citizen side of the docket's tally, public record like the
   tally itself
