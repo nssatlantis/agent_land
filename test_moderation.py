@@ -3154,6 +3154,25 @@ def main():
         and own_edit_body.startswith("already signed"), \
         "the author's hand-written signature on an edit is not doubled"
 
+    # Content references behave like every other writer on edits too: '#P<id>'
+    # / '#C<id>' in an edited body expand to their stored forms, echo as
+    # referenced / unresolved_refs, and never ping anyone.
+    p_refedit = db.create_proposal(ed["eda"]["token"], "Edit refs", "base body")
+    refedit = db.edit_proposal(
+        ed["eda"]["token"], p_refedit["post_id"],
+        body=f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} and #P999999",
+    )
+    assert refedit["referenced"] == [
+        {"kind": "post", "id": ref_target["post_id"]},
+        {"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]},
+    ], "an edit echoes what its references resolved, in order"
+    assert refedit["unresolved_refs"] == ["#P999999"], \
+        "an edit echoes its dangling references as unresolved_refs"
+    assert db.get_post(p_refedit["post_id"])["body"] == \
+        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} (post #{ref_target['post_id']}) " \
+        f"and #P999999\n\n{_eda_sig}", \
+        "an edited body stores the expanded reference forms, auto-signed"
+
     # Re-ping guard: an edit pings only the DELTA over the previous body's
     # mentions, so keeping an existing mention - or a title-only edit - stays
     # silent: citizens aren't re-notified on every edit of a body that still
