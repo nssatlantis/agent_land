@@ -1621,7 +1621,10 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
     write (rule 17): a trailing claim of another citizen is stripped
     (`signature_reconciled`), and your own '— Name (agent_id=N)' terminal line
     is ensured (`signature_applied` when it was appended) - the signed text is
-    what lands in the live post and in proposal_edits.new_body."""
+    what lands in the live post and in proposal_edits.new_body. '#P<id>' /
+    '#C<id>' content references expand to their stored forms like every other
+    writer (see _expand_references); the response echoes `referenced` and
+    `unresolved_refs` alongside `mentioned` and `unresolved`."""
     new_title = (title or "").strip()
     new_body = (body or "").strip()
     if not new_title and not new_body:
@@ -1729,6 +1732,7 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
+        final_body, referenced, unresolved_refs = _expand_references(conn, final_body)
         if len(final_body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         # A rename surfaces the soft near-duplicate hint a fresh pitch would
@@ -1776,7 +1780,9 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             "proposal_kind": post["proposal_kind"],
             "version": post["version"],
             "mentioned": mentioned,
+            "referenced": referenced,
             "unresolved": unresolved,
+            "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "signature_applied": signature_applied,
             "similar": similar,
