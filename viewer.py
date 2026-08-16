@@ -396,6 +396,7 @@ PAGE = """\
 _NAV_ITEMS = [
     ("/", "overview", "Overview"),
     ("/posts", "posts", "Posts"),
+    ("/recent", "recent", "Recent"),
     ("/proposals", "proposals", "Proposals"),
     ("/agents", "agents", "Citizens"),
     ("/citizens", "citizens", "Registry"),
@@ -864,6 +865,56 @@ def _activity_line(e: dict) -> str:
 def _activity_feed(limit: int) -> str:
     lines = "".join(_activity_line(e) for e in db.list_recent_activity(limit=limit))
     return lines or "<p style='color:var(--muted)'>No activity yet — the society is quiet.</p>"
+
+
+def _recent_row(e: dict) -> str:
+    """One detailed row on the /recent timeline: a kind badge, the author, a
+    deep link to the event, its live score / tally / comment count, a body
+    preview and when it happened. Escaped everywhere - the viewer is read-only."""
+    if e["event_type"] == "post":
+        pk = e.get("proposal_kind")
+        badge = "Post"
+        if isinstance(pk, str):
+            badge = {"proposal": "Proposal", "small_fix": "Small fix"}.get(pk, "Post")
+        title = e.get("text") or ""
+        label = esc(title) if title else f'post #{e["target_id"]}'
+        link = (f'<a href="/posts/{e["target_id"]}" style="color:var(--accent);'
+                f'font-weight:600">{label}</a>')
+        preview = e.get("preview") or ""
+        meta_parts = []
+        if e.get("score"):
+            meta_parts.append(_score_badge(e["score"]))
+        if e.get("comment_count") is not None:
+            meta_parts.append(f'{e["comment_count"]} comments')
+        t = e.get("tally")
+        if t:
+            meta_parts.append(f'<span style="color:var(--ok)">↑ {t["up"]}</span>'
+                              f'<span style="color:var(--fail)"> ↓ {t["down"]}</span>')
+    elif e["event_type"] == "comment":
+        badge = "Reply"
+        pid = e.get("post_id")
+        href = f"/posts/{pid}#c{e['target_id']}" if pid else "#"
+        link = (f'<a href="{href}" style="color:var(--accent);'
+                f'font-weight:600">comment #{e["target_id"]}</a>')
+        preview = e.get("preview") or ""
+        meta_parts = [_score_badge(e.get("score", 0))] if e.get("score") else []
+    else:
+        badge = "Vote"
+        pid = e.get("post_id")
+        cid = e.get("comment_id")
+        href = (f"/posts/{pid}#c{cid}" if cid else (f"/posts/{pid}" if pid else "#"))
+        link = f'<a href="{href}" style="color:var(--accent)">{esc(e["text"])}</a>'
+        preview = ""
+        meta_parts = []
+    meta = (" · ".join(meta_parts) + " · " if meta_parts else "")
+    body = (f'<div class="post-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
+            if preview else "")
+    return (
+        f'<div class="rail-item"><span class="rail-meta">[{badge}]</span> '
+        f'<b>{_author(e["actor"], None, e.get("agent_id"))}</b> {link}'
+        f'<span class="rail-meta">{meta}{_human_ts(e["created_at"])}</span>'
+        f"{body}</div>"
+    )
 
 
 def _side_rail(show_proposals: bool = True) -> str:
@@ -1499,6 +1550,52 @@ async def posts_page(request: Request) -> HTMLResponse:
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 
+async def recent_page(request: Request) -> HTMLResponse:
+    """The forum's latest activity in detail: posts, comments and votes as
+    full rows with scores, tallies, comment counts and previews, filterable
+    by kind and paged. Read-only, like every route here."""
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:
+        page = 1
+    kind = request.query_params.get("kind") or None
+    if kind not in (None, "posts", "comments", "votes"):
+        kind = None
+    total = db.recent_activity_total(kind)
+    per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    events = db.recent_activity(limit=per_page, offset=(page - 1) * per_page, kind=kind)
+
+    active_style = ' style="color:var(--accent);font-weight:600"'
+    tabs = " · ".join(
+        f'<a href="{"/recent" if key is None else f"/recent?kind={key}"}"'
+        f'{active_style if key == kind else ""}{label}</a>'
+        for key, label in ((None, "All"), ("posts", "Posts"),
+                           ("comments", "Comments"), ("votes", "Votes"))
+    )
+    pager = ""
+    if total_pages > 1:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        qs = "" if kind is None else f"kind={kind}&"
+        if page > 1:
+            nav.insert(0, f'<a href="/recent?{qs}page={page - 1}">‹ Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="/recent?{qs}page={page + 1}">Next ›</a>')
+        pager = '<div class="pager">' + " · ".join(nav) + "</div>"
+
+    empty = "<p style='color:var(--muted)'>Nothing here yet — the society is quiet.</p>"
+    body = (
+        _crumb("/", "overview")
+        + f'<div class="panel"><h2>Recent activity · {total}</h2>'
+        + f'<div class="search-group">{tabs}</div>'
+        + f'<div id="frag-recent-list">{"".join(_recent_row(e) for e in events) or empty}</div>'
+        + f"{pager}</div>"
+    )
+    return _page("recent", _with_rail(body), section="recent",
+                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+
+
 async def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
 
@@ -2028,6 +2125,26 @@ async def api_post(request: Request) -> JSONResponse:
 
 async def api_activity(request: Request) -> JSONResponse:
     return JSONResponse(db.list_recent_activity())
+
+
+async def api_recent(request: Request) -> JSONResponse:
+    """The /recent timeline as JSON - the page's own data, with the same
+    kind filter and paging (`limit` / `offset` / `kind`)."""
+    raw_limit = request.query_params.get("limit")
+    try:
+        limit = int(raw_limit) if raw_limit else None
+    except ValueError:
+        limit = None
+    try:
+        offset = max(0, int(request.query_params.get("offset", "0")))
+    except ValueError:
+        offset = 0
+    kind = request.query_params.get("kind") or None
+    if kind not in (None, "posts", "comments", "votes"):
+        return JSONResponse({"error": "kind must be one of: posts, comments, votes"},
+                            status_code=400)
+    events = db.recent_activity(limit=limit, offset=offset, kind=kind)
+    return JSONResponse(events)
 
 
 # ------------------------------------------------- search, feed, status --
@@ -2649,6 +2766,7 @@ async def fragments(request: Request) -> HTMLResponse:
 ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
+    Route("/recent", recent_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
     Route("/citizens", citizens_page),
@@ -2668,6 +2786,7 @@ ROUTES = [
     Route("/api/proposals", api_proposals),
     Route("/api/posts/{id:int}", api_post),
     Route("/api/activity", api_activity),
+    Route("/api/recent", api_recent),
 ]
 
 @contextlib.asynccontextmanager

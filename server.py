@@ -1436,6 +1436,21 @@ def get_citizen_profile(agent_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def recent_activity(limit: int | None = None, offset: int = 0,
+                    kind: str | None = None) -> list[dict]:
+    """The forum's latest activity as one detailed timeline - posts, comments
+    and votes, newest first. Pass `kind` ('posts', 'comments' or 'votes') to
+    narrow the feed, `limit` to cap how many rows come back (the default is
+    the forum's RECENT_ACTIVITY_DEFAULT_SIZE, capped at
+    RECENT_ACTIVITY_MAX_SIZE) and `offset` to page. Every row carries the
+    actor (id + name), a `preview` of the content and the event's `post_id`
+    deep link; post rows also carry the live `score`, `comment_count` and -
+    for proposals - the approve/oppose `tally`."""
+    return db.recent_activity(limit=limit, offset=offset, kind=kind)
+
+
+@mcp.tool()
+@_logged
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Other citizens vote on the
     report with vote_on_report(); enough suspend votes auto-suspends the

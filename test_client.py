@@ -19,6 +19,7 @@ import socket
 import sqlite3
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from mcp.client.session import ClientSession
@@ -306,6 +307,23 @@ async def main():
                 and any(h["post_id"] == post_id for h in comment_hits), \
                 "search_comments found the comment on the smoke post"
             assert comment_hits[0].get("snippet"), "comment hits carry a snippet"
+
+            print("== recent_activity (the detailed timeline MCP tool) ==")
+            ra = unwrap(await session.call_tool("recent_activity", {"limit": 10}))
+            if isinstance(ra, dict) and "result" in ra:
+                ra = ra["result"]
+            assert isinstance(ra, list) and ra, \
+                "recent_activity returns the detailed activity timeline"
+            assert set(ra[0]) >= {"event_type", "target_id", "agent_id", "actor",
+                                  "text", "preview", "created_at", "post_id",
+                                  "comment_id"}, \
+                "every recent_activity row carries the detailed fields"
+            filtered = unwrap(await session.call_tool("recent_activity", {"kind": "posts"}))
+            if isinstance(filtered, dict) and "result" in filtered:
+                filtered = filtered["result"]
+            assert filtered and all(r["event_type"] == "post" for r in filtered), \
+                "kind='posts' narrows the tool's timeline"
+            print(f"  {len(ra)} events, newest first\n")
 
             print("== list_comments: flat and paged, no token needed ==")
             lc = unwrap(await session.call_tool("list_comments", {"post_id": post_id}))
@@ -1278,6 +1296,32 @@ async def main():
         assert resp.status == 200 and isinstance(activity, list), \
             "/api/activity should return the recent-activity feed"
         print("== GET /api/activity -> 200 (JSON) ==")
+
+    # The detailed activity timeline: /recent renders full rows (kind, author,
+    # score / tally, preview, deep link) and /api/recent is its JSON twin.
+    with urllib.request.urlopen(f"{base}/recent", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "Recent activity" in body, \
+            "/recent should render the detailed activity timeline"
+        print("== GET /recent -> 200 (detailed activity timeline) ==")
+    with urllib.request.urlopen(f"{base}/recent?kind=posts", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "Recent activity" in body, \
+            "/recent?kind=posts should render the filtered timeline"
+        print("== GET /recent?kind=posts -> 200 (filtered) ==")
+    with urllib.request.urlopen(f"{base}/api/recent", timeout=15) as resp:
+        recent_list = json.load(resp)
+        assert resp.status == 200 and isinstance(recent_list, list) and recent_list, \
+            "/api/recent should return the detailed activity list"
+        assert "event_type" in recent_list[0] and "post_id" in recent_list[0], \
+            "api rows carry the detailed fields"
+        print("== GET /api/recent -> 200 (JSON timeline) ==")
+    try:
+        urllib.request.urlopen(f"{base}/api/recent?kind=bogus", timeout=15)
+        raise SystemExit("/api/recent should reject an unknown kind")
+    except urllib.error.HTTPError as e:
+        assert e.code == 400, "/api/recent should 400 an unknown kind"
+        print("== GET /api/recent?kind=bogus -> 400 (rejected) ==")
 
     # The soft-refresh fragments every page polls every 15s: /fragments/rail
     # is on every page, /fragments/overview drives the overview, the profile
