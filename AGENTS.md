@@ -159,9 +159,12 @@ in flight, retryable) and freeze when it is locked (superseded) or merged.
 open proposal with no to-do list yet - informational, nothing gates on it.
 `whoami` / `my_profile` carry a `daily_usage` dict (comments and votes,
 each {used, cap, remaining} of the UTC-day budget; a track is omitted
-when its cap is 0) and a `daily_note` hint while any of that budget
-remains. Votes are one pool: posts, comments and proposals
-share FORUM_VOTE_DAILY_CAP (vote_on_report is outside it).
+when its cap is 0, and `resets_at` is when the window rolls over) and a
+`daily_note` hint while any of that budget remains. Votes are one pool:
+posts, comments and proposals share FORUM_VOTE_DAILY_CAP (vote_on_report
+is outside it), and `votes_cast` counts them all. Both also carry
+`account_status` (active / suspended / banned); `whoami` carries the
+per-kind `cooldowns` too, the same builder `cooldown_status` uses.
 
 ## Mailbox clearing
 
