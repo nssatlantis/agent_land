@@ -619,6 +619,80 @@ def main():
 
     shutil.rmtree(tree, ignore_errors=True)
 
+    # --- repo_read_file _slice_line_range: pure slice logic, no token ------
+    # The MCP smoke in test_client.py is GITHUB_TOKEN-gated (CI never sets a
+    # token, so the feature never runs there), but _slice_line_range is pure -
+    # test it directly: exact slice semantics, trailing-newline total_lines,
+    # both-or-neither, start<1, end<start, past-end names total, over-cap names
+    # 1000, and the exact error wording (locks the message fix).
+    no_nl = "alpha\nbeta\ngamma"
+    content, total = github._slice_line_range("t.txt", no_nl, 1, 3)
+    assert content == no_nl and total == 3, \
+        "a 1..total_lines range reconstructs a file without a trailing newline exactly"
+    assert github._slice_line_range("t.txt", no_nl, 2, 3) == ("beta\ngamma", 3), \
+        "a range slice is the exact 1-based inclusive cut"
+    assert github._slice_line_range("t.txt", no_nl, 1, 1) == ("alpha", 3), \
+        "a single-line range returns just that line"
+    assert github._slice_line_range("t.txt", no_nl, 3, 3) == ("gamma", 3), \
+        "the last line of a no-newline file is a valid single-line range"
+
+    with_nl = "alpha\nbeta\n"
+    content, total = github._slice_line_range("t.txt", with_nl, 1, 3)
+    assert content == with_nl and total == 3, \
+        "a file ending in a newline reports one extra, empty final line"
+    assert github._slice_line_range("t.txt", with_nl, 1, 2) == ("alpha\nbeta", 3), \
+        "the extra final line never leaks into a 1..2 range"
+    assert github._slice_line_range("t.txt", with_nl, 3, 3) == ("", 3), \
+        "the final range line of a trailing-newline file is the empty part"
+
+    # both-or-neither: a lone param errors naming the one that WAS provided
+    try:
+        github._slice_line_range("t.txt", "a\nb", 1, None)
+    except github.RepoError as e:
+        assert str(e) == ("repo_read_file line range: line_start was given without "
+                          "its pair - 'line_start' and 'line_end' must be passed together."), \
+            f"a lone line_start must name line_start as given: {e}"
+    else:
+        raise AssertionError("a lone line_start must error")
+    try:
+        github._slice_line_range("t.txt", "a\nb", None, 2)
+    except github.RepoError as e:
+        assert str(e) == ("repo_read_file line range: line_end was given without "
+                          "its pair - 'line_start' and 'line_end' must be passed together."), \
+            f"a lone line_end must name line_end as given: {e}"
+    else:
+        raise AssertionError("a lone line_end must error")
+
+    for start, end in ((0, 2), (-1, 2)):
+        try:
+            github._slice_line_range("t.txt", no_nl, start, end)
+        except github.RepoError as e:
+            assert f"'line_start' must be >= 1, got {start}" in str(e), \
+                f"a start below 1 must error naming the value: {e}"
+        else:
+            raise AssertionError(f"start {start} must error")
+    try:
+        github._slice_line_range("t.txt", no_nl, 10, 5)
+    except github.RepoError as e:
+        assert "'line_end' must be >= 'line_start' (10), got 5" in str(e), \
+            f"an end below start must error naming both values: {e}"
+    else:
+        raise AssertionError("an end below start must error")
+    try:
+        github._slice_line_range("t.txt", no_nl, 4, 4)
+    except github.RepoError as e:
+        assert "range 4-4 is past the end of 't.txt' - the file has 3 lines total" in str(e), \
+            f"a range past the end must name the file's total line count: {e}"
+    else:
+        raise AssertionError("a range past the end must error")
+    try:
+        github._slice_line_range("t.txt", "a\nb", 1, 1001)
+    except github.RepoError as e:
+        assert "1001 lines is too large - at most 1000 lines per read" in str(e), \
+            f"a range over the cap must name the cap, not the file: {e}"
+    else:
+        raise AssertionError("a range over the cap must error")
+
     # --- PR outcome classification (repo_get_pr) ---------------------------
     assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
     assert github._pr_outcome({
