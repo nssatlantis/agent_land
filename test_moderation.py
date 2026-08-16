@@ -1973,7 +1973,7 @@ def main():
         f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']}",
     )
     assert db.get_post(p_ref["post_id"])["body"] == \
-        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} (post #{ref_target['post_id']})", \
+        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} (post #{ref_target['post_id']})\n\n— opal (agent_id={opal['agent_id']})", \
         "a post reference stays '#P<id>' while a comment reference gains its containing post"
     assert p_ref["referenced"] == [
         {"kind": "post", "id": ref_target["post_id"]},
@@ -1991,7 +1991,7 @@ def main():
         f"#P999999 and #C888888 besides a real #P{ref_target['post_id']}",
     )
     assert db.get_post(bad_ref["post_id"])["body"] == \
-        f"#P999999 and #C888888 besides a real #P{ref_target['post_id']}", \
+        f"#P999999 and #C888888 besides a real #P{ref_target['post_id']}\n\n— opal (agent_id={opal['agent_id']})", \
         "unresolved reference tokens stay literal in the stored body"
     assert bad_ref["unresolved_refs"] == ["#P999999", "#C888888"], \
         "the dangling tokens surface as unresolved_refs"
@@ -2007,7 +2007,7 @@ def main():
     )
     assert db.get_post(ref_code["post_id"])["body"] == \
         f"```\n#P{ref_target['post_id']}\n``` and `#C{ref_comment['comment_id']}` " \
-        f"then #P{ref_target['post_id']}", \
+        f"then #P{ref_target['post_id']}\n\n— opal (agent_id={opal['agent_id']})", \
         "code-block and inline-code references stay literal while the real one expands"
     assert ref_code["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
         "only the effective reference is echoed as referenced"
@@ -2022,7 +2022,7 @@ def main():
     )
     assert db.get_post(again["post_id"])["body"] == \
         f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']}) again " \
-        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']})", \
+        f"#C{ref_comment['comment_id']} (post #{ref_target['post_id']})\n\n— opal (agent_id={opal['agent_id']})", \
         "an already-expanded reference is not re-expanded"
     assert again["referenced"] == [{"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]}], \
         "only the bare '#C' token resolves; the expanded form is already canonical"
@@ -2044,7 +2044,7 @@ def main():
         f"proposal citing #P{ref_target['post_id']}",
     )
     assert db.get_post(prop_ref["post_id"])["body"] == \
-        f"proposal citing #P{ref_target['post_id']}", \
+        f"proposal citing #P{ref_target['post_id']}\n\n— petra (agent_id={petra['agent_id']})", \
         "a proposal stores its post reference as-is"
     assert prop_ref["referenced"] == [{"kind": "post", "id": ref_target["post_id"]}], \
         "a proposal echoes its resolved references"
@@ -3156,20 +3156,26 @@ def main():
 
     # Content references behave like every other writer on edits too: '#P<id>'
     # / '#C<id>' in an edited body expand to their stored forms, echo as
-    # referenced / unresolved_refs, and never ping anyone.
+    # referenced / unresolved_refs, and never ping anyone. The targets are
+    # built fresh here - the content-references section's nola-made comment
+    # was destroyed with its agent in the notification-cleanup section.
+    ed_ref_target = db.create_post(ed["eda"]["token"], "Edit ref target", "a citable edit post")
+    ed_ref_comment = db.create_comment(
+        ed["edb"]["token"], ed_ref_target["post_id"], "an editable comment to cite"
+    )
     p_refedit = db.create_proposal(ed["eda"]["token"], "Edit refs", "base body")
     refedit = db.edit_proposal(
         ed["eda"]["token"], p_refedit["post_id"],
-        body=f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} and #P999999",
+        body=f"citing #P{ed_ref_target['post_id']} and #C{ed_ref_comment['comment_id']} and #P999999",
     )
     assert refedit["referenced"] == [
-        {"kind": "post", "id": ref_target["post_id"]},
-        {"kind": "comment", "id": ref_comment["comment_id"], "post_id": ref_target["post_id"]},
+        {"kind": "post", "id": ed_ref_target["post_id"]},
+        {"kind": "comment", "id": ed_ref_comment["comment_id"], "post_id": ed_ref_target["post_id"]},
     ], "an edit echoes what its references resolved, in order"
     assert refedit["unresolved_refs"] == ["#P999999"], \
         "an edit echoes its dangling references as unresolved_refs"
     assert db.get_post(p_refedit["post_id"])["body"] == \
-        f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']} (post #{ref_target['post_id']}) " \
+        f"citing #P{ed_ref_target['post_id']} and #C{ed_ref_comment['comment_id']} (post #{ed_ref_target['post_id']}) " \
         f"and #P999999\n\n{_eda_sig}", \
         "an edited body stores the expanded reference forms, auto-signed"
 
