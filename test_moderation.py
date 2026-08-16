@@ -5138,7 +5138,7 @@ def main():
     assert act and isinstance(act, list), "the detailed timeline must not be empty"
     assert set(act[0]) >= {"event_type", "target_id", "agent_id", "actor", "text",
                            "preview", "proposal_kind", "created_at", "post_id",
-                           "score"}, "every timeline row carries the detailed fields"
+                           "comment_id", "score"}, "every timeline row carries the detailed fields"
     assert act[0]["created_at"] >= act[-1]["created_at"], "the timeline is newest first"
     assert db.recent_activity(limit=0) == db.recent_activity(limit=1), \
         "limit 0 clamps to the minimum of 1"
@@ -5149,19 +5149,40 @@ def main():
         "kind='posts' narrows to post events"
     assert all(r["event_type"] == "comment" for r in db.recent_activity(kind="comments")), \
         "kind='comments' narrows to comment events"
-    assert all(r["preview"] for r in db.recent_activity(kind="posts")), \
-        "post rows carry a body preview"
-    assert len(db.recent_activity(limit=1, kind="posts")[0]["preview"]) \
+    post_rows = db.recent_activity(kind="posts")
+    assert all(r["preview"] is not None for r in post_rows), \
+        "post rows carry a body preview (None only for an empty body)"
+    assert len(post_rows[0]["preview"]) \
         <= config.BODY_PREVIEW_LENGTH, "previews are bounded by BODY_PREVIEW_LENGTH"
-    assert all(r["score"] is not None for r in db.recent_activity(kind="posts")), \
+    assert all(r["text"] == db.get_post(r["target_id"])["title"] for r in post_rows), \
+        "post rows carry their title as text"
+    assert all(r["comment_id"] is None for r in post_rows), \
+        "post rows carry no comment_id (NULL keeps the columns aligned)"
+    assert all(r["score"] is not None for r in post_rows), \
         "post rows carry a live score"
-    assert all(r["score"] is not None for r in db.recent_activity(kind="comments")), \
+    comment_rows = db.recent_activity(kind="comments")
+    assert all(r["text"] == r["preview"] for r in comment_rows), \
+        "comment rows carry their own capped text (the payload is the preview)"
+    assert all(len(r["text"]) <= config.BODY_PREVIEW_LENGTH for r in comment_rows), \
+        "comment text is bounded by BODY_PREVIEW_LENGTH"
+    assert all(r["comment_id"] is None for r in comment_rows), \
+        "comment rows carry no comment_id (NULL keeps the columns aligned)"
+    assert all(r["score"] is not None for r in comment_rows), \
         "comment rows carry a live score"
-    votes = db.recent_activity(kind="votes")
+    votes = db.recent_activity(kind="votes", limit=config.RECENT_ACTIVITY_MAX_SIZE)
     if votes:
         assert all(r["event_type"] == "vote" for r in votes), \
             "kind='votes' narrows to vote events"
         assert all(r["score"] is None for r in votes), "vote rows carry no score"
+        assert all("comment_id" in r for r in votes), "vote rows carry a comment_id column"
+        assert all(r["target_id"] == r["comment_id"]
+                   for r in votes if r["comment_id"] is not None), \
+            "a comment-vote row's target_id is the voted comment"
+        assert all(r["target_id"] == r["post_id"]
+                   for r in votes if r["comment_id"] is None and r["post_id"] is not None), \
+            "a post-vote row's target_id is the voted post"
+        assert any(r["comment_id"] is not None for r in votes), \
+            "comment-vote rows are in the window (their deep link is reachable)"
         assert any(r["post_id"] is not None for r in votes), \
             "vote rows carry their deep-link post_id via the join"
     else:
