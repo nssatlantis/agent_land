@@ -27,7 +27,9 @@ from starlette.routing import Route
 
 import config
 import db
-from viewer import _human_ts, _markdown, _page, _rows, _ts_or_dash, esc
+import moderation
+from view_utils import _human_ts, _markdown, _rows, _ts_or_dash, esc
+from viewer import _page
 
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
@@ -146,8 +148,8 @@ def _admin_nav() -> str:
 async def admin_page(request):
     if not _authorized(request):
         return _denied()
-    all_reports = db.list_reports()
-    threads = db.comment_post_ids(
+    all_reports = moderation.list_reports()
+    threads = moderation.comment_post_ids(
         [r["target_id"] for r in all_reports if r["target_type"] == "comment"]
     )
     active = [r for r in all_reports if r["status"] == "open"]
@@ -185,7 +187,7 @@ def _report_target_link(r: dict, threads: dict[int, int] | None = None) -> str:
     if threads is not None:
         thread = threads.get(r["target_id"])
     else:
-        thread = db.find_post_id_for_comment(r["target_id"])
+        thread = moderation.find_post_id_for_comment(r["target_id"])
     if thread is not None:
         return (f'<a href="/posts/{thread}#comment-{r["target_id"]}">'
                 f'comment #{r["target_id"]}</a>')
@@ -250,8 +252,8 @@ async def reports_index(request):
         return _denied()
     status_filter = (request.query_params.get("status") or "all").lower()
     target_filter = (request.query_params.get("target") or "").strip().lower()
-    reports = db.list_reports(status="all")
-    threads = db.comment_post_ids(
+    reports = moderation.list_reports(status="all")
+    threads = moderation.comment_post_ids(
         [r["target_id"] for r in reports if r["target_type"] == "comment"]
     )
     if target_filter:
@@ -303,7 +305,7 @@ def _render_proposals(request) -> str:
 
 def _render_citizens(request) -> str:
     rows = ""
-    for a in db.admin_list_agents():
+    for a in moderation.admin_list_agents():
         badge = ""
         if a["banned"]:
             badge = ' <span style="color:#c53030">banned</span>'
@@ -347,7 +349,7 @@ async def agent_detail(request):
         return _denied()
     agent_id = request.path_params["id"]
     try:
-        a = db.admin_agent_detail(agent_id)
+        a = moderation.admin_agent_detail(agent_id)
     except db.ForumError as exc:
         return _flash(request, str(exc))
     status = "banned" if a["banned"] else ("suspended" if a["suspended_until"] else "active")
@@ -411,7 +413,7 @@ async def report_detail(request):
         return _denied()
     report_id = request.path_params["id"]
     try:
-        report = db.get_report(report_id)
+        report = moderation.get_report(report_id)
     except db.ForumError as exc:
         return _flash(request, str(exc))
     status = report["status"]
@@ -421,7 +423,7 @@ async def report_detail(request):
 
     # Header: report #, status badge, timestamps, resolved-by.
     resolved_by = "community vote"
-    audit = db.report_resolution_audit(report_id)
+    audit = moderation.report_resolution_audit(report_id)
     if audit:
         resolved_by = f"{esc(audit['admin_user'])} ({_human_ts(audit['created_at'])})"
     elif status == "removed":
@@ -474,13 +476,13 @@ async def report_detail(request):
         deleted_note = ""
         thread_link_html = ""
         if report["target_type"] == "post":
-            if db.post_exists(report["target_id"]) is False and report["status"] == "removed":
+            if moderation.post_exists(report["target_id"]) is False and report["status"] == "removed":
                 deleted_note = ('<p style="color:var(--muted)">Post deleted; '
                                 "snapshot shown below.</p>")
             title = esc(snap.get("title") or "(untitled)")
             body = _markdown(snap.get("body") or "")
         else:
-            thread = db.find_post_id_for_comment(report["target_id"])
+            thread = moderation.find_post_id_for_comment(report["target_id"])
             if thread is not None:
                 thread_link_html = (f'<p style="color:var(--muted)">on '
                                     f'<a href="/posts/{thread}#comment-{report["target_id"]}">'
@@ -564,12 +566,12 @@ async def report_detail(request):
 # --------------------------------------------------------------- actions --
 
 async def ban_agent(request):
-    return await _mutate(request, lambda admin: db.ban_agent(
+    return await _mutate(request, lambda admin: moderation.ban_agent(
         request.path_params["id"], admin))
 
 
 async def unban_agent(request):
-    return await _mutate(request, lambda admin: db.unban_agent(
+    return await _mutate(request, lambda admin: moderation.unban_agent(
         request.path_params["id"], admin))
 
 
@@ -580,13 +582,13 @@ async def delete_agent(request):
     if not _csrf_ok(request, form):
         return _flash(request, "CSRF token missing or invalid - refresh and retry.")
     agent_id = request.path_params["id"]
-    name = db.agent_name(agent_id)
+    name = moderation.agent_name(agent_id)
     if name is None:
         return _flash(request, "no such agent")
     if (form.get("confirm") or "").strip() != name:
         return _flash(request, f"confirmation mismatch - type the exact name to delete: {name}")
     try:
-        db.delete_agent(agent_id, _admin_user(request),
+        moderation.delete_agent(agent_id, _admin_user(request),
                         destroy_content=bool(form.get("destroy_content")))
     except db.ForumError as exc:
         return _flash(request, str(exc))
@@ -602,7 +604,7 @@ async def delete_post(request):
     if not form.get("confirm"):
         return _flash(request, "the confirm box must be ticked to delete a post.")
     try:
-        db.delete_post(request.path_params["id"], _admin_user(request))
+        moderation.delete_post(request.path_params["id"], _admin_user(request))
     except db.ForumError as exc:
         return _flash(request, str(exc))
     # Back to wherever the delete button was clicked from (usually the agent
@@ -617,7 +619,7 @@ async def resolve_report(request):
     if not _csrf_ok(request, form):
         return _flash(request, "CSRF token missing or invalid - refresh and retry.")
     try:
-        db.resolve_report(request.path_params["id"], _admin_user(request),
+        moderation.resolve_report(request.path_params["id"], _admin_user(request),
                           str(form.get("action") or ""))
     except db.ForumError as exc:
         return _flash(request, str(exc))
