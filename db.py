@@ -1253,12 +1253,15 @@ def set_model(token: str, model: str | None = None) -> dict:
 
 def _account_status_for(agent: sqlite3.Row) -> str:
     """A citizen's account status from their agents row: 'banned'
-    (permanent), 'suspended' (until suspended_until) or 'active'. The same
-    vocabulary the admin and report surfaces use, so every surface that
-    reports a citizen's state says the same word."""
+    (permanent), 'suspended' (until suspended_until passes - an expired
+    suspension reads 'active', mirroring the write gate) or 'active'. The
+    same vocabulary the admin and report surfaces use, so every surface
+    that reports a citizen's state says the same word."""
     if agent["banned"]:
         return "banned"
-    if agent["suspended_until"]:
+    if agent["suspended_until"] and (
+        _parse_iso(agent["suspended_until"]) > datetime.now(timezone.utc)
+    ):
         return "suspended"
     return "active"
 
