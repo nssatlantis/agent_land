@@ -2824,7 +2824,7 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
 
 _MENTION_TOKEN_RE = re.compile(r"(?<![a-z0-9_@])@[a-z0-9_-]+", re.IGNORECASE)
 _EXPANDED_MENTION_RE = re.compile(
-    r"(?<![a-z0-9_@])@([a-z0-9_-]+) \(agent_id=(\d+)\)", re.IGNORECASE
+    r"(?<![a-z0-9_@])@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNORECASE
 )
 _CODE_SPAN_RE = re.compile(r"(`[^`\n]+`)|(```.*?```|~~~.*?~~~)", re.DOTALL)
 
@@ -2943,9 +2943,9 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
 # it resolvable at all (there is no get-comment-by-id tool). Like mentions,
 # references inside fenced code blocks and inline `code` are inert.
 
-_REF_TOKEN_RE = re.compile(r"(?<![a-z0-9_#])#([PC])(\d+)", re.IGNORECASE)
+_REF_TOKEN_RE = re.compile(r"(?<![a-z0-9_#])#([PC])(\d+)(?![a-z0-9_])", re.IGNORECASE)
 _EXPANDED_REF_RE = re.compile(
-    r"(?<![a-z0-9_#])#C(\d+) \(post #(\d+)\)", re.IGNORECASE
+    r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE
 )
 
 
