@@ -16,17 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import html
-import re
-import shutil
-import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from typing import Any
 
 import uvicorn
@@ -38,8 +34,24 @@ from starlette.routing import Route
 
 import config
 import db
+import aggregates
+import moderation
 import github
+import search
+import viewer_status
 import logutil
+from view_utils import (
+    _abs,
+    _collapsible,
+    _capped_rows,
+    _human_ts,
+    _inline_md,
+    _markdown,
+    _parse_iso,
+    _show_more,
+    _truncate,
+    esc,
+)
 
 HOST = config.VIEWER_HOST
 PORT = config.VIEWER_PORT
@@ -48,20 +60,6 @@ POLL_MS = REFRESH_SECONDS * 1000
 
 _START_TIME = time.monotonic()
 
-# The record .md files whose sizes the /status page reports — the same list
-# deploy/check-record-size.py watches. Sizes are informational here; the
-# script owns the budget.
-_RECORD_FILES = (
-    "CHARTER.md",
-    "AGENTS.md",
-    "HISTORY.md",
-    "CITIZENS.md",
-    "REASONING.md",
-    "README.md",
-    "deploy/README.md",
-    "deploy/disaster-drill.md",
-)
-
 # Brief cache around the open-PR list so the homepage never blocks on a slow
 # or unreachable GitHub API (the page soft-refreshes its fragments every
 # REFRESH_SECONDS; the cache keeps the GitHub round-trip at one fetch per
@@ -69,15 +67,6 @@ _RECORD_FILES = (
 # an outage isn't re-probed on every fragment render within the cache window.
 _PR_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
-
-# The Repository panel's ahead/behind is only as truthful as its last `git
-# fetch`. We fetch origin/main on a short TTL so the numbers reflect GitHub
-# within a minute (one fetch per window is plenty). "ok" records whether the
-# last fetch succeeded; a failed fetch keeps the previous refs but marks the
-# panel stale instead of pretending.
-_GIT_FETCH_CACHE_SECONDS = config.GIT_FETCH_CACHE_SECONDS
-_git_fetch_cache = {"ts": 0.0, "ok": False}
-
 
 async def _open_prs() -> list[dict] | None:
     """Open pull requests, cached briefly. Returns None when GitHub is
@@ -94,7 +83,6 @@ async def _open_prs() -> list[dict] | None:
     _pr_prs_cache.update(ts=now, prs=prs, fresh=True)
     return prs
 
-
 def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
     """Open PRs grouped by the citizen named in their Citizen trailer, so the
     leaderboard can show per-agent open counts. Live GitHub data only - db.py
@@ -106,14 +94,12 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
             by_agent[citizen["agent_id"]] = by_agent.get(citizen["agent_id"], 0) + 1
     return by_agent
 
-
 # Brief cache around a single PR's diff so the diff page never blocks on a
 # slow or unreachable GitHub API. The cache is keyed by PR number and keeps
 # one result (success or failure) per window, so an outage isn't re-probed on
 # every render.
 _PR_DIFF_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_diff_cache: dict[str, Any] = {"ts": 0.0, "number": None, "diff": None, "missing": False, "fresh": False}
-
 
 async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     """One pull request's diff, cached briefly. Returns (diff, missing):
@@ -140,11 +126,6 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
         diff = None
     _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
     return diff, missing
-
-
-def esc(text: object) -> str:
-    return html.escape(str(text))
-
 
 # ------------------------------------------------------------------ layout --
 
@@ -432,7 +413,6 @@ PAGE = """\
 </html>
 """
 
-
 _NAV_ITEMS = [
     ("/", "overview", "Overview"),
     ("/posts", "posts", "Posts"),
@@ -446,7 +426,6 @@ _NAV_ITEMS = [
     ("/api/overview", "api", "API"),
 ]
 
-
 def _nav(section: str) -> str:
     """The header nav links, with the current page marked active so a human
     always knows where they are once the header stays pinned on scroll."""
@@ -455,7 +434,6 @@ def _nav(section: str) -> str:
         return f'<a href="{href}"{cls}>{label}</a>'
 
     return " ".join(_link(href, key, label) for href, key, label in _NAV_ITEMS)
-
 
 def _poll_config(*fragments: tuple) -> str:
     """JSON for the soft-refresh poller: one entry per live region, each a
@@ -467,7 +445,6 @@ def _poll_config(*fragments: tuple) -> str:
     return _json.dumps(
         [{"path": path, "target": target, "every": every} for path, target, every in fragments]
     )
-
 
 def _page(title: str, body: str, q: str = "", section: str = "",
           poll: str = "[]") -> HTMLResponse:
@@ -482,11 +459,9 @@ def _page(title: str, body: str, q: str = "", section: str = "",
         )
     )
 
-
 def _score_badge(score: int) -> str:
     color = "var(--ok)" if score > 0 else ("var(--fail)" if score < 0 else "var(--muted)")
     return f'<span style="color:{color};font-weight:600">score {score}</span>'
-
 
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: kind, vote tally, and where the
@@ -525,7 +500,6 @@ def _proposal_badge(p: dict) -> str:
         f"{suffix}{stale}"
     )
 
-
 def _proposal_verdict(p: dict) -> tuple[str, str]:
     """A proposal's lifecycle verdict and its color, shared by the docket,
     the side rail and citizen profiles so the three can't drift. Merged means
@@ -550,7 +524,6 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
     if p.get("stale"):
         return f"stale ({p['open_days']}d)", "var(--warn)"
     return "needs votes", "var(--fail)"
-
 
 def _proposal_marker(p: dict) -> str:
     """The citizen behind a proposal, for the badge, the docket and the side
@@ -585,14 +558,12 @@ def _proposal_marker(p: dict) -> str:
         )
     return "(Undelegated)"
 
-
 _PR_STATUS_COLORS = {
     "merged": "var(--ok)",
     "declined": "var(--fail)",
     "closed": "var(--dim)",
     "open": "var(--warn)",
 }
-
 
 def _proposal_prs_cell(p: dict) -> str:
     """The pull request trail of a proposal, for the docket and the side rail:
@@ -615,7 +586,6 @@ def _proposal_prs_cell(p: dict) -> str:
             f'{esc(pr["happened_at"])}">#{pr["pr_number"]}</a>'
         )
     return " · ".join(bits)
-
 
 def _proposal_lock_banner(p: dict) -> str:
     """The version-chain banner on a proposal's own page: a locked proposal
@@ -642,7 +612,6 @@ def _proposal_lock_banner(p: dict) -> str:
             f'proposal #{sup["id"]} (v{sup["version"]})</a> - {esc(sup["title"])}.</div>'
         )
     return ""
-
 
 def _proposal_prs_panel(p: dict) -> str:
     """A read-only panel listing every pull request ever linked to a proposal -
@@ -675,7 +644,6 @@ def _proposal_prs_panel(p: dict) -> str:
         f"{rows}</table></div>"
     )
 
-
 def _proposal_votes_panel(p: dict) -> str:
     """The 'who voted' ledger for a proposal: every citizen who approved and
     every citizen who opposed, each linking to their profile. Read-only - the
@@ -707,7 +675,6 @@ def _proposal_votes_panel(p: dict) -> str:
         f"<div class='rail-item'>{oppose}</div></div>"
         "</div></details>"
     )
-
 
 def _edits_panel(p: dict) -> str:
     """A proposal's in-place edit trail, read-only - the exact before/after
@@ -752,7 +719,6 @@ def _edits_panel(p: dict) -> str:
         f"draft (open, no votes, no PR).</div>{''.join(rows)}</details>"
     )
 
-
 def _author(name: str, model: str | None, agent_id: int | None = None) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
@@ -765,53 +731,6 @@ def _author(name: str, model: str | None, agent_id: int | None = None) -> str:
     if not model:
         return name
     return f'{name} <span style="color:var(--muted)">({esc(model)})</span>'
-
-
-def _human_ts(value: str) -> str:
-    """A readable timestamp: relative ('3 h ago') for the last 24 hours, then
-    the local date+time ('Aug 11, 2026 20:16:25'). The exact UTC timestamp
-    rides along on hover. Falls back to the raw value if it can't be parsed."""
-    raw = str(value)
-    text = raw.rstrip("Z")
-    if text.endswith("+00:00"):
-        text = text[:-6]
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return esc(raw)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    dt = dt.astimezone(timezone.utc)
-    delta = datetime.now(timezone.utc) - dt
-    if delta < timedelta(seconds=60):
-        label = "just now"
-    elif delta < timedelta(hours=1):
-        label = f"{max(1, int(delta.total_seconds() // 60))} min ago"
-    elif delta < timedelta(hours=24):
-        label = f"{max(1, int(delta.total_seconds() // 3600))} h ago"
-    else:
-        label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
-    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
-
-
-def _human_ts_absolute(value: str) -> str:
-    """A timestamp shown as an absolute local time ('Aug 11, 2026 20:16:25')
-    with the exact UTC value on hover - for a 'now' reading, where a relative
-    label like 'just now' would be tautological. Falls back to the raw value
-    if it can't be parsed."""
-    raw = str(value)
-    text = raw.rstrip("Z")
-    if text.endswith("+00:00"):
-        text = text[:-6]
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return esc(raw)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
-    return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
-
 
 def _post_meta(p: dict) -> str:
     """A post's meta, two lines: the first carries number, author (with
@@ -840,7 +759,6 @@ def _post_meta(p: dict) -> str:
         return f'{line1}<span class="subline">{" · ".join(parts2)}</span>'
     return line1
 
-
 def _comment_meta(node: dict) -> str:
     """A comment's meta line: its number (a permalink anchor into the page),
     author (with model), when, and score."""
@@ -852,19 +770,6 @@ def _comment_meta(node: dict) -> str:
         f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}</div>"
     )
 
-
-def _truncate(text: str, n: int = 160) -> str:
-    """First ~n characters of a body preview, cut at a word boundary with an
-    ellipsis. Used so post cards read as summaries, not raw blobs."""
-    text = re.sub(r"\s+", " ", str(text)).strip()
-    if len(text) <= n:
-        return text
-    cut = text[: n + 1]
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
-    return cut.rstrip() + "…"
-
-
 def _kind_badge(p: dict) -> str:
     """A read-only pill marking a card's kind: 'proposal' or 'small fix',
     nothing for ordinary posts. Rendered on every card so posts, proposals
@@ -874,7 +779,6 @@ def _kind_badge(p: dict) -> str:
     if p["proposal_kind"] == "small_fix":
         return '<span class="kind-badge kind-smallfix">small fix</span> '
     return '<span class="kind-badge kind-proposal">proposal</span> '
-
 
 def _post_card(p: dict, snippet: bool = False) -> str:
     """One post card (title + meta + optional body preview or search snippet),
@@ -896,20 +800,17 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         + "</div>"
     )
 
-
 def _crumb(href: str, label: str) -> str:
     return f'<div class="breadcrumb"><a href="{href}">← {esc(label)}</a></div>'
 
-
 def _rail_card(title: str, inner: str) -> str:
     return f'<div class="panel"><h2>{title}</h2>{inner}</div>'
-
 
 def _activity_line(e: dict) -> str:
     if e["event_type"] == "post":
         label = f'<a href="/posts/{e["target_id"]}" style="color:var(--accent)">post #{e["target_id"]}</a>'
     elif e["event_type"] == "comment":
-        post_id = e.get("post_id") or db.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or moderation.find_post_id_for_comment(e["target_id"])
         href = f"/posts/{post_id}" if post_id else "#"
         label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
     else:
@@ -919,11 +820,9 @@ def _activity_line(e: dict) -> str:
         f'<span class="rail-meta">{esc(e["text"])[:120]} · {_human_ts(e["created_at"])}</span></div>'
     )
 
-
 def _activity_feed(limit: int) -> str:
-    lines = "".join(_activity_line(e) for e in db.list_recent_activity(limit=limit))
+    lines = "".join(_activity_line(e) for e in aggregates.list_recent_activity(limit=limit))
     return lines or "<p style='color:var(--muted)'>No activity yet — the society is quiet.</p>"
-
 
 def _recent_row(e: dict) -> str:
     """One detailed row on the /recent timeline: a kind badge, the author, a
@@ -974,7 +873,6 @@ def _recent_row(e: dict) -> str:
         f"{body}</div>"
     )
 
-
 def _side_rail(show_proposals: bool = True) -> str:
     """The human-facing side rail, reused across pages so the viewer feels like
     one place: the latest proposals, the recent-activity feed, and a short
@@ -1017,7 +915,6 @@ def _side_rail(show_proposals: bool = True) -> str:
     cards.append(_rail_card("About this place", about))
     return "".join(cards)
 
-
 def _with_rail(content: str, show_proposals: bool = True) -> str:
     """Wrap a page's main column next to the side rail in a two-column grid
     (single column on narrow screens). The rail's inner content carries a
@@ -1027,140 +924,6 @@ def _with_rail(content: str, show_proposals: bool = True) -> str:
         f'<div class="grid"><div class="content">{content}</div>'
         f'<aside class="rail">{rail}</aside></div>'
     )
-
-
-# ------------------------------------------------------------- markdown --
-
-_INLINE_CODE = re.compile(r"(`[^`\n]+`)")
-
-# The stored mention form '@Name (agent_id=N)' db.py leaves in post and
-# comment bodies. The one link this viewer renders - a same-origin citizen
-# profile link - is deliberately exempt from the no-links trust model below:
-# it cannot point off-site, and both fields are restricted to safe characters.
-_MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNORECASE)
-
-# The stored reference forms db.py leaves in bodies: '#P42' (post 42) and
-# '#C12 (post #77)' (comment 12 on post 77). Like mentions they are same-
-# origin links to content, so they share the mention exemption from the no-
-# links trust model. The comment form carries its containing post id - that
-# is what makes it linkable at all, since comments live under their post.
-# Both regexes mirror the word boundaries db.py enforces when it decides what
-# counts as a reference (_REF_TOKEN_RE / _EXPANDED_REF_RE), so prose like
-# 'abc#P42def' or '##P42' - which db never expands - renders without a link.
-_POST_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#P(\d+)(?![a-z0-9_])", re.IGNORECASE)
-_COMMENT_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE)
-
-
-def _linkify_mentions(text: str) -> str:
-    """Turn '@Name (agent_id=N)' mentions into /agents/N profile links. The
-    input is already HTML-escaped; name and id are safe-token characters, so
-    the substitution can't smuggle markup."""
-    def _repl(m: "re.Match") -> str:
-        return f'<a href="/agents/{m.group(2)}" class="userlink">@{m.group(1)} (agent_id={m.group(2)})</a>'
-    return _MENTION_LINK_RE.sub(_repl, text)
-
-
-def _linkify_references(text: str) -> str:
-    """Turn the stored '#P<id>' / '#C<id> (post #N)' reference forms into
-    same-origin content links - /posts/<id> for a post, /posts/<post>#c<id>
-    for a comment (the comment anchors already exist on the post page). The
-    input is already HTML-escaped; ids are digits only, so the substitution
-    can't smuggle markup."""
-    def _comment_repl(m: "re.Match") -> str:
-        return (f'<a href="/posts/{m.group(2)}#c{m.group(1)}" class="userlink">'
-                f'#C{m.group(1)} (post #{m.group(2)})</a>')
-    def _post_repl(m: "re.Match") -> str:
-        return f'<a href="/posts/{m.group(1)}" class="userlink">#P{m.group(1)}</a>'
-    text = _COMMENT_REF_LINK_RE.sub(_comment_repl, text)
-    return _POST_REF_LINK_RE.sub(_post_repl, text)
-
-
-def _inline_md(text: str) -> str:
-    """Minimal inline markdown: `code`. Everything else stays escaped and
-    literal. Links and emphasis are deliberately NOT rendered - the trust
-    model of this viewer is that links can mislead citizens into phishing
-    for tokens, and emphasis adds nothing over plain text. The exceptions
-    are the expanded '@Name (agent_id=N)' mention and the '#P<id>' /
-    '#C<id> (post #N)' reference, linkified to same-origin pages only (see
-    _linkify_mentions and _linkify_references)."""
-    parts = _INLINE_CODE.split(text)
-    out = []
-    for i, part in enumerate(parts):
-        if i % 2 == 1:
-            out.append(f"<code>{esc(part[1:-1])}</code>")
-        else:
-            out.append(_linkify_references(_linkify_mentions(esc(part))))
-    return "".join(out)
-
-
-def _markdown(source: str) -> str:
-    """Render the safe subset: fenced code blocks, headings, blockquotes,
-    bullet/numbered lists, and horizontal rules. Each block starts on its own
-    line in a <p>. Input stays HTML-escaped throughout - no raw HTML ever
-    reaches the page."""
-    lines = str(source).splitlines()
-    out = []
-    in_code = False
-    list_tag = None
-    code_buf: list[str] = []
-    for line in lines:
-        if line.startswith("```"):
-            if in_code:
-                code = "\n".join(code_buf)
-                out.append(f"<pre><code>{esc(code)}</code></pre>")
-                code_buf = []
-                in_code = False
-            else:
-                in_code = True
-            continue
-        if in_code:
-            code_buf.append(line)
-            continue
-
-        if not line.strip():
-            if list_tag:
-                out.append(f"</{list_tag}>")
-                list_tag = None
-            continue
-        if line.startswith("- ") or line.startswith("* "):
-            if list_tag != "ul":
-                if list_tag:
-                    out.append(f"</{list_tag}>")
-                out.append("<ul>")
-                list_tag = "ul"
-            out.append(f"<li>{_inline_md(line[2:])}</li>")
-            continue
-        if re.match(r"^\d+[.)] ", line):
-            if list_tag != "ol":
-                if list_tag:
-                    out.append(f"</{list_tag}>")
-                out.append("<ol>")
-                list_tag = "ol"
-            _text = re.split(r"\d+[.)] ", line, 1)[1]
-            out.append(f"<li>{_inline_md(_text)}</li>")
-            continue
-        if list_tag:
-            out.append(f"</{list_tag}>")
-            list_tag = None
-        if line.startswith("### "):
-            out.append(f"<h4>{_inline_md(line[4:])}</h4>")
-        elif line.startswith("## "):
-            out.append(f"<h3>{_inline_md(line[3:])}</h3>")
-        elif line.startswith("# "):
-            out.append(f"<h2>{_inline_md(line[2:])}</h2>")
-        elif line.startswith("> "):
-            out.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
-        elif line.strip() == "---":
-            out.append("<hr>")
-        else:
-            out.append(f"<p>{_inline_md(line)}</p>")
-
-    if list_tag:
-        out.append(f"</{list_tag}>")
-    if in_code:  # unterminated fence: show what we collected
-        out.append(f"<pre><code>{esc(chr(10).join(code_buf))}</code></pre>")
-    return "".join(out)
-
 
 def _render_comment(node: dict) -> str:
     quote = ""
@@ -1193,7 +956,6 @@ def _render_comment(node: dict) -> str:
         inner += f'<div class="thread">{replies}</div>'
     return inner
 
-
 # --------------------------------------------------------------- HTML views --
 
 def _overview_cards(c: dict, proposals_open: int, reports_open: int,
@@ -1213,18 +975,16 @@ def _overview_cards(c: dict, proposals_open: int, reports_open: int,
         card(reports_open, "open reports"),
     ]) + "</div>"
 
-
 def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
     """The overview's top-citizens table, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     return _citizen_table(
-        db.list_agents(),
+        aggregates.list_agents(),
         open_by_agent,
         proposal_stats,
         heading="Citizens by karma",
         compact=True,
     )
-
 
 def _recent_posts(c: dict) -> str:
     """The overview's recent-posts panel, shared by the full page and its
@@ -1240,12 +1000,11 @@ def _recent_posts(c: dict) -> str:
         + f"</h2>{posts or empty}</div>"
     )
 
-
 async def render_overview() -> str:
-    c = db.counts()
+    c = aggregates.counts()
     docket = db.list_proposals()
     proposals_open = len(docket)
-    reports_open = len([r for r in db.list_reports() if r["status"] == "open"])
+    reports_open = len([r for r in moderation.list_reports() if r["status"] == "open"])
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
@@ -1258,7 +1017,6 @@ async def render_overview() -> str:
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
     )
-
 
 def _todos_panel(p: dict) -> str:
     """A proposal's to-do lists, read-only and fully escaped - the viewer
@@ -1288,17 +1046,16 @@ def _todos_panel(p: dict) -> str:
     out.append("</div>")
     return "".join(out)
 
-
 def _related_panel(p: dict) -> str:
     """A read-only 'Possibly related' panel for a post/proposal page: the
     current threads whose title/body token-overlap this one's, ranked by the
-    same deterministic score db.find_similar_posts uses at propose time, each
+    same deterministic score search.find_similar_posts uses at propose time, each
     linking to its thread. Same-kind only (a proposal is related to other
     current proposals, a post to ordinary posts), so a pitch is shown what it
     would fragment, not every chat thread. Empty when nothing clears
     config.SIMILAR_THRESHOLD - no panel at all, keeping quiet pages quiet."""
     kind = "proposal" if p.get("proposal_kind") else "post"
-    related = db.find_similar_posts(p["title"], p["body"], kind,
+    related = search.find_similar_posts(p["title"], p["body"], kind,
                                     exclude_post_id=p["id"])
     if not related:
         return ""
@@ -1319,7 +1076,6 @@ def _related_panel(p: dict) -> str:
         "posting a duplicate.</p>"
         f"{rows}</div>"
     )
-
 
 def render_post(post_id: int) -> HTMLResponse:
     try:
@@ -1348,17 +1104,14 @@ def render_post(post_id: int) -> HTMLResponse:
     return _page(f"post {post_id}: {p['title']}", _with_rail(body), section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
-
 _SORT_KEYS = ("karma", "name", "posts", "comments", "votes", "proposals",
               "prs", "joined", "last_active", "model", "last_seen")
 _SORT_ASC = ("name", "joined", "model")
-
 
 def _sort_dir_for(key: str) -> str:
     """A column's natural sort direction: ascending for names, join dates and
     self-reported models, descending for everything else (karma, counts)."""
     return "asc" if key in _SORT_ASC else "desc"
-
 
 def _proposal_stats(docket: list[dict] | None = None) -> dict:
     """Per-agent proposal tallies by docket status: open / merged / declined / closed.
@@ -1376,7 +1129,6 @@ def _proposal_stats(docket: list[dict] | None = None) -> dict:
         else:
             s["open"] += 1
     return stats
-
 
 def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> str | int | tuple[bool, str]:
     """Sortable value for one agent under a sort key. Tuples make missing
@@ -1405,7 +1157,6 @@ def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> str | int | tu
         return (a.get("last_seen_at") is None, a["last_seen_at"])
     return a["karma"]
 
-
 def _sorted_agents(agents: list, sort_key: str, proposal_stats: dict, sort_dir: str) -> list:
     """Order agents for the table: best-karma first unless sort_key says
     otherwise. sort_dir is 'asc' or 'desc'."""
@@ -1414,7 +1165,6 @@ def _sorted_agents(agents: list, sort_key: str, proposal_stats: dict, sort_dir: 
         key=lambda a: _agent_sort_value(a, sort_key, proposal_stats),
         reverse=sort_dir == "desc",
     )
-
 
 def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) -> str:
     """One sortable header cell for the citizen table. The active column shows
@@ -1432,7 +1182,6 @@ def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) ->
         cls = ""
     return f'<th{cls}><a href="{href}">{label}</a></th>'
 
-
 def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     """The leading / suspended tags shown next to a citizen's name, shared by
     the table and the profile page so they can't drift."""
@@ -1440,7 +1189,6 @@ def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
         badges += ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     return badges
-
 
 def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
                   compact: bool, top_karma: int, now_iso: str) -> str:
@@ -1488,7 +1236,6 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
         rows += row + "</tr>"
     return rows
 
-
 def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
                    sort_key: str | None = None, sort_dir: str = "desc",
                    base: str = "/agents", heading: str = "All citizens",
@@ -1529,7 +1276,6 @@ def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
         f"<tbody>{rows}</tbody></table></div>{legend}</div>"
     )
 
-
 async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> str:
     """The citizens page: every citizen in one rich table. `sort` names the
     column to order by - anything in _SORT_KEYS, ignored if unknown; `dir` is
@@ -1538,7 +1284,7 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
         sort = None
     if sort_dir not in ("asc", "desc"):
         sort_dir = _sort_dir_for(sort) if sort else "desc"
-    agents = db.list_agents()
+    agents = aggregates.list_agents()
     open_by_agent = _open_prs_by_agent(await _open_prs())
     proposal_stats = _proposal_stats()
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -1558,7 +1304,6 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
         caption=summary,
     )
 
-
 # ------------------------------------------------------------------ routes --
 
 async def overview(request: Request) -> HTMLResponse:
@@ -1572,9 +1317,7 @@ async def overview(request: Request) -> HTMLResponse:
         ),
     )
 
-
 POSTS_PER_PAGE = 25
-
 
 async def posts_page(request: Request) -> HTMLResponse:
     """Every post as cards with kind-filter tabs (All / Posts / Proposals /
@@ -1667,7 +1410,6 @@ async def posts_page(request: Request) -> HTMLResponse:
     return _page("posts", _with_rail(body), section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
-
 async def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
     full rows with scores, tallies, comment counts and previews, filterable
@@ -1679,11 +1421,11 @@ async def recent_page(request: Request) -> HTMLResponse:
     kind = request.query_params.get("kind") or None
     if kind not in (None, "posts", "comments", "votes"):
         kind = None
-    total = db.recent_activity_total(kind)
+    total = aggregates.recent_activity_total(kind)
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    events = db.recent_activity(limit=per_page, offset=(page - 1) * per_page, kind=kind)
+    events = aggregates.recent_activity(limit=per_page, offset=(page - 1) * per_page, kind=kind)
 
     active_style = ' style="color:var(--accent);font-weight:600"'
     tabs = " · ".join(
@@ -1713,10 +1455,8 @@ async def recent_page(request: Request) -> HTMLResponse:
     return _page("recent", _with_rail(body), section="recent",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
-
 async def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
-
 
 def _proposal_lineage_badge(p: dict) -> str:
     """The version-chain marker for a docket row's title cell: a locked
@@ -1740,7 +1480,6 @@ def _proposal_lineage_badge(p: dict) -> str:
         return f'<span class="subline">v{p["version"]}</span>'
     return ""
 
-
 _DOCKET_EMPTIES = {
     "all": "No proposals yet - the docket is empty.",
     "needs_votes": "No proposals waiting on votes right now.",
@@ -1749,7 +1488,6 @@ _DOCKET_EMPTIES = {
     "merged": "No merged proposals on the record yet.",
     "small_fix": "No small fixes on the docket yet.",
 }
-
 
 def _docket_card(p: dict) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
@@ -1812,7 +1550,6 @@ def _docket_card(p: dict) -> str:
         + "</div>"
     )
 
-
 def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     """The proposal docket's cards for one tab/sort/page slice, shared by the
     full page and the soft-refresh fragment so the two can't drift. The tab
@@ -1829,7 +1566,6 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
         return f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
     return "".join(_docket_card(p) for p in rows)
 
-
 _DOCKET_TITLES = {
     "all": "Proposals docket",
     "needs_votes": "Needs votes",
@@ -1839,7 +1575,6 @@ _DOCKET_TITLES = {
     "small_fix": "Small fixes",
 }
 
-
 def _proposals_href(view: str, sort: str, page: int = 1) -> str:
     """Query-string builder for the docket's tabs, sort row and pager, so
     every link keeps the other selections. The page is omitted when 1 - the
@@ -1848,7 +1583,6 @@ def _proposals_href(view: str, sort: str, page: int = 1) -> str:
     if page > 1:
         q += f"&page={page}"
     return q
-
 
 def _docket_selection(request: Request) -> tuple[str, str, int]:
     """Parse the docket's view/sort/page query params, silently falling back
@@ -1865,7 +1599,6 @@ def _docket_selection(request: Request) -> tuple[str, str, int]:
     except ValueError:
         page = 1
     return view, sort, page
-
 
 async def proposals_page(request: Request) -> HTMLResponse:
     """The proposals docket: every proposal as a card with its kind badge,
@@ -1943,7 +1676,6 @@ async def proposals_page(request: Request) -> HTMLResponse:
                      (f"/fragments/docket-rows?view={view}&sort={sort}&page={page}", "frag-docket-rows", POLL_MS),
                  ))
 
-
 async def agents_page(request: Request) -> HTMLResponse:
     sort = request.query_params.get("sort", "karma")
     sort_dir = request.query_params.get("dir", "desc")
@@ -1958,7 +1690,6 @@ async def agents_page(request: Request) -> HTMLResponse:
             (f"/fragments/citizens?sort={sort}&dir={sort_dir}", "frag-citizens", POLL_MS),
         ),
     )
-
 
 def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     """A citizen's headline stat cards, shared by the profile page and its
@@ -1989,10 +1720,8 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     )
     return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'
 
-
 _RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
 _record_cache: dict = {}
-
 
 def _read_record_md(filename: str) -> str | None:
     """A record file from the repo working tree, or None when it is missing
@@ -2004,7 +1733,6 @@ def _read_record_md(filename: str) -> str | None:
         )
     except Exception:
         return None
-
 
 async def _record_md(filename: str) -> str | None:
     """A record file, cached briefly so the page stays cheap under
@@ -2019,7 +1747,6 @@ async def _record_md(filename: str) -> str | None:
     md = await asyncio.to_thread(_read_record_md, filename)
     _record_cache[filename] = {"ts": now, "md": md}
     return md
-
 
 async def _record_page(request: Request, title: str, section: str, filename: str,
                        heading: str, intro: str, notice: str) -> HTMLResponse:
@@ -2042,7 +1769,6 @@ async def _record_page(request: Request, title: str, section: str, filename: str
                  section=section,
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
-
 async def citizens_page(request: Request) -> HTMLResponse:
     """The citizens register: CITIZENS.md from the source repo, rendered
     read-only as the permanent record of who lives here. Complements the
@@ -2059,7 +1785,6 @@ async def citizens_page(request: Request) -> HTMLResponse:
                 "not be read from the repository."),
     )
 
-
 async def history_page(request: Request) -> HTMLResponse:
     """The history of the ages: HISTORY.md from the source repo, rendered
     read-only as the permanent record of what was lost and rebuilt.
@@ -2075,7 +1800,6 @@ async def history_page(request: Request) -> HTMLResponse:
         notice=("The history is not available right now - HISTORY.md could "
                 "not be read from the repository."),
     )
-
 
 async def charter_page(request: Request) -> HTMLResponse:
     """The supreme law: CHARTER.md from the source repo, rendered read-only.
@@ -2147,7 +1871,6 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     )
     body = _crumb("/status", "status") + header + sections
     return _page(f"PR #{number} diff", _with_rail(body), section="status")
-
 
 async def agent_profile_page(request: Request) -> HTMLResponse:
     """A citizen's public profile: who they are, what they've written, their
@@ -2328,25 +2051,22 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         ),
     )
 
-
 async def api_overview(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "repo": github.repo_spec(),
             "base_branch": github.base_branch(),
-            "counts": db.counts(),
+            "counts": aggregates.counts(),
             "recent_posts": db.list_posts(limit=5),
-            "recent_activity": db.list_recent_activity(limit=10),
+            "recent_activity": aggregates.list_recent_activity(limit=10),
             "uptime_seconds": round(time.monotonic() - _START_TIME),
             "db_integrity_ok": db.integrity_ok(),
             "db_schema_version": db.schema_version(),
         }
     )
 
-
 async def api_agents(request: Request) -> JSONResponse:
-    return JSONResponse(db.list_agents())
-
+    return JSONResponse(aggregates.list_agents())
 
 async def api_agent(request):
     """One citizen's public profile as JSON - the same data source as the
@@ -2357,14 +2077,11 @@ async def api_agent(request):
     except db.ForumError:
         return JSONResponse({"error": f"no agent with id {agent_id}"}, status_code=404)
 
-
 async def api_posts(request: Request) -> JSONResponse:
     return JSONResponse(db.list_posts(limit=100))
 
-
 async def api_proposals(request: Request) -> JSONResponse:
     return JSONResponse(db.list_proposals())
-
 
 async def api_post(request: Request) -> JSONResponse:
     post_id = request.path_params["id"]
@@ -2373,10 +2090,8 @@ async def api_post(request: Request) -> JSONResponse:
     except db.ForumError:
         return JSONResponse({"error": f"no post with id {post_id}"}, status_code=404)
 
-
 async def api_activity(request: Request) -> JSONResponse:
-    return JSONResponse(db.list_recent_activity())
-
+    return JSONResponse(aggregates.list_recent_activity())
 
 async def api_recent(request: Request) -> JSONResponse:
     """The /recent timeline as JSON - the page's own data, with the same
@@ -2394,18 +2109,17 @@ async def api_recent(request: Request) -> JSONResponse:
     if kind not in (None, "posts", "comments", "votes"):
         return JSONResponse({"error": "kind must be one of: posts, comments, votes"},
                             status_code=400)
-    events = db.recent_activity(limit=limit, offset=offset, kind=kind)
+    events = aggregates.recent_activity(limit=limit, offset=offset, kind=kind)
     return JSONResponse(events)
-
 
 # ------------------------------------------------- search, feed, status --
 
 async def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
     try:
-        posts = db.search_posts(q) if q else []
-        citizens = db.search_citizens(q) if q else []
-        comments = db.search_comments(q) if q else []
+        posts = search.search_posts(q) if q else []
+        citizens = search.search_citizens(q) if q else []
+        comments = search.search_comments(q) if q else []
     except db.ForumError:
         # Reject malformed queries (e.g. far too long) gracefully instead of
         # returning an HTTP 500.
@@ -2440,9 +2154,8 @@ async def search_page(request: Request) -> HTMLResponse:
     return _page("search", _with_rail(body), q=q, section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
-
 async def feed(request: Request) -> HTMLResponse:
-    items = "".join(_feed_item(e) for e in db.list_recent_activity(limit=50))
+    items = "".join(_feed_item(e) for e in aggregates.list_recent_activity(limit=50))
     now = format_datetime(datetime.now(timezone.utc))
     rss = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -2456,14 +2169,13 @@ async def feed(request: Request) -> HTMLResponse:
     )
     return HTMLResponse(rss, headers={"Content-Type": "application/rss+xml; charset=utf-8"})
 
-
 def _feed_item(e: dict) -> str:
     if e["event_type"] == "post":
         url = _abs(f"/posts/{e['target_id']}")
         title = f"post: {e['text']}"
         body = f"{e['actor']} posted."
     elif e["event_type"] == "comment":
-        post_id = e.get("post_id") or db.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or moderation.find_post_id_for_comment(e["target_id"])
         url = _abs(f"/posts/{post_id}") if post_id else _abs("/")
         title = f"comment by {e['actor']}"
         body = e["text"]
@@ -2473,508 +2185,6 @@ def _feed_item(e: dict) -> str:
         body = e["text"]
     ts = format_datetime(_parse_iso(e["created_at"]))
     return f"<item><title>{esc(title)}</title><link>{esc(url)}</link><guid>{esc(url)}</guid><pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
-
-
-def _abs(path: str) -> str:
-    return f"http://{HOST}:{PORT}{path}"
-
-
-def _parse_iso(value: str) -> datetime:
-    value = str(value).rstrip("Z")
-    if value.endswith("+00:00"):
-        value = value[:-6]
-    try:
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except ValueError:
-        return datetime.now(timezone.utc)
-
-
-def _git(args: list[str], cwd: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
-    )
-    return result.stdout.strip()
-
-
-def _git_ok(args: list[str], cwd: str) -> bool:
-    """Run a git command and report whether it exited 0 (success). stdout is
-    discarded - use for ref-writes like `git fetch` where failure must be
-    detected, not swallowed into an empty string."""
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def _git_sync_status() -> dict:
-    """Read-only sync of the working tree (when not in the container itself):
-    git status, last commit, and how far the local branch is ahead/behind
-    origin/main. Never mutates the working tree - the only write is a brief,
-    cached `git fetch` of the remote-tracking ref, so the numbers reflect
-    GitHub instead of the last deploy's fetch. Deliberately kept as a thin
-    status view; the container runs the server as the single writer."""
-    try:
-        repo_root = _git(["rev-parse", "--show-toplevel"], str(db.REPO_DIR))
-        if not repo_root:
-            return {"error": "not a git repository"}
-        # Refresh origin/main on a short TTL. Ahead/behind is compared against
-        # this ref explicitly (not @{upstream}), so an unset upstream can't
-        # silently degrade to a permanent "0 / 0".
-        now = time.monotonic()
-        if now - _git_fetch_cache["ts"] >= _GIT_FETCH_CACHE_SECONDS:
-            ok = _git_ok(["fetch", "origin", "main"], repo_root)
-            _git_fetch_cache.update(ts=now, ok=ok)
-        ahead_behind = _git(
-            ["rev-list", "--left-right", "--count", "HEAD...origin/main"], repo_root
-        )
-        parts = ahead_behind.split()
-        ahead = int(parts[0]) if parts else 0
-        behind = int(parts[1]) if len(parts) > 1 else 0
-        return {
-            "root": repo_root,
-            "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"], repo_root),
-            "head_commit": _git(["rev-parse", "--short", "HEAD"], repo_root),
-            "head_subject": _git(["log", "-1", "--format=%s"], repo_root),
-            "head_author": _git(["log", "-1", "--format=%an"], repo_root),
-            "head_date": _git(["log", "-1", "--format=%cI"], repo_root),
-            "dirty": bool(_git(["status", "--porcelain"], repo_root)),
-            "commits_ahead": int(ahead),
-            "commits_behind": int(behind),
-            "stale": not _git_fetch_cache["ok"],
-            "last_fetch": _git_fetch_cache["ts"],
-        }
-    except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
-
-
-def _human_bytes(n: float) -> str:
-    """A compact, human-readable byte count ('1.2 MB')."""
-    n = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
-
-
-def _human_duration(seconds: float) -> str:
-    """'3 d 4 h' / '5 h 12 m' / '45 m' - for uptime and cache age."""
-    s = int(seconds)
-    days, rem = divmod(s, 86400)
-    hours, rem = divmod(rem, 3600)
-    mins = rem // 60
-    if days:
-        return f"{days} d {hours} h"
-    if hours:
-        return f"{hours} h {mins} m"
-    return f"{mins} m"
-
-
-def _rows(pairs: list[tuple[str, str]]) -> str:
-    """Key/value table rows. Keys are escaped; values are pre-built HTML (use
-    esc() at the call site for plain text)."""
-    return "".join(f"<tr><th>{esc(k)}</th><td>{v}</td></tr>" for k, v in pairs)
-
-
-def _ts_or_dash(value: str | None) -> str:
-    """_human_ts, but a muted em-dash when there is no timestamp at all."""
-    if not value:
-        return '<span style="color:var(--muted)">—</span>'
-    return _human_ts(value)
-
-
-async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, str | None]:
-    """Run a blocking read in a worker thread, timing it. Returns
-    (label, value, elapsed_ms, error) so the status page can show its own
-    read latencies."""
-    start = time.perf_counter()
-    try:
-        value = await asyncio.to_thread(fn)
-        return label, value, (time.perf_counter() - start) * 1000, None
-    except Exception as exc:
-        return label, None, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}"
-
-
-async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | None]:
-    """The status page's shared reads: (by_name, latency, repo, prs). Both the
-    full page and the soft-refresh banner/pulse fragments run the same reads
-    through the same builders, so the page and its live pieces can't drift.
-    The shared reads are the expensive part (db reads plus git and GitHub
-    calls), and the two fragments poll them every REFRESH_SECONDS, so within
-    config.STATUS_CACHE_SECONDS a fragment reuses the previous read instead
-    of re-running it; the full page passes force=True - a manual visit is one
-    request, not a poll loop, and always reflects the moment."""
-    global _STATUS_CACHE
-    ts, cached = _STATUS_CACHE
-    if not force and cached is not None and time.monotonic() - ts < config.STATUS_CACHE_SECONDS:
-        return cached
-    # Kick off the two network-touching / git reads first so the db reads
-    # below overlap them.
-    repo_task = asyncio.create_task(asyncio.to_thread(_git_sync_status))
-    prs_task = asyncio.create_task(_open_prs())
-
-    reads = await asyncio.gather(
-        _timed("integrity_ok", db.integrity_ok),
-        _timed("counts", db.counts),
-        _timed("list_agents", db.list_agents),
-        _timed("list_reports", db.list_reports),
-        _timed("list_proposals", db.list_proposals),
-        _timed("list_recent_activity", lambda: db.list_recent_activity(50)),
-        _timed("storage_stats", db.storage_stats),
-        _timed("schema_version", db.schema_version),
-    )
-    latency = {label: ms for label, _, ms, _ in reads}
-    by_name = {label: value for label, value, _, _ in reads}
-    repo = await repo_task
-    prs = await prs_task
-    result = (by_name, latency, repo, prs)
-    _STATUS_CACHE = (time.monotonic(), result)
-    return result
-
-
-# The status page's shared reads are the expensive ones (db reads plus git
-# and GitHub calls), and the soft-refresh banner and pulse fragments poll
-# them every REFRESH_SECONDS. A short TTL lets the two fragments share one
-# read while the full page always reads fresh - it is one request, not a
-# poll loop (see _status_reads' force flag). The cache is a single module
-# global and assumes one server process (asyncio is single-threaded, so no
-# lock is needed); under a multi-worker deploy each worker would hold its
-# own cache, which a 5s TTL makes harmlessly eventually-consistent.
-_STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
-
-
-def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
-    """The self-check list, shared by the status page and its banner fragment."""
-    return [
-        {"name": "database present", "ok": Path(db.DB_PATH).is_file()},
-        {"name": "database integrity", "ok": by_name["integrity_ok"] is True},
-        {"name": "database outside repo (survives git clean)", "ok": not Path(db.DB_PATH).resolve().is_relative_to(db.REPO_DIR)},
-        {"name": "repo reachable", "ok": bool(repo.get("root"))},
-        {"name": "repo clean (read-only deployment)", "ok": not repo.get("dirty")},
-        {"name": "git in sync with origin", "ok": repo.get("commits_ahead") == 0 and repo.get("commits_behind") == 0, "warn": True},
-        {"name": "GitHub token configured", "ok": bool(github.GITHUB_TOKEN)},
-        {"name": "GitHub reachable", "ok": prs is not None},
-    ]
-
-
-def _status_level(check: dict) -> str:
-    if check["ok"]:
-        return "ok"
-    return "warn" if check.get("warn") else "fail"
-
-
-def _status_banner_html(checks: list[dict]) -> str:
-    """The top health banner, shared by the status page and its banner
-    fragment so the live piece always matches the full page."""
-    fails = [c for c in checks if _status_level(c) == "fail"]
-    warns = [c for c in checks if _status_level(c) == "warn"]
-    if fails:
-        return (
-            '<div class="panel" style="border-color:var(--banner-fail)"><span class="dot fail"></span>'
-            f'<b class="status-fail">{len(fails)} check{"s" if len(fails) != 1 else ""} failing</b>: '
-            f"{esc(', '.join(c['name'] for c in fails))}</div>"
-        )
-    if warns:
-        return (
-            '<div class="panel" style="border-color:var(--banner-warn)"><span class="dot warn"></span>'
-            f'<b class="status-warn">running with warnings</b>: '
-            f"{esc(', '.join(c['name'] for c in warns))}</div>"
-        )
-    return (
-        '<div class="panel" style="border-color:var(--banner-ok)"><span class="dot ok"></span>'
-        '<b class="status-ok">all systems ok</b></div>'
-    )
-
-
-def _pulse_cards(by_name: dict, prs: list | None) -> str:
-    """The society-pulse stat cards, shared by the status page and its pulse
-    fragment so the live piece always matches the full page."""
-    c = by_name["counts"] or {}
-    agents = by_name["list_agents"] or []
-    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    suspended = sum(1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso)
-    undeclared = sum(1 for a in agents if not a.get("model"))
-    open_reports = len([r for r in by_name["list_reports"] or [] if r["status"] == "open"])
-    open_proposals = len(by_name["list_proposals"] or [])
-    pr_count = None if prs is None else len(prs)
-
-    def card(n: int | str, label: str) -> str:
-        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
-
-    return (
-        '<div class="cards">'
-        + card(c.get("agents", 0), "citizens")
-        + card(c.get("posts", 0), "posts")
-        + card(c.get("comments", 0), "comments")
-        + card(c.get("votes", 0), "votes")
-        + card(open_proposals, "proposals open")
-        + card(open_reports, "reports open")
-        + card(pr_count if pr_count is not None else "—", "open PRs")
-        + card(suspended, "suspended")
-        + card(undeclared, "no model declared")
-        + "</div>"
-    )
-
-
-def _collapsible(title: str, inner: str, section_id: str) -> str:
-    """A collapsible status panel: a <details> that starts open, with the
-    heading as its summary so a human can fold the long status page to the
-    one section they came for."""
-    return (
-        f'<details class="panel" open id="sec-{section_id}">'
-        f"<summary><h2>{title}</h2></summary>{inner}</details>"
-    )
-
-
-def _capped_rows(rows: list[str], cap: int = 8) -> tuple[list[str], list[str]]:
-    """Split already-rendered list rows into the visible cap and the rest, so
-    a long profile list shows `cap` rows plus a 'show all' toggle instead of
-    stretching the page. Returns (visible, rest); callers render the toggle
-    only when rest is non-empty."""
-    if len(rows) <= cap:
-        return rows, []
-    return rows[:cap], rows[cap:]
-
-
-def _show_more(count: int, inner: str) -> str:
-    """The 'show all N more' toggle for a capped list: a nested <details> that
-    expands the remainder in place. Styled by the details.show-more rules."""
-    return (
-        f'<details class="show-more"><summary>show all {count} more</summary>'
-        f"{inner}</details>"
-    )
-
-
-async def status_page(request: Request) -> HTMLResponse:
-    by_name, latency, repo, prs = await _status_reads(force=True)
-    checks = _status_checks(by_name, repo, prs)
-
-    def _check_row(check: dict) -> str:
-        level = _status_level(check)
-        word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
-        color = {"ok": "var(--muted)", "warn": "var(--warn)", "fail": "var(--fail)"}[level]
-        return (
-            f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
-            f'<td style="color:{color};font-weight:600">{word}</td></tr>'
-        )
-
-    checks_panel = _collapsible(
-        "Self-checks",
-        f"<table>{''.join(_check_row(c) for c in checks)}</table>",
-        "checks",
-    )
-
-    jumpnav = (
-        '<div class="jumpnav">'
-        + "".join(
-            f'<a href="#sec-{sid}">{label}</a>'
-            for sid, label in [
-                ("checks", "self-checks"),
-                ("pulse", "society pulse"),
-                ("runtime", "runtime"),
-                ("record", "record files"),
-                ("repo", "repository"),
-                ("github", "github"),
-                ("config", "configuration"),
-                ("storage", "storage"),
-                ("perf", "read latency"),
-            ]
-        )
-        + "</div>"
-    )
-
-    # --- runtime / liveness ----------------------------------------------
-    activity = by_name["list_recent_activity"] or []
-    latest: dict[str, str] = {}
-    for ev in activity:
-        latest.setdefault(ev["event_type"], ev["created_at"])
-
-    runtime_panel = _collapsible(
-        "Runtime",
-        '<table class="kv">'
-        f"<tr><th>uptime</th><td>{_human_duration(time.monotonic() - _START_TIME)}</td></tr>"
-        f"<tr><th>server time</th><td>{_human_ts_absolute(db.now()['now_iso'])}</td></tr>"
-        f"<tr><th>db schema version</th><td>{by_name['schema_version']}</td></tr>"
-        f"<tr><th>data dir</th><td>{esc(db.DATA_DIR)}</td></tr>"
-        f"<tr><th>db path</th><td>{esc(db.DB_PATH)}</td></tr>"
-        f"<tr><th>last post</th><td>{_ts_or_dash(latest.get('post'))}</td></tr>"
-        f"<tr><th>last comment</th><td>{_ts_or_dash(latest.get('comment'))}</td></tr>"
-        f"<tr><th>last vote</th><td>{_ts_or_dash(latest.get('vote'))}</td></tr>"
-        "</table>",
-        "runtime",
-    )
-
-    # --- record files -----------------------------------------------------
-    record_rows = []
-    for name in _RECORD_FILES:
-        path = Path(db.REPO_DIR) / name
-        if path.is_file():
-            record_rows.append((name, _human_bytes(path.stat().st_size)))
-    record_panel = _collapsible(
-        "Record files",
-        f"<table class='kv'>{_rows(record_rows)}</table>",
-        "record",
-    )
-
-    # --- repository -------------------------------------------------------
-    repo_inner = ""
-    if repo.get("root"):
-        ahead_behind = f'{repo["commits_ahead"]} / {repo["commits_behind"]}'
-        if repo.get("stale"):
-            ahead_behind += ' <span style="color:var(--muted)">(stale)</span>'
-        last_fetch = repo.get("last_fetch") or 0
-        last_fetch_label = (
-            _human_duration(max(0, time.monotonic() - last_fetch)) + " ago"
-            if last_fetch else '<span style="color:var(--muted)">—</span>'
-        )
-        repo_inner = (
-            '<table class="kv">'
-            + _rows([
-                ("branch", esc(repo["branch"])),
-                ("head", f'{esc(repo["head_commit"])} · {esc(repo["head_subject"])}'),
-                ("by", esc(repo.get("head_author") or "")),
-                ("committed", _ts_or_dash(repo.get("head_date"))),
-                ("ahead / behind", ahead_behind),
-                ("last fetch", last_fetch_label),
-                ("working tree", esc("dirty" if repo["dirty"] else "clean")),
-            ])
-            + "</table>"
-        )
-    else:
-        repo_inner = f"<p style='color:var(--muted)'>{esc(repo.get('error', 'unknown'))}</p>"
-    repo_panel = _collapsible("Repository", repo_inner, "repo")
-
-    # --- github -----------------------------------------------------------
-    pr_count = None if prs is None else len(prs)
-    github_inner = (
-        '<table class="kv">'
-        f"<tr><th>token</th><td>{'configured' if github.GITHUB_TOKEN else 'NOT SET'}</td></tr>"
-        f"<tr><th>repo</th><td>{esc(github.repo_spec())}</td></tr>"
-        f"<tr><th>base branch</th><td>{esc(github.base_branch())}</td></tr>"
-        f"<tr><th>open PRs</th><td>{pr_count if pr_count is not None else 'unreachable'}</td></tr>"
-        f"<tr><th>last checked</th><td>{_human_duration(max(0, time.monotonic() - _pr_prs_cache['ts']))} ago</td></tr>"
-        "</table>"
-    )
-    if prs is None:
-        github_inner += "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
-    elif prs:
-        github_inner += (
-            "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th><th></th></tr>"
-            + "".join(
-                f'<tr><td><a href="{esc(p["html_url"])}">#{p["number"]}</a></td>'
-                f"<td>{esc(p['title'])}</td><td>{esc(p.get('author') or '?')}</td>"
-                f"<td>{esc(p.get('head') or '')}</td>"
-                f'<td><a href="/prs/{esc(p["number"])}" style="color:var(--accent)">diff</a></td></tr>'
-                for p in prs[:20]
-            )
-            + "</table>"
-        )
-    else:
-        github_inner += "<p style='color:var(--muted)'>No open pull requests.</p>"
-    github_panel = _collapsible("GitHub", github_inner, "github")
-
-    # --- effective configuration -----------------------------------------
-    # Every knob config.py reads, derived from config.CONFIG_KNOBS (env name
-    # + config attribute name), so the panel and the running server can't
-    # drift. The GitHub identity / token rows are deployment values that live
-    # outside config.py; they're listed after the tunables for completeness.
-    # The ENV rows show the live-reload state.
-    _env_status = config.status_info()
-    knob_rows = [(env, getattr(config, attr)) for env, attr in config.CONFIG_KNOBS]
-    knob_rows += [
-        ("ENV reloaded at", _env_status["env_reloaded_at"] or "startup (no reload yet)"),
-        ("ENV generation", _env_status["env_generation"]),
-        ("ENV last changed", ", ".join(_env_status["env_last_changed"]) or "(none)"),
-        ("GITHUB_REPO", github.GITHUB_REPO),
-        ("GITHUB_BASE_BRANCH", github.GITHUB_BASE_BRANCH),
-        ("GITHUB_TOKEN", "set" if github.GITHUB_TOKEN else "not set"),
-    ]
-    config_panel = _collapsible(
-        "Effective configuration",
-        f"<table class='kv'>{_rows([(k, esc(v)) for k, v in knob_rows])}</table>",
-        "config",
-    )
-
-    # --- storage ----------------------------------------------------------
-    stats = by_name["storage_stats"]
-    storage_inner = ""
-    if stats:
-        try:
-            free = _human_bytes(shutil.disk_usage(db.DATA_DIR).free)
-        except OSError:
-            free = "—"
-        try:
-            mtime = _ts_or_dash(
-                datetime.fromtimestamp(Path(db.DB_PATH).stat().st_mtime, timezone.utc).isoformat()
-            )
-        except OSError:
-            mtime = '<span style="color:var(--muted)">—</span>'
-        storage_inner = (
-            '<table class="kv">'
-            + _rows([
-                ("db size", esc(_human_bytes(stats["size"]))),
-                ("pages", f"{stats['page_count']} &times; {stats['page_size']} B"),
-                ("reclaimable (freelist)", esc(_human_bytes(stats["freelist_count"] * stats["page_size"]))),
-                ("journal mode", esc(stats["journal_mode"])),
-                ("auto_vacuum", esc({0: "off", 1: "full", 2: "incremental"}.get(stats["auto_vacuum"], stats["auto_vacuum"]))),
-                ("free space (data dir)", esc(free)),
-                ("db file mtime", mtime),
-            ])
-            + "</table>"
-        )
-    else:
-        storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
-    storage_panel = _collapsible("Storage", storage_inner, "storage")
-
-    # --- read latency -----------------------------------------------------
-    perf_panel = _collapsible(
-        "Read latency (this page)",
-        '<table class="kv">'
-        + "".join(
-            f"<tr><th>{esc(label)}</th><td>{ms:.1f} ms</td></tr>"
-            for label, ms in sorted(latency.items(), key=lambda kv: kv[1], reverse=True)
-        )
-        + "</table><p style='color:var(--muted)'>Milliseconds spent on this page's own "
-        "database reads. If one creeps up over time, that is the query to look at.</p>",
-        "perf",
-    )
-
-    banner = f'<div id="frag-status-banner">{_status_banner_html(checks)}</div>'
-    pulse = f'<div id="frag-status-pulse">{_pulse_cards(by_name, prs)}</div>'
-
-    body = (
-        banner
-        + jumpnav
-        + checks_panel
-        + pulse
-        + runtime_panel
-        + record_panel
-        + repo_panel
-        + github_panel
-        + config_panel
-        + storage_panel
-        + perf_panel
-    )
-    return _page("status", body, section="status",
-                 poll=_poll_config(
-                     ("/fragments/status-banner", "frag-status-banner", POLL_MS * 2),
-                     ("/fragments/status-pulse", "frag-status-pulse", POLL_MS * 2),
-                 ))
-
 
 async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
@@ -3007,13 +2217,12 @@ async def fragments(request: Request) -> HTMLResponse:
         open_count = _open_prs_by_agent(prs).get(agent_id, 0)
         return HTMLResponse(_profile_cards(a, open_count, a["karma_breakdown"]))
     if name == "status-banner":
-        by_name, _, repo, prs = await _status_reads()
-        return HTMLResponse(_status_banner_html(_status_checks(by_name, repo, prs)))
+        by_name, _, repo, prs = await viewer_status._status_reads()
+        return HTMLResponse(viewer_status._status_banner_html(viewer_status._status_checks(by_name, repo, prs)))
     if name == "status-pulse":
-        by_name, _, _, prs = await _status_reads()
-        return HTMLResponse(_pulse_cards(by_name, prs))
+        by_name, _, _, prs = await viewer_status._status_reads()
+        return HTMLResponse(viewer_status._pulse_cards(by_name, prs))
     return HTMLResponse("", status_code=404)
-
 
 ROUTES = [
     Route("/", overview),
@@ -3027,7 +2236,7 @@ ROUTES = [
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
     Route("/prs/{number:int}", pr_diff_page),
-    Route("/status", status_page),
+    Route("/status", viewer_status.status_page),
     Route("/search", search_page),
     Route("/feed", feed),
     Route("/fragments/{name}", fragments),
@@ -3046,9 +2255,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     db.init_db()
     yield
 
-
 app = Starlette(routes=ROUTES, middleware=[Middleware(logutil.RequestLogging)], lifespan=lifespan)
-
 
 if __name__ == "__main__":
     logutil.configure_logging()

@@ -123,8 +123,13 @@ os.environ["FORUM_VOTE_DAILY_CAP"] = "0"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db  # noqa: E402 - env must be set before the import
+import moderation  # noqa: E402
 import config  # noqa: E402 - same env; db.py sources its paths from config
+import aggregates  # noqa: E402
 import github  # noqa: E402 - import-only; no token or network needed
+import notifications  # noqa: E402
+import repo_search  # noqa: E402
+import search  # noqa: E402
 
 
 def expect_error(fn, *args, **kw):
@@ -248,7 +253,7 @@ def main():
     # No module outside config.py may read a FORUM_*/VIEWER_* knob straight
     # from the environment - every tunable flows through config.py so the
     # live-reload machinery and this guard both see it.
-    for module in ("server.py", "viewer.py", "github.py", "db.py", "logutil.py", "admin.py"):
+    for module in ("server.py", "viewer.py", "github.py", "db.py", "logutil.py", "admin.py", "view_utils.py", "rules_text.py", "moderation.py", "notifications.py", "search.py", "aggregates.py", "viewer_status.py", "repo_search.py"):
         mod_text = Path(config.REPO_DIR / module).read_text(encoding="utf-8")
         leaked = set(re.findall(r'os\.environ\.get\("((?:FORUM|VIEWER)_[A-Z0-9_]+)"', mod_text))
         assert not leaked, f"{module} reads tunables straight from the env: {sorted(leaked)}"
@@ -297,7 +302,7 @@ def main():
     assert db.whoami(agents["fresh"]["token"])["model"] is None, "fresh agents have no model"
     db.set_model(agents["fresh"]["token"], "test-model")
     assert db.whoami(agents["fresh"]["token"])["model"] == "test-model", "set_model updates whoami"
-    assert any(a["model"] == "test-model" for a in db.list_agents()), "list_agents carries model"
+    assert any(a["model"] == "test-model" for a in aggregates.list_agents()), "list_agents carries model"
     assert "characters" in expect_error(
         db.set_model, agents["fresh"]["token"], "x" * 100
     ), "model length must be capped"
@@ -350,35 +355,35 @@ def main():
         db.vote(agents["alpha"]["token"], "comment", comment["comment_id"], 1)
 
     # --- karma gates -------------------------------------------------------
-    report = db.report_content(agents["beta"]["token"], "post", post_id, "spammy")
+    report = moderation.report_content(agents["beta"]["token"], "post", post_id, "spammy")
     report_id = report["report_id"]
 
     assert "own report" in expect_error(
-        db.vote_on_report, agents["beta"]["token"], report_id, "suspend"
+        moderation.vote_on_report, agents["beta"]["token"], report_id, "suspend"
     ), "reporter must not vote on their own report"
     assert "own content" in expect_error(
-        db.vote_on_report, agents["alpha"]["token"], report_id, "suspend"
+        moderation.vote_on_report, agents["alpha"]["token"], report_id, "suspend"
     ), "target author must not vote on a report about their own content"
 
     assert "karma" in expect_error(
-        db.report_content, agents["fresh"]["token"], "post", post_id, "x"
+        moderation.report_content, agents["fresh"]["token"], "post", post_id, "x"
     ), "0-karma agent must not be able to report"
     assert "karma" in expect_error(
-        db.vote_on_report, agents["fresh"]["token"], report_id, "suspend"
+        moderation.vote_on_report, agents["fresh"]["token"], report_id, "suspend"
     ), "0-karma agent must not be able to vote suspend"
     # 0-karma agents may vote clear - that is the cheap, open path.
-    db.vote_on_report(agents["fresh"]["token"], report_id, "clear")
+    moderation.vote_on_report(agents["fresh"]["token"], report_id, "clear")
 
     # --- suspension --------------------------------------------------------
     for name in ("eta", "theta"):
-        db.vote_on_report(agents[name]["token"], report_id, "clear")
+        moderation.vote_on_report(agents[name]["token"], report_id, "clear")
     result = None
     for name in ("gamma", "delta", "epsilon", "zeta"):
-        result = db.vote_on_report(agents[name]["token"], report_id, "suspend")
+        result = moderation.vote_on_report(agents[name]["token"], report_id, "suspend")
     assert result is not None and result["suspend_votes"] == 4 and result["clear_votes"] == 3
     assert result["suspended"] is True, "4 suspend (net of 3 clear) should suspend the author"
 
-    reports = {r["id"]: r for r in db.list_reports()}
+    reports = {r["id"]: r for r in moderation.list_reports()}
     assert reports[report_id]["status"] == "suspended", "report should resolve to suspended"
 
     me = db.whoami(agents["alpha"]["token"])
@@ -395,16 +400,16 @@ def main():
 
     # --- tally reset -------------------------------------------------------
     assert all(
-        r["suspend_votes"] == 0 and r["clear_votes"] == 0 for r in db.list_reports()
+        r["suspend_votes"] == 0 and r["clear_votes"] == 0 for r in moderation.list_reports()
     ), "report_votes should reset once a report resolves"
 
     second_post = db.create_post(agents["beta"]["token"], "another", "body")
-    second = db.report_content(agents["gamma"]["token"], "post", second_post["post_id"], "x")
-    by_id = {r["id"]: r for r in db.list_reports()}
+    second = moderation.report_content(agents["gamma"]["token"], "post", second_post["post_id"], "x")
+    by_id = {r["id"]: r for r in moderation.list_reports()}
     assert by_id[second["report_id"]]["suspend_votes"] == 0, "new report must start with a clean tally"
 
     # A voter who voted on the old (resolved) report can vote on the new one.
-    result = db.vote_on_report(agents["delta"]["token"], second["report_id"], "suspend")
+    result = moderation.vote_on_report(agents["delta"]["token"], second["report_id"], "suspend")
     assert result["suspend_votes"] == 1, "old votes must not carry over to a new report"
 
     # --- merged-PR karma (CHARTER.md Article IX) ---------------------------
@@ -619,7 +624,7 @@ def main():
     pycache.mkdir()
     (pycache / "mod.py").write_text("# {0}\n".format(marker), encoding="utf-8")
 
-    res = github.search_files(marker, root=tree)
+    res = repo_search.search_files(marker, root=tree)
     assert res["query"] == marker
     got = {m["path"] for m in res["matches"]}
     assert got == {
@@ -632,30 +637,30 @@ def main():
     assert mod["matches"][0]["line_number"] == 2 and marker in mod["matches"][0]["text"]
 
     # a differently-cased query still hits (case-insensitive substring)
-    assert len(github.search_files(marker.upper(), root=tree)["matches"]) == len(res["matches"])
+    assert len(repo_search.search_files(marker.upper(), root=tree)["matches"]) == len(res["matches"])
 
     # excluded files never appear, whichever of their names is asked for
     for q in ("SECRET", "sqlite", "requests", "not searchable", "core"):
         assert all(".env" != m["path"] and not m["path"].endswith((".db", ".txt"))
                    and not m["path"].startswith((".git/", "src/__pycache__/"))
-                   for m in github.search_files(q, root=tree)["matches"]), \
+                   for m in repo_search.search_files(q, root=tree)["matches"]), \
             f"query {q!r} must not reach excluded files"
 
     # long matched lines are trimmed with an ellipsis
     (tree / "src" / "long.py").write_text(
         "x = '{0}'\n".format("y" * 300), encoding="utf-8")
-    lmatch = next(m for m in github.search_files("y" * 10, root=tree)["matches"]
+    lmatch = next(m for m in repo_search.search_files("y" * 10, root=tree)["matches"]
                   if m["path"] == "src/long.py")
     ltext = lmatch["matches"][0]["text"]
     assert len(ltext) <= 160 and ltext.endswith("..."), "long lines must be trimmed"
 
     # max_results bounds the number of files returned
-    assert len(github.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
+    assert len(repo_search.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
 
     # empty / too-short / too-long queries are rejected
     for q in ("", "x", "x" * 201):
         try:
-            github.search_files(q, root=tree)
+            repo_search.search_files(q, root=tree)
         except github.RepoError:
             pass
         else:
@@ -1202,13 +1207,13 @@ def main():
     assert fresh_after == fresh_before + 1, "a merged PR credits exactly PR_MERGE_KARMA karma"
     assert db.award_pr_merge_karma(102, 999999, "2026-08-11T00:00:00Z") is False, \
         "merges credited to a missing agent must be skipped, not crash"
-    by_id = {a["id"]: a for a in db.list_agents()}
+    by_id = {a["id"]: a for a in aggregates.list_agents()}
     assert by_id[agents["fresh"]["agent_id"]]["karma"] == fresh_before + 1, \
         "list_agents must include merge karma"
     assert by_id[agents["fresh"]["agent_id"]]["last_active"] >= by_id[agents["fresh"]["agent_id"]]["created_at"], \
         "list_agents must expose last_active, falling back to the join date"
     # Merge karma is the same number used by the gates: fresh can now report.
-    db.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
+    moderation.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
 
     # --- declined-PR karma (CHARTER.md Article IX.1.c) ----------------------
     # Delta starts from alpha's upvote (karma 1) and carries no PRs yet.
@@ -1240,7 +1245,7 @@ def main():
         "an upgraded record moves out of 'closed'"
     assert who["karma"] == delta_before - 2, "the upgrade applies the penalty exactly once"
 
-    by_id = {a["id"]: a for a in db.list_agents()}
+    by_id = {a["id"]: a for a in aggregates.list_agents()}
     row = by_id[agents["delta"]["agent_id"]]
     assert row["prs_declined"] == 2 and row["prs_closed"] == 0, \
         "list_agents must include declined/closed counts"
@@ -1448,7 +1453,7 @@ def main():
     db.vote_on_proposal(agents["zeta"]["token"], p5, 1)
     db.require_proposal_approval(agents["theta"]["token"], p5, "repo_propose_change"), \
         "the recorded delegate may open the PR once the vote passes"
-    theta_mail = db.notifications(agents["theta"]["token"])
+    theta_mail = notifications.notifications(agents["theta"]["token"])
     assert any(n["kind"] == "delegation" and n["ref_id"] == p5
                for n in theta_mail["notifications"]), \
         "delegation mails the delegate"
@@ -1548,7 +1553,7 @@ def main():
     # Deleting a delegate clears their assignments (FK-safe cleanup).
     throwaway = db.register_agent("throwaway")
     db.delegate_proposal(agents["eta"]["token"], p5, throwaway["name"])
-    db.delete_agent(throwaway["agent_id"], "root")
+    moderation.delete_agent(throwaway["agent_id"], "root")
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[p5]["delegate_id"] is None and docket[p5]["delegate_name"] is None, \
         "deleting a delegate clears their proposal assignments"
@@ -1647,7 +1652,7 @@ def main():
     assert rows[plain["post_id"]]["proposal"] is None
     detail = db.get_post(p1)
     assert detail["proposal_kind"] == "proposal" and detail["proposal"]["net"] == 4
-    found = db.search_posts("tools")
+    found = search.search_posts("tools")
     assert any(p["id"] == p1 and p["proposal"]["net"] == 4 for p in found), \
         "search results must share the list_posts shape"
 
@@ -1878,7 +1883,7 @@ def main():
     # Admin deleting a decided proposal must clear its links and outcomes too,
     # not trip the foreign key (_remove_posts handles both tables).
     db.link_pr_to_proposal(301, p_three, agents["delta"]["agent_id"])
-    deleted_decided = db.delete_post(p_three, "root")
+    deleted_decided = moderation.delete_post(p_three, "root")
     assert deleted_decided["deleted"] is True
     with db._conn() as conn:
         assert conn.execute(
@@ -1975,41 +1980,41 @@ def main():
     db.vote(helper["token"], "post", pid, 1)
     db.vote(helper["token"], "comment", own_comment["comment_id"], 1)
     db.vote(victim["token"], "comment", other_comment["comment_id"], 1)  # earns the helper reporting karma
-    report = db.report_content(helper["token"], "post", pid, "test reason")
+    report = moderation.report_content(helper["token"], "post", pid, "test reason")
     rid = report["report_id"]
 
     # The admin directory carries ban state and connection fields; the public
     # list must not leak them.
-    listing = {a["id"]: a for a in db.admin_list_agents()}
+    listing = {a["id"]: a for a in moderation.admin_list_agents()}
     assert listing[victim["agent_id"]]["banned"] == 0 and listing[victim["agent_id"]]["last_ip"] is None
-    assert "banned" not in db.list_agents()[0], "the public citizens list must not expose ban state"
-    detail = db.admin_agent_detail(victim["agent_id"])
+    assert "banned" not in aggregates.list_agents()[0], "the public citizens list must not expose ban state"
+    detail = moderation.admin_agent_detail(victim["agent_id"])
     assert detail["name"] == "admin-victim" and len(detail["posts"]) == 1
     assert detail["reports_against"][0]["id"] == rid
 
     # A banned citizen can still read but every write is refused, reversibly.
-    db.ban_agent(victim["agent_id"], "root", reason="smoke")
+    moderation.ban_agent(victim["agent_id"], "root", reason="smoke")
     assert "banned" in expect_error(db.create_post, victim["token"], "x", "y")
     assert "banned" in expect_error(db.create_comment, victim["token"], pid, "y")
     assert db.whoami(victim["token"])["account_status"] == "banned" and \
         db.my_profile(victim["token"])["account_status"] == "banned", \
         "a banned citizen still reads their own account status"
-    db.unban_agent(victim["agent_id"], "root")
+    moderation.unban_agent(victim["agent_id"], "root")
     assert db.whoami(victim["token"])["account_status"] == "active", \
         "unban restores the active status"
     assert db.create_post(victim["token"], "x", "y")["post_id"] > 0, "unban restores writes"
 
     # Manual report resolution: a clear closes the report and the docket shows it.
-    db.resolve_report(rid, "root", "clear")
-    assert next(r for r in db.list_reports() if r["id"] == rid)["status"] == "cleared"
+    moderation.resolve_report(rid, "root", "clear")
+    assert next(r for r in moderation.list_reports() if r["id"] == rid)["status"] == "cleared"
 
     # Deleting refuses while content exists unless destroy_content is set, then
     # removes the agent, their content, and everyone else's content on it.
-    assert "destroy_content" in expect_error(db.delete_agent, victim["agent_id"], "root")
-    assert "no agent" in expect_error(db.delete_agent, 999999, "root")
-    db.delete_agent(victim["agent_id"], "root", destroy_content=True)
-    assert db.admin_agent_detail and next(
-        (a for a in db.admin_list_agents() if a["id"] == victim["agent_id"]), None
+    assert "destroy_content" in expect_error(moderation.delete_agent, victim["agent_id"], "root")
+    assert "no agent" in expect_error(moderation.delete_agent, 999999, "root")
+    moderation.delete_agent(victim["agent_id"], "root", destroy_content=True)
+    assert moderation.admin_agent_detail and next(
+        (a for a in moderation.admin_list_agents() if a["id"] == victim["agent_id"]), None
     ) is None, "deleted agent must vanish from the directory"
     with db._conn() as conn:
         gone_posts = conn.execute(
@@ -2049,10 +2054,10 @@ def main():
     db.vote(proposer["token"], "comment", on_prop["comment_id"], 1)  # earns supporter karma
     db.vote(supporter["token"], "post", pid, 1)
     db.vote_on_proposal(supporter["token"], pid, 1)
-    prop_report = db.report_content(supporter["token"], "post", pid, "proposal flagged")
+    prop_report = moderation.report_content(supporter["token"], "post", pid, "proposal flagged")
 
-    assert "no post" in expect_error(db.delete_post, 999999, "root")
-    deleted = db.delete_post(pid, "root")
+    assert "no post" in expect_error(moderation.delete_post, 999999, "root")
+    deleted = moderation.delete_post(pid, "root")
     assert deleted["post_id"] == pid and deleted["deleted"] is True
     with db._conn() as conn:
         gone_post = conn.execute("SELECT COUNT(*) FROM posts WHERE id = ?", (pid,)).fetchone()[0]
@@ -2080,7 +2085,7 @@ def main():
     mai, nola, opal, petra = (m[n] for n in ("mai", "nola", "opal", "petra"))
 
     def mail(token, **kw):
-        return db.notifications(token, **kw)
+        return notifications.notifications(token, **kw)
 
     # A comment on your post is a 'reply' to you; self-comments ping nobody.
     post1 = db.create_post(mai["token"], "Mailbox", "no mentions here")
@@ -2117,8 +2122,8 @@ def main():
     # @mentions: an '@Name' mention in a post body pings the named citizen,
     # case-insensitively, and expands in the stored body to its
     # self-documenting form. Self-mentions are skipped.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(opal["token"])
     post2 = db.create_post(nola["token"], "Ping", "shout out to @Mai and @opal")
     assert len([n for n in mail(mai["token"])["notifications"] if n["kind"] == "mention"]) == 1, \
         "an @mention in a post body pings the named citizen"
@@ -2148,8 +2153,8 @@ def main():
     # An unmatched '@Word' stays literal, pings nobody, and is echoed back as
     # `unresolved` so the writer sees the mention didn't land. Agent ids are
     # not an addressing scheme: '@<id>' is inert text, never a ping.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(opal["token"])
     id_post = db.create_post(nola["token"], "Ping by id", f"direct to @{opal['agent_id']}")
     assert len([n for n in mail(opal["token"], unread_only=True)["notifications"]
                 if n["kind"] == "mention"]) == 0, \
@@ -2198,17 +2203,17 @@ def main():
     # is stored as-is; a comment reference expands to embed its containing
     # post ('#C12 (post #77)') so it resolves via get_post and deep-links in
     # the viewer. References never ping anyone.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(nola["token"])
-    db.mark_notifications_read(opal["token"])
-    db.mark_notifications_read(petra["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(nola["token"])
+    notifications.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(petra["token"])
     ref_target = db.create_post(mai["token"], "Ref target", "something to cite")
     ref_comment = db.create_comment(nola["token"], ref_target["post_id"], "a citable comment")
     # Creating the citable comment pinged mai (a reply). Clear the mailboxes,
     # then prove references add nothing: citing mai's post and nola's comment
     # from a fresh post leaves both authors' inboxes untouched.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(nola["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(nola["token"])
     p_ref = db.create_post(
         opal["token"], "Post reference",
         f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']}",
@@ -2395,8 +2400,8 @@ def main():
     # A merge keeps notifications tidy: mentions added by the appended text
     # ping once (pointing at the merged comment), names already in the body
     # aren't pinged again, and the post author hears about the thread once.
-    db.mark_notifications_read(petra["token"])
-    db.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(petra["token"])
+    notifications.mark_notifications_read(opal["token"])
     mm = db.create_post(opal["token"], "Merge mentions", "a thread")
     a1 = db.create_comment(nola["token"], mm["post_id"], "no one named here")
     a2 = db.create_comment(nola["token"], mm["post_id"], "pinging @petra from the merge")
@@ -2494,7 +2499,7 @@ def main():
     q_c4 = db.create_comment(nola["token"], q_post["post_id"], "immortal reply",
                              quote_comment_id=q_src2["comment_id"])
     _q_src2_body = f"mortal words\n\n— quote-src (agent_id={q_src_agent['agent_id']})"
-    db.delete_agent(q_src_agent["agent_id"], "root", destroy_content=True)
+    moderation.delete_agent(q_src_agent["agent_id"], "root", destroy_content=True)
     q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
     q_after = q_nodes[q_c4["comment_id"]]
     assert q_after["quote_text"] == _q_src2_body, \
@@ -2602,7 +2607,7 @@ def main():
     # Moderation: being reported is a notification to the author, and a
     # suspension reached by community vote tells both sides.
     target_post = db.create_post(petra["token"], "rule breaker", "trouble")
-    rep = db.report_content(agents["gamma"]["token"], "post", target_post["post_id"], "test")
+    rep = moderation.report_content(agents["gamma"]["token"], "post", target_post["post_id"], "test")
     rep_mail = [n for n in mail(petra["token"])["notifications"] if n["kind"] == "moderation"]
     assert len(rep_mail) == 1 and rep_mail[0]["actor"] == "gamma", \
         "the reported author is told who flagged their content"
@@ -2610,7 +2615,7 @@ def main():
         if db.whoami(v["token"])["karma"] < 1:
             farm = db.create_comment(v["token"], post1["post_id"], "karma for " + v["name"])
             db.vote(mai["token"], "comment", farm["comment_id"], 1)
-        db.vote_on_report(v["token"], rep["report_id"], "suspend")
+        moderation.vote_on_report(v["token"], rep["report_id"], "suspend")
     petra_mail = mail(petra["token"], unread_only=True)
     assert any(n["kind"] == "moderation" and "suspended" in n["body"]
                for n in petra_mail["notifications"]), \
@@ -2624,7 +2629,7 @@ def main():
     assert all(not n["read"] for n in mail(mai["token"], unread_only=True)["notifications"])
     petra_ids = [n["id"] for n in mail(petra["token"])["notifications"]]
     assert len(petra_ids) >= 2, "petra's mailbox holds the report and suspension pings"
-    marked_one = db.mark_notifications_read(petra["token"], ids=[petra_ids[0]])
+    marked_one = notifications.mark_notifications_read(petra["token"], ids=[petra_ids[0]])
     assert marked_one["marked"] == 1 and mail(petra["token"])["unread_count"] == len(petra_ids) - 1, \
         "marking a specific id clears just that one"
 
@@ -2634,31 +2639,31 @@ def main():
     # survivor is the same ping the agent sees at the top of its unread
     # fetch. petra is suspended here: mailbox housekeeping stays open.
     petra_front = mail(petra["token"], unread_only=True)["notifications"]
-    kept_one = db.mark_notifications_read(petra["token"], keep=1)
+    kept_one = notifications.mark_notifications_read(petra["token"], keep=1)
     petra_left = mail(petra["token"], unread_only=True)
     assert kept_one["marked"] == len(petra_front) - 1 \
         and petra_left["unread_count"] == 1 \
         and petra_left["notifications"][0]["id"] == petra_front[0]["id"], \
         "keep=1 leaves exactly the newest unread, in get_notifications order"
-    empty_ids = db.mark_notifications_read(petra["token"], ids=[])
+    empty_ids = notifications.mark_notifications_read(petra["token"], ids=[])
     assert empty_ids["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
         "ids=[] clears nothing - it must not fall through to wiping the mailbox"
-    assert "both" in expect_error(db.mark_notifications_read, petra["token"],
+    assert "both" in expect_error(notifications.mark_notifications_read, petra["token"],
                                   ids=[1], keep=1), \
         "ids and keep together are refused"
-    assert "0 or more" in expect_error(db.mark_notifications_read, petra["token"],
+    assert "0 or more" in expect_error(notifications.mark_notifications_read, petra["token"],
                                        keep=-1), \
         "negative keep is refused"
-    assert "integer" in expect_error(db.mark_notifications_read, petra["token"],
+    assert "integer" in expect_error(notifications.mark_notifications_read, petra["token"],
                                      keep=1.5), \
         "a non-integer keep is refused with a clean error"
-    over_keep = db.mark_notifications_read(petra["token"], keep=5)
+    over_keep = notifications.mark_notifications_read(petra["token"], keep=5)
     assert over_keep["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
         "keep beyond the unread count marks nothing"
-    wiped_zero = db.mark_notifications_read(petra["token"], keep=0)
+    wiped_zero = notifications.mark_notifications_read(petra["token"], keep=0)
     assert wiped_zero["marked"] == 1 and mail(petra["token"])["unread_count"] == 0, \
         "keep=0 wipes all"
-    all_marked = db.mark_notifications_read(mai["token"])
+    all_marked = notifications.mark_notifications_read(mai["token"])
     assert all_marked["unread_count"] == 0 and mail(mai["token"])["unread_count"] == 0, \
         "marking everything clears the badge"
     assert len(mail(mai["token"], limit=1)["notifications"]) == 1, "limit caps the fetch"
@@ -2670,21 +2675,21 @@ def main():
     # mailbox) must not inflate `marked` - and keep never rewrites an
     # already-read row's read_at stamp. Fresh pings, alternating authors so
     # the auto-merge can't collapse them.
-    db.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(mai["token"])
     truth = db.create_post(mai["token"], "Marked truth", "seed")
     db.create_comment(nola["token"], truth["post_id"], "ping 1")
     db.create_comment(opal["token"], truth["post_id"], "ping 2")
     db.create_comment(nola["token"], truth["post_id"], "ping 3")
     truth_ids = [n["id"] for n in mail(mai["token"], unread_only=True)["notifications"]]
     assert len(truth_ids) == 3, "the three truth pings land unread"
-    db.mark_notifications_read(mai["token"], ids=[truth_ids[0]])
-    mixed = db.mark_notifications_read(mai["token"], ids=truth_ids)
+    notifications.mark_notifications_read(mai["token"], ids=[truth_ids[0]])
+    mixed = notifications.mark_notifications_read(mai["token"], ids=truth_ids)
     assert mixed["marked"] == 2, \
         "ids counts only the unread rows, not the already-read one"
     assert mail(mai["token"], unread_only=True)["unread_count"] == 0, \
         "the mixed ids mark cleared the remaining unread pings"
     db.create_comment(opal["token"], truth["post_id"], "ping 4")
-    wiped = db.mark_notifications_read(mai["token"])
+    wiped = notifications.mark_notifications_read(mai["token"])
     assert wiped["marked"] == 1, \
         "wipe-all counts only the genuinely-unread rows, not the whole mailbox"
     assert mail(mai["token"], unread_only=True)["unread_count"] == 0, \
@@ -2696,7 +2701,7 @@ def main():
     assert read_stamp is not None, "the pre-marked row is read"
     db.create_comment(nola["token"], truth["post_id"], "ping 5")
     db.create_comment(opal["token"], truth["post_id"], "ping 6")
-    kept2 = db.mark_notifications_read(mai["token"], keep=1)
+    kept2 = notifications.mark_notifications_read(mai["token"], keep=1)
     assert kept2["marked"] == 1 and mail(mai["token"], unread_only=True)["unread_count"] == 1, \
         "keep=1 marks all but the newest unread"
     with db._conn() as conn:
@@ -2708,7 +2713,7 @@ def main():
 
     # A suspended citizen can still read their mail (it is often how they
     # learn why they were suspended).
-    assert db.notifications(petra["token"])["agent_id"] == petra["agent_id"], \
+    assert notifications.notifications(petra["token"])["agent_id"] == petra["agent_id"], \
         "reading the mailbox stays open while suspended"
 
     # Pruning deletes old READ mail only; unread mail is never touched.
@@ -2718,7 +2723,7 @@ def main():
             "created_at = '2000-01-01T00:00:00.000Z' WHERE agent_id = ?",
             (petra["agent_id"],),
         )
-    assert db.prune_notifications() >= 1, "old read mail is pruned"
+    assert notifications.prune_notifications() >= 1, "old read mail is pruned"
     assert mail(petra["token"])["unread_count"] == 0, "unread mail is never pruned"
 
     # Pruning's guards: an unread note survives no matter how old, a read
@@ -2736,14 +2741,14 @@ def main():
                 (aid, aid, "read recent", now_iso, now_iso),
             ],
         )
-    assert db.prune_notifications() == 0, "only old+read mail is eligible, and there is none left"
+    assert notifications.prune_notifications() == 0, "only old+read mail is eligible, and there is none left"
     petra_left = {n["body"] for n in mail(petra["token"])["notifications"]}
     assert "unread ancient" in petra_left, "an unread notification is never pruned, however old"
     assert "read recent" in petra_left, "a read notification inside the window survives"
     _saved_retention = os.environ.get("FORUM_NOTIFICATION_RETENTION_DAYS")
     try:
         os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = "0"
-        assert db.prune_notifications() == 0, "a retention of 0 disables pruning"
+        assert notifications.prune_notifications() == 0, "a retention of 0 disables pruning"
     finally:
         if _saved_retention is None:
             os.environ.pop("FORUM_NOTIFICATION_RETENTION_DAYS", None)
@@ -2751,14 +2756,14 @@ def main():
             os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = _saved_retention
 
     # Deleting content and citizens cleans up their notifications.
-    db.delete_post(post2["post_id"], "root")
+    moderation.delete_post(post2["post_id"], "root")
     with db._conn() as conn:
         post2_left = conn.execute(
             "SELECT COUNT(*) FROM notifications WHERE ref_type = 'post' AND ref_id = ?",
             (post2["post_id"],),
         ).fetchone()[0]
     assert post2_left == 0, "deleting a post removes its notifications"
-    db.delete_agent(nola["agent_id"], "root", destroy_content=True)
+    moderation.delete_agent(nola["agent_id"], "root", destroy_content=True)
     with db._conn() as conn:
         nola_left = conn.execute(
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
@@ -2945,7 +2950,7 @@ def main():
 
     # Admin-deleting one link of a chain removes the whole lineage - a locked
     # proposal never dangles pointing at a dead successor.
-    gone = db.delete_post(p1, "root")
+    gone = moderation.delete_post(p1, "root")
     assert gone["deleted"] is True and set(gone["chain_deleted"]) >= {p1, p2, p3}, \
         "deleting v1 cascades to the whole superseding chain"
     with db._conn() as conn:
@@ -2961,7 +2966,7 @@ def main():
     m1 = midchain["post_id"]
     m2 = db.supersede_proposal(sups_a["token"], m1, "Middle chain v2", "v2")["post_id"]
     m3 = db.supersede_proposal(sups_a["token"], m2, "Middle chain v3", "v3")["post_id"]
-    gone_mid = db.delete_post(m2, "mid")
+    gone_mid = moderation.delete_post(m2, "mid")
     assert set(gone_mid["chain_deleted"]) >= {m2, m3}, \
         "deleting the middle removes it and its descendants"
     with db._conn() as conn:
@@ -2980,7 +2985,7 @@ def main():
     l1 = leafchain["post_id"]
     l2 = db.supersede_proposal(sups_a["token"], l1, "Leaf chain v2", "v2")["post_id"]
     l3 = db.supersede_proposal(sups_a["token"], l2, "Leaf chain v3", "v3")["post_id"]
-    gone_leaf = db.delete_post(l3, "leaf")
+    gone_leaf = moderation.delete_post(l3, "leaf")
     assert gone_leaf["deleted"] is True and set(gone_leaf["chain_deleted"]) == {l3}, \
         "deleting the leaf removes just it"
     with db._conn() as conn:
@@ -3251,13 +3256,13 @@ def main():
 
     # The pure scorer and the find_similar_posts pool are deterministic:
     # exact-title normalization, bounded scores, and exclude_post_id.
-    assert db._normalized_title("Exact  Title   Guard!!!") == "exact title guard", \
+    assert search._normalized_title("Exact  Title   Guard!!!") == "exact title guard", \
         "the normalization collapses case, punctuation and whitespace"
-    assert db._normalized_title("") == "", "an empty title normalizes to empty"
-    assert 0.0 <= db._jaccard({"a"}, {"b"}) <= 1.0, "disjoint token sets score 0"
-    assert db._jaccard({"a", "b"}, {"b", "c"}) == 1 / 3, \
+    assert search._normalized_title("") == "", "an empty title normalizes to empty"
+    assert 0.0 <= search._jaccard({"a"}, {"b"}) <= 1.0, "disjoint token sets score 0"
+    assert search._jaccard({"a", "b"}, {"b", "c"}) == 1 / 3, \
         "the jaccard overlap is the shared/union ratio"
-    listed = db.find_similar_posts("Add a dark mode toggle",
+    listed = search.find_similar_posts("Add a dark mode toggle",
                                    "Theme the viewer with a dark mode",
                                    "proposal", exclude_post_id=h1)
     assert all(s["post_id"] != h1 for s in listed), \
@@ -3456,7 +3461,7 @@ def main():
     # Mentions and signatures behave like every other writer: new @mentions in
     # the edited body ping their citizens and expand in the stored body; a
     # trailing foreign signature is stripped and echoed.
-    db.mark_notifications_read(ed["edc"]["token"])
+    notifications.mark_notifications_read(ed["edc"]["token"])
     p_ed2 = db.create_proposal(ed["eda"]["token"], "Mention me", "base body")
     edit_w_mention = db.edit_proposal(
         ed["eda"]["token"], p_ed2["post_id"], body="loop in @EdC and @NoSuchCitizen"
@@ -3485,7 +3490,7 @@ def main():
     # foreign agent id, so the stored edit body must not end in it - while the
     # mention ping still fires (mention_body keeps the claim alive for the
     # delta scan). The stored body ends in the author's own clean signature.
-    db.mark_notifications_read(ed["edb"]["token"])
+    notifications.mark_notifications_read(ed["edb"]["token"])
     airtight_edit = db.edit_proposal(
         ed["eda"]["token"], p_ed2["post_id"],
         body="mentioning then trailing @EdB"
@@ -3543,15 +3548,15 @@ def main():
     # mentions, so keeping an existing mention - or a title-only edit - stays
     # silent: citizens aren't re-notified on every edit of a body that still
     # names them.
-    db.mark_notifications_read(ed["edc"]["token"])
-    db.mark_notifications_read(ed["edb"]["token"])
-    db.mark_notifications_read(ed["edd"]["token"])
+    notifications.mark_notifications_read(ed["edc"]["token"])
+    notifications.mark_notifications_read(ed["edb"]["token"])
+    notifications.mark_notifications_read(ed["edd"]["token"])
     p_ed3 = db.create_proposal(ed["eda"]["token"], "Mention both",
                                "loop in @EdC and @EdB")
     # The create pinged both; clear the mail so the edits below are measured
     # cleanly.
-    db.mark_notifications_read(ed["edc"]["token"])
-    db.mark_notifications_read(ed["edb"]["token"])
+    notifications.mark_notifications_read(ed["edc"]["token"])
+    notifications.mark_notifications_read(ed["edb"]["token"])
     title_only = db.edit_proposal(ed["eda"]["token"], p_ed3["post_id"],
                                   title="Mention both (renamed)")
     assert title_only["mentioned"] == [], \
@@ -3606,7 +3611,7 @@ def main():
     ), "an over-long edited body is refused"
 
     # Deleting an edited proposal removes its edit trail (no dangling rows).
-    gone_ed = db.delete_post(p_ed2["post_id"], "root")
+    gone_ed = moderation.delete_post(p_ed2["post_id"], "root")
     assert gone_ed["deleted"] is True, "the edited proposal deletes like any other"
     with db._conn() as conn:
         left_ed = conn.execute(
@@ -3790,7 +3795,7 @@ def main():
     db.set_todos_for_post(tda["token"], todo3["post_id"], [
         {"title": "Gone", "items": [{"text": "soon"}]},
     ])
-    db.delete_post(todo3["post_id"], "root")
+    moderation.delete_post(todo3["post_id"], "root")
     with db._conn() as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?",
@@ -3808,18 +3813,18 @@ def main():
     ), "a deleted post's lists are gone and reads raise like get_post"
 
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
-    # db.search_citizens() / db.search_comments() back the viewer search page
+    # search.search_citizens() / search.search_comments() back the viewer search page
     # and db.proposal_voters() backs the 'who voted' panel on proposal posts.
     # All three are read-only - the viewer needs only SELECTs, never more.
-    found_citizens = db.search_citizens("mai")
+    found_citizens = search.search_citizens("mai")
     assert any(c["name"] == "mai" for c in found_citizens), \
         "search_citizens matches citizen names"
     assert all("name" in c and "model" in c and "created_at" in c for c in found_citizens), \
         "search_citizens returns the columns the viewer renders"
-    assert "cannot be empty" in expect_error(db.search_citizens, ""), \
+    assert "cannot be empty" in expect_error(search.search_citizens, ""), \
         "an empty search is refused, not silently all-matching"
 
-    found_comments = db.search_comments("comment from")
+    found_comments = search.search_comments("comment from")
     assert len(found_comments) >= 5, "search_comments matches comment bodies"
     hit = found_comments[0]
     assert hit["author_id"] and "author" in hit and "post_id" in hit and "score" in hit, \
@@ -3834,7 +3839,7 @@ def main():
                    for c in found_comments), \
         "a comment holding only one term does not match a multi-term query"
     assert "characters or fewer" in expect_error(
-        db.search_comments, "x" * (config.MAX_QUERY_LENGTH + 1)), \
+        search.search_comments, "x" * (config.MAX_QUERY_LENGTH + 1)), \
         "oversized queries are refused"
 
     voters = db.proposal_voters(prop["post_id"])
@@ -3918,13 +3923,13 @@ def main():
         "a real agent with no comments returns an empty list"
 
     # --- record_agent_seen: the wiring target for last-seen / last-IP -------
-    # db.record_agent_seen() backs the admin page's last-seen / last-IP
+    # moderation.record_agent_seen() backs the admin page's last-seen / last-IP
     # columns; the HTTP layer in server.py calls it per authenticated request.
     # The throttle: rewrites only on an address change or after the stamp
     # ages past SEEN_THROTTLE_SECONDS.
     seen = db.register_agent("seen-guy")
     sid = seen["agent_id"]
-    db.record_agent_seen(sid, "10.0.0.9")
+    moderation.record_agent_seen(sid, "10.0.0.9")
     with db._conn() as conn:
         row = conn.execute(
             "SELECT last_ip, last_seen_at FROM agents WHERE id = ?", (sid,)
@@ -3932,14 +3937,14 @@ def main():
     assert row["last_ip"] == "10.0.0.9" and row["last_seen_at"], \
         "record_agent_seen writes the address and a stamp"
     first_stamp = row["last_seen_at"]
-    db.record_agent_seen(sid, "10.0.0.9")  # same address again, within the throttle
+    moderation.record_agent_seen(sid, "10.0.0.9")  # same address again, within the throttle
     with db._conn() as conn:
         same = conn.execute(
             "SELECT last_ip, last_seen_at FROM agents WHERE id = ?", (sid,)
         ).fetchone()
     assert same["last_seen_at"] == first_stamp, \
         "a repeat call from the same address within the throttle does not rewrite"
-    db.record_agent_seen(sid, "10.0.0.99")  # a new address rewrites immediately
+    moderation.record_agent_seen(sid, "10.0.0.99")  # a new address rewrites immediately
     with db._conn() as conn:
         moved = conn.execute(
             "SELECT last_ip, last_seen_at FROM agents WHERE id = ?", (sid,)
@@ -3950,16 +3955,16 @@ def main():
             "UPDATE agents SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
             (sid,),
         )
-    db.record_agent_seen(sid, "10.0.0.99")  # stamp aged past the window: rewrite
+    moderation.record_agent_seen(sid, "10.0.0.99")  # stamp aged past the window: rewrite
     with db._conn() as conn:
         aged = conn.execute(
             "SELECT last_seen_at FROM agents WHERE id = ?", (sid,)
         ).fetchone()
     assert aged["last_seen_at"] != "2000-01-01T00:00:00.000Z", \
         "an old stamp lets the same address record again"
-    db.record_agent_seen(999999, "10.0.0.1")  # unknown agent: silent no-op
-    db.record_agent_seen(sid, "")  # empty addresses are ignored
-    directory = {a["id"]: a for a in db.admin_list_agents()}
+    moderation.record_agent_seen(999999, "10.0.0.1")  # unknown agent: silent no-op
+    moderation.record_agent_seen(sid, "")  # empty addresses are ignored
+    directory = {a["id"]: a for a in moderation.admin_list_agents()}
     assert directory[sid]["last_ip"] == "10.0.0.99" and directory[sid]["last_seen_at"], \
         "the admin directory surfaces last-seen / last-IP"
 
@@ -3968,7 +3973,7 @@ def main():
     assert stats["journal_mode"] == "wal" and stats["page_size"] > 0
     assert stats["size"] == stats["page_count"] * stats["page_size"]
     assert stats["freelist_count"] >= 0
-    assert "suspended_until" in db.list_agents()[0], \
+    assert "suspended_until" in aggregates.list_agents()[0], \
         "list_agents must carry the suspension field for the status page"
 
     # --- migration: pre-delegation mailboxes widen the kind CHECK ----------
@@ -4003,7 +4008,7 @@ def main():
     # ... and the widened mailbox actually accepts delegate_proposal's mail.
     mig_post = db.create_proposal(agents["eta"]["token"], "Delegate migration", "x")
     db.delegate_proposal(agents["eta"]["token"], mig_post["post_id"], "zeta")
-    mig_mail = db.notifications(agents["zeta"]["token"])
+    mig_mail = notifications.notifications(agents["zeta"]["token"])
     assert any(n["kind"] == "delegation" and n["ref_id"] == mig_post["post_id"]
                for n in mig_mail["notifications"]), \
         "delegation mail writes after the init_db migration"
@@ -4032,7 +4037,7 @@ def main():
             f"ping @legacy-one (agent_id={legacy['agent_id']}) and @stranger and @2 in prose", \
             "the migration expands effective '@Name' mentions, leaving unknown words and ids literal"
         assert version == 2, "a booted database lands on the latest user_version"
-        assert any(h["id"] == row["id"] for h in db.search_posts("ping")), \
+        assert any(h["id"] == row["id"] for h in search.search_posts("ping")), \
             "rewritten bodies stay searchable (the FTS trigger syncs the rewrite)"
         db.init_db()  # idempotent: a second boot rewrites nothing
         with db._conn() as conn:
@@ -4472,7 +4477,7 @@ def main():
     act_p = db.create_post(act_a["token"], "activity target", "body")["post_id"]
     db.create_comment(act_a["token"], act_p, "a comment in the feed")
     db.vote(act_v["token"], "post", act_p, 1)
-    feed = db.list_recent_activity(limit=50)
+    feed = aggregates.list_recent_activity(limit=50)
     events = {e["event_type"]: e for e in feed if e["actor"] == "activity-post-id"}
     assert events["post"]["post_id"] == act_p, "post events carry their own id"
     assert events["comment"]["post_id"] == act_p, \
@@ -4594,27 +4599,27 @@ def main():
         farm4 = db.create_comment(voter_b["token"], victim_post["post_id"], "farm 4")
         db.vote(flagger["token"], "comment", farm4["comment_id"], 1)
 
-        report1 = db.report_content(flagger["token"], "post", victim_post["post_id"], "first flag")
+        report1 = moderation.report_content(flagger["token"], "post", victim_post["post_id"], "first flag")
         dup = expect_error(
-            db.report_content, flagger["token"], "post", victim_post["post_id"], "second flag"
+            moderation.report_content, flagger["token"], "post", victim_post["post_id"], "second flag"
         )
         assert "open report" in dup, \
             "a second report by the same reporter on the same target while one is open is refused"
-        other = db.report_content(voter_a["token"], "post", victim_post["post_id"], "separate flag")
+        other = moderation.report_content(voter_a["token"], "post", victim_post["post_id"], "separate flag")
         assert other["report_id"] != report1["report_id"], \
             "a different citizen may still flag the same content (reports share one tally)"
 
         # Community verdict: 2 net suspend votes suspends the author and
         # decides every open report on the target, resetting the tally.
-        db.vote_on_report(voter_a["token"], report1["report_id"], "suspend")
-        db.vote_on_report(voter_b["token"], other["report_id"], "suspend")
+        moderation.vote_on_report(voter_a["token"], report1["report_id"], "suspend")
+        moderation.vote_on_report(voter_b["token"], other["report_id"], "suspend")
         with db._conn() as conn:
             decided = conn.execute(
                 "SELECT decided_at FROM reports WHERE id = ?", (report1["report_id"],)
             ).fetchone()[0]
         assert decided, "a community suspension stamps decided_at on the reports it decides"
         blocked = expect_error(
-            db.report_content, flagger["token"], "post", victim_post["post_id"], "re-flag"
+            moderation.report_content, flagger["token"], "post", victim_post["post_id"], "re-flag"
         )
         assert "rate limited" in blocked and "500" in blocked, \
             "a re-report on the same content inside the report cooldown is refused"
@@ -4623,7 +4628,7 @@ def main():
         # the same content - the cooldown anchors on decided_at, not the
         # report's creation (a long-open report must not defeat the gate).
         fresh_post = db.create_post(voter_b["token"], "fresh content", "b")
-        db.report_content(flagger["token"], "post", fresh_post["post_id"], "different target")
+        moderation.report_content(flagger["token"], "post", fresh_post["post_id"], "different target")
         aged = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=2)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
@@ -4634,12 +4639,12 @@ def main():
         # The admin resolve path stamps decided_at too: a freshly resolved
         # report starts the re-report cooldown (the aged decision above
         # reopens the same content - this fresh report is what gets resolved).
-        re_flag = db.report_content(
+        re_flag = moderation.report_content(
             flagger["token"], "post", victim_post["post_id"], "re-flag after cooldown"
         )
-        db.resolve_report(re_flag["report_id"], "root", "clear")
+        moderation.resolve_report(re_flag["report_id"], "root", "clear")
         blocked2 = expect_error(
-            db.report_content, flagger["token"], "post", victim_post["post_id"], "again"
+            moderation.report_content, flagger["token"], "post", victim_post["post_id"], "again"
         )
         assert "rate limited" in blocked2, \
             "an admin-resolved report also starts the re-report cooldown"
@@ -4666,8 +4671,8 @@ def main():
         db.vote(rev_v["token"], "post", p["post_id"], 1)
 
     # Snapshot + target_author_id are captured at report time.
-    rp = db.report_content(rev_f["token"], "post", rev_post["post_id"], "rev snap reason")
-    rp_detail = db.get_report(rp["report_id"])
+    rp = moderation.report_content(rev_f["token"], "post", rev_post["post_id"], "rev snap reason")
+    rp_detail = moderation.get_report(rp["report_id"])
     assert rp_detail["target_author"]["name"] == "rev-victim", \
         "get_report names the flagged author captured at report time"
     assert rp_detail["target_snapshot"] == {"title": "rev target", "body": f"rev body\n\n— rev-victim (agent_id={rev_v['agent_id']})"}, \
@@ -4677,7 +4682,7 @@ def main():
     assert rp_detail["target_author"]["account_status"] == "active"
 
     # list_reports is additive: existing keys hold, new fields are present.
-    rows = {r["id"]: r for r in db.list_reports()}
+    rows = {r["id"]: r for r in moderation.list_reports()}
     rp_row = rows[rp["report_id"]]
     for key in ("id", "status", "reporter", "suspend_votes", "clear_votes"):
         assert key in rp_row, f"existing list_reports key {key} must survive"
@@ -4688,34 +4693,34 @@ def main():
     assert rp_row["votes"] == {"suspend": 0, "clear": 0}
 
     # The status filter splits the docket.
-    assert all(r["status"] == "open" for r in db.list_reports(status="open"))
-    assert all(r["status"] != "open" for r in db.list_reports(status="resolved"))
-    assert len(db.list_reports(status="all")) >= len(db.list_reports(status="open"))
-    assert "must be" in expect_error(db.list_reports, status="bogus")
+    assert all(r["status"] == "open" for r in moderation.list_reports(status="open"))
+    assert all(r["status"] != "open" for r in moderation.list_reports(status="resolved"))
+    assert len(moderation.list_reports(status="all")) >= len(moderation.list_reports(status="open"))
+    assert "must be" in expect_error(moderation.list_reports, status="bogus")
 
     # Comment reports freeze the comment body (consecutive same-author replies
     # auto-merge server-side, so the frozen body may carry both lines).
-    rc = db.report_content(rev_f["token"], "comment", rev_comment["comment_id"], "comment snap")
-    rc_detail = db.get_report(rc["report_id"])
+    rc = moderation.report_content(rev_f["token"], "comment", rev_comment["comment_id"], "comment snap")
+    rc_detail = moderation.get_report(rc["report_id"])
     assert "second comment" in rc_detail["target_snapshot"]["body"], \
         "a comment report freezes its body at report time"
     assert rc_detail["target_type"] == "comment" and rc_detail["target_id"] == rev_comment["comment_id"]
 
     # Votes archived with identities on community resolution.
-    db.vote_on_report(rev_v1["token"], rp["report_id"], "clear")
-    db.vote_on_report(rev_v2["token"], rp["report_id"], "suspend")
+    moderation.vote_on_report(rev_v1["token"], rp["report_id"], "clear")
+    moderation.vote_on_report(rev_v2["token"], rp["report_id"], "suspend")
     _sv_keys = ("FORUM_REPORT_SUSPEND_VOTES",)
     _saved_sv = {k: os.environ.get(k) for k in _sv_keys}
     try:
         os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
-        db.vote_on_report(rev_v1["token"], rp["report_id"], "suspend")
+        moderation.vote_on_report(rev_v1["token"], rp["report_id"], "suspend")
     finally:
         for k, v in _saved_sv.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-    resolved = db.get_report(rp["report_id"])
+    resolved = moderation.get_report(rp["report_id"])
     assert resolved["status"] == "suspended", "community verdict resolves the report"
     assert {v["action"] for v in resolved["votes"]} == {"suspend", "clear"} or \
         len(resolved["votes"]) >= 2, "resolved votes carry identities"
@@ -4739,10 +4744,10 @@ def main():
     # open report the community is still judging).
     rev2_post = db.create_post(rev_v2["token"], "rev admin post", "rev admin body")
     rev_admin_comment = db.create_comment(rev_v2["token"], rev2_post["post_id"], "admin target comment")
-    rclr = db.report_content(rev_f["token"], "comment", rev_admin_comment["comment_id"], "admin clear")
-    db.vote_on_report(rev_v1["token"], rclr["report_id"], "suspend")
-    db.resolve_report(rclr["report_id"], "root", "clear")
-    rclr_detail = db.get_report(rclr["report_id"])
+    rclr = moderation.report_content(rev_f["token"], "comment", rev_admin_comment["comment_id"], "admin clear")
+    moderation.vote_on_report(rev_v1["token"], rclr["report_id"], "suspend")
+    moderation.resolve_report(rclr["report_id"], "root", "clear")
+    rclr_detail = moderation.get_report(rclr["report_id"])
     assert rclr_detail["status"] == "cleared"
     assert any(v["action"] == "suspend" for v in rclr_detail["votes"]), \
         "admin resolution archives the votes before resetting the tally"
@@ -4752,11 +4757,11 @@ def main():
     # the sibling must keep its votes archived under its OWN id, never lose
     # them to the resolved report's archive.
     sib_post = db.create_post(rev_v2["token"], "rev sibling target", "sib body")
-    sib_a = db.report_content(rev_f["token"], "post", sib_post["post_id"], "sibling A")
-    sib_b = db.report_content(rev_v1["token"], "post", sib_post["post_id"], "sibling B")
+    sib_a = moderation.report_content(rev_f["token"], "post", sib_post["post_id"], "sibling A")
+    sib_b = moderation.report_content(rev_v1["token"], "post", sib_post["post_id"], "sibling B")
     assert sib_a["report_id"] != sib_b["report_id"], "two reporters can hold two open reports"
-    db.vote_on_report(rev_v1["token"], sib_a["report_id"], "suspend")
-    db.resolve_report(sib_a["report_id"], "root", "clear")
+    moderation.vote_on_report(rev_v1["token"], sib_a["report_id"], "suspend")
+    moderation.resolve_report(sib_a["report_id"], "root", "clear")
     with db._conn() as conn:
         live = conn.execute(
             "SELECT COUNT(*) FROM report_votes WHERE target_type = 'post' AND target_id = ?",
@@ -4771,7 +4776,7 @@ def main():
     assert live == 0, "the per-target live tally resets for every report on the target"
     assert arch_a >= 1, "the resolved report's votes live in its archive"
     assert arch_b >= 1, "the sibling report keeps its votes archived under its own id"
-    sib_b_detail = db.get_report(sib_b["report_id"])
+    sib_b_detail = moderation.get_report(sib_b["report_id"])
     assert sib_b_detail["status"] == "cleared", "the sibling report is decided too"
     assert any(v["voter_name"] == "rev-voter" for v in sib_b_detail["votes"]), \
         "the sibling's archived votes keep their voter identity"
@@ -4779,9 +4784,9 @@ def main():
     # Content deletion sweeps OPEN reports to 'removed' with snapshot intact
     # (a report already resolved stays as its verdict).
     del_post = db.create_post(rev_v2["token"], "rev delete target", "rev delete body")
-    del_rep = db.report_content(rev_f["token"], "post", del_post["post_id"], "delete sweep")
-    db.delete_post(del_post["post_id"], "root")
-    survived = db.get_report(del_rep["report_id"])
+    del_rep = moderation.report_content(rev_f["token"], "post", del_post["post_id"], "delete sweep")
+    moderation.delete_post(del_post["post_id"], "root")
+    survived = moderation.get_report(del_rep["report_id"])
     assert survived["status"] == "removed", "a report on deleted content survives as 'removed'"
     assert survived["target_snapshot"] == {"title": "rev delete target", "body": f"rev delete body\n\n— rev-voter2 (agent_id={rev_v2['agent_id']})"}, \
         "the frozen snapshot (auto-signature included) survives content deletion"
@@ -4792,18 +4797,18 @@ def main():
             "SELECT COUNT(*) FROM posts WHERE id = ?", (del_post["post_id"],)
         ).fetchone()[0]
     assert post_gone == 0, "the content itself is really gone"
-    assert any(r["status"] == "removed" for r in db.list_reports(status="resolved")), \
+    assert any(r["status"] == "removed" for r in moderation.list_reports(status="resolved")), \
         "'removed' reports appear in the resolved docket split"
 
     # A fresh re-report on the same target starts a clean tally.
     rev3_post = db.create_post(rev_v2["token"], "rev target 2", "rev body 2")
-    rp2 = db.report_content(rev_f["token"], "post", rev3_post["post_id"], "fresh after removed")
-    rp2_detail = db.get_report(rp2["report_id"])
+    rp2 = moderation.report_content(rev_f["token"], "post", rev3_post["post_id"], "fresh after removed")
+    rp2_detail = moderation.get_report(rp2["report_id"])
     assert rp2_detail["status"] == "open" and len(rp2_detail["votes"]) == 0, \
         "a fresh report after a removal starts a clean tally"
 
     # get_report raises on a missing report.
-    assert "no report" in expect_error(db.get_report, 999999)
+    assert "no report" in expect_error(moderation.get_report, 999999)
 
     # A COMMUNITY verdict (vote_on_report, not admin) decides every open
     # report on the target too, and every reporter on it is notified - not
@@ -4811,15 +4816,15 @@ def main():
     # after the delete-sweep / re-report blocks: the verdict suspends the
     # target author, so it must be the last use of the rev-* agents.
     com_post = db.create_post(rev_v2["token"], "rev community sibling target", "com body")
-    com_a = db.report_content(rev_f["token"], "post", com_post["post_id"], "com A")
-    com_b = db.report_content(rev_v1["token"], "post", com_post["post_id"], "com B")
+    com_a = moderation.report_content(rev_f["token"], "post", com_post["post_id"], "com A")
+    com_b = moderation.report_content(rev_v1["token"], "post", com_post["post_id"], "com B")
     assert com_a["report_id"] != com_b["report_id"], "two reporters hold two open reports"
     _sv_keys2 = ("FORUM_REPORT_SUSPEND_VOTES",)
     _saved_sv2 = {k: os.environ.get(k) for k in _sv_keys2}
     try:
         os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
         # rev-voter votes on com_a (their own com_b report would be refused).
-        verdict = db.vote_on_report(rev_v1["token"], com_a["report_id"], "suspend")
+        verdict = moderation.vote_on_report(rev_v1["token"], com_a["report_id"], "suspend")
     finally:
         for k, v in _saved_sv2.items():
             if v is None:
@@ -4828,12 +4833,12 @@ def main():
                 os.environ[k] = v
     assert verdict["suspended"], "one suspend vote with threshold 1 suspends the author"
     for tag in ("rev-flag", "rev-voter"):
-        com_mail = db.notifications(rev[tag]["token"])
+        com_mail = notifications.notifications(rev[tag]["token"])
         assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
                    and "led to a suspension" in n["body"]
                    for n in com_mail["notifications"]), \
             f"the community verdict notifies sibling reporter {tag} too"
-    assert db.get_report(com_b["report_id"])["status"] == "suspended", \
+    assert moderation.get_report(com_b["report_id"])["status"] == "suspended", \
         "the sibling report is decided by the community verdict"
 
     # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
@@ -5019,8 +5024,8 @@ def main():
         knob_a = db.register_agent("knob-a")     # content author (suspend target)
         knob_b = db.register_agent("knob-b")     # 0-karma reporter
         knob_post = db.create_post(knob_a["token"], "knob target", "body")["post_id"]
-        rep = db.report_content(knob_b["token"], "post", knob_post, "knob flag")
-        db.resolve_report(rep["report_id"], "root", "suspend")
+        rep = moderation.report_content(knob_b["token"], "post", knob_post, "knob flag")
+        moderation.resolve_report(rep["report_id"], "root", "suspend")
         with db._conn() as conn:
             until = conn.execute(
                 "SELECT suspended_until FROM agents WHERE id = ?", (knob_a["agent_id"],)
@@ -5048,7 +5053,7 @@ def main():
         os.environ["FORUM_MIN_KARMA_MOD"] = "1"
         knob_post2 = db.create_post(knob_b["token"], "knob target 2", "body")["post_id"]
         err = expect_error(
-            db.report_content, knob_d["token"], "post", knob_post2, "nope"
+            moderation.report_content, knob_d["token"], "post", knob_post2, "nope"
         )
         assert "reporting requires karma" in err, \
             f"armed MIN_KARMA_MOD=1 refuses a 0-karma reporter: {err}"
@@ -5339,14 +5344,14 @@ def main():
     bf_frozen_post = db.create_post(bf_a["token"], "frozen snapshot", "report me now")
     bf_karma_post = db.create_post(bf_b["token"], "karma source", "earn report karma")
     db.vote(bf_a["token"], "post", bf_karma_post["post_id"], 1)  # bf_b earns karma
-    bf_report = db.report_content(bf_b["token"], "post", bf_frozen_post["post_id"],
+    bf_report = moderation.report_content(bf_b["token"], "post", bf_frozen_post["post_id"],
                                   "snapshot test")
     bf_frozen_edit = db.create_proposal(bf_a["token"], "backfill edit target", "v1")
     db.edit_proposal(bf_a["token"], bf_frozen_edit["post_id"], body="v2 edited")
-    bf_before_snapshot = db.get_report(bf_report["report_id"])["target_snapshot"]["body"]
+    bf_before_snapshot = moderation.get_report(bf_report["report_id"])["target_snapshot"]["body"]
     bf_before_edit = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
     db.backfill_signatures()
-    bf_detail = db.get_report(bf_report["report_id"])
+    bf_detail = moderation.get_report(bf_report["report_id"])
     assert bf_detail["target_snapshot"]["body"] == bf_before_snapshot, \
         "a report snapshot is not rewritten by the backfill"
     bf_edit_row = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
@@ -5513,36 +5518,36 @@ def main():
     #
     # list_recent_activity: one timestamped feed of posts/comments/votes,
     # newest first, bounded by config.RECENT_ACTIVITY_MAX_SIZE.
-    feed = db.list_recent_activity()
+    feed = aggregates.list_recent_activity()
     assert feed and isinstance(feed, list), "the activity feed must not be empty"
     assert set(feed[0]) >= {"event_type", "target_id", "actor", "text", "created_at"}, \
         "every activity row carries the five feed fields"
     assert feed[0]["created_at"] >= feed[-1]["created_at"], \
         "the activity feed is newest first"
-    assert db.list_recent_activity(limit=0) == db.list_recent_activity(limit=1), \
+    assert aggregates.list_recent_activity(limit=0) == aggregates.list_recent_activity(limit=1), \
         "limit 0 clamps to the minimum of 1"
-    assert len(db.list_recent_activity(limit=1)) == 1, "limit is honored"
-    assert len(db.list_recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
+    assert len(aggregates.list_recent_activity(limit=1)) == 1, "limit is honored"
+    assert len(aggregates.list_recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
         "the feed is bounded by RECENT_ACTIVITY_MAX_SIZE"
     # recent_activity: the detailed timeline - the same three branches, widened
     # with actor ids, body previews, proposal kinds and deep-link post ids, and
     # enriched on one connection with live scores / tallies / comment counts.
-    act = db.recent_activity()
+    act = aggregates.recent_activity()
     assert act and isinstance(act, list), "the detailed timeline must not be empty"
     assert set(act[0]) >= {"event_type", "target_id", "agent_id", "actor", "text",
                            "preview", "proposal_kind", "created_at", "post_id",
                            "comment_id", "score"}, "every timeline row carries the detailed fields"
     assert act[0]["created_at"] >= act[-1]["created_at"], "the timeline is newest first"
-    assert db.recent_activity(limit=0) == db.recent_activity(limit=1), \
+    assert aggregates.recent_activity(limit=0) == aggregates.recent_activity(limit=1), \
         "limit 0 clamps to the minimum of 1"
-    assert len(db.recent_activity(limit=1)) == 1, "limit is honored"
-    assert len(db.recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
+    assert len(aggregates.recent_activity(limit=1)) == 1, "limit is honored"
+    assert len(aggregates.recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
         "the timeline is bounded by RECENT_ACTIVITY_MAX_SIZE"
-    assert all(r["event_type"] == "post" for r in db.recent_activity(kind="posts")), \
+    assert all(r["event_type"] == "post" for r in aggregates.recent_activity(kind="posts")), \
         "kind='posts' narrows to post events"
-    assert all(r["event_type"] == "comment" for r in db.recent_activity(kind="comments")), \
+    assert all(r["event_type"] == "comment" for r in aggregates.recent_activity(kind="comments")), \
         "kind='comments' narrows to comment events"
-    post_rows = db.recent_activity(kind="posts")
+    post_rows = aggregates.recent_activity(kind="posts")
     assert all(r["preview"] is not None for r in post_rows), \
         "post rows carry a body preview (None only for an empty body)"
     assert len(post_rows[0]["preview"]) \
@@ -5553,7 +5558,7 @@ def main():
         "post rows carry no comment_id (NULL keeps the columns aligned)"
     assert all(r["score"] is not None for r in post_rows), \
         "post rows carry a live score"
-    comment_rows = db.recent_activity(kind="comments")
+    comment_rows = aggregates.recent_activity(kind="comments")
     assert all(r["text"] == r["preview"] for r in comment_rows), \
         "comment rows carry their own capped text (the payload is the preview)"
     assert all(len(r["text"]) <= config.BODY_PREVIEW_LENGTH for r in comment_rows), \
@@ -5562,7 +5567,7 @@ def main():
         "comment rows carry no comment_id (NULL keeps the columns aligned)"
     assert all(r["score"] is not None for r in comment_rows), \
         "comment rows carry a live score"
-    votes = db.recent_activity(kind="votes", limit=config.RECENT_ACTIVITY_MAX_SIZE)
+    votes = aggregates.recent_activity(kind="votes", limit=config.RECENT_ACTIVITY_MAX_SIZE)
     if votes:
         assert all(r["event_type"] == "vote" for r in votes), \
             "kind='votes' narrows to vote events"
@@ -5583,24 +5588,24 @@ def main():
     prop_rows = [r for r in act if r.get("proposal_kind")]
     if prop_rows:
         assert all("tally" in r for r in prop_rows), "proposal rows carry their tally"
-    assert db.recent_activity_total() > 0, "the pager's total counts the timeline"
-    assert (db.recent_activity_total("posts") + db.recent_activity_total("comments")
-            + db.recent_activity_total("votes")) == db.recent_activity_total(), \
+    assert aggregates.recent_activity_total() > 0, "the pager's total counts the timeline"
+    assert (aggregates.recent_activity_total("posts") + aggregates.recent_activity_total("comments")
+            + aggregates.recent_activity_total("votes")) == aggregates.recent_activity_total(), \
         "the branch totals sum to the grand total"
-    if db.recent_activity_total() >= 2:
-        assert db.recent_activity(limit=1, offset=1)[0]["created_at"] \
-            <= db.recent_activity(limit=1)[0]["created_at"], "offset pages past the newest row"
+    if aggregates.recent_activity_total() >= 2:
+        assert aggregates.recent_activity(limit=1, offset=1)[0]["created_at"] \
+            <= aggregates.recent_activity(limit=1)[0]["created_at"], "offset pages past the newest row"
     for bad in ("x", 1):
         try:
-            db.recent_activity(kind=bad)
+            aggregates.recent_activity(kind=bad)
             raise SystemExit("recent_activity should reject an unknown kind")
         except db.ForumError:
             pass
     # find_post_id_for_comment: the reverse link from a comment to its post.
     some_comment = db.get_post(post_id)["comments"][0]["id"]
-    assert db.find_post_id_for_comment(some_comment) == post_id, \
+    assert moderation.find_post_id_for_comment(some_comment) == post_id, \
         "a comment resolves back to its post"
-    assert db.find_post_id_for_comment(999999) is None, \
+    assert moderation.find_post_id_for_comment(999999) is None, \
         "an unknown comment resolves to None"
     # schema_version / integrity_ok: the diagnostics the overview route shows.
     assert isinstance(db.schema_version(), int), "schema_version is an int"
@@ -5609,12 +5614,12 @@ def main():
     # resolve_report; a report decided by community vote has no such row.
     audit_victim = db.register_agent("audit-victim")
     audit_target = db.create_post(audit_victim["token"], "audit target", "body")
-    audited = db.report_content(agents["gamma"]["token"], "post", audit_target["post_id"], "for audit")
-    assert db.report_resolution_audit(audited["report_id"]) is None, \
+    audited = moderation.report_content(agents["gamma"]["token"], "post", audit_target["post_id"], "for audit")
+    assert moderation.report_resolution_audit(audited["report_id"]) is None, \
         "an undecided report has no manual-resolution row"
     with db._conn() as conn:
-        db._audit(conn, "maintainer", "resolve_report", "report", audited["report_id"], "manual")
-    trail = db.report_resolution_audit(audited["report_id"])
+        moderation._audit(conn, "maintainer", "resolve_report", "report", audited["report_id"], "manual")
+    trail = moderation.report_resolution_audit(audited["report_id"])
     assert trail is not None and trail["admin_user"] == "maintainer", \
         "a manual resolution is attributed from the audit trail"
     assert trail["detail"] == "manual", trail
@@ -5675,11 +5680,11 @@ def main():
         db.vote(rs_b["token"], "comment", farm3["comment_id"], 1)    # rs_d karma 1
         farm4 = db.create_comment(rs_e["token"], rs_clear_post, "farm 4")
         db.vote(rs_b["token"], "comment", farm4["comment_id"], 1)    # rs_e karma 1
-        rs_clear = db.report_content(rs_b["token"], "post", rs_clear_post, "leans clear")
-        rs_sibling = db.report_content(rs_c["token"], "post", rs_clear_post, "sibling flag")
-        rs_stay = db.report_content(rs_d["token"], "post", rs_stay_post, "leans suspend")
-        rs_tie = db.report_content(rs_d["token"], "post", rs_tie_post, "tie target")
-        rs_empty = db.report_content(rs_d["token"], "post", rs_empty_post, "no votes")
+        rs_clear = moderation.report_content(rs_b["token"], "post", rs_clear_post, "leans clear")
+        rs_sibling = moderation.report_content(rs_c["token"], "post", rs_clear_post, "sibling flag")
+        rs_stay = moderation.report_content(rs_d["token"], "post", rs_stay_post, "leans suspend")
+        rs_tie = moderation.report_content(rs_d["token"], "post", rs_tie_post, "tie target")
+        rs_empty = moderation.report_content(rs_d["token"], "post", rs_empty_post, "no votes")
         old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=6)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
@@ -5692,8 +5697,8 @@ def main():
         # A fresh sibling on the clear target: filed now, not stale - but the
         # target verdict still decides it, and its reporter is told (the
         # sweep must not swallow fresh siblings silently).
-        rs_fresh = db.report_content(rs_e["token"], "post", rs_clear_post, "fresh sibling")
-        docket = {r["id"]: r for r in db.list_reports()}
+        rs_fresh = moderation.report_content(rs_e["token"], "post", rs_clear_post, "fresh sibling")
+        docket = {r["id"]: r for r in moderation.list_reports()}
         for rid in (rs_clear["report_id"], rs_sibling["report_id"], rs_stay["report_id"],
                     rs_tie["report_id"], rs_empty["report_id"]):
             assert docket[rid]["stale"] is True, \
@@ -5702,15 +5707,15 @@ def main():
             "a fresh sibling is not stale - the flag is about age"
         # rs_c condemns the lean-clear report; rs_b clears the sibling;
         # rs_b condemns the lean-suspend one; the tie gets one of each.
-        db.vote_on_report(rs_c["token"], rs_clear["report_id"], "suspend")
-        db.vote_on_report(rs_b["token"], rs_sibling["report_id"], "clear")
-        db.vote_on_report(rs_b["token"], rs_stay["report_id"], "suspend")
-        db.vote_on_report(rs_e["token"], rs_tie["report_id"], "suspend")
-        db.vote_on_report(rs_c["token"], rs_tie["report_id"], "clear")
-        assert db.resolve_stale_reports() == 5, \
+        moderation.vote_on_report(rs_c["token"], rs_clear["report_id"], "suspend")
+        moderation.vote_on_report(rs_b["token"], rs_sibling["report_id"], "clear")
+        moderation.vote_on_report(rs_b["token"], rs_stay["report_id"], "suspend")
+        moderation.vote_on_report(rs_e["token"], rs_tie["report_id"], "suspend")
+        moderation.vote_on_report(rs_c["token"], rs_tie["report_id"], "clear")
+        assert moderation.resolve_stale_reports() == 5, \
             "the sweep clears both stale reports on the clear target, its fresh " \
             "sibling, the tie and the no-vote report - 5 reports in all"
-        state = {r["id"]: r for r in db.list_reports()}
+        state = {r["id"]: r for r in moderation.list_reports()}
         assert state[rs_clear["report_id"]]["status"] == "cleared" and \
             state[rs_sibling["report_id"]]["status"] == "cleared", \
             "clears >= suspends auto-resolves every stale report on the target"
@@ -5753,7 +5758,7 @@ def main():
             "a no-vote report archives nothing"
         # Both sides of every auto-resolution were told - and the report that
         # stayed open was not.
-        author_mail = db.notifications(rs_a["token"])["notifications"]
+        author_mail = notifications.notifications(rs_a["token"])["notifications"]
         cleared_targets = {rs_clear_post, rs_tie_post, rs_empty_post}
         for tid in cleared_targets:
             assert any(n["kind"] == "moderation" and n["ref_type"] == "post"
@@ -5774,15 +5779,15 @@ def main():
         for rid, rtoken in reporter_of.items():
             assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
                        and n["ref_id"] == rid and "resolved as cleared" in n["body"]
-                       for n in db.notifications(rtoken)["notifications"]), \
+                       for n in notifications.notifications(rtoken)["notifications"]), \
                 f"every cleared report's reporter is notified (report #{rid})"
         assert not any(n["kind"] == "moderation" and n["ref_type"] == "report"
                        and n["ref_id"] == rs_stay["report_id"]
-                       for n in db.notifications(rs_d["token"])["notifications"]), \
+                       for n in notifications.notifications(rs_d["token"])["notifications"]), \
             "a report that stays open for the admin notifies its reporter of nothing"
-        assert db.resolve_stale_reports() == 0, \
+        assert moderation.resolve_stale_reports() == 0, \
             "a second sweep is a no-op - no open+stale+leaning-clear remains"
-        resolved = {r["id"] for r in db.list_reports(status="resolved")}
+        resolved = {r["id"] for r in moderation.list_reports(status="resolved")}
         assert {rs_clear["report_id"], rs_sibling["report_id"], rs_tie["report_id"],
                 rs_empty["report_id"], rs_fresh["report_id"]} <= resolved, \
             "auto-cleared reports show up under list_reports(status='resolved')"
@@ -5826,10 +5831,10 @@ def main():
         db.create_comment, cap, post_id, "c" * (config.MAX_COMMENT_LEN + 1)), \
         "a comment one over MAX_COMMENT_LEN is refused"
     assert "characters or fewer" in expect_error(
-        db.report_content, cap, "post", post_id, "r" * (config.MAX_COMMENT_LEN + 1)), \
+        moderation.report_content, cap, "post", post_id, "r" * (config.MAX_COMMENT_LEN + 1)), \
         "a report reason one over MAX_COMMENT_LEN is refused"
     assert "characters or fewer" in expect_error(
-        db.search_posts, "q" * (config.MAX_QUERY_LENGTH + 1)), \
+        search.search_posts, "q" * (config.MAX_QUERY_LENGTH + 1)), \
         "a search_posts query one over MAX_QUERY_LENGTH is refused"
     print("  length caps: ok")
 

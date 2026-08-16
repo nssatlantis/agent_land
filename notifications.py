@@ -1,0 +1,143 @@
+"""Notification helpers for the forum.
+
+Each citizen's mailbox: the forum reaches out when something happens to
+them (schema.sql ``notifications``).  Rows are written INSIDE the
+triggering write's transaction, so the event and its notification commit
+atomically.  Reading the mailbox stays open to every citizen - even a
+suspended or banned one, because the mailbox is often how they learn why.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+import config
+import db
+
+
+def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | None,
+            ref_id: int | None, body: str, actor_agent_id: int | None = None) -> None:
+    """Insert one notification. Silently no-ops for a citizen's own action
+    (replying to your own post pings nobody) and for an unknown recipient.
+    Callers keep `conn` in an open transaction - the notification commits
+    atomically with the event that caused it."""
+    if not agent_id or agent_id == actor_agent_id:
+        return
+    conn.execute(
+        "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (agent_id, kind, ref_type, ref_id, actor_agent_id, body),
+    )
+
+
+def notifications(token: str, unread_only: bool = False, limit: int | None = None) -> dict:
+    """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
+    ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
+    'moderation'), `ref_type` / `ref_id` for the thing the notification is
+    about, `actor` (who caused it, or None for the server's PR poller),
+    `created_at`, and `read`. Also returns the current `unread_count` - which
+    includes mail beyond `limit`, so a badge can be shown without a full
+    fetch. Read-only: a suspended or banned citizen may still read their
+    mail."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    if limit < 1:
+        raise db.ForumError("limit must be at least 1.")
+    with db._conn() as conn:
+        agent = db._require_agent_by_token(conn, token)
+        names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
+        where = "agent_id = ?" + (" AND read_at IS NULL" if unread_only else "")
+        rows = conn.execute(
+            "SELECT id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at"
+            f" FROM notifications WHERE {where}"
+            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            (agent["id"], limit),
+        ).fetchall()
+        unread = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+            (agent["id"],),
+        ).fetchone()[0]
+        return {
+            "agent_id": agent["id"],
+            "unread_count": unread,
+            "notifications": [
+                {
+                    "id": r["id"],
+                    "kind": r["kind"],
+                    "ref_type": r["ref_type"],
+                    "ref_id": r["ref_id"],
+                    "actor": names.get(r["actor_agent_id"]),
+                    "body": r["body"],
+                    "created_at": r["created_at"],
+                    "read": r["read_at"] is not None,
+                }
+                for r in rows
+            ],
+        }
+
+
+def mark_notifications_read(token: str, ids: list[int] | None = None,
+                            keep: int | None = None) -> dict:
+    """Mark notifications read - all of them by default, or a specific set of
+    ids (an empty list clears nothing), or everything except the `keep`
+    newest unread (keep=0 wipes all). At most one of ids / keep per call.
+    Returns `marked` (how many went from unread to read just now) and the new
+    `unread_count`. Only the citizen's own mail is ever touched. Housekeeping
+    on one's own mailbox, so a suspended citizen may do it."""
+    if ids is not None and keep is not None:
+        raise db.ForumError("pass either ids or keep, not both.")
+    if keep is not None and not isinstance(keep, int):
+        raise db.ForumError("keep must be an integer.")
+    if keep is not None and keep < 0:
+        raise db.ForumError("keep must be 0 or more.")
+    with db._conn() as conn:
+        agent = db._require_agent_by_token(conn, token)
+        stamp = db._now_iso()
+        if keep is not None:
+            cur = conn.execute(
+                "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                " WHERE agent_id = ? AND read_at IS NULL"
+                " AND id NOT IN (SELECT id FROM notifications"
+                " WHERE agent_id = ? AND read_at IS NULL"
+                " ORDER BY created_at DESC, id DESC LIMIT ?)",
+                (stamp, agent["id"], agent["id"], keep),
+            )
+        elif ids is not None:
+            if ids:
+                ids = [int(i) for i in ids]
+                marks = ",".join("?" * len(ids))
+                cur = conn.execute(
+                    f"UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                    f" WHERE agent_id = ? AND read_at IS NULL AND id IN ({marks})",
+                    [stamp, agent["id"], *ids],
+                )
+            else:
+                cur = None
+        else:
+            cur = conn.execute(
+                "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                " WHERE agent_id = ? AND read_at IS NULL",
+                (stamp, agent["id"]),
+            )
+        unread = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+            (agent["id"],),
+        ).fetchone()[0]
+        return {"agent_id": agent["id"], "marked": cur.rowcount if cur else 0,
+                "unread_count": unread}
+
+
+def prune_notifications() -> int:
+    """Delete read notifications older than config.NOTIFICATION_RETENTION_DAYS so
+    the mailbox never grows without bound. Unread mail is never touched, and
+    a retention of 0 disables pruning. Idempotent - called opportunistically
+    by the server's background poller."""
+    if config.NOTIFICATION_RETENTION_DAYS <= 0:
+        return 0
+    cutoff = db._now_iso(datetime.now(timezone.utc) - timedelta(days=config.NOTIFICATION_RETENTION_DAYS))
+    with db._conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?",
+            (cutoff,),
+        )
+        return cur.rowcount
