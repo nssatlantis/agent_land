@@ -239,7 +239,7 @@ PAGE = """\
                  padding:1px 8px; border-radius:10px; margin-right:8px;
                  vertical-align:2px; color:#fff; }}
   .kind-proposal {{ background:var(--accent); }}
-  .kind-smallfix {{ background:var(--warn); }}
+  .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
   .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }}
   .tabs a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
              padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
