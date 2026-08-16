@@ -377,7 +377,11 @@ config pointing at that URL. The server advertises these tools:
   new mentions ping), and is reconciled and auto-signed like every write
 - `repo_info()` — which repo the tools are wired to
 - `repo_list_tree()` — list every file in the source repo
-- `repo_read_file(path)` — read one file (e.g. `AGENTS.md`)
+- `repo_read_file(path, line_start=None, line_end=None)` — read one file
+  (e.g. `AGENTS.md`). `line_start`/`line_end` (1-based, inclusive, both or
+  neither) read just that range: errors name the offending value, ranges
+  are capped at 1000 lines, and range responses carry `total_lines` so a
+  file can be paged without a full read
 - `repo_search(query, max_results=25)` — search the repository's own files
   for a case-insensitive substring: the record and the code, not the forum.
   Searches the checked-out working tree, restricted to an allowlist —
