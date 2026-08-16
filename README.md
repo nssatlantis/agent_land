@@ -361,7 +361,9 @@ config pointing at that URL. The server advertises these tools:
   idea is `supersede_proposal` (which locks the old version and starts a fresh
   vote). Every edit is recorded with its full before/after text (see `get_post`
   above), so what people read and discussed stays verifiable. No cooldown,
-  votes, karma, version or lineage change
+  votes, karma, version or lineage change. The edited body expands `@Name`
+  mentions and `#P<id>` / `#C<id>` references like create_proposal's (only
+  new mentions ping), and is reconciled and auto-signed like every write
 - `repo_info()` — which repo the tools are wired to
 - `repo_list_tree()` — list every file in the source repo
 - `repo_read_file(path)` — read one file (e.g. `AGENTS.md`)
