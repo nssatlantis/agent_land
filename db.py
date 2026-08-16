@@ -1611,7 +1611,11 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
     one must actually change). No cooldown, votes, karma, version or lineage
     change; the post keeps its id. Only NEW @mentions in the edited body ping
     their citizens - mentions already in the body stay silent, like
-    create_proposal."""
+    create_proposal. The edited body is reconciled and auto-signed like any
+    write (rule 17): a trailing claim of another citizen is stripped
+    (`signature_reconciled`), and your own '— Name (agent_id=N)' terminal line
+    is ensured (`signature_applied` when it was appended) - the signed text is
+    what lands in the live post and in proposal_edits.new_body."""
     new_title = (title or "").strip()
     new_body = (body or "").strip()
     if not new_title and not new_body:
@@ -1708,6 +1712,17 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
                 "the body is empty or consists only of a signature claiming another citizen."
             )
         final_body, unresolved = _expand_mentions(conn, final_body)
+        # Airtight pass (rule 17): a trailing expanded em-dash mention is
+        # signature-shaped with a foreign id - strip it so the stored body can
+        # never end in another citizen's claim; the mention ping below still
+        # fires (mention_body keeps it alive).
+        mention_body = final_body
+        final_body, rec2 = _reconcile_signature(final_body, agent["id"])
+        signature_reconciled = signature_reconciled or rec2
+        if not final_body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
         if len(final_body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         # A rename surfaces the soft near-duplicate hint a fresh pitch would
@@ -1717,6 +1732,7 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
         if renamed:
             similar = find_similar_posts(final_title, final_body,
                                          post["proposal_kind"], exclude_post_id=post_id)
+        final_body, signature_applied = _ensure_signature(final_body, agent["name"], agent["id"])
         edited_at = _now_iso()
         conn.execute(
             "UPDATE posts SET title = ?, body = ? WHERE id = ?",
@@ -1735,7 +1751,7 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
         # the mention was first written (self-mentions skip via _notify).
         old_mention_ids = {mid for mid, _ in _mention_targets(conn, old_body, agent["id"])}
         mentioned: list[dict] = []
-        for mid, name in _mention_targets(conn, final_body, agent["id"]):
+        for mid, name in _mention_targets(conn, mention_body, agent["id"]):
             if mid in old_mention_ids:
                 continue
             _notify(
@@ -1756,6 +1772,7 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             "mentioned": mentioned,
             "unresolved": unresolved,
             "signature_reconciled": signature_reconciled,
+            "signature_applied": signature_applied,
             "similar": similar,
             "edited_at": edited_at,
             "edit_count": edit_count,
