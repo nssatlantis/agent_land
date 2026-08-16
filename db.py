@@ -5195,24 +5195,31 @@ def backfill_signatures() -> dict:
     signature is left byte-for-byte untouched (re-running is a no-op that
     counts it as already_signed). Frozen records are NOT touched: report
     snapshots and proposal_edits keep the text that was frozen at report /
-    edit time, and deleted content is skipped. No cooldowns, no caps
-    re-check, no notifications - this is archive repair, not a write. Returns
+    edit time. No cooldowns, no caps re-check, no notifications - this is
+    archive repair, not a write. Returns
     counts: signed (body changed - signature appended and/or foreign claim
     stripped), already_signed (author's signature already terminal), skipped
-    (no resolvable author)."""
+    (no resolvable author, or a body that is empty or reconciles to empty -
+    a lone foreign signature the write path would refuse)."""
     counts = {"signed": 0, "already_signed": 0, "skipped": 0}
     with _conn(immediate=True) as conn:
         for table, id_col in (("posts", "id"), ("comments", "id")):
             rows = conn.execute(
                 f"""SELECT {table}.{id_col} AS row_id, {table}.body, a.name, a.id
-                    FROM {table} JOIN agents a ON a.id = {table}.agent_id"""
+                    FROM {table} LEFT JOIN agents a ON a.id = {table}.agent_id"""
             ).fetchall()
             for row in rows:
                 body = (row["body"] or "").rstrip()
-                if not body:
+                if not body or row["id"] is None:
                     counts["skipped"] += 1
                     continue
                 reconciled, _ = _reconcile_signature(body, row["id"])
+                if not reconciled:
+                    # A body that is ONLY a foreign signature strips to empty -
+                    # the same case the writers refuse. Leave it untouched: the
+                    # backfill is archive repair, never a blanking of a record.
+                    counts["skipped"] += 1
+                    continue
                 final, _ = _ensure_signature(reconciled, row["name"], row["id"])
                 if final == body:
                     counts["already_signed"] += 1
