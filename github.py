@@ -44,6 +44,11 @@ GITHUB_BASE_BRANCH = os.environ.get("GITHUB_BASE_BRANCH", "main")
 # probably a whole rewrite that belongs in `content` instead.
 _MAX_EDITS_PER_FILE = config.MAX_EDITS_PER_FILE
 
+# Cap on lines per repo_read_file range read. Module constant by design (the
+# _MAX_EDITS_PER_FILE precedent) - a read cap is a client-ergonomics bound,
+# not a server tunable, so it stays out of config.py and the drift manifest.
+_MAX_READ_FILE_LINES = 1000
+
 
 class RepoError(Exception):
     """Raised for any rule violation or GitHub API failure. server.py lets
@@ -120,9 +125,12 @@ def list_tree() -> dict:
     return {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
 
 
-def read_file(path: str) -> dict:
+def read_file(path: str, line_start: int | None = None, line_end: int | None = None) -> dict:
     """Read one file's text from the base branch. Binary files come back as a
-    note instead of content."""
+    note instead of content. With line_start and line_end (1-based, inclusive,
+    both or neither) only that line range is returned, and the response also
+    carries total_lines so a caller can page through a file without a full
+    read; a path-only read is byte-for-byte what it always was."""
     path = _validate_path(path)
     data = _request("GET", f"contents/{path}?ref={GITHUB_BASE_BRANCH}", ok_404=True)
     if data is None:
@@ -132,12 +140,65 @@ def read_file(path: str) -> dict:
         content = raw.decode("utf-8")
     except UnicodeDecodeError:
         content = None
-    return {
+    result = {
         "path": path,
         "size": data.get("size", len(raw)),
         "content": content,
         "note": None if content is not None else "(binary file - content not shown)",
     }
+    if line_start is None and line_end is None:
+        return result
+    if content is None:
+        raise RepoError(
+            f"cannot read lines from {path!r} - it is not UTF-8 text (binary file)."
+        )
+    result["content"], result["total_lines"] = _slice_line_range(
+        path, content, line_start, line_end
+    )
+    result["line_start"] = line_start
+    result["line_end"] = line_end
+    return result
+
+
+def _slice_line_range(
+    path: str, text: str, line_start: int | None, line_end: int | None
+) -> tuple[str, int]:
+    """Validate a 1-based inclusive line range against `text` and slice it.
+    Pure function, no network. An error names the offending value: one of
+    the two params alone, start below 1, end below start, a range wider
+    than _MAX_READ_FILE_LINES, or a range past the end of the file (naming
+    its total line count). Lines are text.split("\\n") parts: total_lines is
+    the number of parts, so a 1..total_lines range always reconstructs the
+    file exactly with "\\n".join() - a file ending in a newline therefore
+    reports one extra, empty final line."""
+    if line_start is None or line_end is None:
+        given = "line_start" if line_start is None else "line_end"
+        raise RepoError(
+            f"repo_read_file line range: {given} was given without its pair - "
+            "'line_start' and 'line_end' must be passed together."
+        )
+    if line_start < 1:
+        raise RepoError(
+            f"repo_read_file line range: 'line_start' must be >= 1, got {line_start}."
+        )
+    if line_end < line_start:
+        raise RepoError(
+            f"repo_read_file line range: 'line_end' must be >= 'line_start' "
+            f"({line_start}), got {line_end}."
+        )
+    if line_end - line_start + 1 > _MAX_READ_FILE_LINES:
+        raise RepoError(
+            f"repo_read_file line range of {line_end - line_start + 1} lines is "
+            f"too large - at most {_MAX_READ_FILE_LINES} lines per read."
+        )
+    lines = text.split("\n")
+    total_lines = len(lines)
+    if line_end > total_lines:
+        raise RepoError(
+            f"repo_read_file line range {line_start}-{line_end} is past the end of "
+            f"{path!r} - the file has {total_lines} lines total."
+        )
+    return "\n".join(lines[line_start - 1:line_end]), total_lines
 
 
 # --- repo-side search ----------------------------------------------------
