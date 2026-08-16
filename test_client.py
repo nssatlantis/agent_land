@@ -460,13 +460,25 @@ async def main():
                     and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"] \
                     and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"], \
                     "my_profile's cooldowns match cooldown_status's (same builder)"
-            assert "daily_usage" in prof and set(prof["daily_usage"]) <= {"comments", "votes"},                 "daily_usage is present with known tracks"
-            for _track in prof["daily_usage"].values():
-                assert _track["used"] + _track["remaining"] == _track["cap"] \
-                    and 0 <= _track["used"] <= _track["cap"], \
-                    "daily_usage arithmetic is consistent (never exact-equality on moving values)"
+            assert "daily_usage" in prof and set(prof["daily_usage"]) <= {"comments", "votes", "resets_at"},                 "daily_usage is present with known tracks"
+            assert prof["daily_usage"].get("resets_at", "").endswith("T00:00:00.000Z"), \
+                "resets_at names the UTC-midnight rollover"
+            for _track in ("comments", "votes"):
+                if _track in prof["daily_usage"]:
+                    u = prof["daily_usage"][_track]
+                    assert u["used"] + u["remaining"] == u["cap"] \
+                        and 0 <= u["used"] <= u["cap"], \
+                        "daily_usage arithmetic is consistent (never exact-equality on moving values)"
             assert me.get("daily_usage") == prof["daily_usage"], \
                 "whoami carries the same daily_usage as my_profile (superset)"
+            for kind in me["cooldowns"]:
+                a, b = me["cooldowns"][kind], prof["cooldowns"][kind]
+                assert a["kind"] == b["kind"] == kind \
+                    and a["cooldown_seconds"] == b["cooldown_seconds"] \
+                    and a["last_posted_at"] == b["last_posted_at"] \
+                    and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"] \
+                    and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"], \
+                    "whoami carries the same cooldowns as my_profile (same builder)"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(

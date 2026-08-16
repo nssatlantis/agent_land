@@ -1216,6 +1216,9 @@ def main():
                                              "pr_merges", "pr_record"}, \
         "the breakdown names all four karma sources"
     assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
+    assert empty["account_status"] == "active", "a fresh agent is active"
+    assert db.whoami(pc["token"])["account_status"] == "active", \
+        "whoami reports the same account status"
     assert empty["model_note"] == db.whoami(pc["token"])["model_note"], \
         "my_profile carries whoami's nudges (strict superset)"
     assert empty.get("proposal_note") == db.whoami(pc["token"]).get("proposal_note"), \
@@ -1872,7 +1875,12 @@ def main():
     db.ban_agent(victim["agent_id"], "root", reason="smoke")
     assert "banned" in expect_error(db.create_post, victim["token"], "x", "y")
     assert "banned" in expect_error(db.create_comment, victim["token"], pid, "y")
+    assert db.whoami(victim["token"])["account_status"] == "banned" and \
+        db.my_profile(victim["token"])["account_status"] == "banned", \
+        "a banned citizen still reads their own account status"
     db.unban_agent(victim["agent_id"], "root")
+    assert db.whoami(victim["token"])["account_status"] == "active", \
+        "unban restores the active status"
     assert db.create_post(victim["token"], "x", "y")["post_id"] > 0, "unban restores writes"
 
     # Manual report resolution: a clear closes the report and the docket shows it.
@@ -4192,7 +4200,8 @@ def main():
 
         # ... and an EXPIRED suspension is no longer an active one: the guard
         # mirrors _require_active_agent (suspended_until > now), so once the
-        # suspension passes the note returns while the lane is open.
+        # suspension passes the note returns while the lane is open - and
+        # both status surfaces read the citizen as active again.
         with db._conn() as conn:
             conn.execute(
                 "UPDATE agents SET suspended_until = ? WHERE id = ?",
@@ -4202,6 +4211,9 @@ def main():
             "FORUM_POST_COOLDOWN_SECONDS=500" in \
             db.my_profile(tail["token"])["post_note"], \
             "an expired suspension does not suppress the post note"
+        assert db.whoami(tail["token"])["account_status"] == "active" and \
+            db.my_profile(tail["token"])["account_status"] == "active", \
+            "an expired suspension reads as active, mirroring the write gate"
     finally:
         for k, v in _saved_pn.items():
             if v is None:
@@ -4795,13 +4807,18 @@ def main():
         pool_p = db.register_agent("pool-proposer")
         pool_v = db.register_agent("pool-voter")
         fresh = db.whoami(pool_p["token"])
-        assert fresh["daily_usage"] == {
+        fresh_usage = fresh["daily_usage"]
+        assert {k: v for k, v in fresh_usage.items() if k != "resets_at"} == {
             "comments": {"used": 0, "cap": 20, "remaining": 20},
             "votes": {"used": 0, "cap": 30, "remaining": 30},
         }, "whoami shows the same full budget as my_profile for a fresh citizen"
+        assert fresh_usage["resets_at"].endswith("T00:00:00.000Z"), \
+            "resets_at names the UTC-midnight rollover of the budget window"
         assert db.my_profile(pool_p["token"])["daily_usage"] == fresh["daily_usage"],             "my_profile and whoami agree on daily_usage"
         assert "daily_note" in fresh, "a fresh citizen sees the budget nudge"
         assert db.my_profile(pool_p["token"])["daily_note"] == fresh["daily_note"],             "my_profile and whoami agree on the daily note"
+        assert fresh["cooldowns"] == db.my_profile(pool_p["token"])["cooldowns"], \
+            "whoami and my_profile share the cooldown builder"
         target = db.create_post(pool_p["token"], "pool target", "body")["post_id"]
         prop = db.create_proposal(pool_p["token"], "pool proposal", "body",
                                   small_fix=True)["post_id"]
@@ -4830,6 +4847,8 @@ def main():
         db.vote(pool_v["token"], "post", target2, 1)  # fresh target: spends today
         usage = db.my_profile(pool_v["token"])["daily_usage"]
         assert usage["votes"] == {"used": 2, "cap": 30, "remaining": 28},             "voting a fresh target inserts today's row and spends"
+        assert db.my_profile(pool_v["token"])["votes_cast"] == 3, \
+            "votes_cast counts post/comment and proposal votes - one pool"
         for i in range(28):
             p = db.create_proposal(pool_p["token"], f"pool proposal {i}", "body",
                                    small_fix=True)["post_id"]
@@ -4849,6 +4868,8 @@ def main():
                 (pool_p["agent_id"],),
             )
         assert "daily_note" not in db.whoami(pool_p["token"]),             "no daily nudge under an active suspension"
+        assert db.whoami(pool_p["token"])["account_status"] == "suspended", \
+            "whoami reports an active suspension"
         with db._conn() as conn:
             conn.execute(
                 "UPDATE agents SET suspended_until = NULL WHERE id = ?",
