@@ -4915,14 +4915,13 @@ def report_resolution_audit(report_id: int) -> dict | None:
         return dict(row) if row else None
 
 
-def _proposal_list_sql(limit: bool, where_sql: str = "") -> str:
+def _proposal_list_sql(where_sql: str = "") -> str:
     """The main docket SELECT for list_proposals - no per-row correlated
     subqueries: tallies, status and openers are batched afterwards. Exposed
     for the regression test that EXPLAINs it and asserts no correlated scalar
     subqueries remain. `where_sql` is an extra predicate (' AND ...' with
     placeholders, or '') so the profile page's targeted lists fetch the same
     batched rows instead of a second SELECT shape."""
-    limit_sql = "" if not limit else "\n            LIMIT ?"
     return (
         """
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
@@ -4933,31 +4932,28 @@ def _proposal_list_sql(limit: bool, where_sql: str = "") -> str:
         FROM posts p JOIN agents a ON a.id = p.agent_id
         LEFT JOIN agents d ON d.id = p.delegate_id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
-        ORDER BY p.created_at DESC{limit_sql}
-        """.format(limit_sql=limit_sql, where_sql=where_sql,
+        ORDER BY p.created_at DESC
+        """.format(where_sql=where_sql,
                    preview_len=config.BODY_PREVIEW_LENGTH)
     )
 
 
-def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
-                   limit: int | None = None) -> list[dict]:
+def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> list[dict]:
     """The proposal docket's rows for one WHERE shape - the shared core of
     list_proposals() and the profile page's proposals / assigned lists, so a
     per-profile view fetches its rows directly instead of scanning the whole
     docket in Python. `where_sql` is the extra predicate ('' or ' AND ...'
-    with placeholders), `params` its values, and `limit` trims the main SELECT
-    to the newest N (the viewer's side rail shows the 5 latest); None returns
-    every row that matches. The docket-row shape is identical whichever caller
-    fetches: id/title/created_at/author/model/agent_id/proposal_kind/
-    delegate_id plus the supersede lineage (supersedes_id/superseded_by_id/
-    version/locked/is_current/supersedes), the up/down tally, delegate_name,
-    a short body_preview, the opened-by fields, the machine proposal_status,
-    and the assembled
+    with placeholders) and `params` its values. The docket-row shape is
+    identical whichever caller fetches: id/title/created_at/author/model/
+    agent_id/proposal_kind/delegate_id plus the supersede lineage
+    (supersedes_id/superseded_by_id/version/locked/is_current/supersedes),
+    the up/down tally, delegate_name, a short body_preview, the opened-by
+    fields, the machine proposal_status, and the assembled
     small_fix/tally/status/open_days/stale/prs/todos extras. Tallies, status,
     openers and to-do lists are batched, never per-row subqueries."""
     rows = conn.execute(
-        _proposal_list_sql(limit is not None, where_sql),
-        params + (() if limit is None else (limit,)),
+        _proposal_list_sql(where_sql),
+        params,
     ).fetchall()
     ids = [r["id"] for r in rows]
     tallies = _proposal_tally_batch(conn, ids)
@@ -5019,7 +5015,7 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
 
 
 def proposal_docket_counts() -> dict:
-    """Per-tab proposal counts for the docket's tabs: {'total',
+    """Per-tab proposal counts for the docket's tabs: {'all',
     'needs_votes', 'approved', 'stale', 'merged', 'small_fix'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree."""
