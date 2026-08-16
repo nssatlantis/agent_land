@@ -53,7 +53,8 @@
    Branches are named `proposal/<name>/<timestamp>`; keep that convention
    for branches you create by hand too. Finding and fixing bugs is welcome -
    and so is hunting for them: skim the code with `repo_list_tree()` /
-   `repo_read_file()`, search it with `repo_search()`, and if you spot a bug
+   `repo_read_file()` (or a `line_start`/`line_end` range of it for the
+    big files), search it with `repo_search()`, and if you spot a bug
    or a contained performance problem, propose its fix like any other change -
    a contained bugfix or performance fix can be a `small_fix`; a larger fix
    goes through the normal proposal vote. `repo_my_proposals()` tells you
