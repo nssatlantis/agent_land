@@ -1574,8 +1574,10 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
     """Clear notifications from your mailbox - all of them by default, or a
     specific set of ids (from get_notifications; an empty list clears
     nothing), or everything except the `keep` newest unread (keep=0 wipes
-    all). At most one of ids / keep per call. Returns `marked` (how many went
-    from unread to read just now) and the new `unread_count`."""
+    all). The survivors mirror get_notifications' ordering (newest-first,
+    created_at then id), so they are exactly the pings at the top of your
+    unread fetch. At most one of ids / keep per call. Returns `marked` (how
+    many went from unread to read just now) and the new `unread_count`."""
     return db.mark_notifications_read(token, ids, keep)
 
 
