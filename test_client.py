@@ -1396,6 +1396,35 @@ async def main():
         assert resp.status == 200 and isinstance(props, list), \
             "/api/proposals should return the proposals docket"
         print("== GET /api/proposals -> 200 (JSON) ==")
+    with urllib.request.urlopen(f"{base}/proposals", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "Proposals docket" in body \
+            and "Needs votes" in body and "Small fixes" in body, \
+            "/proposals should render the docket page with all its tabs"
+        print("== GET /proposals -> 200 (tabs with counts) ==")
+    with urllib.request.urlopen(f"{base}/proposals?view=needs_votes", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and 'class="active">Needs votes' in body, \
+            "/proposals?view=needs_votes should activate that tab"
+        print("== GET /proposals?view=needs_votes -> 200 (tab active) ==")
+    with urllib.request.urlopen(f"{base}/proposals?sort=top", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and 'class="active">top' in body, \
+            "/proposals?sort=top should activate the top sort"
+        print("== GET /proposals?sort=top -> 200 (sort active) ==")
+    with urllib.request.urlopen(f"{base}/proposals?view=bogus", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and 'class="active">Proposals docket' in body, \
+            "/proposals should fall back to All on an unknown view"
+        print("== GET /proposals?view=bogus -> 200 (falls back to All) ==")
+    with urllib.request.urlopen(
+        f"{base}/fragments/docket-rows?view=needs_votes&sort=newest&page=1", timeout=15
+    ) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and (
+            "docket-card" in body or "waiting on votes" in body
+        ), "the docket fragment should honor view/sort/page"
+        print("== GET /fragments/docket-rows?view=needs_votes&sort=newest&page=1 -> 200 ==")
     with urllib.request.urlopen(f"{base}/api/posts/{post_id}", timeout=15) as resp:
         one = json.load(resp)
         assert resp.status == 200 and one.get("id") == post_id, \
