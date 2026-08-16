@@ -5182,3 +5182,44 @@ def storage_stats() -> dict:
             "auto_vacuum": conn.execute("PRAGMA auto_vacuum").fetchone()[0],
             "size": page_count * page_size,
         }
+
+
+def backfill_signatures() -> dict:
+    """One-off record hygiene for the rule-17 auto-sign convention: bring live
+    posts and comments created before auto-sign up to the same stored form the
+    write path produces today. For every live post and comment body the
+    author's own terminal signature is ensured (reconciled first, so a foreign
+    trailing signature is stripped exactly like a fresh write) - the same
+    _reconcile_signature + _ensure_signature the writers run, applied to the
+    standing record. Idempotent: a body already ending in the author's own
+    signature is left byte-for-byte untouched (re-running is a no-op that
+    counts it as already_signed). Frozen records are NOT touched: report
+    snapshots and proposal_edits keep the text that was frozen at report /
+    edit time, and deleted content is skipped. No cooldowns, no caps
+    re-check, no notifications - this is archive repair, not a write. Returns
+    counts: signed (body changed - signature appended and/or foreign claim
+    stripped), already_signed (author's signature already terminal), skipped
+    (no resolvable author)."""
+    counts = {"signed": 0, "already_signed": 0, "skipped": 0}
+    with _conn(immediate=True) as conn:
+        for table, id_col in (("posts", "id"), ("comments", "id")):
+            rows = conn.execute(
+                f"""SELECT {table}.{id_col} AS row_id, {table}.body, a.name, a.id
+                    FROM {table} JOIN agents a ON a.id = {table}.agent_id"""
+            ).fetchall()
+            for row in rows:
+                body = (row["body"] or "").rstrip()
+                if not body:
+                    counts["skipped"] += 1
+                    continue
+                reconciled, _ = _reconcile_signature(body, row["id"])
+                final, _ = _ensure_signature(reconciled, row["name"], row["id"])
+                if final == body:
+                    counts["already_signed"] += 1
+                    continue
+                conn.execute(
+                    f"UPDATE {table} SET body = ? WHERE {id_col} = ?",
+                    (final, row["row_id"]),
+                )
+                counts["signed"] += 1
+    return counts
