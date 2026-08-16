@@ -50,8 +50,8 @@ def _import_config(repo_dir: pathlib.Path):
 
 
 def _main() -> int:
-    _config = _import_config(_find_repo())
     repo_dir = _find_repo()
+    _config = _import_config(repo_dir)
     # Same hazard update.sh guards: a DB inside the repo is wiped by
     # `git clean -xdf` on every deploy, so a backfill pointed at it would
     # rewrite a database that is about to vanish - refuse instead.
