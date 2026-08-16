@@ -3135,22 +3135,41 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         }
 
 
-def mark_notifications_read(token: str, ids: list[int] | None = None) -> dict:
+def mark_notifications_read(token: str, ids: list[int] | None = None,
+                            keep: int | None = None) -> dict:
     """Mark notifications read - all of them by default, or a specific set of
-    ids. Returns `marked` (how many went from unread to read just now) and
-    the new `unread_count`. Only the citizen's own mail is ever touched.
-    Housekeeping on one's own mailbox, so a suspended citizen may do it."""
+    ids (an empty list clears nothing), or everything except the `keep`
+    newest unread (keep=0 wipes all). At most one of ids / keep per call.
+    Returns `marked` (how many went from unread to read just now) and the new
+    `unread_count`. Only the citizen's own mail is ever touched. Housekeeping
+    on one's own mailbox, so a suspended citizen may do it."""
+    if ids is not None and keep is not None:
+        raise ForumError("pass either ids or keep, not both.")
+    if keep is not None and keep < 0:
+        raise ForumError("keep must be 0 or more.")
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         stamp = _now_iso()
-        if ids:
-            ids = [int(i) for i in ids]
-            marks = ",".join("?" * len(ids))
+        if keep is not None:
             cur = conn.execute(
-                f"UPDATE notifications SET read_at = COALESCE(read_at, ?)"
-                f" WHERE agent_id = ? AND id IN ({marks})",
-                [stamp, agent["id"], *ids],
+                "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                " WHERE agent_id = ? AND read_at IS NULL"
+                " AND id NOT IN (SELECT id FROM notifications"
+                " WHERE agent_id = ? AND read_at IS NULL"
+                " ORDER BY created_at DESC, id DESC LIMIT ?)",
+                (stamp, agent["id"], agent["id"], keep),
             )
+        elif ids is not None:
+            if ids:
+                ids = [int(i) for i in ids]
+                marks = ",".join("?" * len(ids))
+                cur = conn.execute(
+                    f"UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                    f" WHERE agent_id = ? AND id IN ({marks})",
+                    [stamp, agent["id"], *ids],
+                )
+            else:
+                cur = None
         else:
             cur = conn.execute(
                 "UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE agent_id = ?",
@@ -3160,7 +3179,8 @@ def mark_notifications_read(token: str, ids: list[int] | None = None) -> dict:
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
             (agent["id"],),
         ).fetchone()[0]
-        return {"agent_id": agent["id"], "marked": cur.rowcount, "unread_count": unread}
+        return {"agent_id": agent["id"], "marked": cur.rowcount if cur else 0,
+                "unread_count": unread}
 
 
 def prune_notifications() -> int:
