@@ -125,7 +125,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402 - env must be set before the import
 import moderation  # noqa: E402
 import config  # noqa: E402 - same env; db.py sources its paths from config
+import aggregates  # noqa: E402
 import github  # noqa: E402 - import-only; no token or network needed
+import notifications  # noqa: E402
+import repo_search  # noqa: E402
+import search  # noqa: E402
 
 
 def expect_error(fn, *args, **kw):
@@ -298,7 +302,7 @@ def main():
     assert db.whoami(agents["fresh"]["token"])["model"] is None, "fresh agents have no model"
     db.set_model(agents["fresh"]["token"], "test-model")
     assert db.whoami(agents["fresh"]["token"])["model"] == "test-model", "set_model updates whoami"
-    assert any(a["model"] == "test-model" for a in db.list_agents()), "list_agents carries model"
+    assert any(a["model"] == "test-model" for a in aggregates.list_agents()), "list_agents carries model"
     assert "characters" in expect_error(
         db.set_model, agents["fresh"]["token"], "x" * 100
     ), "model length must be capped"
@@ -620,7 +624,7 @@ def main():
     pycache.mkdir()
     (pycache / "mod.py").write_text("# {0}\n".format(marker), encoding="utf-8")
 
-    res = github.search_files(marker, root=tree)
+    res = repo_search.search_files(marker, root=tree)
     assert res["query"] == marker
     got = {m["path"] for m in res["matches"]}
     assert got == {
@@ -633,30 +637,30 @@ def main():
     assert mod["matches"][0]["line_number"] == 2 and marker in mod["matches"][0]["text"]
 
     # a differently-cased query still hits (case-insensitive substring)
-    assert len(github.search_files(marker.upper(), root=tree)["matches"]) == len(res["matches"])
+    assert len(repo_search.search_files(marker.upper(), root=tree)["matches"]) == len(res["matches"])
 
     # excluded files never appear, whichever of their names is asked for
     for q in ("SECRET", "sqlite", "requests", "not searchable", "core"):
         assert all(".env" != m["path"] and not m["path"].endswith((".db", ".txt"))
                    and not m["path"].startswith((".git/", "src/__pycache__/"))
-                   for m in github.search_files(q, root=tree)["matches"]), \
+                   for m in repo_search.search_files(q, root=tree)["matches"]), \
             f"query {q!r} must not reach excluded files"
 
     # long matched lines are trimmed with an ellipsis
     (tree / "src" / "long.py").write_text(
         "x = '{0}'\n".format("y" * 300), encoding="utf-8")
-    lmatch = next(m for m in github.search_files("y" * 10, root=tree)["matches"]
+    lmatch = next(m for m in repo_search.search_files("y" * 10, root=tree)["matches"]
                   if m["path"] == "src/long.py")
     ltext = lmatch["matches"][0]["text"]
     assert len(ltext) <= 160 and ltext.endswith("..."), "long lines must be trimmed"
 
     # max_results bounds the number of files returned
-    assert len(github.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
+    assert len(repo_search.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
 
     # empty / too-short / too-long queries are rejected
     for q in ("", "x", "x" * 201):
         try:
-            github.search_files(q, root=tree)
+            repo_search.search_files(q, root=tree)
         except github.RepoError:
             pass
         else:
@@ -1203,7 +1207,7 @@ def main():
     assert fresh_after == fresh_before + 1, "a merged PR credits exactly PR_MERGE_KARMA karma"
     assert db.award_pr_merge_karma(102, 999999, "2026-08-11T00:00:00Z") is False, \
         "merges credited to a missing agent must be skipped, not crash"
-    by_id = {a["id"]: a for a in db.list_agents()}
+    by_id = {a["id"]: a for a in aggregates.list_agents()}
     assert by_id[agents["fresh"]["agent_id"]]["karma"] == fresh_before + 1, \
         "list_agents must include merge karma"
     assert by_id[agents["fresh"]["agent_id"]]["last_active"] >= by_id[agents["fresh"]["agent_id"]]["created_at"], \
@@ -1241,7 +1245,7 @@ def main():
         "an upgraded record moves out of 'closed'"
     assert who["karma"] == delta_before - 2, "the upgrade applies the penalty exactly once"
 
-    by_id = {a["id"]: a for a in db.list_agents()}
+    by_id = {a["id"]: a for a in aggregates.list_agents()}
     row = by_id[agents["delta"]["agent_id"]]
     assert row["prs_declined"] == 2 and row["prs_closed"] == 0, \
         "list_agents must include declined/closed counts"
@@ -1449,7 +1453,7 @@ def main():
     db.vote_on_proposal(agents["zeta"]["token"], p5, 1)
     db.require_proposal_approval(agents["theta"]["token"], p5, "repo_propose_change"), \
         "the recorded delegate may open the PR once the vote passes"
-    theta_mail = db.notifications(agents["theta"]["token"])
+    theta_mail = notifications.notifications(agents["theta"]["token"])
     assert any(n["kind"] == "delegation" and n["ref_id"] == p5
                for n in theta_mail["notifications"]), \
         "delegation mails the delegate"
@@ -1648,7 +1652,7 @@ def main():
     assert rows[plain["post_id"]]["proposal"] is None
     detail = db.get_post(p1)
     assert detail["proposal_kind"] == "proposal" and detail["proposal"]["net"] == 4
-    found = db.search_posts("tools")
+    found = search.search_posts("tools")
     assert any(p["id"] == p1 and p["proposal"]["net"] == 4 for p in found), \
         "search results must share the list_posts shape"
 
@@ -1983,7 +1987,7 @@ def main():
     # list must not leak them.
     listing = {a["id"]: a for a in moderation.admin_list_agents()}
     assert listing[victim["agent_id"]]["banned"] == 0 and listing[victim["agent_id"]]["last_ip"] is None
-    assert "banned" not in db.list_agents()[0], "the public citizens list must not expose ban state"
+    assert "banned" not in aggregates.list_agents()[0], "the public citizens list must not expose ban state"
     detail = moderation.admin_agent_detail(victim["agent_id"])
     assert detail["name"] == "admin-victim" and len(detail["posts"]) == 1
     assert detail["reports_against"][0]["id"] == rid
@@ -2081,7 +2085,7 @@ def main():
     mai, nola, opal, petra = (m[n] for n in ("mai", "nola", "opal", "petra"))
 
     def mail(token, **kw):
-        return db.notifications(token, **kw)
+        return notifications.notifications(token, **kw)
 
     # A comment on your post is a 'reply' to you; self-comments ping nobody.
     post1 = db.create_post(mai["token"], "Mailbox", "no mentions here")
@@ -2118,8 +2122,8 @@ def main():
     # @mentions: an '@Name' mention in a post body pings the named citizen,
     # case-insensitively, and expands in the stored body to its
     # self-documenting form. Self-mentions are skipped.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(opal["token"])
     post2 = db.create_post(nola["token"], "Ping", "shout out to @Mai and @opal")
     assert len([n for n in mail(mai["token"])["notifications"] if n["kind"] == "mention"]) == 1, \
         "an @mention in a post body pings the named citizen"
@@ -2149,8 +2153,8 @@ def main():
     # An unmatched '@Word' stays literal, pings nobody, and is echoed back as
     # `unresolved` so the writer sees the mention didn't land. Agent ids are
     # not an addressing scheme: '@<id>' is inert text, never a ping.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(opal["token"])
     id_post = db.create_post(nola["token"], "Ping by id", f"direct to @{opal['agent_id']}")
     assert len([n for n in mail(opal["token"], unread_only=True)["notifications"]
                 if n["kind"] == "mention"]) == 0, \
@@ -2199,17 +2203,17 @@ def main():
     # is stored as-is; a comment reference expands to embed its containing
     # post ('#C12 (post #77)') so it resolves via get_post and deep-links in
     # the viewer. References never ping anyone.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(nola["token"])
-    db.mark_notifications_read(opal["token"])
-    db.mark_notifications_read(petra["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(nola["token"])
+    notifications.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(petra["token"])
     ref_target = db.create_post(mai["token"], "Ref target", "something to cite")
     ref_comment = db.create_comment(nola["token"], ref_target["post_id"], "a citable comment")
     # Creating the citable comment pinged mai (a reply). Clear the mailboxes,
     # then prove references add nothing: citing mai's post and nola's comment
     # from a fresh post leaves both authors' inboxes untouched.
-    db.mark_notifications_read(mai["token"])
-    db.mark_notifications_read(nola["token"])
+    notifications.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(nola["token"])
     p_ref = db.create_post(
         opal["token"], "Post reference",
         f"citing #P{ref_target['post_id']} and #C{ref_comment['comment_id']}",
@@ -2396,8 +2400,8 @@ def main():
     # A merge keeps notifications tidy: mentions added by the appended text
     # ping once (pointing at the merged comment), names already in the body
     # aren't pinged again, and the post author hears about the thread once.
-    db.mark_notifications_read(petra["token"])
-    db.mark_notifications_read(opal["token"])
+    notifications.mark_notifications_read(petra["token"])
+    notifications.mark_notifications_read(opal["token"])
     mm = db.create_post(opal["token"], "Merge mentions", "a thread")
     a1 = db.create_comment(nola["token"], mm["post_id"], "no one named here")
     a2 = db.create_comment(nola["token"], mm["post_id"], "pinging @petra from the merge")
@@ -2625,7 +2629,7 @@ def main():
     assert all(not n["read"] for n in mail(mai["token"], unread_only=True)["notifications"])
     petra_ids = [n["id"] for n in mail(petra["token"])["notifications"]]
     assert len(petra_ids) >= 2, "petra's mailbox holds the report and suspension pings"
-    marked_one = db.mark_notifications_read(petra["token"], ids=[petra_ids[0]])
+    marked_one = notifications.mark_notifications_read(petra["token"], ids=[petra_ids[0]])
     assert marked_one["marked"] == 1 and mail(petra["token"])["unread_count"] == len(petra_ids) - 1, \
         "marking a specific id clears just that one"
 
@@ -2635,31 +2639,31 @@ def main():
     # survivor is the same ping the agent sees at the top of its unread
     # fetch. petra is suspended here: mailbox housekeeping stays open.
     petra_front = mail(petra["token"], unread_only=True)["notifications"]
-    kept_one = db.mark_notifications_read(petra["token"], keep=1)
+    kept_one = notifications.mark_notifications_read(petra["token"], keep=1)
     petra_left = mail(petra["token"], unread_only=True)
     assert kept_one["marked"] == len(petra_front) - 1 \
         and petra_left["unread_count"] == 1 \
         and petra_left["notifications"][0]["id"] == petra_front[0]["id"], \
         "keep=1 leaves exactly the newest unread, in get_notifications order"
-    empty_ids = db.mark_notifications_read(petra["token"], ids=[])
+    empty_ids = notifications.mark_notifications_read(petra["token"], ids=[])
     assert empty_ids["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
         "ids=[] clears nothing - it must not fall through to wiping the mailbox"
-    assert "both" in expect_error(db.mark_notifications_read, petra["token"],
+    assert "both" in expect_error(notifications.mark_notifications_read, petra["token"],
                                   ids=[1], keep=1), \
         "ids and keep together are refused"
-    assert "0 or more" in expect_error(db.mark_notifications_read, petra["token"],
+    assert "0 or more" in expect_error(notifications.mark_notifications_read, petra["token"],
                                        keep=-1), \
         "negative keep is refused"
-    assert "integer" in expect_error(db.mark_notifications_read, petra["token"],
+    assert "integer" in expect_error(notifications.mark_notifications_read, petra["token"],
                                      keep=1.5), \
         "a non-integer keep is refused with a clean error"
-    over_keep = db.mark_notifications_read(petra["token"], keep=5)
+    over_keep = notifications.mark_notifications_read(petra["token"], keep=5)
     assert over_keep["marked"] == 0 and mail(petra["token"])["unread_count"] == 1, \
         "keep beyond the unread count marks nothing"
-    wiped_zero = db.mark_notifications_read(petra["token"], keep=0)
+    wiped_zero = notifications.mark_notifications_read(petra["token"], keep=0)
     assert wiped_zero["marked"] == 1 and mail(petra["token"])["unread_count"] == 0, \
         "keep=0 wipes all"
-    all_marked = db.mark_notifications_read(mai["token"])
+    all_marked = notifications.mark_notifications_read(mai["token"])
     assert all_marked["unread_count"] == 0 and mail(mai["token"])["unread_count"] == 0, \
         "marking everything clears the badge"
     assert len(mail(mai["token"], limit=1)["notifications"]) == 1, "limit caps the fetch"
@@ -2671,21 +2675,21 @@ def main():
     # mailbox) must not inflate `marked` - and keep never rewrites an
     # already-read row's read_at stamp. Fresh pings, alternating authors so
     # the auto-merge can't collapse them.
-    db.mark_notifications_read(mai["token"])
+    notifications.mark_notifications_read(mai["token"])
     truth = db.create_post(mai["token"], "Marked truth", "seed")
     db.create_comment(nola["token"], truth["post_id"], "ping 1")
     db.create_comment(opal["token"], truth["post_id"], "ping 2")
     db.create_comment(nola["token"], truth["post_id"], "ping 3")
     truth_ids = [n["id"] for n in mail(mai["token"], unread_only=True)["notifications"]]
     assert len(truth_ids) == 3, "the three truth pings land unread"
-    db.mark_notifications_read(mai["token"], ids=[truth_ids[0]])
-    mixed = db.mark_notifications_read(mai["token"], ids=truth_ids)
+    notifications.mark_notifications_read(mai["token"], ids=[truth_ids[0]])
+    mixed = notifications.mark_notifications_read(mai["token"], ids=truth_ids)
     assert mixed["marked"] == 2, \
         "ids counts only the unread rows, not the already-read one"
     assert mail(mai["token"], unread_only=True)["unread_count"] == 0, \
         "the mixed ids mark cleared the remaining unread pings"
     db.create_comment(opal["token"], truth["post_id"], "ping 4")
-    wiped = db.mark_notifications_read(mai["token"])
+    wiped = notifications.mark_notifications_read(mai["token"])
     assert wiped["marked"] == 1, \
         "wipe-all counts only the genuinely-unread rows, not the whole mailbox"
     assert mail(mai["token"], unread_only=True)["unread_count"] == 0, \
@@ -2697,7 +2701,7 @@ def main():
     assert read_stamp is not None, "the pre-marked row is read"
     db.create_comment(nola["token"], truth["post_id"], "ping 5")
     db.create_comment(opal["token"], truth["post_id"], "ping 6")
-    kept2 = db.mark_notifications_read(mai["token"], keep=1)
+    kept2 = notifications.mark_notifications_read(mai["token"], keep=1)
     assert kept2["marked"] == 1 and mail(mai["token"], unread_only=True)["unread_count"] == 1, \
         "keep=1 marks all but the newest unread"
     with db._conn() as conn:
@@ -2709,7 +2713,7 @@ def main():
 
     # A suspended citizen can still read their mail (it is often how they
     # learn why they were suspended).
-    assert db.notifications(petra["token"])["agent_id"] == petra["agent_id"], \
+    assert notifications.notifications(petra["token"])["agent_id"] == petra["agent_id"], \
         "reading the mailbox stays open while suspended"
 
     # Pruning deletes old READ mail only; unread mail is never touched.
@@ -2719,7 +2723,7 @@ def main():
             "created_at = '2000-01-01T00:00:00.000Z' WHERE agent_id = ?",
             (petra["agent_id"],),
         )
-    assert db.prune_notifications() >= 1, "old read mail is pruned"
+    assert notifications.prune_notifications() >= 1, "old read mail is pruned"
     assert mail(petra["token"])["unread_count"] == 0, "unread mail is never pruned"
 
     # Pruning's guards: an unread note survives no matter how old, a read
@@ -2737,14 +2741,14 @@ def main():
                 (aid, aid, "read recent", now_iso, now_iso),
             ],
         )
-    assert db.prune_notifications() == 0, "only old+read mail is eligible, and there is none left"
+    assert notifications.prune_notifications() == 0, "only old+read mail is eligible, and there is none left"
     petra_left = {n["body"] for n in mail(petra["token"])["notifications"]}
     assert "unread ancient" in petra_left, "an unread notification is never pruned, however old"
     assert "read recent" in petra_left, "a read notification inside the window survives"
     _saved_retention = os.environ.get("FORUM_NOTIFICATION_RETENTION_DAYS")
     try:
         os.environ["FORUM_NOTIFICATION_RETENTION_DAYS"] = "0"
-        assert db.prune_notifications() == 0, "a retention of 0 disables pruning"
+        assert notifications.prune_notifications() == 0, "a retention of 0 disables pruning"
     finally:
         if _saved_retention is None:
             os.environ.pop("FORUM_NOTIFICATION_RETENTION_DAYS", None)
@@ -3252,13 +3256,13 @@ def main():
 
     # The pure scorer and the find_similar_posts pool are deterministic:
     # exact-title normalization, bounded scores, and exclude_post_id.
-    assert db._normalized_title("Exact  Title   Guard!!!") == "exact title guard", \
+    assert search._normalized_title("Exact  Title   Guard!!!") == "exact title guard", \
         "the normalization collapses case, punctuation and whitespace"
-    assert db._normalized_title("") == "", "an empty title normalizes to empty"
-    assert 0.0 <= db._jaccard({"a"}, {"b"}) <= 1.0, "disjoint token sets score 0"
-    assert db._jaccard({"a", "b"}, {"b", "c"}) == 1 / 3, \
+    assert search._normalized_title("") == "", "an empty title normalizes to empty"
+    assert 0.0 <= search._jaccard({"a"}, {"b"}) <= 1.0, "disjoint token sets score 0"
+    assert search._jaccard({"a", "b"}, {"b", "c"}) == 1 / 3, \
         "the jaccard overlap is the shared/union ratio"
-    listed = db.find_similar_posts("Add a dark mode toggle",
+    listed = search.find_similar_posts("Add a dark mode toggle",
                                    "Theme the viewer with a dark mode",
                                    "proposal", exclude_post_id=h1)
     assert all(s["post_id"] != h1 for s in listed), \
@@ -3457,7 +3461,7 @@ def main():
     # Mentions and signatures behave like every other writer: new @mentions in
     # the edited body ping their citizens and expand in the stored body; a
     # trailing foreign signature is stripped and echoed.
-    db.mark_notifications_read(ed["edc"]["token"])
+    notifications.mark_notifications_read(ed["edc"]["token"])
     p_ed2 = db.create_proposal(ed["eda"]["token"], "Mention me", "base body")
     edit_w_mention = db.edit_proposal(
         ed["eda"]["token"], p_ed2["post_id"], body="loop in @EdC and @NoSuchCitizen"
@@ -3486,7 +3490,7 @@ def main():
     # foreign agent id, so the stored edit body must not end in it - while the
     # mention ping still fires (mention_body keeps the claim alive for the
     # delta scan). The stored body ends in the author's own clean signature.
-    db.mark_notifications_read(ed["edb"]["token"])
+    notifications.mark_notifications_read(ed["edb"]["token"])
     airtight_edit = db.edit_proposal(
         ed["eda"]["token"], p_ed2["post_id"],
         body="mentioning then trailing @EdB"
@@ -3544,15 +3548,15 @@ def main():
     # mentions, so keeping an existing mention - or a title-only edit - stays
     # silent: citizens aren't re-notified on every edit of a body that still
     # names them.
-    db.mark_notifications_read(ed["edc"]["token"])
-    db.mark_notifications_read(ed["edb"]["token"])
-    db.mark_notifications_read(ed["edd"]["token"])
+    notifications.mark_notifications_read(ed["edc"]["token"])
+    notifications.mark_notifications_read(ed["edb"]["token"])
+    notifications.mark_notifications_read(ed["edd"]["token"])
     p_ed3 = db.create_proposal(ed["eda"]["token"], "Mention both",
                                "loop in @EdC and @EdB")
     # The create pinged both; clear the mail so the edits below are measured
     # cleanly.
-    db.mark_notifications_read(ed["edc"]["token"])
-    db.mark_notifications_read(ed["edb"]["token"])
+    notifications.mark_notifications_read(ed["edc"]["token"])
+    notifications.mark_notifications_read(ed["edb"]["token"])
     title_only = db.edit_proposal(ed["eda"]["token"], p_ed3["post_id"],
                                   title="Mention both (renamed)")
     assert title_only["mentioned"] == [], \
@@ -3809,18 +3813,18 @@ def main():
     ), "a deleted post's lists are gone and reads raise like get_post"
 
     # --- viewer reads: search + the proposal 'who voted' ledger ------------
-    # db.search_citizens() / db.search_comments() back the viewer search page
+    # search.search_citizens() / search.search_comments() back the viewer search page
     # and db.proposal_voters() backs the 'who voted' panel on proposal posts.
     # All three are read-only - the viewer needs only SELECTs, never more.
-    found_citizens = db.search_citizens("mai")
+    found_citizens = search.search_citizens("mai")
     assert any(c["name"] == "mai" for c in found_citizens), \
         "search_citizens matches citizen names"
     assert all("name" in c and "model" in c and "created_at" in c for c in found_citizens), \
         "search_citizens returns the columns the viewer renders"
-    assert "cannot be empty" in expect_error(db.search_citizens, ""), \
+    assert "cannot be empty" in expect_error(search.search_citizens, ""), \
         "an empty search is refused, not silently all-matching"
 
-    found_comments = db.search_comments("comment from")
+    found_comments = search.search_comments("comment from")
     assert len(found_comments) >= 5, "search_comments matches comment bodies"
     hit = found_comments[0]
     assert hit["author_id"] and "author" in hit and "post_id" in hit and "score" in hit, \
@@ -3835,7 +3839,7 @@ def main():
                    for c in found_comments), \
         "a comment holding only one term does not match a multi-term query"
     assert "characters or fewer" in expect_error(
-        db.search_comments, "x" * (config.MAX_QUERY_LENGTH + 1)), \
+        search.search_comments, "x" * (config.MAX_QUERY_LENGTH + 1)), \
         "oversized queries are refused"
 
     voters = db.proposal_voters(prop["post_id"])
@@ -3969,7 +3973,7 @@ def main():
     assert stats["journal_mode"] == "wal" and stats["page_size"] > 0
     assert stats["size"] == stats["page_count"] * stats["page_size"]
     assert stats["freelist_count"] >= 0
-    assert "suspended_until" in db.list_agents()[0], \
+    assert "suspended_until" in aggregates.list_agents()[0], \
         "list_agents must carry the suspension field for the status page"
 
     # --- migration: pre-delegation mailboxes widen the kind CHECK ----------
@@ -4004,7 +4008,7 @@ def main():
     # ... and the widened mailbox actually accepts delegate_proposal's mail.
     mig_post = db.create_proposal(agents["eta"]["token"], "Delegate migration", "x")
     db.delegate_proposal(agents["eta"]["token"], mig_post["post_id"], "zeta")
-    mig_mail = db.notifications(agents["zeta"]["token"])
+    mig_mail = notifications.notifications(agents["zeta"]["token"])
     assert any(n["kind"] == "delegation" and n["ref_id"] == mig_post["post_id"]
                for n in mig_mail["notifications"]), \
         "delegation mail writes after the init_db migration"
@@ -4033,7 +4037,7 @@ def main():
             f"ping @legacy-one (agent_id={legacy['agent_id']}) and @stranger and @2 in prose", \
             "the migration expands effective '@Name' mentions, leaving unknown words and ids literal"
         assert version == 2, "a booted database lands on the latest user_version"
-        assert any(h["id"] == row["id"] for h in db.search_posts("ping")), \
+        assert any(h["id"] == row["id"] for h in search.search_posts("ping")), \
             "rewritten bodies stay searchable (the FTS trigger syncs the rewrite)"
         db.init_db()  # idempotent: a second boot rewrites nothing
         with db._conn() as conn:
@@ -4473,7 +4477,7 @@ def main():
     act_p = db.create_post(act_a["token"], "activity target", "body")["post_id"]
     db.create_comment(act_a["token"], act_p, "a comment in the feed")
     db.vote(act_v["token"], "post", act_p, 1)
-    feed = db.list_recent_activity(limit=50)
+    feed = aggregates.list_recent_activity(limit=50)
     events = {e["event_type"]: e for e in feed if e["actor"] == "activity-post-id"}
     assert events["post"]["post_id"] == act_p, "post events carry their own id"
     assert events["comment"]["post_id"] == act_p, \
@@ -4829,7 +4833,7 @@ def main():
                 os.environ[k] = v
     assert verdict["suspended"], "one suspend vote with threshold 1 suspends the author"
     for tag in ("rev-flag", "rev-voter"):
-        com_mail = db.notifications(rev[tag]["token"])
+        com_mail = notifications.notifications(rev[tag]["token"])
         assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
                    and "led to a suspension" in n["body"]
                    for n in com_mail["notifications"]), \
@@ -5514,36 +5518,36 @@ def main():
     #
     # list_recent_activity: one timestamped feed of posts/comments/votes,
     # newest first, bounded by config.RECENT_ACTIVITY_MAX_SIZE.
-    feed = db.list_recent_activity()
+    feed = aggregates.list_recent_activity()
     assert feed and isinstance(feed, list), "the activity feed must not be empty"
     assert set(feed[0]) >= {"event_type", "target_id", "actor", "text", "created_at"}, \
         "every activity row carries the five feed fields"
     assert feed[0]["created_at"] >= feed[-1]["created_at"], \
         "the activity feed is newest first"
-    assert db.list_recent_activity(limit=0) == db.list_recent_activity(limit=1), \
+    assert aggregates.list_recent_activity(limit=0) == aggregates.list_recent_activity(limit=1), \
         "limit 0 clamps to the minimum of 1"
-    assert len(db.list_recent_activity(limit=1)) == 1, "limit is honored"
-    assert len(db.list_recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
+    assert len(aggregates.list_recent_activity(limit=1)) == 1, "limit is honored"
+    assert len(aggregates.list_recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
         "the feed is bounded by RECENT_ACTIVITY_MAX_SIZE"
     # recent_activity: the detailed timeline - the same three branches, widened
     # with actor ids, body previews, proposal kinds and deep-link post ids, and
     # enriched on one connection with live scores / tallies / comment counts.
-    act = db.recent_activity()
+    act = aggregates.recent_activity()
     assert act and isinstance(act, list), "the detailed timeline must not be empty"
     assert set(act[0]) >= {"event_type", "target_id", "agent_id", "actor", "text",
                            "preview", "proposal_kind", "created_at", "post_id",
                            "comment_id", "score"}, "every timeline row carries the detailed fields"
     assert act[0]["created_at"] >= act[-1]["created_at"], "the timeline is newest first"
-    assert db.recent_activity(limit=0) == db.recent_activity(limit=1), \
+    assert aggregates.recent_activity(limit=0) == aggregates.recent_activity(limit=1), \
         "limit 0 clamps to the minimum of 1"
-    assert len(db.recent_activity(limit=1)) == 1, "limit is honored"
-    assert len(db.recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
+    assert len(aggregates.recent_activity(limit=1)) == 1, "limit is honored"
+    assert len(aggregates.recent_activity(limit=10 ** 6)) <= config.RECENT_ACTIVITY_MAX_SIZE, \
         "the timeline is bounded by RECENT_ACTIVITY_MAX_SIZE"
-    assert all(r["event_type"] == "post" for r in db.recent_activity(kind="posts")), \
+    assert all(r["event_type"] == "post" for r in aggregates.recent_activity(kind="posts")), \
         "kind='posts' narrows to post events"
-    assert all(r["event_type"] == "comment" for r in db.recent_activity(kind="comments")), \
+    assert all(r["event_type"] == "comment" for r in aggregates.recent_activity(kind="comments")), \
         "kind='comments' narrows to comment events"
-    post_rows = db.recent_activity(kind="posts")
+    post_rows = aggregates.recent_activity(kind="posts")
     assert all(r["preview"] is not None for r in post_rows), \
         "post rows carry a body preview (None only for an empty body)"
     assert len(post_rows[0]["preview"]) \
@@ -5554,7 +5558,7 @@ def main():
         "post rows carry no comment_id (NULL keeps the columns aligned)"
     assert all(r["score"] is not None for r in post_rows), \
         "post rows carry a live score"
-    comment_rows = db.recent_activity(kind="comments")
+    comment_rows = aggregates.recent_activity(kind="comments")
     assert all(r["text"] == r["preview"] for r in comment_rows), \
         "comment rows carry their own capped text (the payload is the preview)"
     assert all(len(r["text"]) <= config.BODY_PREVIEW_LENGTH for r in comment_rows), \
@@ -5563,7 +5567,7 @@ def main():
         "comment rows carry no comment_id (NULL keeps the columns aligned)"
     assert all(r["score"] is not None for r in comment_rows), \
         "comment rows carry a live score"
-    votes = db.recent_activity(kind="votes", limit=config.RECENT_ACTIVITY_MAX_SIZE)
+    votes = aggregates.recent_activity(kind="votes", limit=config.RECENT_ACTIVITY_MAX_SIZE)
     if votes:
         assert all(r["event_type"] == "vote" for r in votes), \
             "kind='votes' narrows to vote events"
@@ -5584,16 +5588,16 @@ def main():
     prop_rows = [r for r in act if r.get("proposal_kind")]
     if prop_rows:
         assert all("tally" in r for r in prop_rows), "proposal rows carry their tally"
-    assert db.recent_activity_total() > 0, "the pager's total counts the timeline"
-    assert (db.recent_activity_total("posts") + db.recent_activity_total("comments")
-            + db.recent_activity_total("votes")) == db.recent_activity_total(), \
+    assert aggregates.recent_activity_total() > 0, "the pager's total counts the timeline"
+    assert (aggregates.recent_activity_total("posts") + aggregates.recent_activity_total("comments")
+            + aggregates.recent_activity_total("votes")) == aggregates.recent_activity_total(), \
         "the branch totals sum to the grand total"
-    if db.recent_activity_total() >= 2:
-        assert db.recent_activity(limit=1, offset=1)[0]["created_at"] \
-            <= db.recent_activity(limit=1)[0]["created_at"], "offset pages past the newest row"
+    if aggregates.recent_activity_total() >= 2:
+        assert aggregates.recent_activity(limit=1, offset=1)[0]["created_at"] \
+            <= aggregates.recent_activity(limit=1)[0]["created_at"], "offset pages past the newest row"
     for bad in ("x", 1):
         try:
-            db.recent_activity(kind=bad)
+            aggregates.recent_activity(kind=bad)
             raise SystemExit("recent_activity should reject an unknown kind")
         except db.ForumError:
             pass
@@ -5754,7 +5758,7 @@ def main():
             "a no-vote report archives nothing"
         # Both sides of every auto-resolution were told - and the report that
         # stayed open was not.
-        author_mail = db.notifications(rs_a["token"])["notifications"]
+        author_mail = notifications.notifications(rs_a["token"])["notifications"]
         cleared_targets = {rs_clear_post, rs_tie_post, rs_empty_post}
         for tid in cleared_targets:
             assert any(n["kind"] == "moderation" and n["ref_type"] == "post"
@@ -5775,11 +5779,11 @@ def main():
         for rid, rtoken in reporter_of.items():
             assert any(n["kind"] == "moderation" and n["ref_type"] == "report"
                        and n["ref_id"] == rid and "resolved as cleared" in n["body"]
-                       for n in db.notifications(rtoken)["notifications"]), \
+                       for n in notifications.notifications(rtoken)["notifications"]), \
                 f"every cleared report's reporter is notified (report #{rid})"
         assert not any(n["kind"] == "moderation" and n["ref_type"] == "report"
                        and n["ref_id"] == rs_stay["report_id"]
-                       for n in db.notifications(rs_d["token"])["notifications"]), \
+                       for n in notifications.notifications(rs_d["token"])["notifications"]), \
             "a report that stays open for the admin notifies its reporter of nothing"
         assert moderation.resolve_stale_reports() == 0, \
             "a second sweep is a no-op - no open+stale+leaning-clear remains"
@@ -5830,7 +5834,7 @@ def main():
         moderation.report_content, cap, "post", post_id, "r" * (config.MAX_COMMENT_LEN + 1)), \
         "a report reason one over MAX_COMMENT_LEN is refused"
     assert "characters or fewer" in expect_error(
-        db.search_posts, "q" * (config.MAX_QUERY_LENGTH + 1)), \
+        search.search_posts, "q" * (config.MAX_QUERY_LENGTH + 1)), \
         "a search_posts query one over MAX_QUERY_LENGTH is refused"
     print("  length caps: ok")
 

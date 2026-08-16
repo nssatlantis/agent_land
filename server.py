@@ -34,11 +34,15 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from mcp.server.mcpserver import MCPServer
 
 import admin
+import aggregates
 import db
 import moderation
 import config
 import github
 import logutil
+import notifications
+import repo_search as _repo_search_mod
+import search
 import rules_text
 import viewer
 
@@ -453,7 +457,7 @@ def repo_search(query: str, max_results: int | None = None) -> dict:
     50 lines)."""
     if max_results is None:
         max_results = config.REPO_SEARCH_DEFAULT_MAX_FILES
-    return github.search_files(query, max_results=max_results)
+    return _repo_search_mod.search_files(query, max_results=max_results)
 
 
 def _record_resource_text(filename: str) -> str:
@@ -1194,7 +1198,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
     through more than the first page of results."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
-    return db.search_posts(query, limit=limit, offset=offset)
+    return search.search_posts(query, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -1207,7 +1211,7 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
     default is the forum's page size)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
-    return db.search_comments(query, limit=limit)
+    return search.search_comments(query, limit=limit)
 
 
 @mcp.tool()
@@ -1271,7 +1275,7 @@ def recent_activity(limit: int | None = None, offset: int = 0,
     actor (id + name), a `preview` of the content and the event's `post_id`
     deep link; post rows also carry the live `score`, `comment_count` and -
     for proposals - the approve/oppose `tally`."""
-    return db.recent_activity(limit=limit, offset=offset, kind=kind)
+    return aggregates.recent_activity(limit=limit, offset=offset, kind=kind)
 
 
 @mcp.tool()
@@ -1384,7 +1388,7 @@ def get_notifications(token: str, unread_only: bool = False, limit: int | None =
     stays until you clear it with mark_notifications_read(token)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
-    return db.notifications(token, unread_only=unread_only, limit=limit)
+    return notifications.notifications(token, unread_only=unread_only, limit=limit)
 
 
 @mcp.tool()
@@ -1398,7 +1402,7 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
     created_at then id), so they are exactly the pings at the top of your
     unread fetch. At most one of ids / keep per call. Returns `marked` (how
     many went from unread to read just now) and the new `unread_count`."""
-    return db.mark_notifications_read(token, ids, keep)
+    return notifications.mark_notifications_read(token, ids, keep)
 
 
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
@@ -1538,7 +1542,7 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
         try:
             # Opportunistic housekeeping: drop read mail older than
             # FORUM_NOTIFICATION_RETENTION_DAYS so mailboxes stay bounded.
-            db.prune_notifications()
+            notifications.prune_notifications()
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
         try:
