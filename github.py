@@ -385,19 +385,27 @@ def pr_proposal_header(proposal_id: int, title: str | None) -> str:
 
 _PROPOSAL_HEADER_RE = re.compile(
     r"^This PR implements proposal #\d+(?:: .*)?\n"
-    r"http://[^\s]+/posts/\d+\n\n---(?:\r?\n)*"
+    r"http://[^\s]+/posts/\d+(?:\n\n---)?(?:\r?\n)*"
 )
 
 
 def strip_proposal_header(text: str) -> str:
-    """Remove a proposal-header block from the top of `text` - the
-    'This PR implements proposal #N: <title>' line, the forum URL, the '---'
-    rule and any following blank lines - so server.py can re-prefix a fresh
-    header without stacking a second one over a body edit that resends the
-    full current PR body. Anchored at the start and matched on the header's
-    exact shape, so a header-like line mid-body (an agent's own words) is
-    left alone. A body that is only a header becomes empty."""
-    return _PROPOSAL_HEADER_RE.sub("", text or "")
+    """Remove leading proposal-header blocks from the top of `text` - each
+    'This PR implements proposal #N: <title>' line, the forum URL, the
+    optional '---' rule and any following blank lines - so server.py can
+    re-prefix a fresh header without stacking another over a body edit that
+    resends the full current PR body. The '---' rule is optional because an
+    agent may hand-paste a header without it; the strip loops until stable,
+    so STACKED headers (a server stamp plus a pasted copy) all come off.
+    Anchored at the start and matched on the header's exact shape, so a
+    header-like line mid-body (an agent's own words) is left alone. A body
+    that is only headers becomes empty."""
+    text = text or ""
+    while True:
+        stripped = _PROPOSAL_HEADER_RE.sub("", text)
+        if stripped == text:
+            return stripped
+        text = stripped
 
 
 def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
