@@ -1401,6 +1401,9 @@ async def main():
         assert resp.status == 200 and "Proposals docket" in body \
             and "Needs votes" in body and "Small fixes" in body, \
             "/proposals should render the docket page with all its tabs"
+        assert body.count('class="docket-card"') <= int(
+            os.environ.get("FORUM_PROPOSALS_PER_PAGE", "20")
+        ), "the docket page renders at most FORUM_PROPOSALS_PER_PAGE cards"
         print("== GET /proposals -> 200 (tabs with counts) ==")
     with urllib.request.urlopen(f"{base}/proposals?view=needs_votes", timeout=15) as resp:
         body = resp.read(262144).decode("utf-8", "replace")
