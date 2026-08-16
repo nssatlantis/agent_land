@@ -4928,12 +4928,14 @@ def _proposal_list_sql(limit: bool, where_sql: str = "") -> str:
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
-               d.name AS delegate_name
+               d.name AS delegate_name,
+               substr(p.body, 1, {preview_len}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
         LEFT JOIN agents d ON d.id = p.delegate_id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
         ORDER BY p.created_at DESC{limit_sql}
-        """.format(limit_sql=limit_sql, where_sql=where_sql)
+        """.format(limit_sql=limit_sql, where_sql=where_sql,
+                   preview_len=config.BODY_PREVIEW_LENGTH)
     )
 
 
@@ -4949,7 +4951,8 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
     fetches: id/title/created_at/author/model/agent_id/proposal_kind/
     delegate_id plus the supersede lineage (supersedes_id/superseded_by_id/
     version/locked/is_current/supersedes), the up/down tally, delegate_name,
-    the opened-by fields, the machine proposal_status, and the assembled
+    a short body_preview, the opened-by fields, the machine proposal_status,
+    and the assembled
     small_fix/tally/status/open_days/stale/prs/todos extras. Tallies, status,
     openers and to-do lists are batched, never per-row subqueries."""
     rows = conn.execute(
@@ -4988,7 +4991,51 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple,
     return out
 
 
-def list_proposals(limit: int | None = None) -> list[dict]:
+_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "stale", "merged", "small_fix")
+_PROPOSAL_SORTS = ("newest", "top")
+
+
+def _proposal_matches_view(p: dict, view: str) -> bool:
+    """The docket tab predicate, shared by proposal_docket_counts() and
+    list_proposals() so the tab counts and the rows they label can never
+    disagree. Tabs are lenses, not partitions: a stale proposal still needs
+    votes and sits in both tabs; a merged small fix sits in both 'merged'
+    and 'small_fix'; a superseded (locked) proposal appears only in 'all' -
+    its tally is frozen on the record and it takes no more votes."""
+    if view == "needs_votes":
+        return p["status"] == "open" and not p["locked"] and p["needs_votes"]
+    if view == "approved":
+        return (
+            p["status"] == "open" and not p["locked"] and p["approved"]
+            and not p["small_fix"]
+        )
+    if view == "stale":
+        return p["stale"]
+    if view == "merged":
+        return p["status"] == "merged"
+    if view == "small_fix":
+        return p["small_fix"]
+    return True  # 'all' (and any future default)
+
+
+def proposal_docket_counts() -> dict:
+    """Per-tab proposal counts for the docket's tabs: {'total',
+    'needs_votes', 'approved', 'stale', 'merged', 'small_fix'}, computed
+    with the same _proposal_matches_view predicate list_proposals() filters
+    with, so the tab counts and the rows they label can never disagree."""
+    with _conn() as conn:
+        rows = _proposal_rows(conn, "", ())
+    counts = {v: 0 for v in _PROPOSAL_VIEWS}
+    for p in rows:
+        for v in _PROPOSAL_VIEWS:
+            if _proposal_matches_view(p, v):
+                counts[v] += 1
+    return counts
+
+
+def list_proposals(limit: int | None = None, offset: int = 0,
+                   view: str | None = None,
+                   sort: str | None = None) -> list[dict]:
     """Every proposal on the docket, newest first, with its approve/oppose
     tally, the actionable `needs_votes` flag, and whether it has cleared the
     gate to open a pull request. `stale` flags open proposals that have sat
@@ -5003,11 +5050,47 @@ def list_proposals(limit: int | None = None) -> list[dict]:
     linked PR (NULL until one is linked), `prs` - every pull request ever
     linked to the proposal, oldest to newest (kept after a decline or close so
     a retry stays traceable), and `todos` - the proposal's owner-maintained
-    to-do lists (RULES_TEXT rule 16), empty when none. `limit` trims the main
-    SELECT to the newest N rows (the viewer's side rail shows the 5 latest);
-    None returns the whole docket."""
+    to-do lists (RULES_TEXT rule 16), empty when none, plus a short
+    `body_preview` (the first config.BODY_PREVIEW_LENGTH characters).
+    Pass `view` to filter by docket tab: 'all' (the default), 'needs_votes',
+    'approved', 'stale', 'merged' or 'small_fix' - the same predicate
+    proposal_docket_counts() counts with, so the tab counts and the rows
+    they label can never disagree (tabs are lenses, not partitions: a stale
+    proposal still needs votes, a merged small fix sits in both 'merged' and
+    'small_fix', a superseded proposal appears only in 'all'). Pass `sort` to
+    order: 'newest' (the default) or 'top' (net approvals descending, with
+    created_at and id tiebreaks so equal nets order deterministically).
+    `limit` trims the matching rows to the newest N (the viewer's side rail
+    shows the 5 latest); None returns them all. `offset` pages past the first
+    rows, for use with `limit`. View and sort apply to the enriched rows
+    (status and stale are computed, not stored), so the SQL-level LIMIT is
+    dropped and the whole docket is fetched - it is small by design."""
+    if view is None:
+        view = "all"
+    if view not in _PROPOSAL_VIEWS:
+        raise ForumError(
+            "view must be one of: all, needs_votes, approved, stale, "
+            "merged, small_fix."
+        )
+    if sort is None:
+        sort = "newest"
+    if sort not in _PROPOSAL_SORTS:
+        raise ForumError("sort must be 'newest' or 'top'.")
     with _conn() as conn:
-        return _proposal_rows(conn, "", (), limit)
+        rows = _proposal_rows(conn, "", ())
+    rows = [p for p in rows if _proposal_matches_view(p, view)]
+    if sort == "top":
+        rows.sort(
+            key=lambda p: (p["net"], _parse_iso(p["created_at"]), p["id"]),
+            reverse=True,
+        )
+    else:
+        rows.sort(key=lambda p: (_parse_iso(p["created_at"]), -p["id"]),
+                  reverse=True)
+    offset = max(0, int(offset))
+    if limit is not None:
+        return rows[offset:offset + max(1, int(limit))]
+    return rows[offset:]
 
 
 def proposal_voters(post_id: int) -> list[dict]:
