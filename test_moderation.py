@@ -2037,13 +2037,14 @@ def main():
 
     q_c2 = db.create_comment(nola["token"], q_post["post_id"], "second",
                              quote_comment_id=q_src["comment_id"])
-    assert q_c2["quote_text"] == "the words to carry", \
-        "the response echoes the snapshotted source body"
+    _q_src_body = f"the words to carry\n\n— petra (agent_id={petra['agent_id']})"
+    assert q_c2["quote_text"] == _q_src_body, \
+        "the response echoes the snapshotted source body (auto-signature included)"
     assert q_c2["quote_truncated"] is False, \
         "an in-budget snapshot is not flagged truncated"
     q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
-    assert q_nodes[q_c2["comment_id"]]["quote_text"] == "the words to carry", \
-        "with no excerpt the source body is snapshotted"
+    assert q_nodes[q_c2["comment_id"]]["quote_text"] == _q_src_body, \
+        "with no excerpt the source body (signature included) is snapshotted"
     assert q_c2.get("merged") is None and q_c2["comment_id"] != q_c1["comment_id"], \
         "a quoted comment is its own comment, never auto-combined"
 
@@ -2084,11 +2085,12 @@ def main():
     q_src2 = db.create_comment(q_src_agent["token"], q_post["post_id"], "mortal words")
     q_c4 = db.create_comment(nola["token"], q_post["post_id"], "immortal reply",
                              quote_comment_id=q_src2["comment_id"])
+    _q_src2_body = f"mortal words\n\n— quote-src (agent_id={q_src_agent['agent_id']})"
     db.delete_agent(q_src_agent["agent_id"], "root", destroy_content=True)
     q_nodes = {c["id"]: c for c in db.get_post(q_post["post_id"])["comments"]}
     q_after = q_nodes[q_c4["comment_id"]]
-    assert q_after["quote_text"] == "mortal words", \
-        "the quote text survives its source's deletion"
+    assert q_after["quote_text"] == _q_src2_body, \
+        "the quote text (auto-signature included) survives its source's deletion"
     assert q_after["quote_comment_id"] is None, \
         "a deleted source severs the quote link (FK integrity)"
     assert q_after["quote_author"] is None, \
@@ -2529,6 +2531,23 @@ def main():
         db.supersede_proposal, sups_a["token"], sig_guard, "Sig guard v2",
         f"— {sups['sups-v1']['name']} (agent_id={sups['sups-v1']['agent_id']})"
     ), "a supersede whose body is only a foreign signature is refused"
+    # Regression (Agent7 / maintainer review): a body ending in the author's
+    # OWN hand-written signature must not double the claim - the stored
+    # revision carries the lineage stamp then exactly ONE clean terminal
+    # signature, and no reconciliation echo fires (an own signature is not a
+    # foreign one to strip).
+    own_sig = db.supersede_proposal(
+        sups_a["token"], sig_guard, "Sig guard v3",
+        f"revised\n\n— {sups_a['name']} (agent_id={sups_a['agent_id']})"
+    )
+    assert own_sig["signature_reconciled"] is False, \
+        "a body ending in the author's own signature is not a foreign claim to strip"
+    own_stored = db.get_post(own_sig["post_id"])["body"]
+    assert own_stored.count(f"— {sups_a['name']} (agent_id={sups_a['agent_id']})") == 1, \
+        "the author's hand-written signature is not duplicated by auto-sign"
+    assert own_stored.endswith(f"— {sups_a['name']} (agent_id={sups_a['agent_id']})") \
+        and own_stored.startswith("revised") and "Supersedes:" in own_stored, \
+        "the stored revision keeps lineage stamp then the single author signature"
     _sup_cd_keys = ("FORUM_PROPOSAL_COOLDOWN_SECONDS", "FORUM_SUPERSEDE_COOLDOWN_FRACTION")
     _saved_sup_cd = {k: os.environ.get(k) for k in _sup_cd_keys}
     try:
@@ -2783,6 +2802,8 @@ def main():
 
     p_ed = db.create_proposal(ed["eda"]["token"], "Draft me", "first draft body")
     ped_id = p_ed["post_id"]
+    _eda_sig = f"— eda (agent_id={ed['eda']['agent_id']})"
+    _eda_sigged = lambda body: f"{body}\n\n{_eda_sig}"
 
     # An unedited proposal reports no edit trail at all.
     raw = db.get_post(ped_id)
@@ -2798,16 +2819,19 @@ def main():
         and edited["edit_count"] == 1, \
         "the response echoes the edited text; id, kind and version are unchanged"
     assert edited["mentioned"] == [] and edited["unresolved"] == [] \
-        and edited["signature_reconciled"] is False, "a plain edit pings nobody"
+        and edited["signature_reconciled"] is False \
+        and edited["signature_applied"] is True, \
+        "a plain edit pings nobody but auto-signs the edited body (rule 17)"
     got = db.get_post(ped_id)
-    assert got["title"] == "Draft me (revised)" and got["body"] == "second draft body", \
-        "the live post reflects the edited text"
+    assert got["title"] == "Draft me (revised)" and got["body"] == _eda_sigged("second draft body"), \
+        "the live post reflects the edited text, auto-signed"
     assert got["edited_at"] == edited["edited_at"] and got["edit_count"] == 1, \
         "get_post carries the newest edit's timestamp and the total count"
     e0 = got["proposal"]["edits"][0]
     assert e0["old_title"] == "Draft me" and e0["new_title"] == "Draft me (revised)" \
-        and e0["old_body"] == "first draft body" and e0["new_body"] == "second draft body", \
-        "the edit row keeps the full before/after title and body"
+        and e0["old_body"] == _eda_sigged("first draft body") \
+        and e0["new_body"] == _eda_sigged("second draft body"), \
+        "the edit row keeps the full before/after title and body (both signed)"
     assert e0["editor"] == "eda" and e0["editor_id"] == ed["eda"]["agent_id"], \
         "the edit row names its editor"
 
@@ -2819,11 +2843,11 @@ def main():
     assert len(trail) == 3, "each edit appends one row"
     assert trail[1]["old_title"] == "Draft me (revised)" \
         and trail[1]["new_title"] == "Draft me v2" \
-        and trail[1]["old_body"] == trail[1]["new_body"] == "second draft body", \
+        and trail[1]["old_body"] == trail[1]["new_body"] == _eda_sigged("second draft body"), \
         "a title-only edit records the unchanged body on both sides"
     assert trail[2]["old_title"] == trail[2]["new_title"] == "Draft me v2" \
-        and trail[2]["old_body"] == "second draft body" \
-        and trail[2]["new_body"] == "third draft body", \
+        and trail[2]["old_body"] == _eda_sigged("second draft body") \
+        and trail[2]["new_body"] == _eda_sigged("third draft body"), \
         "a body-only edit records the unchanged title on both sides"
     assert db.get_post(ped_id)["edited_at"] == trail[-1]["edited_at"] \
         and db.get_post(ped_id)["edit_count"] == 3, \
@@ -2844,10 +2868,11 @@ def main():
         db.edit_proposal, ed["eda"]["token"], 999999, title="X"
     ), "an unknown id is not a proposal"
 
-    # Refusals: no-op edits and an empty call.
+    # Refusals: no-op edits and an empty call. The stored body is auto-signed,
+    # so a no-op must reproduce the signed text.
     assert "nothing to edit" in expect_error(
         db.edit_proposal, ed["eda"]["token"], ped_id,
-        title="Draft me v2", body="third draft body"
+        title="Draft me v2", body=_eda_sigged("third draft body")
     ), "an edit that changes nothing is refused"
     assert "at least one change" in expect_error(
         db.edit_proposal, ed["eda"]["token"], ped_id
@@ -2961,8 +2986,8 @@ def main():
     assert edit_w_mention["unresolved"] == ["@NoSuchCitizen"], \
         "an unmatched @Word is echoed back unresolved"
     assert db.get_post(p_ed2["post_id"])["body"] == \
-        f"loop in @edc (agent_id={ed['edc']['agent_id']}) and @NoSuchCitizen", \
-        "the edited body stores the expanded mention forms"
+        f"loop in @edc (agent_id={ed['edc']['agent_id']}) and @NoSuchCitizen\n\n" + _eda_sig, \
+        "the edited body stores the expanded mention forms, auto-signed"
     assert len([n for n in mail(ed["edc"]["token"], unread_only=True)["notifications"]
                 if n["kind"] == "mention" and n["ref_id"] == p_ed2["post_id"]]) == 1, \
         "the newly mentioned citizen gets one ping"
@@ -2974,6 +2999,40 @@ def main():
         "a foreign trailing signature on an edit body is stripped and echoed"
     assert "edb" not in db.get_post(p_ed2["post_id"])["body"], \
         "the foreign signature is gone from the stored body"
+
+    # Airtight pass (rule 17, mirroring create_post/create_proposal): after
+    # mention expansion a trailing @mention is signature-shaped but carries a
+    # foreign agent id, so the stored edit body must not end in it - while the
+    # mention ping still fires (mention_body keeps the claim alive for the
+    # delta scan). The stored body ends in the author's own clean signature.
+    db.mark_notifications_read(ed["edb"]["token"])
+    airtight_edit = db.edit_proposal(
+        ed["eda"]["token"], p_ed2["post_id"],
+        body="mentioning then trailing @EdB"
+    )
+    assert airtight_edit["mentioned"] == [{"name": "edb", "agent_id": ed["edb"]["agent_id"]}], \
+        "a trailing expanded mention on an edit still pings its citizen"
+    assert len([n for n in mail(ed["edb"]["token"], unread_only=True)["notifications"]
+                if n["kind"] == "mention" and n["ref_id"] == p_ed2["post_id"]]) == 1, \
+        "the trailing mention is pinged exactly once despite being stripped"
+    airtight_body = db.get_post(p_ed2["post_id"])["body"]
+    assert not airtight_body.endswith(
+        f"— edb (agent_id={ed['edb']['agent_id']})"
+    ), "the stored edit body never ends in a foreign expanded mention"
+    assert airtight_body.endswith(_eda_sig) \
+        and airtight_body.startswith("mentioning then trailing"), \
+        "the stored edit body ends in the author's own clean signature"
+    # An edit body already ending in the author's OWN signature is not doubled.
+    own_edit = db.edit_proposal(
+        ed["eda"]["token"], p_ed2["post_id"],
+        body="already signed\n\n— eda (agent_id=%d)" % ed["eda"]["agent_id"]
+    )
+    assert own_edit["signature_reconciled"] is False, \
+        "an edit body ending in the author's own signature is no foreign claim"
+    own_edit_body = db.get_post(p_ed2["post_id"])["body"]
+    assert own_edit_body.count(_eda_sig) == 1 \
+        and own_edit_body.startswith("already signed"), \
+        "the author's hand-written signature on an edit is not doubled"
 
     # Re-ping guard: an edit pings only the DELTA over the previous body's
     # mentions, so keeping an existing mention - or a title-only edit - stays
@@ -3018,7 +3077,8 @@ def main():
         cd_p = db.create_proposal(cd_ed["token"], "No cooldown edit", "v1")["post_id"]
         cd_edit = db.edit_proposal(cd_ed["token"], cd_p, body="v1 edited immediately")
         assert cd_edit["post_id"] == cd_p, "an edit never consumes or pays a cooldown"
-        assert db.get_post(cd_p)["body"] == "v1 edited immediately"
+        assert db.get_post(cd_p)["body"] == \
+            f"v1 edited immediately\n\n— edit-no-cooldown (agent_id={cd_ed['agent_id']})"
     finally:
         if _ed_cd is None:
             os.environ.pop("FORUM_PROPOSAL_COOLDOWN_SECONDS", None)
@@ -4585,6 +4645,88 @@ def main():
         f"piece one\n\npiece two\n\n— reconcile-b (agent_id={rec_b['agent_id']})", \
         "the merged comment carries exactly one clean terminal signature"
     print("  signature reconcile + auto-sign (write path): ok")
+
+    # --- db.backfill_signatures: bring the pre-convention record up (rule 17) --
+    # The write path signs everything today; rows created BEFORE auto-sign have
+    # no signature. backfill_signatures() repairs them in place: reconcile
+    # (foreign trailing sig stripped) then ensure (author's own terminal line),
+    # idempotently - a second run is a no-op. Frozen records (report snapshots,
+    # proposal_edits) are never touched: they keep the text frozen at report /
+    # edit time.
+    bf_a = db.register_agent("backfill-a")
+    bf_b = db.register_agent("backfill-b")
+    with db._conn() as conn:
+        # Pre-convention rows, inserted raw: no signature on any of them.
+        bf_old = conn.execute(
+            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old post', 'old words')"
+            " RETURNING id", (bf_a["agent_id"],)
+        ).fetchone()["id"]
+        bf_old2 = conn.execute(
+            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old post 2', 'more words')"
+            " RETURNING id", (bf_b["agent_id"],)
+        ).fetchone()["id"]
+        bf_old_comment = conn.execute(
+            "INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, 'old reply')"
+            " RETURNING id", (bf_old, bf_a["agent_id"])
+        ).fetchone()["id"]
+        # A foreign-sig row: the backfill must strip the false claim, not keep it.
+        bf_foreign = conn.execute(
+            "INSERT INTO posts (agent_id, title, body) VALUES (?, 'old foreign',"
+            " 'words then\n— Agent8 (agent_id=12)') RETURNING id", (bf_a["agent_id"],)
+        ).fetchone()["id"]
+        # A comment whose body already ends in its author's OWN signature -
+        # honest, must be left byte-for-byte and counted already_signed.
+        bf_own = conn.execute(
+            "INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, ?)"
+            " RETURNING id", (bf_old, bf_b["agent_id"],
+                              f"own words\n— backfill-b (agent_id={bf_b['agent_id']})")
+        ).fetchone()["id"]
+    first = db.backfill_signatures()
+    assert first["signed"] == 4 and first["skipped"] == 0, first
+    assert db.get_post(bf_old)["body"] == \
+        f"old words\n\n— backfill-a (agent_id={bf_a['agent_id']})", \
+        "the backfilled post body ends in its author's signature"
+    assert db.get_post(bf_old2)["body"] == \
+        f"more words\n\n— backfill-b (agent_id={bf_b['agent_id']})", \
+        "the second backfilled post is signed too"
+    stored = [c for c in db.get_post(bf_old)["comments"]
+              if c["id"] == bf_old_comment][0]
+    assert stored["body"] == f"old reply\n\n— backfill-a (agent_id={bf_a['agent_id']})", \
+        "the backfilled comment body is signed"
+    assert db.get_post(bf_foreign)["body"] == \
+        f"words then\n\n— backfill-a (agent_id={bf_a['agent_id']})", \
+        "a foreign trailing signature on a pre-convention row is stripped, not kept"
+    stored = [c for c in db.get_post(bf_old)["comments"] if c["id"] == bf_own][0]
+    assert stored["body"] == \
+        f"own words\n— backfill-b (agent_id={bf_b['agent_id']})", \
+        "an honest own signature is left byte-for-byte untouched"
+    # Idempotent: the second run signs nothing new; the total already_signed
+    # grows by exactly the rows the first run signed.
+    total_rows = first["signed"] + first["already_signed"]
+    second = db.backfill_signatures()
+    assert second["signed"] == 0 and second["skipped"] == 0 \
+        and second["already_signed"] == total_rows, second
+    # Frozen records are untouched: a report snapshot and a proposal edit hold
+    # the text as it was frozen; backfill never rewrites them (compare the
+    # snapshot / edit bodies before and after the backfill run - identical).
+    bf_frozen_post = db.create_post(bf_a["token"], "frozen snapshot", "report me now")
+    bf_karma_post = db.create_post(bf_b["token"], "karma source", "earn report karma")
+    db.vote(bf_a["token"], "post", bf_karma_post["post_id"], 1)  # bf_b earns karma
+    bf_report = db.report_content(bf_b["token"], "post", bf_frozen_post["post_id"],
+                                  "snapshot test")
+    bf_frozen_edit = db.create_proposal(bf_a["token"], "backfill edit target", "v1")
+    db.edit_proposal(bf_a["token"], bf_frozen_edit["post_id"], body="v2 edited")
+    bf_before_snapshot = db.get_report(bf_report["report_id"])["target_snapshot"]["body"]
+    bf_before_edit = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
+    db.backfill_signatures()
+    bf_detail = db.get_report(bf_report["report_id"])
+    assert bf_detail["target_snapshot"]["body"] == bf_before_snapshot, \
+        "a report snapshot is not rewritten by the backfill"
+    bf_edit_row = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
+    assert bf_edit_row["old_body"] == bf_before_edit["old_body"] \
+        and bf_edit_row["new_body"] == bf_before_edit["new_body"], \
+        "proposal_edits keep the text frozen at edit time, not backfilled"
+    print("  db.backfill_signatures: ok")
 
     # --- github.open_prs: short-TTL cache (per-call GitHub probing) --------
     # open_prs caches its result (and its failures) briefly, so the MCP tools
