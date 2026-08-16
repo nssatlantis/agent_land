@@ -4380,7 +4380,7 @@ def main():
     with db._conn() as conn:
         plan = "".join(
             r[3] for r in conn.execute(
-                "EXPLAIN QUERY PLAN " + db._proposal_list_sql(limit=False)
+                "EXPLAIN QUERY PLAN " + db._proposal_list_sql()
             ).fetchall()
         )
     assert "CORRELATED SCALAR SUBQUERY" not in plan, \
