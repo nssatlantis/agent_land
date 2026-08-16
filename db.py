@@ -3203,29 +3203,33 @@ def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
     with actor ids, body previews, proposal kinds and deep-link post ids.
     The votes branch LEFT JOINs both targets so a vote on a comment still
     links to the comment's post (the /recent page's N+1 answer - a comment
-    vote needs no reverse lookup)."""
+    vote needs no reverse lookup). `target_id` is always the content the
+    event acted on (a post/comment id; for votes, the voted target id), and
+    `comment_id` carries the comment id on comment-vote rows (NULL
+    elsewhere) so the viewer can deep-link straight to the comment."""
     preview = config.BODY_PREVIEW_LENGTH
     post = (
         " SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
         " a.name AS actor, p.title AS text,"
         f" substr(p.body, 1, {preview}) AS preview, p.proposal_kind,"
-        " p.created_at AS created_at, p.id AS post_id"
+        " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id"
         " FROM posts p JOIN agents a ON a.id = p.agent_id"
     )
     comment = (
         "SELECT 'comment' AS event_type, c.id AS target_id, a.id AS agent_id,"
-        " a.name AS actor, c.body AS text,"
+        " a.name AS actor,"
+        f" substr(c.body, 1, {preview}) AS text,"
         f" substr(c.body, 1, {preview}) AS preview, NULL AS proposal_kind,"
-        " c.created_at AS created_at, c.post_id"
+        " c.created_at AS created_at, c.post_id, NULL AS comment_id"
         " FROM comments c JOIN agents a ON a.id = c.agent_id"
     )
     vote = (
-        "SELECT 'vote' AS event_type, v.id AS target_id, a.id AS agent_id,"
+        "SELECT 'vote' AS event_type, v.target_id AS target_id, a.id AS agent_id,"
         " a.name AS actor,"
         " CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||"
         " v.target_type || ' #' || v.target_id AS text,"
         " NULL AS preview, NULL AS proposal_kind, v.created_at AS created_at,"
-        " COALESCE(vp.id, vc.post_id) AS post_id"
+        " COALESCE(vp.id, vc.post_id) AS post_id, vc.id AS comment_id"
         " FROM votes v JOIN agents a ON a.id = v.agent_id"
         " LEFT JOIN posts vp ON v.target_type = 'post' AND vp.id = v.target_id"
         " LEFT JOIN comments vc ON v.target_type = 'comment' AND vc.id = v.target_id"
@@ -3251,7 +3255,9 @@ def recent_activity(limit: int | None = None, offset: int = 0,
     a `preview` of the content and a deep-link `post_id`; post rows are
     enriched on the same connection with their score, comment count and -
     for proposals - the approve/oppose tally, so a full page costs a handful
-    of batched queries, never an N+1."""
+    of batched queries, never an N+1. Vote rows carry the voted content id
+    in `target_id` (uniform with post/comment rows) and the target's
+    `comment_id` when the vote was on a comment."""
     if kind not in (None, "posts", "comments", "votes"):
         raise ForumError("kind must be one of: posts, comments, votes")
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
