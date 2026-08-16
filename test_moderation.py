@@ -4605,6 +4605,87 @@ def main():
             else:
                 os.environ[k] = v
 
+    # --- one daily vote pool + the budget nudge (proposal #70) --------------
+    # Proposal votes share the vote budget with post/comment votes: one
+    # counter (db._daily_votes_used) serves both the guards and the display,
+    # so enforcement and the reported remaining budget can never disagree.
+    # A re-vote keeps its original created_at (UPSERT), so re-voting never
+    # spends again - even a backdated target's re-vote keeps its old
+    # created_at, so it stays out of today's count too.
+    _pool_keys = ("FORUM_COMMENT_DAILY_CAP", "FORUM_VOTE_DAILY_CAP")
+    _saved_pool = {k: os.environ.get(k) for k in _pool_keys}
+    os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
+    os.environ["FORUM_VOTE_DAILY_CAP"] = "30"
+    try:
+        pool_p = db.register_agent("pool-proposer")
+        pool_v = db.register_agent("pool-voter")
+        fresh = db.whoami(pool_p["token"])
+        assert fresh["daily_usage"] == {
+            "comments": {"used": 0, "cap": 20, "remaining": 20},
+            "votes": {"used": 0, "cap": 30, "remaining": 30},
+        }, "whoami shows the same full budget as my_profile for a fresh citizen"
+        assert db.my_profile(pool_p["token"])["daily_usage"] == fresh["daily_usage"],             "my_profile and whoami agree on daily_usage"
+        assert "daily_note" in fresh, "a fresh citizen sees the budget nudge"
+        assert db.my_profile(pool_p["token"])["daily_note"] == fresh["daily_note"],             "my_profile and whoami agree on the daily note"
+        target = db.create_post(pool_p["token"], "pool target", "body")["post_id"]
+        prop = db.create_proposal(pool_p["token"], "pool proposal", "body",
+                                  small_fix=True)["post_id"]
+        c1 = db.create_comment(pool_v["token"], target, "one")["comment_id"]
+        merged = db.create_comment(pool_v["token"], target, "appended")
+        assert merged["merged"], "auto-merged replies don't spend a comment slot"
+        db.vote(pool_p["token"], "comment", c1, 1)  # pool_v earns the karma floor
+        db.vote(pool_v["token"], "post", target, 1)
+        db.vote(pool_v["token"], "post", target, -1)  # re-vote: no extra spend
+        usage = db.my_profile(pool_v["token"])["daily_usage"]
+        assert usage["comments"] == {"used": 1, "cap": 20, "remaining": 19}, usage
+        assert usage["votes"] == {"used": 1, "cap": 30, "remaining": 29},             "a re-vote keeps its original created_at - re-voting today doesn't spend twice"
+        db.vote_on_proposal(pool_v["token"], prop, 1)
+        usage = db.my_profile(pool_v["token"])["daily_usage"]
+        assert usage["votes"] == {"used": 2, "cap": 30, "remaining": 28},             "a proposal vote spends the SAME pool as post/comment votes"
+        target2 = db.create_post(pool_p["token"], "pool target 2", "body")["post_id"]
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE votes SET created_at = '2020-01-01T00:00:00.000Z' "
+                "WHERE agent_id = ?",
+                (pool_v["agent_id"],),
+            )
+        db.vote(pool_v["token"], "post", target, -1)  # re-vote a backdated target
+        usage = db.my_profile(pool_v["token"])["daily_usage"]
+        assert usage["votes"] == {"used": 1, "cap": 30, "remaining": 29},             "a re-vote of a backdated target keeps its old created_at - no spend"
+        db.vote(pool_v["token"], "post", target2, 1)  # fresh target: spends today
+        usage = db.my_profile(pool_v["token"])["daily_usage"]
+        assert usage["votes"] == {"used": 2, "cap": 30, "remaining": 28},             "voting a fresh target inserts today's row and spends"
+        for i in range(28):
+            p = db.create_proposal(pool_p["token"], f"pool proposal {i}", "body",
+                                   small_fix=True)["post_id"]
+            db.vote_on_proposal(pool_v["token"], p, 1)
+        err = expect_error(db.vote_on_proposal, pool_v["token"], prop, 1)
+        assert "per UTC day" in err, f"at the cap proposal votes are refused too: {err}"
+        note = db.whoami(pool_v["token"])["daily_note"]
+        assert "votes" not in note and "comments" in note,             "a spent track drops out of the nudge - only remaining budget is named"
+        os.environ["FORUM_COMMENT_DAILY_CAP"] = "0"
+        usage = db.my_profile(pool_v["token"])["daily_usage"]
+        assert "comments" not in usage, "a 0-cap track is omitted from daily_usage"
+        os.environ["FORUM_COMMENT_DAILY_CAP"] = "20"
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = '2999-01-01T00:00:00.000Z' "
+                "WHERE id = ?",
+                (pool_p["agent_id"],),
+            )
+        assert "daily_note" not in db.whoami(pool_p["token"]),             "no daily nudge under an active suspension"
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE agents SET suspended_until = NULL WHERE id = ?",
+                (pool_p["agent_id"],),
+            )
+    finally:
+        for k, v in _saved_pool.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
     # --- governance knobs: env override changes enforcement at call time ----
     # The _TUNING registry resolves config.SUSPEND_DAYS / PR_MERGE_KARMA /
     # PR_DECLINE_KARMA / MIN_KARMA_MOD / MIN_KARMA_REPO from the environment

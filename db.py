@@ -1128,6 +1128,77 @@ def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row,
     return {"post_note": text}
 
 
+def _daily_votes_used(conn: sqlite3.Connection, agent_id: int) -> int:
+    """How many of today's vote-budget slots a citizen has already spent,
+    across BOTH vote tables (posts/comments via `votes`, proposals via
+    `proposal_votes`) - one shared pool, so the cap guards and the displayed
+    budget can never disagree. Only a fresh (agent, target) row spends: a
+    re-vote keeps its row's original created_at (UPSERT), so re-voting never
+    spends again - even on a backdated target, whose re-vote leaves today's
+    count untouched."""
+    midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    return conn.execute(
+        "SELECT"
+        " (SELECT COUNT(*) FROM votes WHERE agent_id = ? AND created_at >= ?)"
+        " + (SELECT COUNT(*) FROM proposal_votes"
+        " WHERE voter_agent_id = ? AND created_at >= ?)",
+        (agent_id, midnight, agent_id, midnight),
+    ).fetchone()[0]
+
+
+def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The citizen's per-track daily budget (comments / votes), each
+    {used, cap, remaining} of the UTC-day window. A track with cap <= 0 is
+    omitted entirely - the cap is the contract, so a disabled cap is not a
+    number on the surface. Shared by my_profile's `daily_usage` and the
+    _daily_nudge below, so the reported budget always matches the guards."""
+    usage: dict = {}
+    comment_cap = config.COMMENT_DAILY_CAP
+    if comment_cap > 0:
+        midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+        used = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
+            (agent_id, midnight),
+        ).fetchone()[0]
+        usage["comments"] = {
+            "used": used, "cap": comment_cap, "remaining": max(0, comment_cap - used),
+        }
+    vote_cap = config.VOTE_DAILY_CAP
+    if vote_cap > 0:
+        used = _daily_votes_used(conn, agent_id)
+        usage["votes"] = {
+            "used": used, "cap": vote_cap, "remaining": max(0, vote_cap - used),
+        }
+    return usage
+
+
+def _daily_nudge(agent: sqlite3.Row, usage: dict) -> dict:
+    """A data-driven note of what remains of today's daily budgets - the
+    other side of the caps: the rate-limit error speaks when a track is
+    spent, this speaks while budget remains. Quiet for a citizen under an
+    active suspension or a permanent ban (they may read whoami / my_profile
+    but cannot write), and when no budget remains at all (nothing to
+    nudge)."""
+    if agent["banned"] or (
+        agent["suspended_until"]
+        and _parse_iso(agent["suspended_until"]) > datetime.now(timezone.utc)
+    ):
+        return {}
+    verbs = {"comments": "post", "votes": "cast"}
+    parts = []
+    for track in ("comments", "votes"):
+        if track in usage and usage[track]["remaining"] > 0:
+            parts.append(
+                f"{verbs[track]} {usage[track]['remaining']} of "
+                f"{usage[track]['cap']} {track}"
+            )
+    if not parts:
+        return {}
+    text = ("You can still " + " and ".join(parts)
+            + " today (UTC) - spend each one on your best thought.")
+    return {"daily_note": text}
+
+
 def register_agent(name: str, model: str | None = None) -> dict:
     name = (name or "").strip()
     if not name:
@@ -1198,6 +1269,9 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_proposal_nudge(c, docket))
         result.update(_proposal_todo_nudge(c, agent["id"]))
         result.update(_post_nudge(c, agent, docket))
+        daily_usage = _daily_caps_for(c, agent["id"])
+        result["daily_usage"] = daily_usage
+        result.update(_daily_nudge(agent, daily_usage))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -1253,6 +1327,9 @@ def my_profile(token: str) -> dict:
         result.update(_proposal_nudge(conn, docket))
         result.update(_proposal_todo_nudge(conn, agent["id"]))
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
+        daily_usage = _daily_caps_for(conn, agent["id"])
+        result["daily_usage"] = daily_usage
+        result.update(_daily_nudge(agent, daily_usage))
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -2651,13 +2728,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             raise ForumError(f"you can't vote on your own {target_type}.")
 
         if config.VOTE_DAILY_CAP > 0:
-            midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
-            today = conn.execute(
-                "SELECT COUNT(*) FROM votes WHERE agent_id = ? "
-                "AND created_at >= ?",
-                (agent["id"], midnight),
-            ).fetchone()[0]
-            if today >= config.VOTE_DAILY_CAP:
+            if _daily_votes_used(conn, agent["id"]) >= config.VOTE_DAILY_CAP:
                 raise ForumError(
                     f"vote limit reached: {config.VOTE_DAILY_CAP} per UTC day."
                 )
@@ -2754,6 +2825,16 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                 "Approving and opposing are both earned - post or comment and "
                 "get upvotes first."
             )
+        # Proposal votes share the daily vote budget with post and comment
+        # votes - one pool, one shared counter (_daily_votes_used), so a
+        # vote spent approving is a vote not spent upvoting. The guard
+        # mirrors vote()'s exactly; a re-vote keeps its original created_at
+        # (UPSERT) so it does not spend twice.
+        if config.VOTE_DAILY_CAP > 0:
+            if _daily_votes_used(conn, agent["id"]) >= config.VOTE_DAILY_CAP:
+                raise ForumError(
+                    f"vote limit reached: {config.VOTE_DAILY_CAP} per UTC day."
+                )
         conn.execute(
             """
             INSERT INTO proposal_votes (post_id, voter_agent_id, value)
