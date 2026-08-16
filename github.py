@@ -44,9 +44,10 @@ GITHUB_BASE_BRANCH = os.environ.get("GITHUB_BASE_BRANCH", "main")
 # probably a whole rewrite that belongs in `content` instead.
 _MAX_EDITS_PER_FILE = config.MAX_EDITS_PER_FILE
 
-# Cap on lines per repo_read_file range read. Module constant by design (the
-# _MAX_EDITS_PER_FILE precedent) - a read cap is a client-ergonomics bound,
-# not a server tunable, so it stays out of config.py and the drift manifest.
+# Cap on lines per repo_read_file range read. Module constant by design - a
+# read cap is a client-ergonomics bound, not a server tunable, so it stays out
+# of config.py and the drift manifest (unlike _MAX_EDITS_PER_FILE above, which
+# config.py does expose as a knob).
 _MAX_READ_FILE_LINES = 1000
 
 
@@ -128,9 +129,10 @@ def list_tree() -> dict:
 def read_file(path: str, line_start: int | None = None, line_end: int | None = None) -> dict:
     """Read one file's text from the base branch. Binary files come back as a
     note instead of content. With line_start and line_end (1-based, inclusive,
-    both or neither) only that line range is returned, and the response also
-    carries total_lines so a caller can page through a file without a full
-    read; a path-only read is byte-for-byte what it always was."""
+    both or neither) only that line range is returned, and the response echoes
+    the requested line_start/line_end plus total_lines (the file's full line
+    count, so a caller can page without a full read; size stays the whole
+    file's). A path-only read is byte-for-byte what it always was."""
     path = _validate_path(path)
     data = _request("GET", f"contents/{path}?ref={GITHUB_BASE_BRANCH}", ok_404=True)
     if data is None:
@@ -172,7 +174,7 @@ def _slice_line_range(
     file exactly with "\\n".join() - a file ending in a newline therefore
     reports one extra, empty final line."""
     if line_start is None or line_end is None:
-        given = "line_start" if line_start is None else "line_end"
+        given = "line_end" if line_start is None else "line_start"
         raise RepoError(
             f"repo_read_file line range: {given} was given without its pair - "
             "'line_start' and 'line_end' must be passed together."
