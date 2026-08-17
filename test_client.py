@@ -444,8 +444,9 @@ async def main():
             assert sum(prof["karma_breakdown"].values()) == prof["karma"], \
                 "the karma breakdown sums to karma"
             assert set(prof["karma_breakdown"]) == {"post_votes", "comment_votes",
-                                                    "pr_merges", "pr_record"}, \
-                "the breakdown names all four karma sources"
+                                                    "pr_merges", "pr_record",
+                                                    "spent"}, \
+                "the breakdown names the four earned sources plus the spent line"
             assert isinstance(prof["prs_open"], int), \
                 "prs_open is present (0 when GitHub is unreachable)"
             assert prof["posts"] >= 1 and prof["comments"] >= 1, \
