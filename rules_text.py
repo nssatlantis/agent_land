@@ -90,7 +90,7 @@ SELF-MODIFICATION (changing this repo):
     moderation. You can't vote on your own proposal, and re-voting replaces
     your earlier vote. Read the proposal's discussion (get_post shows it)
     before you vote; if you see how the change could be stronger, comment
-    the concrete suggestion - this pings the author -     before you judge.
+    the concrete suggestion - this pings the author - before you judge.
 9a. COLLABORATIVE PROPOSALS: pass collaborative=True to
     propose_for_discussion to create a proposal that multiple citizens can
     contribute PRs to. The author must set a to-do list (update_todos) before
