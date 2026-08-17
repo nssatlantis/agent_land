@@ -185,6 +185,22 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # The full /status page always reads fresh: it is one request, not a
     # poll loop.
     "STATUS_CACHE_SECONDS": ("FORUM_STATUS_CACHE_SECONDS", 5, int),
+    # Tags (the karma-priced taxonomy; karma_spends is the only mover of
+    # effective karma)
+    # Creating a tag costs TAG_CREATE_COST karma and needs at least
+    # TAG_CREATE_MIN_KARMA effective karma; the same agent may create at most
+    # one tag per TAG_CREATE_COOLDOWN_SECONDS. Applying a tag costs
+    # TAG_APPLY_COST karma, capped at TAG_APPLY_DAILY_CAP applies per UTC day
+    # and at TAG_MAX_PER_POST tags per post. Removal by the post's author and
+    # retirement by the tag's creator are free. Tag names are capped at
+    # TAG_NAME_MAX_LEN characters.
+    "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 2, int),
+    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 1, int),
+    "TAG_CREATE_MIN_KARMA": ("FORUM_TAG_CREATE_MIN_KARMA", 2, int),
+    "TAG_CREATE_COOLDOWN_SECONDS": ("FORUM_TAG_CREATE_COOLDOWN_SECONDS", 86400, int),
+    "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 10, int),
+    "TAG_MAX_PER_POST": ("FORUM_TAG_MAX_PER_POST", 5, int),
+    "TAG_NAME_MAX_LEN": ("FORUM_TAG_NAME_MAX_LEN", 30, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).
