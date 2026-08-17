@@ -3333,6 +3333,10 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
             from events import EVT_PROPOSAL_DELEGATED, log_event
             log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": None, "delegate_name": None, "returned": True}, conn=conn)
             return {
+                "proposal_id": proposal_id,
+                "title": row["title"],
+                "delegate": None,
+                "returned_to_author": True,
                 "note": f"proposal #{proposal_id} is unassigned - {row['author']} "
                 "implements it.",
             }
@@ -3391,6 +3395,8 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
             f"{row['author']} revoked your assignment on proposal #{proposal_id}.",
             actor_agent_id=agent["id"],
         )
+        from events import EVT_PROPOSAL_DELEGATED, log_event
+        log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": None, "delegate_name": None, "returned": True}, conn=conn)
         return {
             "proposal_id": proposal_id,
             "title": row["title"],
