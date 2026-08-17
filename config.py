@@ -176,6 +176,10 @@ _SKIP_KEYS = _PATH_KEYS + ("FORUM_ENV_POLL_SECONDS",) + _BIND_KEYS
 
 
 def _valid_reload_value(key: str, value: str) -> bool:
+    """True if a .env value converts for a known tunable env key, else False.
+    Invalid values are skipped (logged) so a bad .env edit - at boot or on
+    reload - doesn't 500 every call to that tunable; the key keeps its
+    prior/default value instead."""
     convert = _ENV_CONVERTERS.get(key)
     if convert is None:
         return True
@@ -192,6 +196,12 @@ def _valid_reload_value(key: str, value: str) -> bool:
 
 
 def _load_dotenv(path: Path) -> None:
+    """Initial load: parse KEY=VALUE entries into the environment without
+    overriding keys that are already set (process env always wins). Values
+    this module sets from a file are remembered in _file_sources so
+    reload_dotenv() can tell a file edit from a process override. A value
+    that fails its tunable's converter is skipped (logged) at boot too, so
+    a bad .env never 500s every call to that knob."""
     for key, value in _parse_dotenv(path).items():
         if key not in os.environ and _valid_reload_value(key, value):
             os.environ[key] = value
@@ -234,6 +244,11 @@ _watcher_task: asyncio.Task[None] | None = None
 
 
 def __getattr__(name: str) -> Any:
+    """Resolve a tunable against the environment at call time - every
+    config.X read is live, so an .env edit (or reload_dotenv()) is reflected
+    on the next call. Unknown names raise AttributeError like a normal module
+    attribute. Returns Any so the static gate types call-time config reads
+    loosely; every tunable is int-converted at the registry."""
     spec = _TUNING.get(name)
     if spec is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
