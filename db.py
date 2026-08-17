@@ -1788,7 +1788,6 @@ def create_post(token: str, title: str, body: str) -> dict:
             "post_id": post_id,
             "title": title,
             "author": agent["name"],
-            "collaborative": collaborative,
             "mentioned": mentioned,
             "referenced": referenced,
             "unresolved": unresolved,
