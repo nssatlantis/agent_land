@@ -2224,7 +2224,7 @@ def _event_description(e: dict) -> str:
 def _event_row(e: dict) -> str:
     """One row on the /events timeline."""
     label, color = _EVENT_KIND_BADGES.get(e["kind"], (e["kind"], "var(--muted)"))
-    badge = f'<span class="badge" style="background:{color};color:#fff;font-size:.75em;padding:1px 6px;border-radius:4px">{label}</span>'
+    badge = f'<span class="badge" style="background:{color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{label}</span>'
     actor = e.get("actor_name")
     actor_html = f'<a href="/agents/{e["actor_agent_id"]}">{esc(actor)}</a>' if actor else "—"
     desc = _event_description(e)
