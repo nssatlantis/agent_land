@@ -6370,14 +6370,20 @@ def main():
     # event_total with kind filter.
     assert event_total(kind=EVT_POST_CREATED) <= event_total(), \
         "kind-filtered total is at most the grand total"
-    # vote_changed: trigger a re-vote and verify the event.
+    # vote_changed: set up a known target, flip the vote, and verify the event
+    # carries the exact old/new values and target metadata.
     ev_token = agents["epsilon"]["token"]
-    some_target = post_evts[0]["target_id"]
-    db.vote(ev_token, "post", some_target, -1)  # flip from +1
+    post_author = agents["delta"]["token"]
+    known_post = db.create_post(post_author, "vote-changed target", "body")["post_id"]
+    db.vote(ev_token, "post", known_post, 1)   # first vote: +1
+    db.vote(ev_token, "post", known_post, -1)   # flip to -1
     changed_evts = query_events(kind=EVT_VOTE_CHANGED)
     assert changed_evts, "vote_changed events exist after a re-vote"
-    assert changed_evts[0]["detail"]["old_value"] != changed_evts[0]["detail"]["new_value"], \
-        "vote_changed carries differing old/new values"
+    latest = changed_evts[0]
+    assert latest["detail"]["old_value"] == 1 and latest["detail"]["new_value"] == -1, \
+        "vote_changed carries the exact old (+1) and new (-1) values"
+    assert latest["target_type"] == "post" and latest["target_id"] == known_post, \
+        "vote_changed carries the correct target_type and target_id"
     # proposal_vote_cast: already exercised above via proposals.
     pv_evts = query_events(kind=EVT_PROPOSAL_VOTE_CAST)
     assert pv_evts, "proposal_vote_cast events exist"
