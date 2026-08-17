@@ -39,11 +39,20 @@ EVT_REPORT_SWEPT = "report_swept"
 EVT_AGENT_BANNED = "agent_banned"
 EVT_AGENT_UNBANNED = "agent_unbanned"
 EVT_CONTENT_DELETED = "content_deleted"
-EVT_PR_LINKED = "pr_linked"
 EVT_PR_MERGED = "pr_merged"
 EVT_PR_DECLINED = "pr_declined"
 EVT_PR_CLOSED = "pr_closed"
 EVT_AGENT_REGISTERED = "agent_registered"
+
+_VALID_KINDS: set[str] = {
+    EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
+    EVT_VOTE_CAST, EVT_VOTE_CHANGED, EVT_PROPOSAL_SUPERSEDED,
+    EVT_PROPOSAL_DELEGATED, EVT_PROPOSAL_EDITED, EVT_PROPOSAL_VOTE_CAST,
+    EVT_REPORT_FILED, EVT_REPORT_VOTE_CAST, EVT_REPORT_RESOLVED,
+    EVT_REPORT_SWEPT, EVT_AGENT_BANNED, EVT_AGENT_UNBANNED,
+    EVT_CONTENT_DELETED, EVT_PR_MERGED, EVT_PR_DECLINED,
+    EVT_PR_CLOSED, EVT_AGENT_REGISTERED,
+}
 
 # -- write helper --------------------------------------------------------
 
@@ -62,6 +71,8 @@ def log_event(
     mutation that triggered it.  Pass ``conn`` when calling from within an
     open transaction (db.py / moderation.py); the server's PR poller
     passes its own connection too."""
+    if kind not in _VALID_KINDS:
+        raise ValueError(f"unknown event kind: {kind!r}")
     def _exec(c: sqlite3.Connection) -> None:
         c.execute(
             "INSERT INTO events (kind, actor_agent_id, target_type, target_id,"
@@ -120,11 +131,10 @@ def query_events(
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     params.extend([limit, offset])
     with db._conn() as conn:
-        names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
         rows = conn.execute(
             f"SELECT e.id, e.kind, e.actor_agent_id, e.target_type,"
-            f" e.target_id, e.detail, e.created_at"
-            f" FROM events e{where}"
+            f" e.target_id, e.detail, e.created_at, a.name AS actor_name"
+            f" FROM events e LEFT JOIN agents a ON e.actor_agent_id = a.id{where}"
             f" ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
@@ -133,7 +143,7 @@ def query_events(
                 "id": r["id"],
                 "kind": r["kind"],
                 "actor_agent_id": r["actor_agent_id"],
-                "actor_name": names.get(r["actor_agent_id"]),
+                "actor_name": r["actor_name"],
                 "target_type": r["target_type"],
                 "target_id": r["target_id"],
                 "detail": json.loads(r["detail"]) if r["detail"] else None,
@@ -147,6 +157,8 @@ def event_total(
     *,
     agent_id: int | None = None,
     kind: str | None = None,
+    target_type: str | None = None,
+    target_id: int | None = None,
     since: str | None = None,
 ) -> int:
     """Count events matching optional filters (for pagination)."""
@@ -158,6 +170,12 @@ def event_total(
     if kind is not None:
         clauses.append("kind = ?")
         params.append(kind)
+    if target_type is not None:
+        clauses.append("target_type = ?")
+        params.append(target_type)
+    if target_id is not None:
+        clauses.append("target_id = ?")
+        params.append(target_id)
     if since is not None:
         since_norm = db._since_bound(since)
         clauses.append("created_at >= ?")
