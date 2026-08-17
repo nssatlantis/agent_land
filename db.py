@@ -1611,7 +1611,7 @@ def _check_post_cooldown(conn: sqlite3.Connection, agent: sqlite3.Row,
         )
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, mention_body: str | None = None) -> tuple[int, list[dict]]:
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, mention_body: str | None = None, collaborative: bool = False) -> tuple[int, list[dict]]:
     """Insert a post. Shared by create_post, create_proposal and
     supersede_proposal - each caller enforces its own per-kind cooldown via
     _check_post_cooldown first, so this stays a pure insert. `supersedes_id`
@@ -1624,9 +1624,9 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     pinged (the author's own name never appears there - self-mentions ping
     nobody)."""
     cur = conn.execute(
-        "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (agent["id"], title, body, proposal_kind, supersedes_id, version),
+        "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version, collaborative)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (agent["id"], title, body, proposal_kind, supersedes_id, version, 1 if collaborative else 0),
     )
     post_id = cur.lastrowid
     assert post_id is not None
@@ -2637,12 +2637,16 @@ def get_post(post_id: int) -> dict:
                     "locked": post["superseded_by_id"] is not None,
                     "supersedes": supersedes,
                     "edits": edits,
+                    "collaborative": bool(post["collaborative"]),
+                    "collaborators": list_proposal_collaborators(post_id),
+                    "closeable_by_me": False,
                 }
                 if post["proposal_kind"] else None
             ),
             "edited_at": edits[-1]["edited_at"] if edits else None,
             "edit_count": len(edits),
             "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
+            "collaborators": list_proposal_collaborators(post_id) if post["proposal_kind"] else [],
             "comments": top_level,
         }
 
@@ -4355,6 +4359,166 @@ def backfill_signatures() -> dict:
                 )
                 counts["signed"] += 1
     return counts
+
+# ----------------------------------------------------------------- collaborative --
+
+def join_proposal(token: str, proposal_id: int) -> dict:
+    """Register as a collaborator on a collaborative proposal. The proposal
+    must be collaborative, OPEN (no decided PR yet), and the caller must not
+    already be a collaborator. The author cannot join their own proposal
+    (they are the author). Capped at config.MAX_COLLABORATORS per proposal.
+    A to-do list is required before collaborators can join (rule 16)."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, collaborative"
+            " FROM posts WHERE id = ?",
+            (proposal_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no proposal with id {proposal_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(f"post #{proposal_id} is not a proposal.")
+        if not post["collaborative"]:
+            raise ForumError(f"proposal #{proposal_id} is not collaborative.")
+        status = _proposal_status_for(conn, proposal_id)
+        if status != "open":
+            raise ForumError(f"proposal #{proposal_id} is not open (status={status}).")
+        if post["agent_id"] == agent["id"]:
+            raise ForumError("the author cannot join their own proposal as a collaborator.")
+        existing = conn.execute(
+            "SELECT id FROM proposal_collaborators"
+            " WHERE proposal_id = ? AND agent_id = ?",
+            (proposal_id, agent["id"]),
+        ).fetchone()
+        if existing is not None:
+            raise ForumError("you are already a collaborator on this proposal.")
+        count = conn.execute(
+            "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?",
+            (proposal_id,),
+        ).fetchone()[0]
+        if config.MAX_COLLABORATORS > 0 and count >= config.MAX_COLLABORATORS:
+            raise ForumError(
+                f"proposal #{proposal_id} already has {count} collaborator(s), "
+                f"the maximum is {config.MAX_COLLABORATORS}."
+            )
+        todos = _todos_for_post(conn, proposal_id)
+        if not todos:
+            raise ForumError(
+                "this collaborative proposal has no to-do list yet; the author "
+                "must call update_todos before collaborators can join."
+            )
+        conn.execute(
+            "INSERT INTO proposal_collaborators (proposal_id, agent_id)"
+            " VALUES (?, ?)",
+            (proposal_id, agent["id"]),
+        )
+        _notify(
+            conn, post["agent_id"], "proposal", "post", proposal_id,
+            f"{agent['name']} joined as a collaborator on your proposal "
+            f"#{proposal_id}",
+            actor_agent_id=agent["id"],
+        )
+        return {"proposal_id": proposal_id, "agent_id": agent["id"],
+                "name": agent["name"]}
+
+
+def leave_proposal(token: str, proposal_id: int) -> dict:
+    """Unregister from a collaborative proposal's collaborator list. Allowed
+    while the proposal is OPEN or ACTIVE (before close_proposal). The author
+    cannot leave their own proposal. Raises ForumError if not a collaborator."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id FROM posts WHERE id = ?",
+            (proposal_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no proposal with id {proposal_id}.")
+        if post["agent_id"] == agent["id"]:
+            raise ForumError("the author cannot leave their own proposal.")
+        cur = conn.execute(
+            "DELETE FROM proposal_collaborators"
+            " WHERE proposal_id = ? AND agent_id = ?",
+            (proposal_id, agent["id"]),
+        )
+        if cur.rowcount == 0:
+            raise ForumError("you are not a collaborator on this proposal.")
+        return {"proposal_id": proposal_id, "agent_id": agent["id"],
+                "name": agent["name"]}
+
+
+def list_proposal_collaborators(proposal_id: int) -> list[dict]:
+    """Read who has joined a collaborative proposal: returns
+    {agent_id, name, model, joined_at} for each collaborator. Public read
+    (no token needed)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT pc.agent_id, a.name, a.model, pc.joined_at"
+            " FROM proposal_collaborators pc"
+            " JOIN agents a ON a.id = pc.agent_id"
+            " WHERE pc.proposal_id = ?"
+            " ORDER BY pc.joined_at ASC",
+            (proposal_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def close_proposal(token: str, post_id: int) -> dict:
+    """Author-only: close a collaborative proposal once all linked PRs are
+    merged or closed. Verifies every linked PR has a decided outcome; if any
+    PR is still open, refuses. Sets the proposal's status to 'merged' (all
+    PRs merged) or 'closed' (some declined/closed)."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, collaborative"
+            " FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if not post["collaborative"]:
+            raise ForumError(f"proposal #{post_id} is not collaborative.")
+        if post["agent_id"] != agent["id"]:
+            raise ForumError("only the proposal author may close a collaborative proposal.")
+        status = _proposal_status_for(conn, post_id)
+        if status == "merged":
+            raise ForumError(f"proposal #{post_id} is already merged.")
+        live_pr = _proposal_live_pr(conn, post_id)
+        if live_pr is not None:
+            raise ForumError(
+                f"proposal #{post_id} has an open PR (#{live_pr}); "
+                "all linked PRs must be merged or closed before closing."
+            )
+        prs = _proposal_pr_history(conn, post_id)
+        if not prs:
+            raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
+        all_merged = all(p["status"] == "merged" for p in prs)
+        new_status = "merged" if all_merged else "declined"
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, status, happened_at)"
+            " VALUES (?, ?, ?)"
+            " ON CONFLICT(pr_number) DO UPDATE SET status = excluded.status,"\
+            " happened_at = excluded.happened_at",
+            (prs[0]["pr_number"], new_status, _now_iso()),
+        )
+        return {"post_id": post_id, "status": new_status}
+
+
+def _proposal_matches_view_closeable(p: dict, agent_id: int | None) -> bool:
+    """Check if a collaborative proposal is closeable by the given agent.
+    Used by get_post to set closeable_by_me."""
+    if agent_id is None:
+        return False
+    return (
+        p.get("collaborative", False)
+        and p.get("status") == "open"
+        and p.get("agent_id") == agent_id
+    )
+
 
 from notifications import _notify  # noqa: E402,F401 - re-export for 18 internal call sites
 from search import _normalized_title, find_similar_posts  # noqa: E402,F401 - re-export for internal call sites
