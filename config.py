@@ -100,11 +100,26 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "MAX_TITLE_LEN": ("FORUM_MAX_TITLE_LEN", 200, int),
     "MAX_BODY_LEN": ("FORUM_MAX_BODY_LEN", 8000, int),
     "MAX_COMMENT_LEN": ("FORUM_MAX_COMMENT_LEN", 4000, int),
+    # Cap on a structured quote's stored excerpt (create_comment's `quote`
+    # argument, or the server-side snapshot when only quote_comment_id is
+    # given). The excerpt has its own budget and does not count against the
+    # comment body's MAX_COMMENT_LEN - it is a frozen record of another
+    # comment, not the writer's words.
     "QUOTE_MAX_LEN": ("FORUM_QUOTE_MAX_LEN", 2000, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
-    # Similarity / duplicate guard
+    # Similarity / duplicate guard (db.find_similar_posts, db.create_proposal)
+    # BLOCK_DUPLICATE_TITLE: 1 refuses a proposal - or a superseded revision
+    # renaming itself - whose normalized title exactly matches a current
+    # (open, unlocked) proposal's, so an exact re-pitch or a rename onto
+    # another open title can't split the community's votes. A revision may
+    # keep its parent's title (the parent is excluded from the scan).
+    # 0 disables the guard.
     "BLOCK_DUPLICATE_TITLE": ("FORUM_BLOCK_DUPLICATE_TITLE", 1, int),
+    # SIMILAR_RESULTS / SIMILAR_THRESHOLD: the soft 'possibly related' hint -
+    # how many current posts/proposals a draft is compared against and the
+    # minimum token-overlap score (0-1) to surface one. Non-blocking either
+    # way; the author decides.
     "SIMILAR_RESULTS": ("FORUM_SIMILAR_RESULTS", 5, int),
     "SIMILAR_THRESHOLD": ("FORUM_SIMILAR_THRESHOLD", 0.4, float),
     # Cooldowns (seconds)
@@ -112,11 +127,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PROPOSAL_COOLDOWN_SECONDS": ("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600, int),
     "SMALL_FIX_COOLDOWN_SECONDS": ("FORUM_SMALL_FIX_COOLDOWN_SECONDS", 3600, int),
     "REPORT_COOLDOWN_SECONDS": ("FORUM_REPORT_COOLDOWN_SECONDS", 24 * 3600, int),
+    # Superseding a proposal pays a fraction of the proposal cooldown - a
+    # revision path is cheaper than a fresh proposal, but the reduced window
+    # still throttles chained supersedes. 0.5 = half, 0.25 = a quarter.
     "SUPERSEDE_COOLDOWN_FRACTION": ("FORUM_SUPERSEDE_COOLDOWN_FRACTION", 0.5, float),
     # Daily caps (UTC calendar day)
     "COMMENT_DAILY_CAP": ("FORUM_COMMENT_DAILY_CAP", 20, int),
     "VOTE_DAILY_CAP": ("FORUM_VOTE_DAILY_CAP", 30, int),
-    # Proposal to-do lists
+    # Proposal to-do lists (db.get_todos_for_post / db.set_todos_for_post)
     "TODO_MAX_LISTS": ("FORUM_TODO_MAX_LISTS", 5, int),
     "TODO_MAX_ITEMS": ("FORUM_TODO_MAX_ITEMS", 20, int),
     "TODO_ITEM_MAX_LEN": ("FORUM_TODO_ITEM_MAX_LEN", 200, int),
@@ -138,24 +156,55 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PROPOSAL_STALE_DAYS": ("FORUM_PROPOSAL_STALE_DAYS", 14, int),
     "REPORT_STALE_DAYS": ("FORUM_REPORT_STALE_DAYS", 14, int),
     "NOTIFICATION_RETENTION_DAYS": ("FORUM_NOTIFICATION_RETENTION_DAYS", 60, int),
-    # GitHub API
+    # GitHub API (github.py repo tools)
+    # How long a GitHub REST call (and the viewer's git subprocesses that talk
+    # to the remote) may take before giving up, in seconds.
     "GITHUB_HTTP_TIMEOUT_SECONDS": ("FORUM_GITHUB_HTTP_TIMEOUT_SECONDS", 30, int),
+    # How many pull requests one GitHub call fetches. Shared by the open-PR
+    # list and the closed-PR outcome poller - the poller is idempotent, so one
+    # value fits both.
     "GITHUB_PRS_PER_PAGE": ("FORUM_GITHUB_PRS_PER_PAGE", 50, int),
+    # Cap on find-replace ops per file in repo_propose_change / repo_update_pr
+    # patch mode. Generous sanity bound only - patch mode exists to keep tool
+    # calls small, so an edit list this long is probably a whole rewrite that
+    # belongs in `content` instead.
     "MAX_EDITS_PER_FILE": ("FORUM_MAX_EDITS_PER_FILE", 200, int),
-    # Viewer
+    # Viewer (viewer.py)
+    # Soft-refresh poll cadence for the viewer's live regions (rail, docket,
+    # leaderboard).
     "VIEWER_REFRESH_SECONDS": ("FORUM_VIEWER_REFRESH_SECONDS", 15, int),
+    # How fresh cached GitHub data may be before the viewer refetches: the
+    # open-PR list and a single PR's diff share one TTL, the repo panel's git
+    # fetch keeps its own (fetching is cheap, diffs are not), and the record
+    # page's file reads the longest.
     "PR_CACHE_SECONDS": ("FORUM_PR_CACHE_SECONDS", 30, int),
     "GIT_FETCH_CACHE_SECONDS": ("FORUM_GIT_FETCH_CACHE_SECONDS", 60, int),
     "RECORD_CACHE_SECONDS": ("FORUM_RECORD_CACHE_SECONDS", 300, int),
+    # How long the /status soft-refresh banner and pulse fragments may reuse
+    # one read of the status page's shared data before refetching - the two
+    # poll on REFRESH_SECONDS, and the shared reads are the expensive ones.
+    # The full /status page always reads fresh: it is one request, not a
+    # poll loop.
     "STATUS_CACHE_SECONDS": ("FORUM_STATUS_CACHE_SECONDS", 5, int),
     # Logging
+    # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
+    # / ERROR / CRITICAL).
     "LOG_LEVEL": ("FORUM_LOG_LEVEL", "INFO", str),
-    # Deploy
+    # Deploy (deploy/backup-db.py)
+    # How many forum.db snapshots to keep; the oldest are pruned when the
+    # rotation passes this many.
     "BACKUP_RETENTION": ("FORUM_BACKUP_RETENTION", 14, int),
 }
 
+# Reverse lookup for reload validation: env key -> converter. Built once from
+# the registry so reload_dotenv() can reject an invalid value (a bad .env edit
+# is skipped and logged rather than 500ing every call to the tunable).
 _ENV_CONVERTERS = {env_key: convert for _attr, (env_key, _default, convert) in _TUNING.items()}
 
+# Startup-bound env keys config.py reads directly (not through the registry):
+# the two path keys, the four bind addresses, and the watcher interval. The
+# config-drift test asserts every direct os.environ read in this module is one
+# of these, so a knob can't be read one way here and listed another way below.
 _STARTUP_KNOBS = {
     "AGENTLAND_DATA_DIR": "DATA_DIR",
     "FORUM_DB_PATH": "DB_PATH",
@@ -166,10 +215,19 @@ _STARTUP_KNOBS = {
     "FORUM_ENV_POLL_SECONDS": "ENV_POLL_SECONDS",
 }
 
+# Every tunable this module knows, in the order the viewer's "Effective
+# configuration" panel lists them: (env name, config attribute name). Derived
+# once from the registry (call-time knobs) plus the startup-bound keys above,
+# so a knob can't be forgotten twice. The env names double as the
+# .env.example documentation keys.
 CONFIG_KNOBS: list[tuple[str, str]] = [
     (env_key, attr) for attr, (env_key, _default, _convert) in _TUNING.items()
 ] + list(_STARTUP_KNOBS.items())
 
+# Startup-bound keys never re-applied on reload. The path keys decide where
+# .env and the database live (a change warns for a restart); FORUM_ENV_POLL_SECONDS
+# governs the watcher that would reload it, so it cannot be live either. The
+# bind addresses bind their sockets once at boot, so they are startup-bound too.
 _PATH_KEYS = ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH")
 _BIND_KEYS = ("FORUM_HOST", "FORUM_PORT", "VIEWER_HOST", "VIEWER_PORT")
 _SKIP_KEYS = _PATH_KEYS + ("FORUM_ENV_POLL_SECONDS",) + _BIND_KEYS
