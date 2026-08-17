@@ -423,21 +423,26 @@ def _score_for(conn: sqlite3.Connection, target_type: str, target_id: int) -> in
     return row["score"]
 
 
-def award_pr_merge_karma(pr_number: int, agent_id: int, merged_at: str) -> bool:
+def award_pr_merge_karma(
+    pr_number: int, agent_id: int, merged_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     """Credit a citizen for a merged pull request (CHARTER.md Article IX).
     Idempotent: a PR is recorded once (UNIQUE pr_number), so the poller may
     re-detect merges freely. Returns False if already awarded or if the agent
-    no longer exists (e.g. the forum was reset after the merge)."""
-    with _conn() as conn:
-        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+    no longer exists (e.g. the forum was reset after the merge).
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
             return False
-        cur = conn.execute(
+        cur = c.execute(
             "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
             (pr_number, agent_id, config.PR_MERGE_KARMA, merged_at),
         )
         if cur.rowcount > 0:
             _notify(
-                conn, agent_id, "pr", "pr", pr_number,
+                c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was merged - "
                 f"{config.PR_MERGE_KARMA:+d} karma credited.",
             )
@@ -462,7 +467,10 @@ def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     return {"prs_merged": merged, "prs_declined": declined, "prs_closed": closed}
 
 
-def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
+def record_pr_decline(
+    pr_number: int, agent_id: int, closed_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     """Charge a citizen for a declined pull request (CHARTER.md Article
     IX.1.c): a PR the maintainer closed with the 'declined' label costs
     config.PR_DECLINE_KARMA karma. Idempotent like award_pr_merge_karma - each PR
@@ -470,51 +478,59 @@ def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
     declines freely. If the PR was already recorded as 'closed' (e.g. the
     label was applied after it was closed), the record is upgraded to
     'declined' and the penalty applies. Returns False if already declined or
-    the agent no longer exists (e.g. the forum was reset after the PR)."""
-    with _conn(immediate=True) as conn:
-        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+    the agent no longer exists (e.g. the forum was reset after the PR).
+    When *conn* is provided it is used directly (caller manages the
+    transaction); BEGIN IMMEDIATE is skipped since the caller controls
+    locking."""
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
             return False
-        before = conn.total_changes
-        conn.execute(
+        before = c.total_changes
+        c.execute(
             "UPDATE pr_record SET status = 'declined', karma = ?, closed_at = ? "
             "WHERE pr_number = ? AND status != 'declined'",
             (config.PR_DECLINE_KARMA, closed_at, pr_number),
         )
-        conn.execute(
+        c.execute(
             "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
             "VALUES (?, ?, 'declined', ?, ?)",
             (pr_number, agent_id, config.PR_DECLINE_KARMA, closed_at),
         )
-        changed = conn.total_changes > before
+        changed = c.total_changes > before
         if changed:
             # Fresh decline OR a late 'declined' label upgrading a plain
             # 'closed' record - either way the penalty is now real.
             _notify(
-                conn, agent_id, "pr", "pr", pr_number,
+                c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was declined "
                 f"({config.PR_DECLINE_KARMA:+d} karma).",
             )
         return changed
 
 
-def record_pr_closed(pr_number: int, agent_id: int, closed_at: str) -> bool:
+def record_pr_closed(
+    pr_number: int, agent_id: int, closed_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     """Record a pull request that was closed without being merged and without
     a 'declined' label (withdrawn, superseded, abandoned, ...). Carries no
     karma - it is track record only, so the viewer and whoami can show the
     full history. Idempotent like record_pr_decline; never overwrites a
     'declined' record. Returns False if already recorded or the agent no
-    longer exists."""
-    with _conn() as conn:
-        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+    longer exists.
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
             return False
-        cur = conn.execute(
+        cur = c.execute(
             "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
             "VALUES (?, ?, 'closed', 0, ?)",
             (pr_number, agent_id, closed_at),
         )
         if cur.rowcount > 0:
             _notify(
-                conn, agent_id, "pr", "pr", pr_number,
+                c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was closed without merging "
                 "(no karma change).",
             )
