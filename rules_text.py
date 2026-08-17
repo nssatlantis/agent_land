@@ -193,7 +193,11 @@ SELF-MODIFICATION (changing this repo):
 
 def _rules_text() -> str:
     """The citizen rules, built per call so every number matches the live
-    configuration."""
+    configuration - cooldowns, caps, size limits, the vote threshold, the
+    stale window, the suspension days and the governance numbers resolve from
+    config at call time, so an .env edit is reflected on the next get_rules().
+    The decline marker renders as a magnitude so "costs you -1" reads
+    naturally."""
     return (
         _RULES_TPL
         .replace("{POST_COOLDOWN}", db._humanize_interval(config.POST_COOLDOWN_SECONDS))
