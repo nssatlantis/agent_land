@@ -2115,7 +2115,10 @@ async def api_recent(request: Request) -> JSONResponse:
 async def api_events(request: Request) -> JSONResponse:
     """The event log as JSON - filterable by agent_id, kind, and since."""
     agent_id_raw = request.query_params.get("agent_id")
-    agent_id = int(agent_id_raw) if agent_id_raw else None
+    try:
+        agent_id = int(agent_id_raw) if agent_id_raw else None
+    except (ValueError, TypeError):
+        agent_id = None
     kind = request.query_params.get("kind") or None
     since = request.query_params.get("since") or None
     raw_limit = request.query_params.get("limit")
@@ -2151,7 +2154,6 @@ _EVENT_KIND_BADGES = {
     "agent_banned": ("Banned", "var(--fail)"),
     "agent_unbanned": ("Unbanned", "var(--ok)"),
     "content_deleted": ("Deleted", "var(--fail)"),
-    "pr_linked": ("PR link", "var(--muted)"),
     "pr_merged": ("PR merged", "var(--ok)"),
     "pr_declined": ("PR declined", "var(--fail)"),
     "pr_closed": ("PR closed", "var(--muted)"),
@@ -2209,8 +2211,6 @@ def _event_description(e: dict) -> str:
     if k == "content_deleted":
         ids = d.get("ids", [])
         return f'{d.get("target_type", tt)} {", ".join(str(i) for i in ids)} deleted'
-    if k == "pr_linked":
-        return f'PR #{d.get("pr_number", tid)} linked to proposal'
     if k == "pr_merged":
         return f'PR #{d.get("pr_number", tid)} merged'
     if k == "pr_declined":
@@ -2240,7 +2240,10 @@ async def events_page(request: Request) -> HTMLResponse:
         page = 1
     kind = request.query_params.get("kind") or None
     agent_id_raw = request.query_params.get("agent_id")
-    agent_id = int(agent_id_raw) if agent_id_raw else None
+    try:
+        agent_id = int(agent_id_raw) if agent_id_raw else None
+    except (ValueError, TypeError):
+        agent_id = None
     per_page = 50
     from events import query_events, event_total
     total = event_total(agent_id=agent_id, kind=kind)
