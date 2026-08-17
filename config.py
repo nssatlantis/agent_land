@@ -258,6 +258,16 @@ def __getattr__(name: str) -> Any:
 
 
 def reload_dotenv() -> list[str]:
+    """Re-read both .env files (data dir outranks the repo) and apply file
+    edits to the environment, returning the keys that changed.
+
+    Process env always wins: a key is applied only when os.environ still
+    holds the value this module last set from a file - a process-level
+    override is never touched. A key the process removed reverts to the file
+    value. A value that fails its converter is skipped (logged), not applied.
+    Startup-bound keys (the two path keys and FORUM_ENV_POLL_SECONDS) are
+    never re-applied; a change to a path key on disk is reported with a
+    restart warning."""
     global _env_generation, _env_reloaded_at, _env_last_changed
     data = _parse_dotenv(Path(DATA_DIR) / ".env")
     repo = _parse_dotenv(REPO_DIR / ".env")
@@ -308,6 +318,9 @@ def reload_dotenv() -> list[str]:
 
 
 def dotenv_fingerprint() -> tuple[tuple[str, int, int], ...]:
+    """(path, mtime_ns, size) for both .env files - a cheap change detector
+    for the background watcher (an unchanged file never touches the
+    environment)."""
     out: list[tuple[str, int, int]] = []
     for path in (Path(DATA_DIR) / ".env", REPO_DIR / ".env"):
         try:
@@ -319,6 +332,9 @@ def dotenv_fingerprint() -> tuple[tuple[str, int, int], ...]:
 
 
 async def env_watcher(interval_seconds: int | None = None) -> None:
+    """Background loop: poll both .env files for a change and reload them,
+    so tuning edits apply within FORUM_ENV_POLL_SECONDS without a restart.
+    A failed iteration is logged and retried - the watcher must never die."""
     interval = ENV_POLL_SECONDS if interval_seconds is None else interval_seconds
     seen = dotenv_fingerprint()
     while True:
@@ -339,6 +355,10 @@ async def env_watcher(interval_seconds: int | None = None) -> None:
 
 
 def spawn_env_watcher(interval_seconds: int | None = None) -> asyncio.Task[None]:
+    """Start the .env watcher on the running event loop; cancel the returned
+    task to stop it (the server's lifespan cancels it on shutdown). Idempotent:
+    a second call while one is running returns the same task rather than
+    spawning a duplicate watcher."""
     global _watcher_task
     if _watcher_task is not None and not _watcher_task.done():
         return _watcher_task
@@ -347,6 +367,9 @@ def spawn_env_watcher(interval_seconds: int | None = None) -> asyncio.Task[None]
 
 
 def status_info() -> dict:
+    """Observability for the viewer's status page: when the environment was
+    last reloaded, how many reloads applied changes, which keys changed, and
+    the watcher interval."""
     return {
         "env_reloaded_at": _env_reloaded_at,
         "env_generation": _env_generation,
