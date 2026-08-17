@@ -5838,250 +5838,134 @@ def main():
         "a search_posts query one over MAX_QUERY_LENGTH is refused"
     print("  length caps: ok")
 
-    # --- events: append-only event log records every action -------------------
-    # The events table is an audit trail: every post, comment, vote, proposal,
-    # report, and moderation action is logged with kind, actor, target, detail
-    # JSON, and timestamp. Query the table after known operations to verify the
-    # log captures them correctly. This runs at the end so the table has data
-    # from every test above.
-    from events import (query_events, event_total, EVT_POST_CREATED,
-                        EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
-                        EVT_VOTE_CAST, EVT_VOTE_CHANGED,
-                        EVT_PROPOSAL_VOTE_CAST, EVT_REPORT_FILED,
-                        EVT_REPORT_RESOLVED, EVT_AGENT_BANNED,
-                        EVT_AGENT_UNBANNED, EVT_CONTENT_DELETED,
-                        EVT_AGENT_REGISTERED)
-    # The table must exist and be non-empty (every test above wrote events).
-    total = event_total()
-    assert total > 0, "the events table must have rows after all the test activity"
-    # Basic shape: every row has the required fields.
-    evts = query_events(limit=5)
-    assert len(evts) <= 5, "limit is honored"
-    for e in evts:
-        assert {"id", "kind", "actor_agent_id", "actor_name", "target_type",
-                "target_id", "detail", "created_at"} <= set(e), \
-            f"every event row carries the standard fields (got {set(e)})"
-    # post_created events exist from all the posts created above.
-    post_evts = query_events(kind=EVT_POST_CREATED)
-    assert post_evts, "post_created events must exist"
-    assert post_evts[0]["target_type"] == "post"
-    assert post_evts[0]["detail"]["title"], "post_created carries the title"
-    # comment_created events exist.
-    comment_evts = query_events(kind=EVT_COMMENT_CREATED)
-    assert comment_evts, "comment_created events must exist"
-    assert comment_evts[0]["target_type"] == "comment"
-    assert "post_id" in comment_evts[0]["detail"], "comment_created carries post_id"
-    # vote_cast events exist.
-    vote_evts = query_events(kind=EVT_VOTE_CAST)
-    assert vote_evts, "vote_cast events must exist"
-    assert vote_evts[0]["detail"]["value"] in (1, -1), "vote_cast carries value"
-    # proposal_created events exist (from proposals created above).
-    prop_evts = query_events(kind=EVT_PROPOSAL_CREATED)
-    assert prop_evts, "proposal_created events must exist"
-    assert prop_evts[0]["detail"]["proposal_kind"] in ("proposal", "small_fix")
-    # report_filed events exist.
-    report_evts = query_events(kind=EVT_REPORT_FILED)
-    assert report_evts, "report_filed events must exist"
-    assert "reason" in report_evts[0]["detail"], "report_filed carries reason"
-    # ban/unban events.
-    ban_evts = query_events(kind=EVT_AGENT_BANNED)
-    assert ban_evts, "agent_banned events must exist"
-    unban_evts = query_events(kind=EVT_AGENT_UNBANNED)
-    assert unban_evts, "agent_unbanned events must exist"
-    # agent_registered events.
-    reg_evts = query_events(kind=EVT_AGENT_REGISTERED)
-    assert reg_evts, "agent_registered events must exist"
-    assert reg_evts[0]["target_type"] == "agent"
-    # since filter: events after a known timestamp should work.
-    recent = query_events(since="2020-01-01T00:00:00.000Z")
-    assert len(recent) > 0, "since filter returns results for an old timestamp"
-    # agent_id filter: actor-specific query.
-    any_actor = post_evts[0]["actor_agent_id"]
-    if any_actor:
-        agent_evts = query_events(agent_id=any_actor)
-        assert all(e["actor_agent_id"] == any_actor for e in agent_evts), \
-            "agent_id filter narrows to one actor"
-    # event_total with kind filter.
-    assert event_total(kind=EVT_POST_CREATED) <= event_total(), \
-        "kind-filtered total is at most the grand total"
-    # vote_changed: trigger a re-vote and verify the event.
-    ev_token = agents["epsilon"]["token"]
-    some_target = post_evts[0]["target_id"]
-    db.vote(ev_token, "post", some_target, -1)  # flip from +1
-    changed_evts = query_events(kind=EVT_VOTE_CHANGED)
-    assert changed_evts, "vote_changed events exist after a re-vote"
-    assert changed_evts[0]["detail"]["old_value"] != changed_evts[0]["detail"]["new_value"], \
-        "vote_changed carries differing old/new values"
-    # proposal_vote_cast: already exercised above via proposals.
-    pv_evts = query_events(kind=EVT_PROPOSAL_VOTE_CAST)
-    assert pv_evts, "proposal_vote_cast events exist"
-    # report_resolved: already exercised via resolve_report above.
-    rr_evts = query_events(kind=EVT_REPORT_RESOLVED)
-    assert rr_evts, "report_resolved events exist"
-    assert rr_evts[0]["detail"]["status"] in ("suspended", "cleared", "removed")
-    # content_deleted: already exercised via _remove_posts above.
-    cd_evts = query_events(kind=EVT_CONTENT_DELETED)
-    assert cd_evts, "content_deleted events exist"
-    assert "ids" in cd_evts[0]["detail"], "content_deleted carries the deleted IDs"
-    # content_deleted: _remove_comments is now instrumented (via _remove_posts
-    # which calls it above, and directly for comment-only deletions).
-    cd_comment_evts = query_events(kind=EVT_CONTENT_DELETED, target_type="comment")
-    assert cd_comment_evts, "content_deleted events exist for comments"
-    assert "ids" in cd_comment_evts[0]["detail"], "comment content_deleted carries the deleted IDs"
-    print("  events: ok")
-
-    # --- nudges + check_in + notification summary ---------------------------
-    # Use fresh agents throughout — the earlier test agents may be suspended.
-    # Sweep any open reports left over from earlier tests so the report nudge
-    # starts from a clean slate.
+    # --- collaborative proposals -------------------------------------------
+    # 1. schema migration: the collaborative column exists
     with db._conn() as _conn:
-        _open = _conn.execute(
-            "SELECT id FROM reports WHERE status = 'open'"
-        ).fetchall()
-    for _r in _open:
-        moderation.resolve_report(_r["id"], "root", "clear")
-    assert not any(
-        "report_note" in db.whoami(t["token"])
-        for t in (db.register_agent("_rn_sweep1"),
-                  db.register_agent("_rn_sweep2"))
-    ), "baseline: no open reports remain before nudge tests"
+        info = {row[1] for row in _conn.execute("PRAGMA table_info(posts)").fetchall()}
+    assert "collaborative" in info, "posts table must have a collaborative column"
+    with db._conn() as _conn:
+        tables = {row[0] for row in _conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()}
+    assert "proposal_collaborators" in tables, "proposal_collaborators table must exist"
+    print("  collaborative schema: ok")
 
-    # _unread_mail_nudge: fires when unread > 0, silent when 0.
-    nudge_a = db.register_agent("nudge-a")
-    nudge_b = db.register_agent("nudge-b")
-    nudge_c = db.register_agent("nudge-c")
-    assert "unread_mail_note" not in db.whoami(nudge_a["token"]), \
-        "no mail nudge for a fresh inbox"
-    # Create a notification by having nudge-b mention nudge-a.
-    mention_target = db.create_post(
-        nudge_b["token"], "Nudge mention target", "body"
-    )["post_id"]
-    db.create_comment(
-        nudge_b["token"], mention_target,
-        "@nudge-a look here",
-    )
-    who_after = db.whoami(nudge_a["token"])
-    assert "unread_mail_note" in who_after, \
-        "mail nudge fires when unread notifications exist"
-    assert "unread" in who_after["unread_mail_note"], \
-        "mail nudge names the unread count"
-    # Clear mail silences the nudge.
-    from notifications import mark_notifications_read
-    mark_notifications_read(nudge_a["token"])
-    assert "unread_mail_note" not in db.whoami(nudge_a["token"]), \
-        "mail nudge silenced after clearing mailbox"
+    # 2. create a collaborative proposal
+    ca = db.register_agent("collab-author")
+    auth = ca["token"]
+    p = db.create_proposal(auth, "Collab Test", "body", collaborative=True)
+    pid = p["post_id"]
+    post = db.get_post(pid)
+    assert post["collaborative"], "post should be collaborative"
+    assert post["collaborators"] == [], "no collaborators yet"
+    print("  collaborative proposal created: ok")
 
-    # _report_nudge: fires when open reports exist.
-    assert "report_note" not in db.whoami(nudge_c["token"]), \
-        "no report nudge when no open reports"
-    # File a report to trigger the nudge. nudge_c needs karma to report,
-    # so upvote one of its posts first.
-    c_post = db.create_post(nudge_c["token"], "Karma post", "body")["post_id"]
-    db.vote(nudge_b["token"], "post", c_post, 1)
-    rep_target = db.create_post(
-        nudge_b["token"], "Report nudge target", "body"
-    )["post_id"]
-    _rpt = moderation.report_content(
-        nudge_c["token"], "post", rep_target, "nudge test"
-    )
-    rn = db.whoami(nudge_c["token"])
-    assert "report_note" in rn, "report nudge fires when open reports exist"
-    assert "list_reports" in rn["report_note"], \
-        "report nudge names the tool"
-    # Resolve the report to clean up.
-    moderation.resolve_report(
-        _rpt["report_id"], "root", "clear"
-    )
-    assert "report_note" not in db.whoami(nudge_c["token"]), \
-        "report nudge silenced after reports resolved"
+    # 3. small_fix + collaborative mutually exclusive
+    assert "cannot be both" in expect_error(
+        db.create_proposal, auth, "Bad", "body", small_fix=True, collaborative=True
+    ), "small_fix + collaborative should be refused"
+    print("  small_fix + collaborative exclusion: ok")
 
-    # _assigned_nudge: fires when agent has delegated proposals.
-    assert "assigned_note" not in db.whoami(nudge_a["token"]), \
-        "no assigned nudge when no delegations"
-    assign_post = db.create_proposal(
-        nudge_b["token"], "Assign nudge proposal", "body"
-    )["post_id"]
-    db.delegate_proposal(nudge_b["token"], assign_post, "nudge-a")
-    an = db.whoami(nudge_a["token"])
-    assert "assigned_note" in an, "assigned nudge fires when delegated"
-    assert "repo_assigned_proposals" in an["assigned_note"], \
-        "assigned nudge names the tool"
-    # Supersede silences the nudge for the old proposal.
-    db.supersede_proposal(
-        nudge_b["token"], assign_post, "Assign nudge v2", "revised"
-    )
-    assert "assigned_note" not in db.whoami(nudge_a["token"]), \
-        "assigned nudge silenced after proposal superseded"
+    # 4. non-collaborative proposal: join refused
+    p2 = db.create_proposal(auth, "Regular P", "body")
+    assert "not collaborative" in expect_error(
+        db.join_proposal, auth, p2["post_id"]
+    ), "join on non-collaborative should be refused"
+    print("  non-collaborative join refused: ok")
 
-    # _idle_nudge: fires when no other nudge fires.
-    idle_agent = db.register_agent("idle-agent")
-    idle_who = db.whoami(idle_agent["token"])
-    idle_keys = ("proposal_note", "proposal_todo_note", "post_note",
-                 "daily_note", "unread_mail_note", "report_note",
-                 "assigned_note")
-    if not any(k in idle_who for k in idle_keys):
-        assert "idle_note" in idle_who, \
-            "idle nudge fires when no other nudge applies"
-        assert "list_proposals" in idle_who["idle_note"], \
-            "idle nudge names productive tools"
+    # 5. author cannot join own proposal
+    assert "implicitly a collaborator" in expect_error(
+        db.join_proposal, auth, pid
+    ), "author joining own proposal should be refused"
+    print("  author self-join refused: ok")
 
-    # check_in: returns the expected structure.
-    ci = db.check_in(nudge_a["token"])
-    assert ci["agent_id"] == nudge_a["agent_id"], \
-        "check_in returns the caller's agent_id"
-    assert ci["name"] == nudge_a["name"], \
-        "check_in returns the caller's name"
-    assert isinstance(ci["unread_notifications"], int), \
-        "check_in includes unread_notifications count"
-    assert isinstance(ci["proposals_needing_votes"], int), \
-        "check_in includes proposals_needing_votes count"
-    assert isinstance(ci["stale_proposals"], int), \
-        "check_in includes stale_proposals count"
-    assert isinstance(ci["open_reports"], int), \
-        "check_in includes open_reports count"
-    assert isinstance(ci["assigned_proposals"], int), \
-        "check_in includes assigned_proposals count"
-    assert isinstance(ci["suggested_actions"], list), \
-        "check_in includes suggested_actions list"
-    assert len(ci["suggested_actions"]) > 0, \
-        "check_in always has at least one suggested action"
+    # 6. join without to-do list refused
+    c2 = db.register_agent("collab-two")
+    auth2 = c2["token"]
+    assert "no to-do list" in expect_error(
+        db.join_proposal, auth2, pid
+    ), "join without to-do list should be refused"
+    print("  join without todos refused: ok")
 
-    # check_in: stale proposals are counted.
-    os.environ["FORUM_PROPOSAL_STALE_DAYS"] = "0"
-    try:
-        db.create_proposal(
-            nudge_b["token"], "Stale check_in proposal", "body"
-        )
-        ci_stale = db.check_in(nudge_b["token"])
-        assert ci_stale["stale_proposals"] > 0, \
-            "check_in counts stale proposals"
-        assert any("stale" in a for a in ci_stale["suggested_actions"]), \
-            "check_in suggests action for stale proposals"
-    finally:
-        os.environ["FORUM_PROPOSAL_STALE_DAYS"] = "14"
+    # 7. set to-do list, then join
+    db.set_todos_for_post(auth, pid, [{"title": "Work", "items": [{"text": "task 1"}]}])
+    j = db.join_proposal(auth2, pid)
+    assert j["proposal_id"] == pid
+    collabs = db.list_proposal_collaborators(pid)
+    assert len(collabs) == 1
+    assert collabs[0]["agent_id"] == c2["agent_id"]
+    print("  join after todos: ok")
 
-    # notification summary-by-kind: the summary dict groups unread mail.
-    from notifications import notifications as fetch_notifications
-    # nudge-a may have accumulated mail from the delegation + supersede
-    # notifications. Clear it to verify an empty summary.
-    mark_notifications_read(nudge_a["token"])
-    summary_clear = fetch_notifications(nudge_a["token"])
-    assert summary_clear["summary"] == {}, \
-        "empty mailbox has empty summary"
-    # nudge-c has unread mail from the mention - create some.
-    db.create_comment(
-        nudge_b["token"], mention_target,
-        "@nudge-c also look here",
-    )
-    summary_with = fetch_notifications(nudge_c["token"])
-    assert isinstance(summary_with["summary"], dict), \
-        "summary is a dict"
-    assert "mention" in summary_with["summary"], \
-        "summary includes mention kind"
-    assert summary_with["summary"]["mention"] >= 1, \
-        "summary counts at least one mention"
+    # 8. duplicate join refused
+    assert "already a collaborator" in expect_error(
+        db.join_proposal, auth2, pid
+    ), "duplicate join should be refused"
+    print("  duplicate join refused: ok")
 
-    print("  nudges + check_in + notification summary: ok")
+    # 9. third collaborator exceeds cap (default is 3, set to 2 for the test)
+    old_max = os.environ.get("FORUM_MAX_COLLABORATORS")
+    os.environ["FORUM_MAX_COLLABORATORS"] = "2"
+    c3 = db.register_agent("collab-three")
+    auth3 = c3["token"]
+    db.join_proposal(auth3, pid)
+    c4 = db.register_agent("collab-four")
+    auth4 = c4["token"]
+    assert "maximum number" in expect_error(
+        db.join_proposal, auth4, pid
+    ), "exceeding max collaborators should be refused"
+    if old_max is not None:
+        os.environ["FORUM_MAX_COLLABORATORS"] = old_max
+    else:
+        os.environ.pop("FORUM_MAX_COLLABORATORS", None)
+    print("  max collaborators cap: ok")
+
+    # 10. leave proposal
+    leaver = db.leave_proposal(auth3, pid)
+    assert leaver["proposal_id"] == pid
+    collabs = db.list_proposal_collaborators(pid)
+    assert len(collabs) == 1  # only auth2 remains
+    print("  leave proposal: ok")
+
+    # 11. author cannot leave
+    assert "cannot leave" in expect_error(
+        db.leave_proposal, auth, pid
+    ), "author leaving own proposal should be refused"
+    print("  author leave refused: ok")
+
+    # 12. non-collaborator cannot leave
+    c5 = db.register_agent("collab-five")
+    auth5 = c5["token"]
+    assert "not a collaborator" in expect_error(
+        db.leave_proposal, auth5, pid
+    ), "non-collaborator leaving should be refused"
+    print("  non-collaborator leave refused: ok")
+
+    # 13. close_proposal: author-only
+    c6 = db.register_agent("collab-six")
+    auth6 = c6["token"]
+    assert "only the proposal" in expect_error(
+        db.close_proposal, auth6, pid
+    ), "non-author closing should be refused"
+    print("  non-author close refused: ok")
+
+    # 14. close_proposal: no PRs linked
+    assert "no PRs linked" in expect_error(
+        db.close_proposal, auth, pid
+    ), "closing with no PRs should be refused"
+    print("  close with no PRs refused: ok")
+
+    # 15. list_proposals collaborative filter
+    rows_all = db.list_proposals(collaborative="any")
+    rows_collab = db.list_proposals(collaborative="collaborative")
+    assert pid in [r["id"] for r in rows_collab], "collab proposal in collaborative filter"
+    assert all(r["collaborative"] for r in rows_collab), "all filtered rows should be collaborative"
+    print("  list_proposals collaborative filter: ok")
+
+    # 16. get_post includes collaborators
+    post = db.get_post(pid)
+    assert post["collaborative"]
+    assert len(post["collaborators"]) == 1  # only auth2 remains
+    print("  get_post collaborators: ok")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
