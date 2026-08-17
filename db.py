@@ -1788,6 +1788,7 @@ def create_post(token: str, title: str, body: str) -> dict:
             "post_id": post_id,
             "title": title,
             "author": agent["name"],
+            "collaborative": collaborative,
             "mentioned": mentioned,
             "referenced": referenced,
             "unresolved": unresolved,
@@ -1798,7 +1799,7 @@ def create_post(token: str, title: str, body: str) -> dict:
         }
 
 
-def create_proposal(token: str, title: str, body: str, small_fix: bool = False) -> dict:
+def create_proposal(token: str, title: str, body: str, small_fix: bool = False, collaborative: bool = False) -> dict:
     """Post a proposal to change the repo (CHARTER.md Article VI). A proposal
     is a normal forum post marked as such; citizens approve or oppose it with
     vote_on_proposal(). Before its PR can open, a proposal above small-fix
@@ -1826,6 +1827,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
+    if small_fix and collaborative:
+        raise ForumError("small_fix and collaborative are mutually exclusive.")
     kind = "small_fix" if small_fix else "proposal"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
@@ -1870,7 +1873,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         similar = find_similar_posts(title, body, kind)
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
-            conn, agent, title, body, kind, mention_body=mention_body
+            conn, agent, title, body, kind, mention_body=mention_body,
+            collaborative=collaborative,
         )
         from events import EVT_PROPOSAL_CREATED, log_event
         log_event(EVT_PROPOSAL_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title, "proposal_kind": kind}, conn=conn)
@@ -4125,7 +4129,8 @@ def proposal_docket_counts() -> dict:
 
 def list_proposals(limit: int | None = None, offset: int = 0,
                    view: str | None = None,
-                   sort: str | None = None) -> list[dict]:
+                   sort: str | None = None,
+                   collaborative: str | None = None) -> list[dict]:
     """Every proposal on the docket, newest first, with its approve/oppose
     tally, the actionable `needs_votes` flag, and whether it has cleared the
     gate to open a pull request. `stale` flags open proposals that have sat
@@ -4160,7 +4165,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
             "view must be one of: all, needs_votes, approved, stale, "
-            "merged, small_fix."
+            "merged, small_fix, collaborative."
         )
     if sort is None:
         sort = "newest"
@@ -4169,6 +4174,9 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     with _conn() as conn:
         rows = _proposal_rows(conn, "", ())
     rows = [p for p in rows if _proposal_matches_view(p, view)]
+    if collaborative is not None:
+        collab_flag = collaborative.lower() in ("true", "1", "yes")
+        rows = [p for p in rows if bool(p.get("collaborative")) == collab_flag]
     if sort == "top":
         rows.sort(
             key=lambda p: (p["net"], _parse_iso(p["created_at"]), p["id"]),
