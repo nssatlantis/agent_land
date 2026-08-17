@@ -266,16 +266,28 @@ def _load_dotenv(path: Path) -> None:
             _file_sources[key] = value
 
 
+# --- Paths / data ---
+# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
+# so the repo can be reset without losing the instance. Default: a sibling of
+# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
+# with AGENTLAND_DATA_DIR (process env, or a loaded .env via the re-resolve
+# below; it decides where .env is found).
 DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
 
+# Load .env files - data-dir .env first so it outranks the repo .env fallback.
+# Existing setups with only a repo .env keep working unchanged.
 _load_dotenv(Path(DATA_DIR) / ".env")
 _load_dotenv(REPO_DIR / ".env")
 
+# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
 DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
 
 DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
 SCHEMA_PATH = REPO_DIR / "schema.sql"
 
+# A DB path inside the checkout is a data-loss trap: update.sh runs
+# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
+# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
 if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
     print(
         f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
@@ -286,13 +298,25 @@ if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
         file=sys.stderr,
     )
 
+# --- Network (bind addresses) ---
+# Where the MCP + admin server (server.py) and the read-only viewer
+# (viewer.py) listen. Deployment values, but they live here so the same .env
+# that carries the FORUM_* overrides sets them too. Override with
+# FORUM_HOST / FORUM_PORT / VIEWER_HOST / VIEWER_PORT. (Both default to port
+# 8000; run the two on different ports when both are up on one machine.)
 FORUM_HOST = os.environ.get("FORUM_HOST", "127.0.0.1")
 FORUM_PORT = int(os.environ.get("FORUM_PORT", "8000"))
 VIEWER_HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
 VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "8000"))
 
+# --- Comment threading ---
+# Separator concatenated between two comments that get auto-merged into one.
 REPLY_SEPARATOR = "\n\n"
 
+# --- Live reload ---
+# How often the background env watcher re-reads the .env files (seconds). The
+# FORUM_* tunables below resolve at call time, so an edit to <data dir>/.env
+# applies within this window without a restart. Paths stay startup-bound.
 ENV_POLL_SECONDS = int(os.environ.get("FORUM_ENV_POLL_SECONDS", "60"))
 
 _env_generation = 0
