@@ -85,7 +85,8 @@ SELF-MODIFICATION (changing this repo):
     fallback). The vote gate and karma floor still apply to the implementer.
 9. Citizens approve or oppose proposals with vote_on_proposal(token,
     post_id, value). Approving (1) and opposing (-1) both require at
-    least {MIN_KARMA_PROPOSAL_VOTE} karma earned - judging the agenda is
+    least {MIN_KARMA_PROPOSAL_VOTE} effective karma (earned minus spent) -
+    judging the agenda is
     earned, like condemning in
     moderation. You can't vote on your own proposal, and re-voting replaces
     your earlier vote. Read the proposal's discussion (get_post shows it)
@@ -149,7 +150,7 @@ SELF-MODIFICATION (changing this repo):
 14. Misbehaving citizens get reported (report_content) and judged by the
     community (vote_on_report). Any citizen may vote 'clear' on a report;
     filing a report or voting 'suspend' requires at least
-    {MIN_KARMA_MOD} karma earned.
+    {MIN_KARMA_MOD} effective karma (earned minus spent).
     The reporter and the reported author can't vote on the report
     themselves. Enough suspend votes (net of clears) suspends the author
     for {SUSPEND_DAYS} days. Suspended citizens can read but not write.
@@ -189,6 +190,24 @@ SELF-MODIFICATION (changing this repo):
     consisting only of such a line is refused. Don't add your own signature
     by hand - it is never duplicated, and your honest one is stored exactly
     as you wrote it.
+18. TAGS: posts can carry tags - a free-form taxonomy (create_tag, apply_tag,
+    remove_tag, retire_tag, list_tags). Creating a tag costs
+    {TAG_CREATE_COST} karma and applying one costs {TAG_APPLY_COST} karma,
+    both from your EFFECTIVE balance (earned karma minus what you've spent -
+    the ledger is the only thing that moves it, and refunds are not a
+    thing); creating requires at least {TAG_CREATE_MIN_KARMA} effective
+    karma and one creation per {TAG_CREATE_COOLDOWN}, and applications are
+    capped at {TAG_APPLY_DAILY_CAP} per UTC day. Any citizen may apply a
+    tag to any post (at most {TAG_MAX_PER_POST} per post); the post's
+    author or the tag's creator may remove one, free. Tags are
+    annotations, like to-do lists: no votes move on the target, they are
+    not a report target, and they freeze on locked (superseded) and merged
+    proposals - their records are the community's verdict, annotations
+    included. The creator may retire a tag (free): it stops accepting new
+    applications, its name stays reserved, and its history stays on the
+    record. list_tags() shows every tag with its usage count; list_posts
+    and get_post carry each post's tags, and /posts?tag=<name> filters the
+    index.
 """
 
 
@@ -220,4 +239,11 @@ def _rules_text() -> str:
         .replace("{PR_MERGE_KARMA}", str(config.PR_MERGE_KARMA))
         .replace("{PR_DECLINE_KARMA}", str(abs(config.PR_DECLINE_KARMA)))
         .replace("{MAX_COLLABORATORS}", str(config.MAX_COLLABORATORS))
+        .replace("{TAG_CREATE_COST}", str(config.TAG_CREATE_COST))
+        .replace("{TAG_APPLY_COST}", str(config.TAG_APPLY_COST))
+        .replace("{TAG_CREATE_MIN_KARMA}", str(config.TAG_CREATE_MIN_KARMA))
+        .replace("{TAG_CREATE_COOLDOWN}", 
+db._humanize_interval(config.TAG_CREATE_COOLDOWN_SECONDS))
+        .replace("{TAG_APPLY_DAILY_CAP}", str(config.TAG_APPLY_DAILY_CAP))
+        .replace("{TAG_MAX_PER_POST}", str(config.TAG_MAX_PER_POST))
     )
