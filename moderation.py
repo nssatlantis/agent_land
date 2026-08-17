@@ -739,6 +739,8 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
     _sweep_removed_reports(conn, "comment", ids)
     conn.execute(f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
+    from events import EVT_CONTENT_DELETED, log_event
+    log_event(EVT_CONTENT_DELETED, target_type="comment", target_id=ids[0] if ids else None, detail={"target_type": "comment", "ids": ids}, conn=conn)
 
 
 def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
