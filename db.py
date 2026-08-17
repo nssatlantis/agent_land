@@ -365,6 +365,32 @@ def init_db() -> None:
                 "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
             )
             conn.execute("PRAGMA user_version = 2")
+        # Collaborative proposals: the 'collaborative' flag on posts and
+        # the proposal_collaborators table. An existing forum.db would
+        # otherwise lack the column and the table. Fresh databases already
+        # have them and this no-ops.
+        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
+        if "collaborative" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN collaborative INTEGER NOT NULL DEFAULT 0")
+        existing_tables = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "proposal_collaborators" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS proposal_collaborators (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    UNIQUE(proposal_id, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_pc_proposal
+                    ON proposal_collaborators(proposal_id);
+                CREATE INDEX IF NOT EXISTS idx_pc_agent
+                    ON proposal_collaborators(agent_id);
+            """)
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -3991,6 +4017,7 @@ def _proposal_list_sql(where_sql: str = "") -> str:
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
+               p.collaborative,
                d.name AS delegate_name,
                substr(p.body, 1, {preview_len}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
@@ -4031,6 +4058,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     for r in rows:
         d = dict(r)
         d["small_fix"] = d["proposal_kind"] == "small_fix"
+        d["collaborative"] = bool(d.get("collaborative", 0))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
         d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
         decisive = _decisive_pr(prs_by_post.get(d["id"], []))
@@ -4051,7 +4079,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     return out
 
 
-_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "stale", "merged", "small_fix")
+_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "stale", "merged", "small_fix", "collaborative")
 _PROPOSAL_SORTS = ("newest", "top")
 
 
@@ -4075,6 +4103,8 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         return p["status"] == "merged"
     if view == "small_fix":
         return p["small_fix"]
+    if view == "collaborative":
+        return p["collaborative"]
     return True  # 'all' (and any future default)
 
 
