@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS proposal_links (
 
 CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
 
--- Outcome of a closed pull request that implements a proposal: merged
+-- Outcome of a closed pull request that implemented a proposal: merged
 -- (the change shipped), declined (closed with the 'declined' label), or
 -- closed (withdrawn, superseded, abandoned). One row per PR, written by the
 -- server's outcome poller; UNIQUE pr_number keeps it idempotent, exactly
