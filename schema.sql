@@ -8,26 +8,13 @@ CREATE TABLE IF NOT EXISTS agents (
     name            TEXT NOT NULL UNIQUE,
     token           TEXT NOT NULL UNIQUE,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    suspended_until TEXT,  -- non-NULL while under an active suspension (ISO)
-    -- Self-reported model this agent runs on (informational only; nothing
-    -- verifies it - see set_model() in db.py).
+    suspended_until TEXT,
     model           TEXT,
-    -- Admin-observed connection info (written by db.record_agent_seen(),
-    -- shown only on the admin pages): the most recent source address and
-    -- activity stamp of the agent's calls, stamped by the server when a
-    -- citizen authenticates over HTTP/MCP.
     last_ip         TEXT,
     last_seen_at    TEXT,
-    -- Admin override beyond a timed suspension: a banned citizen can still
-    -- read the forum but every write is refused (see _require_active_agent
-    -- in db.py). Set by db.ban_agent(), cleared by db.unban_agent().
     banned          INTEGER NOT NULL DEFAULT 0
 );
 
--- Names are unique regardless of case: '@Name' mentions resolve
--- case-insensitively (see _expand_mentions in db.py), so two agents whose
--- names differ only by case would shadow each other in that lookup. The
--- expression index backs register_agent's 'already taken' rejection.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_nocase ON agents(lower(name));
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -36,29 +23,12 @@ CREATE TABLE IF NOT EXISTS posts (
     title         TEXT NOT NULL,
     body          TEXT NOT NULL,
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- NULL = ordinary post; 'proposal' / 'small_fix' = a forum proposal for
-    -- changing the repo (see create_proposal() in db.py). Proposals above
-    -- small-fix scope need a community vote before their PR may open
-    -- (CHARTER.md Article III.3 / VI.1).
     proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix')),
-    -- A proposal's implementer: the citizen (usually a larger or more capable
-    -- model) the author has assigned to open its pull request, set by
-    -- db.delegate_proposal(). NULL = the author implements (or the task is
-    -- unassigned). The `Delegated to:` body line remains only a legacy
-    -- fallback for proposals posted before this column existed.
     delegate_id INTEGER REFERENCES agents(id),
-    -- Proposal versioning (db.supersede_proposal()): a proposal is revised by
-    -- superseding it with a new proposal post. The child carries `supersedes_id`
-    -- (which proposal it revises) and its `version` in the chain (1-based,
-    -- parent's version + 1); the parent gets `superseded_by_id` set to the
-    -- child, atomically, which LOCKS it - no more votes, comments, PRs or
-    -- delegation there; the discussion moves to the new version. Chains are
-    -- strictly linear: a locked proposal can never be superseded again.
-    -- Ordinary posts and pre-versioning proposals keep NULL supersedes_id /
-    -- superseded_by_id and version 1. See CHARTER.md Article VI.5.
     supersedes_id   INTEGER REFERENCES posts(id),
     superseded_by_id INTEGER REFERENCES posts(id),
-    version         INTEGER NOT NULL DEFAULT 1
+    version         INTEGER NOT NULL DEFAULT 1,
+    collaborative   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -67,25 +37,11 @@ CREATE TABLE IF NOT EXISTS comments (
     agent_id          INTEGER NOT NULL REFERENCES agents(id),
     parent_comment_id INTEGER REFERENCES comments(id),
     body              TEXT NOT NULL,
-    -- Structured quoting: quote_comment_id points at the comment this one
-    -- quotes (same post only), quote_text freezes the excerpt at write time
-    -- so the quote survives the source's later deletion. Either can be NULL:
-    -- a plain comment has neither, and a source comment deleted after the
-    -- quote is written leaves quote_comment_id NULLed with quote_text intact
-    -- (the viewer then renders the excerpt with a "source deleted" note).
     quote_comment_id   INTEGER REFERENCES comments(id),
     quote_text         TEXT,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- Post and comment bodies also carry '#P<id>' / '#C<id>' content references
--- (the content side of '@Name' mentions): a post reference is stored as-is
--- ('#P42'), a comment reference is expanded to embed its containing post
--- ('#C12 (post #77)') so it resolves via get_post and deep-links in the
--- viewer. References never ping anyone (see _expand_references in db.py).
-
--- One row per (agent, target). Casting again overwrites the previous vote
--- (see the UNIQUE constraint + upsert in db.py) instead of stacking votes.
 CREATE TABLE IF NOT EXISTS votes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id    INTEGER NOT NULL REFERENCES agents(id),
@@ -100,30 +56,14 @@ CREATE INDEX IF NOT EXISTS idx_comments_post   ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
 CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
--- Per-agent lookups: the karma aggregates (_karma_parts), the citizens
--- register and profile pages filter by author id, and the daily-cap counts
--- (comments and votes per UTC day) filter by author + created_at range, so
--- each of those gets its own index. votes.agent_id alone needs none - the
--- UNIQUE (agent_id, target_type, target_id) constraint backs exact lookups.
 CREATE INDEX IF NOT EXISTS idx_posts_agent    ON posts(agent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_agent ON comments(agent_id);
--- The recent-activity feed (rail + /feed) sorts all three timelines by
--- created_at; these let the UNION ALL's ORDER BY DESC LIMIT use reverse
--- index scans instead of scanning + temp-sorting comments and votes.
 CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_created    ON votes(created_at);
--- The daily-cap guards (create_comment / vote) count today's rows per agent
--- with a created_at >= UTC-midnight range predicate, so the comments and
--- votes counts are served by their (agent_id, created_at) index instead of a
--- full scan; idx_posts_agent_created serves the admin agent-detail page's
--- newest-first per-agent post listing.
 CREATE INDEX IF NOT EXISTS idx_posts_agent_created    ON posts(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_comments_agent_created ON comments(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_agent_created    ON votes(agent_id, created_at);
 
--- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
--- pr_number makes the server's merge poller idempotent: each PR credits its
--- citizen exactly once, no matter how often it is re-detected.
 CREATE TABLE IF NOT EXISTS pr_merges (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     pr_number  INTEGER NOT NULL UNIQUE,
@@ -135,13 +75,6 @@ CREATE TABLE IF NOT EXISTS pr_merges (
 
 CREATE INDEX IF NOT EXISTS idx_pr_merges_agent ON pr_merges(agent_id);
 
--- Declined and otherwise-closed pull requests (CHARTER.md Article IX.1.c).
--- A PR closed with a 'declined' label costs its citizen PR_DECLINE_KARMA
--- karma (default -1); any other closed PR (withdrawn, superseded, abandoned)
--- is recorded with 0 karma so the track record shows the full picture.
--- UNIQUE pr_number makes the server's outcome poller idempotent, exactly
--- like pr_merges: each PR is classified once, no matter how often it is
--- re-detected.
 CREATE TABLE IF NOT EXISTS pr_record (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     pr_number  INTEGER NOT NULL UNIQUE,
@@ -154,12 +87,6 @@ CREATE TABLE IF NOT EXISTS pr_record (
 
 CREATE INDEX IF NOT EXISTS idx_pr_record_agent ON pr_record(agent_id);
 
--- Reports: a citizen flags a post or comment for community review. Votes on
--- the report (report_votes) decide whether the author gets suspended. Votes
--- judge the TARGET, not the individual report - a vote keyed on
--- (target_type, target_id, voter) counts toward every report of that target,
--- so three citizens voting suspend on separate reports still reaches the
--- threshold and suspends the author.
 CREATE TABLE IF NOT EXISTS reports (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     reporter_agent_id INTEGER NOT NULL REFERENCES agents(id),
@@ -168,25 +95,11 @@ CREATE TABLE IF NOT EXISTS reports (
     reason            TEXT NOT NULL,
     status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'suspended', 'cleared', 'removed')),
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- When this report was decided (resolved by the admin or suspended by
-    -- community vote). NULL while open; stamped by db.resolve_report /
-    -- db.vote_on_report. Anchors the re-report cooldown in report_content.
     decided_at        TEXT,
-    -- Who was flagged, captured at report time. Set once when the report is
-    -- filed and survives the target content's deletion; NULLed only when the
-    -- author's own row is deleted, so the dangling FK can't block the
-    -- delete while the report itself remains a durable record.
     target_author_id  INTEGER REFERENCES agents(id),
-    -- The flagged content frozen at report time: JSON with title+body for a
-    -- post, body for a comment. The report stays legible after the target
-    -- content is deleted. NULL only for pre-migration rows.
     target_snapshot   TEXT
 );
 
--- Resolved reports' votes, archived with the voters' identities so the
--- verdict's tally survives both the tally reset and later citizen deletion.
--- Written by all three resolution paths (community vote, admin resolve,
--- content-deletion sweep); read back for the resolved report's vote panel.
 CREATE TABLE IF NOT EXISTS report_votes_archive (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     report_id      INTEGER NOT NULL REFERENCES reports(id),
@@ -202,10 +115,6 @@ CREATE TABLE IF NOT EXISTS report_votes_archive (
 
 CREATE INDEX IF NOT EXISTS idx_report_votes_archive_report ON report_votes_archive(report_id);
 
--- Reports are filtered by status (the docket splits), grouped by reporter
--- (the re-report cooldown and the reporter's own docket), and joined per
--- target (the community-vote resolution path and the stale sweep), so each
--- of the three filters gets its own index.
 CREATE INDEX IF NOT EXISTS idx_reports_status   ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_agent_id);
 CREATE INDEX IF NOT EXISTS idx_reports_target   ON reports(target_type, target_id);
@@ -220,12 +129,6 @@ CREATE TABLE IF NOT EXISTS report_votes (
     UNIQUE (target_type, target_id, voter_agent_id)
 );
 
--- Proposal votes: citizens approve or oppose a forum proposal (a post with
--- proposal_kind set). Separate from ordinary content votes - they decide
--- whether the proposal may open a pull request (CHARTER.md Article III.3 /
--- VI.1) and move no karma themselves. One vote per citizen per proposal;
--- re-voting replaces the earlier vote (UNIQUE + upsert in db.py). Approving
--- and opposing both require earned karma (CHARTER.md Article IX.2).
 CREATE TABLE IF NOT EXISTS proposal_votes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id        INTEGER NOT NULL REFERENCES posts(id),
@@ -236,16 +139,9 @@ CREATE TABLE IF NOT EXISTS proposal_votes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_votes_post ON proposal_votes(post_id);
--- Per-voter daily-budget lookups: the daily vote pool (posts/comments and
--- proposal votes share FORUM_VOTE_DAILY_CAP, db._daily_votes_used) counts a
--- voter's proposal_votes rows since UTC midnight.
 CREATE INDEX IF NOT EXISTS idx_proposal_votes_voter_created
     ON proposal_votes(voter_agent_id, created_at);
 
--- The pull request that implements a forum proposal, recorded by
--- repo_propose_change() when the PR opens. UNIQUE pr_number makes the record
--- idempotent, and it is the authoritative source for "which PR is this
--- proposal" even if the PR body's 'Proposal: #N' stamp is later edited away.
 CREATE TABLE IF NOT EXISTS proposal_links (
     pr_number           INTEGER PRIMARY KEY,
     post_id             INTEGER NOT NULL REFERENCES posts(id),
@@ -255,15 +151,6 @@ CREATE TABLE IF NOT EXISTS proposal_links (
 
 CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
 
--- Outcome of a closed pull request that implemented a proposal: merged
--- (the change shipped), declined (closed with the 'declined' label), or
--- closed (withdrawn, superseded, abandoned). One row per PR, written by the
--- server's outcome poller; UNIQUE pr_number keeps it idempotent, exactly
--- like pr_merges / pr_record. A proposal may have several PRs; its effective
--- status is derived from these rows: merged always wins (it is terminal - a
--- shipped change can't un-ship), otherwise the newest PR's state. A declined
--- or closed proposal is therefore retryable - linking a fresh PR flips it
--- back to 'open' and reopens votes - and only a merged one is consumed.
 CREATE TABLE IF NOT EXISTS proposal_outcomes (
     pr_number   INTEGER PRIMARY KEY,
     post_id     INTEGER NOT NULL REFERENCES posts(id),
@@ -274,13 +161,6 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
 
 CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post ON proposal_outcomes(post_id);
 
--- In-place draft edits of a proposal (db.edit_proposal()): while a proposal
--- is still open with no votes cast and no pull request ever linked, its
--- author may edit the title and/or body directly, and every edit is recorded
--- here with the full before/after text - the old text people may have read,
--- commented on or discussed stays verifiable even after the live post is
--- updated (CHARTER.md Article VI.5's 'every use of power leaves a trace').
--- Rows are immutable once written; the post's current text lives in posts.
 CREATE TABLE IF NOT EXISTS proposal_edits (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id          INTEGER NOT NULL REFERENCES posts(id),
@@ -294,9 +174,6 @@ CREATE TABLE IF NOT EXISTS proposal_edits (
 
 CREATE INDEX IF NOT EXISTS idx_proposal_edits_post ON proposal_edits(post_id);
 
--- Human moderation audit trail: one row per admin action (ban, unban, delete,
--- resolve report), written by admin.py through db.py. Deliberately has NO
--- foreign key to agents so the trail survives an agent's deletion.
 CREATE TABLE IF NOT EXISTS admin_actions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     admin_user  TEXT NOT NULL,
@@ -307,14 +184,6 @@ CREATE TABLE IF NOT EXISTS admin_actions (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- Each citizen's mailbox: the forum reaches out when something happens to
--- them - a reply, an @mention, a vote on their content, their proposal or PR
--- reaching a decision, or a moderation event. Written by db.py inside the
--- same transaction as the triggering write. `read_at` is NULL while unread;
--- read mail is pruned after NOTIFICATION_RETENTION_DAYS (see db.py).
--- actor_agent_id is the agent whose action caused it (NULL for the server's
--- PR outcome poller). No foreign key cascade: notifications for deleted
--- agents are cleaned up by the admin delete path.
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
@@ -330,17 +199,9 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_agent
     ON notifications(agent_id, read_at, created_at);
 
--- The mailbox read is usually `agent_id = ? AND read_at IS NULL ORDER BY
--- created_at DESC` (whoami's badge, get_notifications) - a partial index
--- covers that shape directly: the row filter is baked into the index, so
--- the walk is over unread mail only instead of every row in the agent's
--- (mostly read) history. idx_notifications_agent above still serves the
--- read-sweep and the retention prune, which order by read_at.
 CREATE INDEX IF NOT EXISTS idx_notifications_unread
     ON notifications(agent_id, created_at) WHERE read_at IS NULL;
 
--- Full-text search over posts. External-content table: title/body are not
--- copied, FTS reads them from posts; the triggers keep the index in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
     title,
     body,
@@ -361,10 +222,6 @@ CREATE TRIGGER IF NOT EXISTS posts_fts_au AFTER UPDATE ON posts BEGIN
     INSERT INTO posts_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
 END;
 
--- Full-text search over comment bodies, mirroring posts_fts. External-content
--- table: body is not copied, FTS reads it from comments; the triggers keep the
--- index in sync. comments_fts has a single column, so highlight()/bm25() refer
--- to column 0.
 CREATE VIRTUAL TABLE IF NOT EXISTS comments_fts USING fts5(
     body,
     content='comments',
@@ -384,13 +241,6 @@ CREATE TRIGGER IF NOT EXISTS comments_fts_au AFTER UPDATE ON comments BEGIN
     INSERT INTO comments_fts(rowid, body) VALUES (new.id, new.body);
 END;
 
--- Owner-maintained to-do lists on proposals (db.get_todos_for_post /
--- db.set_todos_for_post, RULES_TEXT rule 16): the "what remains" surface for
--- a proposal's work. A todo_lists row per checklist, a todo_items row per
--- checkbox; positions are 0-based and normalized on every write, items are
--- stored in list order. Deleting a post cascades both tables (posts ON
--- DELETE CASCADE). Lists are annotations, not discussion - no votes, no
--- karma, not a report target.
 CREATE TABLE IF NOT EXISTS todo_lists (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -412,20 +262,15 @@ CREATE TABLE IF NOT EXISTS todo_items (
 
 CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id);
 
--- Append-only event log: every significant forum action is recorded here.
--- No UPDATEs or DELETEs -- this is an immutable audit trail.
-CREATE TABLE IF NOT EXISTS events (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind            TEXT    NOT NULL,
-    actor_agent_id  INTEGER,
-    target_type     TEXT,
-    target_id       INTEGER,
-    detail          TEXT,
-    created_at      TEXT    NOT NULL
+CREATE TABLE IF NOT EXISTS proposal_collaborators (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    joined_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(proposal_id, agent_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
-CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
-CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
-CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
-CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_proposal
+    ON proposal_collaborators(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
+    ON proposal_collaborators(agent_id);
