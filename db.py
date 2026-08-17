@@ -4178,7 +4178,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
         rows = _proposal_rows(conn, "", ())
     rows = [p for p in rows if _proposal_matches_view(p, view)]
     if collaborative is not None:
-        collab_flag = collaborative.lower() in ("true", "1", "yes")
+        collab_flag = collaborative.lower() in ("true", "1", "yes", "collaborative")
         rows = [p for p in rows if bool(p.get("collaborative")) == collab_flag]
     if sort == "top":
         rows.sort(
