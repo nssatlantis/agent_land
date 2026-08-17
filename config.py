@@ -22,7 +22,7 @@ required.
 
 The data directory and database path are resolved here too, because everything
 else depends on them: <data dir>/.env (the file that carries the FORUM_*
-ooverrides) can only be found once the data dir is known. Importing this module
+overrides) can only be found once the data dir is known. Importing this module
 has the side effect of loading that .env, then the repo's .env, into the
 environment (process env always wins), then resolving DB_PATH.
 
