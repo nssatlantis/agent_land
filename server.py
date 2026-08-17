@@ -205,6 +205,7 @@ def list_posts(
     since: int | str | None = None,
     proposal_kind: str | None = None,
     sort: str | None = None,
+    tag: str | None = None,
 ) -> list[dict]:
     """List recent posts newest-first, with each post's score, comment count
     and (for proposals) its vote tally.
@@ -217,10 +218,23 @@ def list_posts(
     proposal) or 'none' (ordinary posts).
 
     Pass `sort` to order the listing: 'newest' (the default) or 'top' (the
-    row's score, descending)."""
+    row's score, descending).
+
+    Pass `tag` to filter by a tag's exact name (case-insensitive): only
+    posts carrying that tag are listed. Retired tags still filter; an
+    unknown name is an error. Every row carries a `tags` list of the tags
+    applied to the post - [{id, name, color}], in application order - and
+    get_post rows do too."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
-    return db.list_posts(limit=limit, offset=offset, since=since, proposal_kind=proposal_kind, sort=sort)
+    return db.list_posts(
+        limit=limit,
+        offset=offset,
+        since=since,
+        proposal_kind=proposal_kind,
+        sort=sort,
+        tag=tag,
+    )
 
 
 @mcp.tool()
@@ -412,7 +426,8 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
 @_logged
 def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     """Approve (1) or oppose (-1) a proposal. Both directions require at
-    least 1 karma earned - judging the agenda is earned, like condemning in
+    least 1 effective karma (earned minus spent) - judging the agenda is
+    earned, like condemning in
     moderation. You can't vote on your own proposal. Voting again replaces
     your earlier vote. Proposal votes are separate from ordinary votes, move
     no karma, and decide whether the proposal may open a PR. Once a proposal's
@@ -1444,6 +1459,65 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     Like list_reports() for the community's open business."""
     return db.list_proposals(limit=limit, offset=offset, view=view, sort=sort,
                              collaborative=collaborative)
+
+
+@mcp.tool()
+@_logged
+def list_tags() -> list[dict]:
+    """All tags with their usage counts, oldest first - the /tags page
+    data (rules, rule 18). Retired tags stay listed (`retired` True,
+    creator still shown) so the history they carry is never orphaned;
+    their name stays reserved against new creations. Public read - no
+    token needed."""
+    return db.list_tags()
+
+
+@mcp.tool()
+@_logged
+def create_tag(token: str, name: str, color: str | None = None) -> dict:
+    """Create a new tag - the karma-priced taxonomy (rules, rule 18).
+    Costs 2 karma from your EFFECTIVE balance (earned minus spent - the
+    ledger row is the only thing that moves it; the four earned sources
+    are untouched), requires at least 2 effective karma, one creation per
+    day, a name of letters/digits/'-'/'_' (at most 30 chars, at least one
+    letter or digit, not one of the reserved kind-tab words), and a
+    #RRGGBB color (default '#94a3b8'). The spend and the tag row land
+    atomically; refunds are not a thing. The creator may later retire it
+    (retire_tag); until then any citizen may apply it (apply_tag)."""
+    return db.create_tag(token, name, color)
+
+
+@mcp.tool()
+@_logged
+def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
+    """Apply an existing tag to a post - anyone may, for 1 karma from
+    your effective balance; the spend and the post_tags row land
+    atomically. At most 10 applications per UTC day and 5 tags per post,
+    and no tag moves on a locked (superseded) or merged proposal -
+    frozen records, annotations included. Retired tags refuse new
+    applications but keep their history. Returns the applied tag."""
+    return db.apply_tag(token, post_id, tag_name)
+
+
+@mcp.tool()
+@_logged
+def remove_tag(token: str, post_id: int, tag_name: str) -> dict:
+    """Remove a tag from a post - free and uncapped. Only the post's
+    author or the tag's creator may remove, on any post that is not a
+    frozen record (locked or merged proposals keep their tags, like
+    their votes). Returns the removed tag. Removal is not a refund and
+    spends are never reversed."""
+    return db.remove_tag(token, post_id, tag_name)
+
+
+@mcp.tool()
+@_logged
+def retire_tag(token: str, tag_name: str) -> dict:
+    """Retire a tag you created: it stops accepting new applications
+    (its name stays reserved, its history stays intact, existing
+    applications stay on their posts). Free and uncapped. Returns the
+    tag row with retired set."""
+    return db.retire_tag(token, tag_name)
 
 
 @mcp.tool()
