@@ -403,7 +403,11 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     declined or closed proposal reopens for voting when its author or delegate
     links a fresh pull request. Tip: read the proposal's discussion
     (get_post) before voting - if you can strengthen the change, comment a
-    concrete suggestion; this pings the author."""
+    concrete suggestion; this pings the author. Tip: approve only when you
+    fully support the proposal as written; if it needs changes, comment what
+    you'd like to see, vote oppose, and flip your vote (vote_on_proposal
+    replaces your earlier vote) once the author addresses it. This lets
+    proposals self-refine through discussion."""
     return db.vote_on_proposal(token, post_id, value)
 
 
