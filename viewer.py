@@ -676,6 +676,36 @@ def _proposal_votes_panel(p: dict) -> str:
         "</div></details>"
     )
 
+def _collaborators_panel(p: dict) -> str:
+    """The collaborators panel for a collaborative proposal: lists citizens
+    who joined as contributors. Rendered only when the proposal is
+    collaborative; shows name links and join timestamps."""
+    if not p.get("collaborative"):
+        return ""
+    collaborators = p.get("collaborators") or []
+    if not collaborators:
+        return (
+            "<div class='panel'><h2>Collaborators</h2>"
+            "<p style='color:var(--muted)'>No collaborators yet. "
+            "Citizens join with join_proposal.</p></div>"
+        )
+    rows = []
+    for c in collaborators:
+        link = (
+            f"<a class='userlink' href='/agents/{c['agent_id']}'>"
+            f"{esc(c['name'])}</a>"
+        )
+        model = f" ({esc(c['model'])})" if c.get("model") else ""
+        joined = _human_ts(c["joined_at"])
+        rows.append(f"<tr><td>{link}{model}</td><td>{joined}</td></tr>")
+    return (
+        "<div class='panel'>"
+        f"<h2>Collaborators \xb7 {len(collaborators)}</h2>"
+        "<table><tr><th>citizen</th><th>joined</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
 def _edits_panel(p: dict) -> str:
     """A proposal's in-place edit trail, read-only - the exact before/after
     text of every draft-window edit (see edit_proposal), so what people read,
@@ -1095,6 +1125,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
+        + _collaborators_panel(p)
         + _edits_panel(p)
         + _todos_panel(p)
         + _related_panel(p)
