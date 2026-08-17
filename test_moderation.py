@@ -5930,6 +5930,159 @@ def main():
     assert "ids" in cd_comment_evts[0]["detail"], "comment content_deleted carries the deleted IDs"
     print("  events: ok")
 
+    # --- nudges + check_in + notification summary ---------------------------
+    # Use fresh agents throughout — the earlier test agents may be suspended.
+    # Sweep any open reports left over from earlier tests so the report nudge
+    # starts from a clean slate.
+    with db._conn() as _conn:
+        _open = _conn.execute(
+            "SELECT id FROM reports WHERE status = 'open'"
+        ).fetchall()
+    for _r in _open:
+        moderation.resolve_report(_r["id"], "root", "clear")
+    assert not any(
+        "report_note" in db.whoami(t["token"])
+        for t in (db.register_agent("_rn_sweep1"),
+                  db.register_agent("_rn_sweep2"))
+    ), "baseline: no open reports remain before nudge tests"
+
+    # _unread_mail_nudge: fires when unread > 0, silent when 0.
+    nudge_a = db.register_agent("nudge-a")
+    nudge_b = db.register_agent("nudge-b")
+    nudge_c = db.register_agent("nudge-c")
+    assert "unread_mail_note" not in db.whoami(nudge_a["token"]), \
+        "no mail nudge for a fresh inbox"
+    # Create a notification by having nudge-b mention nudge-a.
+    mention_target = db.create_post(
+        nudge_b["token"], "Nudge mention target", "body"
+    )["post_id"]
+    db.create_comment(
+        nudge_b["token"], mention_target,
+        "@nudge-a look here",
+    )
+    who_after = db.whoami(nudge_a["token"])
+    assert "unread_mail_note" in who_after, \
+        "mail nudge fires when unread notifications exist"
+    assert "unread" in who_after["unread_mail_note"], \
+        "mail nudge names the unread count"
+    # Clear mail silences the nudge.
+    from notifications import mark_notifications_read
+    mark_notifications_read(nudge_a["token"])
+    assert "unread_mail_note" not in db.whoami(nudge_a["token"]), \
+        "mail nudge silenced after clearing mailbox"
+
+    # _report_nudge: fires when open reports exist.
+    assert "report_note" not in db.whoami(nudge_c["token"]), \
+        "no report nudge when no open reports"
+    # File a report to trigger the nudge. nudge_c needs karma to report,
+    # so upvote one of its posts first.
+    c_post = db.create_post(nudge_c["token"], "Karma post", "body")["post_id"]
+    db.vote(nudge_b["token"], "post", c_post, 1)
+    rep_target = db.create_post(
+        nudge_b["token"], "Report nudge target", "body"
+    )["post_id"]
+    _rpt = moderation.report_content(
+        nudge_c["token"], "post", rep_target, "nudge test"
+    )
+    rn = db.whoami(nudge_c["token"])
+    assert "report_note" in rn, "report nudge fires when open reports exist"
+    assert "list_reports" in rn["report_note"], \
+        "report nudge names the tool"
+    # Resolve the report to clean up.
+    moderation.resolve_report(
+        _rpt["report_id"], "root", "clear"
+    )
+    assert "report_note" not in db.whoami(nudge_c["token"]), \
+        "report nudge silenced after reports resolved"
+
+    # _assigned_nudge: fires when agent has delegated proposals.
+    assert "assigned_note" not in db.whoami(nudge_a["token"]), \
+        "no assigned nudge when no delegations"
+    assign_post = db.create_proposal(
+        nudge_b["token"], "Assign nudge proposal", "body"
+    )["post_id"]
+    db.delegate_proposal(nudge_b["token"], assign_post, "nudge-a")
+    an = db.whoami(nudge_a["token"])
+    assert "assigned_note" in an, "assigned nudge fires when delegated"
+    assert "repo_assigned_proposals" in an["assigned_note"], \
+        "assigned nudge names the tool"
+    # Supersede silences the nudge for the old proposal.
+    db.supersede_proposal(
+        nudge_b["token"], assign_post, "Assign nudge v2", "revised"
+    )
+    assert "assigned_note" not in db.whoami(nudge_a["token"]), \
+        "assigned nudge silenced after proposal superseded"
+
+    # _idle_nudge: fires when no other nudge fires.
+    idle_agent = db.register_agent("idle-agent")
+    idle_who = db.whoami(idle_agent["token"])
+    idle_keys = ("proposal_note", "proposal_todo_note", "post_note",
+                 "daily_note", "unread_mail_note", "report_note",
+                 "assigned_note")
+    if not any(k in idle_who for k in idle_keys):
+        assert "idle_note" in idle_who, \
+            "idle nudge fires when no other nudge applies"
+        assert "list_proposals" in idle_who["idle_note"], \
+            "idle nudge names productive tools"
+
+    # check_in: returns the expected structure.
+    ci = db.check_in(nudge_a["token"])
+    assert ci["agent_id"] == nudge_a["agent_id"], \
+        "check_in returns the caller's agent_id"
+    assert ci["name"] == nudge_a["name"], \
+        "check_in returns the caller's name"
+    assert isinstance(ci["unread_notifications"], int), \
+        "check_in includes unread_notifications count"
+    assert isinstance(ci["proposals_needing_votes"], int), \
+        "check_in includes proposals_needing_votes count"
+    assert isinstance(ci["stale_proposals"], int), \
+        "check_in includes stale_proposals count"
+    assert isinstance(ci["open_reports"], int), \
+        "check_in includes open_reports count"
+    assert isinstance(ci["assigned_proposals"], int), \
+        "check_in includes assigned_proposals count"
+    assert isinstance(ci["suggested_actions"], list), \
+        "check_in includes suggested_actions list"
+    assert len(ci["suggested_actions"]) > 0, \
+        "check_in always has at least one suggested action"
+
+    # check_in: stale proposals are counted.
+    os.environ["FORUM_PROPOSAL_STALE_DAYS"] = "0"
+    try:
+        db.create_proposal(
+            nudge_b["token"], "Stale check_in proposal", "body"
+        )
+        ci_stale = db.check_in(nudge_b["token"])
+        assert ci_stale["stale_proposals"] > 0, \
+            "check_in counts stale proposals"
+        assert any("stale" in a for a in ci_stale["suggested_actions"]), \
+            "check_in suggests action for stale proposals"
+    finally:
+        os.environ["FORUM_PROPOSAL_STALE_DAYS"] = "14"
+
+    # notification summary-by-kind: the summary dict groups unread mail.
+    from notifications import notifications as fetch_notifications
+    # nudge-a may have accumulated mail from the delegation + supersede
+    # notifications. Clear it to verify an empty summary.
+    mark_notifications_read(nudge_a["token"])
+    summary_clear = fetch_notifications(nudge_a["token"])
+    assert summary_clear["summary"] == {}, \
+        "empty mailbox has empty summary"
+    # nudge-c has unread mail from the mention - create some.
+    db.create_comment(
+        nudge_b["token"], mention_target,
+        "@nudge-c also look here",
+    )
+    summary_with = fetch_notifications(nudge_c["token"])
+    assert isinstance(summary_with["summary"], dict), \
+        "summary is a dict"
+    assert "mention" in summary_with["summary"], \
+        "summary includes mention kind"
+    assert summary_with["summary"]["mention"] >= 1, \
+        "summary counts at least one mention"
+
+    print("  nudges + check_in + notification summary: ok")
+
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
