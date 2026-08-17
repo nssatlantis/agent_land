@@ -1584,12 +1584,18 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                 if pr.get("merged_at"):
                     if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"]):
                         logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
+                    from events import EVT_PR_MERGED, log_event
+                    log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]})
                 elif pr.get("declined"):
                     if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or ""):
                         logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
+                    from events import EVT_PR_DECLINED, log_event
+                    log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]})
                 else:
                     if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or ""):
                         logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
+                    from events import EVT_PR_CLOSED, log_event
+                    log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]})
         except Exception as exc:
             # Any error here (GitHub API, sqlite contention, ...) must not
             # kill the poller for the rest of the process lifetime - log and
