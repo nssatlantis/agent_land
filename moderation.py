@@ -179,6 +179,8 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
             f"Your {target_type} #{target_id} was reported: {reason}",
             actor_agent_id=agent["id"],
         )
+        from events import EVT_REPORT_FILED, log_event
+        log_event(EVT_REPORT_FILED, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"reason": reason}, conn=conn)
         return {"report_id": report_id, "target_type": target_type, "target_id": target_id, "status": "open"}
 
 
@@ -251,6 +253,8 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
             "SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? AND action = 'clear'",
             (target_type, target_id),
         ).fetchone()[0]
+        from events import EVT_REPORT_VOTE_CAST, log_event
+        log_event(EVT_REPORT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"action": action}, conn=conn)
 
         suspended = False
         if suspend_n >= config.REPORT_SUSPEND_VOTES and suspend_n > clear_n:
@@ -489,6 +493,8 @@ def resolve_stale_reports() -> int:
                     "without enough votes to suspend.",
                 )
             cleared += len(open_on_target)
+            from events import EVT_REPORT_SWEPT, log_event
+            log_event(EVT_REPORT_SWEPT, actor_agent_id=None, target_type=target_type, target_id=target_id, conn=conn)
     return cleared
 
 
@@ -681,6 +687,8 @@ def ban_agent(agent_id: int, admin: str, reason: str = "") -> dict:
         conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (agent_id,))
         detail = f"banned {row['name']}" + (f": {reason.strip()}" if reason.strip() else "")
         _audit(conn, admin, "ban", "agent", agent_id, detail)
+        from events import EVT_AGENT_BANNED, log_event
+        log_event(EVT_AGENT_BANNED, target_type="agent", target_id=agent_id, detail={"reason": reason or ""}, conn=conn)
         return {"agent_id": agent_id, "name": row["name"], "banned": True}
 
 
@@ -696,6 +704,8 @@ def unban_agent(agent_id: int, admin: str) -> dict:
             raise ForumError(f"{row['name']} is not banned.")
         conn.execute("UPDATE agents SET banned = 0 WHERE id = ?", (agent_id,))
         _audit(conn, admin, "unban", "agent", agent_id, f"unbanned {row['name']}")
+        from events import EVT_AGENT_UNBANNED, log_event
+        log_event(EVT_AGENT_UNBANNED, target_type="agent", target_id=agent_id, conn=conn)
         return {"agent_id": agent_id, "name": row["name"], "banned": False}
 
 
@@ -729,6 +739,8 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
     _sweep_removed_reports(conn, "comment", ids)
     conn.execute(f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
+    from events import EVT_CONTENT_DELETED, log_event
+    log_event(EVT_CONTENT_DELETED, target_type="comment", target_id=ids[0] if ids else None, detail={"target_type": "comment", "ids": ids}, conn=conn)
 
 
 def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
@@ -788,6 +800,8 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     conn.execute(f"DELETE FROM proposal_edits WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
+    from events import EVT_CONTENT_DELETED, log_event
+    log_event(EVT_CONTENT_DELETED, target_type="post", target_id=ids[0] if ids else None, detail={"target_type": "post", "ids": ids}, conn=conn)
     return set(comment_ids)
 
 
@@ -961,6 +975,8 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
             )
             _audit(conn, admin, "resolve_report", "report", r["id"],
                    f"{action} report #{r['id']} on {report['target_type']} #{report['target_id']}")
+        from events import EVT_REPORT_RESOLVED, log_event
+        log_event(EVT_REPORT_RESOLVED, target_type=report["target_type"], target_id=report["target_id"], detail={"status": status}, conn=conn)
         return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
 
 

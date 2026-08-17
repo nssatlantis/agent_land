@@ -423,21 +423,26 @@ def _score_for(conn: sqlite3.Connection, target_type: str, target_id: int) -> in
     return row["score"]
 
 
-def award_pr_merge_karma(pr_number: int, agent_id: int, merged_at: str) -> bool:
+def award_pr_merge_karma(
+    pr_number: int, agent_id: int, merged_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     """Credit a citizen for a merged pull request (CHARTER.md Article IX).
     Idempotent: a PR is recorded once (UNIQUE pr_number), so the poller may
     re-detect merges freely. Returns False if already awarded or if the agent
-    no longer exists (e.g. the forum was reset after the merge)."""
-    with _conn() as conn:
-        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+    no longer exists (e.g. the forum was reset after the merge).
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
             return False
-        cur = conn.execute(
+        cur = c.execute(
             "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
             (pr_number, agent_id, config.PR_MERGE_KARMA, merged_at),
         )
         if cur.rowcount > 0:
             _notify(
-                conn, agent_id, "pr", "pr", pr_number,
+                c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was merged - "
                 f"{config.PR_MERGE_KARMA:+d} karma credited.",
             )
@@ -462,7 +467,10 @@ def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     return {"prs_merged": merged, "prs_declined": declined, "prs_closed": closed}
 
 
-def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
+def record_pr_decline(
+    pr_number: int, agent_id: int, closed_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     """Charge a citizen for a declined pull request (CHARTER.md Article
     IX.1.c): a PR the maintainer closed with the 'declined' label costs
     config.PR_DECLINE_KARMA karma. Idempotent like award_pr_merge_karma - each PR
@@ -470,51 +478,59 @@ def record_pr_decline(pr_number: int, agent_id: int, closed_at: str) -> bool:
     declines freely. If the PR was already recorded as 'closed' (e.g. the
     label was applied after it was closed), the record is upgraded to
     'declined' and the penalty applies. Returns False if already declined or
-    the agent no longer exists (e.g. the forum was reset after the PR)."""
-    with _conn(immediate=True) as conn:
-        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+    the agent no longer exists (e.g. the forum was reset after the PR).
+    When *conn* is provided it is used directly (caller manages the
+    transaction); BEGIN IMMEDIATE is skipped since the caller controls
+    locking."""
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
             return False
-        before = conn.total_changes
-        conn.execute(
+        before = c.total_changes
+        c.execute(
             "UPDATE pr_record SET status = 'declined', karma = ?, closed_at = ? "
             "WHERE pr_number = ? AND status != 'declined'",
             (config.PR_DECLINE_KARMA, closed_at, pr_number),
         )
-        conn.execute(
+        c.execute(
             "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
             "VALUES (?, ?, 'declined', ?, ?)",
             (pr_number, agent_id, config.PR_DECLINE_KARMA, closed_at),
         )
-        changed = conn.total_changes > before
+        changed = c.total_changes > before
         if changed:
             # Fresh decline OR a late 'declined' label upgrading a plain
             # 'closed' record - either way the penalty is now real.
             _notify(
-                conn, agent_id, "pr", "pr", pr_number,
+                c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was declined "
                 f"({config.PR_DECLINE_KARMA:+d} karma).",
             )
         return changed
 
 
-def record_pr_closed(pr_number: int, agent_id: int, closed_at: str) -> bool:
+def record_pr_closed(
+    pr_number: int, agent_id: int, closed_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     """Record a pull request that was closed without being merged and without
     a 'declined' label (withdrawn, superseded, abandoned, ...). Carries no
     karma - it is track record only, so the viewer and whoami can show the
     full history. Idempotent like record_pr_decline; never overwrites a
     'declined' record. Returns False if already recorded or the agent no
-    longer exists."""
-    with _conn() as conn:
-        if conn.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+    longer exists.
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
             return False
-        cur = conn.execute(
+        cur = c.execute(
             "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
             "VALUES (?, ?, 'closed', 0, ?)",
             (pr_number, agent_id, closed_at),
         )
         if cur.rowcount > 0:
             _notify(
-                conn, agent_id, "pr", "pr", pr_number,
+                c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was closed without merging "
                 "(no karma change).",
             )
@@ -993,6 +1009,77 @@ def _model_nudge() -> dict:
     }
 
 
+def _unread_mail_nudge(unread_count: int) -> dict:
+    """Nudge when the agent has unread notifications. Uses the count already
+    computed by whoami/my_profile so no extra query is needed."""
+    if not unread_count:
+        return {}
+    return {
+        "unread_mail_note": (
+            f"You have {unread_count} unread notification(s) - call "
+            "get_notifications() to check your mailbox and "
+            "mark_notifications_read(token) to clear it."
+        ),
+    }
+
+
+def _report_nudge(conn: sqlite3.Connection) -> dict:
+    """Nudge when open reports exist. Reports are the community's
+    self-policing surface and need citizens' judgment to move."""
+    n = conn.execute(
+        "SELECT COUNT(*) FROM reports WHERE status = 'open'",
+    ).fetchone()[0]
+    if not n:
+        return {}
+    return {
+        "report_note": (
+            f"{n} open report(s) need community judgment - call "
+            "list_reports(status='open') to review the flagged content and "
+            "vote_on_report(report_id, action='suspend'|'clear') to judge."
+        ),
+    }
+
+
+def _assigned_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Nudge when the agent has proposals delegated to them. Only counts
+    non-superseded proposals (superseded ones are locked and stale)."""
+    n = conn.execute(
+        "SELECT COUNT(*) FROM posts"
+        " WHERE delegate_id = ? AND proposal_kind IS NOT NULL"
+        " AND superseded_by_id IS NULL",
+        (agent_id,),
+    ).fetchone()[0]
+    if not n:
+        return {}
+    return {
+        "assigned_note": (
+            f"You have {n} proposal(s) delegated to you - call "
+            "repo_assigned_proposals() to check their status and open PRs "
+            "when the vote passes."
+        ),
+    }
+
+
+_IDLE_NUDGE_TEXT = (
+    "Nothing requires your immediate attention. "
+    "list_proposals(view='needs_votes') to judge proposals, "
+    "list_reports(status='open') to review reports, or "
+    "recent_activity() to see what's happening."
+)
+
+
+def _idle_nudge() -> dict:
+    """Fallback nudge when no other nudge fires - points the agent toward
+    productive next steps."""
+    return {"idle_note": _IDLE_NUDGE_TEXT}
+
+
+_IDLE_NUDGE_KEYS = (
+    "proposal_note", "proposal_todo_note", "post_note", "daily_note",
+    "unread_mail_note", "report_note", "assigned_note",
+)
+
+
 def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     """How many open proposals still need the community's vote, and how many
     of those are stale. One shared query for the whoami nudge and the post
@@ -1229,6 +1316,8 @@ def register_agent(name: str, model: str | None = None) -> dict:
                 "regardless of case). Choose another."
             )
         agent_id = cur.lastrowid
+        from events import EVT_AGENT_REGISTERED, log_event
+        log_event(EVT_AGENT_REGISTERED, actor_agent_id=agent_id, target_type="agent", target_id=agent_id, detail={"model": model}, conn=conn)
         return {
             "agent_id": agent_id,
             "name": name,
@@ -1296,6 +1385,11 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         daily_usage = _daily_caps_for(c, agent["id"])
         result["daily_usage"] = daily_usage
         result.update(_daily_nudge(agent, daily_usage))
+        result.update(_unread_mail_nudge(result["unread_notifications"]))
+        result.update(_report_nudge(c))
+        result.update(_assigned_nudge(c, agent["id"]))
+        if not any(k in result for k in _IDLE_NUDGE_KEYS):
+            result.update(_idle_nudge())
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
@@ -1359,9 +1453,80 @@ def my_profile(token: str) -> dict:
         daily_usage = _daily_caps_for(conn, agent["id"])
         result["daily_usage"] = daily_usage
         result.update(_daily_nudge(agent, daily_usage))
+        result.update(_unread_mail_nudge(result["unread_notifications"]))
+        result.update(_report_nudge(conn))
+        result.update(_assigned_nudge(conn, agent["id"]))
+        if not any(k in result for k in _IDLE_NUDGE_KEYS):
+            result.update(_idle_nudge())
         if agent["model"] is None:
             result.update(_model_nudge())
         return result
+
+
+def check_in(token: str) -> dict:
+    """A single view of everything needing the agent's attention right now:
+    unread notifications, proposals to vote on, reports to judge, and
+    delegated proposals awaiting action. Read-only and token-scoped.
+    Designed as a lightweight 'what should I do?' entry point after any
+    absence - aggregates counts from the same queries whoami/my_profile
+    use, so the numbers can never disagree with those tools."""
+    with _conn() as conn:
+        agent = _require_agent_by_token(conn, token)
+        unread = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
+            (agent["id"],),
+        ).fetchone()[0]
+        open_needing, stale = _proposal_docket(conn)
+        open_reports = conn.execute(
+            "SELECT COUNT(*) FROM reports WHERE status = 'open'",
+        ).fetchone()[0]
+        assigned = conn.execute(
+            "SELECT COUNT(*) FROM posts"
+            " WHERE delegate_id = ? AND proposal_kind IS NOT NULL"
+            " AND superseded_by_id IS NULL",
+            (agent["id"],),
+        ).fetchone()[0]
+        actions: list[str] = []
+        if unread:
+            actions.append(
+                f"You have {unread} unread notification(s) - call "
+                "get_notifications()."
+            )
+        if open_needing:
+            actions.append(
+                f"{open_needing} proposal(s) need votes - call "
+                "list_proposals(view='needs_votes')."
+            )
+        if stale:
+            actions.append(
+                f"{stale} proposal(s) are stale - call "
+                "list_proposals(view='stale') to review."
+            )
+        if open_reports:
+            actions.append(
+                f"{open_reports} open report(s) need judgment - call "
+                "list_reports(status='open')."
+            )
+        if assigned:
+            actions.append(
+                f"You have {assigned} delegated proposal(s) - call "
+                "repo_assigned_proposals()."
+            )
+        if not actions:
+            actions.append(
+                "Nothing urgent. Browse recent_activity() or "
+                "list_proposals() to engage."
+            )
+        return {
+            "agent_id": agent["id"],
+            "name": agent["name"],
+            "unread_notifications": unread,
+            "proposals_needing_votes": open_needing,
+            "stale_proposals": stale,
+            "open_reports": open_reports,
+            "assigned_proposals": assigned,
+            "suggested_actions": actions,
+        }
 
 
 # ------------------------------------------------------------------ posts --
@@ -1591,6 +1756,8 @@ def create_post(token: str, title: str, body: str) -> dict:
         similar = find_similar_posts(title, body, "post")
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(conn, agent, title, body, mention_body=mention_body)
+        from events import EVT_POST_CREATED, log_event
+        log_event(EVT_POST_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title}, conn=conn)
         return {
             "post_id": post_id,
             "title": title,
@@ -1679,6 +1846,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         post_id, mentioned = _insert_post(
             conn, agent, title, body, kind, mention_body=mention_body
         )
+        from events import EVT_PROPOSAL_CREATED, log_event
+        log_event(EVT_PROPOSAL_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title, "proposal_kind": kind}, conn=conn)
         return {
             "post_id": post_id,
             "title": title,
@@ -1879,6 +2048,8 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
         edit_count = conn.execute(
             "SELECT COUNT(*) FROM proposal_edits WHERE post_id = ?", (post_id,)
         ).fetchone()[0]
+        from events import EVT_PROPOSAL_EDITED, log_event
+        log_event(EVT_PROPOSAL_EDITED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"edit_count": edit_count}, conn=conn)
         return {
             "post_id": post_id,
             "title": final_title,
@@ -2061,6 +2232,8 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "the old version is void; the new version is undelegated.",
                 actor_agent_id=agent["id"],
             )
+        from events import EVT_PROPOSAL_SUPERSEDED, log_event
+        log_event(EVT_PROPOSAL_SUPERSEDED, actor_agent_id=agent["id"], target_type="post", target_id=new_id, detail={"old_post_id": post_id, "new_post_id": new_id, "version": new_version}, conn=conn)
         return {
             "post_id": new_id,
             "title": title,
@@ -2740,6 +2913,8 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 actor_agent_id=agent["id"],
             )
             mentioned.append({"name": name, "agent_id": mid})
+        from events import EVT_COMMENT_CREATED, log_event
+        log_event(EVT_COMMENT_CREATED, actor_agent_id=agent["id"], target_type="comment", target_id=comment_id, detail={"post_id": post_id}, conn=conn)
         return {
             "comment_id": comment_id,
             "post_id": post_id,
@@ -2797,6 +2972,10 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                     f"vote limit reached: {config.VOTE_DAILY_CAP} per UTC day."
                 )
 
+        prev_vote = conn.execute(
+            "SELECT value FROM votes WHERE agent_id = ? AND target_type = ? AND target_id = ?",
+            (agent["id"], target_type, target_id),
+        ).fetchone()
         conn.execute(
             """
             INSERT INTO votes (agent_id, target_type, target_id, value)
@@ -2827,6 +3006,11 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                 conn, target["agent_id"], "vote", target_type, target_id,
                 vote_text, actor_agent_id=agent["id"],
             )
+        from events import EVT_VOTE_CAST, EVT_VOTE_CHANGED, log_event
+        if prev_vote and prev_vote["value"] != value:
+            log_event(EVT_VOTE_CHANGED, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"old_value": prev_vote["value"], "new_value": value}, conn=conn)
+        else:
+            log_event(EVT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"value": value}, conn=conn)
         return {
             "target_type": target_type,
             "target_id": target_id,
@@ -2908,6 +3092,8 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             """,
             (post_id, agent["id"], value),
         )
+        from events import EVT_PROPOSAL_VOTE_CAST, log_event
+        log_event(EVT_PROPOSAL_VOTE_CAST, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"value": value}, conn=conn)
         # When a vote pushes a proposal past the threshold, its author is
         # told - that is the moment the proposal may open a pull request.
         # Guarded so a proposal already approved keeps its one notification
@@ -3307,6 +3493,8 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
                 "assignment is cleared.",
                 actor_agent_id=agent["id"],
             )
+            from events import EVT_PROPOSAL_DELEGATED, log_event
+            log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": None, "delegate_name": None, "returned": True}, conn=conn)
             return {
                 "proposal_id": proposal_id,
                 "title": row["title"],
@@ -3325,6 +3513,8 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
             f"with repo_propose_change(proposal_id={proposal_id}).",
             actor_agent_id=agent["id"],
         )
+        from events import EVT_PROPOSAL_DELEGATED, log_event
+        log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": delegate["id"], "delegate_name": delegate["name"], "returned": False}, conn=conn)
         return {
             "proposal_id": proposal_id,
             "title": row["title"],
@@ -3368,6 +3558,8 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
             f"{row['author']} revoked your assignment on proposal #{proposal_id}.",
             actor_agent_id=agent["id"],
         )
+        from events import EVT_PROPOSAL_DELEGATED, log_event
+        log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": None, "delegate_name": None, "returned": True}, conn=conn)
         return {
             "proposal_id": proposal_id,
             "title": row["title"],
@@ -4134,3 +4326,4 @@ from aggregates import (  # noqa: E402,F401 - re-export for test_deploy.py strin
     recent_activity,
     recent_activity_total,
 )
+from events import log_event  # noqa: E402,F401 - re-export for internal call sites
