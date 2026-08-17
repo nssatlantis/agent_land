@@ -5923,7 +5923,11 @@ def main():
     cd_evts = query_events(kind=EVT_CONTENT_DELETED)
     assert cd_evts, "content_deleted events exist"
     assert "ids" in cd_evts[0]["detail"], "content_deleted carries the deleted IDs"
-    # content_deleted: already exercised via _remove_comments above.
+    # content_deleted: _remove_comments is now instrumented (via _remove_posts
+    # which calls it above, and directly for comment-only deletions).
+    cd_comment_evts = query_events(kind=EVT_CONTENT_DELETED, target_type="comment")
+    assert cd_comment_evts, "content_deleted events exist for comments"
+    assert "ids" in cd_comment_evts[0]["detail"], "comment content_deleted carries the deleted IDs"
     print("  events: ok")
 
     print("test_moderation: all assertions passed")
