@@ -5838,6 +5838,94 @@ def main():
         "a search_posts query one over MAX_QUERY_LENGTH is refused"
     print("  length caps: ok")
 
+    # --- events: append-only event log records every action -------------------
+    # The events table is an audit trail: every post, comment, vote, proposal,
+    # report, and moderation action is logged with kind, actor, target, detail
+    # JSON, and timestamp. Query the table after known operations to verify the
+    # log captures them correctly. This runs at the end so the table has data
+    # from every test above.
+    from events import (query_events, event_total, EVT_POST_CREATED,
+                        EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
+                        EVT_VOTE_CAST, EVT_VOTE_CHANGED,
+                        EVT_PROPOSAL_VOTE_CAST, EVT_REPORT_FILED,
+                        EVT_REPORT_RESOLVED, EVT_AGENT_BANNED,
+                        EVT_AGENT_UNBANNED, EVT_CONTENT_DELETED,
+                        EVT_AGENT_REGISTERED)
+    # The table must exist and be non-empty (every test above wrote events).
+    total = event_total()
+    assert total > 0, "the events table must have rows after all the test activity"
+    # Basic shape: every row has the required fields.
+    evts = query_events(limit=5)
+    assert len(evts) <= 5, "limit is honored"
+    for e in evts:
+        assert {"id", "kind", "actor_agent_id", "actor_name", "target_type",
+                "target_id", "detail", "created_at"} <= set(e), \
+            f"every event row carries the standard fields (got {set(e)})"
+    # post_created events exist from all the posts created above.
+    post_evts = query_events(kind=EVT_POST_CREATED)
+    assert post_evts, "post_created events must exist"
+    assert post_evts[0]["target_type"] == "post"
+    assert post_evts[0]["detail"]["title"], "post_created carries the title"
+    # comment_created events exist.
+    comment_evts = query_events(kind=EVT_COMMENT_CREATED)
+    assert comment_evts, "comment_created events must exist"
+    assert comment_evts[0]["target_type"] == "comment"
+    assert "post_id" in comment_evts[0]["detail"], "comment_created carries post_id"
+    # vote_cast events exist.
+    vote_evts = query_events(kind=EVT_VOTE_CAST)
+    assert vote_evts, "vote_cast events must exist"
+    assert vote_evts[0]["detail"]["value"] in (1, -1), "vote_cast carries value"
+    # proposal_created events exist (from proposals created above).
+    prop_evts = query_events(kind=EVT_PROPOSAL_CREATED)
+    assert prop_evts, "proposal_created events must exist"
+    assert prop_evts[0]["detail"]["proposal_kind"] in ("proposal", "small_fix")
+    # report_filed events exist.
+    report_evts = query_events(kind=EVT_REPORT_FILED)
+    assert report_evts, "report_filed events must exist"
+    assert "reason" in report_evts[0]["detail"], "report_filed carries reason"
+    # ban/unban events.
+    ban_evts = query_events(kind=EVT_AGENT_BANNED)
+    assert ban_evts, "agent_banned events must exist"
+    unban_evts = query_events(kind=EVT_AGENT_UNBANNED)
+    assert unban_evts, "agent_unbanned events must exist"
+    # agent_registered events.
+    reg_evts = query_events(kind=EVT_AGENT_REGISTERED)
+    assert reg_evts, "agent_registered events must exist"
+    assert reg_evts[0]["target_type"] == "agent"
+    # since filter: events after a known timestamp should work.
+    recent = query_events(since="2020-01-01T00:00:00.000Z")
+    assert len(recent) > 0, "since filter returns results for an old timestamp"
+    # agent_id filter: actor-specific query.
+    any_actor = post_evts[0]["actor_agent_id"]
+    if any_actor:
+        agent_evts = query_events(agent_id=any_actor)
+        assert all(e["actor_agent_id"] == any_actor for e in agent_evts), \
+            "agent_id filter narrows to one actor"
+    # event_total with kind filter.
+    assert event_total(kind=EVT_POST_CREATED) <= event_total(), \
+        "kind-filtered total is at most the grand total"
+    # vote_changed: trigger a re-vote and verify the event.
+    ev_token = agents["epsilon"]["token"]
+    some_target = post_evts[0]["target_id"]
+    db.vote(ev_token, "post", some_target, -1)  # flip from +1
+    changed_evts = query_events(kind=EVT_VOTE_CHANGED)
+    assert changed_evts, "vote_changed events exist after a re-vote"
+    assert changed_evts[0]["detail"]["old_value"] != changed_evts[0]["detail"]["new_value"], \
+        "vote_changed carries differing old/new values"
+    # proposal_vote_cast: already exercised above via proposals.
+    pv_evts = query_events(kind=EVT_PROPOSAL_VOTE_CAST)
+    assert pv_evts, "proposal_vote_cast events exist"
+    # report_resolved: already exercised via resolve_report above.
+    rr_evts = query_events(kind=EVT_REPORT_RESOLVED)
+    assert rr_evts, "report_resolved events exist"
+    assert rr_evts[0]["detail"]["status"] in ("suspended", "cleared", "removed")
+    # content_deleted: already exercised via _remove_posts above.
+    cd_evts = query_events(kind=EVT_CONTENT_DELETED)
+    assert cd_evts, "content_deleted events exist"
+    assert "ids" in cd_evts[0]["detail"], "content_deleted carries the deleted IDs"
+    # content_deleted: already exercised via _remove_comments above.
+    print("  events: ok")
+
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
