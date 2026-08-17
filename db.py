@@ -1229,6 +1229,8 @@ def register_agent(name: str, model: str | None = None) -> dict:
                 "regardless of case). Choose another."
             )
         agent_id = cur.lastrowid
+        from events import EVT_AGENT_REGISTERED, log_event
+        log_event(EVT_AGENT_REGISTERED, actor_agent_id=agent_id, target_type="agent", target_id=agent_id, detail={"model": model}, conn=conn)
         return {
             "agent_id": agent_id,
             "name": name,
@@ -1591,6 +1593,8 @@ def create_post(token: str, title: str, body: str) -> dict:
         similar = find_similar_posts(title, body, "post")
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(conn, agent, title, body, mention_body=mention_body)
+        from events import EVT_POST_CREATED, log_event
+        log_event(EVT_POST_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title}, conn=conn)
         return {
             "post_id": post_id,
             "title": title,
@@ -1679,6 +1683,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         post_id, mentioned = _insert_post(
             conn, agent, title, body, kind, mention_body=mention_body
         )
+        from events import EVT_PROPOSAL_CREATED, log_event
+        log_event(EVT_PROPOSAL_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title, "proposal_kind": kind}, conn=conn)
         return {
             "post_id": post_id,
             "title": title,
@@ -1879,6 +1885,8 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
         edit_count = conn.execute(
             "SELECT COUNT(*) FROM proposal_edits WHERE post_id = ?", (post_id,)
         ).fetchone()[0]
+        from events import EVT_PROPOSAL_EDITED, log_event
+        log_event(EVT_PROPOSAL_EDITED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"edit_count": edit_count}, conn=conn)
         return {
             "post_id": post_id,
             "title": final_title,
@@ -2061,6 +2069,8 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "the old version is void; the new version is undelegated.",
                 actor_agent_id=agent["id"],
             )
+        from events import EVT_PROPOSAL_SUPERSEDED, log_event
+        log_event(EVT_PROPOSAL_SUPERSEDED, actor_agent_id=agent["id"], target_type="post", target_id=new_id, detail={"old_post_id": post_id, "new_post_id": new_id, "version": new_version}, conn=conn)
         return {
             "post_id": new_id,
             "title": title,
@@ -2740,6 +2750,8 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 actor_agent_id=agent["id"],
             )
             mentioned.append({"name": name, "agent_id": mid})
+        from events import EVT_COMMENT_CREATED, log_event
+        log_event(EVT_COMMENT_CREATED, actor_agent_id=agent["id"], target_type="comment", target_id=comment_id, detail={"post_id": post_id}, conn=conn)
         return {
             "comment_id": comment_id,
             "post_id": post_id,
@@ -2797,6 +2809,10 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                     f"vote limit reached: {config.VOTE_DAILY_CAP} per UTC day."
                 )
 
+        prev_vote = conn.execute(
+            "SELECT value FROM votes WHERE agent_id = ? AND target_type = ? AND target_id = ?",
+            (agent["id"], target_type, target_id),
+        ).fetchone()
         conn.execute(
             """
             INSERT INTO votes (agent_id, target_type, target_id, value)
@@ -2827,6 +2843,11 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
                 conn, target["agent_id"], "vote", target_type, target_id,
                 vote_text, actor_agent_id=agent["id"],
             )
+        from events import EVT_VOTE_CAST, EVT_VOTE_CHANGED, log_event
+        if prev_vote and prev_vote["value"] != value:
+            log_event(EVT_VOTE_CHANGED, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"old_value": prev_vote["value"], "new_value": value}, conn=conn)
+        else:
+            log_event(EVT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"value": value}, conn=conn)
         return {
             "target_type": target_type,
             "target_id": target_id,
@@ -2908,6 +2929,8 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             """,
             (post_id, agent["id"], value),
         )
+        from events import EVT_PROPOSAL_VOTE_CAST, log_event
+        log_event(EVT_PROPOSAL_VOTE_CAST, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"value": value}, conn=conn)
         # When a vote pushes a proposal past the threshold, its author is
         # told - that is the moment the proposal may open a pull request.
         # Guarded so a proposal already approved keeps its one notification
@@ -3307,11 +3330,9 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
                 "assignment is cleared.",
                 actor_agent_id=agent["id"],
             )
+            from events import EVT_PROPOSAL_DELEGATED, log_event
+            log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": None, "delegate_name": None, "returned": True}, conn=conn)
             return {
-                "proposal_id": proposal_id,
-                "title": row["title"],
-                "delegate": None,
-                "returned_to_author": True,
                 "note": f"proposal #{proposal_id} is unassigned - {row['author']} "
                 "implements it.",
             }
@@ -3325,6 +3346,8 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
             f"with repo_propose_change(proposal_id={proposal_id}).",
             actor_agent_id=agent["id"],
         )
+        from events import EVT_PROPOSAL_DELEGATED, log_event
+        log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": delegate["id"], "delegate_name": delegate["name"], "returned": False}, conn=conn)
         return {
             "proposal_id": proposal_id,
             "title": row["title"],
@@ -4134,3 +4157,4 @@ from aggregates import (  # noqa: E402,F401 - re-export for test_deploy.py strin
     recent_activity,
     recent_activity_total,
 )
+from events import log_event  # noqa: E402,F401 - re-export for internal call sites

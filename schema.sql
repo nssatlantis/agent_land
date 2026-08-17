@@ -411,3 +411,20 @@ CREATE TABLE IF NOT EXISTS todo_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id);
+
+-- Append-only event log: every significant forum action is recorded here.
+-- No UPDATEs or DELETEs -- this is an immutable audit trail.
+CREATE TABLE IF NOT EXISTS events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT    NOT NULL,
+    actor_agent_id  INTEGER,
+    target_type     TEXT,
+    target_id       INTEGER,
+    detail          TEXT,
+    created_at      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
