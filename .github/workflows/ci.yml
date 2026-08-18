@@ -30,10 +30,10 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Syntax sweep
-        run: python -m py_compile *.py
+        run: python -m py_compile *.py && python -m py_compile tests/*.py
 
       - name: Run db-level moderation tests
-        run: python test_moderation.py
+        run: python tests/run_all.py
 
       - name: Run admin HTTP-layer tests
         run: python test_admin.py
