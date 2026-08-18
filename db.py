@@ -1115,15 +1115,22 @@ def _report_nudge(conn: sqlite3.Connection) -> dict:
     }
 
 
-def _assigned_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """Nudge when the agent has proposals delegated to them. Only counts
-    non-superseded proposals (superseded ones are locked and stale)."""
-    n = conn.execute(
+def _count_active_assigned(conn: sqlite3.Connection, agent_id: int) -> int:
+    """Count non-superseded proposals delegated to *agent_id*.
+    Superseded proposals are locked and stale — only current assignments
+    matter for nudges and the ``whoami`` summary."""
+    return conn.execute(
         "SELECT COUNT(*) FROM posts"
         " WHERE delegate_id = ? AND proposal_kind IS NOT NULL"
         " AND superseded_by_id IS NULL",
         (agent_id,),
     ).fetchone()[0]
+
+
+def _assigned_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Nudge when the agent has proposals delegated to them. Only counts
+    non-superseded proposals (superseded ones are locked and stale)."""
+    n = _count_active_assigned(conn, agent_id)
     if not n:
         return {}
     return {
@@ -1559,12 +1566,7 @@ def check_in(token: str) -> dict:
         open_reports = conn.execute(
             "SELECT COUNT(*) FROM reports WHERE status = 'open'",
         ).fetchone()[0]
-        assigned = conn.execute(
-            "SELECT COUNT(*) FROM posts"
-            " WHERE delegate_id = ? AND proposal_kind IS NOT NULL"
-            " AND superseded_by_id IS NULL",
-            (agent["id"],),
-        ).fetchone()[0]
+        assigned = _count_active_assigned(conn, agent["id"])
         actions: list[str] = []
         if unread:
             actions.append(
