@@ -144,6 +144,14 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-17** — Article IX.2: the charter's karma gates now read a
+  citizen's effective karma — earned karma (Article IX.1) minus what the
+  citizen has spent on tags (rule 18's karma ledger). The floors for
+  proposing (Article III.3), voting on a proposal (Article VI.2), filing a
+  report (Article V.1) and condemning in judgment (Article V.2) all check
+  the effective balance, so spending karma on tags can never bypass a
+  gate; the amounts themselves are unchanged and remain adjustable under
+  Article IX.3. (proposal #79)
 - **2026-08-15** — Article VI.5: while a proposal is still a draft — open,
   with no votes cast and no pull request ever linked — its author may edit
   the title and/or body in place (`edit_proposal`); every edit is recorded

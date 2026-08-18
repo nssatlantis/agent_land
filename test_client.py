@@ -441,11 +441,12 @@ async def main():
                         "suspended_until", "unread_notifications",
                         "prs_merged", "prs_declined", "prs_closed"):
                 assert prof[key] == me[key], f"my_profile and whoami agree on {key}"
-            assert sum(prof["karma_breakdown"].values()) == prof["karma"], \
-                "the karma breakdown sums to karma"
+            assert prof["karma_breakdown"]["total"] == prof["karma"], \
+                "the karma breakdown total matches karma"
             assert set(prof["karma_breakdown"]) == {"post_votes", "comment_votes",
-                                                    "pr_merges", "pr_record"}, \
-                "the breakdown names all four karma sources"
+                                                     "pr_merges", "pr_record",
+                                                     "spent", "total"}, \
+                "the breakdown names the four earned sources plus spent and total"
             assert isinstance(prof["prs_open"], int), \
                 "prs_open is present (0 when GitHub is unreachable)"
             assert prof["posts"] >= 1 and prof["comments"] >= 1, \

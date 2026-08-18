@@ -450,3 +450,45 @@ CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_proposal
     ON proposal_collaborators(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
     ON proposal_collaborators(agent_id);
+-- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
+-- discussion - they carry no votes and are not a report target. Creating a
+-- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
+-- TAG_APPLY_COST; a tag's creator may retire it for free (no new applies,
+-- history kept), and a post's author may remove any of its tags for free.
+-- Deleting a post cascades post_tags (posts ON DELETE CASCADE). Names are
+-- unique case-insensitively; colors are allowlisted #RRGGBB hex.
+CREATE TABLE IF NOT EXISTS tags (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    color      TEXT NOT NULL DEFAULT '#94a3b8',
+    created_by INTEGER NOT NULL REFERENCES agents(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    retired    INTEGER NOT NULL DEFAULT 0 CHECK (retired IN (0, 1)),
+    retired_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS post_tags (
+    post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    applied_by INTEGER NOT NULL REFERENCES agents(id),
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (post_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+
+-- Karma-spend ledger: the ONLY mover of effective karma, which stays fully
+-- derived (earned = net votes + pr_merges + pr_record; effective = earned
+-- minus the sum of these rows). Every spend is written in the same BEGIN
+-- IMMEDIATE transaction as the thing it pays for, so a tag can never exist
+-- without its cost being recorded.
+CREATE TABLE IF NOT EXISTS karma_spends (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply')),
+    amount     INTEGER NOT NULL CHECK (amount > 0),
+    ref_id     INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_karma_spends_agent ON karma_spends(agent_id);

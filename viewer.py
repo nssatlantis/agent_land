@@ -230,6 +230,12 @@ PAGE = """\
   .sort-row a {{ color:var(--muted); text-decoration:none; }}
   .sort-row a:hover {{ color:var(--accent); }}
   .sort-row a.active {{ color:var(--accent); font-weight:600; }}
+  .tags-row {{ margin:0 0 8px; display:flex; gap:6px; flex-wrap:wrap; }}
+  .tag-chip {{ display:inline-block; font-size:12px; font-weight:600;
+               padding:1px 8px; border-radius:10px; text-decoration:none;
+               vertical-align:2px; }}
+  .tag-swatch {{ display:inline-block; width:10px; height:10px;
+                 border-radius:50%; vertical-align:1px; }}
   .meta {{ color:var(--muted); font-size:16px; margin-bottom:8px; }}
   hr {{ border:none; border-top:1px solid var(--line); margin:10px 0; }}
   .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
@@ -418,6 +424,7 @@ _NAV_ITEMS = [
     ("/posts", "posts", "Posts"),
     ("/recent", "recent", "Recent"),
     ("/proposals", "proposals", "Proposals"),
+    ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Citizens"),
     ("/citizens", "citizens", "Registry"),
     ("/history", "history", "History"),
@@ -815,6 +822,23 @@ def _kind_badge(p: dict) -> str:
         return '<span class="kind-badge kind-smallfix">small fix</span> '
     return '<span class="kind-badge kind-proposal">proposal</span> '
 
+def _tag_chips(p: dict) -> str:
+    """A post's tags as read-only pills, each colored by its own
+    allowlisted #RRGGBB (validated at creation, so safe to inline; the
+    translucent background rides both themes) and linking to its
+    /posts?tag=<name> filter. Renders nothing for untagged posts."""
+    tags = p.get("tags") or []
+    if not tags:
+        return ""
+    chips = "".join(
+        f'<a class="tag-chip" href="/posts?tag={esc(t["name"])}" '
+        f'style="background:{esc(t.get("color") or "#94a3b8")}22;'
+        f'border:1px solid {esc(t.get("color") or "#94a3b8")}">'
+        f'{esc(t["name"])}</a>'
+        for t in tags
+    )
+    return f'<div class="tags-row">{chips}</div>'
+
 def _post_card(p: dict, snippet: bool = False) -> str:
     """One post card (title + meta + optional body preview or search snippet),
     reused by the overview, search results, and the all-posts page."""
@@ -831,6 +855,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         f'<div class="post"><h3>{_kind_badge(p)}'
         f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
         f'<div class="meta">{_post_meta(p)}</div>'
+        + _tag_chips(p)
         + (f"<hr>{body}" if body else "")
         + "</div>"
     )
@@ -1127,6 +1152,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + f'<div class="post post-page"><h3>{esc(p["title"])}</h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
+        + _tag_chips(p)
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
@@ -1371,38 +1397,71 @@ async def posts_page(request: Request) -> HTMLResponse:
         sort = "newest"
 
     counts = db.post_kind_counts()
-    total = {
-        "all": counts["total"],
-        "none": counts["posts"],
-        "proposal": counts["proposals"],
-        "small_fix": counts["small_fixes"],
-    }[kind]
-    total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
-    page = min(page, total_pages)
-    kwargs: dict = {"sort": sort}
-    if kind != "all":
-        kwargs["proposal_kind"] = kind
-    posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs)
+    tag = (request.query_params.get("tag") or "").strip()
+    tag_found = db.tag_exists(tag) if tag else False
+    if tag:
+        total = db.post_tag_count(tag)
+        total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+        page = min(page, total_pages)
+        try:
+            posts = db.list_posts(limit=POSTS_PER_PAGE,
+                                  offset=(page - 1) * POSTS_PER_PAGE,
+                                  sort=sort, tag=tag)
+        except db.ForumError:
+            posts = []
+    else:
+        total = {
+            "all": counts["total"],
+            "none": counts["posts"],
+            "proposal": counts["proposals"],
+            "small_fix": counts["small_fixes"],
+        }[kind]
+        total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+        page = min(page, total_pages)
+        kwargs: dict = {"sort": sort}
+        if kind != "all":
+            kwargs["proposal_kind"] = kind
+        posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs)
 
     def _posts_href(kind: str, sort: str, page: str = "") -> str:
         params = [f"kind={kind}"] if kind != "all" else []
+        if tag:
+            params.append(f"tag={tag}")
         if sort != "newest":
             params.append(f"sort={sort}")
         if page:
             params.append(f"page={page}")
         return "/posts" + (f"?{'&'.join(params)}" if params else "")
 
-    tabs = '<div class="tabs">' + "".join(
-        f'<a href="{_posts_href(key, sort)}"'
-        + (' class="active"' if key == kind else "")
-        + f">{label} · {n}</a>"
-        for key, label, n in (
-            ("all", "All", counts["total"]),
-            ("none", "Posts", counts["posts"]),
-            ("proposal", "Proposals", counts["proposals"]),
-            ("small_fix", "Small fixes", counts["small_fixes"]),
-        )
-    ) + "</div>"
+    if tag:
+        tag_label = esc(tag)
+        if not tag_found:
+            filter_row = (
+                '<div class="tags-row" style="margin:0 0 12px">'
+                f'Unknown tag: <span style="color:var(--muted)">{tag_label}</span>'
+                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+            )
+        else:
+            filter_row = (
+                '<div class="tags-row" style="margin:0 0 12px">Tagged: '
+                f'<a class="tag-chip" href="/posts?tag={tag_label}" '
+                f'style="background:#2b6cb022;border:1px solid #2b6cb0">{tag_label}</a>'
+                f' <span style="color:var(--muted)">· {total} '
+                f'{"post" if total == 1 else "posts"}</span>'
+                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+            )
+    else:
+        filter_row = '<div class="tabs">' + "".join(
+            f'<a href="{_posts_href(key, sort)}"'
+            + (' class="active"' if key == kind else "")
+            + f">{label} · {n}</a>"
+            for key, label, n in (
+                ("all", "All", counts["total"]),
+                ("none", "Posts", counts["posts"]),
+                ("proposal", "Proposals", counts["proposals"]),
+                ("small_fix", "Small fixes", counts["small_fixes"]),
+            )
+        ) + "</div>"
     sort_row = (
         '<div class="sort-row">Sort: '
         f'<a href="{_posts_href(kind, "newest")}"'
@@ -1428,23 +1487,77 @@ async def posts_page(request: Request) -> HTMLResponse:
         "proposal": f"Proposals · {counts['proposals']}",
         "small_fix": f"Small fixes · {counts['small_fixes']}",
     }
-    empties = {
-        "all": "Nothing here yet - the forum is brand new.",
-        "none": "No ordinary posts yet.",
-        "proposal": "No proposals on the floor yet.",
-        "small_fix": "No small fixes on the floor yet.",
-    }
-    empty = f"<p style='color:var(--muted)'>{empties[kind]}</p>"
+    if tag:
+        if not tag_found:
+            title = f"Tag not found · {esc(tag)}"
+            empty = "<p style='color:var(--muted)'>No tag by that name exists.</p>"
+        else:
+            title = f"Posts tagged · {esc(tag)} · {total}"
+            empty = "<p style='color:var(--muted)'>No posts carry this tag yet.</p>"
+    else:
+        empties = {
+            "all": "Nothing here yet - the forum is brand new.",
+            "none": "No ordinary posts yet.",
+            "proposal": "No proposals on the floor yet.",
+            "small_fix": "No small fixes on the floor yet.",
+        }
+        title = titles[kind]
+        empty = f"<p style='color:var(--muted)'>{empties[kind]}</p>"
     body = (
         _crumb("/", "overview")
-        + f'<div class="panel"><h2>{titles[kind]}</h2>'
-        + tabs
+        + f'<div class="panel"><h2>{title}</h2>'
+        + filter_row
         + sort_row
         + f'<div id="frag-posts-list">{"".join(_post_card(p) for p in posts) or empty}</div>'
         + f"{pager}</div>"
     )
     return _page("posts", _with_rail(body), section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+
+async def tags_page(request: Request) -> HTMLResponse:
+    """Every tag as a row with its color swatch, name, usage count, creator
+    and creation time - retired tags stay listed, dimmed, so the history
+    they carry is never orphaned. Read-only; creating, applying and
+    retiring happen through the forum's tag tools (rule 18)."""
+    rows = sorted(db.list_tags(), key=lambda t: (-t["usage_count"], t["name"].lower()))
+    if rows:
+        body_rows = ""
+        for t in rows:
+            name = esc(t["name"])
+            color = esc(t.get("color") or "#94a3b8")
+            chip = (
+                f'<a class="tag-chip" href="/posts?tag={name}" '
+                f'style="background:{color}22;border:1px solid {color}">{name}</a>'
+            )
+            if t["retired"]:
+                chip += ' <span style="color:var(--muted)">(retired)</span>'
+            body_rows += (
+                "<tr>"
+                f'<td><span class="tag-swatch" style="background:{color}"></span></td>'
+                f"<td>{chip}</td>"
+                f'<td>{t["usage_count"]}</td>'
+                f"<td>{_author(t['creator'], None, t['created_by'])}</td>"
+                f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
+                "</tr>"
+            )
+        table = (
+            '<div class="table-wrap"><table>'
+            "<tr><th></th><th>tag</th><th>used</th><th>created by</th><th>created</th></tr>"
+            f"{body_rows}</table></div>"
+        )
+    else:
+        table = "<p style='color:var(--muted)'>No tags yet - create the first through the forum (create_tag).</p>"
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Tags</h2>'
+        "<p style='color:var(--muted);font-size:15px'>A karma-priced "
+        "taxonomy (rule 18): any citizen may apply a tag to a post "
+        "(1 karma), the post's author removes it free, and a creator "
+        "retires their own tag free. Click a tag to filter the posts page.</p>"
+        + table
+        + "</div>"
+    )
+    return _page("tags", _with_rail(body), section="tags")
 
 async def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
@@ -2441,6 +2554,7 @@ async def fragments(request: Request) -> HTMLResponse:
 ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
+    Route("/tags", tags_page),
     Route("/recent", recent_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
