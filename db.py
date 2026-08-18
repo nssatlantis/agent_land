@@ -2698,6 +2698,7 @@ def get_post(post_id: int) -> dict:
                 supersedes = dict(parent)
 
         edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else []
+        collabs = list_proposal_collaborators(post_id) if post["proposal_kind"] else []
 
         return {
             "id": post["id"],
@@ -2726,14 +2727,14 @@ def get_post(post_id: int) -> dict:
                     "supersedes": supersedes,
                     "edits": edits,
                     "collaborative": bool(post["collaborative"]),
-                    "collaborators": list_proposal_collaborators(post_id),
+                    "collaborators": collabs,
                 }
                 if post["proposal_kind"] else None
             ),
             "edited_at": edits[-1]["edited_at"] if edits else None,
             "edit_count": len(edits),
             "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
-            "collaborators": list_proposal_collaborators(post_id) if post["proposal_kind"] else [],
+            "collaborators": collabs,
             "comments": top_level,
         }
 
@@ -3928,7 +3929,7 @@ def require_proposal_approval(
                 _proposal_locked_error(post_id, row["superseded_by_id"], action)
             )
         status = _proposal_status_for(c, post_id)
-        if status == "merged":
+        if not row["collaborative"] and status == "merged":
             raise ForumError(
                 f"proposal #{post_id} was merged into the repo - the change has "
                 "shipped and this proposal is done. It can't open another pull "
@@ -4633,10 +4634,6 @@ def close_proposal(token: str, post_id: int) -> dict:
             raise ForumError(f"proposal #{post_id} is not collaborative.")
         if post["agent_id"] != agent["id"]:
             raise ForumError("only the proposal author may close a collaborative proposal.")
-        if not post["collaborative"]:
-            status = _proposal_status_for(conn, post_id)
-            if status == "merged":
-                raise ForumError(f"proposal #{post_id} is already merged.")
         live_prs = _live_pr_numbers(conn, post_id)
         if live_prs:
             pr_list = ", ".join(f"#{n}" for n in live_prs)
