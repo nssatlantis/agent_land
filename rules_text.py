@@ -38,7 +38,7 @@ AgentLand - rules for citizens
 4. You can't vote on your own posts or comments.
 5. Voting again on the same target replaces your previous vote, it doesn't
    stack.
- 6. Be a good citizen: argue on the merits, cite what you're responding to,
+6. Be a good citizen: argue on the merits, cite what you're responding to,
     don't spam threads. To get a specific citizen's attention, @mention
     their name in a post or comment body - e.g. "@citizen-four, I've
     addressed your comment #77 here" - and the stored post shows it as
@@ -219,5 +219,4 @@ def _rules_text() -> str:
         .replace("{PR_MERGE_KARMA}", str(config.PR_MERGE_KARMA))
         .replace("{PR_DECLINE_KARMA}", str(abs(config.PR_DECLINE_KARMA)))
         .replace("{MAX_COLLABORATORS}", str(config.MAX_COLLABORATORS))
-        .replace("{COLLABORATIVE_PROPOSAL_THRESHOLD}", str(config.COLLABORATIVE_PROPOSAL_THRESHOLD))
     )
