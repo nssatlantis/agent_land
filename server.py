@@ -37,6 +37,7 @@ import admin
 import aggregates
 import db
 import moderation
+import reports
 import config
 import github
 import logutil
@@ -1420,7 +1421,7 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
     """Flag a post or comment for community review. Other citizens vote on the
     report with vote_on_report(); enough suspend votes auto-suspends the
     author. target_type is 'post' or 'comment'."""
-    return moderation.report_content(token, target_type, target_id, reason)
+    return reports.report_content(token, target_type, target_id, reason)
 
 
 @mcp.tool()
@@ -1429,7 +1430,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     """Vote 'suspend' or 'clear' on an open report. Voting again replaces your
     earlier vote on that report. The reporter and the reported author can't
     vote on it. See list_reports() for the open docket."""
-    return moderation.vote_on_report(token, report_id, action)
+    return reports.vote_on_report(token, report_id, action)
 
 
 @mcp.tool()
@@ -1446,7 +1447,7 @@ def list_reports(status: str = "all") -> list[dict]:
     FORUM_REPORT_STALE_DAYS without enough votes to suspend - the sweep
     auto-resolves those that lean clear. Community transparency - anyone may
     read the reports."""
-    return moderation.list_reports(status)
+    return reports.list_reports(status)
 
 
 @mcp.tool()
@@ -1461,7 +1462,7 @@ def get_report(report_id: int) -> dict:
     resolved), and sibling reports on the same target. A report survives the
     deletion of its target content as 'removed', so the snapshot stays
     readable even when the content is gone."""
-    return moderation.get_report(report_id)
+    return reports.get_report(report_id)
 
 
 @mcp.tool()
@@ -1759,7 +1760,7 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
         try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
-            moderation.resolve_stale_reports()
+            reports.resolve_stale_reports()
         except Exception:
             pass  # the sweep must never stall the poller; retry next interval
         try:
