@@ -23,7 +23,7 @@ import config
 import db
 import aggregates
 import github
-import moderation
+import reports
 from view_utils import (
     _collapsible,
     _human_bytes,
@@ -170,7 +170,7 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
         _timed("integrity_ok", db.integrity_ok),
         _timed("counts", aggregates.counts),
         _timed("list_agents", aggregates.list_agents),
-        _timed("list_reports", moderation.list_reports),
+        _timed("list_reports", reports.list_reports),
         _timed("list_proposals", db.list_proposals),
         _timed("list_recent_activity", lambda: aggregates.list_recent_activity(50)),
         _timed("storage_stats", db.storage_stats),
