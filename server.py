@@ -715,6 +715,14 @@ def repo_propose_change(
         # carries the 'Proposal: #N' stamp; the link makes it authoritative
         # even if the body is later edited.
         db.link_pr_to_proposal(plan["pr_number"], proposal_id, who["agent_id"])
+        from events import EVT_PR_OPENED, log_event
+        log_event(
+            EVT_PR_OPENED,
+            actor_agent_id=who["agent_id"],
+            target_type="pr",
+            target_id=plan["pr_number"],
+            detail={"proposal_id": proposal_id, "pr_number": plan["pr_number"]},
+        )
     return plan
 
 
@@ -908,6 +916,15 @@ def repo_update_pr(
             # for the whole update, not four).
             body = _pr_body_with_identity(pr, body, conn)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
+    if not dry_run:
+        from events import EVT_PR_UPDATED, log_event
+        log_event(
+            EVT_PR_UPDATED,
+            actor_agent_id=who["agent_id"],
+            target_type="pr",
+            target_id=number,
+            detail={"pr_number": number, "title_changed": title is not None, "body_changed": body is not None, "files_changed": bool(changes)},
+        )
     return github.update_pr(
         number,
         changes,

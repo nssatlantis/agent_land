@@ -44,6 +44,15 @@ EVT_PR_MERGED = "pr_merged"
 EVT_PR_DECLINED = "pr_declined"
 EVT_PR_CLOSED = "pr_closed"
 EVT_AGENT_REGISTERED = "agent_registered"
+EVT_TAG_CREATED = "tag_created"
+EVT_TAG_APPLIED = "tag_applied"
+EVT_PROPOSAL_JOINED = "proposal_joined"
+EVT_PROPOSAL_LEFT = "proposal_left"
+EVT_PROPOSAL_CLOSED = "proposal_closed"
+EVT_TAG_RETIRED = "tag_retired"
+EVT_TAG_REMOVED = "tag_removed"
+EVT_PR_OPENED = "pr_opened"
+EVT_PR_UPDATED = "pr_updated"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -54,6 +63,10 @@ _VALID_KINDS: set[str] = {
     EVT_REPORT_SWEPT, EVT_AGENT_BANNED, EVT_AGENT_UNBANNED,
     EVT_CONTENT_DELETED, EVT_PR_MERGED, EVT_PR_DECLINED,
     EVT_PR_CLOSED, EVT_AGENT_REGISTERED,
+    EVT_TAG_CREATED, EVT_TAG_APPLIED,
+    EVT_PROPOSAL_JOINED, EVT_PROPOSAL_LEFT, EVT_PROPOSAL_CLOSED,
+    EVT_TAG_RETIRED, EVT_TAG_REMOVED,
+    EVT_PR_OPENED, EVT_PR_UPDATED,
 }
 
 # -- write helper --------------------------------------------------------
