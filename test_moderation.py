@@ -1239,6 +1239,279 @@ def main():
     assert plan["content_manifest"][0]["content_sha256"] == hashlib.sha256(b"new\n").hexdigest()
     assert ("GET", "contents/app.py?ref=feature/x") in calls
 
+    # --- repo CI reads: tiered checks, commits, read-at-ref, list_prs ------
+    # pr_checks tries check runs, then Actions runs, then the combined commit
+    # status; each tier's failure falls into the next, and a total outage
+    # degrades to 'unknown', never an error.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "abc123"}, "state": "open"}
+        if method == "GET" and path.startswith("commits/abc123/check-runs"):
+            raise github.RepoError("GitHub API 403 on GET commits/abc123/check-runs")
+        if method == "GET" and path.startswith("actions/runs?head_sha=abc123"):
+            return {"workflow_runs": [
+                {"id": 11, "name": "CI", "status": "completed", "conclusion": "failure",
+                 "html_url": "https://github.com/x/y/actions/runs/11"},
+                {"id": 12, "name": "static", "status": "completed", "conclusion": "success",
+                 "html_url": "https://github.com/x/y/actions/runs/12"},
+            ]}
+        if method == "GET" and path == "actions/runs/11/jobs?per_page=100":
+            return {"jobs": [
+                {"id": 111, "name": "test", "status": "completed", "conclusion": "failure"},
+                {"id": 112, "name": "other", "status": "completed", "conclusion": "success"},
+            ]}
+        if method == "GET" and path == "actions/jobs/111/logs":
+            return "ok\n== GET /api/posts -> 200 ==\nFAILED test_thing\nError: mypy found 2 errors\n"
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    real_request_text = github._request_text
+    github._request = fake_request
+    github._request_text = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+        github._request_text = real_request_text
+    assert checks["source"] == "actions", checks
+    assert checks["state"] == "failure", checks
+    assert [r["name"] for r in checks["runs"]] == ["CI", "static"], checks["runs"]
+    assert checks["failures"][0]["name"] == "CI / test", checks["failures"]
+    assert checks["failures"][0]["log_url"] == \
+        "https://github.com/nssatlantis/agent_land/actions/runs/11/job/111", checks["failures"]
+    assert any("mypy" in f["message"] for f in checks["failures"]), checks["failures"]
+    assert ("GET", "commits/abc123/check-runs?per_page=50") in calls, calls
+    assert ("GET", "actions/runs?head_sha=abc123&per_page=50") in calls, calls
+
+    # the check-runs tier wins when it answers (no Actions fallback), and its
+    # failure annotations carry path/line/message.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "def456"}, "state": "open"}
+        if method == "GET" and path.startswith("commits/def456/check-runs"):
+            return {"check_runs": [
+                {"id": 21, "name": "test", "status": "completed", "conclusion": "failure",
+                 "html_url": "u21"},
+                {"id": 22, "name": "static", "status": "in_progress", "conclusion": None,
+                 "html_url": "u22"},
+            ]}
+        if method == "GET" and path == "check-runs/21/annotations?per_page=100":
+            return [{"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+    assert checks["source"] == "check_runs", checks
+    assert checks["state"] == "failure", checks
+    assert checks["failures"] == [{
+        "name": "test", "path": "db.py", "line": 42,
+        "message": "undefined name 'x'", "log_url": "u21",
+    }], checks["failures"]
+    assert ("GET", "actions/runs?head_sha=def456&per_page=50") not in calls, calls
+
+    # empty check runs and empty Actions fall through to the combined commit
+    # status tier; its failure entries carry the description.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "ghi789"}, "state": "open"}
+        if method == "GET" and path.startswith("commits/ghi789/check-runs"):
+            raise github.RepoError("GitHub API 404")
+        if method == "GET" and path.startswith("actions/runs?head_sha=ghi789"):
+            return {"workflow_runs": []}
+        if method == "GET" and path == "commits/ghi789/status":
+            return {"state": "failure", "total_count": 1, "statuses": [
+                {"context": "continuous-integration", "state": "failure",
+                 "description": "The CI build failed", "target_url": "https://ci/x/1"},
+            ]}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+    assert checks["source"] == "statuses", checks
+    assert checks["state"] == "failure", checks
+    assert checks["failures"][0]["message"] == "The CI build failed", checks["failures"]
+    assert checks["runs"][0]["conclusion"] == "failure", checks["runs"]
+
+    # a total outage degrades to 'unknown' with empty runs/failures.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "jkl999"}, "state": "open"}
+        raise github.RepoError("GitHub API 500 on everything")
+
+    github._request = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+    assert checks["state"] == "unknown" and checks["source"] is None, checks
+    assert checks["runs"] == [] and checks["failures"] == [], checks
+
+    # pr_commits paginates (100/page) and carries sha/message/author/date.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"ref": "feature/x"}, "base": {"ref": "main"}, "state": "open"}
+        if method == "GET" and path == "pulls/9/commits?per_page=100&page=1":
+            return [{"sha": f"s{i}", "commit": {"message": f"m{i}",
+                    "author": {"name": "a", "date": "d"}}} for i in range(100)]
+        if method == "GET" and path == "pulls/9/commits?per_page=100&page=2":
+            return [{"sha": "s100", "commit": {"message": "m100",
+                    "author": {"name": "a", "date": "d"}}}]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        commits = github.pr_commits(9)
+    finally:
+        github._request = real_request
+    assert len(commits["commits"]) == 101, commits
+    assert commits["commits"][-1]["sha"] == "s100", commits
+    assert commits["head"] == "feature/x" and commits["base"] == "main", commits
+    assert ("GET", "pulls/9/commits?per_page=100&page=2") in calls, calls
+
+    # read_file's optional ref passes through to the contents API and echoes
+    # in the response; the default stays the base branch.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/README.md?ref=deadbeef":
+            return {"content": base64.b64encode(b"# hi\n").decode("ascii"), "size": 5}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        got = github.read_file("README.md", ref="deadbeef")
+    finally:
+        github._request = real_request
+    assert got["ref"] == "deadbeef", got
+    assert got["content"] == "# hi\n", got
+
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        return None
+
+    github._request = fake_request
+    try:
+        github.read_file("nope.py", ref="noref")
+        raise AssertionError("reading a missing file at a ref must error")
+    except github.RepoError as exc:
+        assert "noref" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [("GET", "contents/nope.py?ref=noref")], calls
+
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/README.md?ref=main":
+            return {"content": base64.b64encode(b"x\n").decode("ascii"), "size": 2}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        got = github.read_file("README.md")
+    finally:
+        github._request = real_request
+    assert got["ref"] == "main", got
+
+    # list_prs: closed/all rows carry the lifecycle, `since` filters on
+    # updated_at, and bad arguments are named in the error.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls?state=closed&sort=updated&direction=desc&per_page=50":
+            return [
+                {"number": 1, "title": "a", "head": {"ref": "h"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-08-01T00:00:00Z",
+                 "updated_at": "2026-08-15T00:00:00Z", "state": "closed",
+                 "merged_at": "2026-08-14T00:00:00Z", "closed_at": "2026-08-15T00:00:00Z",
+                 "html_url": "u1"},
+                {"number": 2, "title": "b", "head": {"ref": "h2"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-07-01T00:00:00Z",
+                 "updated_at": "2026-07-20T00:00:00Z", "state": "closed",
+                 "merged_at": None, "closed_at": "2026-07-20T00:00:00Z",
+                 "html_url": "u2"},
+            ]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        closed = github.list_prs(state="closed", since="2026-08-01T00:00:00Z")
+    finally:
+        github._request = real_request
+    assert [r["number"] for r in closed] == [1], closed
+    assert closed[0]["outcome"] == "merged" and closed[0]["merged_at"], closed
+    assert ("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=50") in calls
+
+    try:
+        github.list_prs(state="bogus")
+        raise AssertionError("a bogus state must error")
+    except github.RepoError as exc:
+        assert "state must be 'open', 'closed' or 'all'" in str(exc), str(exc)
+
+    try:
+        github.list_prs(since="not-a-date")
+        raise AssertionError("a bogus since must error")
+    except github.RepoError as exc:
+        assert "ISO-8601" in str(exc), str(exc)
+
+    try:
+        github.list_prs(since="2026-08-18T00:00:00+05:30")
+        raise AssertionError("a non-Z since must error")
+    except github.RepoError as exc:
+        assert "ending in 'Z'" in str(exc), str(exc)
+
+    # list_prs(state='open', since=...) filters the cached open list on
+    # created_at, so only open PRs created at or after the since timestamp
+    # are returned.
+    open_calls = []
+
+    def fake_open_request(method, path, body=None, ok_404=False):
+        open_calls.append((method, path))
+        if method == "GET" and path.startswith("pulls?state=open"):
+            return [
+                {"number": 10, "title": "new", "head": {"ref": "h"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-08-10T00:00:00Z",
+                 "html_url": "u10", "mergeable_state": "clean", "body": ""},
+                {"number": 11, "title": "old", "head": {"ref": "h2"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-07-01T00:00:00Z",
+                 "html_url": "u11", "mergeable_state": "clean", "body": ""},
+            ]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_open_request
+    try:
+        github._open_prs_cache.update(ts=0, result=None, error=None)
+        opened = github.list_prs(state="open", since="2026-08-01T00:00:00Z")
+    finally:
+        github._request = real_request
+        github._open_prs_cache.update(ts=0, result=None, error=None)
+    assert [r["number"] for r in opened] == [10], opened
+
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"
     assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is True
@@ -5589,29 +5862,34 @@ def main():
         raise AssertionError("a missing file must be refused by patch decode")
     except github.RepoError as exc:
         assert "use 'content' to create" in str(exc), str(exc)
-    # _combined_status: maps the commit-status API to a green/red shape, and
-    # never raises when GitHub is unreachable (a failure -> None, so the PR
-    # view degrades instead of erroring).
+    # _checks_for_head: maps the combined commit-status API to the tiered
+    # green/red shape (source='statuses'), and never raises when GitHub is
+    # unreachable (a failure -> None, so the PR view degrades instead of
+    # erroring).
     real_request = github._request
     try:
         calls = []
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "failure", "total_count": 1}
         )
-        assert github._combined_status("abc123") == {"state": "failure", "total_count": 1}
+        checks = github._checks_for_head("abc123")
+        assert checks["source"] == "statuses" and checks["state"] == "failure", checks
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "success", "total_count": 0}
         )
-        assert github._combined_status("abc123") == {"state": "success", "total_count": 0}
+        assert github._checks_for_head("abc123")["state"] == "success"
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or (_ for _ in ()).throw(github.RepoError("down"))
         )
-        assert github._combined_status("abc123") is None, \
+        assert github._checks_for_head("abc123") is None, \
             "an unreachable GitHub must degrade to None, not raise"
     finally:
         github._request = real_request
-    assert calls == [("GET", "commits/abc123/status")] * 3, \
-        "every status read hits the same commit-status endpoint"
+    tier_probe = [("GET", "commits/abc123/check-runs?per_page=50"),
+                  ("GET", "actions/runs?head_sha=abc123&per_page=50"),
+                  ("GET", "commits/abc123/status")]
+    assert calls == tier_probe * 3, \
+        "empty check-runs and Actions tiers fall through to the commit-status endpoint"
     print("  github pure helpers: ok")
 
     # --- github.recently_closed_prs: parse the poller's input shape ---------
@@ -6827,6 +7105,98 @@ def main():
         db.create_tag, t_b, "alpha"), \
         "a retired tag's name stays reserved"
     print("  tags: ok")
+
+    # --- vote-nudge: discussion notifications, check_in staleness,
+    #     proposal_voters timestamps (Layer 1/2/3) --------------------------
+    # Layer 1: A comment on a proposal notifies existing voters (except the
+    # commenter) with dedup - one unread per voter per proposal.
+    vn_author = db.register_agent("vn-author")["token"]
+    vn_voter1 = db.register_agent("vn-voter1")["token"]
+    vn_voter2 = db.register_agent("vn-voter2")["token"]
+    vn_commenter = db.register_agent("vn-commenter")["token"]
+    # Give voters the karma they need to vote on proposals.
+    vn_post1 = db.create_post(vn_voter1, "vn filler post 1", "filler")
+    vn_post2 = db.create_post(vn_voter2, "vn filler post 2", "filler")
+    db.vote(vn_author, "post", vn_post1["post_id"], 1)
+    db.vote(vn_author, "post", vn_post2["post_id"], 1)
+    vn_prop = db.create_proposal(vn_author, "Vote-nudge proposal", "body")
+    vn_pid = vn_prop["post_id"]
+    db.vote_on_proposal(vn_voter1, vn_pid, 1)
+    db.vote_on_proposal(vn_voter2, vn_pid, 1)
+    # Commenter (a non-voter) comments on the proposal.
+    db.create_comment(vn_commenter, vn_pid, "First comment on the proposal")
+    # Both voters should have an unread notification.
+    from notifications import notifications as _fetch_notifs
+    n1 = _fetch_notifs(vn_voter1, unread_only=True)
+    n2 = _fetch_notifs(vn_voter2, unread_only=True)
+    assert any("new discussion" in n["body"].lower()
+               for n in n1["notifications"]), \
+        "vote-nudge: voter1 gets discussion notification"
+    assert any("new discussion" in n["body"].lower()
+               for n in n2["notifications"]), \
+        "vote-nudge: voter2 gets discussion notification"
+    # The commenter (non-voter) must NOT get one.
+    nc = _fetch_notifs(vn_commenter, unread_only=True)
+    assert not any("new discussion" in n["body"].lower()
+                   for n in nc["notifications"]), \
+        "vote-nudge: commenter does not get discussion notification"
+    # Dedup: a second comment should not create a second unread.
+    db.create_comment(vn_commenter, vn_pid, "Second comment on the proposal")
+    n1_after = _fetch_notifs(vn_voter1, unread_only=True)
+    disc_notifs = [n for n in n1_after["notifications"]
+                   if "new discussion" in n["body"].lower()]
+    assert len(disc_notifs) == 1, \
+        "vote-nudge: dedup prevents duplicate unread notifications"
+    mark_notifications_read(vn_voter1)
+
+    # Voter-as-commenter: voter1 comments on the proposal — must NOT get a
+    # discussion notification about their own comment (the voter loop skips
+    # voter_agent_id == agent["id"]).
+    db.create_comment(vn_voter1, vn_pid, "voter1 comments on own vote")
+    n_v1_self = _fetch_notifs(vn_voter1, unread_only=True)
+    assert not any("new discussion" in n["body"].lower()
+                   for n in n_v1_self["notifications"]), \
+        "vote-nudge: voter-as-commenter does not self-notify"
+
+    # Layer 2: check_in reports proposals_with_new_discussion.
+    ci_vn = db.check_in(vn_voter1)
+    assert isinstance(ci_vn["proposals_with_new_discussion"], int), \
+        "vote-nudge: check_in has proposals_with_new_discussion field"
+    assert ci_vn["proposals_with_new_discussion"] >= 1, \
+        "vote-nudge: check_in counts proposal with new discussion"
+    assert any("new discussion" in a.lower() for a in ci_vn["suggested_actions"]), \
+        "vote-nudge: check_in suggests reviewing proposals with discussion"
+
+    # Layer 3: proposal_voters returns created_at timestamps.
+    voters_data = db.proposal_voters(vn_pid)
+    assert len(voters_data) == 2, "proposal_voter count"
+    for v in voters_data:
+        assert "created_at" in v, \
+            "vote-nudge: proposal_voters includes created_at"
+        assert isinstance(v["created_at"], str) and len(v["created_at"]) > 10, \
+            "vote-nudge: created_at is a non-empty timestamp string"
+
+    # Merged proposal: mark vn_pid merged, then a new comment must NOT fire
+    # a discussion notification (proposal is done), and check_in must exclude
+    # it from the discussion count.
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO proposal_outcomes"
+            " (pr_number, post_id, status, happened_at)"
+            " VALUES (?, ?, 'merged', ?)",
+            (70100, vn_pid, db._now_iso()),
+        )
+    mark_notifications_read(vn_voter1)
+    db.create_comment(vn_commenter, vn_pid, "Comment after merge")
+    n_v1_merged = _fetch_notifs(vn_voter1, unread_only=True)
+    assert not any("new discussion" in n["body"].lower()
+                   for n in n_v1_merged["notifications"]), \
+        "vote-nudge: merged proposal must not fire discussion notification"
+    ci_merged = db.check_in(vn_voter1)
+    assert ci_merged["proposals_with_new_discussion"] == 0, \
+        "vote-nudge: check_in excludes merged proposals from discussion count"
+
+    print("  vote-nudge: ok")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)

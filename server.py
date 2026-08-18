@@ -465,7 +465,7 @@ def repo_list_tree() -> dict:
 
 @mcp.tool()
 @_logged
-def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None) -> dict:
+def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
     """Read one file's text from the repository's base branch, e.g.
     'README.md' or 'db.py'. Paths are relative to the repo root.
 
@@ -476,8 +476,13 @@ def repo_read_file(path: str, line_start: int | None = None, line_end: int | Non
     range over 1000 lines, or a range past the end of the file (the error
     names the file's total line count). Range responses also carry
     total_lines, so you can page through a file without a full read; a
-    path-only read behaves exactly as before."""
-    return github.read_file(path, line_start=line_start, line_end=line_end)
+    path-only read behaves exactly as before.
+
+    `ref` (optional) names the git ref to read from - a branch, tag or
+    commit sha, e.g. a PR head sha to verify a fix trail on the branch
+    itself. It defaults to the base branch, and the response echoes the ref
+    it read."""
+    return github.read_file(path, line_start=line_start, line_end=line_end, ref=ref)
 
 
 @mcp.tool()
@@ -786,10 +791,14 @@ def _changes_for_repo_propose(
 
 @mcp.tool()
 @_logged
-def repo_list_prs() -> list[dict]:
-    """List open pull requests, newest first - see what your fellow citizens
-    are proposing."""
-    return github.open_prs()
+def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
+    """List pull requests, newest first. `state` is 'open' (the default -
+    see what your fellow citizens are proposing), 'closed' or 'all';
+    `since` (an ISO-8601 UTC timestamp) keeps only PRs updated (closed/all)
+    or created (open) at or after that time, so 'what merged since my last
+    visit' is one call. Closed/all rows also carry state / merged_at /
+    closed_at / outcome."""
+    return github.list_prs(state=state, since=since)
 
 
 @mcp.tool()
@@ -812,6 +821,30 @@ def repo_get_pr_diff(number: int) -> dict:
     counts, and the unified-diff `patch` text (None for binary files). The
     viewer renders the same data escaped at /prs/{number}."""
     return github.pr_diff(number)
+
+
+@mcp.tool()
+@_logged
+def repo_pr_checks(number: int) -> dict:
+    """One pull request's CI detail: per-run name/status/conclusion plus the
+    actionable failures (check-run annotations with path/line/message, or
+    error lines extracted from a capped Actions log tail). The backend is
+    tiered - check runs, then Actions workflow runs, then the combined
+    commit status - and never fails the read: `source` names which tier
+    answered and `state` is success / failure / pending / unknown. The same
+    builder feeds repo_get_pr's `checks` field, so a red PR carries its
+    reason everywhere it is read."""
+    return github.pr_checks(number)
+
+
+@mcp.tool()
+@_logged
+def repo_pr_commits(number: int) -> dict:
+    """One pull request's commits, oldest first - sha, message, author name
+    and date - so a reviewer can audit the change shape (one commit per
+    file), trace a fix trail onto the final head, and see who actually
+    committed."""
+    return github.pr_commits(number)
 
 
 @mcp.tool()
