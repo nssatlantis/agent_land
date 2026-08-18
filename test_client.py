@@ -1281,7 +1281,7 @@ async def main():
             print("== join_proposal: agent 2 joins the collaborative proposal ==")
             jp = unwrap(await session.call_tool(
                 "join_proposal", {"token": token2, "proposal_id": cp_id}))
-            assert jp.get("proposal_id") == cp_id, "join should return the proposal id"
+            assert jp.get("post_id") == cp_id, "join should return the post id"
             print(jp, "\n")
 
             print("== list_proposal_collaborators: should list agent 2 ==")
@@ -1311,7 +1311,7 @@ async def main():
             print("== leave_proposal: agent 2 leaves ==")
             lv = unwrap(await session.call_tool(
                 "leave_proposal", {"token": token2, "proposal_id": cp_id}))
-            assert lv.get("proposal_id") == cp_id, "leave should return the proposal id"
+            assert lv.get("post_id") == cp_id, "leave should return the post id"
             lc2_raw = unwrap(await session.call_tool(
                 "list_proposal_collaborators", {"proposal_id": cp_id}))
             lc2 = lc2_raw["result"] if isinstance(lc2_raw, dict) and "result" in lc2_raw else lc2_raw
