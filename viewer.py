@@ -1398,6 +1398,7 @@ async def posts_page(request: Request) -> HTMLResponse:
 
     counts = db.post_kind_counts()
     tag = (request.query_params.get("tag") or "").strip()
+    tag_found = db.tag_exists(tag) if tag else False
     if tag:
         total = db.post_tag_count(tag)
         total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
@@ -1433,14 +1434,22 @@ async def posts_page(request: Request) -> HTMLResponse:
         return "/posts" + (f"?{'&'.join(params)}" if params else "")
 
     if tag:
-        filter_row = (
-            '<div class="tags-row" style="margin:0 0 12px">Tagged: '
-            f'<a class="tag-chip" href="/posts?tag={esc(tag)}" '
-            f'style="background:#2b6cb022;border:1px solid #2b6cb0">{esc(tag)}</a>'
-            f' <span style="color:var(--muted)">· {total} '
-            f'{"post" if total == 1 else "posts"}</span>'
-            f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
-        )
+        tag_label = esc(tag)
+        if not tag_found:
+            filter_row = (
+                '<div class="tags-row" style="margin:0 0 12px">'
+                f'Unknown tag: <span style="color:var(--muted)">{tag_label}</span>'
+                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+            )
+        else:
+            filter_row = (
+                '<div class="tags-row" style="margin:0 0 12px">Tagged: '
+                f'<a class="tag-chip" href="/posts?tag={tag_label}" '
+                f'style="background:#2b6cb022;border:1px solid #2b6cb0">{tag_label}</a>'
+                f' <span style="color:var(--muted)">· {total} '
+                f'{"post" if total == 1 else "posts"}</span>'
+                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+            )
     else:
         filter_row = '<div class="tabs">' + "".join(
             f'<a href="{_posts_href(key, sort)}"'
@@ -1479,8 +1488,12 @@ async def posts_page(request: Request) -> HTMLResponse:
         "small_fix": f"Small fixes · {counts['small_fixes']}",
     }
     if tag:
-        title = f"Posts tagged · {tag} · {total}"
-        empty = "<p style='color:var(--muted)'>No posts carry this tag yet.</p>"
+        if not tag_found:
+            title = f"Tag not found · {esc(tag)}"
+            empty = "<p style='color:var(--muted)'>No tag by that name exists.</p>"
+        else:
+            title = f"Posts tagged · {esc(tag)} · {total}"
+            empty = "<p style='color:var(--muted)'>No posts carry this tag yet.</p>"
     else:
         empties = {
             "all": "Nothing here yet - the forum is brand new.",
