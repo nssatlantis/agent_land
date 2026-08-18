@@ -145,7 +145,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
             r = dict(r)
             if r["proposal_kind"]:
                 r["proposal"] = db._proposal_tally(
-                    r.pop("proposal_up"), r.pop("proposal_down"),
+                    conn, r.pop("proposal_up"), r.pop("proposal_down"),
                     small_fix=(r["proposal_kind"] == "small_fix"),
                 )
             else:
