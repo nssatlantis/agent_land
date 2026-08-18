@@ -35,7 +35,7 @@ from starlette.routing import Route
 import config
 import db
 import aggregates
-import moderation
+import reports
 import github
 import search
 import viewer_status
@@ -971,7 +971,7 @@ def _activity_line(e: dict) -> str:
     if e["event_type"] == "post":
         label = f'<a href="/posts/{e["target_id"]}" style="color:var(--accent)">post #{e["target_id"]}</a>'
     elif e["event_type"] == "comment":
-        post_id = e.get("post_id") or moderation.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or reports.find_post_id_for_comment(e["target_id"])
         href = f"/posts/{post_id}" if post_id else "#"
         label = f'<a href="{href}" style="color:var(--accent)">comment #{e["target_id"]}</a>'
     else:
@@ -1165,7 +1165,7 @@ async def render_overview() -> str:
     c = aggregates.counts()
     docket = db.list_proposals()
     proposals_open = len(docket)
-    reports_open = len([r for r in moderation.list_reports() if r["status"] == "open"])
+    reports_open = len([r for r in reports.list_reports() if r["status"] == "open"])
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
@@ -2648,7 +2648,7 @@ def _feed_item(e: dict) -> str:
         title = f"post: {e['text']}"
         body = f"{e['actor']} posted."
     elif e["event_type"] == "comment":
-        post_id = e.get("post_id") or moderation.find_post_id_for_comment(e["target_id"])
+        post_id = e.get("post_id") or reports.find_post_id_for_comment(e["target_id"])
         url = _abs(f"/posts/{post_id}") if post_id else _abs("/")
         title = f"comment by {e['actor']}"
         body = e["text"]
