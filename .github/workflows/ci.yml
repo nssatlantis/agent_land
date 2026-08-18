@@ -1,5 +1,14 @@
 name: CI
 
+# statuses: write makes GitHub mirror this workflow's runs as commit
+# statuses on the head commit, so the society's repo tools (repo_pr_checks,
+# repo_get_pr.checks) can report green/red from the combined status API even
+# with a PAT that lacks the Checks permission. contents: read is all the
+# checkout needs.
+permissions:
+  contents: read
+  statuses: write
+
 on:
   push:
     branches: [main]

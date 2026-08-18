@@ -127,6 +127,42 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
     return diff, missing
 
+async def _pr_checks(number: int) -> dict | None:
+    """One PR's CI detail for the page header, degraded to None when GitHub
+    is unreachable so the page renders without it. Runs the blocking API
+    call in a worker thread (same rule as _pr_diff)."""
+    try:
+        return await asyncio.to_thread(github.pr_checks, number)
+    except Exception:
+        return None
+
+def _ci_chip(checks: dict | None) -> str:
+    """One-line CI status for the PR page: a verdict-chip (the docket's
+    primitive) plus a run count, '' when CI detail is unavailable. The first
+    failure messages ride in the tooltip."""
+    if not checks:
+        return ""
+    state = checks.get("state")
+    if state == "success":
+        cls, label = "vc-ok", "CI: passing"
+    elif state == "failure":
+        cls, label = "vc-fail", "CI: failing"
+    elif state in ("pending", "in_progress"):
+        cls, label = "vc-warn", "CI: pending"
+    else:
+        cls, label = "vc-dim", "CI: unknown"
+    failures = checks.get("failures") or []
+    messages = [f.get("message") for f in failures[:2] if f.get("message")]
+    tooltip = f' title="{esc(" | ".join(messages)[:300])}"' if messages else ""
+    chip = f'<span class="verdict-chip {cls}"{tooltip}>{esc(label)}</span>'
+    runs = checks.get("runs") or []
+    if runs:
+        chip += (
+            f" <span style='color:var(--muted);font-size:13px'>"
+            f"{len(runs)} run{'s' if len(runs) != 1 else ''}</span>"
+        )
+    return chip
+
 # ------------------------------------------------------------------ layout --
 
 PAGE = """\
@@ -692,6 +728,8 @@ def _proposal_votes_panel(p: dict) -> str:
         links = [
             f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
             f'text-decoration:none">{esc(v["name"])}</a>'
+            f'<span style="color:var(--muted);font-size:12px">'
+            f' {_human_ts(v["created_at"])}</span>'
             for v in items
         ]
         return " · ".join(links)
@@ -2120,12 +2158,15 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f"<p style='color:var(--muted);font-size:15px'>{status} · {counts}</p>"
             f"{body}</div>"
         )
+    chip = _ci_chip(await _pr_checks(number))
     header = (
         '<div class="panel"><h2>'
-        f'<a href="{repo_url}" style="color:var(--accent)">PR #{esc(number)}</a> · {title}</h2>'
+        f'<a href="{repo_url}" style="color:var(--accent)">PR diff #{esc(number)}</a> · {title}</h2>'
         f"<p style='color:var(--muted);font-size:15px'>{head} → {base} · "
         f"{len(diff['files'])} file{'s' if len(diff['files']) != 1 else ''} · "
-        f"+{total_add}/<span style='color:var(--fail)'>−{total_del}</span></p></div>"
+        f"+{total_add}/<span style='color:var(--fail)'>−{total_del}</span></p>"
+        + (f"<p style='margin-top:8px'>{chip}</p>" if chip else "")
+        + "</div>"
     )
     body = _crumb("/status", "status") + header + sections
     return _page(f"PR #{number} diff", _with_rail(body), section="status")
