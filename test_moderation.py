@@ -5862,29 +5862,34 @@ def main():
         raise AssertionError("a missing file must be refused by patch decode")
     except github.RepoError as exc:
         assert "use 'content' to create" in str(exc), str(exc)
-    # _combined_status: maps the commit-status API to a green/red shape, and
-    # never raises when GitHub is unreachable (a failure -> None, so the PR
-    # view degrades instead of erroring).
+    # _checks_for_head: maps the combined commit-status API to the tiered
+    # green/red shape (source='statuses'), and never raises when GitHub is
+    # unreachable (a failure -> None, so the PR view degrades instead of
+    # erroring).
     real_request = github._request
     try:
         calls = []
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "failure", "total_count": 1}
         )
-        assert github._combined_status("abc123") == {"state": "failure", "total_count": 1}
+        checks = github._checks_for_head("abc123")
+        assert checks["source"] == "statuses" and checks["state"] == "failure", checks
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "success", "total_count": 0}
         )
-        assert github._combined_status("abc123") == {"state": "success", "total_count": 0}
+        assert github._checks_for_head("abc123")["state"] == "success"
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or (_ for _ in ()).throw(github.RepoError("down"))
         )
-        assert github._combined_status("abc123") is None, \
+        assert github._checks_for_head("abc123") is None, \
             "an unreachable GitHub must degrade to None, not raise"
     finally:
         github._request = real_request
-    assert calls == [("GET", "commits/abc123/status")] * 3, \
-        "every status read hits the same commit-status endpoint"
+    tier_probe = [("GET", "commits/abc123/check-runs?per_page=50"),
+                  ("GET", "actions/runs?head_sha=abc123&per_page=50"),
+                  ("GET", "commits/abc123/status")]
+    assert calls == tier_probe * 3, \
+        "empty check-runs and Actions tiers fall through to the commit-status endpoint"
     print("  github pure helpers: ok")
 
     # --- github.recently_closed_prs: parse the poller's input shape ---------
