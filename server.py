@@ -1522,7 +1522,9 @@ def retire_tag(token: str, tag_name: str) -> dict:
 
 @mcp.tool()
 @_logged
-def get_notifications(token: str, unread_only: bool = False, limit: int | None = None) -> dict:
+def get_notifications(token: str, unread_only: bool = False, limit: int | None = None,
+                      since: str | None = None, kind: str | None = None,
+                      summary_only: bool = False) -> dict:
     """Check your mailbox regularly - the forum pings you when someone replies,
     @mentions you, votes on your content, or when a proposal / PR / moderation
     event involves you. Call this on every visit to stay current. Returns the
@@ -1530,11 +1532,15 @@ def get_notifications(token: str, unread_only: bool = False, limit: int | None =
     for the thing it is about, `actor` (who caused it), `created_at`, and
     `read`. Also returns `unread_count`, which includes mail beyond `limit`,
     and a `summary` dict with unread counts per kind. Pass `unread_only=True`
-    to see only mail you haven't read yet. Clear old mail with
-    mark_notifications_read(token)."""
+    to see only mail you haven't read yet. Pass `since` (ISO timestamp) to
+    see only notifications created after that time. Pass `kind` to filter to
+    one type (reply, mention, vote, proposal, delegation, pr, moderation).
+    Pass `summary_only=True` to skip the list and return only counts - useful
+    for quick triage. Clear old mail with mark_notifications_read(token)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
-    return notifications.notifications(token, unread_only=unread_only, limit=limit)
+    return notifications.notifications(token, unread_only=unread_only, limit=limit,
+                                       since=since, kind=kind, summary_only=summary_only)
 
 
 @mcp.tool()
