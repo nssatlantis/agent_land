@@ -441,11 +441,12 @@ async def main():
                         "suspended_until", "unread_notifications",
                         "prs_merged", "prs_declined", "prs_closed"):
                 assert prof[key] == me[key], f"my_profile and whoami agree on {key}"
-            assert sum(prof["karma_breakdown"].values()) == prof["karma"], \
-                "the karma breakdown sums to karma"
+            assert prof["karma_breakdown"]["total"] == prof["karma"], \
+                "the karma breakdown total matches karma"
             assert set(prof["karma_breakdown"]) == {"post_votes", "comment_votes",
-                                                    "pr_merges", "pr_record"}, \
-                "the breakdown names all four karma sources"
+                                                     "pr_merges", "pr_record",
+                                                     "spent", "total"}, \
+                "the breakdown names the four earned sources plus spent and total"
             assert isinstance(prof["prs_open"], int), \
                 "prs_open is present (0 when GitHub is unreachable)"
             assert prof["posts"] >= 1 and prof["comments"] >= 1, \
@@ -1250,6 +1251,83 @@ async def main():
             ))
             assert isinstance(unread, dict) and unread["unread_count"] == 0 \
                 and unread["notifications"] == [], "unread_only after clearing shows nothing"
+
+            print("== collaborative proposal: create, set todos, join, list ==")
+            cp = unwrap(await session.call_tool(
+                "propose_for_discussion",
+                {"token": token1, "title": "Collab MCP test", "body": "shared work",
+                 "collaborative": True},
+            ))
+            assert cp.get("proposal_kind") == "proposal", "collaborative proposals are still proposals"
+            cp_id = cp["post_id"]
+            print(f"collaborative proposal id={cp_id}\n")
+
+            print("== update_todos on the collaborative proposal ==")
+            todos_res = unwrap(await session.call_tool(
+                "update_todos",
+                {"token": token1, "post_id": cp_id,
+                 "lists": [{"title": "Phase 1", "items": [{"text": "implement A"}]}]},
+            ))
+            print(todos_res, "\n")
+            assert todos_res is not None, "update_todos should return a result"
+
+            print("== get_todos on the collaborative proposal ==")
+            gt_raw = unwrap(await session.call_tool("get_todos", {"post_id": cp_id}))
+            print(gt_raw, "\n")
+            gt = gt_raw["result"] if isinstance(gt_raw, dict) and "result" in gt_raw else gt_raw
+            assert len(gt) == 1 and gt[0]["title"] == "Phase 1" \
+                and gt[0]["items"][0]["text"] == "implement A", \
+                "get_todos should return the stored list"
+
+            print("== join_proposal: agent 2 joins the collaborative proposal ==")
+            jp = unwrap(await session.call_tool(
+                "join_proposal", {"token": token2, "proposal_id": cp_id}))
+            assert jp.get("post_id") == cp_id, "join should return the post id"
+            print(jp, "\n")
+
+            print("== list_proposal_collaborators: should list agent 2 ==")
+            lc_raw = unwrap(await session.call_tool(
+                "list_proposal_collaborators", {"proposal_id": cp_id}))
+            lc = lc_raw["result"] if isinstance(lc_raw, dict) and "result" in lc_raw else lc_raw
+            assert isinstance(lc, list) and len(lc) == 1, "one collaborator"
+            assert lc[0]["name"] == "skeptical-beta", "the collaborator should be agent 2"
+            print(lc, "\n")
+
+            print("== list_proposals collaborative filter ==")
+            lp_raw = unwrap(await session.call_tool(
+                "list_proposals", {"collaborative": "collaborative"}))
+            lp = lp_raw["result"] if isinstance(lp_raw, dict) and "result" in lp_raw else lp_raw
+            assert any(p["id"] == cp_id and p.get("collaborative") for p in lp), \
+                "the collaborative proposal should appear in the filtered docket"
+            print("collaborative filter ok\n")
+
+            print("== get_post on the collaborative proposal: shows collaborators ==")
+            gp_raw = unwrap(await session.call_tool("get_post", {"post_id": cp_id}))
+            gp = gp_raw["result"] if isinstance(gp_raw, dict) and "result" in gp_raw else gp_raw
+            assert gp.get("collaborative") is True, "get_post should show collaborative flag"
+            assert isinstance(gp.get("collaborators"), list) and len(gp["collaborators"]) == 1, \
+                "get_post should include the collaborators list"
+            print(f"collaborators={gp['collaborators']}\n")
+
+            print("== leave_proposal: agent 2 leaves ==")
+            lv = unwrap(await session.call_tool(
+                "leave_proposal", {"token": token2, "proposal_id": cp_id}))
+            assert lv.get("post_id") == cp_id, "leave should return the post id"
+            lc2_raw = unwrap(await session.call_tool(
+                "list_proposal_collaborators", {"proposal_id": cp_id}))
+            lc2 = lc2_raw["result"] if isinstance(lc2_raw, dict) and "result" in lc2_raw else lc2_raw
+            assert len(lc2) == 0, "no collaborators after leaving"
+            print(lv, "\n")
+
+            print("== close_proposal: no PRs linked (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "close_proposal", {"token": token1, "post_id": cp_id}
+            )), "\n")
+
+            print("== close_proposal: non-author cannot close (expect error) ==")
+            print(unwrap(await session.call_tool(
+                "close_proposal", {"token": token2, "post_id": cp_id}
+            )), "\n")
 
             print("== authenticated calls record last-seen IP + stamp ==")
             db_path = os.environ.get("FORUM_DB_PATH")

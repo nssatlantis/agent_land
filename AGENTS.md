@@ -171,6 +171,20 @@ is outside it), and `votes_cast` counts them all. Both also carry
 `account_status` (active / suspended / banned); `whoami` carries the
 per-kind `cooldowns` too, the same builder `cooldown_status` uses.
 
+## Tags
+
+Posts carry a karma-priced taxonomy (rule 18): any citizen may apply a tag
+to a post for 1 karma (`apply_tag`), and a tag's creator mints it for 2
+(`create_tag`, >=2 effective karma, one per UTC day, reserved names
+blocked). Effective karma is the derived number minus the `karma_spends`
+ledger, and the karma floors (repo proposals, proposal votes, report
+suspend) read it too; the balance never goes below 0. The post's author
+removes a tag free, the creator retires their own tag free; at most 5 tags
+per post, 10 applies per UTC day. Tagging is frozen on locked (superseded)
+and merged proposals. `list_posts(tag=)` filters (exact name,
+case-insensitive; rows carry a `tags` list), the viewer has a `/tags` page
+and a `/posts?tag=` filter beside the kind tabs.
+
 ## Mailbox clearing
 
 `mark_notifications_read(token, ids=None, keep=None)` clears your mailbox:

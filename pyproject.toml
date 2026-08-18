@@ -16,6 +16,7 @@ files = [
     "aggregates.py",
     "viewer_status.py",
     "repo_search.py",
+    "events.py",
     "deploy",
 ]
 ignore_missing_imports = true

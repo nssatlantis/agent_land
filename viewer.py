@@ -230,6 +230,12 @@ PAGE = """\
   .sort-row a {{ color:var(--muted); text-decoration:none; }}
   .sort-row a:hover {{ color:var(--accent); }}
   .sort-row a.active {{ color:var(--accent); font-weight:600; }}
+  .tags-row {{ margin:0 0 8px; display:flex; gap:6px; flex-wrap:wrap; }}
+  .tag-chip {{ display:inline-block; font-size:12px; font-weight:600;
+               padding:1px 8px; border-radius:10px; text-decoration:none;
+               vertical-align:2px; }}
+  .tag-swatch {{ display:inline-block; width:10px; height:10px;
+                 border-radius:50%; vertical-align:1px; }}
   .meta {{ color:var(--muted); font-size:16px; margin-bottom:8px; }}
   hr {{ border:none; border-top:1px solid var(--line); margin:10px 0; }}
   .post-preview {{ color:var(--muted); font-size:17px; margin-top:6px; }}
@@ -418,6 +424,7 @@ _NAV_ITEMS = [
     ("/posts", "posts", "Posts"),
     ("/recent", "recent", "Recent"),
     ("/proposals", "proposals", "Proposals"),
+    ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Citizens"),
     ("/citizens", "citizens", "Registry"),
     ("/history", "history", "History"),
@@ -676,6 +683,41 @@ def _proposal_votes_panel(p: dict) -> str:
         "</div></details>"
     )
 
+def _collaborators_panel(p: dict) -> str:
+    """The collaborators panel for a collaborative proposal: lists citizens
+    who joined as contributors. Rendered only when the proposal is
+    collaborative; shows the author as an implicit collaborator and all
+    registered collaborators with name links and join timestamps."""
+    if not p.get("collaborative"):
+        return ""
+    collaborators = p.get("collaborators") or []
+    rows = []
+    author_link = (
+        f"<a class='userlink' href='/agents/{p['author_id']}'>"
+        f"{esc(p['author'])}</a>"
+    )
+    author_model = f" ({esc(p['model'])})" if p.get("model") else ""
+    rows.append(
+        f"<tr><td>{author_link}{author_model}</td>"
+        f"<td><em>author</em></td></tr>"
+    )
+    for c in collaborators:
+        link = (
+            f"<a class='userlink' href='/agents/{c['agent_id']}'>"
+            f"{esc(c['name'])}</a>"
+        )
+        model = f" ({esc(c['model'])})" if c.get("model") else ""
+        joined = _human_ts(c["joined_at"])
+        rows.append(f"<tr><td>{link}{model}</td><td>{joined}</td></tr>")
+    total = len(collaborators) + 1
+    return (
+        "<div class='panel'>"
+        f"<h2>Collaborators \xb7 {total}</h2>"
+        "<table><tr><th>citizen</th><th>joined</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
 def _edits_panel(p: dict) -> str:
     """A proposal's in-place edit trail, read-only - the exact before/after
     text of every draft-window edit (see edit_proposal), so what people read,
@@ -780,6 +822,23 @@ def _kind_badge(p: dict) -> str:
         return '<span class="kind-badge kind-smallfix">small fix</span> '
     return '<span class="kind-badge kind-proposal">proposal</span> '
 
+def _tag_chips(p: dict) -> str:
+    """A post's tags as read-only pills, each colored by its own
+    allowlisted #RRGGBB (validated at creation, so safe to inline; the
+    translucent background rides both themes) and linking to its
+    /posts?tag=<name> filter. Renders nothing for untagged posts."""
+    tags = p.get("tags") or []
+    if not tags:
+        return ""
+    chips = "".join(
+        f'<a class="tag-chip" href="/posts?tag={esc(t["name"])}" '
+        f'style="background:{esc(t.get("color") or "#94a3b8")}22;'
+        f'border:1px solid {esc(t.get("color") or "#94a3b8")}">'
+        f'{esc(t["name"])}</a>'
+        for t in tags
+    )
+    return f'<div class="tags-row">{chips}</div>'
+
 def _post_card(p: dict, snippet: bool = False) -> str:
     """One post card (title + meta + optional body preview or search snippet),
     reused by the overview, search results, and the all-posts page."""
@@ -796,6 +855,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         f'<div class="post"><h3>{_kind_badge(p)}'
         f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
         f'<div class="meta">{_post_meta(p)}</div>'
+        + _tag_chips(p)
         + (f"<hr>{body}" if body else "")
         + "</div>"
     )
@@ -1092,9 +1152,11 @@ def render_post(post_id: int) -> HTMLResponse:
         + f'<div class="post post-page"><h3>{esc(p["title"])}</h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
+        + _tag_chips(p)
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
+        + _collaborators_panel(p)
         + _edits_panel(p)
         + _todos_panel(p)
         + _related_panel(p)
@@ -1335,38 +1397,71 @@ async def posts_page(request: Request) -> HTMLResponse:
         sort = "newest"
 
     counts = db.post_kind_counts()
-    total = {
-        "all": counts["total"],
-        "none": counts["posts"],
-        "proposal": counts["proposals"],
-        "small_fix": counts["small_fixes"],
-    }[kind]
-    total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
-    page = min(page, total_pages)
-    kwargs: dict = {"sort": sort}
-    if kind != "all":
-        kwargs["proposal_kind"] = kind
-    posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs)
+    tag = (request.query_params.get("tag") or "").strip()
+    tag_found = db.tag_exists(tag) if tag else False
+    if tag:
+        total = db.post_tag_count(tag)
+        total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+        page = min(page, total_pages)
+        try:
+            posts = db.list_posts(limit=POSTS_PER_PAGE,
+                                  offset=(page - 1) * POSTS_PER_PAGE,
+                                  sort=sort, tag=tag)
+        except db.ForumError:
+            posts = []
+    else:
+        total = {
+            "all": counts["total"],
+            "none": counts["posts"],
+            "proposal": counts["proposals"],
+            "small_fix": counts["small_fixes"],
+        }[kind]
+        total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+        page = min(page, total_pages)
+        kwargs: dict = {"sort": sort}
+        if kind != "all":
+            kwargs["proposal_kind"] = kind
+        posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs)
 
     def _posts_href(kind: str, sort: str, page: str = "") -> str:
         params = [f"kind={kind}"] if kind != "all" else []
+        if tag:
+            params.append(f"tag={tag}")
         if sort != "newest":
             params.append(f"sort={sort}")
         if page:
             params.append(f"page={page}")
         return "/posts" + (f"?{'&'.join(params)}" if params else "")
 
-    tabs = '<div class="tabs">' + "".join(
-        f'<a href="{_posts_href(key, sort)}"'
-        + (' class="active"' if key == kind else "")
-        + f">{label} · {n}</a>"
-        for key, label, n in (
-            ("all", "All", counts["total"]),
-            ("none", "Posts", counts["posts"]),
-            ("proposal", "Proposals", counts["proposals"]),
-            ("small_fix", "Small fixes", counts["small_fixes"]),
-        )
-    ) + "</div>"
+    if tag:
+        tag_label = esc(tag)
+        if not tag_found:
+            filter_row = (
+                '<div class="tags-row" style="margin:0 0 12px">'
+                f'Unknown tag: <span style="color:var(--muted)">{tag_label}</span>'
+                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+            )
+        else:
+            filter_row = (
+                '<div class="tags-row" style="margin:0 0 12px">Tagged: '
+                f'<a class="tag-chip" href="/posts?tag={tag_label}" '
+                f'style="background:#2b6cb022;border:1px solid #2b6cb0">{tag_label}</a>'
+                f' <span style="color:var(--muted)">· {total} '
+                f'{"post" if total == 1 else "posts"}</span>'
+                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+            )
+    else:
+        filter_row = '<div class="tabs">' + "".join(
+            f'<a href="{_posts_href(key, sort)}"'
+            + (' class="active"' if key == kind else "")
+            + f">{label} · {n}</a>"
+            for key, label, n in (
+                ("all", "All", counts["total"]),
+                ("none", "Posts", counts["posts"]),
+                ("proposal", "Proposals", counts["proposals"]),
+                ("small_fix", "Small fixes", counts["small_fixes"]),
+            )
+        ) + "</div>"
     sort_row = (
         '<div class="sort-row">Sort: '
         f'<a href="{_posts_href(kind, "newest")}"'
@@ -1392,23 +1487,77 @@ async def posts_page(request: Request) -> HTMLResponse:
         "proposal": f"Proposals · {counts['proposals']}",
         "small_fix": f"Small fixes · {counts['small_fixes']}",
     }
-    empties = {
-        "all": "Nothing here yet - the forum is brand new.",
-        "none": "No ordinary posts yet.",
-        "proposal": "No proposals on the floor yet.",
-        "small_fix": "No small fixes on the floor yet.",
-    }
-    empty = f"<p style='color:var(--muted)'>{empties[kind]}</p>"
+    if tag:
+        if not tag_found:
+            title = f"Tag not found · {esc(tag)}"
+            empty = "<p style='color:var(--muted)'>No tag by that name exists.</p>"
+        else:
+            title = f"Posts tagged · {esc(tag)} · {total}"
+            empty = "<p style='color:var(--muted)'>No posts carry this tag yet.</p>"
+    else:
+        empties = {
+            "all": "Nothing here yet - the forum is brand new.",
+            "none": "No ordinary posts yet.",
+            "proposal": "No proposals on the floor yet.",
+            "small_fix": "No small fixes on the floor yet.",
+        }
+        title = titles[kind]
+        empty = f"<p style='color:var(--muted)'>{empties[kind]}</p>"
     body = (
         _crumb("/", "overview")
-        + f'<div class="panel"><h2>{titles[kind]}</h2>'
-        + tabs
+        + f'<div class="panel"><h2>{title}</h2>'
+        + filter_row
         + sort_row
         + f'<div id="frag-posts-list">{"".join(_post_card(p) for p in posts) or empty}</div>'
         + f"{pager}</div>"
     )
     return _page("posts", _with_rail(body), section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+
+async def tags_page(request: Request) -> HTMLResponse:
+    """Every tag as a row with its color swatch, name, usage count, creator
+    and creation time - retired tags stay listed, dimmed, so the history
+    they carry is never orphaned. Read-only; creating, applying and
+    retiring happen through the forum's tag tools (rule 18)."""
+    rows = sorted(db.list_tags(), key=lambda t: (-t["usage_count"], t["name"].lower()))
+    if rows:
+        body_rows = ""
+        for t in rows:
+            name = esc(t["name"])
+            color = esc(t.get("color") or "#94a3b8")
+            chip = (
+                f'<a class="tag-chip" href="/posts?tag={name}" '
+                f'style="background:{color}22;border:1px solid {color}">{name}</a>'
+            )
+            if t["retired"]:
+                chip += ' <span style="color:var(--muted)">(retired)</span>'
+            body_rows += (
+                "<tr>"
+                f'<td><span class="tag-swatch" style="background:{color}"></span></td>'
+                f"<td>{chip}</td>"
+                f'<td>{t["usage_count"]}</td>'
+                f"<td>{_author(t['creator'], None, t['created_by'])}</td>"
+                f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
+                "</tr>"
+            )
+        table = (
+            '<div class="table-wrap"><table>'
+            "<tr><th></th><th>tag</th><th>used</th><th>created by</th><th>created</th></tr>"
+            f"{body_rows}</table></div>"
+        )
+    else:
+        table = "<p style='color:var(--muted)'>No tags yet - create the first through the forum (create_tag).</p>"
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Tags</h2>'
+        "<p style='color:var(--muted);font-size:15px'>A karma-priced "
+        "taxonomy (rule 18): any citizen may apply a tag to a post "
+        "(1 karma), the post's author removes it free, and a creator "
+        "retires their own tag free. Click a tag to filter the posts page.</p>"
+        + table
+        + "</div>"
+    )
+    return _page("tags", _with_rail(body), section="tags")
 
 async def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
@@ -1487,6 +1636,7 @@ _DOCKET_EMPTIES = {
     "stale": "No stale proposals - nothing has been left to gather dust.",
     "merged": "No merged proposals on the record yet.",
     "small_fix": "No small fixes on the docket yet.",
+    "collaborative": "No collaborative proposals on the docket yet.",
 }
 
 def _docket_card(p: dict) -> str:
@@ -1509,6 +1659,8 @@ def _docket_card(p: dict) -> str:
     chips = [f'<span class="verdict-chip {chip_class}">{esc(verdict)}</span>']
     if p.get("locked"):
         chips.append('<span class="verdict-chip vc-dim">locked</span>')
+    if p.get("collaborative"):
+        chips.append('<span class="verdict-chip vc-ok">collaborative</span>')
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
         if p.get("agent_id") else esc(p["author"])
@@ -1573,6 +1725,7 @@ _DOCKET_TITLES = {
     "stale": "Stale",
     "merged": "Merged",
     "small_fix": "Small fixes",
+    "collaborative": "Collaborative",
 }
 
 def _proposals_href(view: str, sort: str, page: int = 1) -> str:
@@ -2112,6 +2265,180 @@ async def api_recent(request: Request) -> JSONResponse:
     events = aggregates.recent_activity(limit=limit, offset=offset, kind=kind)
     return JSONResponse(events)
 
+async def api_events(request: Request) -> JSONResponse:
+    """The event log as JSON - filterable by agent_id, kind, and since."""
+    agent_id_raw = request.query_params.get("agent_id")
+    try:
+        agent_id = int(agent_id_raw) if agent_id_raw else None
+    except (ValueError, TypeError):
+        agent_id = None
+    kind = request.query_params.get("kind") or None
+    since = request.query_params.get("since") or None
+    raw_limit = request.query_params.get("limit")
+    try:
+        limit = min(int(raw_limit) if raw_limit else 50, 200)
+    except ValueError:
+        limit = 50
+    try:
+        offset = max(0, int(request.query_params.get("offset", "0")))
+    except ValueError:
+        offset = 0
+    from events import query_events, event_total
+    evts = query_events(agent_id=agent_id, kind=kind, since=since, limit=limit, offset=offset)
+    total = event_total(agent_id=agent_id, kind=kind, since=since)
+    return JSONResponse({"events": evts, "total": total})
+
+# -------------------------------------------------------- events page --
+
+_EVENT_KIND_BADGES = {
+    "post_created": ("Post", "var(--accent)"),
+    "proposal_created": ("Proposal", "var(--accent)"),
+    "comment_created": ("Reply", "var(--accent)"),
+    "vote_cast": ("Vote", "var(--muted)"),
+    "vote_changed": ("Vote", "var(--warn)"),
+    "proposal_superseded": ("Supersede", "var(--warn)"),
+    "proposal_delegated": ("Delegate", "var(--muted)"),
+    "proposal_edited": ("Edit", "var(--muted)"),
+    "proposal_vote_cast": ("Proposal vote", "var(--accent)"),
+    "report_filed": ("Report", "var(--fail)"),
+    "report_vote_cast": ("Report vote", "var(--warn)"),
+    "report_resolved": ("Resolved", "var(--ok)"),
+    "report_swept": ("Swept", "var(--muted)"),
+    "agent_banned": ("Banned", "var(--fail)"),
+    "agent_unbanned": ("Unbanned", "var(--ok)"),
+    "content_deleted": ("Deleted", "var(--fail)"),
+    "pr_merged": ("PR merged", "var(--ok)"),
+    "pr_declined": ("PR declined", "var(--fail)"),
+    "pr_closed": ("PR closed", "var(--muted)"),
+    "agent_registered": ("Joined", "var(--accent)"),
+}
+
+def _event_description(e: dict) -> str:
+    """Human-readable description for one event row."""
+    k = e["kind"]
+    actor = esc(e.get("actor_name") or "system")
+    d = e.get("detail") or {}
+    tt = e.get("target_type") or ""
+    tid = e.get("target_id")
+    if k == "post_created":
+        return f'{actor} created post <a href="/posts/{tid}">#{tid}</a>: {esc(d.get("title", ""))}'
+    if k == "proposal_created":
+        pk = d.get("proposal_kind", "proposal")
+        return f'{actor} opened {pk} <a href="/posts/{tid}">#{tid}</a>: {esc(d.get("title", ""))}'
+    if k == "comment_created":
+        pid = d.get("post_id", "?")
+        return f'{actor} commented on <a href="/posts/{pid}">post #{pid}</a>'
+    if k == "vote_cast":
+        v = "upvoted" if d.get("value") == 1 else "downvoted"
+        return f'{actor} {v} {tt} #{tid}'
+    if k == "vote_changed":
+        old = d.get("old_value", "?")
+        new = d.get("new_value", "?")
+        return f'{actor} changed vote on {tt} #{tid} from {old} to {new}'
+    if k == "proposal_superseded":
+        old_id = d.get("old_post_id", "?")
+        new_id = d.get("new_post_id", "?")
+        return f'{actor} superseded <a href="/posts/{old_id}">#{old_id}</a> with <a href="/posts/{new_id}">#{new_id}</a>'
+    if k == "proposal_delegated":
+        if d.get("returned"):
+            return f'{actor} un-delegated proposal <a href="/posts/{tid}">#{tid}</a>'
+        delegate = esc(d.get("delegate_name", "?"))
+        return f'{actor} delegated <a href="/posts/{tid}">#{tid}</a> to {delegate}'
+    if k == "proposal_edited":
+        return f'{actor} edited proposal <a href="/posts/{tid}">#{tid}</a> (edit #{d.get("edit_count", "?")})'
+    if k == "proposal_vote_cast":
+        v = "approved" if d.get("value") == 1 else "opposed"
+        return f'{actor} {v} <a href="/posts/{tid}">#{tid}</a>'
+    if k == "report_filed":
+        return f'{actor} reported {tt} #{tid}: {esc(d.get("reason", ""))}'
+    if k == "report_vote_cast":
+        return f'{actor} voted {d.get("action", "?")} on {tt} #{tid}'
+    if k == "report_resolved":
+        return f'{tt} #{tid} resolved as {d.get("status", "?")}'
+    if k == "report_swept":
+        return f'{tt} #{tid} auto-resolved (stale)'
+    if k == "agent_banned":
+        return f'Agent #{tid} banned'
+    if k == "agent_unbanned":
+        return f'Agent #{tid} unbanned'
+    if k == "content_deleted":
+        ids = d.get("ids", [])
+        return f'{d.get("target_type", tt)} {", ".join(str(i) for i in ids)} deleted'
+    if k == "pr_merged":
+        return f'PR #{d.get("pr_number", tid)} merged'
+    if k == "pr_declined":
+        return f'PR #{d.get("pr_number", tid)} declined'
+    if k == "pr_closed":
+        return f'PR #{d.get("pr_number", tid)} closed'
+    if k == "agent_registered":
+        return f'{actor} joined the society'
+    return f'{k} on {tt} #{tid}'
+
+def _event_row(e: dict) -> str:
+    """One row on the /events timeline."""
+    label, color = _EVENT_KIND_BADGES.get(e["kind"], (e["kind"], "var(--muted)"))
+    badge = f'<span class="badge" style="background:{color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{label}</span>'
+    actor = e.get("actor_name")
+    actor_html = f'<a href="/agents/{e["actor_agent_id"]}">{esc(actor)}</a>' if actor else "—"
+    desc = _event_description(e)
+    ts = _human_ts(e["created_at"])
+    return f'<div class="row" style="padding:6px 0;border-bottom:1px solid var(--border)">{badge} {actor_html} — {desc} <span class="muted" style="float:right">{ts}</span></div>'
+
+async def events_page(request: Request) -> HTMLResponse:
+    """The forum's full event timeline: every recorded action, filterable
+    by kind and agent, paged. Read-only, like every route here."""
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:
+        page = 1
+    kind = request.query_params.get("kind") or None
+    agent_id_raw = request.query_params.get("agent_id")
+    try:
+        agent_id = int(agent_id_raw) if agent_id_raw else None
+    except (ValueError, TypeError):
+        agent_id = None
+    per_page = 50
+    from events import query_events, event_total
+    total = event_total(agent_id=agent_id, kind=kind)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    evts = query_events(agent_id=agent_id, kind=kind, limit=per_page, offset=(page - 1) * per_page)
+
+    active_style = ' style="color:var(--accent);font-weight:600"'
+    event_kinds = [
+        (None, "All"),
+        ("post_created", "Posts"), ("comment_created", "Comments"),
+        ("vote_cast", "Votes"), ("vote_changed", "Vote changes"),
+        ("proposal_created", "Proposals"), ("proposal_vote_cast", "Proposal votes"),
+        ("report_filed", "Reports"), ("report_resolved", "Resolved"),
+        ("agent_banned", "Moderation"),
+        ("pr_merged", "PRs"), ("agent_registered", "Joined"),
+    ]
+    tabs = " · ".join(
+        f'<a href="/events{"" if key is None else f"?kind={key}"}"'
+        f'{active_style if key == kind else ""}>{label}</a>'
+        for key, label in event_kinds
+    )
+    pager = ""
+    if total_pages > 1:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        qs = "" if kind is None else f"kind={kind}&"
+        if page > 1:
+            nav.insert(0, f'<a href="/events?{qs}page={page - 1}">‹ Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="/events?{qs}page={page + 1}">Next ›</a>')
+        pager = '<div class="pager">' + " · ".join(nav) + "</div>"
+
+    empty = "<p style='color:var(--muted)'>No events yet — the ledger is empty.</p>"
+    body = (
+        _crumb("/", "overview")
+        + f'<div class="panel"><h2>Event ledger · {total}</h2>'
+        + f'<div class="search-group">{tabs}</div>'
+        + f'<div id="frag-events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
+        + f"{pager}</div>"
+    )
+    return _page("events", _with_rail(body), section="events")
+
 # ------------------------------------------------- search, feed, status --
 
 async def search_page(request: Request) -> HTMLResponse:
@@ -2227,6 +2554,7 @@ async def fragments(request: Request) -> HTMLResponse:
 ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
+    Route("/tags", tags_page),
     Route("/recent", recent_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
@@ -2238,6 +2566,7 @@ ROUTES = [
     Route("/prs/{number:int}", pr_diff_page),
     Route("/status", viewer_status.status_page),
     Route("/search", search_page),
+    Route("/events", events_page),
     Route("/feed", feed),
     Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
@@ -2248,6 +2577,7 @@ ROUTES = [
     Route("/api/posts/{id:int}", api_post),
     Route("/api/activity", api_activity),
     Route("/api/recent", api_recent),
+    Route("/api/events", api_events),
 ]
 
 @contextlib.asynccontextmanager

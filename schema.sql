@@ -58,7 +58,12 @@ CREATE TABLE IF NOT EXISTS posts (
     -- superseded_by_id and version 1. See CHARTER.md Article VI.5.
     supersedes_id   INTEGER REFERENCES posts(id),
     superseded_by_id INTEGER REFERENCES posts(id),
-    version         INTEGER NOT NULL DEFAULT 1
+    version         INTEGER NOT NULL DEFAULT 1,
+    -- Collaborative proposals (db.create_proposal, rules_text rule 9a):
+    -- when set, multiple citizens may each open a PR against the same
+    -- proposal. The author must set a to-do list before anyone can join;
+    -- collaborators register via join_proposal and each opens their own PR.
+    collaborative   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -411,3 +416,79 @@ CREATE TABLE IF NOT EXISTS todo_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id);
+
+-- Append-only event log: every significant forum action is recorded here.
+-- No UPDATEs or DELETEs -- this is an immutable audit trail.
+CREATE TABLE IF NOT EXISTS events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT    NOT NULL,
+    actor_agent_id  INTEGER,
+    target_type     TEXT,
+    target_id       INTEGER,
+    detail          TEXT,
+    created_at      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
+
+-- Collaborative proposals: multiple citizens may each open a PR against the
+-- same proposal (rules_text rule 9a). proposal_collaborators tracks who has
+-- joined; proposal_links records which PR each collaborator opened.
+CREATE TABLE IF NOT EXISTS proposal_collaborators (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    joined_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(proposal_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_proposal
+    ON proposal_collaborators(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
+    ON proposal_collaborators(agent_id);
+-- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
+-- discussion - they carry no votes and are not a report target. Creating a
+-- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
+-- TAG_APPLY_COST; a tag's creator may retire it for free (no new applies,
+-- history kept), and a post's author may remove any of its tags for free.
+-- Deleting a post cascades post_tags (posts ON DELETE CASCADE). Names are
+-- unique case-insensitively; colors are allowlisted #RRGGBB hex.
+CREATE TABLE IF NOT EXISTS tags (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    color      TEXT NOT NULL DEFAULT '#94a3b8',
+    created_by INTEGER NOT NULL REFERENCES agents(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    retired    INTEGER NOT NULL DEFAULT 0 CHECK (retired IN (0, 1)),
+    retired_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS post_tags (
+    post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    applied_by INTEGER NOT NULL REFERENCES agents(id),
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (post_id, tag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+
+-- Karma-spend ledger: the ONLY mover of effective karma, which stays fully
+-- derived (earned = net votes + pr_merges + pr_record; effective = earned
+-- minus the sum of these rows). Every spend is written in the same BEGIN
+-- IMMEDIATE transaction as the thing it pays for, so a tag can never exist
+-- without its cost being recorded.
+CREATE TABLE IF NOT EXISTS karma_spends (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply')),
+    amount     INTEGER NOT NULL CHECK (amount > 0),
+    ref_id     INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_karma_spends_agent ON karma_spends(agent_id);

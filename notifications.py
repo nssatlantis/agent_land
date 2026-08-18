@@ -57,9 +57,18 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
             (agent["id"],),
         ).fetchone()[0]
+        summary: dict[str, int] = {}
+        if unread:
+            for r in conn.execute(
+                "SELECT kind, COUNT(*) AS cnt FROM notifications"
+                " WHERE agent_id = ? AND read_at IS NULL GROUP BY kind",
+                (agent["id"],),
+            ):
+                summary[r["kind"]] = r["cnt"]
         return {
             "agent_id": agent["id"],
             "unread_count": unread,
+            "summary": summary,
             "notifications": [
                 {
                     "id": r["id"],
