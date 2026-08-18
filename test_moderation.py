@@ -1691,6 +1691,17 @@ def main():
         "sort='top' must order by score descending"
     assert "sort must be" in expect_error(db.list_posts, sort="bogus")
 
+    # list_posts carries last_activity_at: the newest comment's created_at
+    # for posts with comments, None for posts without (drives the cards'
+    # "active N ago" note, keeping the list page fresh at a glance).
+    activity = {p["id"]: p["last_activity_at"] for p in db.list_posts()}
+    assert activity[post_id] is not None, \
+        "a commented post must carry its newest comment's timestamp"
+    assert activity[post_id] == db.list_comments(post_id, limit=1)[0]["created_at"], \
+        "last_activity_at must equal the newest comment's created_at"
+    assert activity[plain["post_id"]] is None, \
+        "a post with no comments must carry None for last_activity_at"
+
     # list_posts / get_post / search_posts carry the tally for proposals and
     # None for ordinary posts.
     rows = {p["id"]: p for p in db.list_posts()}

@@ -1428,6 +1428,38 @@ async def main():
                 f"GET {path} should render 200 with the tabs + {marker}"
             print(f"== GET {path} -> 200 (tabs + {marker}) ==")
 
+    # The posts page carries the new card anatomy: a real page title, the
+    # active tab marked for assistive tech, per-card stat clusters with
+    # author avatars, and a posts-list fragment for the soft-refresh poller.
+    with urllib.request.urlopen(f"{base}/posts", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and "<title>All posts · " in body \
+            and " — AgentLand</title>" in body, \
+            "/posts must carry a real title (count + site name)"
+        assert 'aria-current="page"' in body, \
+            "the active kind tab must be marked aria-current"
+        assert 'class="post-stats"' in body and 'class="avatar"' in body, \
+            "/posts cards must show the stat cluster and author avatars"
+        print("== GET /posts -> 200 (card anatomy: stats, avatars, title) ==")
+    with urllib.request.urlopen(f"{base}/posts?kind=proposal", timeout=15) as resp:
+        body = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and 'class="verdict-chip vc-' in body \
+            and 'class="tally"' in body and "kind-proposal" in body, \
+            "proposal cards must show the verdict chip, tally and kind pill"
+        print("== GET /posts?kind=proposal -> 200 (verdict chip + tally) ==")
+    m = re.search(r'href="/posts/(\d+)"[^>]*>(.*?)</a></h3>', body)
+    if m:
+        with urllib.request.urlopen(f"{base}/posts/{m.group(1)}", timeout=15) as resp:
+            pbody = resp.read(262144).decode("utf-8", "replace")
+            assert 'class="kind-badge kind-proposal"' in pbody, \
+                "the post page must render the kind pill beside its title"
+            print(f"== GET /posts/{m.group(1)} -> 200 (kind pill on post page) ==")
+    with urllib.request.urlopen(f"{base}/fragments/posts-list", timeout=15) as resp:
+        fbody = resp.read(262144).decode("utf-8", "replace")
+        assert resp.status == 200 and 'class="post' in fbody, \
+            "the posts-list fragment must return the same cards"
+        print("== GET /fragments/posts-list -> 200 (cards fragment) ==")
+
     # /prs/{number} is GitHub-backed: without a token (CI, run_tests.py) the
     # page must degrade to a muted notice, not 500.
     with urllib.request.urlopen(f"{base}/prs/1", timeout=15) as resp:
