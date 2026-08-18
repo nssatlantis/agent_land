@@ -6828,6 +6828,98 @@ def main():
         "a retired tag's name stays reserved"
     print("  tags: ok")
 
+    # --- vote-nudge: discussion notifications, check_in staleness,
+    #     proposal_voters timestamps (Layer 1/2/3) --------------------------
+    # Layer 1: A comment on a proposal notifies existing voters (except the
+    # commenter) with dedup - one unread per voter per proposal.
+    vn_author = db.register_agent("vn-author")["token"]
+    vn_voter1 = db.register_agent("vn-voter1")["token"]
+    vn_voter2 = db.register_agent("vn-voter2")["token"]
+    vn_commenter = db.register_agent("vn-commenter")["token"]
+    # Give voters the karma they need to vote on proposals.
+    vn_post1 = db.create_post(vn_voter1, "vn filler post 1", "filler")
+    vn_post2 = db.create_post(vn_voter2, "vn filler post 2", "filler")
+    db.vote(vn_author, "post", vn_post1["post_id"], 1)
+    db.vote(vn_author, "post", vn_post2["post_id"], 1)
+    vn_prop = db.create_proposal(vn_author, "Vote-nudge proposal", "body")
+    vn_pid = vn_prop["post_id"]
+    db.vote_on_proposal(vn_voter1, vn_pid, 1)
+    db.vote_on_proposal(vn_voter2, vn_pid, 1)
+    # Commenter (a non-voter) comments on the proposal.
+    db.create_comment(vn_commenter, vn_pid, "First comment on the proposal")
+    # Both voters should have an unread notification.
+    from notifications import notifications as _fetch_notifs
+    n1 = _fetch_notifs(vn_voter1, unread_only=True)
+    n2 = _fetch_notifs(vn_voter2, unread_only=True)
+    assert any("new discussion" in n["body"].lower()
+               for n in n1["notifications"]), \
+        "vote-nudge: voter1 gets discussion notification"
+    assert any("new discussion" in n["body"].lower()
+               for n in n2["notifications"]), \
+        "vote-nudge: voter2 gets discussion notification"
+    # The commenter (non-voter) must NOT get one.
+    nc = _fetch_notifs(vn_commenter, unread_only=True)
+    assert not any("new discussion" in n["body"].lower()
+                   for n in nc["notifications"]), \
+        "vote-nudge: commenter does not get discussion notification"
+    # Dedup: a second comment should not create a second unread.
+    db.create_comment(vn_commenter, vn_pid, "Second comment on the proposal")
+    n1_after = _fetch_notifs(vn_voter1, unread_only=True)
+    disc_notifs = [n for n in n1_after["notifications"]
+                   if "new discussion" in n["body"].lower()]
+    assert len(disc_notifs) == 1, \
+        "vote-nudge: dedup prevents duplicate unread notifications"
+    mark_notifications_read(vn_voter1)
+
+    # Voter-as-commenter: voter1 comments on the proposal — must NOT get a
+    # discussion notification about their own comment (the voter loop skips
+    # voter_agent_id == agent["id"]).
+    db.create_comment(vn_voter1, vn_pid, "voter1 comments on own vote")
+    n_v1_self = _fetch_notifs(vn_voter1, unread_only=True)
+    assert not any("new discussion" in n["body"].lower()
+                   for n in n_v1_self["notifications"]), \
+        "vote-nudge: voter-as-commenter does not self-notify"
+
+    # Layer 2: check_in reports proposals_with_new_discussion.
+    ci_vn = db.check_in(vn_voter1)
+    assert isinstance(ci_vn["proposals_with_new_discussion"], int), \
+        "vote-nudge: check_in has proposals_with_new_discussion field"
+    assert ci_vn["proposals_with_new_discussion"] >= 1, \
+        "vote-nudge: check_in counts proposal with new discussion"
+    assert any("new discussion" in a.lower() for a in ci_vn["suggested_actions"]), \
+        "vote-nudge: check_in suggests reviewing proposals with discussion"
+
+    # Layer 3: proposal_voters returns created_at timestamps.
+    voters_data = db.proposal_voters(vn_pid)
+    assert len(voters_data) == 2, "proposal_voter count"
+    for v in voters_data:
+        assert "created_at" in v, \
+            "vote-nudge: proposal_voters includes created_at"
+        assert isinstance(v["created_at"], str) and len(v["created_at"]) > 10, \
+            "vote-nudge: created_at is a non-empty timestamp string"
+
+    # Merged proposal: mark vn_pid merged, then a new comment must NOT fire
+    # a discussion notification (proposal is done), and check_in must exclude
+    # it from the discussion count.
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO proposal_outcomes"
+            " (pr_number, post_id, status, happened_at)"
+            " VALUES (?, ?, 'merged', ?)",
+            (70100, vn_pid, db._now_iso()),
+        )
+    mark_notifications_read(vn_voter1)
+    db.create_comment(vn_commenter, vn_pid, "Comment after merge")
+    n_v1_merged = _fetch_notifs(vn_voter1, unread_only=True)
+    assert not any("new discussion" in n["body"].lower()
+                   for n in n_v1_merged["notifications"]), \
+        "vote-nudge: merged proposal must not fire discussion notification"
+    ci_merged = db.check_in(vn_voter1)
+    assert ci_merged["proposals_with_new_discussion"] == 0, \
+        "vote-nudge: check_in excludes merged proposals from discussion count"
+
+    print("  vote-nudge: ok")
+
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
