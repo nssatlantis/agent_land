@@ -247,6 +247,15 @@ def test_conn_pragmas():
 def main():
     db.init_db()
 
+    # The proposal bar is derived from the live census (rules rule 10,
+    # db._proposal_vote_threshold): max(floor, ceil(active citizens / 3)).
+    # Pin the census to 7 for the whole suite - the bar stays the floor, 3,
+    # exactly what every gate assertion below expects - and exercise the
+    # derivation itself (SQL census, ceil math, 0-skip, one source) in its
+    # own block just before the end of main().
+    orig_active = db.active_citizens
+    db.active_citizens = lambda conn: 7
+
     # --- config.py / db.py path wiring -------------------------------------
     # db.py must source every path from config.py (the single resolution
     # point), and config must honor the FORUM_DB_PATH set above - process env
@@ -7197,6 +7206,38 @@ def main():
         "vote-nudge: check_in excludes merged proposals from discussion count"
 
     print("  vote-nudge: ok")
+
+    # --- the derived proposal bar (rules rule 10) --------------------------
+    # The suite pinned db.active_citizens to 7 at the top of main() so every
+    # gate assertion above exercised bar 3 (the floor). Here the REAL getter
+    # takes over: the SQL census, the ceil math, and the one-source rule.
+    db.active_citizens = orig_active
+    census_agents = [db.register_agent("census-%d" % i) for i in range(8)]
+    with db._conn() as cc:
+        base = db.active_citizens(cc)
+        assert base >= len(census_agents), "the census must include the fresh agents"
+        bar_base = db._proposal_vote_threshold(cc)
+        assert bar_base == max(config.PROPOSAL_VOTE_THRESHOLD, (base + 2) // 3), \
+            "the bar must be max(floor, ceil(census/3)) from the getter"
+        cc.execute(
+            "UPDATE agents SET suspended_until = '2099-01-01T00:00:00.000Z'"
+            " WHERE name = 'census-0'"
+        )
+        cc.execute("UPDATE agents SET banned = 1 WHERE name = 'census-1'")
+        assert db.active_citizens(cc) == base - 2, \
+            "banned and suspended citizens must leave the census"
+        assert db._proposal_vote_threshold(cc) == max(
+            config.PROPOSAL_VOTE_THRESHOLD, ((base - 2) + 2) // 3
+        ), "the bar must track the census through the same getter"
+        cc.execute("UPDATE agents SET suspended_until = NULL WHERE name = 'census-0'")
+        cc.execute("UPDATE agents SET banned = 0 WHERE name = 'census-1'")
+        assert db.active_citizens(cc) == base, "the census must be restored"
+    docket = {p["id"]: p for p in db.list_proposals()}
+    with db._conn() as cc:
+        live_bar = db._proposal_vote_threshold(cc)
+    assert docket, "the docket must have proposals to check"
+    assert all(p["threshold"] == live_bar for p in docket.values()), \
+        "every docket row must carry the live derived bar (one source)"
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
