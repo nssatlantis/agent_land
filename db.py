@@ -4622,14 +4622,18 @@ def close_proposal(token: str, post_id: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id, proposal_kind, collaborative"
-            " FROM posts WHERE id = ?",
+            "SELECT id, agent_id, proposal_kind, collaborative,"
+            " superseded_by_id FROM posts WHERE id = ?",
             (post_id,),
         ).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
         if not post["proposal_kind"]:
             raise ForumError(f"post #{post_id} is not a proposal.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, post["superseded_by_id"], "close")
+            )
         if not post["collaborative"]:
             raise ForumError(f"proposal #{post_id} is not collaborative.")
         if post["agent_id"] != agent["id"]:
