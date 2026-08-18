@@ -2915,7 +2915,7 @@ def main():
         db.vote_on_proposal(v["token"], pif, 1)
     db.require_proposal_approval(sups_a["token"], pif, "repo_propose_change")
     db.link_pr_to_proposal(702, pif, sups_a["agent_id"])
-    assert "in flight" in expect_error(
+    assert "open PR" in expect_error(
         db.supersede_proposal, sups_a["token"], pif, "X", "y"
     ), "an open PR must be closed before superseding"
     db.record_proposal_outcome(702, pif, "closed", "2026-08-12T11:00:00Z")
@@ -5969,6 +5969,186 @@ def main():
     assert post["collaborative"]
     assert len(post["collaborators"]) == 1  # only auth2 remains
     print("  get_post collaborators: ok")
+
+    # --- new tests for 11-item improvements ---------------------------------
+
+    # 17. create_proposal: collaborative note mentions collaborative workflow
+    ca2 = db.register_agent("collab-author2")
+    auth_a2 = ca2["token"]
+    p_note = db.create_proposal(auth_a2, "Note Test", "body", collaborative=True)
+    assert "collaborative" in p_note["note"].lower(), (
+        "collaborative proposal note should mention collaborative workflow"
+    )
+    assert "join_proposal" in p_note["note"], (
+        "collaborative note should mention join_proposal"
+    )
+    print("  collaborative create_proposal note: ok")
+
+    # 18. create_proposal: ordinary note unchanged
+    p_ord = db.create_proposal(auth_a2, "Ord Note", "body")
+    assert "delegate_proposal" in p_ord["note"], (
+        "ordinary proposal note should mention delegate_proposal"
+    )
+    assert "join_proposal" not in p_ord["note"], (
+        "ordinary proposal note should not mention join_proposal"
+    )
+    print("  ordinary create_proposal note unchanged: ok")
+
+    # 19. supersede_proposal copies collaborators
+    db.set_todos_for_post(auth_a2, p_note["post_id"],
+                          [{"title": "W", "items": [{"text": "t1"}]}])
+    sup_auth2 = db.register_agent("sup-collab2")
+    sup_token2 = sup_auth2["token"]
+    db.join_proposal(sup_token2, p_note["post_id"])
+    sup_result = db.supersede_proposal(
+        auth_a2, p_note["post_id"],
+        title="Note Test v2", body="revised body",
+    )
+    new_pid = sup_result["post_id"]
+    new_collabs = db.list_proposal_collaborators(new_pid)
+    collab_ids = [c["agent_id"] for c in new_collabs]
+    assert sup_auth2["agent_id"] in collab_ids, (
+        "superseded collaborative should copy collaborators"
+    )
+    print("  supersede copies collaborators: ok")
+
+    # 20. supersede_proposal copies todos
+    new_todos = db.get_todos_for_post(new_pid)
+    assert len(new_todos) >= 1, "superseded collaborative should copy to-do lists"
+    assert new_todos[0]["items"][0]["text"] == "t1"
+    print("  supersede copies todos: ok")
+
+    # 21. supersede_proposal notifies collaborators
+    sup_notifs = notifications.notifications(sup_token2, unread_only=True)
+    sup_notif_msgs = [n["body"] for n in sup_notifs["notifications"]]
+    assert any("superseded" in m and "collaborators" in m for m in sup_notif_msgs), (
+        "supersede should notify collaborators about copied collaborators"
+    )
+    print("  supersede notifies collaborators: ok")
+
+    # 22. leave_proposal notifies author
+    db.leave_proposal(sup_token2, new_pid)
+    auth_a2_notifs = notifications.notifications(auth_a2, unread_only=True)
+    auth_a2_msgs = [n["body"] for n in auth_a2_notifs["notifications"]]
+    assert any("left as a collaborator" in m for m in auth_a2_msgs), (
+        "leave should notify the proposal author"
+    )
+    print("  leave notifies author: ok")
+
+    # 23. vote_on_proposal notifies collaborators when threshold reached
+    # Set up a fresh collaborative proposal for this test
+    ca3 = db.register_agent("collab-author3")
+    auth_a3 = ca3["token"]
+    p_vote = db.create_proposal(auth_a3, "Vote Notify", "body", collaborative=True)
+    db.set_todos_for_post(auth_a3, p_vote["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_vote = db.register_agent("collab-voter")
+    c_vote_token = c_vote["token"]
+    db.join_proposal(c_vote_token, p_vote["post_id"])
+    # Vote with citizens to reach threshold — farm karma first
+    voters = []
+    for i in range(4):
+        v = db.register_agent(f"vote-thresh-{i}")
+        if db.whoami(v["token"])["karma"] < 1:
+            farm = db.create_comment(v["token"], post["id"], f"karma for vote-thresh-{i}")
+            db.vote(ca3["token"], "comment", farm["comment_id"], 1)
+        voters.append(v)
+    for v in voters:
+        db.vote_on_proposal(v["token"], p_vote["post_id"], 1)
+    c_vote_notifs = notifications.notifications(c_vote_token, unread_only=True)
+    c_vote_msgs = [n["body"] for n in c_vote_notifs["notifications"]]
+    assert any("threshold" in m for m in c_vote_msgs), (
+        "vote threshold should notify collaborators"
+    )
+    print("  vote threshold notifies collaborators: ok")
+
+    # 24. record_proposal_outcome notifies collaborators
+    # Create a proposal, join, link a PR, record outcome
+    ca4 = db.register_agent("collab-author4")
+    auth_a4 = ca4["token"]
+    p_outcome = db.create_proposal(auth_a4, "Outcome Notify", "body",
+                                   collaborative=True)
+    db.set_todos_for_post(auth_a4, p_outcome["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_outcome = db.register_agent("collab-outcome")
+    db.join_proposal(c_outcome["token"], p_outcome["post_id"])
+    db.link_pr_to_proposal(99999, p_outcome["post_id"], ca4["agent_id"])
+    db.record_proposal_outcome(99999, p_outcome["post_id"], "merged", "2026-08-17T12:00:00.000Z")
+    c_out_notifs = notifications.notifications(c_outcome["token"], unread_only=True)
+    c_out_msgs = [n["body"] for n in c_out_notifs["notifications"]]
+    assert any("merged" in m for m in c_out_msgs), (
+        "record_proposal_outcome should notify collaborators"
+    )
+    print("  record_proposal_outcome notifies collaborators: ok")
+
+    # 25. close_proposal: skipped merged check for collaborative
+    # (close_proposal author-only already tested above; this tests that
+    # a collaborative proposal with merged PRs is not blocked)
+    ca5 = db.register_agent("collab-author5")
+    auth_a5 = ca5["token"]
+    p_close = db.create_proposal(auth_a5, "Close Collab", "body",
+                                 collaborative=True)
+    db.set_todos_for_post(auth_a5, p_close["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_close = db.register_agent("collab-close")
+    db.join_proposal(c_close["token"], p_close["post_id"])
+    db.link_pr_to_proposal(88888, p_close["post_id"], ca5["agent_id"])
+    db.link_pr_to_proposal(88889, p_close["post_id"], c_close["agent_id"])
+    db.record_proposal_outcome(88888, p_close["post_id"], "merged", "2026-08-17T12:00:00.000Z")
+    db.record_proposal_outcome(88889, p_close["post_id"], "closed", "2026-08-17T12:00:00.000Z")
+    close_result = db.close_proposal(auth_a5, p_close["post_id"])
+    assert close_result["post_id"] == p_close["post_id"]
+    print("  close_proposal collaborative merged PRs: ok")
+
+    # 26. supersede multi-PR error mentions all PR numbers
+    ca6 = db.register_agent("collab-author6")
+    auth_a6 = ca6["token"]
+    p_multi = db.create_proposal(auth_a6, "Multi PR", "body",
+                                 collaborative=True)
+    db.set_todos_for_post(auth_a6, p_multi["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_multi1 = db.register_agent("multi-collab1")
+    db.join_proposal(c_multi1["token"], p_multi["post_id"])
+    db.link_pr_to_proposal(77777, p_multi["post_id"], ca6["agent_id"])
+    db.link_pr_to_proposal(77778, p_multi["post_id"], c_multi1["agent_id"])
+    err = expect_error(db.supersede_proposal, auth_a6, p_multi["post_id"],
+                       title="Multi v2", body="v2")
+    assert "open PR" in err, f"multi-PR error should mention open PR, got: {err}"
+    assert "#77777" in err and "#77778" in err, (
+        f"multi-PR error should list both PR numbers, got: {err}"
+    )
+    print("  supersede multi-PR error message: ok")
+
+    # 27. close multi-PR error mentions all PR numbers
+    ca7 = db.register_agent("collab-author7")
+    auth_a7 = ca7["token"]
+    p_multi2 = db.create_proposal(auth_a7, "Multi PR Close", "body",
+                                  collaborative=True)
+    db.set_todos_for_post(auth_a7, p_multi2["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_multi2 = db.register_agent("multi-collab2")
+    db.join_proposal(c_multi2["token"], p_multi2["post_id"])
+    db.link_pr_to_proposal(66666, p_multi2["post_id"], ca7["agent_id"])
+    db.link_pr_to_proposal(66667, p_multi2["post_id"], c_multi2["agent_id"])
+    err2 = expect_error(db.close_proposal, auth_a7, p_multi2["post_id"])
+    assert "open PR" in err2, f"multi-PR close error should mention open PR, got: {err2}"
+    assert "#66666" in err2 and "#66667" in err2, (
+        f"multi-PR close error should list both PR numbers, got: {err2}"
+    )
+    print("  close multi-PR error message: ok")
+
+    # 28. vote_on_proposal: collaborative flag is accessible in SELECT
+    ca8 = db.register_agent("collab-author8")
+    auth_a8 = ca8["token"]
+    p_voteflag = db.create_proposal(auth_a8, "Vote Flag", "body",
+                                    collaborative=True)
+    voter = db.register_agent("vote-flag-voter")
+    if db.whoami(voter["token"])["karma"] < 1:
+        farm = db.create_comment(voter["token"], post["id"], "karma for vote-flag")
+        db.vote(ca8["token"], "comment", farm["comment_id"], 1)
+    result = db.vote_on_proposal(voter["token"], p_voteflag["post_id"], 1)
+    assert "your_vote" in result, "vote_on_proposal should return successfully"
+    print("  vote_on_proposal collaborative flag: ok")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
