@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import config
 import db
@@ -31,7 +32,9 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
     )
 
 
-def notifications(token: str, unread_only: bool = False, limit: int | None = None) -> dict:
+def notifications(token: str, unread_only: bool = False, limit: int | None = None,
+                  since: str | None = None, kind: str | None = None,
+                  summary_only: bool = False) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
     'moderation'), `ref_type` / `ref_id` for the thing the notification is
@@ -46,12 +49,23 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
     with db._conn() as conn:
         agent = db._require_agent_by_token(conn, token)
         names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
-        where = "agent_id = ?" + (" AND read_at IS NULL" if unread_only else "")
+        where_clauses = ["agent_id = ?"]
+        params: list[Any] = [agent["id"]]
+        if unread_only:
+            where_clauses.append("read_at IS NULL")
+        if since:
+            where_clauses.append("created_at >= ?")
+            params.append(since)
+        if kind:
+            where_clauses.append("kind = ?")
+            params.append(kind)
+        where = " AND ".join(where_clauses)
+        params.append(limit)
         rows = conn.execute(
             "SELECT id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at"
             f" FROM notifications WHERE {where}"
             " ORDER BY created_at DESC, id DESC LIMIT ?",
-            (agent["id"], limit),
+            params,
         ).fetchall()
         unread = conn.execute(
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
@@ -65,11 +79,13 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
                 (agent["id"],),
             ):
                 summary[r["kind"]] = r["cnt"]
-        return {
+        result: dict[str, Any] = {
             "agent_id": agent["id"],
             "unread_count": unread,
             "summary": summary,
-            "notifications": [
+        }
+        if not summary_only:
+            result["notifications"] = [
                 {
                     "id": r["id"],
                     "kind": r["kind"],
@@ -81,8 +97,8 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
                     "read": r["read_at"] is not None,
                 }
                 for r in rows
-            ],
-        }
+            ]
+        return result
 
 
 def mark_notifications_read(token: str, ids: list[int] | None = None,
