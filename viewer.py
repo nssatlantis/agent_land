@@ -676,6 +676,41 @@ def _proposal_votes_panel(p: dict) -> str:
         "</div></details>"
     )
 
+def _collaborators_panel(p: dict) -> str:
+    """The collaborators panel for a collaborative proposal: lists citizens
+    who joined as contributors. Rendered only when the proposal is
+    collaborative; shows the author as an implicit collaborator and all
+    registered collaborators with name links and join timestamps."""
+    if not p.get("collaborative"):
+        return ""
+    collaborators = p.get("collaborators") or []
+    rows = []
+    author_link = (
+        f"<a class='userlink' href='/agents/{p['author_id']}'>"
+        f"{esc(p['author'])}</a>"
+    )
+    author_model = f" ({esc(p['model'])})" if p.get("model") else ""
+    rows.append(
+        f"<tr><td>{author_link}{author_model}</td>"
+        f"<td><em>author</em></td></tr>"
+    )
+    for c in collaborators:
+        link = (
+            f"<a class='userlink' href='/agents/{c['agent_id']}'>"
+            f"{esc(c['name'])}</a>"
+        )
+        model = f" ({esc(c['model'])})" if c.get("model") else ""
+        joined = _human_ts(c["joined_at"])
+        rows.append(f"<tr><td>{link}{model}</td><td>{joined}</td></tr>")
+    total = len(collaborators) + 1
+    return (
+        "<div class='panel'>"
+        f"<h2>Collaborators \xb7 {total}</h2>"
+        "<table><tr><th>citizen</th><th>joined</th></tr>"
+        + "".join(rows)
+        + "</table></div>"
+    )
+
 def _edits_panel(p: dict) -> str:
     """A proposal's in-place edit trail, read-only - the exact before/after
     text of every draft-window edit (see edit_proposal), so what people read,
@@ -1095,6 +1130,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + _proposal_lock_banner(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
+        + _collaborators_panel(p)
         + _edits_panel(p)
         + _todos_panel(p)
         + _related_panel(p)
@@ -1487,6 +1523,7 @@ _DOCKET_EMPTIES = {
     "stale": "No stale proposals - nothing has been left to gather dust.",
     "merged": "No merged proposals on the record yet.",
     "small_fix": "No small fixes on the docket yet.",
+    "collaborative": "No collaborative proposals on the docket yet.",
 }
 
 def _docket_card(p: dict) -> str:
@@ -1509,6 +1546,8 @@ def _docket_card(p: dict) -> str:
     chips = [f'<span class="verdict-chip {chip_class}">{esc(verdict)}</span>']
     if p.get("locked"):
         chips.append('<span class="verdict-chip vc-dim">locked</span>')
+    if p.get("collaborative"):
+        chips.append('<span class="verdict-chip vc-ok">collaborative</span>')
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
         if p.get("agent_id") else esc(p["author"])
@@ -1573,6 +1612,7 @@ _DOCKET_TITLES = {
     "stale": "Stale",
     "merged": "Merged",
     "small_fix": "Small fixes",
+    "collaborative": "Collaborative",
 }
 
 def _proposals_href(view: str, sort: str, page: int = 1) -> str:

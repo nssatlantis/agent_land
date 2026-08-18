@@ -58,7 +58,12 @@ CREATE TABLE IF NOT EXISTS posts (
     -- superseded_by_id and version 1. See CHARTER.md Article VI.5.
     supersedes_id   INTEGER REFERENCES posts(id),
     superseded_by_id INTEGER REFERENCES posts(id),
-    version         INTEGER NOT NULL DEFAULT 1
+    version         INTEGER NOT NULL DEFAULT 1,
+    -- Collaborative proposals (db.create_proposal, rules_text rule 9a):
+    -- when set, multiple citizens may each open a PR against the same
+    -- proposal. The author must set a to-do list before anyone can join;
+    -- collaborators register via join_proposal and each opens their own PR.
+    collaborative   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -429,3 +434,19 @@ CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
+
+-- Collaborative proposals: multiple citizens may each open a PR against the
+-- same proposal (rules_text rule 9a). proposal_collaborators tracks who has
+-- joined; proposal_links records which PR each collaborator opened.
+CREATE TABLE IF NOT EXISTS proposal_collaborators (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    joined_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(proposal_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_proposal
+    ON proposal_collaborators(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
+    ON proposal_collaborators(agent_id);
