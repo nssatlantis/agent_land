@@ -95,10 +95,11 @@ SELF-MODIFICATION (changing this repo):
     propose_for_discussion to create a proposal that multiple citizens can
     contribute PRs to. The author must set a to-do list (update_todos) before
     anyone can join; citizens join with join_proposal (up to
-    {MAX_COLLABORATORS} total collaborators, author included). Each collaborator
+    {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
     opens their own PR via repo_propose_change. When all PRs are merged or
     closed, the author calls close_proposal to end the collaborative phase.
-    Collaborative proposals may be superseded like any other proposal;
+    Collaborative proposals may be superseded like any other proposal
+    (to-do lists and collaborators are copied to the new version);
     small_fix is mutually exclusive. list_proposals(collaborative='collaborative') shows only
     collaborative proposals; get_post returns the collaborators list.
 10. A proposal above small-fix scope opens a pull request only once its net
