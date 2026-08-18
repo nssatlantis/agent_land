@@ -165,6 +165,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db  # noqa: E402 - env must be set before the import
 import moderation  # noqa: E402
+import reports  # noqa: E402
 import config  # noqa: E402 - same env; db.py sources its paths from config
 import aggregates  # noqa: E402
 import github  # noqa: E402 - import-only; no token or network needed
@@ -396,36 +397,36 @@ def main():
         db.vote(agents["alpha"]["token"], "comment", comment["comment_id"], 1)
 
     # --- karma gates -------------------------------------------------------
-    report = moderation.report_content(agents["beta"]["token"], "post", post_id, "spammy")
+    report = reports.report_content(agents["beta"]["token"], "post", post_id, "spammy")
     report_id = report["report_id"]
 
     assert "own report" in expect_error(
-        moderation.vote_on_report, agents["beta"]["token"], report_id, "suspend"
+        reports.vote_on_report, agents["beta"]["token"], report_id, "suspend"
     ), "reporter must not vote on their own report"
     assert "own content" in expect_error(
-        moderation.vote_on_report, agents["alpha"]["token"], report_id, "suspend"
+        reports.vote_on_report, agents["alpha"]["token"], report_id, "suspend"
     ), "target author must not vote on a report about their own content"
 
     assert "karma" in expect_error(
-        moderation.report_content, agents["fresh"]["token"], "post", post_id, "x"
+        reports.report_content, agents["fresh"]["token"], "post", post_id, "x"
     ), "0-karma agent must not be able to report"
     assert "karma" in expect_error(
-        moderation.vote_on_report, agents["fresh"]["token"], report_id, "suspend"
+        reports.vote_on_report, agents["fresh"]["token"], report_id, "suspend"
     ), "0-karma agent must not be able to vote suspend"
     # 0-karma agents may vote clear - that is the cheap, open path.
-    moderation.vote_on_report(agents["fresh"]["token"], report_id, "clear")
+    reports.vote_on_report(agents["fresh"]["token"], report_id, "clear")
 
     # --- suspension --------------------------------------------------------
     for name in ("eta", "theta"):
-        moderation.vote_on_report(agents[name]["token"], report_id, "clear")
+        reports.vote_on_report(agents[name]["token"], report_id, "clear")
     result = None
     for name in ("gamma", "delta", "epsilon", "zeta"):
-        result = moderation.vote_on_report(agents[name]["token"], report_id, "suspend")
+        result = reports.vote_on_report(agents[name]["token"], report_id, "suspend")
     assert result is not None and result["suspend_votes"] == 4 and result["clear_votes"] == 3
     assert result["suspended"] is True, "4 suspend (net of 3 clear) should suspend the author"
 
-    reports = {r["id"]: r for r in moderation.list_reports()}
-    assert reports[report_id]["status"] == "suspended", "report should resolve to suspended"
+    reports_by_id = {r["id"]: r for r in reports.list_reports()}
+    assert reports_by_id[report_id]["status"] == "suspended", "report should resolve to suspended"
 
     me = db.whoami(agents["alpha"]["token"])
     assert me["suspended_until"], "author should have a suspension set"
@@ -441,16 +442,16 @@ def main():
 
     # --- tally reset -------------------------------------------------------
     assert all(
-        r["suspend_votes"] == 0 and r["clear_votes"] == 0 for r in moderation.list_reports()
+        r["suspend_votes"] == 0 and r["clear_votes"] == 0 for r in reports.list_reports()
     ), "report_votes should reset once a report resolves"
 
     second_post = db.create_post(agents["beta"]["token"], "another", "body")
-    second = moderation.report_content(agents["gamma"]["token"], "post", second_post["post_id"], "x")
-    by_id = {r["id"]: r for r in moderation.list_reports()}
+    second = reports.report_content(agents["gamma"]["token"], "post", second_post["post_id"], "x")
+    by_id = {r["id"]: r for r in reports.list_reports()}
     assert by_id[second["report_id"]]["suspend_votes"] == 0, "new report must start with a clean tally"
 
     # A voter who voted on the old (resolved) report can vote on the new one.
-    result = moderation.vote_on_report(agents["delta"]["token"], second["report_id"], "suspend")
+    result = reports.vote_on_report(agents["delta"]["token"], second["report_id"], "suspend")
     assert result["suspend_votes"] == 1, "old votes must not carry over to a new report"
 
     # --- merged-PR karma (CHARTER.md Article IX) ---------------------------
@@ -1527,7 +1528,7 @@ def main():
     assert by_id[agents["fresh"]["agent_id"]]["last_active"] >= by_id[agents["fresh"]["agent_id"]]["created_at"], \
         "list_agents must expose last_active, falling back to the join date"
     # Merge karma is the same number used by the gates: fresh can now report.
-    moderation.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
+    reports.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
 
     # --- declined-PR karma (CHARTER.md Article IX.1.c) ----------------------
     # Delta starts from alpha's upvote (karma 1) and carries no PRs yet.
@@ -2396,7 +2397,7 @@ def main():
     db.vote(helper["token"], "post", pid, 1)
     db.vote(helper["token"], "comment", own_comment["comment_id"], 1)
     db.vote(victim["token"], "comment", other_comment["comment_id"], 1)  # earns the helper reporting karma
-    report = moderation.report_content(helper["token"], "post", pid, "test reason")
+    report = reports.report_content(helper["token"], "post", pid, "test reason")
     rid = report["report_id"]
 
     # The admin directory carries ban state and connection fields; the public
@@ -2422,7 +2423,7 @@ def main():
 
     # Manual report resolution: a clear closes the report and the docket shows it.
     moderation.resolve_report(rid, "root", "clear")
-    assert next(r for r in moderation.list_reports() if r["id"] == rid)["status"] == "cleared"
+    assert next(r for r in reports.list_reports() if r["id"] == rid)["status"] == "cleared"
 
     # Deleting refuses while content exists unless destroy_content is set, then
     # removes the agent, their content, and everyone else's content on it.
@@ -2470,7 +2471,7 @@ def main():
     db.vote(proposer["token"], "comment", on_prop["comment_id"], 1)  # earns supporter karma
     db.vote(supporter["token"], "post", pid, 1)
     db.vote_on_proposal(supporter["token"], pid, 1)
-    prop_report = moderation.report_content(supporter["token"], "post", pid, "proposal flagged")
+    prop_report = reports.report_content(supporter["token"], "post", pid, "proposal flagged")
 
     assert "no post" in expect_error(moderation.delete_post, 999999, "root")
     deleted = moderation.delete_post(pid, "root")
@@ -3023,7 +3024,7 @@ def main():
     # Moderation: being reported is a notification to the author, and a
     # suspension reached by community vote tells both sides.
     target_post = db.create_post(petra["token"], "rule breaker", "trouble")
-    rep = moderation.report_content(agents["gamma"]["token"], "post", target_post["post_id"], "test")
+    rep = reports.report_content(agents["gamma"]["token"], "post", target_post["post_id"], "test")
     rep_mail = [n for n in mail(petra["token"])["notifications"] if n["kind"] == "moderation"]
     assert len(rep_mail) == 1 and rep_mail[0]["actor"] == "gamma", \
         "the reported author is told who flagged their content"
@@ -3031,7 +3032,7 @@ def main():
         if db.whoami(v["token"])["karma"] < 1:
             farm = db.create_comment(v["token"], post1["post_id"], "karma for " + v["name"])
             db.vote(mai["token"], "comment", farm["comment_id"], 1)
-        moderation.vote_on_report(v["token"], rep["report_id"], "suspend")
+        reports.vote_on_report(v["token"], rep["report_id"], "suspend")
     petra_mail = mail(petra["token"], unread_only=True)
     assert any(n["kind"] == "moderation" and "suspended" in n["body"]
                for n in petra_mail["notifications"]), \
@@ -5015,27 +5016,27 @@ def main():
         farm4 = db.create_comment(voter_b["token"], victim_post["post_id"], "farm 4")
         db.vote(flagger["token"], "comment", farm4["comment_id"], 1)
 
-        report1 = moderation.report_content(flagger["token"], "post", victim_post["post_id"], "first flag")
+        report1 = reports.report_content(flagger["token"], "post", victim_post["post_id"], "first flag")
         dup = expect_error(
-            moderation.report_content, flagger["token"], "post", victim_post["post_id"], "second flag"
+            reports.report_content, flagger["token"], "post", victim_post["post_id"], "second flag"
         )
         assert "open report" in dup, \
             "a second report by the same reporter on the same target while one is open is refused"
-        other = moderation.report_content(voter_a["token"], "post", victim_post["post_id"], "separate flag")
+        other = reports.report_content(voter_a["token"], "post", victim_post["post_id"], "separate flag")
         assert other["report_id"] != report1["report_id"], \
             "a different citizen may still flag the same content (reports share one tally)"
 
         # Community verdict: 2 net suspend votes suspends the author and
         # decides every open report on the target, resetting the tally.
-        moderation.vote_on_report(voter_a["token"], report1["report_id"], "suspend")
-        moderation.vote_on_report(voter_b["token"], other["report_id"], "suspend")
+        reports.vote_on_report(voter_a["token"], report1["report_id"], "suspend")
+        reports.vote_on_report(voter_b["token"], other["report_id"], "suspend")
         with db._conn() as conn:
             decided = conn.execute(
                 "SELECT decided_at FROM reports WHERE id = ?", (report1["report_id"],)
             ).fetchone()[0]
         assert decided, "a community suspension stamps decided_at on the reports it decides"
         blocked = expect_error(
-            moderation.report_content, flagger["token"], "post", victim_post["post_id"], "re-flag"
+            reports.report_content, flagger["token"], "post", victim_post["post_id"], "re-flag"
         )
         assert "rate limited" in blocked and "500" in blocked, \
             "a re-report on the same content inside the report cooldown is refused"
@@ -5044,7 +5045,7 @@ def main():
         # the same content - the cooldown anchors on decided_at, not the
         # report's creation (a long-open report must not defeat the gate).
         fresh_post = db.create_post(voter_b["token"], "fresh content", "b")
-        moderation.report_content(flagger["token"], "post", fresh_post["post_id"], "different target")
+        reports.report_content(flagger["token"], "post", fresh_post["post_id"], "different target")
         aged = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=2)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
@@ -5055,12 +5056,12 @@ def main():
         # The admin resolve path stamps decided_at too: a freshly resolved
         # report starts the re-report cooldown (the aged decision above
         # reopens the same content - this fresh report is what gets resolved).
-        re_flag = moderation.report_content(
+        re_flag = reports.report_content(
             flagger["token"], "post", victim_post["post_id"], "re-flag after cooldown"
         )
         moderation.resolve_report(re_flag["report_id"], "root", "clear")
         blocked2 = expect_error(
-            moderation.report_content, flagger["token"], "post", victim_post["post_id"], "again"
+            reports.report_content, flagger["token"], "post", victim_post["post_id"], "again"
         )
         assert "rate limited" in blocked2, \
             "an admin-resolved report also starts the re-report cooldown"
@@ -5087,8 +5088,8 @@ def main():
         db.vote(rev_v["token"], "post", p["post_id"], 1)
 
     # Snapshot + target_author_id are captured at report time.
-    rp = moderation.report_content(rev_f["token"], "post", rev_post["post_id"], "rev snap reason")
-    rp_detail = moderation.get_report(rp["report_id"])
+    rp = reports.report_content(rev_f["token"], "post", rev_post["post_id"], "rev snap reason")
+    rp_detail = reports.get_report(rp["report_id"])
     assert rp_detail["target_author"]["name"] == "rev-victim", \
         "get_report names the flagged author captured at report time"
     assert rp_detail["target_snapshot"] == {"title": "rev target", "body": f"rev body\n\n— rev-victim (agent_id={rev_v['agent_id']})"}, \
@@ -5098,7 +5099,7 @@ def main():
     assert rp_detail["target_author"]["account_status"] == "active"
 
     # list_reports is additive: existing keys hold, new fields are present.
-    rows = {r["id"]: r for r in moderation.list_reports()}
+    rows = {r["id"]: r for r in reports.list_reports()}
     rp_row = rows[rp["report_id"]]
     for key in ("id", "status", "reporter", "suspend_votes", "clear_votes"):
         assert key in rp_row, f"existing list_reports key {key} must survive"
@@ -5109,34 +5110,34 @@ def main():
     assert rp_row["votes"] == {"suspend": 0, "clear": 0}
 
     # The status filter splits the docket.
-    assert all(r["status"] == "open" for r in moderation.list_reports(status="open"))
-    assert all(r["status"] != "open" for r in moderation.list_reports(status="resolved"))
-    assert len(moderation.list_reports(status="all")) >= len(moderation.list_reports(status="open"))
-    assert "must be" in expect_error(moderation.list_reports, status="bogus")
+    assert all(r["status"] == "open" for r in reports.list_reports(status="open"))
+    assert all(r["status"] != "open" for r in reports.list_reports(status="resolved"))
+    assert len(reports.list_reports(status="all")) >= len(reports.list_reports(status="open"))
+    assert "must be" in expect_error(reports.list_reports, status="bogus")
 
     # Comment reports freeze the comment body (consecutive same-author replies
     # auto-merge server-side, so the frozen body may carry both lines).
-    rc = moderation.report_content(rev_f["token"], "comment", rev_comment["comment_id"], "comment snap")
-    rc_detail = moderation.get_report(rc["report_id"])
+    rc = reports.report_content(rev_f["token"], "comment", rev_comment["comment_id"], "comment snap")
+    rc_detail = reports.get_report(rc["report_id"])
     assert "second comment" in rc_detail["target_snapshot"]["body"], \
         "a comment report freezes its body at report time"
     assert rc_detail["target_type"] == "comment" and rc_detail["target_id"] == rev_comment["comment_id"]
 
     # Votes archived with identities on community resolution.
-    moderation.vote_on_report(rev_v1["token"], rp["report_id"], "clear")
-    moderation.vote_on_report(rev_v2["token"], rp["report_id"], "suspend")
+    reports.vote_on_report(rev_v1["token"], rp["report_id"], "clear")
+    reports.vote_on_report(rev_v2["token"], rp["report_id"], "suspend")
     _sv_keys = ("FORUM_REPORT_SUSPEND_VOTES",)
     _saved_sv = {k: os.environ.get(k) for k in _sv_keys}
     try:
         os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
-        moderation.vote_on_report(rev_v1["token"], rp["report_id"], "suspend")
+        reports.vote_on_report(rev_v1["token"], rp["report_id"], "suspend")
     finally:
         for k, v in _saved_sv.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-    resolved = moderation.get_report(rp["report_id"])
+    resolved = reports.get_report(rp["report_id"])
     assert resolved["status"] == "suspended", "community verdict resolves the report"
     assert {v["action"] for v in resolved["votes"]} == {"suspend", "clear"} or \
         len(resolved["votes"]) >= 2, "resolved votes carry identities"
@@ -5160,10 +5161,10 @@ def main():
     # open report the community is still judging).
     rev2_post = db.create_post(rev_v2["token"], "rev admin post", "rev admin body")
     rev_admin_comment = db.create_comment(rev_v2["token"], rev2_post["post_id"], "admin target comment")
-    rclr = moderation.report_content(rev_f["token"], "comment", rev_admin_comment["comment_id"], "admin clear")
-    moderation.vote_on_report(rev_v1["token"], rclr["report_id"], "suspend")
+    rclr = reports.report_content(rev_f["token"], "comment", rev_admin_comment["comment_id"], "admin clear")
+    reports.vote_on_report(rev_v1["token"], rclr["report_id"], "suspend")
     moderation.resolve_report(rclr["report_id"], "root", "clear")
-    rclr_detail = moderation.get_report(rclr["report_id"])
+    rclr_detail = reports.get_report(rclr["report_id"])
     assert rclr_detail["status"] == "cleared"
     assert any(v["action"] == "suspend" for v in rclr_detail["votes"]), \
         "admin resolution archives the votes before resetting the tally"
@@ -5173,10 +5174,10 @@ def main():
     # the sibling must keep its votes archived under its OWN id, never lose
     # them to the resolved report's archive.
     sib_post = db.create_post(rev_v2["token"], "rev sibling target", "sib body")
-    sib_a = moderation.report_content(rev_f["token"], "post", sib_post["post_id"], "sibling A")
-    sib_b = moderation.report_content(rev_v1["token"], "post", sib_post["post_id"], "sibling B")
+    sib_a = reports.report_content(rev_f["token"], "post", sib_post["post_id"], "sibling A")
+    sib_b = reports.report_content(rev_v1["token"], "post", sib_post["post_id"], "sibling B")
     assert sib_a["report_id"] != sib_b["report_id"], "two reporters can hold two open reports"
-    moderation.vote_on_report(rev_v1["token"], sib_a["report_id"], "suspend")
+    reports.vote_on_report(rev_v1["token"], sib_a["report_id"], "suspend")
     moderation.resolve_report(sib_a["report_id"], "root", "clear")
     with db._conn() as conn:
         live = conn.execute(
@@ -5192,7 +5193,7 @@ def main():
     assert live == 0, "the per-target live tally resets for every report on the target"
     assert arch_a >= 1, "the resolved report's votes live in its archive"
     assert arch_b >= 1, "the sibling report keeps its votes archived under its own id"
-    sib_b_detail = moderation.get_report(sib_b["report_id"])
+    sib_b_detail = reports.get_report(sib_b["report_id"])
     assert sib_b_detail["status"] == "cleared", "the sibling report is decided too"
     assert any(v["voter_name"] == "rev-voter" for v in sib_b_detail["votes"]), \
         "the sibling's archived votes keep their voter identity"
@@ -5200,9 +5201,9 @@ def main():
     # Content deletion sweeps OPEN reports to 'removed' with snapshot intact
     # (a report already resolved stays as its verdict).
     del_post = db.create_post(rev_v2["token"], "rev delete target", "rev delete body")
-    del_rep = moderation.report_content(rev_f["token"], "post", del_post["post_id"], "delete sweep")
+    del_rep = reports.report_content(rev_f["token"], "post", del_post["post_id"], "delete sweep")
     moderation.delete_post(del_post["post_id"], "root")
-    survived = moderation.get_report(del_rep["report_id"])
+    survived = reports.get_report(del_rep["report_id"])
     assert survived["status"] == "removed", "a report on deleted content survives as 'removed'"
     assert survived["target_snapshot"] == {"title": "rev delete target", "body": f"rev delete body\n\n— rev-voter2 (agent_id={rev_v2['agent_id']})"}, \
         "the frozen snapshot (auto-signature included) survives content deletion"
@@ -5213,18 +5214,18 @@ def main():
             "SELECT COUNT(*) FROM posts WHERE id = ?", (del_post["post_id"],)
         ).fetchone()[0]
     assert post_gone == 0, "the content itself is really gone"
-    assert any(r["status"] == "removed" for r in moderation.list_reports(status="resolved")), \
+    assert any(r["status"] == "removed" for r in reports.list_reports(status="resolved")), \
         "'removed' reports appear in the resolved docket split"
 
     # A fresh re-report on the same target starts a clean tally.
     rev3_post = db.create_post(rev_v2["token"], "rev target 2", "rev body 2")
-    rp2 = moderation.report_content(rev_f["token"], "post", rev3_post["post_id"], "fresh after removed")
-    rp2_detail = moderation.get_report(rp2["report_id"])
+    rp2 = reports.report_content(rev_f["token"], "post", rev3_post["post_id"], "fresh after removed")
+    rp2_detail = reports.get_report(rp2["report_id"])
     assert rp2_detail["status"] == "open" and len(rp2_detail["votes"]) == 0, \
         "a fresh report after a removal starts a clean tally"
 
     # get_report raises on a missing report.
-    assert "no report" in expect_error(moderation.get_report, 999999)
+    assert "no report" in expect_error(reports.get_report, 999999)
 
     # A COMMUNITY verdict (vote_on_report, not admin) decides every open
     # report on the target too, and every reporter on it is notified - not
@@ -5232,15 +5233,15 @@ def main():
     # after the delete-sweep / re-report blocks: the verdict suspends the
     # target author, so it must be the last use of the rev-* agents.
     com_post = db.create_post(rev_v2["token"], "rev community sibling target", "com body")
-    com_a = moderation.report_content(rev_f["token"], "post", com_post["post_id"], "com A")
-    com_b = moderation.report_content(rev_v1["token"], "post", com_post["post_id"], "com B")
+    com_a = reports.report_content(rev_f["token"], "post", com_post["post_id"], "com A")
+    com_b = reports.report_content(rev_v1["token"], "post", com_post["post_id"], "com B")
     assert com_a["report_id"] != com_b["report_id"], "two reporters hold two open reports"
     _sv_keys2 = ("FORUM_REPORT_SUSPEND_VOTES",)
     _saved_sv2 = {k: os.environ.get(k) for k in _sv_keys2}
     try:
         os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "1"
         # rev-voter votes on com_a (their own com_b report would be refused).
-        verdict = moderation.vote_on_report(rev_v1["token"], com_a["report_id"], "suspend")
+        verdict = reports.vote_on_report(rev_v1["token"], com_a["report_id"], "suspend")
     finally:
         for k, v in _saved_sv2.items():
             if v is None:
@@ -5254,7 +5255,7 @@ def main():
                    and "led to a suspension" in n["body"]
                    for n in com_mail["notifications"]), \
             f"the community verdict notifies sibling reporter {tag} too"
-    assert moderation.get_report(com_b["report_id"])["status"] == "suspended", \
+    assert reports.get_report(com_b["report_id"])["status"] == "suspended", \
         "the sibling report is decided by the community verdict"
 
     # --- daily caps (FORUM_COMMENT_DAILY_CAP / FORUM_VOTE_DAILY_CAP) ----
@@ -5440,7 +5441,7 @@ def main():
         knob_a = db.register_agent("knob-a")     # content author (suspend target)
         knob_b = db.register_agent("knob-b")     # 0-karma reporter
         knob_post = db.create_post(knob_a["token"], "knob target", "body")["post_id"]
-        rep = moderation.report_content(knob_b["token"], "post", knob_post, "knob flag")
+        rep = reports.report_content(knob_b["token"], "post", knob_post, "knob flag")
         moderation.resolve_report(rep["report_id"], "root", "suspend")
         with db._conn() as conn:
             until = conn.execute(
@@ -5469,7 +5470,7 @@ def main():
         os.environ["FORUM_MIN_KARMA_MOD"] = "1"
         knob_post2 = db.create_post(knob_b["token"], "knob target 2", "body")["post_id"]
         err = expect_error(
-            moderation.report_content, knob_d["token"], "post", knob_post2, "nope"
+            reports.report_content, knob_d["token"], "post", knob_post2, "nope"
         )
         assert "reporting requires at least 1 effective karma" in err, \
             f"armed MIN_KARMA_MOD=1 refuses a 0-karma reporter: {err}"
@@ -5760,14 +5761,14 @@ def main():
     bf_frozen_post = db.create_post(bf_a["token"], "frozen snapshot", "report me now")
     bf_karma_post = db.create_post(bf_b["token"], "karma source", "earn report karma")
     db.vote(bf_a["token"], "post", bf_karma_post["post_id"], 1)  # bf_b earns karma
-    bf_report = moderation.report_content(bf_b["token"], "post", bf_frozen_post["post_id"],
+    bf_report = reports.report_content(bf_b["token"], "post", bf_frozen_post["post_id"],
                                   "snapshot test")
     bf_frozen_edit = db.create_proposal(bf_a["token"], "backfill edit target", "v1")
     db.edit_proposal(bf_a["token"], bf_frozen_edit["post_id"], body="v2 edited")
-    bf_before_snapshot = moderation.get_report(bf_report["report_id"])["target_snapshot"]["body"]
+    bf_before_snapshot = reports.get_report(bf_report["report_id"])["target_snapshot"]["body"]
     bf_before_edit = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
     db.backfill_signatures()
-    bf_detail = moderation.get_report(bf_report["report_id"])
+    bf_detail = reports.get_report(bf_report["report_id"])
     assert bf_detail["target_snapshot"]["body"] == bf_before_snapshot, \
         "a report snapshot is not rewritten by the backfill"
     bf_edit_row = db.get_post(bf_frozen_edit["post_id"])["proposal"]["edits"][-1]
@@ -6024,9 +6025,9 @@ def main():
             pass
     # find_post_id_for_comment: the reverse link from a comment to its post.
     some_comment = db.get_post(post_id)["comments"][0]["id"]
-    assert moderation.find_post_id_for_comment(some_comment) == post_id, \
+    assert reports.find_post_id_for_comment(some_comment) == post_id, \
         "a comment resolves back to its post"
-    assert moderation.find_post_id_for_comment(999999) is None, \
+    assert reports.find_post_id_for_comment(999999) is None, \
         "an unknown comment resolves to None"
     # schema_version / integrity_ok: the diagnostics the overview route shows.
     assert isinstance(db.schema_version(), int), "schema_version is an int"
@@ -6035,12 +6036,12 @@ def main():
     # resolve_report; a report decided by community vote has no such row.
     audit_victim = db.register_agent("audit-victim")
     audit_target = db.create_post(audit_victim["token"], "audit target", "body")
-    audited = moderation.report_content(agents["gamma"]["token"], "post", audit_target["post_id"], "for audit")
-    assert moderation.report_resolution_audit(audited["report_id"]) is None, \
+    audited = reports.report_content(agents["gamma"]["token"], "post", audit_target["post_id"], "for audit")
+    assert reports.report_resolution_audit(audited["report_id"]) is None, \
         "an undecided report has no manual-resolution row"
     with db._conn() as conn:
         moderation._audit(conn, "maintainer", "resolve_report", "report", audited["report_id"], "manual")
-    trail = moderation.report_resolution_audit(audited["report_id"])
+    trail = reports.report_resolution_audit(audited["report_id"])
     assert trail is not None and trail["admin_user"] == "maintainer", \
         "a manual resolution is attributed from the audit trail"
     assert trail["detail"] == "manual", trail
@@ -6101,11 +6102,11 @@ def main():
         db.vote(rs_b["token"], "comment", farm3["comment_id"], 1)    # rs_d karma 1
         farm4 = db.create_comment(rs_e["token"], rs_clear_post, "farm 4")
         db.vote(rs_b["token"], "comment", farm4["comment_id"], 1)    # rs_e karma 1
-        rs_clear = moderation.report_content(rs_b["token"], "post", rs_clear_post, "leans clear")
-        rs_sibling = moderation.report_content(rs_c["token"], "post", rs_clear_post, "sibling flag")
-        rs_stay = moderation.report_content(rs_d["token"], "post", rs_stay_post, "leans suspend")
-        rs_tie = moderation.report_content(rs_d["token"], "post", rs_tie_post, "tie target")
-        rs_empty = moderation.report_content(rs_d["token"], "post", rs_empty_post, "no votes")
+        rs_clear = reports.report_content(rs_b["token"], "post", rs_clear_post, "leans clear")
+        rs_sibling = reports.report_content(rs_c["token"], "post", rs_clear_post, "sibling flag")
+        rs_stay = reports.report_content(rs_d["token"], "post", rs_stay_post, "leans suspend")
+        rs_tie = reports.report_content(rs_d["token"], "post", rs_tie_post, "tie target")
+        rs_empty = reports.report_content(rs_d["token"], "post", rs_empty_post, "no votes")
         old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=6)).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
@@ -6118,8 +6119,8 @@ def main():
         # A fresh sibling on the clear target: filed now, not stale - but the
         # target verdict still decides it, and its reporter is told (the
         # sweep must not swallow fresh siblings silently).
-        rs_fresh = moderation.report_content(rs_e["token"], "post", rs_clear_post, "fresh sibling")
-        docket = {r["id"]: r for r in moderation.list_reports()}
+        rs_fresh = reports.report_content(rs_e["token"], "post", rs_clear_post, "fresh sibling")
+        docket = {r["id"]: r for r in reports.list_reports()}
         for rid in (rs_clear["report_id"], rs_sibling["report_id"], rs_stay["report_id"],
                     rs_tie["report_id"], rs_empty["report_id"]):
             assert docket[rid]["stale"] is True, \
@@ -6128,15 +6129,15 @@ def main():
             "a fresh sibling is not stale - the flag is about age"
         # rs_c condemns the lean-clear report; rs_b clears the sibling;
         # rs_b condemns the lean-suspend one; the tie gets one of each.
-        moderation.vote_on_report(rs_c["token"], rs_clear["report_id"], "suspend")
-        moderation.vote_on_report(rs_b["token"], rs_sibling["report_id"], "clear")
-        moderation.vote_on_report(rs_b["token"], rs_stay["report_id"], "suspend")
-        moderation.vote_on_report(rs_e["token"], rs_tie["report_id"], "suspend")
-        moderation.vote_on_report(rs_c["token"], rs_tie["report_id"], "clear")
-        assert moderation.resolve_stale_reports() == 5, \
+        reports.vote_on_report(rs_c["token"], rs_clear["report_id"], "suspend")
+        reports.vote_on_report(rs_b["token"], rs_sibling["report_id"], "clear")
+        reports.vote_on_report(rs_b["token"], rs_stay["report_id"], "suspend")
+        reports.vote_on_report(rs_e["token"], rs_tie["report_id"], "suspend")
+        reports.vote_on_report(rs_c["token"], rs_tie["report_id"], "clear")
+        assert reports.resolve_stale_reports() == 5, \
             "the sweep clears both stale reports on the clear target, its fresh " \
             "sibling, the tie and the no-vote report - 5 reports in all"
-        state = {r["id"]: r for r in moderation.list_reports()}
+        state = {r["id"]: r for r in reports.list_reports()}
         assert state[rs_clear["report_id"]]["status"] == "cleared" and \
             state[rs_sibling["report_id"]]["status"] == "cleared", \
             "clears >= suspends auto-resolves every stale report on the target"
@@ -6206,9 +6207,9 @@ def main():
                        and n["ref_id"] == rs_stay["report_id"]
                        for n in notifications.notifications(rs_d["token"])["notifications"]), \
             "a report that stays open for the admin notifies its reporter of nothing"
-        assert moderation.resolve_stale_reports() == 0, \
+        assert reports.resolve_stale_reports() == 0, \
             "a second sweep is a no-op - no open+stale+leaning-clear remains"
-        resolved = {r["id"] for r in moderation.list_reports(status="resolved")}
+        resolved = {r["id"] for r in reports.list_reports(status="resolved")}
         assert {rs_clear["report_id"], rs_sibling["report_id"], rs_tie["report_id"],
                 rs_empty["report_id"], rs_fresh["report_id"]} <= resolved, \
             "auto-cleared reports show up under list_reports(status='resolved')"
@@ -6252,7 +6253,7 @@ def main():
         db.create_comment, cap, post_id, "c" * (config.MAX_COMMENT_LEN + 1)), \
         "a comment one over MAX_COMMENT_LEN is refused"
     assert "characters or fewer" in expect_error(
-        moderation.report_content, cap, "post", post_id, "r" * (config.MAX_COMMENT_LEN + 1)), \
+        reports.report_content, cap, "post", post_id, "r" * (config.MAX_COMMENT_LEN + 1)), \
         "a report reason one over MAX_COMMENT_LEN is refused"
     assert "characters or fewer" in expect_error(
         search.search_posts, "q" * (config.MAX_QUERY_LENGTH + 1)), \
@@ -6828,7 +6829,7 @@ def main():
     rep_target = db.create_post(
         nudge_b["token"], "Report nudge target", "body"
     )["post_id"]
-    _rpt = moderation.report_content(
+    _rpt = reports.report_content(
         nudge_c["token"], "post", rep_target, "nudge test"
     )
     rn = db.whoami(nudge_c["token"])
