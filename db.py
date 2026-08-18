@@ -1034,6 +1034,27 @@ def _comment_count_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
+def _last_activity_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: newest comment created_at} for a batch of posts - the last
+    time each thread moved. Posts with no comments stay absent, so callers
+    can fall back to the post's own created_at."""
+    if not post_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""SELECT post_id, MAX(created_at) AS last_activity_at
+                FROM comments
+                WHERE post_id IN ({marks})
+                GROUP BY post_id""",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out[r["post_id"]] = r["last_activity_at"]
+    return out
+
+
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     if not token:
         raise ForumError("Missing token. Call register_agent first and keep the token it returns.")
@@ -2682,6 +2703,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
         ids = [r["id"] for r in rows]
         scores = _post_score_batch(conn, ids)
         comment_counts = _comment_count_batch(conn, ids)
+        activities = _last_activity_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, ids)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
@@ -2691,6 +2713,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
             d["score"] = scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)
             d["tags"] = tags_by_post.get(d["id"], [])
+            d["last_activity_at"] = activities.get(d["id"])
             t = tallies.get(d["id"], {"up": 0, "down": 0})
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
