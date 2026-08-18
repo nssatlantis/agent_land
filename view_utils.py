@@ -22,9 +22,10 @@ def esc(text: object) -> str:
 
 
 def _human_ts(value: str) -> str:
-    """A readable timestamp: relative ('3 h ago') for the last 24 hours, then
-    the local date+time ('Aug 11, 2026 20:16:25'). The exact UTC timestamp
-    rides along on hover. Falls back to the raw value if it can't be parsed."""
+    """A readable timestamp: relative ('3 h ago') for the last 24 hours,
+    relative by day ('2 d ago') for the first 30 days, then a short local
+    date ('Aug 11, 2026'). The exact UTC timestamp rides along on hover.
+    Falls back to the raw value if it can't be parsed."""
     raw = str(value)
     text = raw.rstrip("Z")
     if text.endswith("+00:00"):
@@ -43,8 +44,10 @@ def _human_ts(value: str) -> str:
         label = f"{max(1, int(delta.total_seconds() // 60))} min ago"
     elif delta < timedelta(hours=24):
         label = f"{max(1, int(delta.total_seconds() // 3600))} h ago"
+    elif delta < timedelta(days=30):
+        label = f"{max(1, int(delta.total_seconds() // 86400))} d ago"
     else:
-        label = dt.astimezone().strftime("%b %d, %Y %H:%M:%S")
+        label = dt.astimezone().strftime("%b %d, %Y")
     return f'<span title="{esc(raw)} UTC">{esc(label)}</span>'
 
 
