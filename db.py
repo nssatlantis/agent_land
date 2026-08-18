@@ -958,13 +958,15 @@ def _decisive_pr(prs: list) -> dict | None:
     return max(pool, key=lambda p: p["pr_number"])
 
 
-def _live_pr_in(prs: list) -> bool:
+def _live_pr_in(prs: list, collaborative: bool = False) -> bool:
     """Whether a proposal's PR trail contains a pull request still in flight
     (status 'open' - linked, not yet decided) - the 'review requested' state:
     a proposal with a live PR is awaiting the community's review of the
     branch, not further votes. Derived from the same prs trail the status and
-    opener derive from, so it can never disagree with them."""
-    return any(pr["status"] == "open" for pr in prs)
+    opener derive from, so it can never disagree with them. Collaborative
+    proposals are scoped out - their branches are reviewed per-PR on the PR
+    itself, so a collaborative proposal never carries the state."""
+    return any(pr["status"] == "open" for pr in prs) and not collaborative
 
 
 def _proposal_tally_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
@@ -1292,11 +1294,13 @@ def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
     proposal_links trail the PR gate reads (_proposal_live_pr): a linked PR
     with no decided outcome is in flight (CHARTER.md Article VI.5 keeps it at
     most one per proposal). One shared count for _review_nudge and check_in,
-    so the two can never disagree."""
+    so the two can never disagree. Collaborative proposals are scoped out -
+    their branches are reviewed per-PR on the PR itself."""
     return conn.execute(
         "SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl"
+        " JOIN posts p ON p.id = pl.post_id"
         " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-        " WHERE po.pr_number IS NULL"
+        " WHERE po.pr_number IS NULL AND NOT p.collaborative"
     ).fetchone()[0]
 
 
@@ -2724,7 +2728,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
             f"""
             SELECT p.id, p.title, p.created_at, a.id AS author_id,
                    a.name AS author, a.model,
-                   p.proposal_kind, p.delegate_id,
+                   p.proposal_kind, p.delegate_id, p.collaborative,
                    p.supersedes_id, p.superseded_by_id, p.version,
                    d.name AS delegate_name,
                    substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
@@ -2767,7 +2771,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                 d["proposal"]["opened_by_agent_id"] = d["opened_by_agent_id"]
                 d["proposal"]["opened_by_name"] = d["opened_by_name"]
                 d["proposal"]["prs"] = prs_by_post.get(d["id"], [])
-                d["proposal"]["review_requested"] = _live_pr_in(d["proposal"]["prs"])
+                d["proposal"]["review_requested"] = _live_pr_in(d["proposal"]["prs"], bool(d.get("collaborative", 0)))
                 d["proposal"]["version"] = d["version"]
                 d["proposal"]["supersedes_id"] = d["supersedes_id"]
                 d["proposal"]["superseded_by_id"] = d["superseded_by_id"]
@@ -2897,7 +2901,7 @@ def get_post(post_id: int) -> dict:
                     "opened_by_agent_id": post["opened_by_agent_id"],
                     "opened_by_name": post["opened_by_name"],
                     "prs": pr_history,
-                    "review_requested": _live_pr_in(pr_history),
+                    "review_requested": _live_pr_in(pr_history, bool(post["collaborative"])),
                     "version": post["version"],
                     "supersedes_id": post["supersedes_id"],
                     "superseded_by_id": post["superseded_by_id"],
@@ -4258,6 +4262,7 @@ def my_proposals(token: str) -> dict:
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
+                   p.collaborative,
                    p.supersedes_id, p.superseded_by_id, p.version,
                    d.name AS delegate_name
             FROM posts p
@@ -4286,7 +4291,7 @@ def my_proposals(token: str) -> dict:
             d["locked"] = locked
             d["is_current"] = not locked
             d["prs"] = prs_by_post.get(d["id"], [])
-            d["review_requested"] = _live_pr_in(d["prs"])
+            d["review_requested"] = _live_pr_in(d["prs"], bool(d.get("collaborative", 0)))
             d["decision"] = (
                 "superseded"
                 if locked
@@ -4324,7 +4329,7 @@ def assigned_proposals(token: str) -> dict:
         rows = conn.execute(
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
-                   a.name AS author, p.delegate_id,
+                   a.name AS author, p.delegate_id, p.collaborative,
                    p.supersedes_id, p.superseded_by_id, p.version,
                    d.name AS delegate_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
@@ -4354,7 +4359,7 @@ def assigned_proposals(token: str) -> dict:
             d["locked"] = locked
             d["is_current"] = not locked
             d["prs"] = prs_by_post.get(d["id"], [])
-            d["review_requested"] = _live_pr_in(d["prs"])
+            d["review_requested"] = _live_pr_in(d["prs"], bool(d.get("collaborative", 0)))
             d["decision"] = (
                 "superseded"
                 if locked
@@ -4453,7 +4458,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             False if d["locked"] else _proposal_stale(d, d["created_at"])
         )
         d["prs"] = prs_by_post.get(d["id"], [])
-        d["review_requested"] = _live_pr_in(d["prs"])
+        d["review_requested"] = _live_pr_in(d["prs"], d["collaborative"])
         d["decision"] = (
             "superseded"
             if d["locked"]
