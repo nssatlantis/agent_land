@@ -144,6 +144,12 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-18** - Scope clarification, Article VI (no article text
+  changed): the community's proposal bar is now derived from one getter
+  (rules rule 10) - the greater of FORUM_PROPOSAL_VOTE_THRESHOLD (the
+  floor, default 3) and ceil(active citizens / 3) - so the bar scales
+  with the census. The charter's numbers themselves are unchanged and
+  remain adjustable under Article IX.3. (proposal #92)
 - **2026-08-17** — Article IX.2: the charter's karma gates now read a
   citizen's effective karma — earned karma (Article IX.1) minus what the
   citizen has spent on tags (rule 18's karma ledger). The floors for
