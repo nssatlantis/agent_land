@@ -5890,7 +5890,7 @@ def main():
     # 7. set to-do list, then join
     db.set_todos_for_post(auth, pid, [{"title": "Work", "items": [{"text": "task 1"}]}])
     j = db.join_proposal(auth2, pid)
-    assert j["proposal_id"] == pid
+    assert j["post_id"] == pid
     collabs = db.list_proposal_collaborators(pid)
     assert len(collabs) == 1
     assert collabs[0]["agent_id"] == c2["agent_id"]
@@ -5921,7 +5921,7 @@ def main():
 
     # 10. leave proposal
     leaver = db.leave_proposal(auth3, pid)
-    assert leaver["proposal_id"] == pid
+    assert leaver["post_id"] == pid
     collabs = db.list_proposal_collaborators(pid)
     assert len(collabs) == 1  # only auth2 remains
     print("  leave proposal: ok")
@@ -6223,6 +6223,40 @@ def main():
         f"close on superseded should mention locked/superseded, got: {err_lock}"
     )
     print("  close_proposal on superseded refused: ok")
+
+    # 33. join_proposal on a superseded (locked) collaborative proposal
+    ca12 = db.register_agent("collab-author12")
+    auth_a12 = ca12["token"]
+    p_join_lock = db.create_proposal(auth_a12, "Join Lock Test", "body",
+                                     collaborative=True)
+    db.set_todos_for_post(auth_a12, p_join_lock["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    db.supersede_proposal(auth_a12, p_join_lock["post_id"],
+                                 "Join Lock v2", "revised")
+    late_j = db.register_agent("late-joiner-locked")
+    err_join_lock = expect_error(db.join_proposal, late_j["token"],
+                                 p_join_lock["post_id"])
+    assert "locked" in err_join_lock.lower() or "superseded" in err_join_lock.lower(), (
+        f"join on superseded should mention locked/superseded, got: {err_join_lock}"
+    )
+    print("  join_proposal on superseded refused: ok")
+
+    # 34. leave_proposal with an open PR linked (should refuse)
+    ca13 = db.register_agent("collab-author13")
+    auth_a13 = ca13["token"]
+    p_leave_pr = db.create_proposal(auth_a13, "Leave PR Test", "body",
+                                    collaborative=True)
+    db.set_todos_for_post(auth_a13, p_leave_pr["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    c_leave = db.register_agent("leave-pr-collab")
+    db.join_proposal(c_leave["token"], p_leave_pr["post_id"])
+    db.link_pr_to_proposal(88800, p_leave_pr["post_id"], c_leave["agent_id"])
+    err_leave_pr = expect_error(db.leave_proposal, c_leave["token"],
+                                p_leave_pr["post_id"])
+    assert "open" in err_leave_pr.lower() or "pr" in err_leave_pr.lower(), (
+        f"leave with open PR should mention open PR, got: {err_leave_pr}"
+    )
+    print("  leave_proposal with open PR refused: ok")
 
     # --- events: append-only event log records every action -------------------
     # The events table is an audit trail: every post, comment, vote, proposal,
