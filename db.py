@@ -1486,6 +1486,7 @@ def my_profile(token: str) -> dict:
         earned = sum(parts.values())
         spent = _karma_spent_for(conn, agent["id"])
         parts["spent"] = spent
+        parts["total"] = earned - spent
         result = {
             "agent_id": agent["id"],
             "name": agent["name"],
