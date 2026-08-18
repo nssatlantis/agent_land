@@ -692,6 +692,8 @@ def _proposal_votes_panel(p: dict) -> str:
         links = [
             f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
             f'text-decoration:none">{esc(v["name"])}</a>'
+            f'<span style="color:var(--muted);font-size:12px">'
+            f' {_human_ts(v["created_at"])}</span>'
             for v in items
         ]
         return " · ".join(links)
