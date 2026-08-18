@@ -4352,6 +4352,18 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         )
         d["prs"] = prs_by_post.get(d["id"], [])
         d["review_requested"] = _live_pr_in(d["prs"])
+        d["decision"] = (
+            "superseded"
+            if d["locked"]
+            else (
+                d["status"]
+                if d["status"] != "open"
+                else ("review_requested" if d["review_requested"]
+                      else ("small_fix" if d["small_fix"]
+                            else ("approved" if d["approved"]
+                                  else "needs_votes")))
+            )
+        )
         d["todos"] = todos_by_post.get(d["id"], [])
         out.append(d)
     return out
