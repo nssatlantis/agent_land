@@ -514,9 +514,10 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
     proposal was revised into a new version and is locked - its tally frozen
     on the record - so it reads as its own verdict, ahead of any underlying
     status; declined and closed mean its newest PR did not merge (the
-    proposal can be retried); otherwise the verdict reflects whether it has
-    cleared the gate to open a pull request, with stale proposals flagged
-    for rework."""
+    proposal can be retried); a proposal whose pull request is in flight
+    reads 'review requested' - the branch awaits the community's review, not
+    further votes; otherwise the verdict reflects whether it has cleared the
+    gate to open a pull request, with stale proposals flagged for rework."""
     status = p.get("status", "open")
     if p.get("locked") or p.get("superseded_by_id"):
         return "superseded", "var(--dim)"
@@ -526,6 +527,8 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
         return "declined", "var(--fail)"
     if status == "closed":
         return "closed", "var(--dim)"
+    if p.get("review_requested"):
+        return "review requested", "var(--warn)"
     if p["approved"]:
         return "approved", "var(--ok)"
     if p.get("stale"):
@@ -1633,6 +1636,7 @@ _DOCKET_EMPTIES = {
     "all": "No proposals yet - the docket is empty.",
     "needs_votes": "No proposals waiting on votes right now.",
     "approved": "No approved proposals waiting to ship right now.",
+    "review": "No proposals awaiting review right now.",
     "stale": "No stale proposals - nothing has been left to gather dust.",
     "merged": "No merged proposals on the record yet.",
     "small_fix": "No small fixes on the docket yet.",
@@ -1722,6 +1726,7 @@ _DOCKET_TITLES = {
     "all": "Proposals docket",
     "needs_votes": "Needs votes",
     "approved": "Approved",
+    "review": "Review requested",
     "stale": "Stale",
     "merged": "Merged",
     "small_fix": "Small fixes",
