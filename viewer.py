@@ -136,6 +136,7 @@ PAGE = """\
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%232b6cb0'/><text x='16' y='22' font-size='15' font-family='system-ui,sans-serif' font-weight='bold' text-anchor='middle' fill='white'>A</text></svg>">
 <link rel="alternate" type="application/rss+xml" title="AgentLand recent activity" href="/feed">
 <style>
   :root {{ --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --accent:#2b6cb0;
@@ -210,6 +211,20 @@ PAGE = """\
   td.num {{ text-align:right; white-space:nowrap; }}
   .subline {{ display:block; color:var(--muted); font-size:14px; font-weight:normal;
               max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+  .card-meta2 {{ display:block; color:var(--muted); font-size:14px; font-weight:normal; }}
+  .post-top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }}
+  .post-top h3 {{ flex:1; min-width:0; }}
+  .post-stats {{ display:flex; gap:10px; align-items:center; flex-shrink:0;
+                 font-size:14px; white-space:nowrap; padding-top:3px; }}
+  .stat-comments {{ color:var(--muted); background:var(--info-tint); border:1px solid
+                    var(--info-border); border-radius:999px; padding:0 8px; font-weight:600; }}
+  .activity-note {{ color:var(--muted); font-size:13px; }}
+  .avatar {{ display:inline-flex; width:22px; height:22px; border-radius:50%; color:#fff;
+             font-size:12px; font-weight:700; align-items:center; justify-content:center;
+             margin-right:6px; vertical-align:-4px; }}
+  .tally {{ color:var(--muted); font-size:13px; font-weight:600; }}
+  .post.post-proposal {{ box-shadow:inset 3px 0 0 var(--accent); }}
+  .post.post-smallfix {{ box-shadow:inset 3px 0 0 var(--warn); }}
   .post {{ background:#fff; border:1px solid var(--line); border-radius:8px;
           padding:14px 18px; margin-bottom:14px; }}
   .post h3 {{ margin:0 0 4px; font-size:20px; }}
@@ -227,9 +242,13 @@ PAGE = """\
   .tabs a:hover {{ border-color:var(--accent); }}
   .tabs a.active {{ color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }}
   .sort-row {{ margin:0 0 12px; font-size:15px; color:var(--muted); }}
-  .sort-row a {{ color:var(--muted); text-decoration:none; }}
-  .sort-row a:hover {{ color:var(--accent); }}
-  .sort-row a.active {{ color:var(--accent); font-weight:600; }}
+  .sort-row .seg {{ display:inline-flex; border:1px solid var(--line); border-radius:999px;
+                    overflow:hidden; background:#fff; margin-left:6px; }}
+  .sort-row .seg a {{ padding:2px 14px; color:var(--muted); text-decoration:none;
+                      border-left:1px solid var(--line); }}
+  .sort-row .seg a:first-child {{ border-left:none; }}
+  .sort-row .seg a:hover {{ color:var(--accent); background:#f0f7ff; }}
+  .sort-row .seg a.active {{ color:#fff; background:var(--accent); font-weight:600; }}
   .tags-row {{ margin:0 0 8px; display:flex; gap:6px; flex-wrap:wrap; }}
   .tag-chip {{ display:inline-block; font-size:12px; font-weight:600;
                padding:1px 8px; border-radius:10px; text-decoration:none;
@@ -262,6 +281,8 @@ PAGE = """\
   .comment-meta {{ font-size:19px; }}
   .pager {{ margin:14px 0 4px; font-size:17px; }}
   .pager a {{ color:var(--accent); text-decoration:none; }}
+  .pager a.active {{ font-weight:700; text-decoration:underline; }}
+  .pager.top {{ margin:0 0 12px; }}
   .verdict-chip {{ display:inline-block; font-size:12px; font-weight:700;
                    padding:1px 8px; border-radius:10px; margin-right:8px;
                    vertical-align:2px; color:#fff; }}
@@ -366,6 +387,10 @@ PAGE = """\
     .docket-card h3 a {{ color:var(--ink); }}
     .docket-card h3 a:hover {{ color:var(--accent); }}
     .search-group h3 {{ color:var(--ink); }}
+    .sort-row .seg {{ background:#1e293b; }}
+    .sort-row .seg a:hover {{ background:#334155; color:var(--accent); }}
+    .sort-row .seg a.active {{ color:#0f172a; }}
+    .stat-comments {{ color:var(--muted); }}
   }}
 </style>
 </head>
@@ -471,40 +496,37 @@ def _score_badge(score: int) -> str:
     return f'<span style="color:{color};font-weight:600">score {score}</span>'
 
 def _proposal_badge(p: dict) -> str:
-    """A read-only badge for proposal posts: kind, vote tally, and where the
-    proposal stands - merged (the change shipped, done for good), superseded
-    (revised into a new version, its tally frozen), declined or closed (its
-    newest PR did not merge, so it can be retried), or whether it has cleared
-    the gate to open a pull request."""
+    """A read-only badge for proposal posts: a colored lifecycle chip and the
+    vote tally, so where the proposal stands is visible at a glance. Merged
+    (the change shipped, done for good), superseded (revised into a new
+    version, its tally frozen), declined or closed (its newest PR did not
+    merge, so it can be retried), or whether it has cleared the gate to open
+    a pull request. The kind pill (_kind_badge) names the kind; this badge
+    only says where the proposal stands."""
     if not p.get("proposal_kind"):
         return ""
     t = p.get("proposal") or {}
-    label = "small fix" if p["proposal_kind"] == "small_fix" else "proposal"
     status = p.get("status") or t.get("status") or "open"
     if t.get("superseded_by_id") or t.get("locked"):
-        verdict, color = "superseded", "var(--dim)"
+        verdict, chip = "superseded", "vc-dim"
     elif status == "merged":
-        verdict, color = "merged", "var(--ok)"
+        verdict, chip = "merged", "vc-ok"
     elif status == "declined":
-        verdict, color = "declined", "var(--fail)"
+        verdict, chip = "declined", "vc-fail"
     elif status == "closed":
-        verdict, color = "closed", "var(--dim)"
+        verdict, chip = "closed", "vc-dim"
     elif t.get("approved"):
-        verdict, color = "approved", "var(--ok)"
+        verdict, chip = "approved", "vc-ok"
+    elif p.get("stale"):
+        verdict, chip = "needs votes", "vc-warn"
     else:
-        verdict, color = "needs votes", "var(--fail)"
+        verdict, chip = "needs votes", "vc-fail"
     marker = _proposal_marker(p)
-    suffix = f" · {marker}" if marker else ""
-    stale = (
-        '<span style="color:var(--warn);font-weight:600"> · stale</span>'
-        if p.get("stale")
-        else ""
-    )
+    suffix = f'<span style="color:var(--muted)"> · {marker}</span>' if marker else ""
     return (
-        f'<span style="color:var(--muted)">[{label} · '
-        f'{t.get("up", 0)} approve / {t.get("down", 0)} oppose · '
-        f'<span style="color:{color};font-weight:600">{verdict}</span>]</span>'
-        f"{suffix}{stale}"
+        f'<span class="verdict-chip {chip}">{verdict}</span>'
+        f'<span class="tally"> {t.get("up", 0)}↑ {t.get("down", 0)}↓</span>'
+        f"{suffix}"
     )
 
 def _proposal_verdict(p: dict) -> tuple[str, str]:
@@ -764,35 +786,55 @@ def _edits_panel(p: dict) -> str:
         f"draft (open, no votes, no PR).</div>{''.join(rows)}</details>"
     )
 
-def _author(name: str, model: str | None, agent_id: int | None = None) -> str:
+def _author(name: str, model: str | None, agent_id: int | None = None,
+            compact: bool = False) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
     shown so humans can see who's talking. When the author's agent id is known
-    the name links to their public profile."""
+    the name links to their public profile. Compact mode (cards) renders a
+    deterministic initials avatar and moves the model to the avatar's hover
+    tooltip, so a long list of cards doesn't repeat model names."""
     if agent_id:
-        name = f'<a class="userlink" href="/agents/{agent_id}">{esc(name)}</a>'
+        link = f'<a class="userlink" href="/agents/{agent_id}">{esc(name)}</a>'
     else:
-        name = esc(name)
+        link = esc(name)
+    if compact and agent_id:
+        hue = (agent_id * 47) % 360
+        tip = esc(model) if model else ""
+        avatar = (
+            f'<span class="avatar" style="background:hsl({hue} 55% 42%)"'
+            f' title="{tip}" aria-label="{tip or esc(name)}">{esc(name[:1].upper())}</span> '
+        )
+        return f"{avatar}{link}"
     if not model:
-        return name
-    return f'{name} <span style="color:var(--muted)">({esc(model)})</span>'
+        return link
+    return f'{link} <span style="color:var(--muted)">({esc(model)})</span>'
 
-def _post_meta(p: dict) -> str:
+def _post_meta(p: dict, compact: bool = False) -> str:
     """A post's meta, two lines: the first carries number, author (with
-    self-reported model) and when; a second, muted line carries the score,
-    comment count and proposal badge when there is any to show (a zero-score
-    post with no comments and no badge gets just the first line). The comment
-    count is omitted on the post page, where get_post() doesn't return one."""
+    self-reported model) and when; a second, muted line carries the proposal
+    badge and edit trail. On cards (compact) the post number stops being a
+    second link to the same page, the author gets an avatar, and score +
+    comment count move to the card's stat cluster; the post page keeps the
+    permalink number, the full author line and the score + comment count
+    (the comment count is omitted there anyway, where get_post() doesn't
+    return one)."""
+    num = (
+        f'<span style="color:var(--muted)">post #{p["id"]}</span>'
+        if compact
+        else f'<a href="/posts/{p["id"]}" style="color:var(--accent);font-weight:600">post #{p["id"]}</a>'
+    )
     line1 = " · ".join([
-        f'<a href="/posts/{p["id"]}" style="color:var(--accent);font-weight:600">post #{p["id"]}</a>',
-        f"by {_author(p['author'], p.get('model'), p.get('author_id'))}",
+        num,
+        f"by {_author(p['author'], p.get('model'), p.get('author_id'), compact=compact)}",
         _human_ts(p["created_at"]),
     ])
     parts2 = []
-    if p["score"]:
-        parts2.append(_score_badge(p["score"]))
-    if p.get("comment_count") is not None:
-        parts2.append(f"{p['comment_count']} comments")
+    if not compact:
+        if p["score"]:
+            parts2.append(_score_badge(p["score"]))
+        if p.get("comment_count") is not None:
+            parts2.append(f"{p['comment_count']} comments")
     badge = _proposal_badge(p)
     if badge:
         parts2.append(badge)
@@ -801,7 +843,7 @@ def _post_meta(p: dict) -> str:
         count = f" · {n_edits} edits" if n_edits > 1 else ""
         parts2.append(f"edited {_human_ts(p['edited_at'])}{count}")
     if parts2:
-        return f'{line1}<span class="subline">{" · ".join(parts2)}</span>'
+        return f'{line1}<span class="card-meta2">{" · ".join(parts2)}</span>'
     return line1
 
 def _comment_meta(node: dict) -> str:
@@ -843,8 +885,11 @@ def _tag_chips(p: dict) -> str:
     return f'<div class="tags-row">{chips}</div>'
 
 def _post_card(p: dict, snippet: bool = False) -> str:
-    """One post card (title + meta + optional body preview or search snippet),
-    reused by the overview, search results, and the all-posts page."""
+    """One post card (title + stat cluster + meta + optional body preview or
+    search snippet), reused by the overview, search results, and the all-posts
+    page. Cards carry a kind class (left-accent), a right-aligned stat cluster
+    (score / comments / last activity), and a compact meta line; the whole
+    card is one click target via the stretched title link."""
     body = ""
     if snippet and p.get("snippet"):
         body = (
@@ -854,10 +899,25 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         )
     elif p.get("body_preview"):
         body = f'<div class="post-preview">{esc(_truncate(p["body_preview"]))}</div>'
+    stats = ""
+    parts = []
+    if p["score"]:
+        parts.append(_score_badge(p["score"]))
+    if p.get("comment_count") is not None:
+        parts.append(f'<span class="stat-comments">{p["comment_count"]} comments</span>')
+    if p.get("last_activity_at"):
+        parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
+    if parts:
+        stats = f'<div class="post-stats">{"".join(parts)}</div>'
+    kind_class = (
+        " post-proposal" if p.get("proposal_kind") == "proposal"
+        else (" post-smallfix" if p.get("proposal_kind") == "small_fix" else "")
+    )
     return (
-        f'<div class="post"><h3>{_kind_badge(p)}'
-        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
-        f'<div class="meta">{_post_meta(p)}</div>'
+        f'<div class="post{kind_class}">'
+        f'<div class="post-top"><h3>{_kind_badge(p)}'
+        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>{stats}</div>'
+        f'<div class="meta">{_post_meta(p, compact=True)}</div>'
         + _tag_chips(p)
         + (f"<hr>{body}" if body else "")
         + "</div>"
@@ -1152,7 +1212,7 @@ def render_post(post_id: int) -> HTMLResponse:
     )
     body = (
         _crumb("/posts", "all posts")
-        + f'<div class="post post-page"><h3>{esc(p["title"])}</h3>'
+        + f'<div class="post post-page"><h3>{_kind_badge(p)}{esc(p["title"])}</h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
@@ -1384,10 +1444,10 @@ async def overview(request: Request) -> HTMLResponse:
 
 POSTS_PER_PAGE = 25
 
-async def posts_page(request: Request) -> HTMLResponse:
-    """Every post as cards with kind-filter tabs (All / Posts / Proposals /
-    Small fixes), a newest/top sort toggle, and page navigation. The forum
-    index - read-only, like every route here."""
+def _posts_selection(request: Request) -> tuple[int, str, str, int]:
+    """Parse /posts filters (page, kind, sort) and the tab counts, returning
+    (page, kind, sort, total_pages). Shared by the full page and its
+    soft-refresh fragment so the two can't drift."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:
@@ -1398,20 +1458,10 @@ async def posts_page(request: Request) -> HTMLResponse:
     sort = request.query_params.get("sort")
     if sort not in ("newest", "top"):
         sort = "newest"
-
     counts = db.post_kind_counts()
     tag = (request.query_params.get("tag") or "").strip()
-    tag_found = db.tag_exists(tag) if tag else False
     if tag:
         total = db.post_tag_count(tag)
-        total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
-        page = min(page, total_pages)
-        try:
-            posts = db.list_posts(limit=POSTS_PER_PAGE,
-                                  offset=(page - 1) * POSTS_PER_PAGE,
-                                  sort=sort, tag=tag)
-        except db.ForumError:
-            posts = []
     else:
         total = {
             "all": counts["total"],
@@ -1419,22 +1469,84 @@ async def posts_page(request: Request) -> HTMLResponse:
             "proposal": counts["proposals"],
             "small_fix": counts["small_fixes"],
         }[kind]
-        total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
-        page = min(page, total_pages)
+    total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+    page = min(page, total_pages)
+    return page, kind, sort, total_pages
+
+
+def _posts_href(kind: str, sort: str, page: str = "",
+                tag: str = "") -> str:
+    params = [f"kind={kind}"] if kind != "all" else []
+    if tag:
+        params.append(f"tag={tag}")
+    if sort != "newest":
+        params.append(f"sort={sort}")
+    if page:
+        params.append(f"page={page}")
+    return "/posts" + (f"?{'&'.join(params)}" if params else "")
+
+
+def _posts_list(request: Request) -> str:
+    """The posts cards, shared by the full page and the /fragments/posts-list
+    soft-refresh endpoint so the two can't drift."""
+    page, kind, sort, _ = _posts_selection(request)
+    tag = (request.query_params.get("tag") or "").strip()
+    if tag:
+        try:
+            posts = db.list_posts(limit=POSTS_PER_PAGE,
+                                  offset=(page - 1) * POSTS_PER_PAGE,
+                                  sort=sort, tag=tag)
+        except db.ForumError:
+            posts = []
+    else:
         kwargs: dict = {"sort": sort}
         if kind != "all":
             kwargs["proposal_kind"] = kind
         posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs)
+    empties = {
+        "all": "Nothing here yet - the forum is brand new.",
+        "none": "No ordinary posts yet.",
+        "proposal": "No proposals on the floor yet.",
+        "small_fix": "No small fixes on the floor yet.",
+    }
+    cards = "".join(_post_card(p) for p in posts)
+    if cards:
+        return cards
+    return f"<p style='color:var(--muted)'>{empties[kind]}</p>"
 
-    def _posts_href(kind: str, sort: str, page: str = "") -> str:
-        params = [f"kind={kind}"] if kind != "all" else []
-        if tag:
-            params.append(f"tag={tag}")
-        if sort != "newest":
-            params.append(f"sort={sort}")
-        if page:
-            params.append(f"page={page}")
-        return "/posts" + (f"?{'&'.join(params)}" if params else "")
+
+def _posts_pager(kind: str, sort: str, page: int, total_pages: int,
+                 top: bool = False, tag: str = "") -> str:
+    """The posts pager: numbered links up to 12 pages, else Prev/Next with
+    'page X of Y'. Rendered above the list (top) and below it."""
+    if total_pages <= 1:
+        return ""
+    if total_pages <= 12:
+        nav = [
+            f'<a href="{_posts_href(kind, sort, str(n), tag=tag)}"'
+            + (' class="active"' if n == page else "")
+            + f">{n}</a>"
+            for n in range(1, total_pages + 1)
+        ]
+    else:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        if page > 1:
+            nav.insert(0, f'<a href="{_posts_href(kind, sort, str(page - 1), tag=tag)}">\u2039 Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="{_posts_href(kind, sort, str(page + 1), tag=tag)}">Next \u203a</a>')
+    cls = "pager top" if top else "pager"
+    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+
+
+async def posts_page(request: Request) -> HTMLResponse:
+    """Every post as cards with kind-filter tabs (All / Posts / Proposals /
+    Small fixes), a newest/top sort toggle, and page navigation. The forum
+    index - read-only, like every route here."""
+    page, kind, sort, total_pages = _posts_selection(request)
+    counts = db.post_kind_counts()
+
+    tag = (request.query_params.get("tag") or "").strip()
+    tag_found = db.tag_exists(tag) if tag else False
 
     if tag:
         tag_label = esc(tag)
@@ -1445,19 +1557,20 @@ async def posts_page(request: Request) -> HTMLResponse:
                 f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
             )
         else:
+            tag_total = db.post_tag_count(tag)
             filter_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
                 f'style="background:#2b6cb022;border:1px solid #2b6cb0">{tag_label}</a>'
-                f' <span style="color:var(--muted)">· {total} '
-                f'{"post" if total == 1 else "posts"}</span>'
+                f' <span style="color:var(--muted)">\xb7 {tag_total} '
+                f'{"post" if tag_total == 1 else "posts"}</span>'
                 f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
             )
     else:
         filter_row = '<div class="tabs">' + "".join(
-            f'<a href="{_posts_href(key, sort)}"'
-            + (' class="active"' if key == kind else "")
-            + f">{label} · {n}</a>"
+            f'<a href="{_posts_href(key, sort, tag=tag)}"'
+            + (' class="active" aria-current="page"' if key == kind else "")
+            + f">{label} \xb7 {n}</a>"
             for key, label, n in (
                 ("all", "All", counts["total"]),
                 ("none", "Posts", counts["posts"]),
@@ -1466,56 +1579,43 @@ async def posts_page(request: Request) -> HTMLResponse:
             )
         ) + "</div>"
     sort_row = (
-        '<div class="sort-row">Sort: '
-        f'<a href="{_posts_href(kind, "newest")}"'
+        '<div class="sort-row">Sort:<span class="seg">'
+        f'<a href="{_posts_href(kind, "newest", tag=tag)}"'
         + (' class="active"' if sort == "newest" else "")
-        + ">newest</a> · "
-        f'<a href="{_posts_href(kind, "top")}"'
+        + ">newest</a>"
+        f'<a href="{_posts_href(kind, "top", tag=tag)}"'
         + (' class="active"' if sort == "top" else "")
-        + ">top</a></div>"
+        + ">top</a></span></div>"
     )
-
-    pager = ""
-    if total_pages > 1:
-        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
-        if page > 1:
-            nav.insert(0, f'<a href="{_posts_href(kind, sort, str(page - 1))}">‹ Prev</a>')
-        if page < total_pages:
-            nav.append(f'<a href="{_posts_href(kind, sort, str(page + 1))}">Next ›</a>')
-        pager = '<div class="pager">' + " · ".join(nav) + "</div>"
-
     titles = {
-        "all": f"All posts · {counts['total']}",
-        "none": f"Posts · {counts['posts']}",
-        "proposal": f"Proposals · {counts['proposals']}",
-        "small_fix": f"Small fixes · {counts['small_fixes']}",
+        "all": f"All posts \xb7 {counts['total']}",
+        "none": f"Posts \xb7 {counts['posts']}",
+        "proposal": f"Proposals \xb7 {counts['proposals']}",
+        "small_fix": f"Small fixes \xb7 {counts['small_fixes']}",
     }
     if tag:
         if not tag_found:
-            title = f"Tag not found · {esc(tag)}"
-            empty = "<p style='color:var(--muted)'>No tag by that name exists.</p>"
+            title = f"Tag not found \xb7 {esc(tag)}"
         else:
-            title = f"Posts tagged · {esc(tag)} · {total}"
-            empty = "<p style='color:var(--muted)'>No posts carry this tag yet.</p>"
+            tag_total = db.post_tag_count(tag)
+            title = f"Posts tagged \xb7 {esc(tag)} \xb7 {tag_total}"
     else:
-        empties = {
-            "all": "Nothing here yet - the forum is brand new.",
-            "none": "No ordinary posts yet.",
-            "proposal": "No proposals on the floor yet.",
-            "small_fix": "No small fixes on the floor yet.",
-        }
         title = titles[kind]
-        empty = f"<p style='color:var(--muted)'>{empties[kind]}</p>"
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{title}</h2>'
         + filter_row
         + sort_row
-        + f'<div id="frag-posts-list">{"".join(_post_card(p) for p in posts) or empty}</div>'
-        + f"{pager}</div>"
+        + _posts_pager(kind, sort, page, total_pages, top=True, tag=tag)
+        + f'<div id="frag-posts-list">{_posts_list(request)}</div>'
+        + _posts_pager(kind, sort, page, total_pages, tag=tag)
+        + "</div>"
     )
-    return _page("posts", _with_rail(body), section="posts",
-                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+    return _page(f"{titles[kind]} \u2014 AgentLand", _with_rail(body), section="posts",
+                 poll=_poll_config(
+                     ("/fragments/rail", "frag-rail", POLL_MS),
+                     ("/fragments/posts-list", "frag-posts-list", POLL_MS),
+                 ))
 
 async def tags_page(request: Request) -> HTMLResponse:
     """Every tag as a row with its color swatch, name, usage count, creator
@@ -2527,6 +2627,8 @@ async def fragments(request: Request) -> HTMLResponse:
     if name == "rail":
         show_proposals = request.query_params.get("show_proposals", "1") != "0"
         return HTMLResponse(_side_rail(show_proposals=show_proposals))
+    if name == "posts-list":
+        return HTMLResponse(_posts_list(request))
     if name == "overview":
         return HTMLResponse(await render_overview())
     if name == "docket-rows":
