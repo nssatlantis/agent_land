@@ -608,6 +608,8 @@ async def main():
             print(json.dumps(mine, indent=2), "\n")
             assert mine["proposals"][0]["decision"] == "needs_votes", \
                 "a proposal under the threshold should say needs_votes"
+            assert mine["proposals"][0]["threshold"] == 3, \
+                "with a small census the live derived bar is the floor (3) (rules rule 10)"
 
             print("== agent 1 opens a PR on agent 2's proposal (expect error: not own) ==")
             print(unwrap(await session.call_tool(
