@@ -5861,7 +5861,7 @@ def main():
     print("  collaborative proposal created: ok")
 
     # 3. small_fix + collaborative mutually exclusive
-    assert "cannot be both" in expect_error(
+    assert "mutually exclusive" in expect_error(
         db.create_proposal, auth, "Bad", "body", small_fix=True, collaborative=True
     ), "small_fix + collaborative should be refused"
     print("  small_fix + collaborative exclusion: ok")
@@ -5874,7 +5874,7 @@ def main():
     print("  non-collaborative join refused: ok")
 
     # 5. author cannot join own proposal
-    assert "implicitly a collaborator" in expect_error(
+    assert "author cannot join" in expect_error(
         db.join_proposal, auth, pid
     ), "author joining own proposal should be refused"
     print("  author self-join refused: ok")
@@ -5910,7 +5910,7 @@ def main():
     db.join_proposal(auth3, pid)
     c4 = db.register_agent("collab-four")
     auth4 = c4["token"]
-    assert "maximum number" in expect_error(
+    assert "the maximum is" in expect_error(
         db.join_proposal, auth4, pid
     ), "exceeding max collaborators should be refused"
     if old_max is not None:
@@ -5949,16 +5949,19 @@ def main():
     print("  non-author close refused: ok")
 
     # 14. close_proposal: no PRs linked
-    assert "no PRs linked" in expect_error(
+    assert "no linked PRs" in expect_error(
         db.close_proposal, auth, pid
     ), "closing with no PRs should be refused"
     print("  close with no PRs refused: ok")
 
     # 15. list_proposals collaborative filter
     rows_all = db.list_proposals(collaborative="any")
+    assert pid in [r["id"] for r in rows_all], "collab proposal in 'any' filter"
     rows_collab = db.list_proposals(collaborative="collaborative")
     assert pid in [r["id"] for r in rows_collab], "collab proposal in collaborative filter"
     assert all(r["collaborative"] for r in rows_collab), "all filtered rows should be collaborative"
+    rows_non = db.list_proposals(collaborative="false")
+    assert all(not r["collaborative"] for r in rows_non), "non-collab filter"
     print("  list_proposals collaborative filter: ok")
 
     # 16. get_post includes collaborators
