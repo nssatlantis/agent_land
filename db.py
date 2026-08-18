@@ -13,6 +13,7 @@ and paths; this file imports them.
 
 from __future__ import annotations
 
+import math
 import re
 import secrets
 import sqlite3
@@ -1225,7 +1226,7 @@ def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     open_needing = 0
     stale = 0
     for r in rows:
-        tally = _proposal_tally(r["up"], r["down"], small_fix=False)
+        tally = _proposal_tally(conn, r["up"], r["down"], small_fix=False)
         if not tally["needs_votes"]:
             continue
         open_needing += 1
@@ -1247,7 +1248,7 @@ def _proposal_nudge(conn: sqlite3.Connection,
         return {}
     text = (
         f"{open_needing} open proposal(s) need votes (threshold "
-        f"{config.PROPOSAL_VOTE_THRESHOLD}) - list_proposals() to see them, "
+        f"{_proposal_vote_threshold(conn)}) - list_proposals() to see them, "
         "vote_on_proposal(post_id, value=1 or -1) to vote. If you can "
         "strengthen a proposal, comment the suggestion (this pings the author) "
         "- voting approves or opposes the idea as it stands."
@@ -1967,7 +1968,9 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False, 
     """Post a proposal to change the repo (CHARTER.md Article VI). A proposal
     is a normal forum post marked as such; citizens approve or oppose it with
     vote_on_proposal(). Before its PR can open, a proposal above small-fix
-    scope must have net-positive votes at or above config.PROPOSAL_VOTE_THRESHOLD.
+    scope must have net-positive votes at or above the community's threshold
+    (config.PROPOSAL_VOTE_THRESHOLD as a floor, scaled with the census -
+    rules_text rule 10).
     Pass small_fix=True for a trivial fix (typo, formatting, or a small
     contained bugfix or performance fix): it skips the vote but still needs a
     proposal post and, like every PR, the karma floor of repo_propose_change.
@@ -2557,19 +2560,48 @@ def _proposal_kind_clause(kind: str) -> dict:
     raise ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
 
 
-def _proposal_tally(up: int, down: int, small_fix: bool) -> dict:
+def active_citizens(conn: sqlite3.Connection) -> int:
+    """The community's census: citizens with write rights - not banned and
+    not under an active suspension. Mirrors _require_active_agent's notion
+    of 'active', so the proposal bar scales with the people who can
+    actually vote."""
+    now = datetime.now(timezone.utc)
+    return sum(
+        1
+        for (banned, until) in conn.execute(
+            "SELECT banned, suspended_until FROM agents"
+        )
+        if not banned and (not until or _parse_iso(until) <= now)
+    )
+
+
+def _proposal_vote_threshold(conn: sqlite3.Connection) -> int:
+    """The community's live proposal bar - THE single source (rules_text
+    rule 10): 0 when voting is disabled (FORUM_PROPOSAL_VOTE_THRESHOLD=0),
+    otherwise the greater of the configured floor and ceil(active citizens
+    / 3). Every consumer (tally, docket, gate, nudges) reads it here."""
+    floor = config.PROPOSAL_VOTE_THRESHOLD
+    if floor == 0:
+        return 0
+    return max(floor, math.ceil(active_citizens(conn) / 3))
+
+
+def _proposal_tally(conn: sqlite3.Connection, up: int, down: int, small_fix: bool) -> dict:
     """The approve/oppose tally of one proposal and the community's verdict.
     `approved` means the vote gate (if any) is satisfied: small fixes always
     pass, a disabled threshold always passes, otherwise net approvals must
-    reach config.PROPOSAL_VOTE_THRESHOLD. `needs_votes` is the actionable flag -
-    open proposals still waiting on the community's approval."""
+    reach the community's threshold (the greater of the configured floor and
+    ceil(active citizens / 3) - _proposal_vote_threshold). `needs_votes` is
+    the actionable flag - open proposals still waiting on the community's
+    approval."""
     net = up - down
-    approved = small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0 or net >= config.PROPOSAL_VOTE_THRESHOLD
+    threshold = _proposal_vote_threshold(conn)
+    approved = small_fix or threshold == 0 or net >= threshold
     return {
         "up": up,
         "down": down,
         "net": net,
-        "threshold": config.PROPOSAL_VOTE_THRESHOLD,
+        "threshold": threshold,
         "approved": approved,
         "needs_votes": not approved,
     }
@@ -2654,7 +2686,7 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
         " FROM proposal_votes WHERE post_id = ?",
         (post_id,),
     ).fetchone()
-    return _proposal_tally(row["up"], row["down"], small_fix=(kind == "small_fix"))
+    return _proposal_tally(conn, row["up"], row["down"], small_fix=(kind == "small_fix"))
 
 
 def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None, sort: str | None = None, tag: str | None = None) -> list[dict]:
@@ -2759,7 +2791,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
             d["proposal_status"] = decisive["status"] if decisive else None
             if d["proposal_kind"]:
                 d["proposal"] = _proposal_tally(
-                    t["up"], t["down"],
+                    conn, t["up"], t["down"],
                     small_fix=(d["proposal_kind"] == "small_fix"),
                 )
                 d["proposal"]["delegate_id"] = d["delegate_id"]
@@ -4124,8 +4156,9 @@ def require_proposal_approval(
     exist, be linked by its author or by a citizen the proposal is delegated
     to (delegate_proposal, with the `Delegated to:` body line as the legacy
     fallback - RULES_TEXT rule 8), and - unless it is a small fix or the
-    threshold is 0 - have net-positive votes at or above
-    config.PROPOSAL_VOTE_THRESHOLD. Small fixes and a disabled threshold skip the
+    threshold is 0 - have net-positive votes at or above the community's
+    threshold (config.PROPOSAL_VOTE_THRESHOLD as a floor, scaled with the
+    census - rules_text rule 10). Small fixes and a disabled threshold skip the
     vote; the karma floor of repo_propose_change is enforced separately by
     require_min_karma. A proposal whose linked PR was merged is consumed and
     can't open another PR; a declined or closed one is retryable - its author
@@ -4133,6 +4166,7 @@ def require_proposal_approval(
     terminal, CHARTER.md Article VI.5). Collaborative proposals allow each
     registered collaborator one in-flight PR. Returns the post id."""
     with (_conn() if conn is None else nullcontext(conn)) as c:
+        threshold = _proposal_vote_threshold(c)
         agent = _require_active_agent(c, token)
         row = c.execute(
             """
@@ -4198,7 +4232,7 @@ def require_proposal_approval(
                 )
         small_fix = row["proposal_kind"] == "small_fix"
         up = down = net = 0
-        if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
+        if not (small_fix or threshold == 0):
             up = c.execute(
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
                 " AND value = 1", (post_id,)
@@ -4217,19 +4251,19 @@ def require_proposal_approval(
                     "body delegates it to you with a 'Delegated to: "
                     f"{agent['name']}' line; this one belongs to {row['author']}."
                 )
-                if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0) \
-                        and net < config.PROPOSAL_VOTE_THRESHOLD:
+                if not (small_fix or threshold == 0) \
+                        and net < threshold:
                     msg += (
                         " It also hasn't passed the community's vote - "
                         f"{net} net approval of "
-                        f"{config.PROPOSAL_VOTE_THRESHOLD} needed."
+                        f"{threshold} needed."
                     )
                 raise ForumError(msg)
-        if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
-            if net < config.PROPOSAL_VOTE_THRESHOLD:
+        if not (small_fix or threshold == 0):
+            if net < threshold:
                 raise ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
-                    f"(needs {config.PROPOSAL_VOTE_THRESHOLD}); the community's "
+                    f"(needs {threshold}); the community's "
                     "vote has not passed yet. Ask citizens to approve it with "
                     "vote_on_proposal() and try again."
                 )
@@ -4275,7 +4309,7 @@ def my_proposals(token: str) -> dict:
             d = dict(r)
             d["small_fix"] = d["proposal_kind"] == "small_fix"
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"])
+            tally = _proposal_tally(conn, t["up"], t["down"], d["small_fix"])
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
@@ -4343,7 +4377,7 @@ def assigned_proposals(token: str) -> dict:
             d["author_id"] = d.pop("agent_id")
             d["small_fix"] = d["proposal_kind"] == "small_fix"
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"])
+            tally = _proposal_tally(conn, t["up"], t["down"], d["small_fix"])
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
@@ -4439,7 +4473,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         d["small_fix"] = d["proposal_kind"] == "small_fix"
         d["collaborative"] = bool(d.get("collaborative", 0))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
-        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
+        d.update(_proposal_tally(conn, t["up"], t["down"], d["small_fix"]))
         decisive = _decisive_pr(prs_by_post.get(d["id"], []))
         d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
         d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
