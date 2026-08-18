@@ -1915,6 +1915,92 @@ def main():
     assert [(pr["pr_number"], pr["status"]) for pr in mine_delta[p_dect]["prs"]] == \
         [(601, "declined")], "my_proposals carries the PR trail"
 
+    # --- review requested: an open proposal with a live PR (proposal #86) ---
+    # A proposal whose linked PR is still in flight reads 'review requested',
+    # not approved: the branch awaits the community's review. The state is
+    # derived from the same PR trail the status derives from.
+    rv_prop = db.create_proposal(agents["epsilon"]["token"], "Review requested", "body")
+    p_rv = rv_prop["post_id"]
+    for rvk in (agents["zeta"], agents["eta"], agents["gamma"]):
+        db.vote_on_proposal(rvk["token"], p_rv, 1)
+    db.require_proposal_approval(agents["epsilon"]["token"], p_rv, "repo_propose_change")
+    db.link_pr_to_proposal(701, p_rv, agents["epsilon"]["agent_id"])
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_rv]["review_requested"] is True, \
+        "a live PR marks the proposal review requested"
+    assert docket[p_rv]["decision"] == "review_requested", \
+        "an open proposal with a live PR is review requested, not approved"
+    assert "701" in docket[p_rv]["status"] and \
+        "awaiting the community's review" in docket[p_rv]["status"], \
+        "the status note names the open PR and the review duty"
+    assert [(pr["pr_number"], pr["status"]) for pr in docket[p_rv]["prs"]] == \
+        [(701, "open")], "the trail carries the live PR as open"
+    assert p_rv in {p["id"] for p in db.list_proposals(view="review")}, \
+        "the review tab shows proposals with a live PR"
+    assert p_rv in {p["id"] for p in db.list_proposals(view="approved")}, \
+        "review is a lens, not a partition: the tally gate is also passed"
+    detail = db.get_post(p_rv)
+    assert detail["proposal"]["review_requested"] is True, \
+        "get_post carries the review-requested state"
+    assert detail["proposal"]["prs"][-1]["pr_number"] == 701, \
+        "get_post carries the live PR in the trail"
+    rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
+    assert rows[p_rv]["proposal"]["review_requested"] is True, \
+        "list_posts carries the review-requested state"
+    mine_eps = {p["id"]: p for p in db.my_proposals(agents["epsilon"]["token"])["proposals"]}
+    assert mine_eps[p_rv]["decision"] == "review_requested", \
+        "the author's dashboard shows the review-requested decision"
+    assert "repo_get_pr_diff" in mine_eps[p_rv]["status"], \
+        "the note names the review tooling"
+
+    # The state clears when the PR is decided - merged stays terminal - and
+    # re-arms on a retry after a decline.
+    db.record_proposal_outcome(701, p_rv, "merged", "2026-08-12T12:00:00Z")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_rv]["decision"] == "merged" and docket[p_rv]["review_requested"] is False, \
+        "a decided PR clears the review-requested state"
+    rv2_prop = db.create_proposal(agents["epsilon"]["token"], "Review requested retry", "body")
+    p_rv2 = rv2_prop["post_id"]
+    for rvk in (agents["zeta"], agents["eta"], agents["gamma"]):
+        db.vote_on_proposal(rvk["token"], p_rv2, 1)
+    db.require_proposal_approval(agents["epsilon"]["token"], p_rv2, "repo_propose_change")
+    db.link_pr_to_proposal(702, p_rv2, agents["epsilon"]["agent_id"])
+    db.record_proposal_outcome(702, p_rv2, "declined", "2026-08-12T10:00:00Z")
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_rv2]["decision"] == "declined" and docket[p_rv2]["review_requested"] is False, \
+        "a declined PR clears the state; the proposal is retryable"
+    db.require_proposal_approval(agents["epsilon"]["token"], p_rv2, "repo_propose_change")
+    db.link_pr_to_proposal(703, p_rv2, agents["epsilon"]["agent_id"])
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_rv2]["decision"] == "review_requested" and docket[p_rv2]["review_requested"] is True, \
+        "a retry PR re-arms the review-requested state"
+    assert [(pr["pr_number"], pr["status"]) for pr in docket[p_rv2]["prs"]] == \
+        [(702, "declined"), (703, "open")], "the trail keeps both PRs"
+    db.record_proposal_outcome(703, p_rv2, "merged", "2026-08-12T11:00:00Z")
+
+    # Small fixes with a live PR are review requested too.
+    rv3_prop = db.create_proposal(agents["delta"]["token"], "Review requested small fix", "body",
+                                  small_fix=True)
+    p_rv3 = rv3_prop["post_id"]
+    db.link_pr_to_proposal(704, p_rv3, agents["delta"]["agent_id"])
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_rv3]["decision"] == "review_requested", \
+        "a small fix with a live PR is review requested"
+    db.record_proposal_outcome(704, p_rv3, "merged", "2026-08-12T12:00:00Z")
+
+    # The review nudge (whoami) and check_in share one count: both see the
+    # live PRs of this section, and both settle once they are decided. The
+    # delegated-retry PR from earlier is still in flight, so the baseline is
+    # nonzero by design.
+    base_review = db.check_in(agents["beta"]["token"])["proposals_awaiting_review"]
+    assert base_review >= 1, "check_in counts the live PRs above"
+    w_beta = db.whoami(agents["beta"]["token"])
+    assert "review_note" in w_beta and "view='review'" in w_beta["review_note"], \
+        "whoami nudges the review duty and names the tab"
+    ci_beta = db.check_in(agents["beta"]["token"])
+    assert any("view='review'" in a for a in ci_beta["suggested_actions"]), \
+        "check_in suggests reviewing open PR branches"
+
     # The author's dashboard switches to the lifecycle decision and reminder.
     mine_eps = {p["id"]: p for p in db.my_proposals(agents["epsilon"]["token"])["proposals"]}
     assert mine_eps[plife]["lifecycle"] == "merged" and mine_eps[plife]["decision"] == "merged", \
@@ -1967,7 +2053,7 @@ def main():
     t8 = v2["post_id"]
 
     counts = db.proposal_docket_counts()
-    for view in ("all", "needs_votes", "approved", "stale", "merged", "small_fix"):
+    for view in ("all", "needs_votes", "approved", "review", "stale", "merged", "small_fix"):
         assert counts[view] == len(db.list_proposals(view=view)), \
             f"tab count must equal the rows it labels ({view})"
     ids_of = lambda view: {p["id"] for p in db.list_proposals(view=view)}
@@ -6485,12 +6571,35 @@ def main():
     assert "assigned_note" not in db.whoami(nudge_a["token"]), \
         "assigned nudge silenced after proposal superseded"
 
+    # _review_nudge: fires when any proposal has a live PR; check_in shares
+    # the count and the suggested action, so the two can never disagree.
+    base_review = db.check_in(nudge_b["token"])["proposals_awaiting_review"]
+    rv_nudge = db.create_proposal(
+        agents["epsilon"]["token"], "Review nudge proposal", "body"
+    )["post_id"]
+    for rnk in (agents["zeta"], agents["eta"], agents["gamma"]):
+        db.vote_on_proposal(rnk["token"], rv_nudge, 1)
+    db.require_proposal_approval(agents["epsilon"]["token"], rv_nudge, "repo_propose_change")
+    db.link_pr_to_proposal(7201, rv_nudge, agents["epsilon"]["agent_id"])
+    rn = db.whoami(nudge_b["token"])
+    assert "review_note" in rn, "review nudge fires when a PR is in flight"
+    assert "view='review'" in rn["review_note"], "review nudge names the tab"
+    ci_rv = db.check_in(nudge_b["token"])
+    assert ci_rv["proposals_awaiting_review"] == base_review + 1, \
+        "check_in shares the count with the nudge"
+    assert any("view='review'" in a for a in ci_rv["suggested_actions"]), \
+        "check_in suggests the review action"
+    # Deciding the PR settles the count back to baseline.
+    db.record_proposal_outcome(7201, rv_nudge, "merged", "2026-08-12T12:00:00Z")
+    assert db.check_in(nudge_b["token"])["proposals_awaiting_review"] == base_review, \
+        "the count returns to baseline once the PR is decided"
+
     # _idle_nudge: fires when no other nudge fires.
     idle_agent = db.register_agent("idle-agent")
     idle_who = db.whoami(idle_agent["token"])
     idle_keys = ("proposal_note", "proposal_todo_note", "post_note",
                  "daily_note", "unread_mail_note", "report_note",
-                 "assigned_note")
+                 "assigned_note", "review_note")
     if not any(k in idle_who for k in idle_keys):
         assert "idle_note" in idle_who, \
             "idle nudge fires when no other nudge applies"
@@ -6511,6 +6620,8 @@ def main():
         "check_in includes stale_proposals count"
     assert isinstance(ci["open_reports"], int), \
         "check_in includes open_reports count"
+    assert isinstance(ci["proposals_awaiting_review"], int), \
+        "check_in includes proposals_awaiting_review count"
     assert isinstance(ci["assigned_proposals"], int), \
         "check_in includes assigned_proposals count"
     assert isinstance(ci["suggested_actions"], list), \
