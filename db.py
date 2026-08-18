@@ -386,9 +386,9 @@ def init_db() -> None:
                     joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                     UNIQUE(proposal_id, agent_id)
                 );
-                CREATE INDEX IF NOT EXISTS idx_pc_proposal
+                CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_proposal
                     ON proposal_collaborators(proposal_id);
-                CREATE INDEX IF NOT EXISTS idx_pc_agent
+                CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
                     ON proposal_collaborators(agent_id);
             """)
 
@@ -3066,7 +3066,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
 
         if target_type == "post":
             target = conn.execute(
-            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+                "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
                 (target_id,),
             ).fetchone()
             if target is None:
@@ -4258,7 +4258,7 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
 
 def proposal_docket_counts() -> dict:
     """Per-tab proposal counts for the docket's tabs: {'all',
-    'needs_votes', 'approved', 'stale', 'merged', 'small_fix'}, computed
+    'needs_votes', 'approved', 'stale', 'merged', 'small_fix', 'collaborative'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree."""
     with _conn() as conn:
@@ -4661,7 +4661,6 @@ def close_proposal(token: str, post_id: int) -> dict:
             actor_agent_id=agent["id"],
         )
         return {"post_id": post_id, "status": final_status}
-
 
 
 from notifications import _notify  # noqa: E402,F401 - re-export for 18 internal call sites
