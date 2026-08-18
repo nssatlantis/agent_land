@@ -48,6 +48,13 @@ _MAX_EDITS_PER_FILE = config.MAX_EDITS_PER_FILE
 # config.py does expose as a knob).
 _MAX_READ_FILE_LINES = 1000
 
+# Caps on CI-detail reads (pr_checks). Read caps are client-ergonomics bounds
+# like _MAX_READ_FILE_LINES - module constants, deliberately not config.py
+# tunables, so no drift-manifest churn for a bound the operator never turns.
+_MAX_CHECK_RUNS = 50
+_MAX_FAILURE_LINES = 30
+_MAX_LOG_TAIL_BYTES = 65536
+
 
 class RepoError(Exception):
     """Raised for any rule violation or GitHub API failure. server.py lets
@@ -66,14 +73,36 @@ def _headers() -> dict:
     return headers
 
 
-def _request(method: str, path: str, body: dict | None = None, ok_404: bool = False):
-    """Hit the GitHub REST API. Raises RepoError on failure. Returns parsed
-    JSON (or None for 204/404-ok)."""
+def _ensure_token() -> None:
+    """Raise RepoError when no GITHUB_TOKEN is configured."""
     if not GITHUB_TOKEN:
         raise RepoError(
             "GITHUB_TOKEN is not set. Add it to your environment (see .env.example "
             "and README.md) before using the repo tools."
         )
+
+
+def _raise_request_error(e: urllib.error.HTTPError, method: str, path: str,
+                         ok_404: bool = False) -> None | RepoError:
+    """Shared HTTPError handler for _request and _request_text: extract the
+    GitHub error message, honour ok_404, and raise RepoError. Returns None
+    only on a 404-ok miss (the caller must propagate it)."""
+    msg = ""
+    try:
+        payload = json.loads(e.read())
+        msg = payload.get("message", "")
+    except Exception:
+        pass
+    if e.code == 404 and ok_404:
+        return None
+    detail = f" ({msg})" if msg else ""
+    raise RepoError(f"GitHub API {e.code}{detail} on {method} {path}") from e
+
+
+def _request(method: str, path: str, body: dict | None = None, ok_404: bool = False):
+    """Hit the GitHub REST API. Raises RepoError on failure. Returns parsed
+    JSON (or None for 204/404-ok)."""
+    _ensure_token()
     url = f"{API_ROOT}/repos/{GITHUB_REPO}/{path}"
     data = None
     if body is not None:
@@ -86,16 +115,10 @@ def _request(method: str, path: str, body: dict | None = None, ok_404: bool = Fa
                 return None
             return json.loads(raw)
     except urllib.error.HTTPError as e:
-        msg = ""
-        try:
-            payload = json.loads(e.read())
-            msg = payload.get("message", "")
-        except Exception:
-            pass
-        if e.code == 404 and ok_404:
+        result = _raise_request_error(e, method, path, ok_404)
+        if result is None:
             return None
-        detail = f" ({msg})" if msg else ""
-        raise RepoError(f"GitHub API {e.code}{detail} on {method} {path}") from e
+        raise result
     except urllib.error.URLError as e:
         raise RepoError(f"could not reach GitHub: {e.reason}") from e
 
@@ -124,17 +147,23 @@ def list_tree() -> dict:
     return {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
 
 
-def read_file(path: str, line_start: int | None = None, line_end: int | None = None) -> dict:
+def read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
     """Read one file's text from the base branch. Binary files come back as a
     note instead of content. With line_start and line_end (1-based, inclusive,
     both or neither) only that line range is returned, and the response echoes
     the requested line_start/line_end plus total_lines (the file's full line
     count, so a caller can page without a full read; size stays the whole
-    file's). A path-only read is byte-for-byte what it always was."""
+    file's). A path-only read is byte-for-byte what it always was.
+
+    `ref` (optional) names the git ref to read from - a branch, tag or commit
+    sha, e.g. a PR head sha to verify a fix trail on the branch itself. It
+    defaults to the base branch; a ref that does not exist is named in the
+    404 error. The response echoes the ref it read."""
     path = _validate_path(path)
-    data = _request("GET", f"contents/{path}?ref={GITHUB_BASE_BRANCH}", ok_404=True)
+    ref = ref or GITHUB_BASE_BRANCH
+    data = _request("GET", f"contents/{path}?ref={ref}", ok_404=True)
     if data is None:
-        raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{GITHUB_BASE_BRANCH}.")
+        raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
     raw = base64.b64decode(data.get("content", ""))
     try:
         content = raw.decode("utf-8")
@@ -142,6 +171,7 @@ def read_file(path: str, line_start: int | None = None, line_end: int | None = N
         content = None
     result = {
         "path": path,
+        "ref": ref,
         "size": data.get("size", len(raw)),
         "content": content,
         "note": None if content is not None else "(binary file - content not shown)",
@@ -240,6 +270,59 @@ def open_prs() -> list[dict]:
         raise
     cached.update(ts=now, result=result, error=None)
     return result
+
+
+def list_prs(state: str = "open", since: str | None = None) -> list[dict]:
+    """Pull requests, newest first. `state` is 'open' (the default - the same
+    cached list repo_list_prs always returned), 'closed' or 'all'; the
+    closed/all paths page GitHub's 'updated' sort so recent history comes
+    back complete. `since` (an ISO-8601 UTC timestamp like the forum's
+    created_at, e.g. '2026-08-18T00:00:00.000Z') keeps only rows updated
+    (closed/all) or created (open) at or after that time, so 'what merged
+    since my last visit' is one call. Closed/all rows carry the lifecycle
+    fields (state / merged_at / closed_at / outcome)."""
+    if state not in ("open", "closed", "all"):
+        raise RepoError("repo_list_prs state must be 'open', 'closed' or 'all'.")
+    if since is not None:
+        try:
+            datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise RepoError(
+                "repo_list_prs since must be an ISO-8601 UTC timestamp like "
+                f"'2026-08-18T00:00:00.000Z', got {since!r}."
+            ) from None
+        if not since.endswith("Z"):
+            raise RepoError(
+                "repo_list_prs since must be a UTC timestamp ending in 'Z' "
+                f"(e.g. '2026-08-18T00:00:00.000Z'), got {since!r}."
+            )
+    if state == "open":
+        rows = open_prs()
+        return [r for r in rows if r["created_at"] >= since] if since else rows
+    pulls = _request(
+        "GET",
+        f"pulls?state={state}&sort=updated&direction=desc&per_page={config.GITHUB_PRS_PER_PAGE}",
+    )
+    rows = []
+    for p in pulls:
+        row = {
+            "number": p["number"],
+            "title": p["title"],
+            "head": p["head"]["ref"],
+            "base": p["base"]["ref"],
+            "author": (p.get("user") or {}).get("login"),
+            "created_at": p["created_at"],
+            "updated_at": p.get("updated_at"),
+            "state": p.get("state"),
+            "merged_at": p.get("merged_at"),
+            "closed_at": p.get("closed_at"),
+            "outcome": _pr_outcome(p),
+            "html_url": p["html_url"],
+        }
+        if since and (row["updated_at"] or "") < since:
+            continue
+        rows.append(row)
+    return rows
 
 
 _CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
@@ -399,7 +482,7 @@ def get_pr(number: int) -> dict:
     newest first. `files` is the changed-file list - useful to check a PR
     really contains everything it claims to."""
     pr = _request("GET", f"pulls/{number}")
-    checks = _combined_status(pr["head"]["sha"])
+    checks = _checks_for_head(pr["head"]["sha"])
     return {
         "number": pr["number"],
         "title": pr["title"],
@@ -509,14 +592,237 @@ def comment_on_pr(number: int, body: str) -> dict:
     }
 
 
-def _combined_status(head_sha: str) -> dict | None:
-    """Overall green/red state of CI on a commit (from the commit status API).
-    GitHub Actions uses check runs; map what we can, never fail the read."""
+def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
+    """Like _request but for text responses - GitHub's Actions log download
+    (actions/jobs/{id}/logs) is text/plain, not JSON. Returns the decoded
+    text ('' for an empty body) or None on an ok_404 miss; raises RepoError
+    exactly like _request otherwise."""
+    _ensure_token()
+    url = f"{API_ROOT}/repos/{GITHUB_REPO}/{path}"
+    req = urllib.request.Request(url, method=method, headers=_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS) as resp:
+            raw = resp.read()
+            if not raw:
+                return ""
+            return raw.decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        result = _raise_request_error(e, method, path, ok_404)
+        if result is None:
+            return None
+        raise result
+    except urllib.error.URLError as e:
+        raise RepoError(f"could not reach GitHub: {e.reason}") from e
+
+
+_FAILURE_MARKERS = (
+    "error:", "error ", "failed", "traceback", "assertionerror",
+    "mypy:", "ruff", "fatal", "exit code",
+)
+
+
+def _extract_failure_lines(log: str) -> list[str]:
+    """Scan a CI log for the lines that carry failures (error markers, test
+    failures, mypy/ruff output). Only the last _MAX_LOG_TAIL_BYTES are
+    scanned - a log's interesting end is what matters - and each hit is
+    trimmed, so the tool returns signal, not megabytes."""
+    tail = (log or "")[-_MAX_LOG_TAIL_BYTES:]
+    hits = []
+    for line in tail.splitlines():
+        low = line.lower()
+        if any(marker in low for marker in _FAILURE_MARKERS):
+            hits.append(line.strip()[:500])
+    return hits
+
+
+def _ci_state(mapped: list[dict]) -> str:
+    """One green/red/pending verdict across a run list: 'failure' when any
+    run failed, 'pending' while any is unfinished, else 'success'.
+    Includes 'error' (the combined commit status API's configuration-failure
+    state) alongside the check-run / Actions failure vocabularies."""
+    if any(r["conclusion"] in ("failure", "cancelled", "timed_out", "action_required", "error") for r in mapped):
+        return "failure"
+    if any(r["conclusion"] is None or r["status"] != "completed" for r in mapped):
+        return "pending"
+    return "success"
+
+
+def _checks_from_check_runs(runs: list[dict]) -> dict:
+    """Map check runs (the richest tier) to per-check entries and pull the
+    failure annotations - path, start line, message - capped, so a red PR
+    carries its reason in the tool result."""
+    mapped: list[dict] = []
+    failures: list[dict] = []
+    for r in runs:
+        name = r.get("name") or "check"
+        mapped.append({
+            "name": name,
+            "status": r.get("status") or "queued",
+            "conclusion": r.get("conclusion"),
+            "html_url": r.get("html_url"),
+        })
+        if r.get("conclusion") not in ("failure", "cancelled", "timed_out", "action_required"):
+            continue
+        run_id = r.get("id")
+        annotations: list[dict] = []
+        if run_id is not None:
+            try:
+                annotations = _request(
+                    "GET", f"check-runs/{run_id}/annotations?per_page=100"
+                ) or []
+            except RepoError:
+                annotations = []
+        for a in annotations[:_MAX_FAILURE_LINES]:
+            failures.append({
+                "name": name,
+                "path": a.get("path"),
+                "line": a.get("start_line"),
+                "message": (a.get("message") or "")[:2000],
+                "log_url": r.get("html_url"),
+            })
+    return {"source": "check_runs", "state": _ci_state(mapped), "runs": mapped, "failures": failures}
+
+
+def _checks_from_actions(runs: list[dict]) -> dict:
+    """Map GitHub Actions workflow runs; for each failed run, fetch the jobs
+    and pull error lines from a capped log tail. Degrades per-failure: a job
+    or log that cannot be read leaves the run link, never an error."""
+    mapped: list[dict] = []
+    failures: list[dict] = []
+    for r in runs:
+        name = r.get("name") or "workflow"
+        conclusion = r.get("conclusion")
+        run_id = r.get("id")
+        run_url = r.get("html_url")
+        mapped.append({
+            "name": name,
+            "status": r.get("status") or "completed",
+            "conclusion": conclusion,
+            "html_url": run_url,
+        })
+        if conclusion not in ("failure", "cancelled", "timed_out") or run_id is None:
+            continue
+        jobs: list[dict] = []
+        try:
+            jobs = (_request("GET", f"actions/runs/{run_id}/jobs?per_page=100") or {}).get("jobs") or []
+        except RepoError:
+            jobs = []
+        for job in jobs:
+            if job.get("conclusion") not in ("failure", "cancelled", "timed_out"):
+                continue
+            job_name = job.get("name") or "job"
+            job_id = job.get("id")
+            lines: list[str] = []
+            log_url = None
+            if job_id is not None:
+                try:
+                    lines = _extract_failure_lines(
+                        _request_text("GET", f"actions/jobs/{job_id}/logs") or ""
+                    )
+                    log_url = f"https://github.com/{GITHUB_REPO}/actions/runs/{run_id}/job/{job_id}"
+                except RepoError:
+                    lines = []
+            for line in lines[:_MAX_FAILURE_LINES]:
+                failures.append({
+                    "name": f"{name} / {job_name}",
+                    "message": line,
+                    "log_url": log_url,
+                })
+    return {"source": "actions", "state": _ci_state(mapped), "runs": mapped, "failures": failures}
+
+
+def _checks_for_head(head_sha: str) -> dict | None:
+    """CI detail for one commit, tiered and never failing the read: (1) check
+    runs with annotations, then (2) GitHub Actions workflow runs with log
+    error-lines, then (3) the combined commit status. Each tier's 403/404
+    falls into the next; only a total outage yields None."""
+    try:
+        data = _request("GET", f"commits/{head_sha}/check-runs?per_page={_MAX_CHECK_RUNS}")
+        runs = data.get("check_runs") or []
+        if runs:
+            return _checks_from_check_runs(runs)
+    except RepoError:
+        pass
+    try:
+        data = _request("GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}")
+        runs = data.get("workflow_runs") or []
+        if runs:
+            return _checks_from_actions(runs)
+    except RepoError:
+        pass
     try:
         data = _request("GET", f"commits/{head_sha}/status")
-        return {"state": data.get("state"), "total_count": data.get("total_count")}
+        statuses = data.get("statuses") or []
+        return {
+            "source": "statuses",
+            "state": data.get("state") or ("unknown" if not statuses else "pending"),
+            "runs": [
+                {
+                    "name": s.get("context") or "status",
+                    "status": "completed",
+                    "conclusion": s.get("state"),
+                    "html_url": s.get("target_url"),
+                }
+                for s in statuses
+            ],
+            "failures": [
+                {
+                    "name": s.get("context") or "status",
+                    "message": s.get("description") or "",
+                    "log_url": s.get("target_url"),
+                }
+                for s in statuses
+                if s.get("state") in ("failure", "error")
+            ],
+        }
     except RepoError:
         return None
+
+
+def pr_checks(number: int) -> dict:
+    """One pull request's CI detail: per-run name/status/conclusion plus the
+    actionable failures (annotations with path/line/message, or error lines
+    extracted from a capped Actions log tail). The backend is tiered (check
+    runs -> Actions workflow runs -> combined commit status) and never fails
+    the read: `source` names which tier answered, `state` is 'success' /
+    'failure' / 'pending' / 'unknown'. get_pr's `checks` field uses the same
+    builder, so a red PR carries its reason everywhere it is read."""
+    pr = _request("GET", f"pulls/{number}")
+    head_sha = pr["head"]["sha"]
+    checks = _checks_for_head(head_sha) or {
+        "source": None, "state": "unknown", "runs": [], "failures": []
+    }
+    return {"number": number, "head_sha": head_sha, **checks}
+
+
+def pr_commits(number: int) -> dict:
+    """One pull request's commits, oldest first - sha, message, author name
+    and date - so a reviewer can audit the change shape (one commit per
+    file), trace a fix trail onto the final head, and see who actually
+    committed. Paginated like pr_diff so no commit is silently dropped."""
+    pr = _request("GET", f"pulls/{number}")
+    commits: list[dict] = []
+    page = 1
+    while True:
+        batch = _request("GET", f"pulls/{number}/commits?per_page=100&page={page}")
+        commits.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return {
+        "number": number,
+        "head": pr["head"]["ref"],
+        "base": pr["base"]["ref"],
+        "commits": [
+            {
+                "sha": c["sha"],
+                "message": (c.get("commit") or {}).get("message") or "",
+                "author_name": ((c.get("commit") or {}).get("author") or {}).get("name"),
+                "author_date": ((c.get("commit") or {}).get("author") or {}).get("date"),
+            }
+            for c in commits
+        ],
+    }
 
 
 # ----------------------------------------------------------------- writes --
