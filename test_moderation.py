@@ -87,10 +87,44 @@ Covers the community-moderation rules:
   fresh target is never blocked, and both verdict paths stamp the decision
 - patch / find-replace mode (the repo tools' `edits` input): the pure
   github._apply_edits core (exact-once / occurrence / sequential / delete /
-  unicode semantics, all failure modes), edits shape validation at the
-  github layer, patch resolution against base / PR-branch refs via a fake
+  unicode semantics, all failure modes), edits shape validation at the github
+  layer, patch resolution against base / PR-branch refs via a fake
   github._request (applied result reaches content_manifest + the PUT), and
   the content-mode dry_run zero-_request guarantee
+
+Additional coverage:
+- config wiring (config.py / db.py path resolution, config-drift guard)
+- self-reported model on registration, registration rules (name uniqueness,
+  length caps, banned-name guard)
+- repo_search walker allowlist, repo_read_file line-range slicing
+- multi-file PR planning, patch-mode edits, content integrity (empty / null /
+  too-many edits)
+- my_profile stats overview (superset of whoami)
+- proposal opener trail (opened_by_agent_id / opened_by_name on the docket)
+- human-admin functions (ban / unban, delete_agent, delete_post)
+- single-post delete (destroy_content guard, post-only removal)
+- structured quoting (quote_comment_id, quote_text, quote_truncated)
+- proposal supersede / versioning (lineage, locking, version numbering)
+- similarity / duplicate guard (title overlap, FORUM_SIMILAR_THRESHOLD)
+- proposal draft-window editing (edit_proposal, edit trail in get_post)
+- proposal to-do lists (update_todos, get_todos, owner / delegate guard)
+- list_comments flat/paged view, agent_comments citizen history
+- migration tests (schema upgrades: proposal_edits, todo_lists,
+  report target fields, events table)
+- per-agent indexes, agent_card, lister regression (no correlated subqueries)
+- C1/C2/C3 regressions (comment merge atomicity, concurrent writers)
+- reports revamp (snapshots, archives, sibling reports, content-deleted sweep)
+- daily caps (comment / vote), one daily vote pool + budget nudge
+- governance knobs (env override changes enforcement at call time)
+- live .env reload (FORUM_ENV_POLL_SECONDS cycle)
+- signature reconcile + auto-sign on write path, db.backfill_signatures
+- github.open_prs cache, github pure helpers, recently_closed_prs
+- repo_spec / base_branch, db read helpers (viewer / diagnostics)
+- linked_pr_openers (PR opener attribution)
+- stale reports sweep (FORUM_REPORT_STALE_DAYS)
+- length caps on every write path (posts, comments, proposals, names, models)
+- events (append-only event log, all 20 event kinds)
+- agent nudges + check_in + notification summary-by-kind
 """
 
 import asyncio
