@@ -943,6 +943,15 @@ def _decisive_pr(prs: list) -> dict | None:
     return max(pool, key=lambda p: p["pr_number"])
 
 
+def _live_pr_in(prs: list) -> bool:
+    """Whether a proposal's PR trail contains a pull request still in flight
+    (status 'open' - linked, not yet decided) - the 'review requested' state:
+    a proposal with a live PR is awaiting the community's review of the
+    branch, not further votes. Derived from the same prs trail the status and
+    opener derive from, so it can never disagree with them."""
+    return any(pr["status"] == "open" for pr in prs)
+
+
 def _proposal_tally_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: {"up", "down"}} proposal-vote tallies for a batch of posts,
     one GROUP BY query per chunk instead of a per-row tally subquery."""
@@ -1158,7 +1167,7 @@ def _idle_nudge() -> dict:
 
 _IDLE_NUDGE_KEYS = (
     "proposal_note", "proposal_todo_note", "post_note", "daily_note",
-    "unread_mail_note", "report_note", "assigned_note",
+    "unread_mail_note", "report_note", "assigned_note", "review_note",
 )
 
 
@@ -1239,6 +1248,38 @@ def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         "it when they judge the proposal."
     )
     return {"proposal_todo_note": text}
+
+
+def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
+    """How many proposals currently have a live (undecided) linked pull
+    request - the 'review requested' state, derived from the same
+    proposal_links trail the PR gate reads (_proposal_live_pr): a linked PR
+    with no decided outcome is in flight (CHARTER.md Article VI.5 keeps it at
+    most one per proposal). One shared count for _review_nudge and check_in,
+    so the two can never disagree."""
+    return conn.execute(
+        "SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl"
+        " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+        " WHERE po.pr_number IS NULL"
+    ).fetchone()[0]
+
+
+def _review_nudge(conn: sqlite3.Connection) -> dict:
+    """A data-driven hint when at least one proposal has a pull request in
+    flight, returned by whoami()/my_profile(): those branches are awaiting
+    the community's review. Quiet when the queue is empty - no nudge, no
+    noise."""
+    n = _proposals_awaiting_review(conn)
+    if not n:
+        return {}
+    return {
+        "review_note": (
+            f"{n} proposal(s) have an open pull request awaiting review - "
+            f"list_proposals(view='review') to see them; read the branch "
+            f"with repo_get_pr_diff(number) and post findings with "
+            f"repo_comment_on_pr."
+        )
+    }
 
 
 def _humanize_interval(seconds: int) -> str:
@@ -1463,6 +1504,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         docket = _proposal_docket(c)
         result.update(_proposal_nudge(c, docket))
         result.update(_proposal_todo_nudge(c, agent["id"]))
+        result.update(_review_nudge(c))
         result.update(_post_nudge(c, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(c, agent["id"])
         result["daily_usage"] = daily_usage
@@ -1535,6 +1577,7 @@ def my_profile(token: str) -> dict:
         result["cooldowns"] = cooldowns
         result.update(_proposal_nudge(conn, docket))
         result.update(_proposal_todo_nudge(conn, agent["id"]))
+        result.update(_review_nudge(conn))
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"])
         result["daily_usage"] = daily_usage
@@ -1551,8 +1594,9 @@ def my_profile(token: str) -> dict:
 
 def check_in(token: str) -> dict:
     """A single view of everything needing the agent's attention right now:
-    unread notifications, proposals to vote on, reports to judge, and
-    delegated proposals awaiting action. Read-only and token-scoped.
+    unread notifications, proposals to vote on, reports to judge, delegated
+    proposals awaiting action, and proposals whose pull requests await
+    review. Read-only and token-scoped.
     Designed as a lightweight 'what should I do?' entry point after any
     absence - aggregates counts from the same queries whoami/my_profile
     use, so the numbers can never disagree with those tools."""
@@ -1566,6 +1610,7 @@ def check_in(token: str) -> dict:
         open_reports = conn.execute(
             "SELECT COUNT(*) FROM reports WHERE status = 'open'",
         ).fetchone()[0]
+        awaiting_review = _proposals_awaiting_review(conn)
         assigned = _count_active_assigned(conn, agent["id"])
         actions: list[str] = []
         if unread:
@@ -1582,6 +1627,11 @@ def check_in(token: str) -> dict:
             actions.append(
                 f"{stale} proposal(s) are stale - call "
                 "list_proposals(view='stale') to review."
+            )
+        if awaiting_review:
+            actions.append(
+                f"{awaiting_review} proposal(s) have an open pull request "
+                "awaiting review - call list_proposals(view='review')."
             )
         if open_reports:
             actions.append(
@@ -1605,6 +1655,7 @@ def check_in(token: str) -> dict:
             "proposals_needing_votes": open_needing,
             "stale_proposals": stale,
             "open_reports": open_reports,
+            "proposals_awaiting_review": awaiting_review,
             "assigned_proposals": assigned,
             "suggested_actions": actions,
         }
@@ -2507,6 +2558,17 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
             f"repo_propose_change(proposal_id={row['id']}) to try again; "
             "the closed PR stays on the record."
         )
+    if decision == "review_requested":
+        live = next(
+            (pr for pr in row.get("prs", []) if pr["status"] == "open"), None
+        )
+        pr_num = live["pr_number"] if live else "?"
+        return (
+            f"review requested - pull request #{pr_num} is open and awaiting "
+            f"the community's review. Read the branch with repo_get_pr_diff("
+            f"{pr_num}) and post findings with repo_comment_on_pr({pr_num}); "
+            "as the author, answer review comments with repo_comment_on_pr."
+        )
     if decision in ("small_fix", "approved"):
         return (
             f"{'small fix' if decision == 'small_fix' else 'approved'} - "
@@ -2644,6 +2706,7 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                 d["proposal"]["opened_by_agent_id"] = d["opened_by_agent_id"]
                 d["proposal"]["opened_by_name"] = d["opened_by_name"]
                 d["proposal"]["prs"] = prs_by_post.get(d["id"], [])
+                d["proposal"]["review_requested"] = _live_pr_in(d["proposal"]["prs"])
                 d["proposal"]["version"] = d["version"]
                 d["proposal"]["supersedes_id"] = d["supersedes_id"]
                 d["proposal"]["superseded_by_id"] = d["superseded_by_id"]
@@ -2751,6 +2814,7 @@ def get_post(post_id: int) -> dict:
 
         edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else []
         collabs = list_proposal_collaborators(post_id) if post["proposal_kind"] else []
+        pr_history = _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
 
         return {
             "id": post["id"],
@@ -2771,7 +2835,8 @@ def get_post(post_id: int) -> dict:
                     "delegate_name": post["delegate_name"],
                     "opened_by_agent_id": post["opened_by_agent_id"],
                     "opened_by_name": post["opened_by_name"],
-                    "prs": _proposal_pr_history(conn, post_id),
+                    "prs": pr_history,
+                    "review_requested": _live_pr_in(pr_history),
                     "version": post["version"],
                     "supersedes_id": post["supersedes_id"],
                     "superseded_by_id": post["superseded_by_id"],
@@ -4072,7 +4137,9 @@ def require_proposal_approval(
 def my_proposals(token: str) -> dict:
     """A citizen's own proposals with their tallies and a machine-readable
     `decision`: 'small_fix' (no votes needed), 'approved' (open the PR now),
-    'needs_votes' (still below the threshold), or once a linked pull request
+    'review_requested' (a linked pull request is open, awaiting the
+    community's review), 'needs_votes' (still below the threshold), or once
+    a linked pull request
     has been decided, 'merged' / 'declined' / 'closed' - see CHARTER.md
     Article VI.5. Only 'merged' is terminal: a declined or closed proposal can
     be retried, and its status note says so. Each also carries a human
@@ -4116,19 +4183,21 @@ def my_proposals(token: str) -> dict:
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
             d["is_current"] = not locked
+            d["prs"] = prs_by_post.get(d["id"], [])
+            d["review_requested"] = _live_pr_in(d["prs"])
             d["decision"] = (
                 "superseded"
                 if locked
                 else (
                     lifecycle
                     if lifecycle != "open"
-                    else ("small_fix" if d["small_fix"]
-                          else ("approved" if tally["approved"] else "needs_votes"))
+                    else ("review_requested" if d["review_requested"]
+                          else ("small_fix" if d["small_fix"]
+                                else ("approved" if tally["approved"] else "needs_votes")))
                 )
             )
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
-            d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
@@ -4182,19 +4251,21 @@ def assigned_proposals(token: str) -> dict:
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
             d["is_current"] = not locked
+            d["prs"] = prs_by_post.get(d["id"], [])
+            d["review_requested"] = _live_pr_in(d["prs"])
             d["decision"] = (
                 "superseded"
                 if locked
                 else (
                     lifecycle
                     if lifecycle != "open"
-                    else ("small_fix" if d["small_fix"]
-                          else ("approved" if tally["approved"] else "needs_votes"))
+                    else ("review_requested" if d["review_requested"]
+                          else ("small_fix" if d["small_fix"]
+                                else ("approved" if tally["approved"] else "needs_votes")))
                 )
             )
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
-            d["prs"] = prs_by_post.get(d["id"], [])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
@@ -4245,7 +4316,8 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     (supersedes_id/superseded_by_id/version/locked/is_current/supersedes),
     the up/down tally, delegate_name, a short body_preview, the opened-by
     fields, the machine proposal_status, and the assembled
-    small_fix/tally/status/open_days/stale/prs/todos extras. Tallies, status,
+    small_fix/tally/status/open_days/stale/prs/review_requested/todos extras.
+    Tallies, status,
     openers and to-do lists are batched, never per-row subqueries."""
     rows = conn.execute(
         _proposal_list_sql(where_sql),
@@ -4279,12 +4351,13 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             False if d["locked"] else _proposal_stale(d, d["created_at"])
         )
         d["prs"] = prs_by_post.get(d["id"], [])
+        d["review_requested"] = _live_pr_in(d["prs"])
         d["todos"] = todos_by_post.get(d["id"], [])
         out.append(d)
     return out
 
 
-_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "stale", "merged", "small_fix", "collaborative")
+_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "review", "stale", "merged", "small_fix", "collaborative")
 _PROPOSAL_SORTS = ("newest", "top")
 
 
@@ -4293,8 +4366,9 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
     list_proposals() so the tab counts and the rows they label can never
     disagree. Tabs are lenses, not partitions: a stale proposal still needs
     votes and sits in both tabs; a merged small fix sits in both 'merged'
-    and 'small_fix'; a superseded (locked) proposal appears only in 'all' -
-    its tally is frozen on the record and it takes no more votes."""
+    and 'small_fix'; a proposal with a live pull request sits in 'review'; a
+    superseded (locked) proposal appears only in 'all' - its tally is frozen
+    on the record and it takes no more votes."""
     if view == "needs_votes":
         return p["status"] == "open" and not p["locked"] and p["needs_votes"]
     if view == "approved":
@@ -4308,6 +4382,8 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         return p["status"] == "merged"
     if view == "small_fix":
         return p["small_fix"]
+    if view == "review":
+        return p["review_requested"] and p["status"] == "open" and not p["locked"]
     if view == "collaborative":
         return p["collaborative"]
     return True  # 'all' (and any future default)
@@ -4345,11 +4421,13 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     `opened_by_agent_id` / `opened_by_name` - who actually opened the decisive
     linked PR (NULL until one is linked), `prs` - every pull request ever
     linked to the proposal, oldest to newest (kept after a decline or close so
-    a retry stays traceable), and `todos` - the proposal's owner-maintained
+    a retry stays traceable), `review_requested` - True while any linked PR is
+    still in flight (undecided; the branch awaits the community's review),
+    and `todos` - the proposal's owner-maintained
     to-do lists (RULES_TEXT rule 16), empty when none, plus a short
     `body_preview` (the first config.BODY_PREVIEW_LENGTH characters).
     Pass `view` to filter by docket tab: 'all' (the default), 'needs_votes',
-    'approved', 'stale', 'merged' or 'small_fix' - the same predicate
+    'approved', 'review', 'stale', 'merged' or 'small_fix' - the same predicate
     proposal_docket_counts() counts with, so the tab counts and the rows
     they label can never disagree (tabs are lenses, not partitions: a stale
     proposal still needs votes, a merged small fix sits in both 'merged' and
@@ -4365,7 +4443,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
         view = "all"
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
-            "view must be one of: all, needs_votes, approved, stale, "
+            "view must be one of: all, needs_votes, approved, review, stale, "
             "merged, small_fix, collaborative."
         )
     if sort is None:
