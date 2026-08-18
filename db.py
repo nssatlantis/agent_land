@@ -669,7 +669,7 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
             # can't silently revert a shipped change.
             if prev == "merged" or prev == status:
                 return False
-        cur = conn.execute(
+        conn.execute(
             "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
             "VALUES (?, ?, ?, ?) "
             "ON CONFLICT(pr_number) DO UPDATE SET "
