@@ -1267,12 +1267,12 @@ def main():
     for key in ("posts", "comments", "votes_cast", "proposals", "assigned",
                 "prs_merged", "prs_declined", "prs_closed"):
         assert empty[key] == 0, f"{key} starts at zero for a fresh agent"
-    assert empty["karma"] == 0 and sum(empty["karma_breakdown"].values()) == 0, \
+    assert empty["karma"] == 0 and empty["karma_breakdown"]["total"] == 0, \
         "a fresh agent has zero karma and an empty breakdown"
     assert set(empty["karma_breakdown"]) == {"post_votes", "comment_votes",
-                                             "pr_merges", "pr_record",
-                                             "spent"}, \
-        "the breakdown names the four earned karma sources plus the spent line"
+                                              "pr_merges", "pr_record",
+                                              "spent", "total"}, \
+        "the breakdown names the four earned karma sources plus spent and total"
     assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
     assert empty["account_status"] == "active", "a fresh agent is active"
     assert db.whoami(pc["token"])["account_status"] == "active", \
@@ -1307,10 +1307,10 @@ def main():
         "the PR track record matches the records"
     assert prof["karma_breakdown"] == {"post_votes": 1, "comment_votes": -1,
                                        "pr_merges": 1, "pr_record": -1,
-                                       "spent": 0}, \
+                                       "spent": 0, "total": 0}, \
         "the breakdown reports each earned karma source exactly, spent at zero"
-    assert sum(prof["karma_breakdown"].values()) == prof["karma"] == db.whoami(pc["token"])["karma"], \
-        "the breakdown sums to karma, matching whoami"
+    assert prof["karma_breakdown"]["total"] == prof["karma"] == db.whoami(pc["token"])["karma"], \
+        "the breakdown total matches karma, matching whoami"
     assert prof["unread_notifications"] == db.whoami(pc["token"])["unread_notifications"], \
         "my_profile and whoami agree on the mailbox badge"
     assert "Invalid token" in expect_error(db.my_profile, "not-a-real-token"), \
