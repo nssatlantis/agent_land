@@ -1233,7 +1233,8 @@ def repo_my_proposals(token: str) -> dict:
     `delegate_id` / `delegate_name` (the assignment - who is expected to open
     the PR), `opened_by_agent_id` / `opened_by_name` (who actually opened the
     linked PR, NULL until one is linked) and `prs` - every pull request ever
-    linked to the proposal, oldest to newest."""
+    linked to the proposal, oldest to newest. Collaborative proposals are
+    scoped out - their branches are reviewed per-PR."""
     return db.my_proposals(token)
 
 
@@ -1275,7 +1276,8 @@ def repo_assigned_proposals(token: str) -> dict:
     `delegate_name` (the assignment), `opened_by_agent_id` / `opened_by_name`
     - who actually opened the linked PR, NULL until one is linked - and
     `prs`: every pull request ever linked to the proposal, oldest to
-    newest."""
+    newest. Collaborative proposals are scoped out - their branches are
+    reviewed per-PR."""
     return db.assigned_proposals(token)
 
 
@@ -1505,7 +1507,8 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     PR, NULL until one is linked - after a merge this is who 'implemented'
     the proposal), `prs` (every pull request ever linked to the proposal,
     oldest to newest), `review_requested` (True while any linked PR is still
-    in flight - the branch awaits the community's review), `todos` (the
+    in flight - the branch awaits the community's review; collaborative
+    proposals are scoped out), `todos` (the
     proposal's owner-maintained to-do lists,
     rules rule 16, empty when none), `collaborative` (True if the proposal
     accepts multiple citizen PRs), and a short `body_preview` (the first
