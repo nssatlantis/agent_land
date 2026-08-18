@@ -1930,9 +1930,9 @@ def main():
         "a live PR marks the proposal review requested"
     assert docket[p_rv]["decision"] == "review_requested", \
         "an open proposal with a live PR is review requested, not approved"
-    assert "701" in docket[p_rv]["status"] and \
-        "awaiting the community's review" in docket[p_rv]["status"], \
-        "the status note names the open PR and the review duty"
+    assert "701" in str(docket[p_rv]["prs"]) and \
+        docket[p_rv]["status"] == "open", \
+        "the proposal stays open while its PR awaits review"
     assert [(pr["pr_number"], pr["status"]) for pr in docket[p_rv]["prs"]] == \
         [(701, "open")], "the trail carries the live PR as open"
     assert p_rv in {p["id"] for p in db.list_proposals(view="review")}, \
@@ -3034,7 +3034,7 @@ def main():
     # A merged proposal is done for good - it can't be superseded.
     merged_p = db.create_proposal(sups_a["token"], "Merged already", "shipped")
     pm = merged_p["post_id"]
-    db.record_proposal_outcome(701, pm, "merged", "2026-08-12T10:00:00Z")
+    db.record_proposal_outcome(820, pm, "merged", "2026-08-12T10:00:00Z")
     assert "merged" in expect_error(
         db.supersede_proposal, sups_a["token"], pm, "X", "y"
     ), "a merged proposal is consumed for good"
@@ -3046,11 +3046,11 @@ def main():
     for v in sups.values():
         db.vote_on_proposal(v["token"], pif, 1)
     db.require_proposal_approval(sups_a["token"], pif, "repo_propose_change")
-    db.link_pr_to_proposal(702, pif, sups_a["agent_id"])
+    db.link_pr_to_proposal(821, pif, sups_a["agent_id"])
     assert "open PR" in expect_error(
         db.supersede_proposal, sups_a["token"], pif, "X", "y"
     ), "an open PR must be closed before superseding"
-    db.record_proposal_outcome(702, pif, "closed", "2026-08-12T11:00:00Z")
+    db.record_proposal_outcome(821, pif, "closed", "2026-08-12T11:00:00Z")
     sup_if = db.supersede_proposal(sups_a["token"], pif, "PR closed, revise", "now ok")
     assert sup_if["supersedes_id"] == pif, "a closed PR no longer blocks superseding"
 
