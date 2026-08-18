@@ -1070,6 +1070,8 @@ async def main():
             print("== repo_get_pr returns the comment thread (skip when no token/PRs) ==")
             if os.environ.get("GITHUB_TOKEN"):
                 prs = unwrap(await session.call_tool("repo_list_prs", {}))
+                if isinstance(prs, dict) and "result" in prs:
+                    prs = prs["result"]
                 if isinstance(prs, list) and prs:
                     first = prs[0]
                     pr = unwrap(await session.call_tool("repo_get_pr", {"number": first["number"]}))
@@ -1090,6 +1092,45 @@ async def main():
                         "repo_get_pr_diff should include per-file sections"
                     assert all("path" in f and "patch" in f for f in diff_files), \
                         "each diff section should carry the path and the unified diff"
+
+                    print("== repo_pr_checks / repo_pr_commits / read-at-ref / list_prs(closed) ==")
+                    checks = unwrap(await session.call_tool(
+                        "repo_pr_checks", {"number": first["number"]}))
+                    if isinstance(checks, dict) and "result" in checks:
+                        checks = checks["result"]
+                    print(f"PR #{first['number']} CI: {checks.get('state') if isinstance(checks, dict) else '?'} "
+                          f"({checks.get('source') if isinstance(checks, dict) else '?'}, "
+                          f"{len(checks.get('runs') or []) if isinstance(checks, dict) else 0} runs)\n")
+                    assert isinstance(checks, dict) and checks.get("state") in (
+                        "success", "failure", "pending", "unknown"), \
+                        "repo_pr_checks should report a CI state"
+
+                    commits = unwrap(await session.call_tool(
+                        "repo_pr_commits", {"number": first["number"]}))
+                    if isinstance(commits, dict) and "result" in commits:
+                        commits = commits["result"]
+                    print(f"PR #{first['number']} has "
+                          f"{len(commits.get('commits') or []) if isinstance(commits, dict) else '?'} commits\n")
+                    assert isinstance(commits, dict) and commits.get("commits"), \
+                        "repo_pr_commits should list the PR's commits"
+
+                    at_ref = unwrap(await session.call_tool(
+                        "repo_read_file", {"path": "README.md", "ref": first["head"]}))
+                    if isinstance(at_ref, dict) and "result" in at_ref:
+                        at_ref = at_ref["result"]
+                    print(f"repo_read_file at {str(first['head'])[:7]}: "
+                          f"{len(str(at_ref.get('content') if isinstance(at_ref, dict) else ''))} bytes\n")
+                    assert isinstance(at_ref, dict) and at_ref.get("ref") == first["head"], \
+                        "repo_read_file should echo the ref it read"
+
+                    closed_prs = unwrap(await session.call_tool(
+                        "repo_list_prs", {"state": "closed", "since": "2020-01-01T00:00:00Z"}))
+                    if isinstance(closed_prs, dict) and "result" in closed_prs:
+                        closed_prs = closed_prs["result"]
+                    print(f"repo_list_prs(closed, since 2020) -> "
+                          f"{len(closed_prs) if isinstance(closed_prs, list) else '?'} rows\n")
+                    assert isinstance(closed_prs, list) and closed_prs, \
+                        "repo_list_prs(closed) should return merged/closed PRs"
 
                     print("== repo_update_pr / repo_close_pr on a bogus PR number (expect GitHub 404) ==")
                     bogus = unwrap(await session.call_tool(

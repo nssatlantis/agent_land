@@ -1239,6 +1239,279 @@ def main():
     assert plan["content_manifest"][0]["content_sha256"] == hashlib.sha256(b"new\n").hexdigest()
     assert ("GET", "contents/app.py?ref=feature/x") in calls
 
+    # --- repo CI reads: tiered checks, commits, read-at-ref, list_prs ------
+    # pr_checks tries check runs, then Actions runs, then the combined commit
+    # status; each tier's failure falls into the next, and a total outage
+    # degrades to 'unknown', never an error.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "abc123"}, "state": "open"}
+        if method == "GET" and path.startswith("commits/abc123/check-runs"):
+            raise github.RepoError("GitHub API 403 on GET commits/abc123/check-runs")
+        if method == "GET" and path.startswith("actions/runs?head_sha=abc123"):
+            return {"workflow_runs": [
+                {"id": 11, "name": "CI", "status": "completed", "conclusion": "failure",
+                 "html_url": "https://github.com/x/y/actions/runs/11"},
+                {"id": 12, "name": "static", "status": "completed", "conclusion": "success",
+                 "html_url": "https://github.com/x/y/actions/runs/12"},
+            ]}
+        if method == "GET" and path == "actions/runs/11/jobs?per_page=100":
+            return {"jobs": [
+                {"id": 111, "name": "test", "status": "completed", "conclusion": "failure"},
+                {"id": 112, "name": "other", "status": "completed", "conclusion": "success"},
+            ]}
+        if method == "GET" and path == "actions/jobs/111/logs":
+            return "ok\n== GET /api/posts -> 200 ==\nFAILED test_thing\nError: mypy found 2 errors\n"
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    real_request_text = github._request_text
+    github._request = fake_request
+    github._request_text = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+        github._request_text = real_request_text
+    assert checks["source"] == "actions", checks
+    assert checks["state"] == "failure", checks
+    assert [r["name"] for r in checks["runs"]] == ["CI", "static"], checks["runs"]
+    assert checks["failures"][0]["name"] == "CI / test", checks["failures"]
+    assert checks["failures"][0]["log_url"] == \
+        "https://github.com/nssatlantis/agent_land/actions/runs/11/job/111", checks["failures"]
+    assert any("mypy" in f["message"] for f in checks["failures"]), checks["failures"]
+    assert ("GET", "commits/abc123/check-runs?per_page=50") in calls, calls
+    assert ("GET", "actions/runs?head_sha=abc123&per_page=50") in calls, calls
+
+    # the check-runs tier wins when it answers (no Actions fallback), and its
+    # failure annotations carry path/line/message.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "def456"}, "state": "open"}
+        if method == "GET" and path.startswith("commits/def456/check-runs"):
+            return {"check_runs": [
+                {"id": 21, "name": "test", "status": "completed", "conclusion": "failure",
+                 "html_url": "u21"},
+                {"id": 22, "name": "static", "status": "in_progress", "conclusion": None,
+                 "html_url": "u22"},
+            ]}
+        if method == "GET" and path == "check-runs/21/annotations?per_page=100":
+            return [{"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+    assert checks["source"] == "check_runs", checks
+    assert checks["state"] == "failure", checks
+    assert checks["failures"] == [{
+        "name": "test", "path": "db.py", "line": 42,
+        "message": "undefined name 'x'", "log_url": "u21",
+    }], checks["failures"]
+    assert ("GET", "actions/runs?head_sha=def456&per_page=50") not in calls, calls
+
+    # empty check runs and empty Actions fall through to the combined commit
+    # status tier; its failure entries carry the description.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "ghi789"}, "state": "open"}
+        if method == "GET" and path.startswith("commits/ghi789/check-runs"):
+            raise github.RepoError("GitHub API 404")
+        if method == "GET" and path.startswith("actions/runs?head_sha=ghi789"):
+            return {"workflow_runs": []}
+        if method == "GET" and path == "commits/ghi789/status":
+            return {"state": "failure", "total_count": 1, "statuses": [
+                {"context": "continuous-integration", "state": "failure",
+                 "description": "The CI build failed", "target_url": "https://ci/x/1"},
+            ]}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+    assert checks["source"] == "statuses", checks
+    assert checks["state"] == "failure", checks
+    assert checks["failures"][0]["message"] == "The CI build failed", checks["failures"]
+    assert checks["runs"][0]["conclusion"] == "failure", checks["runs"]
+
+    # a total outage degrades to 'unknown' with empty runs/failures.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "jkl999"}, "state": "open"}
+        raise github.RepoError("GitHub API 500 on everything")
+
+    github._request = fake_request
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+    assert checks["state"] == "unknown" and checks["source"] is None, checks
+    assert checks["runs"] == [] and checks["failures"] == [], checks
+
+    # pr_commits paginates (100/page) and carries sha/message/author/date.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"ref": "feature/x"}, "base": {"ref": "main"}, "state": "open"}
+        if method == "GET" and path == "pulls/9/commits?per_page=100&page=1":
+            return [{"sha": f"s{i}", "commit": {"message": f"m{i}",
+                    "author": {"name": "a", "date": "d"}}} for i in range(100)]
+        if method == "GET" and path == "pulls/9/commits?per_page=100&page=2":
+            return [{"sha": "s100", "commit": {"message": "m100",
+                    "author": {"name": "a", "date": "d"}}}]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        commits = github.pr_commits(9)
+    finally:
+        github._request = real_request
+    assert len(commits["commits"]) == 101, commits
+    assert commits["commits"][-1]["sha"] == "s100", commits
+    assert commits["head"] == "feature/x" and commits["base"] == "main", commits
+    assert ("GET", "pulls/9/commits?per_page=100&page=2") in calls, calls
+
+    # read_file's optional ref passes through to the contents API and echoes
+    # in the response; the default stays the base branch.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/README.md?ref=deadbeef":
+            return {"content": base64.b64encode(b"# hi\n").decode("ascii"), "size": 5}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        got = github.read_file("README.md", ref="deadbeef")
+    finally:
+        github._request = real_request
+    assert got["ref"] == "deadbeef", got
+    assert got["content"] == "# hi\n", got
+
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        return None
+
+    github._request = fake_request
+    try:
+        github.read_file("nope.py", ref="noref")
+        raise AssertionError("reading a missing file at a ref must error")
+    except github.RepoError as exc:
+        assert "noref" in str(exc), str(exc)
+    finally:
+        github._request = real_request
+    assert calls == [("GET", "contents/nope.py?ref=noref")], calls
+
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "contents/README.md?ref=main":
+            return {"content": base64.b64encode(b"x\n").decode("ascii"), "size": 2}
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        got = github.read_file("README.md")
+    finally:
+        github._request = real_request
+    assert got["ref"] == "main", got
+
+    # list_prs: closed/all rows carry the lifecycle, `since` filters on
+    # updated_at, and bad arguments are named in the error.
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls?state=closed&sort=updated&direction=desc&per_page=50":
+            return [
+                {"number": 1, "title": "a", "head": {"ref": "h"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-08-01T00:00:00Z",
+                 "updated_at": "2026-08-15T00:00:00Z", "state": "closed",
+                 "merged_at": "2026-08-14T00:00:00Z", "closed_at": "2026-08-15T00:00:00Z",
+                 "html_url": "u1"},
+                {"number": 2, "title": "b", "head": {"ref": "h2"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-07-01T00:00:00Z",
+                 "updated_at": "2026-07-20T00:00:00Z", "state": "closed",
+                 "merged_at": None, "closed_at": "2026-07-20T00:00:00Z",
+                 "html_url": "u2"},
+            ]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        closed = github.list_prs(state="closed", since="2026-08-01T00:00:00Z")
+    finally:
+        github._request = real_request
+    assert [r["number"] for r in closed] == [1], closed
+    assert closed[0]["outcome"] == "merged" and closed[0]["merged_at"], closed
+    assert ("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=50") in calls
+
+    try:
+        github.list_prs(state="bogus")
+        raise AssertionError("a bogus state must error")
+    except github.RepoError as exc:
+        assert "state must be 'open', 'closed' or 'all'" in str(exc), str(exc)
+
+    try:
+        github.list_prs(since="not-a-date")
+        raise AssertionError("a bogus since must error")
+    except github.RepoError as exc:
+        assert "ISO-8601" in str(exc), str(exc)
+
+    try:
+        github.list_prs(since="2026-08-18T00:00:00+05:30")
+        raise AssertionError("a non-Z since must error")
+    except github.RepoError as exc:
+        assert "ending in 'Z'" in str(exc), str(exc)
+
+    # list_prs(state='open', since=...) filters the cached open list on
+    # created_at, so only open PRs created at or after the since timestamp
+    # are returned.
+    open_calls = []
+
+    def fake_open_request(method, path, body=None, ok_404=False):
+        open_calls.append((method, path))
+        if method == "GET" and path.startswith("pulls?state=open"):
+            return [
+                {"number": 10, "title": "new", "head": {"ref": "h"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-08-10T00:00:00Z",
+                 "html_url": "u10", "mergeable_state": "clean", "body": ""},
+                {"number": 11, "title": "old", "head": {"ref": "h2"}, "base": {"ref": "main"},
+                 "user": {"login": "u"}, "created_at": "2026-07-01T00:00:00Z",
+                 "html_url": "u11", "mergeable_state": "clean", "body": ""},
+            ]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_open_request
+    try:
+        github._open_prs_cache.update(ts=0, result=None, error=None)
+        opened = github.list_prs(state="open", since="2026-08-01T00:00:00Z")
+    finally:
+        github._request = real_request
+        github._open_prs_cache.update(ts=0, result=None, error=None)
+    assert [r["number"] for r in opened] == [10], opened
+
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"
     assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is True
@@ -5589,29 +5862,34 @@ def main():
         raise AssertionError("a missing file must be refused by patch decode")
     except github.RepoError as exc:
         assert "use 'content' to create" in str(exc), str(exc)
-    # _combined_status: maps the commit-status API to a green/red shape, and
-    # never raises when GitHub is unreachable (a failure -> None, so the PR
-    # view degrades instead of erroring).
+    # _checks_for_head: maps the combined commit-status API to the tiered
+    # green/red shape (source='statuses'), and never raises when GitHub is
+    # unreachable (a failure -> None, so the PR view degrades instead of
+    # erroring).
     real_request = github._request
     try:
         calls = []
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "failure", "total_count": 1}
         )
-        assert github._combined_status("abc123") == {"state": "failure", "total_count": 1}
+        checks = github._checks_for_head("abc123")
+        assert checks["source"] == "statuses" and checks["state"] == "failure", checks
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "success", "total_count": 0}
         )
-        assert github._combined_status("abc123") == {"state": "success", "total_count": 0}
+        assert github._checks_for_head("abc123")["state"] == "success"
         github._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or (_ for _ in ()).throw(github.RepoError("down"))
         )
-        assert github._combined_status("abc123") is None, \
+        assert github._checks_for_head("abc123") is None, \
             "an unreachable GitHub must degrade to None, not raise"
     finally:
         github._request = real_request
-    assert calls == [("GET", "commits/abc123/status")] * 3, \
-        "every status read hits the same commit-status endpoint"
+    tier_probe = [("GET", "commits/abc123/check-runs?per_page=50"),
+                  ("GET", "actions/runs?head_sha=abc123&per_page=50"),
+                  ("GET", "commits/abc123/status")]
+    assert calls == tier_probe * 3, \
+        "empty check-runs and Actions tiers fall through to the commit-status endpoint"
     print("  github pure helpers: ok")
 
     # --- github.recently_closed_prs: parse the poller's input shape ---------
