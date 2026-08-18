@@ -5058,6 +5058,15 @@ def create_tag(token: str, name: str, color: str | None = None) -> dict:
             " VALUES (?, 'tag_create', ?, ?, ?)",
             (agent["id"], config.TAG_CREATE_COST, tag_id, now),
         )
+        from events import EVT_TAG_CREATED, log_event
+        log_event(
+            EVT_TAG_CREATED,
+            actor_agent_id=agent["id"],
+            target_type="tag",
+            target_id=tag_id,
+            detail={"name": name, "color": color, "cost": config.TAG_CREATE_COST},
+            conn=conn,
+        )
         return dict(
             conn.execute(
                 "SELECT id, name, color, created_by, created_at, retired, retired_at"
@@ -5122,6 +5131,15 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
             "INSERT INTO karma_spends (agent_id, kind, amount, ref_id, created_at)"
             " VALUES (?, 'tag_apply', ?, ?, ?)",
             (agent["id"], config.TAG_APPLY_COST, post_id, now),
+        )
+        from events import EVT_TAG_APPLIED, log_event
+        log_event(
+            EVT_TAG_APPLIED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"tag_id": tag["id"], "tag_name": tag["name"], "cost": config.TAG_APPLY_COST},
+            conn=conn,
         )
         return {"id": tag["id"], "name": tag["name"], "color": tag["color"]}
 
