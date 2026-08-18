@@ -2272,6 +2272,35 @@ def main():
         "a small fix with a live PR is review requested"
     db.record_proposal_outcome(704, p_rv3, "merged", "2026-08-12T12:00:00Z")
 
+    # A collaborative proposal with a live PR is scoped OUT of the
+    # review-requested state: its branches are reviewed per-PR on the PR
+    # itself, so no single proposal-level 'review requested' marker exists.
+    rv_coll = db.create_proposal(agents["zeta"]["token"], "Collab review scoped", "body",
+                                 collaborative=True)
+    p_rv_coll = rv_coll["post_id"]
+    db.set_todos_for_post(agents["zeta"]["token"], p_rv_coll,
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    db.link_pr_to_proposal(7205, p_rv_coll, agents["zeta"]["agent_id"])
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_rv_coll]["collaborative"] is True, \
+        "the collaborative flag rides the docket row"
+    assert docket[p_rv_coll]["review_requested"] is False, \
+        "a collaborative proposal is scoped out of review requested"
+    assert docket[p_rv_coll]["decision"] != "review_requested", \
+        "a collaborative proposal's decision never reads review requested"
+    assert p_rv_coll not in {p["id"] for p in db.list_proposals(view="review")}, \
+        "the review tab excludes collaborative proposals"
+    detail = db.get_post(p_rv_coll)
+    assert detail["proposal"]["review_requested"] is False, \
+        "get_post scopes collaborative out of review requested"
+    rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
+    assert rows[p_rv_coll]["proposal"]["review_requested"] is False, \
+        "list_posts scopes collaborative out of review requested"
+    mine_zeta = {p["id"]: p for p in db.my_proposals(agents["zeta"]["token"])["proposals"]}
+    assert mine_zeta[p_rv_coll]["decision"] != "review_requested", \
+        "the author dashboard scopes collaborative out of review requested"
+    db.record_proposal_outcome(7205, p_rv_coll, "merged", "2026-08-12T12:00:00Z")
+
     # The review nudge (whoami) and check_in share one count: both see the
     # live PRs of this section, and both settle once they are decided. The
     # delegated-retry PR from earlier is still in flight, so the baseline is
