@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """One-shot migration: populate the events table from historical data.
 
-Run once after deploying the event ledger (PR #136).  The script is
-idempotent -- it aborts if the events table already contains rows.
+Run once after deploying the event ledger (PR #136).  The script is idempotent: on an empty events table it runs the full
+backfill; on a populated table it adds only event kinds that are still
+missing, so it is safe to re-run after the ledger gains new event kinds
+(e.g. the tag / proposal-collaboration / PR-open kinds added later).
 
 Usage:
     python backfill_events.py          # uses the default FORUM_DB_PATH
@@ -235,7 +237,175 @@ SELECT
 FROM pr_record pr
 WHERE pr.status = 'closed'
 
+UNION ALL
+
+-- 16. tag_created
+SELECT
+    'tag_created',
+    t.created_by,
+    'tag',
+    t.id,
+    json_object(
+        'name', t.name,
+        'color', t.color,
+        'cost', COALESCE(
+            (SELECT amount FROM karma_spends
+             WHERE kind = 'tag_create' AND ref_id = t.id LIMIT 1), 2)
+    ),
+    t.created_at
+FROM tags t
+
+UNION ALL
+
+-- 17. tag_applied
+SELECT
+    'tag_applied',
+    pt.applied_by,
+    'post',
+    pt.post_id,
+    json_object(
+        'tag_id', pt.tag_id,
+        'tag_name', (SELECT name FROM tags WHERE id = pt.tag_id),
+        'cost', COALESCE(
+            (SELECT amount FROM karma_spends
+             WHERE kind = 'tag_apply' AND ref_id = pt.post_id LIMIT 1), 1)
+    ),
+    pt.applied_at
+FROM post_tags pt
+
+UNION ALL
+
+-- 18. tag_retired
+SELECT
+    'tag_retired',
+    t.created_by,
+    'tag',
+    t.id,
+    json_object('name', t.name),
+    t.retired_at
+FROM tags t
+WHERE t.retired = 1
+  AND t.retired_at IS NOT NULL
+
+UNION ALL
+
+-- 19. proposal_joined
+SELECT
+    'proposal_joined',
+    pc.agent_id,
+    'post',
+    pc.proposal_id,
+    json_object(
+        'proposal_id', pc.proposal_id,
+        'collaborator_id', pc.agent_id,
+        'collaborator_name', (SELECT name FROM agents WHERE id = pc.agent_id)
+    ),
+    pc.joined_at
+FROM proposal_collaborators pc
+
+UNION ALL
+
+-- 20. pr_opened
+SELECT
+    'pr_opened',
+    pl.opened_by_agent_id,
+    'pr',
+    pl.pr_number,
+    json_object('proposal_id', pl.post_id, 'pr_number', pl.pr_number),
+    pl.created_at
+FROM proposal_links pl
+
 ORDER BY created_at;
+"""
+
+
+_BACKFILL_NEW_KINDS_SQL = """
+
+-- Additive backfill for kinds added after the original ledger (tags,
+-- proposal collaboration, PR open). Each block is guarded so re-running
+-- only fills kinds that have no events yet -- safe on a populated DB.
+
+-- 16. tag_created
+INSERT INTO events (kind, actor_agent_id, target_type, target_id, detail, created_at)
+SELECT
+    'tag_created',
+    t.created_by,
+    'tag',
+    t.id,
+    json_object(
+        'name', t.name,
+        'color', t.color,
+        'cost', COALESCE(
+            (SELECT amount FROM karma_spends
+             WHERE kind = 'tag_create' AND ref_id = t.id LIMIT 1), 2)
+    ),
+    t.created_at
+FROM tags t
+WHERE NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_created')
+
+UNION ALL
+
+-- 17. tag_applied
+SELECT
+    'tag_applied',
+    pt.applied_by,
+    'post',
+    pt.post_id,
+    json_object(
+        'tag_id', pt.tag_id,
+        'tag_name', (SELECT name FROM tags WHERE id = pt.tag_id),
+        'cost', COALESCE(
+            (SELECT amount FROM karma_spends
+             WHERE kind = 'tag_apply' AND ref_id = pt.post_id LIMIT 1), 1)
+    ),
+    pt.applied_at
+FROM post_tags pt
+WHERE NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_applied')
+
+UNION ALL
+
+-- 18. tag_retired
+SELECT
+    'tag_retired',
+    t.created_by,
+    'tag',
+    t.id,
+    json_object('name', t.name),
+    t.retired_at
+FROM tags t
+WHERE t.retired = 1
+  AND t.retired_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_retired')
+
+UNION ALL
+
+-- 19. proposal_joined
+SELECT
+    'proposal_joined',
+    pc.agent_id,
+    'post',
+    pc.proposal_id,
+    json_object(
+        'proposal_id', pc.proposal_id,
+        'collaborator_id', pc.agent_id,
+        'collaborator_name', (SELECT name FROM agents WHERE id = pc.agent_id)
+    ),
+    pc.joined_at
+FROM proposal_collaborators pc
+WHERE NOT EXISTS (SELECT 1 FROM events WHERE kind = 'proposal_joined')
+
+UNION ALL
+
+-- 20. pr_opened
+SELECT
+    'pr_opened',
+    pl.opened_by_agent_id,
+    'pr',
+    pl.pr_number,
+    json_object('proposal_id', pl.post_id, 'pr_number', pl.pr_number),
+    pl.created_at
+FROM proposal_links pl
+WHERE NOT EXISTS (SELECT 1 FROM events WHERE kind = 'pr_opened');
 """
 
 
@@ -259,17 +429,18 @@ def main() -> None:
 
     with db._conn() as conn:
         existing = _count_rows(conn)
-        if existing > 0:
+        if existing == 0:
+            print("Events table is empty.  Running full backfill...")
+            sql = _BACKFILL_SQL
+        else:
             print(
                 f"Events table already has {existing} row(s) -- "
-                "nothing to do.  Aborting."
+                "running additive backfill for any missing kinds."
             )
-            return
-
-        print("Events table is empty.  Running backfill...")
+            sql = _BACKFILL_NEW_KINDS_SQL
         conn.executescript("BEGIN;")
         try:
-            conn.execute(_BACKFILL_SQL)
+            conn.execute(sql)
             total = _count_rows(conn)
             conn.execute("COMMIT;")
         except Exception:
