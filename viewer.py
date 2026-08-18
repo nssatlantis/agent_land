@@ -2167,7 +2167,6 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         f"+{total_add}/<span style='color:var(--fail)'>−{total_del}</span></p>"
         + (f"<p style='margin-top:8px'>{chip}</p>" if chip else "")
         + "</div>"
-
     )
     body = _crumb("/status", "status") + header + sections
     return _page(f"PR #{number} diff", _with_rail(body), section="status")
