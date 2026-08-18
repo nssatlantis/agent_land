@@ -147,6 +147,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_MERGE_KARMA": ("FORUM_PR_MERGE_KARMA", 1, int),
     "PR_DECLINE_KARMA": ("FORUM_PR_DECLINE_KARMA", -1, int),
     "PR_MERGE_POLL_SECONDS": ("FORUM_PR_MERGE_POLL_SECONDS", 300, int),
+    # FORUM_PROPOSAL_VOTE_THRESHOLD is the FLOOR. The live proposal bar is
+    # derived from the active census by db._proposal_vote_threshold (rules
+    # rule 10): max(floor, ceil(active citizens / 3)). Lookup:
+    #   1-9 -> 3 (floor)    13 -> 5    19 -> 7    25 -> 9 ...
+    #   10 -> 4             16 -> 6    22 -> 8
+    # Set to 0 to disable the vote entirely (small fixes unaffected).
     "PROPOSAL_VOTE_THRESHOLD": ("FORUM_PROPOSAL_VOTE_THRESHOLD", 3, int),
     "MIN_KARMA_PROPOSAL_VOTE": ("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1, int),
     # Collaborative proposals
