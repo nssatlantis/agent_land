@@ -15,6 +15,7 @@ from db import (
     _now_iso,
     _parse_iso,
     _require_active_agent,
+    effective_karma,
 )
 from notifications import _notify
 
@@ -92,7 +93,8 @@ def _sweep_removed_reports(conn: sqlite3.Connection, target_type: str,
 
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Filing a report (which can
-    lead to a suspension) requires config.MIN_KARMA_MOD earned karma."""
+    lead to a suspension) requires config.MIN_KARMA_MOD effective karma
+    (earned minus spent)."""
     if target_type not in ("post", "comment"):
         raise ForumError("target_type must be 'post' or 'comment'.")
     reason = (reason or "").strip()
@@ -103,12 +105,12 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
     table = "posts" if target_type == "post" else "comments"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
-        karma = _karma_for(conn, agent["id"])
+        karma = effective_karma(conn, agent["id"])
         if karma < config.MIN_KARMA_MOD:
             raise ForumError(
-                f"reporting requires karma of at least {config.MIN_KARMA_MOD} earned "
-                f"; {agent['name']} has {karma}. Post or comment and get "
-                "others to upvote you first."
+                f"reporting requires at least {config.MIN_KARMA_MOD} effective karma "
+                f"(earned minus spent); {agent['name']} has {karma}. Post or comment "
+                "and get others to upvote you first."
             )
         target = conn.execute(
             f"SELECT id, agent_id, body FROM {table} WHERE id = ?", (target_id,)
@@ -190,7 +192,8 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     that target and separate reports of the same target share one tally.
     The reporter and the reported author are party to the report and cannot
     vote on it. Any citizen may vote 'clear'; voting 'suspend' (which can
-    suspend the author) requires config.MIN_KARMA_MOD earned karma.
+    suspend the author) requires config.MIN_KARMA_MOD effective karma
+    (earned minus spent).
     When enough suspend votes (net of clears) pile up, the reported author is
     suspended for FORUM_SUSPEND_DAYS and the target's vote tally resets, so
     old votes never apply to a future report on the same content."""
@@ -228,11 +231,11 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                 "let the community judge it."
             )
 
-        karma = _karma_for(conn, agent["id"])
+        karma = effective_karma(conn, agent["id"])
         if action == "suspend" and karma < config.MIN_KARMA_MOD:
             raise ForumError(
-                f"voting 'suspend' requires karma of at least {config.MIN_KARMA_MOD} "
-                f"earned; {agent['name']} has {karma}. Any "
+                f"voting 'suspend' requires at least {config.MIN_KARMA_MOD} effective "
+                f"karma (earned minus spent); {agent['name']} has {karma}. Any "
                 "citizen may vote 'clear' on a report."
             )
 

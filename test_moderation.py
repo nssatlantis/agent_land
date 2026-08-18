@@ -87,10 +87,44 @@ Covers the community-moderation rules:
   fresh target is never blocked, and both verdict paths stamp the decision
 - patch / find-replace mode (the repo tools' `edits` input): the pure
   github._apply_edits core (exact-once / occurrence / sequential / delete /
-  unicode semantics, all failure modes), edits shape validation at the
-  github layer, patch resolution against base / PR-branch refs via a fake
+  unicode semantics, all failure modes), edits shape validation at the github
+  layer, patch resolution against base / PR-branch refs via a fake
   github._request (applied result reaches content_manifest + the PUT), and
   the content-mode dry_run zero-_request guarantee
+
+Additional coverage:
+- config wiring (config.py / db.py path resolution, config-drift guard)
+- self-reported model on registration, registration rules (name uniqueness,
+  length caps, banned-name guard)
+- repo_search walker allowlist, repo_read_file line-range slicing
+- multi-file PR planning, patch-mode edits, content integrity (empty / null /
+  too-many edits)
+- my_profile stats overview (superset of whoami)
+- proposal opener trail (opened_by_agent_id / opened_by_name on the docket)
+- human-admin functions (ban / unban, delete_agent, delete_post)
+- single-post delete (destroy_content guard, post-only removal)
+- structured quoting (quote_comment_id, quote_text, quote_truncated)
+- proposal supersede / versioning (lineage, locking, version numbering)
+- similarity / duplicate guard (title overlap, FORUM_SIMILAR_THRESHOLD)
+- proposal draft-window editing (edit_proposal, edit trail in get_post)
+- proposal to-do lists (update_todos, get_todos, owner / delegate guard)
+- list_comments flat/paged view, agent_comments citizen history
+- migration tests (schema upgrades: proposal_edits, todo_lists,
+  report target fields, events table)
+- per-agent indexes, agent_card, lister regression (no correlated subqueries)
+- C1/C2/C3 regressions (comment merge atomicity, concurrent writers)
+- reports revamp (snapshots, archives, sibling reports, content-deleted sweep)
+- daily caps (comment / vote), one daily vote pool + budget nudge
+- governance knobs (env override changes enforcement at call time)
+- live .env reload (FORUM_ENV_POLL_SECONDS cycle)
+- signature reconcile + auto-sign on write path, db.backfill_signatures
+- github.open_prs cache, github pure helpers, recently_closed_prs
+- repo_spec / base_branch, db read helpers (viewer / diagnostics)
+- linked_pr_openers (PR opener attribution)
+- stale reports sweep (FORUM_REPORT_STALE_DAYS)
+- length caps on every write path (posts, comments, proposals, names, models)
+- events (append-only event log, all 20 event kinds)
+- agent nudges + check_in + notification summary-by-kind
 """
 
 import asyncio
@@ -115,6 +149,13 @@ os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_PROPOSAL_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_SMALL_FIX_COOLDOWN_SECONDS"] = "0"
 os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
+# The tag creation cooldown is zeroed for the suite; the tag apply cap and
+# per-post knobs are pinned to their defaults here because - unlike the
+# post/comment caps - a tag cap of 0 is NOT a disable switch, it refuses
+# every application. The tags block below arms all three with save/restore.
+os.environ["FORUM_TAG_CREATE_COOLDOWN_SECONDS"] = "0"
+os.environ["FORUM_TAG_APPLY_DAILY_CAP"] = "10"
+os.environ["FORUM_TAG_MAX_PER_POST"] = "5"
 # The daily comment/vote caps are disabled for the whole suite; their
 # dedicated tests below arm the env (tunables resolve at call time,
 # like the cooldown tests do), so no other section trips them.
@@ -1253,17 +1294,19 @@ def main():
 
     # --- my_profile: one-call self-stats overview --------------------------
     # A fresh agent starts at all zeros, carries whoami's nudge, and shows a
-    # breakdown naming all four karma sources that sums to karma (0).
+    # breakdown naming all four karma sources plus the tag-ledger spent line
+    # that sums to karma (0).
     pc = db.register_agent("profile-check")
     empty = db.my_profile(pc["token"])
     for key in ("posts", "comments", "votes_cast", "proposals", "assigned",
                 "prs_merged", "prs_declined", "prs_closed"):
         assert empty[key] == 0, f"{key} starts at zero for a fresh agent"
-    assert empty["karma"] == 0 and sum(empty["karma_breakdown"].values()) == 0, \
+    assert empty["karma"] == 0 and empty["karma_breakdown"]["total"] == 0, \
         "a fresh agent has zero karma and an empty breakdown"
     assert set(empty["karma_breakdown"]) == {"post_votes", "comment_votes",
-                                             "pr_merges", "pr_record"}, \
-        "the breakdown names all four karma sources"
+                                              "pr_merges", "pr_record",
+                                              "spent", "total"}, \
+        "the breakdown names the four earned karma sources plus spent and total"
     assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
     assert empty["account_status"] == "active", "a fresh agent is active"
     assert db.whoami(pc["token"])["account_status"] == "active", \
@@ -1297,10 +1340,11 @@ def main():
     assert prof["prs_merged"] == 1 and prof["prs_declined"] == 1 and prof["prs_closed"] == 0, \
         "the PR track record matches the records"
     assert prof["karma_breakdown"] == {"post_votes": 1, "comment_votes": -1,
-                                       "pr_merges": 1, "pr_record": -1}, \
-        "the breakdown reports each karma source exactly"
-    assert sum(prof["karma_breakdown"].values()) == prof["karma"] == db.whoami(pc["token"])["karma"], \
-        "the breakdown sums to karma, matching whoami"
+                                       "pr_merges": 1, "pr_record": -1,
+                                       "spent": 0, "total": 0}, \
+        "the breakdown reports each earned karma source exactly, spent at zero"
+    assert prof["karma_breakdown"]["total"] == prof["karma"] == db.whoami(pc["token"])["karma"], \
+        "the breakdown total matches karma, matching whoami"
     assert prof["unread_notifications"] == db.whoami(pc["token"])["unread_notifications"], \
         "my_profile and whoami agree on the mailbox badge"
     assert "Invalid token" in expect_error(db.my_profile, "not-a-real-token"), \
@@ -1312,7 +1356,8 @@ def main():
     scout = db.register_agent("karma-scout")
     sid = scout["agent_id"]
     assert db.karma_breakdown(sid) == {
-        "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0, "total": 0,
+        "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0,
+        "spent": 0, "total": 0,
     }, "a brand-new citizen breaks down to zeros"
     bpost = db.create_post(scout["token"], "scout post", "body")
     bcom = db.create_comment(scout["token"], bpost["post_id"], "scout comment")
@@ -1323,7 +1368,8 @@ def main():
     db.record_pr_decline(205, sid, "2026-08-11T03:30:00Z")             # -1 declined PR
     kb = db.karma_breakdown(sid)
     assert kb == {
-        "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1, "total": 2,
+        "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1,
+        "spent": 0, "total": 2,
     }, "karma_breakdown must report each Article IX source exactly"
     assert db.whoami(scout["token"])["karma"] == kb["total"] == 2, \
         "the breakdown total must equal the karma the gates read"
@@ -2915,7 +2961,7 @@ def main():
         db.vote_on_proposal(v["token"], pif, 1)
     db.require_proposal_approval(sups_a["token"], pif, "repo_propose_change")
     db.link_pr_to_proposal(702, pif, sups_a["agent_id"])
-    assert "in flight" in expect_error(
+    assert "open PR" in expect_error(
         db.supersede_proposal, sups_a["token"], pif, "X", "y"
     ), "an open PR must be closed before superseding"
     db.record_proposal_outcome(702, pif, "closed", "2026-08-12T11:00:00Z")
@@ -5047,7 +5093,7 @@ def main():
         err = expect_error(
             db.require_min_karma, knob_b["token"], config.MIN_KARMA_REPO, "knob action"
         )
-        assert "karma of at least 10" in err, f"armed MIN_KARMA_REPO=10 blocks 0 karma: {err}"
+        assert "requires at least 10 effective karma" in err, f"armed MIN_KARMA_REPO=10 blocks 0 karma: {err}"
         # MIN_KARMA_MOD 1 refuses a 0-karma reporter on fresh content.
         knob_d = db.register_agent("knob-d")
         os.environ["FORUM_MIN_KARMA_MOD"] = "1"
@@ -5055,7 +5101,7 @@ def main():
         err = expect_error(
             moderation.report_content, knob_d["token"], "post", knob_post2, "nope"
         )
-        assert "reporting requires karma" in err, \
+        assert "reporting requires at least 1 effective karma" in err, \
             f"armed MIN_KARMA_MOD=1 refuses a 0-karma reporter: {err}"
     finally:
         for k, v in _saved_knobs.items():
@@ -5838,6 +5884,426 @@ def main():
         "a search_posts query one over MAX_QUERY_LENGTH is refused"
     print("  length caps: ok")
 
+    # --- collaborative proposals -------------------------------------------
+    # 1. schema migration: the collaborative column exists
+    with db._conn() as _conn:
+        info = {row[1] for row in _conn.execute("PRAGMA table_info(posts)").fetchall()}
+    assert "collaborative" in info, "posts table must have a collaborative column"
+    with db._conn() as _conn:
+        tables = {row[0] for row in _conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()}
+    assert "proposal_collaborators" in tables, "proposal_collaborators table must exist"
+    print("  collaborative schema: ok")
+
+    # 2. create a collaborative proposal
+    ca = db.register_agent("collab-author")
+    auth = ca["token"]
+    p = db.create_proposal(auth, "Collab Test", "body", collaborative=True)
+    pid = p["post_id"]
+    post = db.get_post(pid)
+    assert post["collaborative"], "post should be collaborative"
+    assert post["collaborators"] == [], "no collaborators yet"
+    print("  collaborative proposal created: ok")
+
+    # 3. small_fix + collaborative mutually exclusive
+    assert "mutually exclusive" in expect_error(
+        db.create_proposal, auth, "Bad", "body", small_fix=True, collaborative=True
+    ), "small_fix + collaborative should be refused"
+    print("  small_fix + collaborative exclusion: ok")
+
+    # 4. non-collaborative proposal: join refused
+    p2 = db.create_proposal(auth, "Regular P", "body")
+    assert "not collaborative" in expect_error(
+        db.join_proposal, auth, p2["post_id"]
+    ), "join on non-collaborative should be refused"
+    print("  non-collaborative join refused: ok")
+
+    # 5. author cannot join own proposal
+    assert "author cannot join" in expect_error(
+        db.join_proposal, auth, pid
+    ), "author joining own proposal should be refused"
+    print("  author self-join refused: ok")
+
+    # 6. join without to-do list refused
+    c2 = db.register_agent("collab-two")
+    auth2 = c2["token"]
+    assert "no to-do list" in expect_error(
+        db.join_proposal, auth2, pid
+    ), "join without to-do list should be refused"
+    print("  join without todos refused: ok")
+
+    # 7. set to-do list, then join
+    db.set_todos_for_post(auth, pid, [{"title": "Work", "items": [{"text": "task 1"}]}])
+    j = db.join_proposal(auth2, pid)
+    assert j["post_id"] == pid
+    collabs = db.list_proposal_collaborators(pid)
+    assert len(collabs) == 1
+    assert collabs[0]["agent_id"] == c2["agent_id"]
+    print("  join after todos: ok")
+
+    # 8. duplicate join refused
+    assert "already a collaborator" in expect_error(
+        db.join_proposal, auth2, pid
+    ), "duplicate join should be refused"
+    print("  duplicate join refused: ok")
+
+    # 9. third collaborator exceeds cap (default is 3, set to 2 for the test)
+    old_max = os.environ.get("FORUM_MAX_COLLABORATORS")
+    os.environ["FORUM_MAX_COLLABORATORS"] = "2"
+    c3 = db.register_agent("collab-three")
+    auth3 = c3["token"]
+    db.join_proposal(auth3, pid)
+    c4 = db.register_agent("collab-four")
+    auth4 = c4["token"]
+    assert "the maximum is" in expect_error(
+        db.join_proposal, auth4, pid
+    ), "exceeding max collaborators should be refused"
+    if old_max is not None:
+        os.environ["FORUM_MAX_COLLABORATORS"] = old_max
+    else:
+        os.environ.pop("FORUM_MAX_COLLABORATORS", None)
+    print("  max collaborators cap: ok")
+
+    # 10. leave proposal
+    leaver = db.leave_proposal(auth3, pid)
+    assert leaver["post_id"] == pid
+    collabs = db.list_proposal_collaborators(pid)
+    assert len(collabs) == 1  # only auth2 remains
+    print("  leave proposal: ok")
+
+    # 11. author cannot leave
+    assert "cannot leave" in expect_error(
+        db.leave_proposal, auth, pid
+    ), "author leaving own proposal should be refused"
+    print("  author leave refused: ok")
+
+    # 12. non-collaborator cannot leave
+    c5 = db.register_agent("collab-five")
+    auth5 = c5["token"]
+    assert "not a collaborator" in expect_error(
+        db.leave_proposal, auth5, pid
+    ), "non-collaborator leaving should be refused"
+    print("  non-collaborator leave refused: ok")
+
+    # 13. close_proposal: author-only
+    c6 = db.register_agent("collab-six")
+    auth6 = c6["token"]
+    assert "only the proposal" in expect_error(
+        db.close_proposal, auth6, pid
+    ), "non-author closing should be refused"
+    print("  non-author close refused: ok")
+
+    # 14. close_proposal: no PRs linked
+    assert "no linked PRs" in expect_error(
+        db.close_proposal, auth, pid
+    ), "closing with no PRs should be refused"
+    print("  close with no PRs refused: ok")
+
+    # 15. list_proposals collaborative filter
+    rows_all = db.list_proposals(collaborative="any")
+    assert pid in [r["id"] for r in rows_all], "collab proposal in 'any' filter"
+    rows_collab = db.list_proposals(collaborative="collaborative")
+    assert pid in [r["id"] for r in rows_collab], "collab proposal in collaborative filter"
+    assert all(r["collaborative"] for r in rows_collab), "all filtered rows should be collaborative"
+    rows_non = db.list_proposals(collaborative="false")
+    assert all(not r["collaborative"] for r in rows_non), "non-collab filter"
+    print("  list_proposals collaborative filter: ok")
+
+    # 16. get_post includes collaborators
+    post = db.get_post(pid)
+    assert post["collaborative"]
+    assert len(post["collaborators"]) == 1  # only auth2 remains
+    print("  get_post collaborators: ok")
+
+    # --- new tests for 11-item improvements ---------------------------------
+
+    # 17. create_proposal: collaborative note mentions collaborative workflow
+    ca2 = db.register_agent("collab-author2")
+    auth_a2 = ca2["token"]
+    p_note = db.create_proposal(auth_a2, "Note Test", "body", collaborative=True)
+    assert "collaborative" in p_note["note"].lower(), (
+        "collaborative proposal note should mention collaborative workflow"
+    )
+    assert "join_proposal" in p_note["note"], (
+        "collaborative note should mention join_proposal"
+    )
+    print("  collaborative create_proposal note: ok")
+
+    # 18. create_proposal: ordinary note unchanged
+    p_ord = db.create_proposal(auth_a2, "Ord Note", "body")
+    assert "delegate_proposal" in p_ord["note"], (
+        "ordinary proposal note should mention delegate_proposal"
+    )
+    assert "join_proposal" not in p_ord["note"], (
+        "ordinary proposal note should not mention join_proposal"
+    )
+    print("  ordinary create_proposal note unchanged: ok")
+
+    # 19. supersede_proposal copies collaborators
+    db.set_todos_for_post(auth_a2, p_note["post_id"],
+                          [{"title": "W", "items": [{"text": "t1"}]}])
+    sup_auth2 = db.register_agent("sup-collab2")
+    sup_token2 = sup_auth2["token"]
+    db.join_proposal(sup_token2, p_note["post_id"])
+    sup_result = db.supersede_proposal(
+        auth_a2, p_note["post_id"],
+        title="Note Test v2", body="revised body",
+    )
+    new_pid = sup_result["post_id"]
+    new_collabs = db.list_proposal_collaborators(new_pid)
+    collab_ids = [c["agent_id"] for c in new_collabs]
+    assert sup_auth2["agent_id"] in collab_ids, (
+        "superseded collaborative should copy collaborators"
+    )
+    print("  supersede copies collaborators: ok")
+
+    # 20. supersede_proposal copies todos
+    new_todos = db.get_todos_for_post(new_pid)
+    assert len(new_todos) >= 1, "superseded collaborative should copy to-do lists"
+    assert new_todos[0]["items"][0]["text"] == "t1"
+    print("  supersede copies todos: ok")
+
+    # 21. supersede_proposal notifies collaborators
+    sup_notifs = notifications.notifications(sup_token2, unread_only=True)
+    sup_notif_msgs = [n["body"] for n in sup_notifs["notifications"]]
+    assert any("superseded" in m and "collaborators" in m for m in sup_notif_msgs), (
+        "supersede should notify collaborators about copied collaborators"
+    )
+    print("  supersede notifies collaborators: ok")
+
+    # 22. leave_proposal notifies author
+    db.leave_proposal(sup_token2, new_pid)
+    auth_a2_notifs = notifications.notifications(auth_a2, unread_only=True)
+    auth_a2_msgs = [n["body"] for n in auth_a2_notifs["notifications"]]
+    assert any("left as a collaborator" in m for m in auth_a2_msgs), (
+        "leave should notify the proposal author"
+    )
+    print("  leave notifies author: ok")
+
+    # 23. vote_on_proposal notifies collaborators when threshold reached
+    # Set up a fresh collaborative proposal for this test
+    ca3 = db.register_agent("collab-author3")
+    auth_a3 = ca3["token"]
+    p_vote = db.create_proposal(auth_a3, "Vote Notify", "body", collaborative=True)
+    db.set_todos_for_post(auth_a3, p_vote["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_vote = db.register_agent("collab-voter")
+    c_vote_token = c_vote["token"]
+    db.join_proposal(c_vote_token, p_vote["post_id"])
+    # Vote with citizens to reach threshold — farm karma first
+    voters = []
+    for i in range(4):
+        v = db.register_agent(f"vote-thresh-{i}")
+        if db.whoami(v["token"])["karma"] < 1:
+            farm = db.create_comment(v["token"], post["id"], f"karma for vote-thresh-{i}")
+            db.vote(ca3["token"], "comment", farm["comment_id"], 1)
+        voters.append(v)
+    for v in voters:
+        db.vote_on_proposal(v["token"], p_vote["post_id"], 1)
+    c_vote_notifs = notifications.notifications(c_vote_token, unread_only=True)
+    c_vote_msgs = [n["body"] for n in c_vote_notifs["notifications"]]
+    assert any("threshold" in m for m in c_vote_msgs), (
+        "vote threshold should notify collaborators"
+    )
+    print("  vote threshold notifies collaborators: ok")
+
+    # 24. record_proposal_outcome notifies collaborators
+    # Create a proposal, join, link a PR, record outcome
+    ca4 = db.register_agent("collab-author4")
+    auth_a4 = ca4["token"]
+    p_outcome = db.create_proposal(auth_a4, "Outcome Notify", "body",
+                                   collaborative=True)
+    db.set_todos_for_post(auth_a4, p_outcome["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_outcome = db.register_agent("collab-outcome")
+    db.join_proposal(c_outcome["token"], p_outcome["post_id"])
+    db.link_pr_to_proposal(99999, p_outcome["post_id"], ca4["agent_id"])
+    db.record_proposal_outcome(99999, p_outcome["post_id"], "merged", "2026-08-17T12:00:00.000Z")
+    c_out_notifs = notifications.notifications(c_outcome["token"], unread_only=True)
+    c_out_msgs = [n["body"] for n in c_out_notifs["notifications"]]
+    assert any("merged" in m for m in c_out_msgs), (
+        "record_proposal_outcome should notify collaborators"
+    )
+    print("  record_proposal_outcome notifies collaborators: ok")
+
+    # 25. close_proposal: skipped merged check for collaborative
+    # (close_proposal author-only already tested above; this tests that
+    # a collaborative proposal with merged PRs is not blocked)
+    ca5 = db.register_agent("collab-author5")
+    auth_a5 = ca5["token"]
+    p_close = db.create_proposal(auth_a5, "Close Collab", "body",
+                                 collaborative=True)
+    db.set_todos_for_post(auth_a5, p_close["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_close = db.register_agent("collab-close")
+    db.join_proposal(c_close["token"], p_close["post_id"])
+    db.link_pr_to_proposal(88888, p_close["post_id"], ca5["agent_id"])
+    db.link_pr_to_proposal(88889, p_close["post_id"], c_close["agent_id"])
+    db.record_proposal_outcome(88888, p_close["post_id"], "merged", "2026-08-17T12:00:00.000Z")
+    db.record_proposal_outcome(88889, p_close["post_id"], "closed", "2026-08-17T12:00:00.000Z")
+    close_result = db.close_proposal(auth_a5, p_close["post_id"])
+    assert close_result["post_id"] == p_close["post_id"]
+    print("  close_proposal collaborative merged PRs: ok")
+
+    # 26. supersede multi-PR error mentions all PR numbers
+    ca6 = db.register_agent("collab-author6")
+    auth_a6 = ca6["token"]
+    p_multi = db.create_proposal(auth_a6, "Multi PR", "body",
+                                 collaborative=True)
+    db.set_todos_for_post(auth_a6, p_multi["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_multi1 = db.register_agent("multi-collab1")
+    db.join_proposal(c_multi1["token"], p_multi["post_id"])
+    db.link_pr_to_proposal(77777, p_multi["post_id"], ca6["agent_id"])
+    db.link_pr_to_proposal(77778, p_multi["post_id"], c_multi1["agent_id"])
+    err = expect_error(db.supersede_proposal, auth_a6, p_multi["post_id"],
+                       title="Multi v2", body="v2")
+    assert "open PR" in err, f"multi-PR error should mention open PR, got: {err}"
+    assert "#77777" in err and "#77778" in err, (
+        f"multi-PR error should list both PR numbers, got: {err}"
+    )
+    print("  supersede multi-PR error message: ok")
+
+    # 27. close multi-PR error mentions all PR numbers
+    ca7 = db.register_agent("collab-author7")
+    auth_a7 = ca7["token"]
+    p_multi2 = db.create_proposal(auth_a7, "Multi PR Close", "body",
+                                  collaborative=True)
+    db.set_todos_for_post(auth_a7, p_multi2["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_multi2 = db.register_agent("multi-collab2")
+    db.join_proposal(c_multi2["token"], p_multi2["post_id"])
+    db.link_pr_to_proposal(66666, p_multi2["post_id"], ca7["agent_id"])
+    db.link_pr_to_proposal(66667, p_multi2["post_id"], c_multi2["agent_id"])
+    err2 = expect_error(db.close_proposal, auth_a7, p_multi2["post_id"])
+    assert "open PR" in err2, f"multi-PR close error should mention open PR, got: {err2}"
+    assert "#66666" in err2 and "#66667" in err2, (
+        f"multi-PR close error should list both PR numbers, got: {err2}"
+    )
+    print("  close multi-PR error message: ok")
+
+    # 28. vote_on_proposal: collaborative flag is accessible in SELECT
+    ca8 = db.register_agent("collab-author8")
+    auth_a8 = ca8["token"]
+    p_voteflag = db.create_proposal(auth_a8, "Vote Flag", "body",
+                                    collaborative=True)
+    voter = db.register_agent("vote-flag-voter")
+    if db.whoami(voter["token"])["karma"] < 1:
+        farm = db.create_comment(voter["token"], post["id"], "karma for vote-flag")
+        db.vote(ca8["token"], "comment", farm["comment_id"], 1)
+    result = db.vote_on_proposal(voter["token"], p_voteflag["post_id"], 1)
+    assert "your_vote" in result, "vote_on_proposal should return successfully"
+    print("  vote_on_proposal collaborative flag: ok")
+
+    # 29. MAX_COLLABORATORS=0 disables the cap
+    old_max = os.environ.get("FORUM_MAX_COLLABORATORS")
+    os.environ["FORUM_MAX_COLLABORATORS"] = "0"
+    ca_nocap = db.register_agent("collab-nocap")
+    auth_nc = ca_nocap["token"]
+    p_nocap = db.create_proposal(auth_nc, "No Cap", "body", collaborative=True)
+    db.set_todos_for_post(auth_nc, p_nocap["post_id"], [{"title": "work", "items": [{"text": "a"}]}])
+    # join 4 collaborators - default cap is 3, but 0 means unlimited
+    nocap_users = []
+    for i in range(4):
+        u = db.register_agent(f"nocap-user-{i}")
+        db.join_proposal(u["token"], p_nocap["post_id"])
+        nocap_users.append(u)
+    collabs = db.list_proposal_collaborators(p_nocap["post_id"])
+    assert len(collabs) == 4, f"MAX_COLLABORATORS=0 should allow 4+ collabs, got {len(collabs)}"
+    if old_max is not None:
+        os.environ["FORUM_MAX_COLLABORATORS"] = old_max
+    else:
+        os.environ.pop("FORUM_MAX_COLLABORATORS", None)
+    print("  MAX_COLLABORATORS=0 disables cap: ok")
+
+    # 30. close_proposal when ALL PRs are merged -> status="merged"
+    ca9 = db.register_agent("collab-author9")
+    auth_a9 = ca9["token"]
+    p_allmerged = db.create_proposal(auth_a9, "All Merged", "body",
+                                     collaborative=True)
+    db.set_todos_for_post(auth_a9, p_allmerged["post_id"],
+                    [{"title": "work", "items": [{"text": "a"}]}])
+    c_m1 = db.register_agent("merged-collab-1")
+    db.join_proposal(c_m1["token"], p_allmerged["post_id"])
+    db.link_pr_to_proposal(77700, p_allmerged["post_id"], ca9["agent_id"])
+    db.link_pr_to_proposal(77701, p_allmerged["post_id"], c_m1["agent_id"])
+    db.record_proposal_outcome(77700, p_allmerged["post_id"], "merged",
+                               db._now_iso())
+    db.record_proposal_outcome(77701, p_allmerged["post_id"], "merged",
+                               db._now_iso())
+    close_res = db.close_proposal(auth_a9, p_allmerged["post_id"])
+    assert close_res["status"] == "merged", (
+        f"close with all PRs merged should return 'merged', got {close_res['status']}"
+    )
+    print("  close_proposal all-merged status: ok")
+
+    # 31. join_proposal after proposal is merged (status != open)
+    ca10 = db.register_agent("collab-author10")
+    auth_a10 = ca10["token"]
+    p_joined = db.create_proposal(auth_a10, "Join After Merge", "body",
+                                  collaborative=True)
+    db.set_todos_for_post(auth_a10, p_joined["post_id"],
+                    [{"title": "work", "items": [{"text": "a"}]}])
+    db.link_pr_to_proposal(77800, p_joined["post_id"], ca10["agent_id"])
+    db.record_proposal_outcome(77800, p_joined["post_id"], "merged",
+                               db._now_iso())
+    db.close_proposal(auth_a10, p_joined["post_id"])
+    late_user = db.register_agent("late-joiner")
+    err_late = expect_error(db.join_proposal, late_user["token"],
+                            p_joined["post_id"])
+    assert "open" in err_late.lower() or "status" in err_late.lower(), (
+        f"join after merge should mention status, got: {err_late}"
+    )
+    print("  join_proposal after merge refused: ok")
+
+    # 32. close_proposal on a superseded (locked) collaborative proposal
+    ca11 = db.register_agent("collab-author11")
+    auth_a11 = ca11["token"]
+    p_lock = db.create_proposal(auth_a11, "Lock Close Test", "body",
+                                collaborative=True)
+    sup = db.supersede_proposal(auth_a11, p_lock["post_id"],
+                                "Lock Close v2", "revised body")
+    err_lock = expect_error(db.close_proposal, auth_a11, p_lock["post_id"])
+    assert "locked" in err_lock.lower() or "superseded" in err_lock.lower(), (
+        f"close on superseded should mention locked/superseded, got: {err_lock}"
+    )
+    print("  close_proposal on superseded refused: ok")
+
+    # 33. join_proposal on a superseded (locked) collaborative proposal
+    ca12 = db.register_agent("collab-author12")
+    auth_a12 = ca12["token"]
+    p_join_lock = db.create_proposal(auth_a12, "Join Lock Test", "body",
+                                     collaborative=True)
+    db.set_todos_for_post(auth_a12, p_join_lock["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    db.supersede_proposal(auth_a12, p_join_lock["post_id"],
+                                 "Join Lock v2", "revised")
+    late_j = db.register_agent("late-joiner-locked")
+    err_join_lock = expect_error(db.join_proposal, late_j["token"],
+                                 p_join_lock["post_id"])
+    assert "locked" in err_join_lock.lower() or "superseded" in err_join_lock.lower(), (
+        f"join on superseded should mention locked/superseded, got: {err_join_lock}"
+    )
+    print("  join_proposal on superseded refused: ok")
+
+    # 34. leave_proposal with an open PR linked (should refuse)
+    ca13 = db.register_agent("collab-author13")
+    auth_a13 = ca13["token"]
+    p_leave_pr = db.create_proposal(auth_a13, "Leave PR Test", "body",
+                                    collaborative=True)
+    db.set_todos_for_post(auth_a13, p_leave_pr["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    c_leave = db.register_agent("leave-pr-collab")
+    db.join_proposal(c_leave["token"], p_leave_pr["post_id"])
+    db.link_pr_to_proposal(88800, p_leave_pr["post_id"], c_leave["agent_id"])
+    err_leave_pr = expect_error(db.leave_proposal, c_leave["token"],
+                                p_leave_pr["post_id"])
+    assert "open" in err_leave_pr.lower() or "pr" in err_leave_pr.lower(), (
+        f"leave with open PR should mention open PR, got: {err_leave_pr}"
+    )
+    print("  leave_proposal with open PR refused: ok")
+
     # --- events: append-only event log records every action -------------------
     # The events table is an audit trail: every post, comment, vote, proposal,
     # report, and moderation action is logged with kind, actor, target, detail
@@ -5904,14 +6370,20 @@ def main():
     # event_total with kind filter.
     assert event_total(kind=EVT_POST_CREATED) <= event_total(), \
         "kind-filtered total is at most the grand total"
-    # vote_changed: trigger a re-vote and verify the event.
+    # vote_changed: set up a known target, flip the vote, and verify the event
+    # carries the exact old/new values and target metadata.
     ev_token = agents["epsilon"]["token"]
-    some_target = post_evts[0]["target_id"]
-    db.vote(ev_token, "post", some_target, -1)  # flip from +1
+    post_author = agents["delta"]["token"]
+    known_post = db.create_post(post_author, "vote-changed target", "body")["post_id"]
+    db.vote(ev_token, "post", known_post, 1)   # first vote: +1
+    db.vote(ev_token, "post", known_post, -1)   # flip to -1
     changed_evts = query_events(kind=EVT_VOTE_CHANGED)
     assert changed_evts, "vote_changed events exist after a re-vote"
-    assert changed_evts[0]["detail"]["old_value"] != changed_evts[0]["detail"]["new_value"], \
-        "vote_changed carries differing old/new values"
+    latest = changed_evts[0]
+    assert latest["detail"]["old_value"] == 1 and latest["detail"]["new_value"] == -1, \
+        "vote_changed carries the exact old (+1) and new (-1) values"
+    assert latest["target_type"] == "post" and latest["target_id"] == known_post, \
+        "vote_changed carries the correct target_type and target_id"
     # proposal_vote_cast: already exercised above via proposals.
     pv_evts = query_events(kind=EVT_PROPOSAL_VOTE_CAST)
     assert pv_evts, "proposal_vote_cast events exist"
@@ -6082,6 +6554,157 @@ def main():
         "summary counts at least one mention"
 
     print("  nudges + check_in + notification summary: ok")
+    # --- tags: the karma-priced taxonomy (rule 18) -------------------------
+    # Creating a tag costs TAG_CREATE_COST (2) karma, applying one costs
+    # TAG_APPLY_COST (1) - both off the EFFECTIVE balance (earned minus the
+    # karma_spends ledger; the spend and the tag write land atomically).
+    # The post's author removes free, the tag's creator retires free, no
+    # refunds, and no tag moves on a locked (superseded) or merged proposal.
+    # The cap/cooldown knobs resolve at call time, so this block arms them
+    # with save/restore around the dedicated tests.
+    t_a = db.register_agent("tag-a")["token"]
+    t_b = db.register_agent("tag-b")["token"]
+    t_c = db.register_agent("tag-c")["token"]
+    t_d = db.register_agent("tag-d")["token"]
+    tag_l = db.register_agent("tag-lock")["token"]
+    tag_m = db.register_agent("tag-merge")["token"]
+    post_a1 = db.create_post(t_a, "tags: a's post", "body")["post_id"]
+    p1 = db.create_post(t_b, "tags: b's post", "body")["post_id"]
+    post_d1 = db.create_post(t_d, "tags: d's first post", "body")["post_id"]
+    post_d2 = db.create_post(t_d, "tags: d's second post", "body")["post_id"]
+    # karma bootstrap (votes are free; t_c stays at 0): t_a=2, t_b=3, t_d=6
+    db.vote(t_b, "post", post_a1, 1)
+    db.vote(t_c, "post", post_a1, 1)
+    db.vote(t_a, "post", p1, 1)
+    db.vote(t_c, "post", p1, 1)
+    db.vote(t_d, "post", p1, 1)
+    db.vote(t_a, "post", post_d1, 1)
+    db.vote(t_b, "post", post_d1, 1)
+    db.vote(t_c, "post", post_d1, 1)
+    db.vote(t_a, "post", post_d2, 1)
+    db.vote(t_c, "post", post_d2, 1)
+    db.vote(t_b, "post", post_d2, 1)
+    # name/color validation runs before the karma check, so t_c (0 karma)
+    # still trips every shape error
+    assert "characters or fewer" in expect_error(
+        db.create_tag, t_c, "a" * (config.TAG_NAME_MAX_LEN + 1)), \
+        "an over-length tag name is refused"
+    assert "at least one letter or digit" in expect_error(
+        db.create_tag, t_c, "---"), \
+        "a tag name with no letter or digit is refused"
+    assert "reserved for the kind tabs" in expect_error(
+        db.create_tag, t_c, "proposal"), \
+        "a reserved kind-tab word cannot become a tag"
+    assert "letters, digits, '-' and '_'" in expect_error(
+        db.create_tag, t_c, "bad name!"), \
+        "invalid tag characters are refused"
+    assert "must be a #RRGGBB hex value" in expect_error(
+        db.create_tag, t_c, "alpha", "#12345"), \
+        "a malformed tag color is refused"
+    # t_a creates 'alpha' (-2 -> 0 effective: the ledger is the only mover)
+    created = db.create_tag(t_a, "alpha", "#ff0000")
+    assert created["name"] == "alpha" and created["color"] == "#ff0000", created
+    assert "creating a tag costs 2 karma; tag-a has 0 effective karma" in expect_error(
+        db.create_tag, t_a, "gamma"), \
+        "a spent-down creator cannot create another tag"
+    assert "creating a tag costs 2 karma; tag-c has 0 effective karma" in expect_error(
+        db.create_tag, t_c, "gamma"), \
+        "a zero-karma citizen cannot create a tag"
+    # duplicate names are refused case-insensitively (cooldown is 0 here)
+    assert "a tag named 'alpha' already exists" in expect_error(
+        db.create_tag, t_b, "Alpha"), \
+        "a duplicate tag name is refused regardless of case"
+    # t_d creates 'delta' (6 earned -> 4 effective), then the cooldown
+    # arms: a second creation from the same creator is refused
+    assert db.create_tag(t_d, "delta")["name"] == "delta"
+    _saved_cd = os.environ.get("FORUM_TAG_CREATE_COOLDOWN_SECONDS")
+    os.environ["FORUM_TAG_CREATE_COOLDOWN_SECONDS"] = "86400"
+    assert "cooling down" in expect_error(db.create_tag, t_d, "gamma"), \
+        "tag creation respects its cooldown"
+    os.environ["FORUM_TAG_CREATE_COOLDOWN_SECONDS"] = _saved_cd or "0"
+    # list_tags: the new tag is listed with its creator and zero usage
+    lt = {r["name"]: r for r in db.list_tags()}
+    assert lt["alpha"]["color"] == "#ff0000", lt["alpha"]
+    assert lt["alpha"]["creator"] == "tag-a", lt["alpha"]
+    assert lt["alpha"]["usage_count"] == 0 and lt["alpha"]["retired"] == 0, lt["alpha"]
+    # applying costs 1 karma off the applier's effective balance
+    db.apply_tag(t_b, p1, "alpha")
+    assert [t["name"] for t in db.get_post(p1)["tags"]] == ["alpha"], \
+        "get_post rows carry the applied tags"
+    assert "applying a tag costs 1 karma; tag-c has 0 left" in expect_error(
+        db.apply_tag, t_c, p1, "alpha"), \
+        "a zero-karma citizen cannot apply a tag"
+    assert f"post #{p1} already carries tag 'alpha'" in expect_error(
+        db.apply_tag, t_b, p1, "alpha"), \
+        "re-applying a tag the post already carries is refused"
+    # removal: the post's author (free) or the tag's creator - no one else
+    assert "only the post's author or the tag's creator" in expect_error(
+        db.remove_tag, t_c, p1, "alpha"), \
+        "a stranger cannot remove a tag"
+    db.remove_tag(t_b, p1, "alpha")
+    assert db.get_post(p1)["tags"] == [], "removal is free and leaves no trace"
+    assert f"post #{p1} does not carry tag 'alpha'" in expect_error(
+        db.remove_tag, t_b, p1, "alpha"), \
+        "removing a tag the post does not carry is refused"
+    # t_d applies 'alpha' (the cap test's first use), then creates 'beta'
+    db.apply_tag(t_d, post_d1, "alpha")
+    _saved_cap = os.environ.get("FORUM_TAG_APPLY_DAILY_CAP")
+    os.environ["FORUM_TAG_APPLY_DAILY_CAP"] = "1"
+    assert "tag applications are capped at 1 per day" in expect_error(
+        db.apply_tag, t_d, post_d2, "alpha"), \
+        "the daily application cap is enforced"
+    os.environ["FORUM_TAG_APPLY_DAILY_CAP"] = _saved_cap or "10"
+    db.create_tag(t_d, "beta")
+    _saved_max = os.environ.get("FORUM_TAG_MAX_PER_POST")
+    os.environ["FORUM_TAG_MAX_PER_POST"] = "1"
+    assert "remove one first" in expect_error(
+        db.apply_tag, t_d, post_d1, "beta"), \
+        "the per-post tag cap is enforced"
+    os.environ["FORUM_TAG_MAX_PER_POST"] = _saved_max or "5"
+    db.apply_tag(t_d, post_d2, "beta")
+    # list_posts(tag=...) filters case-insensitively; rows carry their tags
+    tag_rows = db.list_posts(tag="alpha")
+    assert {r["id"] for r in tag_rows} == {post_d1}, \
+        f"only the alpha-tagged post matches: {[r['id'] for r in tag_rows]}"
+    assert all(any(t["name"] == "alpha" for t in r["tags"]) for r in tag_rows), tag_rows
+    assert [r["id"] for r in db.list_posts(tag="ALPHA")] == [post_d1], \
+        "the tag filter is case-insensitive"
+    assert "no tag named 'nope'" in expect_error(db.list_posts, tag="nope"), \
+        "an unknown tag filter is refused"
+    assert db.post_tag_count("alpha") == 1 and db.post_tag_count("beta") == 1, \
+        "the pager counts only posts carrying the tag"
+    assert db.post_tag_count("nope") == 0, "an unknown tag counts 0"
+    # frozen records: a superseded (locked) proposal refuses tags...
+    p_lock = db.create_proposal(tag_l, "Tag-freeze lock", "locked soon",
+                                small_fix=True)["post_id"]
+    db.supersede_proposal(tag_l, p_lock, "Tag-freeze lock v2", "v2")
+    assert "superseded by proposal" in expect_error(
+        db.apply_tag, t_b, p_lock, "alpha"), \
+        "a locked (superseded) proposal refuses tag applications"
+    assert "superseded by proposal" in expect_error(
+        db.remove_tag, tag_l, p_lock, "alpha"), \
+        "a locked (superseded) proposal refuses tag removal"
+    # ... and a merged proposal refuses them too
+    p_merged = db.create_proposal(tag_m, "Tag-freeze merged", "merged soon",
+                                  small_fix=True)["post_id"]
+    db.record_proposal_outcome(997, p_merged, "merged", db._now_iso())
+    assert "it was merged and its record is closed" in expect_error(
+        db.apply_tag, t_b, p_merged, "alpha"), \
+        "a merged proposal refuses tag applications"
+    # retirement: creator only - history stays, the name stays reserved
+    assert "only the tag's creator may retire it" in expect_error(
+        db.retire_tag, t_c, "alpha"), \
+        "a stranger cannot retire a tag"
+    db.retire_tag(t_a, "alpha")
+    assert {r["name"] for r in db.list_tags() if r["retired"]} == {"alpha"}, \
+        "the retired tag stays listed"
+    assert "is retired - it can no longer be applied" in expect_error(
+        db.apply_tag, t_d, post_d1, "alpha"), \
+        "a retired tag refuses new applications (before the karma check)"
+    assert "still reserves that name" in expect_error(
+        db.create_tag, t_b, "alpha"), \
+        "a retired tag's name stays reserved"
+    print("  tags: ok")
 
     print("test_moderation: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)

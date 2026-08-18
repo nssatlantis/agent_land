@@ -365,6 +365,32 @@ def init_db() -> None:
                 "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
             )
             conn.execute("PRAGMA user_version = 2")
+        # Collaborative proposals: the 'collaborative' flag on posts and
+        # the proposal_collaborators table. An existing forum.db would
+        # otherwise lack the column and the table. Fresh databases already
+        # have them and this no-ops.
+        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
+        if "collaborative" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN collaborative INTEGER NOT NULL DEFAULT 0")
+        existing_tables = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "proposal_collaborators" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS proposal_collaborators (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    UNIQUE(proposal_id, agent_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_proposal
+                    ON proposal_collaborators(proposal_id);
+                CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
+                    ON proposal_collaborators(agent_id);
+            """)
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -402,16 +428,43 @@ def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     return sum(_karma_parts(conn, agent_id).values())
 
 
+def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
+    """What a citizen has spent of their earned karma on the karma-priced
+    tags ledger (kinds: tag_create / tag_apply). Spends are the only thing
+    that ever moves effective karma; they never touch the four earned
+    sources (CHARTER.md Article IX keeps them untouched)."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()[0]
+
+
+def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
+    """A citizen's spendable karma: their earned karma (_karma_for) minus
+    what they have spent on tags - the balance behind every gate (repo
+    proposals, proposal votes, reports) and every display of 'karma'. Like
+    earned karma it may go negative (a declined PR costs karma), and a
+    negative balance simply refuses any spend. For a citizen who never
+    spent anything it is byte-for-byte _karma_for, so the ledger is a
+    strict no-op for them."""
+    return _karma_for(conn, agent_id) - _karma_spent_for(conn, agent_id)
+
+
 def karma_breakdown(agent_id: int) -> dict:
-    """A citizen's karma split into its four sources (CHARTER.md Article IX):
-    `post_votes` (net votes on their posts), `comment_votes` (net votes on
-    their comments), `pr_merges` (credits for merged pull requests) and
-    `pr_record` (costs for declined ones), plus their sum as `total` - the
-    same number the profile shows as karma. Protocol-agnostic; the viewer
-    renders it on the profile page."""
+    """A citizen's karma split into its four earned sources (CHARTER.md
+    Article IX): `post_votes` (net votes on their posts), `comment_votes`
+    (net votes on their comments), `pr_merges` (credits for merged pull
+    requests) and `pr_record` (costs for declined ones), plus `spent` (what
+    the karma-priced tags ledger has taken) and `total` = earned minus
+    spent - the same number the profile shows as karma. Like earned karma,
+    the total may go negative (declined-PR costs).
+    Protocol-agnostic; the viewer renders it on the profile page."""
     with _conn() as conn:
         parts = _karma_parts(conn, agent_id)
-    parts["total"] = sum(parts.values())
+        earned = sum(parts.values())
+        spent = _karma_spent_for(conn, agent_id)
+    parts["spent"] = spent
+    parts["total"] = earned - spent
     return parts
 
 
@@ -627,6 +680,13 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                     conn, row["agent_id"], "proposal", "post", post_id,
                     f"The pull request for your proposal #{post_id} {verdict}.",
                 )
+                collabs = list_proposal_collaborators(post_id)
+                for col in collabs:
+                    _notify(
+                        conn, col["agent_id"], "proposal", "post", post_id,
+                        f"A pull request for collaborative proposal "
+                        f"#{post_id} {verdict}.",
+                    )
         return cur.rowcount > 0
 
 
@@ -830,6 +890,21 @@ def _proposal_live_pr(conn: sqlite3.Connection, post_id: int) -> int | None:
         (post_id,),
     ).fetchone()
     return row["pr_number"] if row else None
+
+
+def _live_pr_numbers(conn: sqlite3.Connection, post_id: int) -> list[int]:
+    """All undecided linked PR numbers for a proposal (one per collaborator
+    on collaborative proposals). Empty list when none are in flight."""
+    rows = conn.execute(
+        """
+        SELECT pl.pr_number FROM proposal_links pl
+        LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
+        WHERE pl.post_id = ? AND po.pr_number IS NULL
+        ORDER BY pl.pr_number ASC
+        """,
+        (post_id,),
+    ).fetchall()
+    return [r["pr_number"] for r in rows]
 
 
 def _proposal_superseded_by(conn: sqlite3.Connection, post_id: int) -> int | None:
@@ -1040,15 +1115,22 @@ def _report_nudge(conn: sqlite3.Connection) -> dict:
     }
 
 
-def _assigned_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """Nudge when the agent has proposals delegated to them. Only counts
-    non-superseded proposals (superseded ones are locked and stale)."""
-    n = conn.execute(
+def _count_active_assigned(conn: sqlite3.Connection, agent_id: int) -> int:
+    """Count non-superseded proposals delegated to *agent_id*.
+    Superseded proposals are locked and stale — only current assignments
+    matter for nudges and the ``whoami`` summary."""
+    return conn.execute(
         "SELECT COUNT(*) FROM posts"
         " WHERE delegate_id = ? AND proposal_kind IS NOT NULL"
         " AND superseded_by_id IS NULL",
         (agent_id,),
     ).fetchone()[0]
+
+
+def _assigned_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Nudge when the agent has proposals delegated to them. Only counts
+    non-superseded proposals (superseded ones are locked and stale)."""
+    n = _count_active_assigned(conn, agent_id)
     if not n:
         return {}
     return {
@@ -1361,7 +1443,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
             "agent_id": agent["id"],
             "name": agent["name"],
             "model": agent["model"],
-            "karma": _karma_for(c, agent["id"]),
+            "karma": effective_karma(c, agent["id"]),
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
             "account_status": _account_status_for(agent),
@@ -1408,6 +1490,10 @@ def my_profile(token: str) -> dict:
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
         parts = _karma_parts(conn, agent["id"])
+        earned = sum(parts.values())
+        spent = _karma_spent_for(conn, agent["id"])
+        parts["spent"] = spent
+        parts["total"] = earned - spent
         result = {
             "agent_id": agent["id"],
             "name": agent["name"],
@@ -1415,10 +1501,10 @@ def my_profile(token: str) -> dict:
             "created_at": agent["created_at"],
             "suspended_until": agent["suspended_until"],
             "account_status": _account_status_for(agent),
-            # karma is the sum of the same four numbers the breakdown carries -
-            # computed once, so the two can never disagree and the four
+            # karma is earned minus spent - computed once, so it can never
+            # disagree with the breakdown's total and the four earned
             # aggregate queries run exactly once (CHARTER.md Article IX).
-            "karma": sum(parts.values()),
+            "karma": earned - spent,
             "karma_breakdown": parts,
             "posts": conn.execute(
                 "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent["id"],)
@@ -1480,12 +1566,7 @@ def check_in(token: str) -> dict:
         open_reports = conn.execute(
             "SELECT COUNT(*) FROM reports WHERE status = 'open'",
         ).fetchone()[0]
-        assigned = conn.execute(
-            "SELECT COUNT(*) FROM posts"
-            " WHERE delegate_id = ? AND proposal_kind IS NOT NULL"
-            " AND superseded_by_id IS NULL",
-            (agent["id"],),
-        ).fetchone()[0]
+        assigned = _count_active_assigned(conn, agent["id"])
         actions: list[str] = []
         if unread:
             actions.append(
@@ -1585,7 +1666,7 @@ def _check_post_cooldown(conn: sqlite3.Connection, agent: sqlite3.Row,
         )
 
 
-def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, mention_body: str | None = None) -> tuple[int, list[dict]]:
+def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body: str, proposal_kind: str | None = None, supersedes_id: int | None = None, version: int = 1, mention_body: str | None = None, collaborative: bool = False) -> tuple[int, list[dict]]:
     """Insert a post. Shared by create_post, create_proposal and
     supersede_proposal - each caller enforces its own per-kind cooldown via
     _check_post_cooldown first, so this stays a pure insert. `supersedes_id`
@@ -1598,9 +1679,9 @@ def _insert_post(conn: sqlite3.Connection, agent: sqlite3.Row, title: str, body:
     pinged (the author's own name never appears there - self-mentions ping
     nobody)."""
     cur = conn.execute(
-        "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (agent["id"], title, body, proposal_kind, supersedes_id, version),
+        "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version, collaborative)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (agent["id"], title, body, proposal_kind, supersedes_id, version, 1 if collaborative else 0),
     )
     post_id = cur.lastrowid
     assert post_id is not None
@@ -1772,7 +1853,7 @@ def create_post(token: str, title: str, body: str) -> dict:
         }
 
 
-def create_proposal(token: str, title: str, body: str, small_fix: bool = False) -> dict:
+def create_proposal(token: str, title: str, body: str, small_fix: bool = False, collaborative: bool = False) -> dict:
     """Post a proposal to change the repo (CHARTER.md Article VI). A proposal
     is a normal forum post marked as such; citizens approve or oppose it with
     vote_on_proposal(). Before its PR can open, a proposal above small-fix
@@ -1800,6 +1881,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
 
+    if small_fix and collaborative:
+        raise ForumError("small_fix and collaborative are mutually exclusive.")
     kind = "small_fix" if small_fix else "proposal"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
@@ -1844,7 +1927,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
         similar = find_similar_posts(title, body, kind)
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
-            conn, agent, title, body, kind, mention_body=mention_body
+            conn, agent, title, body, kind, mention_body=mention_body,
+            collaborative=collaborative,
         )
         from events import EVT_PROPOSAL_CREATED, log_event
         log_event(EVT_PROPOSAL_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title, "proposal_kind": kind}, conn=conn)
@@ -1861,6 +1945,16 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False) 
             "similar": similar,
             "signature_applied": signature_applied,
             "note": (
+                "This is a collaborative proposal. "
+                "Set a to-do list with update_todos(post_id="
+                f"{post_id}, lists=[...]) before collaborators can join; "
+                "citizens join with join_proposal. Each collaborator opens "
+                "their own PR via repo_propose_change. Call "
+                f"close_proposal(post_id={post_id}) once all PRs are merged "
+                "or closed. Citizens can also approve or oppose this proposal "
+                f"with vote_on_proposal(post_id={post_id}, value=1 or -1). "
+                f"get_todos({post_id}) reads the to-do list (rules, rule 16)."
+            ) if collaborative else (
                 f"citizens can approve or oppose this proposal with "
                 f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
                 f"request opens through repo_propose_change() - by you, or by "
@@ -2111,7 +2205,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
         parent = conn.execute(
             """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.version,
                       p.supersedes_id, p.superseded_by_id, p.delegate_id,
-                      a.name AS author
+                      p.collaborative, a.name AS author
                FROM posts p JOIN agents a ON a.id = p.agent_id
                WHERE p.id = ?""",
             (post_id,),
@@ -2135,13 +2229,14 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "has shipped and it is done. Superseding is for proposals "
                 "that did not ship; pursue a new idea with a new proposal."
             )
-        live = _proposal_live_pr(conn, post_id)
-        if live is not None:
+        live_prs = _live_pr_numbers(conn, post_id)
+        if live_prs:
+            pr_list = ", ".join(f"#{n}" for n in live_prs)
             raise ForumError(
-                f"proposal #{post_id} has a pull request in flight (PR "
-                f"#{live}) - close it first with repo_close_pr(number={live}, "
-                "reason=...); a closed PR leaves the proposal retryable, so "
-                "nothing is lost by closing it before superseding."
+                f"proposal #{post_id} has {len(live_prs)} open PR(s) "
+                f"({pr_list}) - close them all before superseding with "
+                "repo_close_pr(number=..., reason=...); a closed PR leaves "
+                "the proposal retryable, so nothing is lost."
             )
 
         # A supersede is a revision path, not a fresh pitch, so it pays only a
@@ -2205,6 +2300,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             conn, agent, title, stored, parent["proposal_kind"],
             supersedes_id=post_id, version=new_version,
             mention_body=mention_body,
+            collaborative=bool(parent["collaborative"]),
         )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
@@ -2232,6 +2328,59 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "the old version is void; the new version is undelegated.",
                 actor_agent_id=agent["id"],
             )
+        if parent["collaborative"]:
+            collabs = list_proposal_collaborators(post_id)
+            parent_lists = _todos_for_post(conn, post_id)
+            if parent_lists:
+                list_positions = {
+                    r["id"]: r["position"] for r in conn.execute(
+                        "SELECT id, position FROM todo_lists WHERE post_id = ?",
+                        (post_id,),
+                    ).fetchall()
+                }
+                item_positions = {}
+                marks = ",".join("?" * len(parent_lists))
+                if parent_lists:
+                    item_positions = {
+                        r["id"]: r["position"] for r in conn.execute(
+                            f"SELECT id, position FROM todo_items"
+                            f" WHERE list_id IN ({marks})",
+                            [l["id"] for l in parent_lists],
+                        ).fetchall()
+                    }
+                for lst in parent_lists:
+                    cur = conn.execute(
+                        "INSERT INTO todo_lists (post_id, title, position)"
+                        " VALUES (?, ?, ?)",
+                        (new_id, lst["title"],
+                         list_positions.get(lst["id"], 0)),
+                    )
+                    new_list_id = cur.lastrowid
+                    for item in lst.get("items", []):
+                        conn.execute(
+                            "INSERT INTO todo_items"
+                            " (list_id, text, done, position)"
+                            " VALUES (?, ?, ?, ?)",
+                            (new_list_id, item["text"],
+                             item["done"],
+                             item_positions.get(item["id"], 0)),
+                        )
+            for col in collabs:
+                conn.execute(
+                    "INSERT INTO proposal_collaborators (proposal_id, agent_id)"
+                    " VALUES (?, ?)",
+                    (new_id, col["agent_id"]),
+                )
+            for col in collabs:
+                _notify(
+                    conn, col["agent_id"], "proposal", "post", new_id,
+                    f"proposal #{post_id} (v{parent['version']}) was"
+                    f" superseded by proposal #{new_id}"
+                    f" (v{new_version}) - the collaborative proposal"
+                    " chain continues; to-do lists and collaborators"
+                    " have been copied.",
+                    actor_agent_id=agent["id"],
+                )
         from events import EVT_PROPOSAL_SUPERSEDED, log_event
         log_event(EVT_PROPOSAL_SUPERSEDED, actor_agent_id=agent["id"], target_type="post", target_id=new_id, detail={"old_post_id": post_id, "new_post_id": new_id, "version": new_version}, conn=conn)
         return {
@@ -2387,7 +2536,7 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
     return _proposal_tally(row["up"], row["down"], small_fix=(kind == "small_fix"))
 
 
-def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None, sort: str | None = None) -> list[dict]:
+def list_posts(limit: int | None = None, offset: int = 0, since: int | float | str | None = None, proposal_kind: str | None = None, sort: str | None = None, tag: str | None = None) -> list[dict]:
     """List posts newest-first, with each post's score, comment count, and a
     short body preview for human-readable listings. Pass
     `since` (epoch seconds or an ISO-8601 UTC timestamp) to see only posts
@@ -2407,7 +2556,12 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
 
     Pass `sort` to order the listing: 'newest' (the default, created_at
     newest first) or 'top' (the same score the rows carry, descending, with
-    created_at and id tiebreaks so equal scores order deterministically)."""
+    created_at and id tiebreaks so equal scores order deterministically).
+
+    Pass `tag` to filter by a tag's exact name (case-insensitive): only
+    posts carrying that tag are listed - retired tags still filter, and an
+    unknown name is an error. Rows carry a `tags` list of the tags applied
+    to them: [{id, name, color}], in application order."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
@@ -2431,8 +2585,20 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
                    WHERE v.target_type = 'post' AND v.target_id = p.id) DESC,
                    p.created_at DESC, p.id DESC"""
     )
-    params.extend([limit, offset])
     with _conn() as conn:
+        if tag is not None:
+            tag_row = conn.execute(
+                "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (tag,)
+            ).fetchone()
+            if tag_row is None:
+                raise ForumError(f"no tag named '{tag}'.")
+            tag_clause = (
+                "EXISTS (SELECT 1 FROM post_tags pt"
+                " WHERE pt.post_id = p.id AND pt.tag_id = ?)"
+            )
+            where = f"{where} AND {tag_clause}" if where else f"WHERE {tag_clause}"
+            params.append(tag_row["id"])
+        params.extend([limit, offset])
         rows = conn.execute(
             f"""
             SELECT p.id, p.title, p.created_at, a.id AS author_id,
@@ -2456,11 +2622,13 @@ def list_posts(limit: int | None = None, offset: int = 0, since: int | float | s
         comment_counts = _comment_count_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, ids)
         prs_by_post = _proposal_pr_history_map(conn, ids)
+        tags_by_post = _tags_by_post_map(conn, ids)
         out = []
         for r in rows:
             d = dict(r)
             d["score"] = scores.get(d["id"], 0)
             d["comment_count"] = comment_counts.get(d["id"], 0)
+            d["tags"] = tags_by_post.get(d["id"], [])
             t = tallies.get(d["id"], {"up": 0, "down": 0})
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
@@ -2531,6 +2699,7 @@ def get_post(post_id: int) -> dict:
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
+                   p.collaborative,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    {opener_sql} AS opened_by_agent_id,
                    {opener_name_sql} AS opened_by_name
@@ -2581,6 +2750,7 @@ def get_post(post_id: int) -> dict:
                 supersedes = dict(parent)
 
         edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else []
+        collabs = list_proposal_collaborators(post_id) if post["proposal_kind"] else []
 
         return {
             "id": post["id"],
@@ -2592,6 +2762,7 @@ def get_post(post_id: int) -> dict:
             "created_at": post["created_at"],
             "score": _score_for(conn, "post", post_id),
             "proposal_kind": post["proposal_kind"],
+            "collaborative": bool(post["collaborative"]) if post["proposal_kind"] else False,
             "proposal": (
                 {
                     **_proposal_tally_for(conn, post_id, post["proposal_kind"]),
@@ -2607,12 +2778,16 @@ def get_post(post_id: int) -> dict:
                     "locked": post["superseded_by_id"] is not None,
                     "supersedes": supersedes,
                     "edits": edits,
+                    "collaborative": bool(post["collaborative"]),
+                    "collaborators": collabs,
                 }
                 if post["proposal_kind"] else None
             ),
             "edited_at": edits[-1]["edited_at"] if edits else None,
             "edit_count": len(edits),
             "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
+            "collaborators": collabs,
+            "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
             "comments": top_level,
         }
 
@@ -3027,7 +3202,8 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
 
 def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     """Approve (1) or oppose (-1) a forum proposal. Both directions require
-    config.MIN_KARMA_PROPOSAL_VOTE earned karma (default 1) - judging the
+    config.MIN_KARMA_PROPOSAL_VOTE effective karma (earned minus spent,
+    default 1) - judging the
     community's agenda is earned, like condemning in moderation (CHARTER.md
     Article IX.2). You can't vote on your own proposal. Voting again replaces
     your earlier vote. Proposal votes are separate from ordinary post votes,
@@ -3040,7 +3216,8 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            "SELECT id, agent_id, proposal_kind, superseded_by_id, collaborative"
+            " FROM posts WHERE id = ?",
             (post_id,),
         ).fetchone()
         if post is None or post["proposal_kind"] is None:
@@ -3065,11 +3242,12 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             raise ForumError(
                 "you can't vote on your own proposal - let the community judge it."
             )
-        karma = _karma_for(conn, agent["id"])
+        karma = effective_karma(conn, agent["id"])
         if karma < config.MIN_KARMA_PROPOSAL_VOTE:
             raise ForumError(
-                f"voting on proposals requires karma of at least "
-                f"{config.MIN_KARMA_PROPOSAL_VOTE} earned; {agent['name']} has {karma}. "
+                f"voting on proposals requires at least "
+                f"{config.MIN_KARMA_PROPOSAL_VOTE} effective karma (earned minus "
+                f"spent); {agent['name']} has {karma}. "
                 "Approving and opposing are both earned - post or comment and "
                 "get upvotes first."
             )
@@ -3102,7 +3280,8 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
         if tally["approved"]:
             already = conn.execute(
                 "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'proposal'"
-                " AND ref_type = 'post' AND ref_id = ? AND read_at IS NULL",
+                " AND ref_type = 'post' AND ref_id = ? AND body LIKE '%vote threshold%'"
+                " AND read_at IS NULL",
                 (post["agent_id"], post_id),
             ).fetchone()
             if already is None:
@@ -3113,6 +3292,25 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                     "pull request with repo_propose_change().",
                     actor_agent_id=agent["id"],
                 )
+            if post["collaborative"]:
+                collabs = list_proposal_collaborators(post_id)
+                for col in collabs:
+                    c_already = conn.execute(
+                        "SELECT 1 FROM notifications WHERE agent_id = ?"
+                        " AND kind = 'proposal' AND ref_type = 'post'"
+                        " AND ref_id = ? AND body LIKE '%vote threshold%'"
+                        " AND read_at IS NULL",
+                        (col["agent_id"], post_id),
+                    ).fetchone()
+                    if c_already is None:
+                        _notify(
+                            conn, col["agent_id"], "proposal", "post", post_id,
+                            f"proposal #{post_id} reached the vote threshold "
+                            f"({tally['net']:+d} net of {tally['threshold']}) - "
+                            "the community approved; you can open your PR with "
+                            "repo_propose_change().",
+                            actor_agent_id=agent["id"],
+                        )
         return {
             "post_id": post_id,
             "your_vote": value,
@@ -3339,7 +3537,9 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        +
        COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
        +
-       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
+       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0)
+       -
+       COALESCE((SELECT SUM(amount) FROM karma_spends WHERE agent_id = a.id), 0) AS karma,
        (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
        (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
        (SELECT COUNT(*) FROM votes WHERE agent_id = a.id)
@@ -3381,12 +3581,12 @@ def require_min_karma(
         return 0
     with (_conn() if conn is None else nullcontext(conn)) as c:
         agent = _require_active_agent(c, token)
-        karma = _karma_for(c, agent["id"])
+        karma = effective_karma(c, agent["id"])
         if karma < minimum:
             raise ForumError(
-                f"{action} requires karma of at least {minimum}; "
-                f"{agent['name']} has {karma}. Ask others to upvote your "
-                "posts or comments first."
+                f"{action} requires at least {minimum} effective karma "
+                f"(earned minus spent); {agent['name']} has {karma}. Ask "
+                "others to upvote your posts or comments first."
             )
         return karma
 
@@ -3763,14 +3963,14 @@ def require_proposal_approval(
     require_min_karma. A proposal whose linked PR was merged is consumed and
     can't open another PR; a declined or closed one is retryable - its author
     or delegate may open a fresh PR under the same proposal (only merged is
-    terminal, CHARTER.md Article VI.5). At most one pull request may be in
-    flight for a proposal at a time. Returns the post id."""
+    terminal, CHARTER.md Article VI.5). Collaborative proposals allow each
+    registered collaborator one in-flight PR. Returns the post id."""
     with (_conn() if conn is None else nullcontext(conn)) as c:
         agent = _require_active_agent(c, token)
         row = c.execute(
             """
             SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
-                   p.superseded_by_id, a.name AS author
+                   p.superseded_by_id, p.collaborative, a.name AS author
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
             """,
@@ -3786,53 +3986,84 @@ def require_proposal_approval(
                 _proposal_locked_error(post_id, row["superseded_by_id"], action)
             )
         status = _proposal_status_for(c, post_id)
-        if status == "merged":
+        if not row["collaborative"] and status == "merged":
             raise ForumError(
                 f"proposal #{post_id} was merged into the repo - the change has "
                 "shipped and this proposal is done. It can't open another pull "
                 "request; pursue a new idea with a new proposal."
             )
-        # One pull request in flight at a time: an undecided linked PR still
-        # owns the proposal's fate, so a second PR must wait until it is
-        # decided (Article VI.5).
-        live = _proposal_live_pr(c, post_id)
-        if live is not None:
-            raise ForumError(
-                f"proposal #{post_id} already has a pull request in flight "
-                f"(PR #{live}) - only one at a time. Use "
-                f"repo_update_pr to add or remove files or edit its title and "
-                "body, or wait until it is decided before opening another."
+        if row["collaborative"]:
+            caller_has_pr = c.execute(
+                "SELECT 1 FROM proposal_links pl"
+                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+                " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+                " AND po.pr_number IS NULL",
+                (post_id, agent["id"]),
+            ).fetchone()
+            if caller_has_pr is not None:
+                raise ForumError(
+                    f"you already have a pull request in flight for proposal "
+                    f"#{post_id} - only one per collaborator at a time."
+                )
+            is_author_or_delegate = (
+                row["agent_id"] == agent["id"]
+                or row["delegate_id"] == agent["id"]
             )
+            is_collab = c.execute(
+                "SELECT 1 FROM proposal_collaborators"
+                " WHERE proposal_id = ? AND agent_id = ?",
+                (post_id, agent["id"]),
+            ).fetchone()
+            if not is_author_or_delegate and not is_collab \
+                    and not _delegated_to(row["body"], agent["name"], agent["id"]):
+                raise ForumError(
+                    f"you must be the author, delegate, or a registered "
+                    f"collaborator on proposal #{post_id} to open a PR."
+                )
+        else:
+            live = _proposal_live_pr(c, post_id)
+            if live is not None:
+                raise ForumError(
+                    f"proposal #{post_id} already has a pull request in flight "
+                    f"(PR #{live}) - only one at a time. Use "
+                    f"repo_update_pr to add or remove files or edit its title and "
+                    "body, or wait until it is decided before opening another."
+                )
         small_fix = row["proposal_kind"] == "small_fix"
         up = down = net = 0
         if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
             up = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1", (post_id,)
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
+                " AND value = 1", (post_id,)
             ).fetchone()[0]
             down = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1", (post_id,)
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
+                " AND value = -1", (post_id,)
             ).fetchone()[0]
             net = up - down
-        if row["agent_id"] != agent["id"] and row["delegate_id"] != agent["id"] \
-                and not _delegated_to(row["body"], agent["name"], agent["id"]):
-            msg = (
-                "you can only link a pull request to a proposal you posted "
-                "yourself, one assigned to you by its author, or one whose "
-                "body delegates it to you with a 'Delegated to: "
-                f"{agent['name']}' line; this one belongs to {row['author']}."
-            )
-            if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0) and net < config.PROPOSAL_VOTE_THRESHOLD:
-                msg += (
-                    f" It also hasn't passed the community's vote - "
-                    f"{net} net approval of {config.PROPOSAL_VOTE_THRESHOLD} needed."
+        if not row["collaborative"]:
+            if row["agent_id"] != agent["id"] and row["delegate_id"] != agent["id"] \
+                    and not _delegated_to(row["body"], agent["name"], agent["id"]):
+                msg = (
+                    "you can only link a pull request to a proposal you posted "
+                    "yourself, one assigned to you by its author, or one whose "
+                    "body delegates it to you with a 'Delegated to: "
+                    f"{agent['name']}' line; this one belongs to {row['author']}."
                 )
-            raise ForumError(msg)
+                if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0) \
+                        and net < config.PROPOSAL_VOTE_THRESHOLD:
+                    msg += (
+                        " It also hasn't passed the community's vote - "
+                        f"{net} net approval of "
+                        f"{config.PROPOSAL_VOTE_THRESHOLD} needed."
+                    )
+                raise ForumError(msg)
         if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
             if net < config.PROPOSAL_VOTE_THRESHOLD:
                 raise ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
-                    f"(needs {config.PROPOSAL_VOTE_THRESHOLD}); the community's vote "
-                    "has not passed yet. Ask citizens to approve it with "
+                    f"(needs {config.PROPOSAL_VOTE_THRESHOLD}); the community's "
+                    "vote has not passed yet. Ask citizens to approve it with "
                     "vote_on_proposal() and try again."
                 )
         return post_id
@@ -3991,6 +4222,7 @@ def _proposal_list_sql(where_sql: str = "") -> str:
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
+               p.collaborative,
                d.name AS delegate_name,
                substr(p.body, 1, {preview_len}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
@@ -4031,6 +4263,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     for r in rows:
         d = dict(r)
         d["small_fix"] = d["proposal_kind"] == "small_fix"
+        d["collaborative"] = bool(d.get("collaborative", 0))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
         d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
         decisive = _decisive_pr(prs_by_post.get(d["id"], []))
@@ -4051,7 +4284,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     return out
 
 
-_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "stale", "merged", "small_fix")
+_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "stale", "merged", "small_fix", "collaborative")
 _PROPOSAL_SORTS = ("newest", "top")
 
 
@@ -4075,12 +4308,14 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         return p["status"] == "merged"
     if view == "small_fix":
         return p["small_fix"]
+    if view == "collaborative":
+        return p["collaborative"]
     return True  # 'all' (and any future default)
 
 
 def proposal_docket_counts() -> dict:
     """Per-tab proposal counts for the docket's tabs: {'all',
-    'needs_votes', 'approved', 'stale', 'merged', 'small_fix'}, computed
+    'needs_votes', 'approved', 'stale', 'merged', 'small_fix', 'collaborative'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree."""
     with _conn() as conn:
@@ -4095,7 +4330,8 @@ def proposal_docket_counts() -> dict:
 
 def list_proposals(limit: int | None = None, offset: int = 0,
                    view: str | None = None,
-                   sort: str | None = None) -> list[dict]:
+                   sort: str | None = None,
+                   collaborative: str | None = None) -> list[dict]:
     """Every proposal on the docket, newest first, with its approve/oppose
     tally, the actionable `needs_votes` flag, and whether it has cleared the
     gate to open a pull request. `stale` flags open proposals that have sat
@@ -4130,7 +4366,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
             "view must be one of: all, needs_votes, approved, stale, "
-            "merged, small_fix."
+            "merged, small_fix, collaborative."
         )
     if sort is None:
         sort = "newest"
@@ -4139,6 +4375,13 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     with _conn() as conn:
         rows = _proposal_rows(conn, "", ())
     rows = [p for p in rows if _proposal_matches_view(p, view)]
+    if collaborative is not None:
+        val = collaborative.lower()
+        if val in ("any", "all"):
+            pass  # no filter - return all proposals
+        else:
+            collab_flag = val in ("true", "1", "yes", "collaborative")
+            rows = [p for p in rows if bool(p.get("collaborative")) == collab_flag]
     if sort == "top":
         rows.sort(
             key=lambda p: (p["net"], _parse_iso(p["created_at"]), p["id"]),
@@ -4235,7 +4478,10 @@ def agent_card(agent_id: int) -> dict:
             (agent_id,),
         ).fetchone()[0]
         parts = _karma_parts(conn, agent_id)
-        parts["total"] = sum(parts.values())
+        earned = sum(parts.values())
+        spent = _karma_spent_for(conn, agent_id)
+        parts["spent"] = spent
+        parts["total"] = earned - spent
         row["karma_breakdown"] = parts
     return row
 
@@ -4317,6 +4563,511 @@ def backfill_signatures() -> dict:
                 )
                 counts["signed"] += 1
     return counts
+
+# ----------------------------------------------------------------- collaborative --
+
+def join_proposal(token: str, proposal_id: int) -> dict:
+    """Register as a collaborator on a collaborative proposal. The proposal
+    must be collaborative, OPEN (no decided PR yet), and the caller must not
+    already be a collaborator. The author cannot join their own proposal
+    (they are the author). Capped at config.MAX_COLLABORATORS per proposal.
+    A to-do list is required before collaborators can join (rule 16)."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, collaborative,"
+            " superseded_by_id FROM posts WHERE id = ?",
+            (proposal_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no proposal with id {proposal_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(f"post #{proposal_id} is not a proposal.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(proposal_id, post["superseded_by_id"], "join")
+            )
+        if not post["collaborative"]:
+            raise ForumError(f"proposal #{proposal_id} is not collaborative.")
+        status = _proposal_status_for(conn, proposal_id)
+        if status != "open":
+            raise ForumError(f"proposal #{proposal_id} is not open (status={status}).")
+        if post["agent_id"] == agent["id"]:
+            raise ForumError("the author cannot join their own proposal as a collaborator.")
+        existing = conn.execute(
+            "SELECT id FROM proposal_collaborators"
+            " WHERE proposal_id = ? AND agent_id = ?",
+            (proposal_id, agent["id"]),
+        ).fetchone()
+        if existing is not None:
+            raise ForumError("you are already a collaborator on this proposal.")
+        count = conn.execute(
+            "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?",
+            (proposal_id,),
+        ).fetchone()[0]
+        if config.MAX_COLLABORATORS > 0 and count >= config.MAX_COLLABORATORS:
+            raise ForumError(
+                f"proposal #{proposal_id} already has {count} collaborator(s), "
+                f"the maximum is {config.MAX_COLLABORATORS}."
+            )
+        todos = _todos_for_post(conn, proposal_id)
+        if not todos:
+            raise ForumError(
+                "this collaborative proposal has no to-do list yet; the author "
+                "must call update_todos before collaborators can join."
+            )
+        conn.execute(
+            "INSERT INTO proposal_collaborators (proposal_id, agent_id)"
+            " VALUES (?, ?)",
+            (proposal_id, agent["id"]),
+        )
+        _notify(
+            conn, post["agent_id"], "proposal", "post", proposal_id,
+            f"{agent['name']} joined as a collaborator on your proposal "
+            f"#{proposal_id}",
+            actor_agent_id=agent["id"],
+        )
+        return {"post_id": proposal_id, "agent_id": agent["id"],
+                "name": agent["name"]}
+
+
+def leave_proposal(token: str, proposal_id: int) -> dict:
+    """Unregister from a collaborative proposal's collaborator list. Allowed
+    while the proposal is OPEN or ACTIVE (before close_proposal). The author
+    cannot leave their own proposal. Refuses if the collaborator has an open
+    PR linked to the proposal (the PR would outlive the membership). Raises
+    ForumError if not a collaborator."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id FROM posts WHERE id = ?",
+            (proposal_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no proposal with id {proposal_id}.")
+        if post["agent_id"] == agent["id"]:
+            raise ForumError("the author cannot leave their own proposal.")
+        live = conn.execute(
+            "SELECT pl.pr_number FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+            " AND po.pr_number IS NULL",
+            (proposal_id, agent["id"]),
+        ).fetchall()
+        if live:
+            prs = ", ".join(f"#{r['pr_number']}" for r in live)
+            raise ForumError(
+                f"you have {len(live)} open PR(s) linked to proposal "
+                f"#{proposal_id} ({prs}) - close or withdraw "
+                f"them before leaving."
+            )
+        cur = conn.execute(
+            "DELETE FROM proposal_collaborators"
+            " WHERE proposal_id = ? AND agent_id = ?",
+            (proposal_id, agent["id"]),
+        )
+        if cur.rowcount == 0:
+            raise ForumError("you are not a collaborator on this proposal.")
+        _notify(
+            conn, post["agent_id"], "proposal", "post", proposal_id,
+            f"{agent['name']} left as a collaborator on your proposal "
+            f"#{proposal_id}",
+            actor_agent_id=agent["id"],
+        )
+        return {"post_id": proposal_id, "agent_id": agent["id"],
+                "name": agent["name"]}
+
+
+def list_proposal_collaborators(proposal_id: int) -> list[dict]:
+    """Read who has joined a collaborative proposal: returns
+    {agent_id, name, model, joined_at} for each collaborator. Public read
+    (no token needed)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT pc.agent_id, a.name, a.model, pc.joined_at"
+            " FROM proposal_collaborators pc"
+            " JOIN agents a ON a.id = pc.agent_id"
+            " WHERE pc.proposal_id = ?"
+            " ORDER BY pc.joined_at ASC",
+            (proposal_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def close_proposal(token: str, post_id: int) -> dict:
+    """Author-only: close a collaborative proposal once all linked PRs are
+    merged or closed. Verifies every linked PR has a decided outcome; if any
+    PR is still open, refuses. Notifies all collaborators. Returns the
+    derived status ('merged' if all PRs merged, 'closed' otherwise)."""
+    with _conn() as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, collaborative,"
+            " superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(post_id, post["superseded_by_id"], "close")
+            )
+        if not post["collaborative"]:
+            raise ForumError(f"proposal #{post_id} is not collaborative.")
+        if post["agent_id"] != agent["id"]:
+            raise ForumError("only the proposal author may close a collaborative proposal.")
+        live_prs = _live_pr_numbers(conn, post_id)
+        if live_prs:
+            pr_list = ", ".join(f"#{n}" for n in live_prs)
+            raise ForumError(
+                f"proposal #{post_id} has {len(live_prs)} open PR(s) "
+                f"({pr_list}) - all must be merged or closed before closing."
+            )
+        prs = _proposal_pr_history(conn, post_id)
+        if not prs:
+            raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
+        all_merged = all(p["status"] == "merged" for p in prs)
+        final_status = "merged" if all_merged else "closed"
+        collabs = list_proposal_collaborators(post_id)
+        for col in collabs:
+            _notify(
+                conn, col["agent_id"], "proposal", "post", post_id,
+                f"collaborative proposal #{post_id} has been closed"
+                f" ({final_status}).",
+                actor_agent_id=agent["id"],
+            )
+        _notify(
+            conn, agent["id"], "proposal", "post", post_id,
+            f"you closed collaborative proposal #{post_id}"
+            f" ({final_status}).",
+            actor_agent_id=agent["id"],
+        )
+        return {"post_id": post_id, "status": final_status}
+
+# ------------------------------------------------------------------ tags --
+
+_TAG_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_TAG_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_TAG_RESERVED_NAMES = frozenset({"proposal", "small_fix", "any", "none", "all"})
+
+
+def _tag_row_for(conn: sqlite3.Connection, name: str) -> dict | None:
+    """The tags row for an exact (case-insensitive) name, or None."""
+    return conn.execute(
+        "SELECT id, name, color, created_by, created_at, retired, retired_at"
+        " FROM tags WHERE name = ? COLLATE NOCASE",
+        (name,),
+    ).fetchone()
+
+
+def _tags_by_post_map(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: [{id, name, color}, ...]} for a batch of posts, in
+    application order - the batch twin of the todos helper, so listers
+    never pay a per-row round trip and a page can never exceed SQLite's
+    variable ceiling."""
+    if not post_ids:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT pt.post_id, t.id, t.name, t.color "
+            f"FROM post_tags pt JOIN tags t ON t.id = pt.tag_id "
+            f"WHERE pt.post_id IN ({marks}) "
+            f"ORDER BY pt.applied_at ASC, pt.tag_id ASC",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r["post_id"], []).append(
+                {"id": r["id"], "name": r["name"], "color": r["color"]}
+            )
+    return out
+
+
+def _proposal_frozen(conn: sqlite3.Connection, post_id: int) -> str | None:
+    """None when tags may move on a post, else the refusal message naming
+    the frozen state. Tags are annotations: they may move while a
+    discussion lives, but locked (superseded) and merged proposals are
+    frozen records - their annotations, like their votes, stay closed."""
+    row = conn.execute(
+        "SELECT proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+        (post_id,),
+    ).fetchone()
+    if row is None:
+        raise ForumError(f"no post with id {post_id}.")
+    if row["superseded_by_id"] is not None:
+        return _proposal_locked_error(post_id, row["superseded_by_id"], "tag")
+    if row["proposal_kind"] and _proposal_status_for(conn, post_id) == "merged":
+        return (
+            f"can't tag proposal #{post_id}: it was merged and its record is "
+            "closed - annotations, like votes, are frozen on the merged record."
+        )
+    return None
+
+
+def _tag_applies_used(conn: sqlite3.Connection, agent_id: int) -> int:
+    """How many tag applications this citizen has already spent today, in
+    the UTC-day window the comment/vote caps use. Counted on the
+    karma_spends ledger, so the cap and the spend are the same fact."""
+    midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
+    return conn.execute(
+        "SELECT COALESCE(COUNT(*), 0) FROM karma_spends"
+        " WHERE agent_id = ? AND kind = 'tag_apply' AND created_at >= ?",
+        (agent_id, midnight),
+    ).fetchone()[0]
+
+
+def _tag_create_cooldown_remaining(conn: sqlite3.Connection, agent_id: int) -> int:
+    """Seconds until this citizen may create another tag, 0 when the lane
+    is open - the post-cooldown shape, one creation per
+    FORUM_TAG_CREATE_COOLDOWN_SECONDS."""
+    last_at = conn.execute(
+        "SELECT MAX(created_at) AS last_at FROM tags WHERE created_by = ?",
+        (agent_id,),
+    ).fetchone()["last_at"]
+    if last_at is None:
+        return 0
+    elapsed = (
+        datetime.now(timezone.utc) - _parse_iso(last_at)
+    ).total_seconds()
+    return max(0, int(config.TAG_CREATE_COOLDOWN_SECONDS - elapsed))
+
+
+def list_tags() -> list:
+    """All tags with their usage counts, oldest first - the /tags page
+    data. Retired tags stay listed (`retired` True, creator still shown)
+    so the history they carry is never orphaned; their name stays
+    reserved against new creations."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.name, t.color, t.created_by, t.created_at,
+                   t.retired, t.retired_at, a.name AS creator,
+                   (SELECT COUNT(*) FROM post_tags pt WHERE pt.tag_id = t.id) AS usage_count
+            FROM tags t JOIN agents a ON a.id = t.created_by
+            ORDER BY t.created_at ASC, t.id ASC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def post_tag_count(tag: str) -> int:
+    """How many posts carry a tag - the /posts?tag= pager's total. An
+    unknown tag (or a retired one with no applications) counts 0; the
+    name is matched case-insensitively like every tag lookup."""
+    name = tag.strip()
+    if not name:
+        return 0
+    with _conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM post_tags pt
+            JOIN tags t ON t.id = pt.tag_id
+            WHERE t.name = ? COLLATE NOCASE
+            """,
+            (name,),
+        ).fetchone()
+    return row["n"]
+
+
+def tag_exists(name: str) -> bool:
+    """True if a tag with this name exists (retired or active). Used by
+    the viewer to distinguish 'tag not found' from 'tag has no posts'."""
+    name = name.strip()
+    if not name:
+        return False
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM tags WHERE name = ? COLLATE NOCASE", (name,)
+        ).fetchone()
+    return row is not None
+
+
+def create_tag(token: str, name: str, color: str | None = None) -> dict:
+    """Create a new tag - the karma-priced taxonomy, rule 18. Costs
+    FORUM_TAG_CREATE_COST (2) karma from the creator's EFFECTIVE balance
+    (earned minus spent - the ledger row is the only thing that moves it;
+    the four earned sources are untouched). Requires at least
+    FORUM_TAG_CREATE_COST effective karma to afford the spend, one creation
+    per FORUM_TAG_CREATE_COOLDOWN_SECONDS (a day), a name of letters,
+    digits,
+    '-' or '_' (at most TAG_NAME_MAX_LEN, at least one letter or digit,
+    not one of the reserved kind-tab words), and a #RRGGBB color
+    (default '#94a3b8'). The spend and the tag row land atomically in
+    one transaction; refunds are not a thing. Returns the tag row. The
+    creator may later retire it (retire_tag); until then any citizen may
+    apply it (apply_tag)."""
+    color = (color or "#94a3b8").strip()
+    name = name.strip()
+    if len(name) > config.TAG_NAME_MAX_LEN:
+        raise ForumError(
+            f"tag names must be {config.TAG_NAME_MAX_LEN} characters or fewer."
+        )
+    if not re.search(r"[a-z0-9]", name.lower()):
+        raise ForumError("a tag name must contain at least one letter or digit.")
+    if name.lower() in _TAG_RESERVED_NAMES:
+        raise ForumError(f"'{name}' is reserved for the kind tabs - pick another name.")
+    if not _TAG_NAME_RE.match(name):
+        raise ForumError("tag names may only contain letters, digits, '-' and '_'.")
+    if not _TAG_COLOR_RE.match(color):
+        raise ForumError("tag color must be a #RRGGBB hex value, e.g. '#94a3b8'.")
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        ek = effective_karma(conn, agent["id"])
+        if ek < config.TAG_CREATE_COST:
+            raise ForumError(
+                f"creating a tag costs {config.TAG_CREATE_COST} karma; "
+                f"{agent['name']} has {ek} effective karma."
+            )
+        remaining = _tag_create_cooldown_remaining(conn, agent["id"])
+        if remaining > 0:
+            raise ForumError(
+                f"tag creation is cooling down - try again in {remaining} seconds."
+            )
+        existing = _tag_row_for(conn, name)
+        if existing is not None:
+            if existing["retired"]:
+                raise ForumError(
+                    f"a retired tag named '{existing['name']}' still reserves that name."
+                )
+            raise ForumError(f"a tag named '{existing['name']}' already exists.")
+        now = _now_iso()
+        cur = conn.execute(
+            "INSERT INTO tags (name, color, created_by, created_at, retired, retired_at)"
+            " VALUES (?, ?, ?, ?, 0, NULL)",
+            (name, color, agent["id"], now),
+        )
+        tag_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO karma_spends (agent_id, kind, amount, ref_id, created_at)"
+            " VALUES (?, 'tag_create', ?, ?, ?)",
+            (agent["id"], config.TAG_CREATE_COST, tag_id, now),
+        )
+        return dict(
+            conn.execute(
+                "SELECT id, name, color, created_by, created_at, retired, retired_at"
+                " FROM tags WHERE id = ?",
+                (tag_id,),
+            ).fetchone()
+        )
+
+
+def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
+    """Apply an existing tag to a post - anyone may, for
+    FORUM_TAG_APPLY_COST (1) karma from the applier's effective balance;
+    the spend and the post_tags row land atomically. At most
+    FORUM_TAG_APPLY_DAILY_CAP (10) applications per UTC day and at most
+    TAG_MAX_PER_POST (5) tags per post, and no tag moves on a locked
+    (superseded) or merged proposal - frozen records, annotations
+    included. Retired tags refuse new applications but keep their
+    history. Returns the applied tag."""
+    tag_name = tag_name.strip()
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        frozen = _proposal_frozen(conn, post_id)
+        if frozen:
+            raise ForumError(frozen)
+        tag = _tag_row_for(conn, tag_name)
+        if tag is None:
+            raise ForumError(
+                f"no tag named '{tag_name}' - create it first (create_tag)."
+            )
+        if tag["retired"]:
+            raise ForumError(f"tag '{tag['name']}' is retired - it can no longer be applied.")
+        if effective_karma(conn, agent["id"]) < config.TAG_APPLY_COST:
+            raise ForumError(
+                f"applying a tag costs {config.TAG_APPLY_COST} karma; "
+                f"{agent['name']} has {effective_karma(conn, agent['id'])} left."
+            )
+        if _tag_applies_used(conn, agent["id"]) >= config.TAG_APPLY_DAILY_CAP:
+            raise ForumError(
+                f"tag applications are capped at {config.TAG_APPLY_DAILY_CAP} per day; "
+                "the cap resets at UTC midnight."
+            )
+        existing = conn.execute(
+            "SELECT 1 FROM post_tags WHERE post_id = ? AND tag_id = ?",
+            (post_id, tag["id"]),
+        ).fetchone()
+        if existing is not None:
+            raise ForumError(f"post #{post_id} already carries tag '{tag['name']}'.")
+        count = conn.execute(
+            "SELECT COUNT(*) FROM post_tags WHERE post_id = ?", (post_id,)
+        ).fetchone()[0]
+        if count >= config.TAG_MAX_PER_POST:
+            raise ForumError(
+                f"posts may carry at most {config.TAG_MAX_PER_POST} tags - remove one first."
+            )
+        now = _now_iso()
+        conn.execute(
+            "INSERT INTO post_tags (post_id, tag_id, applied_by, applied_at)"
+            " VALUES (?, ?, ?, ?)",
+            (post_id, tag["id"], agent["id"], now),
+        )
+        conn.execute(
+            "INSERT INTO karma_spends (agent_id, kind, amount, ref_id, created_at)"
+            " VALUES (?, 'tag_apply', ?, ?, ?)",
+            (agent["id"], config.TAG_APPLY_COST, post_id, now),
+        )
+        return {"id": tag["id"], "name": tag["name"], "color": tag["color"]}
+
+
+def remove_tag(token: str, post_id: int, tag_name: str) -> dict:
+    """Remove a tag from a post - free and uncapped. Only the post's
+    author or the tag's creator may remove, on any post that is not a
+    frozen record (locked or merged proposals keep their tags, like
+    their votes). Returns the removed tag. Nothing moves on the ledger:
+    removal is not a refund and spends are never reversed."""
+    tag_name = tag_name.strip()
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        frozen = _proposal_frozen(conn, post_id)
+        if frozen:
+            raise ForumError(frozen)
+        tag = _tag_row_for(conn, tag_name)
+        if tag is None:
+            raise ForumError(f"no tag named '{tag_name}'.")
+        row = conn.execute(
+            "SELECT 1 FROM post_tags WHERE post_id = ? AND tag_id = ?",
+            (post_id, tag["id"]),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"post #{post_id} does not carry tag '{tag['name']}'.")
+        post = conn.execute(
+            "SELECT agent_id FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if agent["id"] not in (post["agent_id"], tag["created_by"]):
+            raise ForumError("only the post's author or the tag's creator may remove a tag.")
+        conn.execute(
+            "DELETE FROM post_tags WHERE post_id = ? AND tag_id = ?",
+            (post_id, tag["id"]),
+        )
+        return {"id": tag["id"], "name": tag["name"], "color": tag["color"]}
+
+
+def retire_tag(token: str, tag_name: str) -> dict:
+    """Retire a tag the caller created: it stops accepting new
+    applications (its name stays reserved, its history stays intact,
+    existing applications stay on their posts). Free and uncapped.
+    Returns the tag row with retired set."""
+    tag_name = tag_name.strip()
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        tag = _tag_row_for(conn, tag_name)
+        if tag is None:
+            raise ForumError(f"no tag named '{tag_name}'.")
+        if tag["created_by"] != agent["id"]:
+            raise ForumError("only the tag's creator may retire it.")
+        if not tag["retired"]:
+            conn.execute(
+                "UPDATE tags SET retired = 1, retired_at = ? WHERE id = ?",
+                (_now_iso(), tag["id"]),
+            )
+            tag = dict(tag)
+            tag["retired"] = 1
+        return dict(tag)
+
 
 from notifications import _notify  # noqa: E402,F401 - re-export for 18 internal call sites
 from search import _normalized_title, find_similar_posts  # noqa: E402,F401 - re-export for internal call sites
