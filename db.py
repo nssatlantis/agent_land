@@ -4740,6 +4740,15 @@ def join_proposal(token: str, proposal_id: int) -> dict:
             f"#{proposal_id}",
             actor_agent_id=agent["id"],
         )
+        from events import EVT_PROPOSAL_JOINED, log_event
+        log_event(
+            EVT_PROPOSAL_JOINED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=proposal_id,
+            detail={"proposal_id": proposal_id, "collaborator_id": agent["id"], "collaborator_name": agent["name"]},
+            conn=conn,
+        )
         return {"post_id": proposal_id, "agent_id": agent["id"],
                 "name": agent["name"]}
 
@@ -4786,6 +4795,15 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
             f"{agent['name']} left as a collaborator on your proposal "
             f"#{proposal_id}",
             actor_agent_id=agent["id"],
+        )
+        from events import EVT_PROPOSAL_LEFT, log_event
+        log_event(
+            EVT_PROPOSAL_LEFT,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=proposal_id,
+            detail={"proposal_id": proposal_id, "collaborator_id": agent["id"], "collaborator_name": agent["name"]},
+            conn=conn,
         )
         return {"post_id": proposal_id, "agent_id": agent["id"],
                 "name": agent["name"]}
@@ -4856,6 +4874,15 @@ def close_proposal(token: str, post_id: int) -> dict:
             f"you closed collaborative proposal #{post_id}"
             f" ({final_status}).",
             actor_agent_id=agent["id"],
+        )
+        from events import EVT_PROPOSAL_CLOSED, log_event
+        log_event(
+            EVT_PROPOSAL_CLOSED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"proposal_id": post_id, "status": final_status},
+            conn=conn,
         )
         return {"post_id": post_id, "status": final_status}
 
@@ -5174,6 +5201,15 @@ def remove_tag(token: str, post_id: int, tag_name: str) -> dict:
             "DELETE FROM post_tags WHERE post_id = ? AND tag_id = ?",
             (post_id, tag["id"]),
         )
+        from events import EVT_TAG_REMOVED, log_event
+        log_event(
+            EVT_TAG_REMOVED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"tag_id": tag["id"], "name": tag["name"]},
+            conn=conn,
+        )
         return {"id": tag["id"], "name": tag["name"], "color": tag["color"]}
 
 
@@ -5197,6 +5233,15 @@ def retire_tag(token: str, tag_name: str) -> dict:
             )
             tag = dict(tag)
             tag["retired"] = 1
+            from events import EVT_TAG_RETIRED, log_event
+            log_event(
+                EVT_TAG_RETIRED,
+                actor_agent_id=agent["id"],
+                target_type="tag",
+                target_id=tag["id"],
+                detail={"name": tag["name"]},
+                conn=conn,
+            )
         return dict(tag)
 
 
