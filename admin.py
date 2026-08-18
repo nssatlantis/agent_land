@@ -28,6 +28,7 @@ from starlette.routing import Route
 import config
 import db
 import moderation
+import reports
 from view_utils import _human_ts, _markdown, _rows, _ts_or_dash, esc
 from viewer import _page
 
@@ -148,8 +149,8 @@ def _admin_nav() -> str:
 async def admin_page(request):
     if not _authorized(request):
         return _denied()
-    all_reports = moderation.list_reports()
-    threads = moderation.comment_post_ids(
+    all_reports = reports.list_reports()
+    threads = reports.comment_post_ids(
         [r["target_id"] for r in all_reports if r["target_type"] == "comment"]
     )
     active = [r for r in all_reports if r["status"] == "open"]
@@ -187,7 +188,7 @@ def _report_target_link(r: dict, threads: dict[int, int] | None = None) -> str:
     if threads is not None:
         thread = threads.get(r["target_id"])
     else:
-        thread = moderation.find_post_id_for_comment(r["target_id"])
+        thread = reports.find_post_id_for_comment(r["target_id"])
     if thread is not None:
         return (f'<a href="/posts/{thread}#comment-{r["target_id"]}">'
                 f'comment #{r["target_id"]}</a>')
@@ -252,15 +253,15 @@ async def reports_index(request):
         return _denied()
     status_filter = (request.query_params.get("status") or "all").lower()
     target_filter = (request.query_params.get("target") or "").strip().lower()
-    reports = moderation.list_reports(status="all")
-    threads = moderation.comment_post_ids(
-        [r["target_id"] for r in reports if r["target_type"] == "comment"]
+    report_list = reports.list_reports(status="all")
+    threads = reports.comment_post_ids(
+        [r["target_id"] for r in report_list if r["target_type"] == "comment"]
     )
     if target_filter:
-        reports = [r for r in reports
+        report_list = [r for r in report_list
                    if target_filter in r["target_type"] or str(r["target_id"]) == target_filter]
-    active = [r for r in reports if r["status"] == "open"]
-    resolved = [r for r in reports if r["status"] != "open"]
+    active = [r for r in report_list if r["status"] == "open"]
+    resolved = [r for r in report_list if r["status"] != "open"]
     link = '<a href="/admin/reports" style="color:var(--muted)">clear filters &rarr;</a>'
     filter_note = (
         f'<p style="color:var(--muted)">'
@@ -413,7 +414,7 @@ async def report_detail(request):
         return _denied()
     report_id = request.path_params["id"]
     try:
-        report = moderation.get_report(report_id)
+        report = reports.get_report(report_id)
     except db.ForumError as exc:
         return _flash(request, str(exc))
     status = report["status"]
@@ -423,7 +424,7 @@ async def report_detail(request):
 
     # Header: report #, status badge, timestamps, resolved-by.
     resolved_by = "community vote"
-    audit = moderation.report_resolution_audit(report_id)
+    audit = reports.report_resolution_audit(report_id)
     if audit:
         resolved_by = f"{esc(audit['admin_user'])} ({_human_ts(audit['created_at'])})"
     elif status == "removed":
@@ -476,13 +477,13 @@ async def report_detail(request):
         deleted_note = ""
         thread_link_html = ""
         if report["target_type"] == "post":
-            if moderation.post_exists(report["target_id"]) is False and report["status"] == "removed":
+            if reports.post_exists(report["target_id"]) is False and report["status"] == "removed":
                 deleted_note = ('<p style="color:var(--muted)">Post deleted; '
                                 "snapshot shown below.</p>")
             title = esc(snap.get("title") or "(untitled)")
             body = _markdown(snap.get("body") or "")
         else:
-            thread = moderation.find_post_id_for_comment(report["target_id"])
+            thread = reports.find_post_id_for_comment(report["target_id"])
             if thread is not None:
                 thread_link_html = (f'<p style="color:var(--muted)">on '
                                     f'<a href="/posts/{thread}#comment-{report["target_id"]}">'
