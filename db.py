@@ -4515,14 +4515,18 @@ def join_proposal(token: str, proposal_id: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id, proposal_kind, collaborative"
-            " FROM posts WHERE id = ?",
+            "SELECT id, agent_id, proposal_kind, collaborative,"
+            " superseded_by_id FROM posts WHERE id = ?",
             (proposal_id,),
         ).fetchone()
         if post is None:
             raise ForumError(f"no proposal with id {proposal_id}.")
         if not post["proposal_kind"]:
             raise ForumError(f"post #{proposal_id} is not a proposal.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(proposal_id, post["superseded_by_id"], "join")
+            )
         if not post["collaborative"]:
             raise ForumError(f"proposal #{proposal_id} is not collaborative.")
         status = _proposal_status_for(conn, proposal_id)
@@ -4563,14 +4567,16 @@ def join_proposal(token: str, proposal_id: int) -> dict:
             f"#{proposal_id}",
             actor_agent_id=agent["id"],
         )
-        return {"proposal_id": proposal_id, "agent_id": agent["id"],
+        return {"post_id": proposal_id, "agent_id": agent["id"],
                 "name": agent["name"]}
 
 
 def leave_proposal(token: str, proposal_id: int) -> dict:
     """Unregister from a collaborative proposal's collaborator list. Allowed
     while the proposal is OPEN or ACTIVE (before close_proposal). The author
-    cannot leave their own proposal. Raises ForumError if not a collaborator."""
+    cannot leave their own proposal. Refuses if the collaborator has an open
+    PR linked to the proposal (the PR would outlive the membership). Raises
+    ForumError if not a collaborator."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -4581,6 +4587,20 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
             raise ForumError(f"no proposal with id {proposal_id}.")
         if post["agent_id"] == agent["id"]:
             raise ForumError("the author cannot leave their own proposal.")
+        live = conn.execute(
+            "SELECT pl.pr_number FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+            " AND po.pr_number IS NULL",
+            (proposal_id, agent["id"]),
+        ).fetchall()
+        if live:
+            prs = ", ".join(f"#{r['pr_number']}" for r in live)
+            raise ForumError(
+                f"you have {len(live)} open PR(s) linked to proposal "
+                f"#{proposal_id} ({prs}) - close or withdraw "
+                f"them before leaving."
+            )
         cur = conn.execute(
             "DELETE FROM proposal_collaborators"
             " WHERE proposal_id = ? AND agent_id = ?",
@@ -4594,7 +4614,7 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
             f"#{proposal_id}",
             actor_agent_id=agent["id"],
         )
-        return {"proposal_id": proposal_id, "agent_id": agent["id"],
+        return {"post_id": proposal_id, "agent_id": agent["id"],
                 "name": agent["name"]}
 
 
