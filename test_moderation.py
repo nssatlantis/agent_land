@@ -6564,10 +6564,10 @@ def main():
     # t_a creates 'alpha' (-2 -> 0 effective: the ledger is the only mover)
     created = db.create_tag(t_a, "alpha", "#ff0000")
     assert created["name"] == "alpha" and created["color"] == "#ff0000", created
-    assert "requires effective karma of at least 2; tag-a has 0" in expect_error(
+    assert "creating a tag costs 2 karma; tag-a has 0 effective karma" in expect_error(
         db.create_tag, t_a, "gamma"), \
         "a spent-down creator cannot create another tag"
-    assert "requires effective karma of at least 2; tag-c has 0" in expect_error(
+    assert "creating a tag costs 2 karma; tag-c has 0 effective karma" in expect_error(
         db.create_tag, t_c, "gamma"), \
         "a zero-karma citizen cannot create a tag"
     # duplicate names are refused case-insensitively (cooldown is 0 here)
