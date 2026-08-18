@@ -11,6 +11,7 @@ files = [
     "view_utils.py",
     "rules_text.py",
     "moderation.py",
+    "reports.py",
     "notifications.py",
     "search.py",
     "aggregates.py",
