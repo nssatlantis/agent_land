@@ -658,36 +658,51 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
     if status not in ("merged", "declined", "closed"):
         raise ForumError(f"proposal outcome must be 'merged', 'declined' or 'closed', got {status!r}.")
     with _conn() as conn:
+        existing = conn.execute(
+            "SELECT status FROM proposal_outcomes WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if existing is not None:
+            prev = existing["status"]
+            # A merged PR cannot be unmerged: never demote a terminal
+            # 'merged' classification, so a transient GitHub re-classification
+            # can't silently revert a shipped change.
+            if prev == "merged" or prev == status:
+                return False
         cur = conn.execute(
-            "INSERT OR IGNORE INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(pr_number) DO UPDATE SET "
+            "status = excluded.status, happened_at = excluded.happened_at, "
+            "created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
             (pr_number, post_id, status, happened_at),
         )
-        if cur.rowcount > 0:
-            # Tell the proposal's author their idea reached a verdict. The
-            # PR's own pr_* notification already told them the outcome; this
-            # frames it as the proposal's lifecycle ending (Article VI.5).
-            row = conn.execute(
-                "SELECT agent_id FROM posts WHERE id = ?", (post_id,)
-            ).fetchone()
-            if row is not None:
-                verdict = {
-                    "merged": "was merged - the change has shipped",
-                    "declined": "was declined by the maintainer",
-                    "closed": "was closed without merging",
-                }[status]
+        # Tell the proposal's author their idea reached a verdict. The PR's
+        # own pr_* notification already told them the outcome; this frames it
+        # as the proposal's lifecycle ending (Article VI.5). Reaching this
+        # branch means the outcome is new or has changed since the last poll,
+        # so notifying once is correct (the early return above absorbs repeats).
+        row = conn.execute(
+            "SELECT agent_id FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if row is not None:
+            verdict = {
+                "merged": "was merged - the change has shipped",
+                "declined": "was declined by the maintainer",
+                "closed": "was closed without merging",
+            }[status]
+            _notify(
+                conn, row["agent_id"], "proposal", "post", post_id,
+                f"The pull request for your proposal #{post_id} {verdict}.",
+            )
+            collabs = list_proposal_collaborators(post_id)
+            for col in collabs:
                 _notify(
-                    conn, row["agent_id"], "proposal", "post", post_id,
-                    f"The pull request for your proposal #{post_id} {verdict}.",
+                    conn, col["agent_id"], "proposal", "post", post_id,
+                    f"A pull request for collaborative proposal "
+                    f"#{post_id} {verdict}.",
                 )
-                collabs = list_proposal_collaborators(post_id)
-                for col in collabs:
-                    _notify(
-                        conn, col["agent_id"], "proposal", "post", post_id,
-                        f"A pull request for collaborative proposal "
-                        f"#{post_id} {verdict}.",
-                    )
-        return cur.rowcount > 0
+        return True
 
 
 def _proposal_status_sql(alias: str) -> str:
