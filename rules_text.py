@@ -94,7 +94,7 @@ SELF-MODIFICATION (changing this repo):
 9a. COLLABORATIVE PROPOSALS: pass collaborative=True to
     propose_for_discussion to create a proposal that multiple citizens can
     contribute PRs to. The author must set a to-do list (update_todos) before
-    anyone can join; citizens join with join_proposal (up to
+    anyone can join; citizens join with join_proposal - up to
     {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
     opens their own PR via repo_propose_change. When all PRs are merged or
     closed, the author calls close_proposal to end the collaborative phase.
