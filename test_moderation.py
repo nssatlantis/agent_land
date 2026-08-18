@@ -6150,6 +6150,80 @@ def main():
     assert "your_vote" in result, "vote_on_proposal should return successfully"
     print("  vote_on_proposal collaborative flag: ok")
 
+    # 29. MAX_COLLABORATORS=0 disables the cap
+    old_max = os.environ.get("FORUM_MAX_COLLABORATORS")
+    os.environ["FORUM_MAX_COLLABORATORS"] = "0"
+    ca_nocap = db.register_agent("collab-nocap")
+    auth_nc = ca_nocap["token"]
+    p_nocap = db.create_proposal(auth_nc, "No Cap", "body", collaborative=True)
+    db.set_todos_for_post(auth_nc, p_nocap["post_id"], [{"title": "work", "items": [{"text": "a"}]}])
+    # join 4 collaborators - default cap is 3, but 0 means unlimited
+    nocap_users = []
+    for i in range(4):
+        u = db.register_agent(f"nocap-user-{i}")
+        db.join_proposal(u["token"], p_nocap["post_id"])
+        nocap_users.append(u)
+    collabs = db.list_proposal_collaborators(p_nocap["post_id"])
+    assert len(collabs) == 4, f"MAX_COLLABORATORS=0 should allow 4+ collabs, got {len(collabs)}"
+    if old_max is not None:
+        os.environ["FORUM_MAX_COLLABORATORS"] = old_max
+    else:
+        os.environ.pop("FORUM_MAX_COLLABORATORS", None)
+    print("  MAX_COLLABORATORS=0 disables cap: ok")
+
+    # 30. close_proposal when ALL PRs are merged -> status="merged"
+    ca9 = db.register_agent("collab-author9")
+    auth_a9 = ca9["token"]
+    p_allmerged = db.create_proposal(auth_a9, "All Merged", "body",
+                                     collaborative=True)
+    db.set_todos_for_post(auth_a9, p_allmerged["post_id"],
+                    [{"title": "work", "items": [{"text": "a"}]}])
+    c_m1 = db.register_agent("merged-collab-1")
+    db.join_proposal(c_m1["token"], p_allmerged["post_id"])
+    db.link_pr_to_proposal(77700, p_allmerged["post_id"], ca9["agent_id"])
+    db.link_pr_to_proposal(77701, p_allmerged["post_id"], c_m1["agent_id"])
+    db.record_proposal_outcome(77700, p_allmerged["post_id"], "merged",
+                               db._now_iso())
+    db.record_proposal_outcome(77701, p_allmerged["post_id"], "merged",
+                               db._now_iso())
+    close_res = db.close_proposal(auth_a9, p_allmerged["post_id"])
+    assert close_res["status"] == "merged", (
+        f"close with all PRs merged should return 'merged', got {close_res['status']}"
+    )
+    print("  close_proposal all-merged status: ok")
+
+    # 31. join_proposal after proposal is merged (status != open)
+    ca10 = db.register_agent("collab-author10")
+    auth_a10 = ca10["token"]
+    p_joined = db.create_proposal(auth_a10, "Join After Merge", "body",
+                                  collaborative=True)
+    db.set_todos_for_post(auth_a10, p_joined["post_id"],
+                    [{"title": "work", "items": [{"text": "a"}]}])
+    db.link_pr_to_proposal(77800, p_joined["post_id"], ca10["agent_id"])
+    db.record_proposal_outcome(77800, p_joined["post_id"], "merged",
+                               db._now_iso())
+    db.close_proposal(auth_a10, p_joined["post_id"])
+    late_user = db.register_agent("late-joiner")
+    err_late = expect_error(db.join_proposal, late_user["token"],
+                            p_joined["post_id"])
+    assert "open" in err_late.lower() or "status" in err_late.lower(), (
+        f"join after merge should mention status, got: {err_late}"
+    )
+    print("  join_proposal after merge refused: ok")
+
+    # 32. close_proposal on a superseded (locked) collaborative proposal
+    ca11 = db.register_agent("collab-author11")
+    auth_a11 = ca11["token"]
+    p_lock = db.create_proposal(auth_a11, "Lock Close Test", "body",
+                                collaborative=True)
+    sup = db.supersede_proposal(auth_a11, p_lock["post_id"],
+                                "Lock Close v2", "revised body")
+    err_lock = expect_error(db.close_proposal, auth_a11, p_lock["post_id"])
+    assert "locked" in err_lock.lower() or "superseded" in err_lock.lower(), (
+        f"close on superseded should mention locked/superseded, got: {err_lock}"
+    )
+    print("  close_proposal on superseded refused: ok")
+
     # --- events: append-only event log records every action -------------------
     # The events table is an audit trail: every post, comment, vote, proposal,
     # report, and moderation action is logged with kind, actor, target, detail
