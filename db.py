@@ -4870,13 +4870,27 @@ def post_tag_count(tag: str) -> int:
     return row["n"]
 
 
+def tag_exists(name: str) -> bool:
+    """True if a tag with this name exists (retired or active). Used by
+    the viewer to distinguish 'tag not found' from 'tag has no posts'."""
+    name = name.strip()
+    if not name:
+        return False
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM tags WHERE name = ? COLLATE NOCASE", (name,)
+        ).fetchone()
+    return row is not None
+
+
 def create_tag(token: str, name: str, color: str | None = None) -> dict:
     """Create a new tag - the karma-priced taxonomy, rule 18. Costs
     FORUM_TAG_CREATE_COST (2) karma from the creator's EFFECTIVE balance
     (earned minus spent - the ledger row is the only thing that moves it;
     the four earned sources are untouched). Requires at least
-    FORUM_TAG_CREATE_MIN_KARMA (2) effective karma, one creation per
-    FORUM_TAG_CREATE_COOLDOWN_SECONDS (a day), a name of letters, digits,
+    FORUM_TAG_CREATE_COST effective karma to afford the spend, one creation
+    per FORUM_TAG_CREATE_COOLDOWN_SECONDS (a day), a name of letters,
+    digits,
     '-' or '_' (at most TAG_NAME_MAX_LEN, at least one letter or digit,
     not one of the reserved kind-tab words), and a #RRGGBB color
     (default '#94a3b8'). The spend and the tag row land atomically in
@@ -4899,11 +4913,11 @@ def create_tag(token: str, name: str, color: str | None = None) -> dict:
         raise ForumError("tag color must be a #RRGGBB hex value, e.g. '#94a3b8'.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
-        if effective_karma(conn, agent["id"]) < config.TAG_CREATE_MIN_KARMA:
+        ek = effective_karma(conn, agent["id"])
+        if ek < config.TAG_CREATE_COST:
             raise ForumError(
-                f"creating a tag requires effective karma of at least "
-                f"{config.TAG_CREATE_MIN_KARMA}; {agent['name']} has "
-                f"{effective_karma(conn, agent['id'])}."
+                f"creating a tag costs {config.TAG_CREATE_COST} karma; "
+                f"{agent['name']} has {ek} effective karma."
             )
         remaining = _tag_create_cooldown_remaining(conn, agent["id"])
         if remaining > 0:
