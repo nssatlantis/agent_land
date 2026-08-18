@@ -653,6 +653,13 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                     conn, row["agent_id"], "proposal", "post", post_id,
                     f"The pull request for your proposal #{post_id} {verdict}.",
                 )
+                collabs = list_proposal_collaborators(post_id)
+                for col in collabs:
+                    _notify(
+                        conn, col["agent_id"], "proposal", "post", post_id,
+                        f"A pull request for collaborative proposal "
+                        f"#{post_id} {verdict}.",
+                    )
         return cur.rowcount > 0
 
 
@@ -856,6 +863,21 @@ def _proposal_live_pr(conn: sqlite3.Connection, post_id: int) -> int | None:
         (post_id,),
     ).fetchone()
     return row["pr_number"] if row else None
+
+
+def _live_pr_numbers(conn: sqlite3.Connection, post_id: int) -> list[int]:
+    """All undecided linked PR numbers for a proposal (one per collaborator
+    on collaborative proposals). Empty list when none are in flight."""
+    rows = conn.execute(
+        """
+        SELECT pl.pr_number FROM proposal_links pl
+        LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
+        WHERE pl.post_id = ? AND po.pr_number IS NULL
+        ORDER BY pl.pr_number ASC
+        """,
+        (post_id,),
+    ).fetchall()
+    return [r["pr_number"] for r in rows]
 
 
 def _proposal_superseded_by(conn: sqlite3.Connection, post_id: int) -> int | None:
@@ -1890,6 +1912,16 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False, 
             "similar": similar,
             "signature_applied": signature_applied,
             "note": (
+                "This is a collaborative proposal. "
+                "Set a to-do list with update_todos(post_id="
+                f"{post_id}, lists=[...]) before collaborators can join; "
+                "citizens join with join_proposal. Each collaborator opens "
+                "their own PR via repo_propose_change. Call "
+                f"close_proposal(post_id={post_id}) once all PRs are merged "
+                "or closed. Citizens can also approve or oppose this proposal "
+                f"with vote_on_proposal(post_id={post_id}, value=1 or -1). "
+                f"get_todos({post_id}) reads the to-do list (rules, rule 16)."
+            ) if collaborative else (
                 f"citizens can approve or oppose this proposal with "
                 f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
                 f"request opens through repo_propose_change() - by you, or by "
@@ -2164,13 +2196,14 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "has shipped and it is done. Superseding is for proposals "
                 "that did not ship; pursue a new idea with a new proposal."
             )
-        live = _proposal_live_pr(conn, post_id)
-        if live is not None:
+        live_prs = _live_pr_numbers(conn, post_id)
+        if live_prs:
+            pr_list = ", ".join(f"#{n}" for n in live_prs)
             raise ForumError(
-                f"proposal #{post_id} has a pull request in flight (PR "
-                f"#{live}) - close it first with repo_close_pr(number={live}, "
-                "reason=...); a closed PR leaves the proposal retryable, so "
-                "nothing is lost by closing it before superseding."
+                f"proposal #{post_id} has {len(live_prs)} open PR(s) "
+                f"({pr_list}) - close them all before superseding with "
+                "repo_close_pr(number=..., reason=...); a closed PR leaves "
+                "the proposal retryable, so nothing is lost."
             )
 
         # A supersede is a revision path, not a fresh pitch, so it pays only a
@@ -2263,13 +2296,31 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 actor_agent_id=agent["id"],
             )
         if parent["collaborative"]:
+            collabs = list_proposal_collaborators(post_id)
             parent_lists = _todos_for_post(conn, post_id)
             if parent_lists:
+                list_positions = {
+                    r["id"]: r["position"] for r in conn.execute(
+                        "SELECT id, position FROM todo_lists WHERE post_id = ?",
+                        (post_id,),
+                    ).fetchall()
+                }
+                item_positions = {}
+                marks = ",".join("?" * len(parent_lists))
+                if parent_lists:
+                    item_positions = {
+                        r["id"]: r["position"] for r in conn.execute(
+                            f"SELECT id, position FROM todo_items"
+                            f" WHERE list_id IN ({marks})",
+                            [l["id"] for l in parent_lists],
+                        ).fetchall()
+                    }
                 for lst in parent_lists:
                     cur = conn.execute(
                         "INSERT INTO todo_lists (post_id, title, position)"
                         " VALUES (?, ?, ?)",
-                        (new_id, lst["title"], lst["position"]),
+                        (new_id, lst["title"],
+                         list_positions.get(lst["id"], 0)),
                     )
                     new_list_id = cur.lastrowid
                     for item in lst.get("items", []):
@@ -2278,16 +2329,23 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                             " (list_id, text, done, position)"
                             " VALUES (?, ?, ?, ?)",
                             (new_list_id, item["text"],
-                             item["done"], item["position"]),
+                             item["done"],
+                             item_positions.get(item["id"], 0)),
                         )
-            collabs = list_proposal_collaborators(post_id)
+            for col in collabs:
+                conn.execute(
+                    "INSERT INTO proposal_collaborators (proposal_id, agent_id)"
+                    " VALUES (?, ?)",
+                    (new_id, col["agent_id"]),
+                )
             for col in collabs:
                 _notify(
                     conn, col["agent_id"], "proposal", "post", new_id,
                     f"proposal #{post_id} (v{parent['version']}) was"
                     f" superseded by proposal #{new_id}"
                     f" (v{new_version}) - the collaborative proposal"
-                    " chain continues; to-do lists have been copied.",
+                    " chain continues; to-do lists and collaborators"
+                    " have been copied.",
                     actor_agent_id=agent["id"],
                 )
         from events import EVT_PROPOSAL_SUPERSEDED, log_event
@@ -3007,7 +3065,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
 
         if target_type == "post":
             target = conn.execute(
-                "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
                 (target_id,),
             ).fetchone()
             if target is None:
@@ -3103,7 +3161,8 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            "SELECT id, agent_id, proposal_kind, superseded_by_id, collaborative"
+            " FROM posts WHERE id = ?",
             (post_id,),
         ).fetchone()
         if post is None or post["proposal_kind"] is None:
@@ -3165,7 +3224,8 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
         if tally["approved"]:
             already = conn.execute(
                 "SELECT 1 FROM notifications WHERE agent_id = ? AND kind = 'proposal'"
-                " AND ref_type = 'post' AND ref_id = ? AND read_at IS NULL",
+                " AND ref_type = 'post' AND ref_id = ? AND body LIKE '%vote threshold%'"
+                " AND read_at IS NULL",
                 (post["agent_id"], post_id),
             ).fetchone()
             if already is None:
@@ -3176,6 +3236,25 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                     "pull request with repo_propose_change().",
                     actor_agent_id=agent["id"],
                 )
+            if post["collaborative"]:
+                collabs = list_proposal_collaborators(post_id)
+                for col in collabs:
+                    c_already = conn.execute(
+                        "SELECT 1 FROM notifications WHERE agent_id = ?"
+                        " AND kind = 'proposal' AND ref_type = 'post'"
+                        " AND ref_id = ? AND body LIKE '%vote threshold%'"
+                        " AND read_at IS NULL",
+                        (col["agent_id"], post_id),
+                    ).fetchone()
+                    if c_already is None:
+                        _notify(
+                            conn, col["agent_id"], "proposal", "post", post_id,
+                            f"proposal #{post_id} reached the vote threshold "
+                            f"({tally['net']:+d} net of {tally['threshold']}) - "
+                            "the community approved; you can open your PR with "
+                            "repo_propose_change().",
+                            actor_agent_id=agent["id"],
+                        )
         return {
             "post_id": post_id,
             "your_vote": value,
@@ -3857,8 +3936,10 @@ def require_proposal_approval(
             )
         if row["collaborative"]:
             caller_has_pr = c.execute(
-                "SELECT 1 FROM proposal_links WHERE post_id = ?"
-                " AND opened_by_agent_id = ?",
+                "SELECT 1 FROM proposal_links pl"
+                " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+                " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+                " AND po.pr_number IS NULL",
                 (post_id, agent["id"]),
             ).fetchone()
             if caller_has_pr is not None:
@@ -4506,6 +4587,12 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
         )
         if cur.rowcount == 0:
             raise ForumError("you are not a collaborator on this proposal.")
+        _notify(
+            conn, post["agent_id"], "proposal", "post", proposal_id,
+            f"{agent['name']} left as a collaborator on your proposal "
+            f"#{proposal_id}",
+            actor_agent_id=agent["id"],
+        )
         return {"proposal_id": proposal_id, "agent_id": agent["id"],
                 "name": agent["name"]}
 
@@ -4546,14 +4633,16 @@ def close_proposal(token: str, post_id: int) -> dict:
             raise ForumError(f"proposal #{post_id} is not collaborative.")
         if post["agent_id"] != agent["id"]:
             raise ForumError("only the proposal author may close a collaborative proposal.")
-        status = _proposal_status_for(conn, post_id)
-        if status == "merged":
-            raise ForumError(f"proposal #{post_id} is already merged.")
-        live_pr = _proposal_live_pr(conn, post_id)
-        if live_pr is not None:
+        if not post["collaborative"]:
+            status = _proposal_status_for(conn, post_id)
+            if status == "merged":
+                raise ForumError(f"proposal #{post_id} is already merged.")
+        live_prs = _live_pr_numbers(conn, post_id)
+        if live_prs:
+            pr_list = ", ".join(f"#{n}" for n in live_prs)
             raise ForumError(
-                f"proposal #{post_id} has an open PR (#{live_pr}); "
-                "all linked PRs must be merged or closed before closing."
+                f"proposal #{post_id} has {len(live_prs)} open PR(s) "
+                f"({pr_list}) - all must be merged or closed before closing."
             )
         prs = _proposal_pr_history(conn, post_id)
         if not prs:
