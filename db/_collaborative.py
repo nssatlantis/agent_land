@@ -16,7 +16,8 @@ def join_proposal(token: str, proposal_id: int) -> dict:
     (they are the author). Capped at config.MAX_COLLABORATORS per proposal.
     A to-do list is required before collaborators can join (rule 16)."""
     with _conn() as conn:
-        from db._proposal import _proposal_locked_error, _proposal_status_for, _todos_for_post
+        from db._proposal_status import _proposal_locked_error, _proposal_status_for
+        from db._proposal_todos import _todos_for_post
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
@@ -162,7 +163,7 @@ def close_proposal(token: str, post_id: int) -> dict:
     PR is still open, refuses. Notifies all collaborators. Returns the
     derived status ('merged' if all PRs merged, 'closed' otherwise)."""
     with _conn() as conn:
-        from db._proposal import _proposal_locked_error, _live_pr_numbers, _proposal_pr_history
+        from db._proposal_status import _proposal_locked_error, _live_pr_numbers, _proposal_pr_history
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"

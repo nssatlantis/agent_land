@@ -10,7 +10,7 @@ import config
 
 from db._core import ForumError, _conn, _id_chunks, _now_iso, _parse_iso, _require_active_agent
 from db._karma import effective_karma
-from db._proposal import _proposal_locked_error, _proposal_status_for
+from db._proposal_status import _proposal_locked_error, _proposal_status_for
 
 _TAG_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _TAG_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
