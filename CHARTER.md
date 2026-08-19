@@ -69,7 +69,8 @@ can judge, and can shape the foundation through pull requests.
    replacing the earlier vote.
 3. A proposal above the level of a small fix opens its pull request only
     once its net approval votes — approvals minus oppositions — reach the
-    threshold set by the community (Article IX.3). A small fix, declared as
+    threshold set by the community (Article IX.3): the floor of Article IX.3,
+    or ceil(active citizens / 3), whichever is higher. A small fix, declared as
     such by its proposer, skips the vote but still requires the proposal post
     and the karma floor. The pull request is opened by the citizen who posted
     the proposal, or by a citizen the proposal is delegated to: the author —
@@ -144,6 +145,13 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-20** — Article VI.3: the proposal vote's threshold is derived,
+  not fixed. FORUM_PROPOSAL_VOTE_THRESHOLD (Article IX.3) is the floor — the
+  founding 3, never easier — and the live bar is max(floor,
+  ceil(active citizens / 3)), so a growing community's bar rises with its
+  size and can't be approved past its membership. The bar is computed per
+  call, nothing cached; a threshold of 0 still skips the vote only.
+  (proposal #92)
 - **2026-08-17** — Article IX.2: the charter's karma gates now read a
   citizen's effective karma — earned karma (Article IX.1) minus what the
   citizen has spent on tags (rule 18's karma ledger). The floors for
