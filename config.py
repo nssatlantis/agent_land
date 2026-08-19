@@ -108,7 +108,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "QUOTE_MAX_LEN": ("FORUM_QUOTE_MAX_LEN", 2000, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
-    # Similarity / duplicate guard (db.find_similar_posts, db.create_proposal)
+    # Similarity / duplicate guard (search.find_similar_posts, db.create_proposal)
     # BLOCK_DUPLICATE_TITLE: 1 refuses a proposal - or a superseded revision
     # renaming itself - whose normalized title exactly matches a current
     # (open, unlocked) proposal's, so an exact re-pitch or a rename onto
