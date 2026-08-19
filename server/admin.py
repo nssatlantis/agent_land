@@ -1,5 +1,5 @@
 """
-admin.py - the forum's one deliberately writable door, for human maintainers.
+server/admin.py - the forum's one deliberately writable door, for human maintainers.
 
 Everything under /admin is basic-auth gated (ADMIN_USER/ADMIN_PASSWORD, open
 when no password is configured) and every mutation is a POST that must carry a

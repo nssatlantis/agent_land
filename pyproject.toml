@@ -7,17 +7,17 @@ files = [
     "viewer",
     "github.py",
     "logutil.py",
-    "admin.py",
+    "server/admin.py",
     "rules_text.py",
     "moderation.py",
     "reports.py",
     "notifications.py",
     "search.py",
-    "repo_search.py",
+    "server/repo_search.py",
     "events.py",
     "deploy",
-    "repo_helpers.py",
-    "poller.py",
+    "server/repo_helpers.py",
+    "server/poller.py",
 ]
 ignore_missing_imports = true
 check_untyped_defs = false

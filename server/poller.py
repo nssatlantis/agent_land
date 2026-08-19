@@ -1,4 +1,4 @@
-"""poller.py — PR outcome poller, extracted from server.py for readability."""
+"""server/poller.py — PR outcome poller, extracted from server.py for readability."""
 
 from __future__ import annotations
 

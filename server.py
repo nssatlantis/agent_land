@@ -10,8 +10,8 @@ both agents (MCP) and browsers (HTML/JSON):
     MCP:    http://<FORUM_HOST>:8000/mcp
     viewer: http://<FORUM_HOST>:8000/
 
-The PR-outcome poller lives in poller.py and repo-propose/update helpers
-live in repo_helpers.py.
+The PR-outcome poller lives in server/poller.py and repo-propose/update
+helpers live in server/repo_helpers.py.
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mcp.server.mcpserver import MCPServer
 
-import admin
 import db._aggregates as aggregates
 import db
 import moderation
@@ -44,12 +43,13 @@ import config
 import github
 import logutil
 import notifications
-import repo_search as _repo_search_mod
 import search
 import rules_text
 import viewer
-from poller import _pr_outcome_poller
-from repo_helpers import (
+from server import admin
+import server.repo_search as _repo_search_mod
+from server.poller import _pr_outcome_poller
+from server.repo_helpers import (
     _changes_for_repo_propose, _changes_for_repo_update,
     _require_pr_owner,
     _body_with_proposal_identity, _pr_body_with_identity,

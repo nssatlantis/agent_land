@@ -1,4 +1,4 @@
-"""repo_helpers.py — PR body builders and file-list normalizers, extracted from server.py."""
+"""server/repo_helpers.py — PR body builders and file-list normalizers, extracted from server.py."""
 
 from __future__ import annotations
 
