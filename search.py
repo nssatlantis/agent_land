@@ -140,6 +140,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
             ).fetchall()
         except sqlite3.OperationalError:
             return []
+        threshold = db._proposal_vote_threshold(conn)
         results = []
         for r in rows:
             r = dict(r)
@@ -147,6 +148,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 r["proposal"] = db._proposal_tally(
                     r.pop("proposal_up"), r.pop("proposal_down"),
                     small_fix=(r["proposal_kind"] == "small_fix"),
+                    threshold=threshold,
                 )
             else:
                 r.pop("proposal_up", None)
