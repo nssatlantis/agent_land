@@ -34,7 +34,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from mcp.server.mcpserver import MCPServer
 
 import admin
-import aggregates
+import db._aggregates as aggregates
 import db
 import moderation
 import reports
