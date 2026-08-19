@@ -197,7 +197,7 @@ from db._content import (  # noqa: F401
 # ── cross-package re-exports (keep internal callers working) ───────────
 from notifications import _notify  # noqa: F401,E402
 from search import _normalized_title, find_similar_posts  # noqa: F401,E402
-from aggregates import (  # noqa: F401,E402
+from db._aggregates import (  # noqa: F401,E402
     list_agents,
     list_recent_activity,
     recent_activity,
