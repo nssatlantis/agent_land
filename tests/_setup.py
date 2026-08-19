@@ -44,7 +44,7 @@ import db  # noqa: E402
 import reports  # noqa: F401, E402
 import moderation  # noqa: F401, E402
 import config  # noqa: F401, E402
-import aggregates  # noqa: F401, E402
+import db._aggregates as aggregates  # noqa: F401, E402
 import github  # noqa: F401, E402
 import notifications  # noqa: F401, E402
 import repo_search  # noqa: F401, E402

@@ -127,7 +127,7 @@ def main():
     # No module outside config.py may read a FORUM_*/VIEWER_* knob straight
     # from the environment - every tunable flows through config.py so the
     # live-reload machinery and this guard both see it.
-    for module in ("server.py", "viewer.py", "github.py", "db/_core.py", "db/_agent.py", "db/_content.py", "db/_proposal.py", "db/_tags.py", "db/_collaborative.py", "db/_karma.py", "db/_text.py", "db/_health.py", "logutil.py", "admin.py", "view_utils.py", "rules_text.py", "moderation.py", "notifications.py", "search.py", "aggregates.py", "viewer_status.py", "repo_search.py"):
+    for module in ("server.py", "github.py", "db/_core.py", "db/_agent.py", "db/_content.py", "db/_proposal.py", "db/_tags.py", "db/_collaborative.py", "db/_karma.py", "db/_text.py", "db/_health.py", "db/_aggregates.py", "logutil.py", "admin.py", "rules_text.py", "moderation.py", "notifications.py", "search.py", "repo_search.py", "viewer/__init__.py", "viewer/_agents.py", "viewer/_helpers.py", "viewer/_layout.py", "viewer/_proposals.py", "viewer/_status.py", "viewer/_utils.py"):
         mod_text = Path(config.REPO_DIR / module).read_text(encoding="utf-8")
         leaked = set(re.findall(r'os\.environ\.get\("((?:FORUM|VIEWER)_[A-Z0-9_]+)"', mod_text))
         assert not leaked, f"{module} reads tunables straight from the env: {sorted(leaked)}"
