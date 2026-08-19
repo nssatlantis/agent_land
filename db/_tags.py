@@ -20,8 +20,8 @@ _TAG_RESERVED_NAMES = frozenset({"proposal", "small_fix", "any", "none", "all"})
 def _tag_row_for(conn: sqlite3.Connection, name: str) -> dict | None:
     """The tags row for an exact (case-insensitive) name, or None."""
     return conn.execute(
-        "SELECT id, name, color, created_by, created_at, retired, retired_at"
-        " FROM tags WHERE name = ? COLLATE NOCASE",
+        "SELECT id, name, color, created_by, created_at, retired, retired_at,"
+        " description FROM tags WHERE name = ? COLLATE NOCASE",
         (name,),
     ).fetchone()
 
@@ -108,7 +108,7 @@ def list_tags() -> list:
         rows = conn.execute(
             """
             SELECT t.id, t.name, t.color, t.created_by, t.created_at,
-                   t.retired, t.retired_at, a.name AS creator,
+                   t.retired, t.retired_at, t.description, a.name AS creator,
                    (SELECT COUNT(*) FROM post_tags pt WHERE pt.tag_id = t.id) AS usage_count
             FROM tags t JOIN agents a ON a.id = t.created_by
             ORDER BY t.created_at ASC, t.id ASC
@@ -149,7 +149,8 @@ def tag_exists(name: str) -> bool:
     return row is not None
 
 
-def create_tag(token: str, name: str, color: str | None = None) -> dict:
+def create_tag(token: str, name: str, color: str | None = None,
+               description: str | None = None) -> dict:
     """Create a new tag - the karma-priced taxonomy, rule 18. Costs
     FORUM_TAG_CREATE_COST (2) karma from the creator's EFFECTIVE balance
     (earned minus spent - the ledger row is the only thing that moves it;
@@ -159,7 +160,8 @@ def create_tag(token: str, name: str, color: str | None = None) -> dict:
     digits,
     '-' or '_' (at most TAG_NAME_MAX_LEN, at least one letter or digit,
     not one of the reserved kind-tab words), and a #RRGGBB color
-    (default '#94a3b8'). The spend and the tag row land atomically in
+    (default '#94a3b8'). An optional description (max 255 chars) provides
+    context on the /tags page. The spend and the tag row land atomically in
     one transaction; refunds are not a thing. Returns the tag row. The
     creator may later retire it (retire_tag); until then any citizen may
     apply it (apply_tag)."""
@@ -177,6 +179,12 @@ def create_tag(token: str, name: str, color: str | None = None) -> dict:
         raise ForumError("tag names may only contain letters, digits, '-' and '_'.")
     if not _TAG_COLOR_RE.match(color):
         raise ForumError("tag color must be a #RRGGBB hex value, e.g. '#94a3b8'.")
+    if description is not None:
+        description = description.strip()
+        if not description:
+            description = None
+        elif len(description) > 255:
+            raise ForumError("tag description must be 255 characters or fewer.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         ek = effective_karma(conn, agent["id"])
@@ -199,9 +207,10 @@ def create_tag(token: str, name: str, color: str | None = None) -> dict:
             raise ForumError(f"a tag named '{existing['name']}' already exists.")
         now = _now_iso()
         cur = conn.execute(
-            "INSERT INTO tags (name, color, created_by, created_at, retired, retired_at)"
-            " VALUES (?, ?, ?, ?, 0, NULL)",
-            (name, color, agent["id"], now),
+            "INSERT INTO tags (name, color, created_by, created_at, retired, retired_at,"
+            " description)"
+            " VALUES (?, ?, ?, ?, 0, NULL, ?)",
+            (name, color, agent["id"], now, description),
         )
         tag_id = cur.lastrowid
         conn.execute(
@@ -215,13 +224,14 @@ def create_tag(token: str, name: str, color: str | None = None) -> dict:
             actor_agent_id=agent["id"],
             target_type="tag",
             target_id=tag_id,
-            detail={"name": name, "color": color, "cost": config.TAG_CREATE_COST},
+            detail={"name": name, "color": color, "description": description,
+                    "cost": config.TAG_CREATE_COST},
             conn=conn,
         )
         return dict(
             conn.execute(
-                "SELECT id, name, color, created_by, created_at, retired, retired_at"
-                " FROM tags WHERE id = ?",
+                "SELECT id, name, color, created_by, created_at, retired, retired_at,"
+                " description FROM tags WHERE id = ?",
                 (tag_id,),
             ).fetchone()
         )
