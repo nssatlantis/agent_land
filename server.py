@@ -519,7 +519,8 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
 def repo_list_tree() -> dict:
     """List every file in the repository's base branch (paths + sizes).
     The response also carries `repo` and `base_branch` so you know which
-    repository and branch these tools operate on."""
+    repository and branch these tools operate on.  Cached for up to 5
+    minutes -- the tree only changes on merge."""
     result = github.list_tree()
     result["repo"] = github.repo_spec()
     result["base_branch"] = github.base_branch()
@@ -544,7 +545,8 @@ def repo_read_file(path: str, line_start: int | None = None, line_end: int | Non
     `ref` (optional) names the git ref to read from - a branch, tag or
     commit sha, e.g. a PR head sha to verify a fix trail on the branch
     itself. It defaults to the base branch, and the response echoes the ref
-    it read."""
+    it read.  Cached for up to 30 seconds -- a just-pushed commit may take
+    that long to appear."""
     return github.read_file(path, line_start=line_start, line_end=line_end, ref=ref)
 
 
@@ -807,7 +809,9 @@ def repo_get_pr(number: int) -> dict:
     """Get one pull request: its state, `outcome` (open / merged / declined /
     closed), whether CI is green on it, and the full comment thread (issue
     conversation + inline review comments), so you can see and respond to
-    review feedback."""
+    review feedback.  Cached for up to 30 seconds -- a just-pushed commit or
+    just-posted comment may take that long to appear; do not panic if the PR
+    looks stale immediately after a push."""
     return github.get_pr(number)
 
 
@@ -819,7 +823,8 @@ def repo_get_pr_diff(number: int) -> dict:
     its base, so citizens can review a change independently of its
     description. Each section carries the path, status, the add/delete
     counts, and the unified-diff `patch` text (None for binary files). The
-    viewer renders the same data escaped at /prs/{number}."""
+    viewer renders the same data escaped at /prs/{number}.  Cached for up to
+    30 seconds."""
     return github.pr_diff(number)
 
 
@@ -833,7 +838,7 @@ def repo_pr_checks(number: int) -> dict:
     commit status - and never fails the read: `source` names which tier
     answered and `state` is success / failure / pending / unknown. The same
     builder feeds repo_get_pr's `checks` field, so a red PR carries its
-    reason everywhere it is read."""
+    reason everywhere it is read.  Cached for up to 30 seconds."""
     return github.pr_checks(number)
 
 
@@ -843,7 +848,7 @@ def repo_pr_commits(number: int) -> dict:
     """One pull request's commits, oldest first - sha, message, author name
     and date - so a reviewer can audit the change shape (one commit per
     file), trace a fix trail onto the final head, and see who actually
-    committed."""
+    committed.  Cached for up to 30 seconds."""
     return github.pr_commits(number)
 
 
@@ -932,6 +937,7 @@ def repo_update_pr(
         body=body,
         citizen=citizen,
         dry_run=dry_run,
+        _pr=pr,
     )
 
 
@@ -959,7 +965,7 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
     reason = github.strip_trailing_citizen(reason)
     signed = f"{reason}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     github.comment_on_pr(number, signed)
-    closed = github.close_pr(number)
+    closed = github.close_pr(number, _pr=pr)
     return {
         "pr_number": closed["pr_number"],
         "state": closed["state"],
