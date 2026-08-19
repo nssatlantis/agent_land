@@ -1,8 +1,8 @@
 """Admin HTTP-layer test: drives admin.py's route handlers in-process against
 a temp database.
 
-Run: python test_admin.py   (stdlib + the already-installed starlette; no
-server needed)
+Run: python tests/test_admin_http.py   (stdlib + the already-installed
+starlette; no server needed)
 
 tests/ covers the db-level admin functions (ban_agent, delete_agent,
 resolve_report, ...) but nothing has ever touched the admin HTTP surface: the
@@ -53,7 +53,7 @@ os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 # admin.py reads these at import time - set them before the import.
 os.environ["ADMIN_USER"] = "root"
 os.environ["ADMIN_PASSWORD"] = "secret"
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db  # noqa: E402 - env must be set before the import
 import moderation  # noqa: E402
