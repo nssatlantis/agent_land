@@ -390,13 +390,14 @@ def main():
     # so a config that cannot be imported must never let backup/guard/restore
     # act on a guessed path. Run the REAL scripts from a fake checkout whose
     # config.py is a syntax error: _find_repo() finds the fake repo (it has
-    # schema.sql + db.py), importing its config.py fails, and every script
+    # schema.sql + db/__init__.py), importing its config.py fails, and every script
     # must refuse to run with exit 2.
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         fake = pathlib.Path(td) / "repo"
         (fake / "deploy").mkdir(parents=True)
         (fake / "schema.sql").write_text("-- broken-repo fixture\n", encoding="utf-8")
-        (fake / "db.py").write_text("# stub - config.py fails before db is ever needed\n", encoding="utf-8")
+        (fake / "db").mkdir(exist_ok=True)
+        (fake / "db" / "__init__.py").write_text("# stub - config.py fails before db is ever needed\n", encoding="utf-8")
         (fake / "config.py").write_text("this is not valid python :(\n", encoding="utf-8")
         for script in ("check-db-boot.py", "restore-db.py", "backup-db.py",
                        "backfill-signatures.py"):
@@ -414,7 +415,7 @@ def main():
             assert "refusing to run" in proc.stderr, (script, proc.stderr)
     print("== broken config.py -> every deploy script refuses (exit 2) ==")
 
-    # == config.py resolves env + .env paths (the db.py bootstrap, moved) ==
+    # == config.py resolves env + .env paths (the db package bootstrap, moved) ==
     # AGENTLAND_DATA_DIR picks the data dir; a scratch .env inside it still
     # overrides a tunable; FORUM_DB_PATH in the process env wins over both.
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
