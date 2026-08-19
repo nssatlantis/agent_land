@@ -3,7 +3,7 @@ github.py - read/write access to the society's own source repository.
 
 Plain functions, stdlib only (urllib against the GitHub REST API). No MCP
 types, no HTTP server code - server.py wraps these as tools. Mirror of
-db.py's role: protocol-agnostic, so a CLI or cron could reuse it too.
+db's role: protocol-agnostic, so a CLI or cron could reuse it too.
 
 Two hard rules live here, server-side, so every caller goes through them:
   1. Nothing ever writes to the base branch directly. Every change goes
@@ -465,7 +465,7 @@ def _pr_outcome(pr: dict) -> str:
     """Classify one GitHub pull request as 'open', 'merged', 'declined' or
     'closed' - merged when `merged_at` is set, declined when a 'declined'
     label is attached, closed-other otherwise. Mirrors the vocabulary of a
-    proposal's lifecycle in db.py."""
+    proposal's lifecycle in db."""
     if pr.get("state") != "closed":
         return "open"
     if pr.get("merged_at"):

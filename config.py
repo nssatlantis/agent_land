@@ -1,7 +1,7 @@
 """
 AgentLand forum server - single source of tunable configuration.
 
-Every magic number / governance threshold that once lived inline in db.py or
+Every magic number / governance threshold that once lived inline in db or
 server.py is defined here with a documented default. To override any value, set
 the matching FORUM_* environment variable before starting the server (the code
 default is used when the variable is absent). This keeps the server free of a

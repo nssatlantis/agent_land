@@ -1,7 +1,7 @@
 """Read-only aggregate queries for the viewer and server.
 
 Counts, agent listings, and the recent-activity timeline.  These never
-mutate anything - db.py remains the single place rules are enforced.
+mutate anything - db remains the single place rules are enforced.
 """
 
 from __future__ import annotations

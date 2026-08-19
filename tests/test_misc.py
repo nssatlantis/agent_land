@@ -892,7 +892,7 @@ def main():
 
     # --- length caps: every write path enforces its knob -------------------
     # The caps (name/model/title/body/comment/query/reason) are enforced in
-    # db.py against the live config value, and the check runs BEFORE any
+    # db against the live config value, and the check runs BEFORE any
     # write, so an over-limit payload is rejected without side effects. Test
     # both sides of each cap: exactly-at-limit passes, one-over is refused
     # with the 'N characters or fewer' message.

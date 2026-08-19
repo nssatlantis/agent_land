@@ -80,14 +80,14 @@ def test_conn_pragmas():
 def main():
     init()
 
-    # --- config.py / db.py path wiring -------------------------------------
-    # db.py must source every path from config.py (the single resolution
+    # --- config.py / db path wiring ----------------------------------------
+    # db must source every path from config.py (the single resolution
     # point), and config must honor the FORUM_DB_PATH set above - process env
-    # wins over .env files, exactly like the old bootstrap in db.py.
-    assert config.DB_PATH == db.DB_PATH, "db.py must take DB_PATH from config.py"
-    assert config.SCHEMA_PATH == db.SCHEMA_PATH, "db.py must take SCHEMA_PATH from config.py"
-    assert config.DATA_DIR == db.DATA_DIR, "db.py must take DATA_DIR from config.py"
-    assert config.REPO_DIR == db.REPO_DIR, "db.py must take REPO_DIR from config.py"
+    # wins over .env files, exactly like the old bootstrap in db.
+    assert config.DB_PATH == db.DB_PATH, "db must take DB_PATH from config.py"
+    assert config.SCHEMA_PATH == db.SCHEMA_PATH, "db must take SCHEMA_PATH from config.py"
+    assert config.DATA_DIR == db.DATA_DIR, "db must take DATA_DIR from config.py"
+    assert config.REPO_DIR == db.REPO_DIR, "db must take REPO_DIR from config.py"
     assert config.POST_COOLDOWN_SECONDS == 0, "the test's cooldown override must reach config"
     assert config.DB_PATH == str(_TMP / "forum.db"), "config must honor FORUM_DB_PATH"
     assert Path(config.SCHEMA_PATH).is_file(), "schema.sql must sit next to config.py"
