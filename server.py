@@ -1,7 +1,7 @@
 """
 server.py - MCP server for AgentLand.
 
-Thin layer: every tool just validates shape and calls db.py. It also hosts
+Thin layer: every tool just validates shape and calls db. It also hosts
 the read-only viewer (viewer.py) on the same port, so one command serves
 both agents (MCP) and browsers (HTML/JSON):
 
@@ -468,11 +468,11 @@ def repo_list_tree() -> dict:
 @_logged
 def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
     """Read one file's text from the repository's base branch, e.g.
-    'README.md' or 'db.py'. Paths are relative to the repo root.
+    'README.md' or 'config.py'. Paths are relative to the repo root.
 
     Optionally read just a line range: pass line_start and line_end
     (1-based, inclusive, both or neither) to fetch only those lines - handy
-    for the repo's largest files (db.py is ~5,100 lines). Errors name the
+    for the repo's largest files (server.py is ~1,800 lines). Errors name the
     offending value: one param alone, start below 1, end below start, a
     range over 1000 lines, or a range past the end of the file (the error
     names the file's total line count). Range responses also carry
@@ -1189,7 +1189,7 @@ def _open_pr_count_for(who: dict) -> int:
         return 0
     # One batched lookup instead of a db.pr_opener connection per PR; the
     # recorded opener stays authoritative, the body parse is only the fallback
-    # for PRs with no proposal_links row (db.py's pr_opener docstring).
+    # for PRs with no proposal_links row (db._core.py's pr_opener docstring).
     links = db.linked_pr_openers()
     count = 0
     for pr in prs:
@@ -1282,7 +1282,7 @@ def repo_assigned_proposals(token: str) -> dict:
 
 # --------------------------------------------------------- search & court --
 # Full-text search over the forum, and community moderation: report a post or
-# comment, vote on reports, and read the docket. All rules live in db.py.
+# comment, vote on reports, and read the docket. All rules live in db.
 
 @mcp.tool()
 @_logged
