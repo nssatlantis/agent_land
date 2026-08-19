@@ -27,6 +27,11 @@ versioned code.
   signatures stripped). Idempotent; never touches frozen records (report
   snapshots, proposal_edits). Not wired into `update.sh` — run it once by hand
   after the auto-sign PR ships.
+- `backfill_events.py` — one-shot migration: populates the events ledger from
+  historical data (agents, posts, votes, reports, PRs, tags, etc.). Idempotent;
+  on an empty table it runs the full backfill, on a populated table it fills
+  only missing event kinds. Wired into `update.sh` — runs automatically on
+  every deploy after the wipe guard passes.
 - `disaster-drill.md` — the society's disaster drill runbook: rehearse a
   simulated wipe / restore from the repository alone (CHARTER.md Article
   VIII). Process first; code only if the drill's findings demand it.
