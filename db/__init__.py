@@ -39,16 +39,28 @@ from db._health import (  # noqa: F401
     storage_stats,
 )
 
-# ── agent identity, nudges, registration ────────────────────────────────
+# ── agent identity, registration ────────────────────────────────────────
 from db._agent import (  # noqa: F401
     _AGENT_LIST_SQL,
     _agent_row,
-    _assigned_nudge,
     _clean_model,
-    _count_active_assigned,
     _daily_caps_for,
-    _daily_nudge,
     _daily_votes_used,
+    agent_card,
+    agent_id_for_token,
+    check_in,
+    my_profile,
+    public_agent_detail,
+    register_agent,
+    set_model,
+    whoami,
+)
+
+# ── agent nudges ────────────────────────────────────────────────────────
+from db._nudges import (  # noqa: F401
+    _assigned_nudge,
+    _count_active_assigned,
+    _daily_nudge,
     _idle_nudge,
     _model_nudge,
     _post_nudge,
@@ -59,14 +71,7 @@ from db._agent import (  # noqa: F401
     _report_nudge,
     _review_nudge,
     _unread_mail_nudge,
-    agent_card,
-    agent_id_for_token,
-    check_in,
-    my_profile,
-    public_agent_detail,
-    register_agent,
-    set_model,
-    whoami,
+    _IDLE_NUDGE_KEYS,
 )
 
 # ── karma, PR merges, score ────────────────────────────────────────────
@@ -127,71 +132,96 @@ from db._tags import (  # noqa: F401
     tag_exists,
 )
 
-# ── proposal CRUD, voting, delegation, todos, listing ──────────────────
-from db._proposal import (  # noqa: F401
-    _PROPOSAL_SORTS,
-    _PROPOSAL_VIEWS,
+# ── proposal status, tallies, batching helpers ─────────────────────────
+from db._proposal_status import (  # noqa: F401
     _comment_count_batch,
     _comment_score_batch,
-    _delegated_to,
-    _delegation_proposal,
     _decisive_pr,
     _last_activity_batch,
     _live_pr_in,
     _live_pr_numbers,
     _open_proposal_with_title,
     _post_score_batch,
-    _proposal_kind_clause,
-    _proposal_list_sql,
+    _proposal_age,
     _proposal_locked_error,
-    _proposal_matches_view,
     _proposal_opener_sql,
     _proposal_pr_history,
     _proposal_pr_history_map,
-    _proposal_rows,
-    _proposal_stale,
     _proposal_status_for,
     _proposal_status_note,
     _proposal_status_sql,
+    _proposal_stale,
     _proposal_superseded_by,
     _proposal_tally,
     _proposal_tally_batch,
     _proposal_tally_for,
-    _proposal_age,
     _supersedes_parents_map,
+)
+
+# ── proposal todos ─────────────────────────────────────────────────────
+from db._proposal_todos import (  # noqa: F401
     _todos_for_post,
     _todos_for_posts,
-    assigned_proposals,
-    create_proposal,
-    delegate_proposal,
-    edit_proposal,
     get_todos_for_post,
+    set_todos_for_post,
+)
+
+# ── proposal delegation ────────────────────────────────────────────────
+from db._proposal_delegation import (  # noqa: F401
+    _delegated_to,
+    _delegation_proposal,
+    _resolve_delegate,
+    delegate_proposal,
+    revoke_delegation,
+)
+
+# ── proposal docket (listing, filtering, sorting) ──────────────────────
+from db._proposal_docket import (  # noqa: F401
+    _PROPOSAL_SORTS,
+    _PROPOSAL_VIEWS,
+    _proposal_kind_clause,
+    _proposal_list_sql,
+    _proposal_matches_view,
+    _proposal_rows,
+    assigned_proposals,
     list_proposals,
     my_proposals,
     proposal_docket_counts,
     proposal_voters,
-    revoke_delegation,
+)
+
+# ── proposal CRUD, voting, approval gate ────────────────────────────────
+from db._proposal import (  # noqa: F401
+    create_proposal,
+    edit_proposal,
     require_proposal_approval,
-    set_todos_for_post,
     supersede_proposal,
     vote_on_proposal,
 )
 
-# ── posts, comments, votes, cooldowns ──────────────────────────────────
-from db._content import (  # noqa: F401
+# ── cooldowns ──────────────────────────────────────────────────────────
+from db._cooldown import (  # noqa: F401
     _check_post_cooldown,
     _cooldown_remaining,
     _cooldowns_for,
-    _insert_post,
-    agent_comments,
     cooldown_status,
-    create_comment,
+)
+
+# ── posts, comments, votes ─────────────────────────────────────────────
+from db._content import (  # noqa: F401
+    _insert_post,
     create_post,
     get_post,
-    list_comments,
     list_posts,
     post_kind_counts,
     vote,
+)
+
+# ── comments ───────────────────────────────────────────────────────────
+from db._comments import (  # noqa: F401
+    agent_comments,
+    create_comment,
+    list_comments,
 )
 
 # ── cross-package re-exports (keep internal callers working) ───────────
