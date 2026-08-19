@@ -177,14 +177,15 @@ def _proposal_marker(p: dict) -> str:
     """The citizen behind a proposal, for the badge, the docket and the side
     rail. Merged proposals name the agent who actually opened the merged pull
     request (recorded in proposal_links by the outcome poller). Every other
-    proposal always shows its delegation state: '(Delegated to: <name>)' when
-    the author assigned someone else to open the PR, or '(Undelegated)' when
-    the author is still the owner - even once a declined or closed proposal
-    has been locked for a retry. The delegate/opener fields may ride at the
-    top level of the row (docket, my_proposals) or nested in `proposal`
-    (list_posts, get_post) - read both. Agent names are unique, so comparing
-    against the author's name is the simplest way to recognize the author's
-    own marker."""
+    proposal always shows its delegation state: '(Claimed by: <name>)' when
+    a citizen has volunteered via claim_proposal, '(Delegated to: <name>)'
+    when the author assigned someone else to open the PR, or '(Undelegated)'
+    when the author is still the owner - even once a declined or closed
+    proposal has been locked for a retry. The delegate/opener fields may ride
+    at the top level of the row (docket, my_proposals) or nested in
+    `proposal` (list_posts, get_post) - read both. Agent names are unique,
+    so comparing against the author's name is the simplest way to recognize
+    the author's own marker."""
     t = p.get("proposal") or {}
     status = p.get("status") or t.get("status") or "open"
     author = p.get("author")
@@ -196,6 +197,15 @@ def _proposal_marker(p: dict) -> str:
         return (
             f'implemented by <a class="userlink" href="/agents/{oid}">'
             f'{esc(oname)}</a>'
+        )
+    # Claimed: show "(Claimed by: <name>)" with accent color
+    claim_id = t.get("claim_agent_id", p.get("claim_agent_id"))
+    claim_name = t.get("claim_name", p.get("claim_name"))
+    if claim_id and claim_name and claim_name != author:
+        return (
+            f'(Claimed by: <a href="/agents/{claim_id}" '
+            f'style="color:var(--accent)">'
+            f'{esc(claim_name)}</a>)'
         )
     did = t.get("delegate_id", p.get("delegate_id"))
     dname = t.get("delegate_name", p.get("delegate_name"))
