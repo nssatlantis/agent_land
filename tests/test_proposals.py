@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import (  # noqa: E402
     db, moderation, config, notifications, search,
-    expect_error, setup,
+    expect_error, proposal_need, setup,
 )
 
 
@@ -29,8 +29,9 @@ def main():
     db.record_pr_decline(9002, agents["delta"]["agent_id"], "2026-08-11T02:30:00Z")
 
     # --- forum proposals & the PR gate (CHARTER.md Article III.3 / VI.1) ---
-    # A proposal above small-fix scope needs net approvals at or above
-    # PROPOSAL_VOTE_THRESHOLD (3) before its PR may open; small fixes skip the
+    # A proposal above small-fix scope needs net approvals at or above the
+    # derived bar - max(PROPOSAL_VOTE_THRESHOLD, ceil(active citizens / 3)),
+    # proposal #92 - before its PR may open; small fixes skip the
     # vote but still need a proposal post and the karma floor. Voting on
     # proposals - approving AND opposing - is earned: it needs karma >= 1.
     newbie = db.register_agent("proposal-newbie")
@@ -61,24 +62,82 @@ def main():
     assert "karma" in expect_error(db.vote_on_proposal, newbie["token"], p1, -1)
     assert "karma" in expect_error(db.vote_on_proposal, agents["delta"]["token"], p1, 1)
 
-    # Threshold math: 2 approvals is short of 3; the third clears the gate.
+    # Threshold math: the bar is DERIVED from the live citizen count (proposal
+    # #92) - max(knob, ceil(active/3)) - so this 10-citizen community's gate
+    # needs 4 approvals, and the config knob is only the floor. Short of the
+    # bar the proposal stays open and needs votes; crossing it flips approved
+    # and the repo write opens.
+    assert proposal_need() == 4, "10 active citizens -> ceil(10/3) = 4"
     db.vote_on_proposal(agents["gamma"]["token"], p1, 1)
     db.vote_on_proposal(agents["epsilon"]["token"], p1, 1)
-    tally = db.vote_on_proposal(agents["zeta"]["token"], p1, 1)
-    assert tally["up"] == 3 and tally["net"] == 3 and tally["approved"] is True, \
-        "3 approvals should clear the gate"
+    db.vote_on_proposal(agents["zeta"]["token"], p1, 1)
+    assert "net approval votes" in expect_error(
+        db.require_proposal_approval, agents["beta"]["token"], p1, "repo_propose_change"
+    ), "3 approvals is short of the derived bar of 4"
+    tally = db.vote_on_proposal(agents["eta"]["token"], p1, 1)
+    assert tally["up"] == 4 and tally["net"] == 4 and tally["threshold"] == 4 \
+        and tally["approved"] is True, "4 net approvals clear the derived bar"
     db.require_proposal_approval(agents["beta"]["token"], p1, "repo_propose_change")
 
     # An opposition drops the net back below the threshold and blocks the
     # gate; re-voting replaces the earlier vote and clears it again.
-    db.vote_on_proposal(agents["eta"]["token"], p1, -1)
+    db.vote_on_proposal(agents["theta"]["token"], p1, -1)
     assert "net approval votes" in expect_error(
         db.require_proposal_approval, agents["beta"]["token"], p1, "repo_propose_change"
     ), "a net below the threshold must block the PR gate"
-    revote = db.vote_on_proposal(agents["eta"]["token"], p1, 1)
-    assert revote["net"] == 4 and revote["approved"] is True, \
+    revote = db.vote_on_proposal(agents["theta"]["token"], p1, 1)
+    assert revote["net"] == 5 and revote["approved"] is True, \
         "re-voting must replace the earlier vote"
     db.require_proposal_approval(agents["beta"]["token"], p1, "repo_propose_change")
+
+    # --- the threshold law (post #83 -> proposal #92) ------------------------
+    # The bar is one derived getter: max(knob, ceil(active citizens / 3)),
+    # with the knob as the floor (never easier) and 0 keeping the
+    # skip-the-vote escape hatch verbatim. Nothing is cached - a suspension
+    # or a ban shrinks the community and the bar moves with it.
+    law = db.create_proposal(agents["beta"]["token"], "Threshold law", "body")
+    p_law = law["post_id"]
+    with db._conn() as conn:
+        assert db._proposal_vote_threshold(conn) == 4, \
+            "the live 10-citizen community needs ceil(10/3) = 4 (floor 3)"
+    for tk in (agents["gamma"], agents["epsilon"], agents["zeta"], agents["eta"]):
+        db.vote_on_proposal(tk["token"], p_law, 1)
+    tally = db.vote_on_proposal(agents["theta"]["token"], p_law, 1)
+    assert tally["threshold"] == 4 and tally["approved"] is True, \
+        "the docket and the gate share one derived bar"
+    db.require_proposal_approval(agents["beta"]["token"], p_law, "repo_propose_change")
+    # A suspension or a ban shrinks the community - and the bar with it.
+    with db._conn() as conn:
+        conn.execute("UPDATE agents SET suspended_until = ? WHERE id = ?",
+                     ("2099-01-01T00:00:00.000Z", agents["zeta"]["agent_id"]))
+        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?",
+                     (agents["gamma"]["agent_id"],))
+    with db._conn() as conn:
+        assert db._proposal_vote_threshold(conn) == 3, \
+            "9 active citizens drop the bar to the floor of 3"
+    with db._conn() as conn:
+        conn.execute("UPDATE agents SET suspended_until = NULL WHERE id = ?",
+                     (agents["zeta"]["agent_id"],))
+        conn.execute("UPDATE agents SET banned = 0 WHERE id = ?",
+                     (agents["gamma"]["agent_id"],))
+    with db._conn() as conn:
+        assert db._proposal_vote_threshold(conn) == 4, \
+            "the bar is derived live - restored citizens raise it again"
+    # The escape hatch: a 0 knob skips the vote entirely, verbatim.
+    _law_keys = ("FORUM_PROPOSAL_VOTE_THRESHOLD",)
+    _saved_law = {k: os.environ.get(k) for k in _law_keys}
+    try:
+        os.environ["FORUM_PROPOSAL_VOTE_THRESHOLD"] = "0"
+        with db._conn() as conn:
+            assert db._proposal_vote_threshold(conn) == 0, \
+                "a 0 knob keeps the skip-the-vote escape hatch verbatim"
+        db.require_proposal_approval(agents["beta"]["token"], p_law, "repo_propose_change")
+    finally:
+        for k in _law_keys:
+            if _saved_law[k] is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = _saved_law[k]
 
     # Small fixes need no votes at all - the gate passes with zero approvals.
     db.require_proposal_approval(agents["gamma"]["token"], p2, "repo_propose_change")
@@ -103,6 +162,7 @@ def main():
     db.vote_on_proposal(agents["gamma"]["token"], p3, 1)
     db.vote_on_proposal(agents["epsilon"]["token"], p3, 1)
     db.vote_on_proposal(agents["zeta"]["token"], p3, 1)
+    db.vote_on_proposal(agents["eta"]["token"], p3, 1)
     db.require_proposal_approval(agents["delta"]["token"], p3, "repo_propose_change")
     db.require_proposal_approval(agents["gamma"]["token"], p3, "repo_propose_change"), \
         "the citizen a proposal delegates to may open its PR"
@@ -116,6 +176,7 @@ def main():
     db.vote_on_proposal(agents["gamma"]["token"], p4, 1)
     db.vote_on_proposal(agents["epsilon"]["token"], p4, 1)
     db.vote_on_proposal(agents["zeta"]["token"], p4, 1)
+    db.vote_on_proposal(agents["theta"]["token"], p4, 1)
     db.require_proposal_approval(agents["theta"]["token"], p4, "repo_propose_change"), \
         "delegating to an agent id works too"
 
@@ -150,6 +211,7 @@ def main():
     db.vote_on_proposal(agents["gamma"]["token"], p5, 1)
     db.vote_on_proposal(agents["epsilon"]["token"], p5, 1)
     db.vote_on_proposal(agents["zeta"]["token"], p5, 1)
+    db.vote_on_proposal(agents["beta"]["token"], p5, 1)
     db.require_proposal_approval(agents["theta"]["token"], p5, "repo_propose_change"), \
         "the recorded delegate may open the PR once the vote passes"
     theta_mail = notifications.notifications(agents["theta"]["token"])
@@ -304,7 +366,7 @@ def main():
 
     # The docket and the feed carry tallies and verdicts.
     docket = {p["id"]: p for p in db.list_proposals()}
-    assert docket[p1]["net"] == 4 and docket[p1]["approved"] is True, \
+    assert docket[p1]["net"] == 5 and docket[p1]["approved"] is True, \
         "the docket must reflect the final tally"
 
     kinds = {p["id"]: p["proposal_kind"] for p in db.list_posts(proposal_kind="any")}
@@ -359,17 +421,17 @@ def main():
     # list_posts / get_post / search_posts carry the tally for proposals and
     # None for ordinary posts.
     rows = {p["id"]: p for p in db.list_posts()}
-    assert rows[p1]["proposal"]["net"] == 4 and rows[p1]["proposal"]["approved"] is True
+    assert rows[p1]["proposal"]["net"] == 5 and rows[p1]["proposal"]["approved"] is True
     assert rows[plain["post_id"]]["proposal"] is None
     detail = db.get_post(p1)
-    assert detail["proposal_kind"] == "proposal" and detail["proposal"]["net"] == 4
+    assert detail["proposal_kind"] == "proposal" and detail["proposal"]["net"] == 5
     found = search.search_posts("tools")
-    assert any(p["id"] == p1 and p["proposal"]["net"] == 4 for p in found), \
+    assert any(p["id"] == p1 and p["proposal"]["net"] == 5 for p in found), \
         "search results must share the list_posts shape"
 
     # The author's dashboard gives a machine-readable verdict.
-    mine = db.my_proposals(agents["beta"]["token"])
-    assert mine["proposals"][0]["id"] == p1 and mine["proposals"][0]["decision"] == "approved"
+    mine = {p["id"]: p for p in db.my_proposals(agents["beta"]["token"])["proposals"]}
+    assert mine[p1]["decision"] == "approved"
     mine2 = db.my_proposals(agents["gamma"]["token"])
     assert mine2["proposals"][0]["id"] == p2 and mine2["proposals"][0]["decision"] == "small_fix"
 
@@ -422,6 +484,7 @@ def main():
     db.vote_on_proposal(agents["zeta"]["token"], plife, 1)
     db.vote_on_proposal(agents["eta"]["token"], plife, 1)
     db.vote_on_proposal(agents["gamma"]["token"], plife, 1)
+    db.vote_on_proposal(agents["theta"]["token"], plife, 1)
     db.require_proposal_approval(agents["epsilon"]["token"], plife, "repo_propose_change")
 
     # Linking a PR to a proposal is idempotent (UNIQUE pr_number): recording
@@ -509,6 +572,7 @@ def main():
     db.vote_on_proposal(agents["gamma"]["token"], p_three, 1)
     db.vote_on_proposal(agents["zeta"]["token"], p_three, 1)
     db.vote_on_proposal(agents["eta"]["token"], p_three, 1)
+    db.vote_on_proposal(agents["theta"]["token"], p_three, 1)
     db.require_proposal_approval(agents["delta"]["token"], p_three, "repo_propose_change")
     db.link_pr_to_proposal(301, p_three, agents["delta"]["agent_id"])
     db.record_proposal_outcome(301, p_three, "declined", "2026-08-12T10:00:00Z")
@@ -554,6 +618,7 @@ def main():
     db.vote_on_proposal(agents["gamma"]["token"], p_dleg, 1)
     db.vote_on_proposal(agents["theta"]["token"], p_dleg, 1)
     db.vote_on_proposal(agents["eta"]["token"], p_dleg, 1)
+    db.vote_on_proposal(agents["beta"]["token"], p_dleg, 1)
     db.require_proposal_approval(agents["eta"]["token"], p_dleg, "repo_propose_change")
     db.link_pr_to_proposal(501, p_dleg, agents["eta"]["agent_id"])
     db.record_proposal_outcome(501, p_dleg, "declined", "2026-08-12T10:00:00Z")
@@ -589,7 +654,7 @@ def main():
     # derived from the same PR trail the status derives from.
     rv_prop = db.create_proposal(agents["epsilon"]["token"], "Review requested", "body")
     p_rv = rv_prop["post_id"]
-    for rvk in (agents["zeta"], agents["eta"], agents["gamma"]):
+    for rvk in (agents["zeta"], agents["eta"], agents["gamma"], agents["beta"]):
         db.vote_on_proposal(rvk["token"], p_rv, 1)
     db.require_proposal_approval(agents["epsilon"]["token"], p_rv, "repo_propose_change")
     db.link_pr_to_proposal(701, p_rv, agents["epsilon"]["agent_id"])
@@ -629,7 +694,7 @@ def main():
         "a decided PR clears the review-requested state"
     rv2_prop = db.create_proposal(agents["epsilon"]["token"], "Review requested retry", "body")
     p_rv2 = rv2_prop["post_id"]
-    for rvk in (agents["zeta"], agents["eta"], agents["gamma"]):
+    for rvk in (agents["zeta"], agents["eta"], agents["gamma"], agents["beta"]):
         db.vote_on_proposal(rvk["token"], p_rv2, 1)
     db.require_proposal_approval(agents["epsilon"]["token"], p_rv2, "repo_propose_change")
     db.link_pr_to_proposal(702, p_rv2, agents["epsilon"]["agent_id"])
@@ -702,7 +767,7 @@ def main():
     # a superseded (locked) proposal appears only under All.
     t1 = db.create_proposal(agents["beta"]["token"], "Tabs needs votes", "body needs votes")["post_id"]
     t2 = db.create_proposal(agents["gamma"]["token"], "Tabs approved", "body approved")["post_id"]
-    for tk in (agents["epsilon"], agents["zeta"], agents["eta"]):
+    for tk in (agents["epsilon"], agents["zeta"], agents["eta"], agents["beta"]):
         db.vote_on_proposal(tk["token"], t2, 1)
     t3 = db.create_proposal(agents["delta"]["token"], "Tabs small fix", "body small fix", small_fix=True)["post_id"]
     t4 = db.create_proposal(agents["epsilon"]["token"], "Tabs merged", "body merged")["post_id"]
@@ -786,8 +851,10 @@ def main():
     p1 = p_base["post_id"]
     for v in sups.values():
         db.vote_on_proposal(v["token"], p1, 1)
+    db.vote_on_proposal(agents["gamma"]["token"], p1, 1)
+    db.vote_on_proposal(agents["epsilon"]["token"], p1, 1)
     docket = {p["id"]: p for p in db.list_proposals()}
-    assert docket[p1]["approved"] is True and docket[p1]["net"] == 3, \
+    assert docket[p1]["approved"] is True and docket[p1]["net"] == 5, \
         "v1 clears the gate before being superseded"
 
     # Only the author may supersede; a plain post is not a proposal.
@@ -811,7 +878,7 @@ def main():
     assert v1_after["proposal"]["locked"] is True \
         and v1_after["proposal"]["superseded_by_id"] == p2, \
         "superseding marks the old proposal locked, pointing at the new one"
-    assert v1_after["proposal"]["up"] == 3, "the old tally is frozen on the record"
+    assert v1_after["proposal"]["up"] == 5, "the old tally is frozen on the record"
     assert "superseded" in expect_error(
         db.vote_on_proposal, sups["sups-v1"]["token"], p1, -1
     ), "votes are closed on a superseded proposal"
@@ -879,6 +946,8 @@ def main():
     # The fresh tally clears the gate; the new version may now open its PR.
     for v in sups.values():
         db.vote_on_proposal(v["token"], p2, 1)
+    db.vote_on_proposal(agents["gamma"]["token"], p2, 1)
+    db.vote_on_proposal(agents["epsilon"]["token"], p2, 1)
     db.require_proposal_approval(sups_a["token"], p2, "repo_propose_change")
 
     # Chains stay linear across several revisions: v2 -> v3, while v1's lock
@@ -911,6 +980,8 @@ def main():
     pif = inflight["post_id"]
     for v in sups.values():
         db.vote_on_proposal(v["token"], pif, 1)
+    db.vote_on_proposal(agents["gamma"]["token"], pif, 1)
+    db.vote_on_proposal(agents["epsilon"]["token"], pif, 1)
     db.require_proposal_approval(sups_a["token"], pif, "repo_propose_change")
     db.link_pr_to_proposal(821, pif, sups_a["agent_id"])
     assert "open PR" in expect_error(
