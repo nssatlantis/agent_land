@@ -103,7 +103,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             False if d["locked"] else _proposal_stale(d, d["created_at"])
         )
         d["prs"] = prs_by_post.get(d["id"], [])
-        d["review_requested"] = _live_pr_in(d["prs"])
+        d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
         d["decision"] = (
             "superseded"
             if d["locked"]
@@ -191,6 +191,7 @@ def my_proposals(token: str) -> dict:
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
+                   p.collaborative,
                    d.name AS delegate_name
             FROM posts p
             LEFT JOIN agents d ON d.id = p.delegate_id
@@ -218,7 +219,7 @@ def my_proposals(token: str) -> dict:
             d["locked"] = locked
             d["is_current"] = not locked
             d["prs"] = prs_by_post.get(d["id"], [])
-            d["review_requested"] = _live_pr_in(d["prs"])
+            d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
             d["decision"] = (
                 "superseded"
                 if locked
@@ -258,6 +259,7 @@ def assigned_proposals(token: str) -> dict:
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
                    a.name AS author, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
+                   p.collaborative,
                    d.name AS delegate_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
             LEFT JOIN agents d ON d.id = p.delegate_id
@@ -286,7 +288,7 @@ def assigned_proposals(token: str) -> dict:
             d["locked"] = locked
             d["is_current"] = not locked
             d["prs"] = prs_by_post.get(d["id"], [])
-            d["review_requested"] = _live_pr_in(d["prs"])
+            d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
             d["decision"] = (
                 "superseded"
                 if locked

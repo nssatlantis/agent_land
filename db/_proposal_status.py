@@ -258,12 +258,17 @@ def _decisive_pr(prs: list) -> dict | None:
     return max(pool, key=lambda p: p["pr_number"])
 
 
-def _live_pr_in(prs: list) -> bool:
+def _live_pr_in(prs: list, collaborative: bool = False) -> bool:
     """Whether a proposal's PR trail contains a pull request still in flight
     (status 'open' - linked, not yet decided) - the 'review requested' state:
     a proposal with a live PR is awaiting the community's review of the
-    branch, not further votes. Derived from the same prs trail the status and
-    opener derive from, so it can never disagree with them."""
+    branch, not further votes. Collaborative proposals are excluded - their
+    authors run their own review of each collaborator branch, so a live one
+    must not flag the whole proposal 'review requested'. Derived from the
+    same prs trail the status and opener derive from, so it can never
+    disagree with them."""
+    if collaborative:
+        return False
     return any(pr["status"] == "open" for pr in prs)
 
 

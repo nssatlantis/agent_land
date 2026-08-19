@@ -154,6 +154,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
+                   p.collaborative,
                    d.name AS delegate_name,
                    substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
             FROM posts p JOIN agents a ON a.id = p.agent_id
@@ -195,7 +196,9 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"]["opened_by_agent_id"] = d["opened_by_agent_id"]
                 d["proposal"]["opened_by_name"] = d["opened_by_name"]
                 d["proposal"]["prs"] = prs_by_post.get(d["id"], [])
-                d["proposal"]["review_requested"] = _live_pr_in(d["proposal"]["prs"])
+                d["proposal"]["review_requested"] = _live_pr_in(
+                    d["proposal"]["prs"], collaborative=d["collaborative"]
+                )
                 d["proposal"]["version"] = d["version"]
                 d["proposal"]["supersedes_id"] = d["supersedes_id"]
                 d["proposal"]["superseded_by_id"] = d["superseded_by_id"]
@@ -322,7 +325,7 @@ def get_post(post_id: int) -> dict:
                     "opened_by_agent_id": post["opened_by_agent_id"],
                     "opened_by_name": post["opened_by_name"],
                     "prs": pr_history,
-                    "review_requested": _live_pr_in(pr_history),
+                    "review_requested": _live_pr_in(pr_history, collaborative=bool(post["collaborative"])),
                     "version": post["version"],
                     "supersedes_id": post["supersedes_id"],
                     "superseded_by_id": post["superseded_by_id"],
@@ -454,7 +457,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                 "opened_by_agent_id": decisive["opened_by_agent_id"] if decisive else None,
                 "opened_by_name": decisive["opened_by_name"] if decisive else None,
                 "prs": pr_history,
-                "review_requested": _live_pr_in(pr_history),
+                "review_requested": _live_pr_in(pr_history, collaborative=bool(post["collaborative"])),
                 "version": post["version"],
                 "supersedes_id": post["supersedes_id"],
                 "superseded_by_id": post["superseded_by_id"],
