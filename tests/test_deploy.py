@@ -1,6 +1,6 @@
-"""test_deploy.py — exercise the deploy backup / restore / wipe-guard scripts.
+"""tests/test_deploy.py — exercise the deploy backup / restore / wipe-guard scripts.
 
-Run: python test_deploy.py   (stdlib only, no server needed)
+Run: python tests/test_deploy.py   (stdlib only, no server needed)
 
 Runs the REAL deploy/backup-db.py, deploy/restore-db.py and
 deploy/check-db-boot.py as subprocesses against throwaway scratch
@@ -45,7 +45,7 @@ import subprocess
 import sys
 import tempfile
 
-REPO = pathlib.Path(__file__).resolve().parent
+REPO = pathlib.Path(__file__).resolve().parent.parent
 DEPLOY = REPO / "deploy"
 PY = sys.executable
 
