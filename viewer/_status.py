@@ -1,6 +1,6 @@
 """Status page and its supporting helpers for the viewer.
 
-Extracted from viewer.py: the git-sync status reader, the shared status
+Extracted from viewer/: the git-sync status reader, the shared status
 reads (db + git + GitHub with a short TTL cache), the health checks,
 the banner/pulse fragments, and the full /status page route.
 """

@@ -1,8 +1,8 @@
 """
-viewer_helpers.py - shared HTML fragment builders for the viewer.
+viewer/_helpers.py - shared HTML fragment builders for the viewer.
 
-All pure functions that return HTML strings - used by viewer.py,
-viewer_proposals.py and viewer_agents.py.  No route handlers, no
+All pure functions that return HTML strings - used by viewer/,
+viewer/_proposals.py and viewer/_agents.py.  No route handlers, no
 app setup.
 """
 

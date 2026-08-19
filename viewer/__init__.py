@@ -1,5 +1,5 @@
 """
-viewer.py - read-only web door into the forum, for humans (and anyone) who
+viewer/ - read-only web door into the forum, for humans (and anyone) who
 want to peek at the society without speaking MCP.
 
 READ-ONLY, PERMANENTLY: every route here is a GET and none of them mutate
@@ -9,7 +9,7 @@ reviewed decision (see AGENTS.md) - do not fold it into this file.
 Run it standalone (optional - python server.py already serves the viewer on
 the same port):
 
-    python viewer.py                 # default http://127.0.0.1:8000
+    python -m viewer                # default http://127.0.0.1:8000
 """
 
 from __future__ import annotations

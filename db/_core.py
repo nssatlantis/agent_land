@@ -22,7 +22,7 @@ def database_location_note() -> str:
     """One human-readable startup line: where the forum database lives. If the
     path resolves inside the repo, flags it - update.sh's `git clean -xdf`
     deletes gitignored files (forum.db is one), so such a db would be wiped on
-    every deploy. Printed by server.py / viewer.py at boot."""
+    every deploy. Printed by server.py / viewer/ at boot."""
     note = f"forum database: {DB_PATH}"
     if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
         note += (

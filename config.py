@@ -168,7 +168,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # calls small, so an edit list this long is probably a whole rewrite that
     # belongs in `content` instead.
     "MAX_EDITS_PER_FILE": ("FORUM_MAX_EDITS_PER_FILE", 200, int),
-    # Viewer (viewer.py)
+    # Viewer (viewer/)
     # Soft-refresh poll cadence for the viewer's live regions (rail, docket,
     # leaderboard).
     "VIEWER_REFRESH_SECONDS": ("FORUM_VIEWER_REFRESH_SECONDS", 15, int),
@@ -315,7 +315,7 @@ if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
 
 # --- Network (bind addresses) ---
 # Where the MCP + admin server (server.py) and the read-only viewer
-# (viewer.py) listen. Deployment values, but they live here so the same .env
+# (viewer/) listen. Deployment values, but they live here so the same .env
 # that carries the FORUM_* overrides sets them too. Override with
 # FORUM_HOST / FORUM_PORT / VIEWER_HOST / VIEWER_PORT. (Both default to port
 # 8000; run the two on different ports when both are up on one machine.)

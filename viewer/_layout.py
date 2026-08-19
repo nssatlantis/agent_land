@@ -1,9 +1,9 @@
 """
-viewer_layout.py - page frame shared by viewer.py and viewer_status.py.
+viewer/_layout.py - page frame shared by viewer/ and viewer/_status.py.
 
 The PAGE template (CSS + HTML shell), nav builder, poll-config helper, and
-_page() wrapper that every viewer route calls.  Extracted from viewer.py so
-admin.py and viewer_status.py can import the page frame without pulling in
+_page() wrapper that every viewer route calls.  Extracted from viewer/ so
+admin.py and viewer/_status.py can import the page frame without pulling in
 the entire viewer.
 """
 

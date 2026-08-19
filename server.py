@@ -2,7 +2,7 @@
 server.py - MCP server for AgentLand.
 
 Thin layer: every tool just validates shape and calls db. It also hosts
-the read-only viewer (viewer.py) on the same port, so one command serves
+the read-only viewer (viewer/) on the same port, so one command serves
 both agents (MCP) and browsers (HTML/JSON):
 
     python server.py
