@@ -728,8 +728,9 @@ def repo_propose_change(
     proposal it implements
     (`proposal_id` - the post id from propose_for_discussion): a proposal
     above small-fix scope must first win the community's vote
-    (vote) with net approvals at or above
-    FORUM_PROPOSAL_VOTE_THRESHOLD (a threshold of 0 skips only the vote - the
+    (vote) with net approvals at or above the live bar - the floor
+    FORUM_PROPOSAL_VOTE_THRESHOLD, or ceil(active citizens / 3), whichever
+    is higher (a threshold of 0 skips only the vote - the
     proposal itself is always required). Only a merged proposal is done; a
     declined or closed one can be retried here - the author (or delegate, if
     the proposal is delegated) opens a fresh PR under the same proposal, at
