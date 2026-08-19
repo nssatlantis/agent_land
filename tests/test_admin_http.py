@@ -1,10 +1,10 @@
 """Admin HTTP-layer test: drives admin.py's route handlers in-process against
 a temp database.
 
-Run: python test_admin.py   (stdlib + the already-installed starlette; no
-server needed)
+Run: python tests/test_admin_http.py   (stdlib + the already-installed
+starlette; no server needed)
 
-test_moderation.py covers the db-level admin functions (ban_agent, delete_agent,
+tests/ covers the db-level admin functions (ban_agent, delete_agent,
 resolve_report, ...) but nothing has ever touched the admin HTTP surface: the
 basic-auth gate, the CSRF token machinery and the form-handling routes that
 wrap those db calls. This file closes that gap by calling the handlers directly
@@ -53,10 +53,11 @@ os.environ["FORUM_REPORT_COOLDOWN_SECONDS"] = "0"
 # admin.py reads these at import time - set them before the import.
 os.environ["ADMIN_USER"] = "root"
 os.environ["ADMIN_PASSWORD"] = "secret"
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db  # noqa: E402 - env must be set before the import
 import moderation  # noqa: E402
+import reports  # noqa: E402
 import admin  # noqa: E402 - reads ADMIN_USER/ADMIN_PASSWORD at import
 
 _CSRF = admin._CSRF_COOKIE
@@ -150,7 +151,7 @@ def main():
     bob_post = db.create_post(b_token, "bob's stone", "hello")
     db.vote(a_token, "post", bob_post["post_id"], 1)
     alice_post = db.create_post(a_token, "alice's stone", "world")
-    report = moderation.report_content(b_token, "post", alice_post["post_id"], "flagged for review")
+    report = reports.report_content(b_token, "post", alice_post["post_id"], "flagged for review")
     report_id = report["report_id"]
 
     # --- basic-auth gate ---------------------------------------------------
@@ -317,17 +318,17 @@ def main():
         cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "action": "clear"},
         headers=[(b"authorization", _AUTH.encode())]))
     assert resp.status_code == 303, "clear redirects"
-    assert [r for r in moderation.list_reports() if r["id"] == report_id][0]["status"] == "cleared", \
+    assert [r for r in reports.list_reports() if r["id"] == report_id][0]["status"] == "cleared", \
         "clear closes the report"
 
-    rep2 = moderation.report_content(b_token, "post", alice_post["post_id"], "second flag")
+    rep2 = reports.report_content(b_token, "post", alice_post["post_id"], "second flag")
     resp = _call(admin.resolve_report, _req(
         "POST", f"/admin/reports/{rep2['report_id']}/resolve", params={"id": rep2["report_id"]},
         cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "action": "suspend"},
         headers=[(b"authorization", _AUTH.encode())]))
     assert resp.status_code == 303, "suspend redirects"
     assert db.whoami(a_token)["suspended_until"] is not None, "suspend suspends the author"
-    assert [r for r in moderation.list_reports() if r["id"] == rep2["report_id"]][0]["status"] \
+    assert [r for r in reports.list_reports() if r["id"] == rep2["report_id"]][0]["status"] \
         == "suspended", "the report records the suspension"
 
     resp = _call(admin.resolve_report, _req(
@@ -335,7 +336,7 @@ def main():
         cookies={_CSRF: cookie_token}, body={"csrf": cookie_token, "action": "nonsense"},
         headers=[(b"authorization", _AUTH.encode())]))
     assert resp.status_code == 200, "an unknown action is a graceful flash"
-    assert [r for r in moderation.list_reports() if r["id"] == report_id][0]["status"] \
+    assert [r for r in reports.list_reports() if r["id"] == report_id][0]["status"] \
         == "cleared", "an invalid action never changes the report"
 
     # --- pages: agent detail + report detail -------------------------------
@@ -388,13 +389,13 @@ def main():
     # resolve test above, so a fresh author and voter carry this case.
     dave = db.register_agent("dave")
     doomed = db.create_post(dave["token"], "doomed post", "this will be deleted")
-    removed_rep = moderation.report_content(b_token, "post", doomed["post_id"], "sweep me")
+    removed_rep = reports.report_content(b_token, "post", doomed["post_id"], "sweep me")
     erin = db.register_agent("erin")
     erin_post = db.create_post(erin["token"], "erin's stone", "hi")
     db.vote(b_token, "post", erin_post["post_id"], 1)
-    moderation.vote_on_report(erin["token"], removed_rep["report_id"], "suspend")
+    reports.vote_on_report(erin["token"], removed_rep["report_id"], "suspend")
     moderation.delete_post(doomed["post_id"], "root")
-    removed_row = [r for r in moderation.list_reports() if r["id"] == removed_rep["report_id"]][0]
+    removed_row = [r for r in reports.list_reports() if r["id"] == removed_rep["report_id"]][0]
     assert removed_row["status"] == "removed", "deleted content sweeps its report to 'removed'"
     assert "this will be deleted" in (removed_row["target_preview"] or ""), \
         "the snapshot preview survives content deletion"
@@ -421,8 +422,8 @@ def main():
     quote_src = db.create_comment(frank["token"], f_post["post_id"], "original words")
     quote_comment = db.create_comment(
         b_token, f_post["post_id"], "quoting", quote_comment_id=quote_src["comment_id"])
-    quoted_rep = moderation.report_content(b_token, "comment", quote_comment["comment_id"], "flagged")
-    qr = moderation.get_report(quoted_rep["report_id"])
+    quoted_rep = reports.report_content(b_token, "comment", quote_comment["comment_id"], "flagged")
+    qr = reports.get_report(quoted_rep["report_id"])
     _q_src_body = f"original words\n\n— frank (agent_id={frank['agent_id']})"
     assert qr["target_snapshot"].get("quote_comment_id") == quote_src["comment_id"] \
         and qr["target_snapshot"].get("quote_text") == _q_src_body, \

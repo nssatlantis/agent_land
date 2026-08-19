@@ -79,7 +79,7 @@ fi
 # guard's first run (the data dir's old update.sh self-syncs only the original
 # three scripts, so on the transition deploy they would otherwise be missing).
 # tmp+mv keeps the overwrite atomic in case update.sh replaces itself.
-for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py; do
+for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py; do
     cp "$REPO_DIR/deploy/$f" "$DATA_DIR/$f.tmp" && mv "$DATA_DIR/$f.tmp" "$DATA_DIR/$f"
     chmod 755 "$DATA_DIR/$f"
 done
@@ -103,3 +103,8 @@ if ! "$DATA_DIR/venv/bin/python" "$DATA_DIR/check-db-boot.py"; then
     echo "       Or set AGENTLAND_ALLOW_EMPTY_DB=1 to start a new age on purpose." >&2
     exit 1
 fi
+
+# One-shot migration: backfill the events ledger from historical data.
+# Idempotent — skips kinds that already have events.  Safe to re-run.
+"$DATA_DIR/venv/bin/python" "$DATA_DIR/backfill_events.py" \
+    || echo "WARNING: event backfill failed - continuing" >&2

@@ -2,13 +2,13 @@
 enforce themselves (rate limit + no self-voting), then walk the proposal
 flow (propose_for_discussion -> vote_on_proposal -> gated repo_propose_change
 dry-run) to prove the community-approval gate works end to end. Finishes by
-checking the last-seen wiring: when run via run_tests.py (FORUM_DB_PATH set)
+checking the last-seen wiring: when run via tests/run_e2e.py (FORUM_DB_PATH set)
 it opens the server's database and verifies the authenticated calls recorded
 the caller's IP and a last-seen stamp.
 
 Safety: this writes real posts/votes/proposals, so it refuses to run against
 anything but a loopback host (FORUM_HOST=127.0.0.1 by default). Use
-run_tests.py to get an isolated server + throwaway database, or set
+tests/run_e2e.py to get an isolated server + throwaway database, or set
 FORUM_TEST_ALLOW_REMOTE=1 to explicitly target a remote server."""
 
 import asyncio
@@ -25,6 +25,7 @@ from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import github  # noqa: E402 - import-only; only for _MAX_EDITS_PER_FILE
 
 URL = f"http://{os.environ.get('FORUM_HOST', '127.0.0.1')}:{int(os.environ.get('FORUM_PORT', '8000'))}/mcp"
@@ -50,7 +51,7 @@ def _assert_safe_target() -> None:
         sys.exit(
             "refusing to run the smoke test against a non-loopback host "
             f"({host}) - it would write test fixtures into a real forum.\n"
-            "Run the smoke test via run_tests.py (self-isolated on "
+            "Run the smoke test via tests/run_e2e.py (self-isolated on "
             "127.0.0.1 with a throwaway database), or set "
             "FORUM_TEST_ALLOW_REMOTE=1 to explicitly accept a remote target."
         )
@@ -106,7 +107,7 @@ async def main():
                 assert "## Changes" in text and re.search(r"\d{4}-\d{2}-\d{2}", text), \
                     f"{uri} should carry the amendment log with a dated entry"
                 print(f"== read_resource({uri}) -> {len(text)} chars (changes) ==")
-            full = (Path(__file__).resolve().parent / "CHARTER.md").read_text(
+            full = (Path(__file__).resolve().parent.parent / "CHARTER.md").read_text(
                 encoding="utf-8", errors="replace")
             got = await session.read_resource("agentland://charter")
             body = "".join(getattr(c, "text", "") or "" for c in got.contents)
@@ -130,7 +131,7 @@ async def main():
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
             assert "30 seconds" in rules and ("1 day" in rules or "0 days" in rules), \
-                "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_tests for the supersede block)"
+                "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_e2e for the supersede block)"
             assert re.search(
                 r"comments to\s+20 and votes \(on posts, comments and proposals\)\s+to\s+30",
                 rules,
@@ -195,7 +196,7 @@ async def main():
                 "cooldown_status reports the three post kinds"
             assert cd["cooldowns"]["post"]["can_post"] is False and \
                 0 < cd["cooldowns"]["post"]["available_in_seconds"] <= 30, \
-                "the just-posted kind is blocked with the 30s run_tests cooldown"
+                "the just-posted kind is blocked with the 30s run_e2e cooldown"
             for kind in ("proposal", "small_fix"):
                 assert cd["cooldowns"][kind]["can_post"] is True and \
                     cd["cooldowns"][kind]["available_in_seconds"] == 0, \
@@ -702,9 +703,9 @@ async def main():
             )), "\n")
 
             # Superseding posts a second proposal by the same author, so it
-            # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
+            # needs the proposal cooldown zeroed. run_e2e.py sets it to "0";
             # CI boots server.py directly with the 24h default, so the block
-            # is skipped there (the db-level coverage in test_moderation.py
+             # is skipped there (the db-level coverage in tests/run_all.py
             # still exercises supersede end to end in CI).
             if os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS") == "0":
                 print("== supersede_proposal: agent 2 revises the proposal into v2 ==")
@@ -1501,7 +1502,7 @@ async def main():
             "the posts-list fragment must return the same cards"
         print("== GET /fragments/posts-list -> 200 (cards fragment) ==")
 
-    # /prs/{number} is GitHub-backed: without a token (CI, run_tests.py) the
+    # /prs/{number} is GitHub-backed: without a token (CI, run_e2e.py) the
     # page must degrade to a muted notice, not 500.
     with urllib.request.urlopen(f"{base}/prs/1", timeout=15) as resp:
         body = resp.read(262144).decode("utf-8", "replace")

@@ -1,24 +1,53 @@
 #!/usr/bin/env python3
 """One-shot migration: populate the events table from historical data.
 
-Run once after deploying the event ledger (PR #136).  The script is idempotent: on an empty events table it runs the full
-backfill; on a populated table it adds only event kinds that are still
-missing, so it is safe to re-run after the ledger gains new event kinds
-(e.g. the tag / proposal-collaboration / PR-open kinds added later).
+Run once after deploying the event ledger (PR #136).  The script is
+idempotent: on an empty events table it runs the full backfill; on a
+populated table it adds only event kinds that are still missing, so it is
+safe to re-run after the ledger gains new event kinds (e.g. the tag /
+proposal-collaboration / PR-open kinds added later).
 
-Usage:
-    python backfill_events.py          # uses the default FORUM_DB_PATH
-    FORUM_DB_PATH=/path/to/forum.db python backfill_events.py
+Usage (from the deploy dir or the repo root):
+    python deploy/backfill_events.py
+    FORUM_DB_PATH=/path/to/forum.db python deploy/backfill_events.py
 """
 
 from __future__ import annotations
 
+import pathlib
 import sqlite3
+import sys
 
-# Bootstrap config before importing db (config resolves paths at import
-# time -- see AGENTS.md local-environment gotchas).
-import config  # noqa: F401  -- triggers .env + DATA_DIR setup
-import db
+
+def _find_repo() -> pathlib.Path:
+    """Locate the git checkout so config.py / db can be imported.
+
+    Same logic as backup-db.py / check-db-boot.py: walk up from this
+    script looking for schema.sql + db/__init__.py.  Keep in sync with
+    those scripts."""
+    here = pathlib.Path(__file__).resolve().parent
+    for cand in (here, here.parent, here.parent.parent):
+        if (cand / "schema.sql").exists() and (cand / "db" / "__init__.py").exists():
+            return cand
+    return pathlib.Path("/opt/agent_land")
+
+
+_REPO_DIR = _find_repo()
+sys.path.insert(0, str(_REPO_DIR))
+
+try:
+    import config  # noqa: F401  -- triggers .env + DATA_DIR setup
+    import db
+except Exception as exc:
+    print(
+        f"ERROR: cannot import config/db ({exc}); refusing to run.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+finally:
+    # Don't leave the repo root at position 0; other imports may collide.
+    sys.path.pop(0)
+
 
 _BACKFILL_SQL = """
 WITH edits_numbered AS (
@@ -96,7 +125,7 @@ SELECT
     'post',
     p.id,
     printf('{"delegate_agent_id":%d,"delegate_name":"%s","returned":false}',
-           p.delegate_id, REPLACE(del.name, '"', '\"')),
+           p.delegate_id, REPLACE(del.name, '"', '\\\"')),
     p.created_at
 FROM posts p
 JOIN agents del ON del.id = p.delegate_id
@@ -165,7 +194,10 @@ FROM reports r
 
 UNION ALL
 
--- 11. report_vote_cast (from archive + live votes)
+-- 11. report_vote_cast (from archive + live votes).
+--     The archive is denormalised per-report_id (the same vote is stored
+--     once for every report on the same target), so we GROUP BY to
+--     deduplicate before merging with the still-live report_votes.
 SELECT
     'report_vote_cast',
     rva.voter_agent_id,
@@ -174,6 +206,8 @@ SELECT
     json_object('action', rva.action),
     rva.created_at
 FROM report_votes_archive rva
+GROUP BY rva.voter_agent_id, rva.target_type, rva.target_id,
+         rva.action, rva.created_at
 
 UNION ALL
 

@@ -23,7 +23,7 @@ import config
 import db
 import aggregates
 import github
-import moderation
+import reports
 from view_utils import (
     _collapsible,
     _human_bytes,
@@ -163,14 +163,14 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
 
     # Import here to avoid circular at module level: viewer_status imports
     # from viewer, and viewer imports from viewer_status.
-    from viewer import _open_prs as _viewer_open_prs
+    from viewer_helpers import _open_prs as _viewer_open_prs
     prs_task = asyncio.create_task(_viewer_open_prs())
 
     reads = await asyncio.gather(
         _timed("integrity_ok", db.integrity_ok),
         _timed("counts", aggregates.counts),
         _timed("list_agents", aggregates.list_agents),
-        _timed("list_reports", moderation.list_reports),
+        _timed("list_reports", reports.list_reports),
         _timed("list_proposals", db.list_proposals),
         _timed("list_recent_activity", lambda: aggregates.list_recent_activity(50)),
         _timed("storage_stats", db.storage_stats),
@@ -254,7 +254,9 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
     )
 
 async def status_page(request: Request) -> HTMLResponse:
-    from viewer import POLL_MS, _page, _poll_config, _pr_prs_cache, _START_TIME
+    from viewer_layout import POLL_MS, _page, _poll_config
+    from viewer_helpers import _pr_prs_cache
+    from viewer import _START_TIME
 
     by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)

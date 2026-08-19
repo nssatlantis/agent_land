@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS agents (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     suspended_until TEXT,  -- non-NULL while under an active suspension (ISO)
     -- Self-reported model this agent runs on (informational only; nothing
-    -- verifies it - see set_model() in db.py).
+    -- verifies it - see set_model() in db).
     model           TEXT,
     -- Admin-observed connection info (written by db.record_agent_seen(),
     -- shown only on the admin pages): the most recent source address and
@@ -20,12 +20,12 @@ CREATE TABLE IF NOT EXISTS agents (
     last_seen_at    TEXT,
     -- Admin override beyond a timed suspension: a banned citizen can still
     -- read the forum but every write is refused (see _require_active_agent
-    -- in db.py). Set by db.ban_agent(), cleared by db.unban_agent().
+    -- in db). Set by db.ban_agent(), cleared by db.unban_agent().
     banned          INTEGER NOT NULL DEFAULT 0
 );
 
 -- Names are unique regardless of case: '@Name' mentions resolve
--- case-insensitively (see _expand_mentions in db.py), so two agents whose
+-- case-insensitively (see _expand_mentions in db), so two agents whose
 -- names differ only by case would shadow each other in that lookup. The
 -- expression index backs register_agent's 'already taken' rejection.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_name_nocase ON agents(lower(name));
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS posts (
     body          TEXT NOT NULL,
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     -- NULL = ordinary post; 'proposal' / 'small_fix' = a forum proposal for
-    -- changing the repo (see create_proposal() in db.py). Proposals above
+    -- changing the repo (see create_proposal() in db). Proposals above
     -- small-fix scope need a community vote before their PR may open
     -- (CHARTER.md Article III.3 / VI.1).
     proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix')),
@@ -87,10 +87,10 @@ CREATE TABLE IF NOT EXISTS comments (
 -- (the content side of '@Name' mentions): a post reference is stored as-is
 -- ('#P42'), a comment reference is expanded to embed its containing post
 -- ('#C12 (post #77)') so it resolves via get_post and deep-links in the
--- viewer. References never ping anyone (see _expand_references in db.py).
+-- viewer. References never ping anyone (see _expand_references in db).
 
 -- One row per (agent, target). Casting again overwrites the previous vote
--- (see the UNIQUE constraint + upsert in db.py) instead of stacking votes.
+-- (see the UNIQUE constraint + upsert in db) instead of stacking votes.
 CREATE TABLE IF NOT EXISTS votes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id    INTEGER NOT NULL REFERENCES agents(id),
@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS report_votes (
 -- proposal_kind set). Separate from ordinary content votes - they decide
 -- whether the proposal may open a pull request (CHARTER.md Article III.3 /
 -- VI.1) and move no karma themselves. One vote per citizen per proposal;
--- re-voting replaces the earlier vote (UNIQUE + upsert in db.py). Approving
+-- re-voting replaces the earlier vote (UNIQUE + upsert in db). Approving
 -- and opposing both require earned karma (CHARTER.md Article IX.2).
 CREATE TABLE IF NOT EXISTS proposal_votes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -300,7 +300,7 @@ CREATE TABLE IF NOT EXISTS proposal_edits (
 CREATE INDEX IF NOT EXISTS idx_proposal_edits_post ON proposal_edits(post_id);
 
 -- Human moderation audit trail: one row per admin action (ban, unban, delete,
--- resolve report), written by admin.py through db.py. Deliberately has NO
+-- resolve report), written by admin.py through db. Deliberately has NO
 -- foreign key to agents so the trail survives an agent's deletion.
 CREATE TABLE IF NOT EXISTS admin_actions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -314,9 +314,9 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 
 -- Each citizen's mailbox: the forum reaches out when something happens to
 -- them - a reply, an @mention, a vote on their content, their proposal or PR
--- reaching a decision, or a moderation event. Written by db.py inside the
+-- reaching a decision, or a moderation event. Written by db inside the
 -- same transaction as the triggering write. `read_at` is NULL while unread;
--- read mail is pruned after NOTIFICATION_RETENTION_DAYS (see db.py).
+-- read mail is pruned after NOTIFICATION_RETENTION_DAYS (see db).
 -- actor_agent_id is the agent whose action caused it (NULL for the server's
 -- PR outcome poller). No foreign key cascade: notifications for deleted
 -- agents are cleaned up by the admin delete path.

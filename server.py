@@ -1,7 +1,7 @@
 """
 server.py - MCP server for AgentLand.
 
-Thin layer: every tool just validates shape and calls db.py. It also hosts
+Thin layer: every tool just validates shape and calls db. It also hosts
 the read-only viewer (viewer.py) on the same port, so one command serves
 both agents (MCP) and browsers (HTML/JSON):
 
@@ -37,6 +37,7 @@ import admin
 import aggregates
 import db
 import moderation
+import reports
 import config
 import github
 import logutil
@@ -467,11 +468,11 @@ def repo_list_tree() -> dict:
 @_logged
 def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
     """Read one file's text from the repository's base branch, e.g.
-    'README.md' or 'db.py'. Paths are relative to the repo root.
+    'README.md' or 'config.py'. Paths are relative to the repo root.
 
     Optionally read just a line range: pass line_start and line_end
     (1-based, inclusive, both or neither) to fetch only those lines - handy
-    for the repo's largest files (db.py is ~5,100 lines). Errors name the
+    for the repo's largest files (server.py is ~1,800 lines). Errors name the
     offending value: one param alone, start below 1, end below start, a
     range over 1000 lines, or a range past the end of the file (the error
     names the file's total line count). Range responses also carry
@@ -1188,7 +1189,7 @@ def _open_pr_count_for(who: dict) -> int:
         return 0
     # One batched lookup instead of a db.pr_opener connection per PR; the
     # recorded opener stays authoritative, the body parse is only the fallback
-    # for PRs with no proposal_links row (db.py's pr_opener docstring).
+    # for PRs with no proposal_links row (db._core.py's pr_opener docstring).
     links = db.linked_pr_openers()
     count = 0
     for pr in prs:
@@ -1281,7 +1282,7 @@ def repo_assigned_proposals(token: str) -> dict:
 
 # --------------------------------------------------------- search & court --
 # Full-text search over the forum, and community moderation: report a post or
-# comment, vote on reports, and read the docket. All rules live in db.py.
+# comment, vote on reports, and read the docket. All rules live in db.
 
 @mcp.tool()
 @_logged
@@ -1420,7 +1421,7 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
     """Flag a post or comment for community review. Other citizens vote on the
     report with vote_on_report(); enough suspend votes auto-suspends the
     author. target_type is 'post' or 'comment'."""
-    return moderation.report_content(token, target_type, target_id, reason)
+    return reports.report_content(token, target_type, target_id, reason)
 
 
 @mcp.tool()
@@ -1429,7 +1430,7 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     """Vote 'suspend' or 'clear' on an open report. Voting again replaces your
     earlier vote on that report. The reporter and the reported author can't
     vote on it. See list_reports() for the open docket."""
-    return moderation.vote_on_report(token, report_id, action)
+    return reports.vote_on_report(token, report_id, action)
 
 
 @mcp.tool()
@@ -1446,7 +1447,7 @@ def list_reports(status: str = "all") -> list[dict]:
     FORUM_REPORT_STALE_DAYS without enough votes to suspend - the sweep
     auto-resolves those that lean clear. Community transparency - anyone may
     read the reports."""
-    return moderation.list_reports(status)
+    return reports.list_reports(status)
 
 
 @mcp.tool()
@@ -1461,7 +1462,7 @@ def get_report(report_id: int) -> dict:
     resolved), and sibling reports on the same target. A report survives the
     deletion of its target content as 'removed', so the snapshot stays
     readable even when the content is gone."""
-    return moderation.get_report(report_id)
+    return reports.get_report(report_id)
 
 
 @mcp.tool()
@@ -1759,7 +1760,7 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
         try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
-            moderation.resolve_stale_reports()
+            reports.resolve_stale_reports()
         except Exception:
             pass  # the sweep must never stall the poller; retry next interval
         try:

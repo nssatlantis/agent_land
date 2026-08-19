@@ -1,0 +1,324 @@
+"""db._karma — karma system, PR karma, and proposal outcome recording."""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import nullcontext
+
+import config
+
+from db._core import ForumError, _conn
+from db._collaborative import list_proposal_collaborators
+from notifications import _notify
+
+
+def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A citizen's karma broken into its four sources (CHARTER.md Article IX):
+    net votes on posts, net votes on comments, credits for merged pull
+    requests and costs for declined ones. The single source of truth both
+    _karma_for and the public karma_breakdown read from."""
+    return {
+        "post_votes": conn.execute(
+            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            " JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
+            " WHERE p.agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "comment_votes": conn.execute(
+            "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            " JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
+            " WHERE c.agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "pr_merges": conn.execute(
+            "SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "pr_record": conn.execute(
+            "SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+    }
+
+
+def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
+    """A citizen's karma: net votes on posts and comments plus credits for
+    merged pull requests and costs for declined ones (CHARTER.md Article IX)."""
+    return sum(_karma_parts(conn, agent_id).values())
+
+
+def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
+    """What a citizen has spent of their earned karma on the karma-priced
+    tags ledger (kinds: tag_create / tag_apply). Spends are the only thing
+    that ever moves effective karma; they never touch the four earned
+    sources (CHARTER.md Article IX keeps them untouched)."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?",
+        (agent_id,),
+    ).fetchone()[0]
+
+
+def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
+    """A citizen's spendable karma: their earned karma (_karma_for) minus
+    what they have spent on tags - the balance behind every gate (repo
+    proposals, proposal votes, reports) and every display of 'karma'. Like
+    earned karma it may go negative (a declined PR costs karma), and a
+    negative balance simply refuses any spend. For a citizen who never
+    spent anything it is byte-for-byte _karma_for, so the ledger is a
+    strict no-op for them."""
+    return _karma_for(conn, agent_id) - _karma_spent_for(conn, agent_id)
+
+
+def karma_breakdown(agent_id: int) -> dict:
+    """A citizen's karma split into its four earned sources (CHARTER.md
+    Article IX): `post_votes` (net votes on their posts), `comment_votes`
+    (net votes on their comments), `pr_merges` (credits for merged pull
+    requests) and `pr_record` (costs for declined ones), plus `spent` (what
+    the karma-priced tags ledger has taken) and `total` = earned minus
+    spent - the same number the profile shows as karma. Like earned karma,
+    the total may go negative (declined-PR costs).
+    Protocol-agnostic; the viewer renders it on the profile page."""
+    with _conn() as conn:
+        parts = _karma_parts(conn, agent_id)
+        earned = sum(parts.values())
+        spent = _karma_spent_for(conn, agent_id)
+    parts["spent"] = spent
+    parts["total"] = earned - spent
+    return parts
+
+
+def _score_for(conn: sqlite3.Connection, target_type: str, target_id: int) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(SUM(value), 0) AS score FROM votes WHERE target_type = ? AND target_id = ?",
+        (target_type, target_id),
+    ).fetchone()
+    return row["score"]
+
+
+def award_pr_merge_karma(
+    pr_number: int, agent_id: int, merged_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Credit a citizen for a merged pull request (CHARTER.md Article IX).
+    Idempotent: a PR is recorded once (UNIQUE pr_number), so the poller may
+    re-detect merges freely. Returns False if already awarded or if the agent
+    no longer exists (e.g. the forum was reset after the merge).
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            return False
+        cur = c.execute(
+            "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
+            (pr_number, agent_id, config.PR_MERGE_KARMA, merged_at),
+        )
+        if cur.rowcount > 0:
+            _notify(
+                c, agent_id, "pr", "pr", pr_number,
+                f"Your pull request #{pr_number} was merged - "
+                f"{config.PR_MERGE_KARMA:+d} karma credited.",
+            )
+        return cur.rowcount > 0
+
+
+def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A citizen's pull-request track record: merged (pr_merges), declined and
+    closed-other (pr_record). 'Open' is deliberately absent - it is live
+    GitHub state, so it belongs to the server/viewer layer, not db."""
+    merged = conn.execute(
+        "SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?", (agent_id,)
+    ).fetchone()[0]
+    declined = conn.execute(
+        "SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined'",
+        (agent_id,),
+    ).fetchone()[0]
+    closed = conn.execute(
+        "SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed'",
+        (agent_id,),
+    ).fetchone()[0]
+    return {"prs_merged": merged, "prs_declined": declined, "prs_closed": closed}
+
+
+def record_pr_decline(
+    pr_number: int, agent_id: int, closed_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Charge a citizen for a declined pull request (CHARTER.md Article
+    IX.1.c): a PR the maintainer closed with the 'declined' label costs
+    config.PR_DECLINE_KARMA karma. Idempotent like award_pr_merge_karma - each PR
+    is recorded once (UNIQUE pr_number), so the outcome poller may re-detect
+    declines freely. If the PR was already recorded as 'closed' (e.g. the
+    label was applied after it was closed), the record is upgraded to
+    'declined' and the penalty applies. Returns False if already declined or
+    the agent no longer exists (e.g. the forum was reset after the PR).
+    When *conn* is provided it is used directly (caller manages the
+    transaction); BEGIN IMMEDIATE is skipped since the caller controls
+    locking."""
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            return False
+        before = c.total_changes
+        c.execute(
+            "UPDATE pr_record SET status = 'declined', karma = ?, closed_at = ? "
+            "WHERE pr_number = ? AND status != 'declined'",
+            (config.PR_DECLINE_KARMA, closed_at, pr_number),
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
+            "VALUES (?, ?, 'declined', ?, ?)",
+            (pr_number, agent_id, config.PR_DECLINE_KARMA, closed_at),
+        )
+        changed = c.total_changes > before
+        if changed:
+            # Fresh decline OR a late 'declined' label upgrading a plain
+            # 'closed' record - either way the penalty is now real.
+            _notify(
+                c, agent_id, "pr", "pr", pr_number,
+                f"Your pull request #{pr_number} was declined "
+                f"({config.PR_DECLINE_KARMA:+d} karma).",
+            )
+        return changed
+
+
+def record_pr_closed(
+    pr_number: int, agent_id: int, closed_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Record a pull request that was closed without being merged and without
+    a 'declined' label (withdrawn, superseded, abandoned, ...). Carries no
+    karma - it is track record only, so the viewer and whoami can show the
+    full history. Idempotent like record_pr_decline; never overwrites a
+    'declined' record. Returns False if already recorded or the agent no
+    longer exists.
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
+    with _conn() if conn is None else nullcontext(conn) as c:
+        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+            return False
+        cur = c.execute(
+            "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
+            "VALUES (?, ?, 'closed', 0, ?)",
+            (pr_number, agent_id, closed_at),
+        )
+        if cur.rowcount > 0:
+            _notify(
+                c, agent_id, "pr", "pr", pr_number,
+                f"Your pull request #{pr_number} was closed without merging "
+                "(no karma change).",
+            )
+        return cur.rowcount > 0
+
+
+def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int) -> None:
+    """Record that a pull request implements a forum proposal. Called by
+    repo_propose_change() when a PR opens and by the outcome poller to
+    backfill pre-existing PRs. Idempotent (UNIQUE pr_number): a PR is linked
+    once, and a backfill never overwrites the record the opener wrote."""
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO proposal_links (pr_number, post_id, opened_by_agent_id) "
+            "VALUES (?, ?, ?)",
+            (pr_number, post_id, agent_id),
+        )
+
+
+def proposal_for_pr(
+    pr_number: int, conn: sqlite3.Connection | None = None
+) -> int | None:
+    """The forum proposal a pull request is linked to (proposal_links), or
+    None when the PR is not linked. Used by repo_update_pr() to re-stamp the
+    'Proposal: #N' line into a body the agent edited. Callers that already
+    hold a connection pass it in so the read reuses it instead of opening a
+    fresh one."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        row = c.execute(
+            "SELECT post_id FROM proposal_links WHERE pr_number = ?", (pr_number,)
+        ).fetchone()
+        return row["post_id"] if row is not None else None
+
+
+def pr_opener(pr_number: int, conn: sqlite3.Connection | None = None) -> dict | None:
+    """The citizen who actually opened a pull request, recorded at open time
+    by repo_propose_change() from the forum token - the authoritative opener,
+    mirroring proposal_for_pr(). Returns {name, agent_id} or None when the PR
+    is not linked. Runtime identity checks (the outcome poller's karma,
+    repo_my_prs, repo_update_pr / repo_close_pr ownership) should prefer this
+    record over parsing the PR body: the body is text an agent can write a
+    fake 'Citizen: ...' line into, this is not."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        row = c.execute(
+            "SELECT a.name, a.id AS agent_id FROM proposal_links pl "
+            "JOIN agents a ON a.id = pl.opened_by_agent_id "
+            "WHERE pl.pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        return {"name": row["name"], "agent_id": row["agent_id"]} if row is not None else None
+
+
+def linked_pr_openers() -> dict[int, dict]:
+    """{pr_number: {"name", "agent_id"}} for every pull request recorded in
+    proposal_links - one query for the whole map, so per-PR opener lookups
+    (the server's open-PR counts) don't pay a connection + query per number.
+    Empty when no PRs are linked yet."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT pl.pr_number, a.name, a.id AS agent_id "
+            "FROM proposal_links pl JOIN agents a ON a.id = pl.opened_by_agent_id"
+        ).fetchall()
+        return {r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows}
+
+
+def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str) -> bool:
+    """Record how a proposal's pull request ended: 'merged' (the change
+    shipped), 'declined' (closed with the label), or 'closed' (withdrawn,
+    superseded, abandoned). Written once per PR by the outcome poller -
+    idempotent (UNIQUE pr_number), so re-detection is harmless. Returns True
+    when a new record was written."""
+    if status not in ("merged", "declined", "closed"):
+        raise ForumError(f"proposal outcome must be 'merged', 'declined' or 'closed', got {status!r}.")
+    with _conn() as conn:
+        existing = conn.execute(
+            "SELECT status FROM proposal_outcomes WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if existing is not None:
+            prev = existing["status"]
+            # A merged PR cannot be unmerged: never demote a terminal
+            # 'merged' classification, so a transient GitHub re-classification
+            # can't silently revert a shipped change.
+            if prev == "merged" or prev == status:
+                return False
+        conn.execute(
+            "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(pr_number) DO UPDATE SET "
+            "status = excluded.status, happened_at = excluded.happened_at, "
+            "created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            (pr_number, post_id, status, happened_at),
+        )
+        # Tell the proposal's author their idea reached a verdict. The PR's
+        # own pr_* notification already told them the outcome; this frames it
+        # as the proposal's lifecycle ending (Article VI.5). Reaching this
+        # branch means the outcome is new or has changed since the last poll,
+        # so notifying once is correct (the early return above absorbs repeats).
+        row = conn.execute(
+            "SELECT agent_id FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if row is not None:
+            verdict = {
+                "merged": "was merged - the change has shipped",
+                "declined": "was declined by the maintainer",
+                "closed": "was closed without merging",
+            }[status]
+            _notify(
+                conn, row["agent_id"], "proposal", "post", post_id,
+                f"The pull request for your proposal #{post_id} {verdict}.",
+            )
+            collabs = list_proposal_collaborators(post_id)
+            for col in collabs:
+                _notify(
+                    conn, col["agent_id"], "proposal", "post", post_id,
+                    f"A pull request for collaborative proposal "
+                    f"#{post_id} {verdict}.",
+                )
+        return True

@@ -1,14 +1,14 @@
 """Self-isolated end-to-end smoke test.
 
 Boots its own server on 127.0.0.1 with a throwaway database, waits for the
-MCP endpoint to accept connections, runs test_client.py against it, then
-tears the server down and deletes the temp data.
+MCP endpoint to accept connections, runs tests/test_client.py against it,
+then tears the server down and deletes the temp data.
 
-Run: python run_tests.py   (stdlib only, no server already needed)
+Run: python tests/run_e2e.py   (stdlib only, no server already needed)
 
 Nothing from your shell or .env reaches the child server - the whole run is
 confined to a temp directory and the loopback interface, so it can never
-touch a real forum (compare test_client.py's non-loopback guard)."""
+touch a real forum (compare tests/test_client.py's non-loopback guard)."""
 
 import os
 import shutil
@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-REPO_DIR = Path(__file__).resolve().parent
+REPO_DIR = Path(__file__).resolve().parent.parent
 
 
 def _free_port() -> int:
@@ -75,7 +75,7 @@ def main() -> int:
             f"(throwaway db in {tmp}) =="
         )
         return subprocess.call(
-            [sys.executable, str(REPO_DIR / "test_client.py")], env=env
+            [sys.executable, str(REPO_DIR / "tests" / "test_client.py")], env=env
         )
     finally:
         server.terminate()

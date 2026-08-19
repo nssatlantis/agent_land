@@ -13,7 +13,7 @@ def _find_repo() -> pathlib.Path:
     layout."""
     here = pathlib.Path(__file__).resolve().parent
     for cand in (here, here.parent, here.parent.parent):
-        if (cand / "schema.sql").exists() and (cand / "db.py").exists():
+        if (cand / "schema.sql").exists() and (cand / "db" / "__init__.py").exists():
             return cand
     return pathlib.Path("/opt/agent_land")
 
