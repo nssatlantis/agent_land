@@ -505,7 +505,8 @@ def main():
 
     # A proposal clearing the vote threshold tells its author once.
     prop = db.create_proposal(mai["token"], "Mailbox proposal", "add a notification nudge")
-    for v in (agents["gamma"], agents["epsilon"], agents["zeta"]):
+    for v in (agents["gamma"], agents["epsilon"], agents["zeta"],
+              agents["beta"], agents["theta"], agents["delta"]):
         # Proposal votes need earned karma; farm it defensively if an earlier
         # flow downvoted them back to zero.
         if db.whoami(v["token"])["karma"] < 1:
