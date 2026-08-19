@@ -658,6 +658,7 @@ def main():
     real_request_text = github._request_text
     github._request = fake_request
     github._request_text = fake_request
+    github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
@@ -693,6 +694,7 @@ def main():
         raise AssertionError(f"unexpected request {method} {path}")
 
     github._request = fake_request
+    github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
@@ -725,6 +727,7 @@ def main():
         raise AssertionError(f"unexpected request {method} {path}")
 
     github._request = fake_request
+    github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
@@ -744,6 +747,7 @@ def main():
         raise github.RepoError("GitHub API 500 on everything")
 
     github._request = fake_request
+    github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
@@ -767,6 +771,7 @@ def main():
         raise AssertionError(f"unexpected request {method} {path}")
 
     github._request = fake_request
+    github.clear_cache()
     try:
         commits = github.pr_commits(9)
     finally:
@@ -893,11 +898,11 @@ def main():
 
     github._request = fake_open_request
     try:
-        github._open_prs_cache.update(ts=0, result=None, error=None)
+        github.clear_cache()
         opened = github.list_prs(state="open", since="2026-08-01T00:00:00Z")
     finally:
         github._request = real_request
-        github._open_prs_cache.update(ts=0, result=None, error=None)
+        github.clear_cache()
     assert [r["number"] for r in opened] == [10], opened
 
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]

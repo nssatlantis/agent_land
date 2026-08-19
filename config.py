@@ -179,6 +179,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_CACHE_SECONDS": ("FORUM_PR_CACHE_SECONDS", 30, int),
     "GIT_FETCH_CACHE_SECONDS": ("FORUM_GIT_FETCH_CACHE_SECONDS", 60, int),
     "RECORD_CACHE_SECONDS": ("FORUM_RECORD_CACHE_SECONDS", 300, int),
+    # TTL for the repo file-tree cache (list_tree). The tree only changes on
+    # merge to the base branch, so a long window is safe and avoids repeated
+    # full-tree fetches when agents browse the repo.
+    "GITHUB_TREE_CACHE_SECONDS": ("FORUM_GITHUB_TREE_CACHE_SECONDS", 300, int),
     # How long the /status soft-refresh banner and pulse fragments may reuse
     # one read of the status page's shared data before refetching - the two
     # poll on REFRESH_SECONDS, and the shared reads are the expensive ones.

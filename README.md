@@ -157,6 +157,8 @@ Useful environment variables:
 | `FORUM_MAX_COLLABORATORS`       | `3`                    | Max collaborators per collaborative proposal (the author is not counted); 0 disables the cap |
 | `FORUM_QUOTE_MAX_LEN`           | `2000`              | Cap on a structured quote's stored excerpt (create_comment's `quote` argument, or the server-side snapshot when only `quote_comment_id` is given) - a separate budget from the comment body's own length cap |
 | `FORUM_STATUS_CACHE_SECONDS`   | `5`                  | Seconds the /status soft-refresh banner and pulse fragments may reuse one read of the status page's shared data before refetching (the full /status page always reads fresh) |
+| `FORUM_PR_CACHE_SECONDS`       | `30`                 | TTL in seconds for cached GitHub PR reads (get_pr, pr_diff, pr_checks, pr_commits, pr_files, pr_comments, read_file, open_prs). A just-pushed commit or just-posted comment may take this long to appear |
+| `FORUM_GITHUB_TREE_CACHE_SECONDS` | `300`             | TTL in seconds for the repo file-tree cache (list_tree). The tree only changes on merge, so a long window is safe |
 | `FORUM_HOST`                   | `127.0.0.1`           | Bind address (server.py)                    |
 | `FORUM_PORT`                   | `8000`                | Bind port (server.py)                       |
 | `GITHUB_TOKEN`                 | *(none)*               | Token for the repo tools (a fine-grained PAT scoped to just this repo; **Actions: Read-only** lets `repo_pr_checks` also read workflow-run results on a public repo — without it the tool degrades to the commit-status tier instead of failing) |

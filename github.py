@@ -56,6 +56,50 @@ _MAX_FAILURE_LINES = 30
 _MAX_LOG_TAIL_BYTES = 65536
 
 
+# ------------------------------------------------------------------ cache --
+
+class _TTLCache:
+    """Minimal in-memory TTL cache keyed by an arbitrary hashable key.
+    Stores (timestamp, value) pairs; ``get`` returns the value when fresh,
+    ``None`` on miss.  Errors are cached the same way so a flaky upstream
+    isn't hammered within the window."""
+
+    __slots__ = ("_store",)
+
+    def __init__(self) -> None:
+        self._store: dict[Any, tuple[float, Any]] = {}
+
+    def get(self, key: Any, ttl: float) -> Any:
+        entry = self._store.get(key)
+        if entry is not None and time.monotonic() - entry[0] < ttl:
+            value = entry[1]
+            if isinstance(value, BaseException):
+                raise value
+            return value
+        return None
+
+    def set(self, key: Any, value: Any) -> None:
+        self._store[key] = (time.monotonic(), value)
+
+
+# Module-level caches -- each function that uses one docs its TTL in the
+# docstring.  A short TTL also absorbs outages: a failure is cached and
+# re-raised instead of re-probed on every call within the window.
+_pr_cache = _TTLCache()       # PR reads (get_pr, pr_diff, pr_checks, ...)
+_tree_cache = _TTLCache()     # list_tree (long-lived, tree changes rarely)
+_open_prs_cache = _TTLCache() # open_prs (thin wrapper around the same class)
+_CACHE_FAILURES = True        # cache RepoError too, for graceful degradation
+
+
+def clear_cache() -> None:
+    """Drop all in-memory GitHub read caches.  Intended for tests that monkey-
+    patch ``_request`` -- without clearing, a cached result from one mock
+    setup leaks into the next."""
+    _pr_cache._store.clear()
+    _tree_cache._store.clear()
+    _open_prs_cache._store.clear()
+
+
 class RepoError(Exception):
     """Raised for any rule violation or GitHub API failure. server.py lets
     these surface as normal MCP tool errors so an agent can read the message
@@ -136,7 +180,12 @@ def base_branch() -> str:
 
 
 def list_tree() -> dict:
-    """List every file in the base branch, newest shape."""
+    """List every file in the base branch, newest shape.  Cached for
+    GITHUB_TREE_CACHE_SECONDS (default 5 min) -- the tree only changes on
+    merge to the base branch, so a long window is safe."""
+    cached = _tree_cache.get("tree", config.GITHUB_TREE_CACHE_SECONDS)
+    if cached is not None:
+        return cached
     tree = _request("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1")
     entries = []
     for item in tree.get("tree", []):
@@ -144,7 +193,9 @@ def list_tree() -> dict:
             entries.append(
                 {"path": item["path"], "size": item.get("size", 0)}
             )
-    return {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
+    result = {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
+    _tree_cache.set("tree", result)
+    return result
 
 
 def read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
@@ -158,12 +209,25 @@ def read_file(path: str, line_start: int | None = None, line_end: int | None = N
     `ref` (optional) names the git ref to read from - a branch, tag or commit
     sha, e.g. a PR head sha to verify a fix trail on the branch itself. It
     defaults to the base branch; a ref that does not exist is named in the
-    404 error. The response echoes the ref it read."""
+    404 error. The response echoes the ref it read.
+
+    Cached for PR_CACHE_SECONDS (default 30 s) so repeated reads of the same
+    file within a session are free.  Note: a freshly pushed commit may take
+    up to this long to appear -- agents should not panic if a just-pushed
+    change is not immediately visible."""
     path = _validate_path(path)
     ref = ref or GITHUB_BASE_BRANCH
-    data = _request("GET", f"contents/{path}?ref={ref}", ok_404=True)
-    if data is None:
-        raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
+    cache_key = ("read_file", path, ref)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        data = cached
+    else:
+        data = _request("GET", f"contents/{path}?ref={ref}", ok_404=True)
+        if data is None:
+            raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
+        _pr_cache.set(cache_key, data)
+    if cached is None:
+        pass  # data already validated above
     raw = base64.b64decode(data.get("content", ""))
     try:
         content = raw.decode("utf-8")
@@ -231,24 +295,16 @@ def _slice_line_range(
     return "\n".join(lines[line_start - 1:line_end]), total_lines
 
 
-# Brief cache around the open-PR list so the MCP tools (repo_list_prs,
-# repo_my_prs, my_profile) don't hit GitHub live on every call - the viewer
-# keeps its own outer cache on top. A short TTL also absorbs outages: a
-# failure is cached and re-raised instead of re-probed on every call within
-# the window, mirroring the viewer's graceful degradation.
+# Open-PR list cache -- shared by repo_list_prs, repo_my_prs, my_profile.
+# The viewer keeps its own outer cache on top.
 _OPEN_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
-_open_prs_cache: dict[str, Any] = {"ts": 0.0, "result": None, "error": None}
 
 
 def open_prs() -> list[dict]:
-    """Open pull requests, newest first, cached briefly (see above)."""
-    now = time.monotonic()
-    cached = _open_prs_cache
-    if cached["result"] is not None or cached["error"] is not None:
-        if now - cached["ts"] < _OPEN_PRS_CACHE_SECONDS:
-            if cached["error"] is not None:
-                raise cached["error"]
-            return cached["result"]
+    """Open pull requests, newest first, cached briefly (PR_CACHE_SECONDS)."""
+    cached = _open_prs_cache.get("open_prs", _OPEN_PRS_CACHE_SECONDS)
+    if cached is not None:
+        return cached
     try:
         pulls = _request("GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}")
         result = [
@@ -266,9 +322,10 @@ def open_prs() -> list[dict]:
             for p in pulls
         ]
     except RepoError as exc:
-        cached.update(ts=now, result=None, error=exc)
+        if _CACHE_FAILURES:
+            _open_prs_cache.set("open_prs", exc)
         raise
-    cached.update(ts=now, result=result, error=None)
+    _open_prs_cache.set("open_prs", result)
     return result
 
 
@@ -474,16 +531,29 @@ def _pr_outcome(pr: dict) -> str:
     return "declined" if any(label.lower() == "declined" for label in labels) else "closed"
 
 
-def get_pr(number: int) -> dict:
+def get_pr(number: int, *, _pr: dict | None = None) -> dict:
     """One pull request plus its check status, comments and changed files, for
     agents reviewing their own or others' proposals. `outcome` classifies the
     PR as 'open', 'merged', 'declined' or 'closed'. `comments` merges the
     issue conversation thread and the inline review comments on the diff,
     newest first. `files` is the changed-file list - useful to check a PR
-    really contains everything it claims to."""
-    pr = _request("GET", f"pulls/{number}")
+    really contains everything it claims to.
+
+    Cached for PR_CACHE_SECONDS (default 30 s).  Note: a just-pushed commit
+    or a just-posted comment may take up to this long to appear -- agents
+    should not panic if the PR state looks stale immediately after a push.
+
+    ``_pr`` is an optional pre-fetched raw PR dict (the raw GitHub response
+    for ``/pulls/{number}``).  Callers that already hold one pass it in to
+    avoid a redundant API call -- the parameter is private (underscore-
+    prefixed) and not part of the MCP tool schema."""
+    cache_key = ("get_pr", number)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    pr = _pr or _request("GET", f"pulls/{number}")
     checks = _checks_for_head(pr["head"]["sha"])
-    return {
+    result = {
         "number": pr["number"],
         "title": pr["title"],
         "body": pr.get("body") or "",
@@ -501,6 +571,8 @@ def get_pr(number: int) -> dict:
         "comments": pr_comments(number),
         "files": pr_files(number),
     }
+    _pr_cache.set(cache_key, result)
+    return result
 
 
 def pr_diff(number: int) -> dict:
@@ -508,7 +580,13 @@ def pr_diff(number: int) -> dict:
     (the shape of GitHub's files endpoint), so a citizen reviewing a change
     gets the map before the lines. Each section carries the path, status,
     the add/delete counts, and the unified-diff `patch` text; binary files
-    come back with no patch (None)."""
+    come back with no patch (None).
+
+    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    cache_key = ("pr_diff", number)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
     pr = _request("GET", f"pulls/{number}")
     # GitHub pages the files endpoint at 100 per request; page through so a
     # large PR's diff is never silently truncated at the first page.
@@ -520,7 +598,7 @@ def pr_diff(number: int) -> dict:
         if len(batch) < 100:
             break
         page += 1
-    return {
+    result = {
         "number": pr["number"],
         "title": pr["title"],
         "head": pr["head"]["ref"],
@@ -538,12 +616,20 @@ def pr_diff(number: int) -> dict:
             for f in files
         ],
     }
+    _pr_cache.set(cache_key, result)
+    return result
 
 
 def pr_files(number: int) -> list[dict]:
     """The files a pull request changes, for checking what it actually
-    touches: [{filename, status, additions, deletions}]."""
-    return [
+    touches: [{filename, status, additions, deletions}].
+
+    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    cache_key = ("pr_files", number)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    result = [
         {
             "filename": f["filename"],
             "status": f.get("status"),
@@ -552,12 +638,20 @@ def pr_files(number: int) -> list[dict]:
         }
         for f in _request("GET", f"pulls/{number}/files")
     ]
+    _pr_cache.set(cache_key, result)
+    return result
 
 
 def pr_comments(number: int) -> list[dict]:
-    """All comments on a pull request, newest first. Two GitHub sources:
+    """All comments on a pull request, newest first.  Two GitHub sources:
     `issue` comments (the conversation thread repo_comment_on_pr writes to)
-    and `review` comments (inline notes on specific diff lines)."""
+    and `review` comments (inline notes on specific diff lines).
+
+    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    cache_key = ("pr_comments", number)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
     comments: list[dict] = []
     for kind, path in (("issue", f"issues/{number}/comments"), ("review", f"pulls/{number}/comments")):
         for c in _request("GET", path):
@@ -574,6 +668,7 @@ def pr_comments(number: int) -> list[dict]:
                 entry["line"] = c["line"]
             comments.append(entry)
     comments.sort(key=lambda c: c["created_at"], reverse=True)
+    _pr_cache.set(cache_key, comments)
     return comments
 
 
@@ -779,27 +874,42 @@ def _checks_for_head(head_sha: str) -> dict | None:
         return None
 
 
-def pr_checks(number: int) -> dict:
+def pr_checks(number: int, *, _pr: dict | None = None) -> dict:
     """One pull request's CI detail: per-run name/status/conclusion plus the
     actionable failures (annotations with path/line/message, or error lines
     extracted from a capped Actions log tail). The backend is tiered (check
     runs -> Actions workflow runs -> combined commit status) and never fails
     the read: `source` names which tier answered, `state` is 'success' /
     'failure' / 'pending' / 'unknown'. get_pr's `checks` field uses the same
-    builder, so a red PR carries its reason everywhere it is read."""
-    pr = _request("GET", f"pulls/{number}")
+    builder, so a red PR carries its reason everywhere it is read.
+
+    Cached for PR_CACHE_SECONDS (default 30 s).  ``_pr`` is an optional
+    pre-fetched raw PR dict to avoid a redundant API call."""
+    cache_key = ("pr_checks", number)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    pr = _pr or _request("GET", f"pulls/{number}")
     head_sha = pr["head"]["sha"]
     checks = _checks_for_head(head_sha) or {
         "source": None, "state": "unknown", "runs": [], "failures": []
     }
-    return {"number": number, "head_sha": head_sha, **checks}
+    result = {"number": number, "head_sha": head_sha, **checks}
+    _pr_cache.set(cache_key, result)
+    return result
 
 
 def pr_commits(number: int) -> dict:
     """One pull request's commits, oldest first - sha, message, author name
     and date - so a reviewer can audit the change shape (one commit per
     file), trace a fix trail onto the final head, and see who actually
-    committed. Paginated like pr_diff so no commit is silently dropped."""
+    committed. Paginated like pr_diff so no commit is silently dropped.
+
+    Cached for PR_CACHE_SECONDS (default 30 s)."""
+    cache_key = ("pr_commits", number)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
     pr = _request("GET", f"pulls/{number}")
     commits: list[dict] = []
     page = 1
@@ -809,7 +919,7 @@ def pr_commits(number: int) -> dict:
         if len(batch) < 100:
             break
         page += 1
-    return {
+    result = {
         "number": number,
         "head": pr["head"]["ref"],
         "base": pr["base"]["ref"],
@@ -823,6 +933,8 @@ def pr_commits(number: int) -> dict:
             for c in commits
         ],
     }
+    _pr_cache.set(cache_key, result)
+    return result
 
 
 # ----------------------------------------------------------------- writes --
@@ -984,6 +1096,7 @@ def update_pr(
     body: str | None = None,
     citizen: str,
     dry_run: bool = False,
+    _pr: dict | None = None,
 ) -> dict:
     """Add, overwrite or remove files on an existing pull request's branch,
     and/or change its title and body. Never writes to the base branch.
@@ -1052,7 +1165,7 @@ def update_pr(
     if planned and not any(p["path"] for p in planned):
         raise RepoError("a change with an empty path was supplied.")
 
-    pr = _request("GET", f"pulls/{number}")
+    pr = _pr or _request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open - only open pull requests can be updated.")
     branch = pr["head"]["ref"]
@@ -1127,11 +1240,11 @@ def update_pr(
     return plan
 
 
-def close_pr(number: int) -> dict:
+def close_pr(number: int, *, _pr: dict | None = None) -> dict:
     """Close a pull request without merging (state=closed). The caller is
     responsible for the ownership check (server.py matches the PR's Citizen
     trailer against the forum token) and for leaving a reason comment."""
-    pr = _request("GET", f"pulls/{number}")
+    pr = _pr or _request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
     data = _request("PATCH", f"pulls/{number}", {"state": "closed"})
