@@ -503,7 +503,7 @@ def main():
     # backup in the empty-file wipe case).
     text = (REPO / "deploy" / "update.sh").read_text(encoding="utf-8")
     lines = text.splitlines()
-    sync = _find(lines, "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py")
+    sync = _find(lines, "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py")
     guard = _find(lines, 'check-db-boot.py"; then')
     assert sync < guard, f"scripts must be installed (line {sync}) before the guard runs (line {guard})"
     assert "restore-db.py --list" in text, "update.sh must document --list"
