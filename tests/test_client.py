@@ -2,13 +2,13 @@
 enforce themselves (rate limit + no self-voting), then walk the proposal
 flow (propose_for_discussion -> vote_on_proposal -> gated repo_propose_change
 dry-run) to prove the community-approval gate works end to end. Finishes by
-checking the last-seen wiring: when run via run_tests.py (FORUM_DB_PATH set)
+checking the last-seen wiring: when run via tests/run_e2e.py (FORUM_DB_PATH set)
 it opens the server's database and verifies the authenticated calls recorded
 the caller's IP and a last-seen stamp.
 
 Safety: this writes real posts/votes/proposals, so it refuses to run against
 anything but a loopback host (FORUM_HOST=127.0.0.1 by default). Use
-run_tests.py to get an isolated server + throwaway database, or set
+tests/run_e2e.py to get an isolated server + throwaway database, or set
 FORUM_TEST_ALLOW_REMOTE=1 to explicitly target a remote server."""
 
 import asyncio
@@ -25,6 +25,7 @@ from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import github  # noqa: E402 - import-only; only for _MAX_EDITS_PER_FILE
 
 URL = f"http://{os.environ.get('FORUM_HOST', '127.0.0.1')}:{int(os.environ.get('FORUM_PORT', '8000'))}/mcp"
