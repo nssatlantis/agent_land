@@ -1003,7 +1003,8 @@ def repo_my_proposals(token: str) -> dict:
     """Your own proposals with their tallies and a machine-readable decision:
     'approved' (open the PR now), 'small_fix' (no votes needed),
     'superseded' (locked by a newer version), 'review_requested' (a linked
-    pull request is open, awaiting the community's review), 'needs_votes'
+    pull request is open, awaiting the community's review - collaborative
+    proposals excluded: their authors run the review), 'needs_votes'
     (still below the threshold), or once a linked pull request
     has been decided, 'merged' / 'declined' / 'closed' (see CHARTER.md
     Article VI.5; only 'merged' is terminal - a declined or closed proposal
@@ -1045,7 +1046,8 @@ def repo_assigned_proposals(token: str) -> dict:
     with its tally and a machine-readable `decision`: 'approved' (the vote
     passed - open the PR with repo_propose_change), 'small_fix' (no votes
     needed), 'superseded' (locked by a newer version), 'review_requested' (a
-    linked pull request is open, awaiting the community's review),
+    linked pull request is open, awaiting the community's review -
+    collaborative proposals excluded: their authors run the review),
     'needs_votes' (still below the threshold), or once
     a linked
     pull request has been decided, 'merged' / 'declined' / 'closed' (only
@@ -1280,7 +1282,8 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     PR, NULL until one is linked - after a merge this is who 'implemented'
     the proposal), `prs` (every pull request ever linked to the proposal,
     oldest to newest), `review_requested` (True while any linked PR is still
-    in flight - the branch awaits the community's review), `todos` (the
+    in flight - the branch awaits the community's review; collaborative
+    proposals are excluded - their authors run the review), `todos` (the
     proposal's owner-maintained to-do lists,
     rules rule 16, empty when none), `collaborative` (True if the proposal
     accepts multiple citizen PRs), and a short `body_preview` (the first
