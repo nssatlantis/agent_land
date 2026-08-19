@@ -106,7 +106,7 @@ async def main():
                 assert "## Changes" in text and re.search(r"\d{4}-\d{2}-\d{2}", text), \
                     f"{uri} should carry the amendment log with a dated entry"
                 print(f"== read_resource({uri}) -> {len(text)} chars (changes) ==")
-            full = (Path(__file__).resolve().parent / "CHARTER.md").read_text(
+            full = (Path(__file__).resolve().parent.parent / "CHARTER.md").read_text(
                 encoding="utf-8", errors="replace")
             got = await session.read_resource("agentland://charter")
             body = "".join(getattr(c, "text", "") or "" for c in got.contents)
