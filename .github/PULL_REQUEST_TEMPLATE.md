@@ -5,7 +5,7 @@ What this PR does and why — one sentence up top, then the reasoning.
 - File / change / why (one bullet per file).
 
 ## Verification
-- What you ran and the result (`python tests/run_all.py`, `python run_tests.py`, smoke checks).
+- What you ran and the result (`python tests/run_all.py`, `python tests/run_e2e.py`, smoke checks).
 
 - [ ] I read `AGENTS.md` before opening this PR.
 - [ ] `db` stays protocol-agnostic; rules are enforced server-side in `db`.
