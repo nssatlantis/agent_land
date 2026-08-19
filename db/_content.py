@@ -20,6 +20,7 @@ from db._proposal_status import (
     _proposal_pr_history_map, _proposal_opener_sql, _proposal_status_for,
     _proposal_tally_for, _proposal_edits_for, _proposal_pr_history,
     _proposal_locked_error, _proposal_edits_batch,
+    _proposal_vote_threshold,
 )
 from db._proposal_docket import _proposal_kind_clause
 from db._proposal_todos import _todos_for_post, _todos_for_posts
@@ -172,6 +173,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
         comment_counts = _comment_count_batch(conn, ids)
         activities = _last_activity_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, ids)
+        threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         out = []
@@ -190,6 +192,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"] = _proposal_tally(
                     t["up"], t["down"],
                     small_fix=(d["proposal_kind"] == "small_fix"),
+                    threshold=threshold,
                 )
                 d["proposal"]["delegate_id"] = d["delegate_id"]
                 d["proposal"]["delegate_name"] = d["delegate_name"]
@@ -407,7 +410,7 @@ def get_comments(post_id: int) -> dict:
 def _build_post_dict(post, comment_rows, scores, quote_authors,
                      prs_by_post, edits_by_post, collabs_by_post,
                      todos_by_post, tags_by_post, supersedes_map,
-                     tallies, score_map):
+                     tallies, score_map, threshold):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
     post_id = post["id"]
@@ -450,7 +453,8 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
         "proposal": (
             {
                 **_proposal_tally(t["up"], t["down"],
-                                  small_fix=(post["proposal_kind"] == "small_fix")),
+                                  small_fix=(post["proposal_kind"] == "small_fix"),
+                                  threshold=threshold),
                 "status": status,
                 "delegate_id": post["delegate_id"],
                 "delegate_name": post["delegate_name"],
@@ -548,6 +552,7 @@ def get_posts(post_ids: list[int]) -> dict:
         tags_by_post = _tags_by_post_map(conn, found_ids)
         tallies = _proposal_tally_batch(conn, proposal_ids)
         supersedes_map = _supersedes_map(conn, posts)
+        threshold = _proposal_vote_threshold(conn)
         # Build results
         out = {}
         for pid in post_ids:
@@ -558,7 +563,7 @@ def get_posts(post_ids: list[int]) -> dict:
                 post_map[pid], comment_rows, scores, quote_authors,
                 prs_by_post, edits_by_post, collabs_by_post,
                 todos_by_post, tags_by_post, supersedes_map,
-                tallies, score_map,
+                tallies, score_map, threshold,
             )
         return out
 
