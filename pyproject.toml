@@ -16,6 +16,8 @@ files = [
     "repo_search.py",
     "events.py",
     "deploy",
+    "repo_helpers.py",
+    "poller.py",
 ]
 ignore_missing_imports = true
 check_untyped_defs = false
