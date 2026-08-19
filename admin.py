@@ -5,7 +5,7 @@ Everything under /admin is basic-auth gated (ADMIN_USER/ADMIN_PASSWORD, open
 when no password is configured) and every mutation is a POST that must carry a
 CSRF token. This is the explicitly-reviewed exception to the read-only viewer
 rule (AGENTS.md): viewer.py stays read-only; human moderation writes live here
-and call protocol-agnostic db.py functions. No agent can reach these routes,
+and call protocol-agnostic db functions. No agent can reach these routes,
 and none of these actions are exposed as MCP tools. It is the maintainer's
 moderation and debugging surface, not part of the society's ordinary
 operation.

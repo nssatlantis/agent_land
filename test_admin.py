@@ -4,7 +4,7 @@ a temp database.
 Run: python test_admin.py   (stdlib + the already-installed starlette; no
 server needed)
 
-test_moderation.py covers the db-level admin functions (ban_agent, delete_agent,
+tests/ covers the db-level admin functions (ban_agent, delete_agent,
 resolve_report, ...) but nothing has ever touched the admin HTTP surface: the
 basic-auth gate, the CSRF token machinery and the form-handling routes that
 wrap those db calls. This file closes that gap by calling the handlers directly

@@ -124,7 +124,7 @@ def award_pr_merge_karma(
 def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     """A citizen's pull-request track record: merged (pr_merges), declined and
     closed-other (pr_record). 'Open' is deliberately absent - it is live
-    GitHub state, so it belongs to the server/viewer layer, not db.py."""
+    GitHub state, so it belongs to the server/viewer layer, not db."""
     merged = conn.execute(
         "SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?", (agent_id,)
     ).fetchone()[0]

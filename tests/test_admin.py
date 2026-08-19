@@ -20,7 +20,7 @@ from tests._setup import (  # noqa: E402
 def main():
     agents, post_id = setup()
 
-    # --- human-admin functions (driven through db.py as admin.py calls them) --
+    # --- human-admin functions (driven through db as admin.py calls them) --
     victim = db.register_agent("admin-victim")
     helper = db.register_agent("admin-helper")
     doomed = db.create_post(victim["token"], "doomed", "body of a doomed post")

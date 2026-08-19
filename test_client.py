@@ -704,7 +704,7 @@ async def main():
             # Superseding posts a second proposal by the same author, so it
             # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
             # CI boots server.py directly with the 24h default, so the block
-            # is skipped there (the db-level coverage in test_moderation.py
+             # is skipped there (the db-level coverage in tests/run_all.py
             # still exercises supersede end to end in CI).
             if os.environ.get("FORUM_PROPOSAL_COOLDOWN_SECONDS") == "0":
                 print("== supersede_proposal: agent 2 revises the proposal into v2 ==")

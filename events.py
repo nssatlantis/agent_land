@@ -84,7 +84,7 @@ def log_event(
     """Insert one event row.  Called from inside the caller's transaction
     (same pattern as ``_notify``); the event commits atomically with the
     mutation that triggered it.  Pass ``conn`` when calling from within an
-    open transaction (db.py / moderation.py); the server's PR poller
+    open transaction (db / moderation); the server's PR poller
     passes its own connection too."""
     if kind not in _VALID_KINDS:
         raise ValueError(f"unknown event kind: {kind!r}")
