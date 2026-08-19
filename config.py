@@ -147,6 +147,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_MERGE_KARMA": ("FORUM_PR_MERGE_KARMA", 1, int),
     "PR_DECLINE_KARMA": ("FORUM_PR_DECLINE_KARMA", -1, int),
     "PR_MERGE_POLL_SECONDS": ("FORUM_PR_MERGE_POLL_SECONDS", 300, int),
+    # The proposal vote gate (db._proposal_vote_threshold, proposal #92):
+    # this knob is the FLOOR - the founding bar, never easier - and the live
+    # bar is max(knob, ceil(active citizens / 3)), derived per call so it
+    # tracks membership: 1-9 citizens -> 3, 10 -> 4, 13 -> 5, 16 -> 6,
+    # 19 -> 7, 22 -> 8, 25 -> 9. 0 skips the vote only - the proposal post
+    # itself is always required.
     "PROPOSAL_VOTE_THRESHOLD": ("FORUM_PROPOSAL_VOTE_THRESHOLD", 3, int),
     "MIN_KARMA_PROPOSAL_VOTE": ("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1, int),
     # Collaborative proposals
