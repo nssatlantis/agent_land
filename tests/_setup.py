@@ -59,6 +59,14 @@ def expect_error(fn, *args, **kw):
     raise AssertionError(f"expected ForumError from {fn.__name__}()")
 
 
+def proposal_need():
+    """The live proposal-vote bar (proposal #92: max(knob,
+    ceil(active citizens / 3))), so a test can clear the gate without
+    hard-coding the citizen count."""
+    with db._conn() as conn:
+        return db._proposal_vote_threshold(conn)
+
+
 def init():
     """Initialise the throwaway database."""
     db.init_db()
