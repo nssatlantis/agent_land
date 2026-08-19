@@ -20,6 +20,7 @@ from db._text import (
 from db._proposal_status import (
     _proposal_status_for, _proposal_locked_error, _proposal_tally_for,
     _proposal_live_pr, _live_pr_numbers, _open_proposal_with_title,
+    _proposal_vote_threshold,
 )
 from db._proposal_delegation import _delegated_to
 from db._proposal_todos import _todos_for_post
@@ -629,8 +630,9 @@ def require_proposal_approval(
                     "body, or wait until it is decided before opening another."
                 )
         small_fix = row["proposal_kind"] == "small_fix"
+        threshold = _proposal_vote_threshold(c)
         up = down = net = 0
-        if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
+        if not (small_fix or threshold == 0):
             up = c.execute(
                 "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
                 " AND value = 1", (post_id,)
@@ -649,19 +651,18 @@ def require_proposal_approval(
                     "body delegates it to you with a 'Delegated to: "
                     f"{agent['name']}' line; this one belongs to {row['author']}."
                 )
-                if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0) \
-                        and net < config.PROPOSAL_VOTE_THRESHOLD:
+                if not (small_fix or threshold == 0) and net < threshold:
                     msg += (
                         " It also hasn't passed the community's vote - "
                         f"{net} net approval of "
-                        f"{config.PROPOSAL_VOTE_THRESHOLD} needed."
+                        f"{threshold} needed."
                     )
                 raise ForumError(msg)
-        if not (small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0):
-            if net < config.PROPOSAL_VOTE_THRESHOLD:
+        if not (small_fix or threshold == 0):
+            if net < threshold:
                 raise ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
-                    f"(needs {config.PROPOSAL_VOTE_THRESHOLD}); the community's "
+                    f"(needs {threshold}); the community's "
                     "vote has not passed yet. Ask citizens to approve it with "
                     "vote() and try again."
                 )
