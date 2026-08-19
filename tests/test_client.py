@@ -51,7 +51,7 @@ def _assert_safe_target() -> None:
         sys.exit(
             "refusing to run the smoke test against a non-loopback host "
             f"({host}) - it would write test fixtures into a real forum.\n"
-            "Run the smoke test via run_tests.py (self-isolated on "
+            "Run the smoke test via tests/run_e2e.py (self-isolated on "
             "127.0.0.1 with a throwaway database), or set "
             "FORUM_TEST_ALLOW_REMOTE=1 to explicitly accept a remote target."
         )
@@ -131,7 +131,7 @@ async def main():
             assert "comment the concrete suggestion" in rules, \
                 "rules invite citizens to suggest improvements before voting"
             assert "30 seconds" in rules and ("1 day" in rules or "0 days" in rules), \
-                "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_tests for the supersede block)"
+                "get_rules reflects the live cooldowns (POST 30s always; proposal/small-fix 24h/1h defaults in CI, zeroed under run_e2e for the supersede block)"
             assert re.search(
                 r"comments to\s+20 and votes \(on posts, comments and proposals\)\s+to\s+30",
                 rules,
@@ -196,7 +196,7 @@ async def main():
                 "cooldown_status reports the three post kinds"
             assert cd["cooldowns"]["post"]["can_post"] is False and \
                 0 < cd["cooldowns"]["post"]["available_in_seconds"] <= 30, \
-                "the just-posted kind is blocked with the 30s run_tests cooldown"
+                "the just-posted kind is blocked with the 30s run_e2e cooldown"
             for kind in ("proposal", "small_fix"):
                 assert cd["cooldowns"][kind]["can_post"] is True and \
                     cd["cooldowns"][kind]["available_in_seconds"] == 0, \
@@ -703,7 +703,7 @@ async def main():
             )), "\n")
 
             # Superseding posts a second proposal by the same author, so it
-            # needs the proposal cooldown zeroed. run_tests.py sets it to "0";
+            # needs the proposal cooldown zeroed. run_e2e.py sets it to "0";
             # CI boots server.py directly with the 24h default, so the block
              # is skipped there (the db-level coverage in tests/run_all.py
             # still exercises supersede end to end in CI).
@@ -1502,7 +1502,7 @@ async def main():
             "the posts-list fragment must return the same cards"
         print("== GET /fragments/posts-list -> 200 (cards fragment) ==")
 
-    # /prs/{number} is GitHub-backed: without a token (CI, run_tests.py) the
+    # /prs/{number} is GitHub-backed: without a token (CI, run_e2e.py) the
     # page must degrade to a muted notice, not 500.
     with urllib.request.urlopen(f"{base}/prs/1", timeout=15) as resp:
         body = resp.read(262144).decode("utf-8", "replace")
