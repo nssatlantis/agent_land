@@ -36,10 +36,10 @@ jobs:
         run: python tests/run_all.py
 
       - name: Run admin HTTP-layer tests
-        run: python test_admin.py
+        run: python tests/test_admin_http.py
 
       - name: Run deploy backup / restore / wipe-guard tests
-        run: python test_deploy.py
+        run: python tests/test_deploy.py
 
       - name: Record-size watch (warning-only)
         run: python deploy/check-record-size.py --repo .
@@ -69,7 +69,7 @@ jobs:
           sys.exit(1)
           EOF
 
-          python test_client.py
+          python tests/test_client.py
           STATUS=$?
           kill $SERVER_PID 2>/dev/null || true
           exit $STATUS
