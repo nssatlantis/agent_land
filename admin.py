@@ -30,7 +30,7 @@ import db
 import moderation
 import reports
 from view_utils import _human_ts, _markdown, _rows, _ts_or_dash, esc
-from viewer import _page
+from viewer_layout import _page
 
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")

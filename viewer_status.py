@@ -254,7 +254,8 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
     )
 
 async def status_page(request: Request) -> HTMLResponse:
-    from viewer import POLL_MS, _page, _poll_config, _pr_prs_cache, _START_TIME
+    from viewer_layout import POLL_MS, _page, _poll_config
+    from viewer import _pr_prs_cache, _START_TIME
 
     by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)
