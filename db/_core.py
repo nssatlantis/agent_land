@@ -381,6 +381,12 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
                     ON proposal_collaborators(agent_id);
             """)
+        # Tag descriptions: an optional free-text annotation on each tag
+        # (schema.sql). An existing forum.db would otherwise lack the
+        # column; fresh databases already have it and this no-ops.
+        tag_cols = {row[1] for row in conn.execute("PRAGMA table_info(tags)")}
+        if "description" not in tag_cols:
+            conn.execute("ALTER TABLE tags ADD COLUMN description TEXT DEFAULT NULL")
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:
