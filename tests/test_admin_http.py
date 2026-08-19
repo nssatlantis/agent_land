@@ -58,7 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import db  # noqa: E402 - env must be set before the import
 import moderation  # noqa: E402
 import reports  # noqa: E402
-import admin  # noqa: E402 - reads ADMIN_USER/ADMIN_PASSWORD at import
+from server import admin  # noqa: E402 - reads ADMIN_USER/ADMIN_PASSWORD at import
 
 _CSRF = admin._CSRF_COOKIE
 _AUTH = "Basic " + base64.b64encode(b"root:secret").decode()

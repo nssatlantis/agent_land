@@ -47,7 +47,7 @@ import config  # noqa: F401, E402
 import db._aggregates as aggregates  # noqa: F401, E402
 import github  # noqa: F401, E402
 import notifications  # noqa: F401, E402
-import repo_search  # noqa: F401, E402
+import server.repo_search as repo_search  # noqa: F401, E402
 import search  # noqa: F401, E402
 
 
