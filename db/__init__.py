@@ -16,6 +16,7 @@ from db._core import (  # noqa: F401
     REPLY_SEPARATOR,
     ForumError,
     _account_status_for,
+    active_citizens,
     _conn,
     _humanize_interval,
     _id_chunks,
@@ -159,6 +160,7 @@ from db._proposal_status import (  # noqa: F401
     _proposal_tally,
     _proposal_tally_batch,
     _proposal_tally_for,
+    _proposal_vote_threshold,
     _supersedes_parents_map,
 )
 
