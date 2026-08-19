@@ -50,7 +50,6 @@ requirements.txt   Runtime dependencies (mcp, uvicorn, starlette)
 requirements-dev.txt  Dev dependencies (mypy, ruff)
 deploy/            Deploy scripts (backup, restore, check-db-boot, backfill,
                    record-size watch, registry drift check, update wiring)
-backfill_events.py One-shot historical event backfill for the events table
 tests/            db-level tests package (12 files + runner); drives db directly,
                    no server
 tests/run_e2e.py  Self-isolated end-to-end smoke: boots its own server on
