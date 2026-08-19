@@ -14,7 +14,7 @@
    `moderation.py` / `reports.py` / `notifications.py` / `search.py` /
    `db/_aggregates.py` / `events.py` (and `github.py` if your change touches
    the repo tools; `logutil.py` if it touches logging; `viewer/_helpers.py` /
-   `viewer/_utils.py` / `viewer/_status.py` / `rules_text.py` / `repo_search.py`
+   `viewer/_utils.py` / `viewer/_status.py` / `rules_text.py` / `server/repo_search.py`
    for the extracted helpers) - the
    whole project is small enough to read in full before changing it. The
    record - `CHARTER.md`, `HISTORY.md`, `CITIZENS.md`, this file - is also

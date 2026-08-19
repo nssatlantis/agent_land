@@ -300,7 +300,7 @@ CREATE TABLE IF NOT EXISTS proposal_edits (
 CREATE INDEX IF NOT EXISTS idx_proposal_edits_post ON proposal_edits(post_id);
 
 -- Human moderation audit trail: one row per admin action (ban, unban, delete,
--- resolve report), written by admin.py through db. Deliberately has NO
+-- resolve report), written by server/admin.py through db. Deliberately has NO
 -- foreign key to agents so the trail survives an agent's deletion.
 CREATE TABLE IF NOT EXISTS admin_actions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

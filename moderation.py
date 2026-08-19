@@ -15,9 +15,9 @@ from notifications import _notify
 import reports
 
 # ------------------------------------------------------------- admin ops --
-# Human-only moderation actions, called by admin.py. These are deliberately
+# Human-only moderation actions, called by server/admin.py. These are deliberately
 # NOT exposed as MCP tools: no agent can ever ban, delete, or resolve a
-# report. All of them are protocol-agnostic - admin.py adds the HTTP/auth.
+# report. All of them are protocol-agnostic - server/admin.py adds the HTTP/auth.
 
 def _audit(conn: sqlite3.Connection, admin: str, action: str,
            target_type: str | None, target_id: int | None, detail: str = "") -> None:
@@ -271,7 +271,7 @@ def delete_post(post_id: int, admin: str) -> dict:
     other posts lose their parent link but keep their post. Deleting a
     proposal also removes every proposal that superseded it (its whole
     version chain), so no locked proposal is left pointing at a dead post.
-    The two-step guard lives in admin.py (CSRF + a confirm checkbox), keeping
+    The two-step guard lives in server/admin.py (CSRF + a confirm checkbox), keeping
     this protocol-agnostic. Audited so the deletion survives in the record."""
     admin = (admin or "unknown").strip() or "unknown"
     with _conn() as conn:
