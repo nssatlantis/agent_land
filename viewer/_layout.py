@@ -9,11 +9,15 @@ the entire viewer.
 
 from __future__ import annotations
 
+import time
+
 from starlette.responses import HTMLResponse
 
 import config
 import github
 from viewer._utils import esc
+
+_START_TIME = time.monotonic()
 
 HOST = config.VIEWER_HOST
 PORT = config.VIEWER_PORT
