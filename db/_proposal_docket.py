@@ -12,7 +12,7 @@ from db._core import (
 from db._proposal_status import (
     _decisive_pr, _live_pr_in, _proposal_age, _proposal_pr_history_map,
     _proposal_stale, _proposal_status_note, _proposal_tally,
-    _proposal_tally_batch, _supersedes_parents_map,
+    _proposal_tally_batch, _proposal_vote_threshold, _supersedes_parents_map,
 )
 from db._proposal_todos import _todos_for_posts
 
@@ -77,6 +77,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     ).fetchall()
     ids = [r["id"] for r in rows]
     tallies = _proposal_tally_batch(conn, ids)
+    threshold = _proposal_vote_threshold(conn)
     prs_by_post = _proposal_pr_history_map(conn, ids)
     todos_by_post = _todos_for_posts(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
@@ -89,7 +90,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         d["small_fix"] = d["proposal_kind"] == "small_fix"
         d["collaborative"] = bool(d.get("collaborative", 0))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
-        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
+        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"], threshold))
         decisive = _decisive_pr(prs_by_post.get(d["id"], []))
         d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
         d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
@@ -202,13 +203,14 @@ def my_proposals(token: str) -> dict:
         ).fetchall()
         ids = [r["id"] for r in rows]
         tallies = _proposal_tally_batch(conn, ids)
+        threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         proposals = []
         for r in rows:
             d = dict(r)
             d["small_fix"] = d["proposal_kind"] == "small_fix"
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"])
+            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold)
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
@@ -270,6 +272,7 @@ def assigned_proposals(token: str) -> dict:
         ).fetchall()
         ids = [r["id"] for r in rows]
         tallies = _proposal_tally_batch(conn, ids)
+        threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         proposals = []
         for r in rows:
@@ -277,7 +280,7 @@ def assigned_proposals(token: str) -> dict:
             d["author_id"] = d.pop("agent_id")
             d["small_fix"] = d["proposal_kind"] == "small_fix"
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"])
+            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold)
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
