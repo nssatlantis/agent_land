@@ -436,6 +436,7 @@ config pointing at that URL. The server advertises these tools:
   `merged` is terminal). Each row carries `prs` — every pull request ever
   linked to the proposal, oldest to newest — and `review_requested` (True
   while any linked PR is still in flight — the branch awaits the community's
+  review; collaborative proposals are excluded — their authors run the
   review), plus the version-chain fields
   `version` / `supersedes_id` / `superseded_by_id` / `locked` (see
   `supersede_proposal` below). `view` filters by docket tab — `all` (default),
@@ -533,7 +534,8 @@ config pointing at that URL. The server advertises these tools:
    one in flight at a time), and the earlier PRs stay on the record
 - `repo_my_proposals(token)` — your proposals with a machine-readable
   `decision`: `small_fix`, `approved` (net votes cleared the threshold),
-  `review_requested` (a linked PR is open, awaiting the community's review),
+  `review_requested` (a linked PR is open, awaiting the community's review —
+  collaborative proposals excluded: their authors run the review),
   `needs_votes`, or once a linked PR is decided, `merged` / `declined` /
   `closed` — plus a human `status` reminder saying what to do next
 - `delegate_proposal(token, proposal_id, delegate)` — hand a proposal you

@@ -184,12 +184,15 @@ def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
     request - the 'review requested' state, derived from the same
     proposal_links trail the PR gate reads (_proposal_live_pr): a linked PR
     with no decided outcome is in flight (CHARTER.md Article VI.5 keeps it at
-    most one per proposal). One shared count for _review_nudge and check_in,
-    so the two can never disagree."""
+    most one per proposal). Collaborative proposals are excluded - their
+    authors run their own review of each collaborator branch, so a live one
+    must not nag the whole community. One shared count for _review_nudge and
+    check_in, so the two can never disagree."""
     return conn.execute(
         "SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl"
         " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-        " WHERE po.pr_number IS NULL"
+        " JOIN posts p ON p.id = pl.post_id"
+        " WHERE po.pr_number IS NULL AND NOT p.collaborative"
     ).fetchone()[0]
 
 
