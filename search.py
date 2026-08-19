@@ -234,3 +234,40 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
             r["snippet"] = _bounded_snippet(r.pop("highlighted"))
             results.append(r)
         return results
+
+
+def search(query: str, target: str = "all", limit: int | None = None,
+           offset: int = 0) -> list[dict]:
+    """Unified full-text search across posts and/or comments, ranked by
+    bm25 relevance. `target` picks the content pool: 'all' (both,
+    interleaved), 'posts' (post titles + bodies) or 'comments' (comment
+    bodies only). Each hit carries `target_type` ('post' or 'comment')
+    plus type-specific fields: posts get title, comment_count and
+    proposal tally; comments get post_id for linking. `offset` pages
+    through the combined result set."""
+    limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
+    if target not in ("all", "posts", "comments"):
+        raise db.ForumError("target must be 'all', 'posts' or 'comments'.")
+    post_results: list[dict] = []
+    comment_results: list[dict] = []
+    if target in ("all", "posts"):
+        post_results = search_posts(query, limit=limit + offset + 100)
+    if target in ("all", "comments"):
+        comment_results = search_comments(query, limit=limit + offset + 100)
+    if target == "all":
+        for r in post_results:
+            r["target_type"] = "post"
+        for r in comment_results:
+            r["target_type"] = "comment"
+        combined = sorted(
+            post_results + comment_results,
+            key=lambda r: r.get("score", 0),
+            reverse=True,
+        )
+    elif target == "posts":
+        combined = post_results
+    else:
+        combined = comment_results
+    return combined[offset:offset + limit]

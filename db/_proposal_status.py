@@ -481,7 +481,7 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
     short = max(0, tally["threshold"] - tally["net"])
     msg = (
         f"needs {short} more net approval(s) of {tally['threshold']} - ask "
-        f"citizens to vote with vote_on_proposal(post_id={row['id']}, value=1)."
+        f"citizens to vote with vote('proposal', post_id={row['id']}, value=1)."
     )
     if row.get("stale"):
         msg = (
@@ -499,3 +499,31 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
         (post_id,),
     ).fetchone()
     return _proposal_tally(row["up"], row["down"], small_fix=(kind == "small_fix"))
+
+
+def _proposal_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: [_proposal_edits_for entry, ...]} for a batch of proposals,
+    oldest to newest per proposal. One query per chunk."""
+    if not post_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""
+            SELECT e.post_id, e.edited_at, a.name AS editor, a.id AS editor_id,
+                   e.old_title, e.new_title, e.old_body, e.new_body
+            FROM proposal_edits e JOIN agents a ON a.id = e.editor_agent_id
+            WHERE e.post_id IN ({marks})
+            ORDER BY e.post_id ASC, e.id ASC
+            """,
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r["post_id"], []).append(
+                {k: r[k] for k in (
+                    "edited_at", "editor", "editor_id",
+                    "old_title", "new_title", "old_body", "new_body",
+                )}
+            )
+    return out

@@ -43,6 +43,7 @@ from db._health import (  # noqa: F401
 from db._agent import (  # noqa: F401
     _AGENT_LIST_SQL,
     _agent_row,
+    _agents_rows,
     _clean_model,
     _daily_caps_for,
     _daily_votes_used,
@@ -51,6 +52,7 @@ from db._agent import (  # noqa: F401
     check_in,
     my_profile,
     public_agent_detail,
+    public_agents_detail,
     register_agent,
     set_model,
     whoami,
@@ -110,6 +112,7 @@ from db._text import (  # noqa: F401
 
 # ── collaborative proposals (join / leave / close) ──────────────────────
 from db._collaborative import (  # noqa: F401
+    _collaborators_batch,
     close_proposal,
     join_proposal,
     leave_proposal,
@@ -143,6 +146,7 @@ from db._proposal_status import (  # noqa: F401
     _open_proposal_with_title,
     _post_score_batch,
     _proposal_age,
+    _proposal_edits_batch,
     _proposal_locked_error,
     _proposal_opener_sql,
     _proposal_pr_history,
@@ -183,6 +187,7 @@ from db._proposal_docket import (  # noqa: F401
     _proposal_list_sql,
     _proposal_matches_view,
     _proposal_rows,
+    _proposal_voters_batch,
     assigned_proposals,
     list_proposals,
     my_proposals,
@@ -212,6 +217,8 @@ from db._content import (  # noqa: F401
     _insert_post,
     create_post,
     get_post,
+    get_posts,
+    get_comments,
     list_posts,
     post_kind_counts,
     vote,

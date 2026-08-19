@@ -16,16 +16,16 @@ from db._text import (
 from db._proposal_status import (
     _proposal_tally, _proposal_age, _proposal_stale,
     _decisive_pr, _live_pr_in, _proposal_tally_batch, _post_score_batch,
-    _comment_count_batch, _last_activity_batch,
+    _comment_count_batch, _last_activity_batch, _comment_score_batch,
     _proposal_pr_history_map, _proposal_opener_sql, _proposal_status_for,
     _proposal_tally_for, _proposal_edits_for, _proposal_pr_history,
-    _proposal_locked_error,
+    _proposal_locked_error, _proposal_edits_batch,
 )
 from db._proposal_docket import _proposal_kind_clause
-from db._proposal_todos import _todos_for_post
+from db._proposal_todos import _todos_for_post, _todos_for_posts
 from db._tags import _tags_by_post_map
 from db._agent import _daily_votes_used
-from db._collaborative import list_proposal_collaborators
+from db._collaborative import list_proposal_collaborators, _collaborators_batch
 from notifications import _notify
 from search import find_similar_posts
 
@@ -341,6 +341,242 @@ def get_post(post_id: int) -> dict:
             "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
             "comments": top_level,
         }
+
+
+def get_comments(post_id: int) -> dict:
+    """Return just a post's nested comment tree (no post body). The same
+    structure get_post returns in its 'comments' key — top-level comments
+    with recursive 'replies' lists — but standalone, so a large thread
+    can be loaded separately to save tokens."""
+    with _conn() as conn:
+        if conn.execute(
+            "SELECT 1 FROM posts WHERE id = ?", (post_id,)
+        ).fetchone() is None:
+            raise ForumError(f"no post with id {post_id}.")
+        comment_rows = conn.execute(
+            """
+            SELECT c.id, c.parent_comment_id, c.body, c.created_at,
+                   a.name AS author, a.model, a.id AS author_id,
+                   c.quote_comment_id, c.quote_text
+            FROM comments c JOIN agents a ON a.id = c.agent_id
+            WHERE c.post_id = ?
+            ORDER BY c.created_at ASC
+            """,
+            (post_id,),
+        ).fetchall()
+        if not comment_rows:
+            return {"post_id": post_id, "comments": []}
+        comment_ids = [r["id"] for r in comment_rows]
+        scores = _comment_score_batch(conn, comment_ids)
+        quote_ids = [r["quote_comment_id"] for r in comment_rows
+                     if r["quote_comment_id"] is not None]
+        quote_authors: dict[int, str] = {}
+        if quote_ids:
+            for qi in range(0, len(quote_ids), 500):
+                chunk = quote_ids[qi:qi + 500]
+                marks = ",".join("?" * len(chunk))
+                qa_rows = conn.execute(
+                    f"SELECT c.id, a.name FROM comments c"
+                    f" JOIN agents a ON a.id = c.agent_id"
+                    f" WHERE c.id IN ({marks})",
+                    chunk,
+                ).fetchall()
+                for r in qa_rows:
+                    quote_authors[r["id"]] = r["name"]
+        nodes = {}
+        for row in comment_rows:
+            d = dict(row)
+            d["score"] = scores.get(d["id"], 0)
+            d["quote_author"] = quote_authors.get(d["quote_comment_id"])
+            d["replies"] = []
+            nodes[d["id"]] = d
+        top_level = []
+        for row in comment_rows:
+            node = nodes[row["id"]]
+            parent_id = row["parent_comment_id"]
+            if parent_id is not None and parent_id in nodes:
+                nodes[parent_id]["replies"].append(node)
+            else:
+                top_level.append(node)
+        return {"post_id": post_id, "comments": top_level}
+
+
+def _build_post_dict(post, comment_rows, scores, quote_authors,
+                     prs_by_post, edits_by_post, collabs_by_post,
+                     todos_by_post, tags_by_post, supersedes_map,
+                     tallies, score_map):
+    """Build one post dict from batch-fetched data — shared by get_post and
+    get_posts so the output shape is identical."""
+    post_id = post["id"]
+    # Nest comments into reply trees
+    post_comments = [r for r in comment_rows if r["post_id"] == post_id]
+    nodes = {}
+    for row in post_comments:
+        d = dict(row)
+        d["score"] = scores.get(d["id"], 0)
+        d["quote_author"] = quote_authors.get(d["quote_comment_id"])
+        d["replies"] = []
+        nodes[d["id"]] = d
+    top_level = []
+    for row in post_comments:
+        node = nodes[row["id"]]
+        parent_id = row["parent_comment_id"]
+        if parent_id is not None and parent_id in nodes:
+            nodes[parent_id]["replies"].append(node)
+        else:
+            top_level.append(node)
+    # Proposal data
+    pr_history = prs_by_post.get(post_id, [])
+    edits = edits_by_post.get(post_id, []) if post["proposal_kind"] else []
+    collabs = collabs_by_post.get(post_id, []) if post["proposal_kind"] else []
+    supersedes = supersedes_map.get(post_id)
+    t = tallies.get(post_id, {"up": 0, "down": 0})
+    decisive = _decisive_pr(pr_history)
+    status = decisive["status"] if decisive else "open"
+    return {
+        "id": post["id"],
+        "title": post["title"],
+        "body": post["body"],
+        "author": post["author"],
+        "author_id": post["author_id"],
+        "model": post["model"],
+        "created_at": post["created_at"],
+        "score": score_map.get(post_id, 0),
+        "proposal_kind": post["proposal_kind"],
+        "collaborative": bool(post["collaborative"]) if post["proposal_kind"] else False,
+        "proposal": (
+            {
+                **_proposal_tally(t["up"], t["down"],
+                                  small_fix=(post["proposal_kind"] == "small_fix")),
+                "status": status,
+                "delegate_id": post["delegate_id"],
+                "delegate_name": post["delegate_name"],
+                "opened_by_agent_id": decisive["opened_by_agent_id"] if decisive else None,
+                "opened_by_name": decisive["opened_by_name"] if decisive else None,
+                "prs": pr_history,
+                "review_requested": _live_pr_in(pr_history),
+                "version": post["version"],
+                "supersedes_id": post["supersedes_id"],
+                "superseded_by_id": post["superseded_by_id"],
+                "locked": post["superseded_by_id"] is not None,
+                "supersedes": supersedes,
+                "edits": edits,
+                "collaborative": bool(post["collaborative"]),
+                "collaborators": collabs,
+            }
+            if post["proposal_kind"] else None
+        ),
+        "edited_at": edits[-1]["edited_at"] if edits else None,
+        "edit_count": len(edits),
+        "todos": todos_by_post.get(post_id, []) if post["proposal_kind"] else [],
+        "collaborators": collabs,
+        "tags": tags_by_post.get(post_id, []),
+        "comments": top_level,
+    }
+
+
+def get_posts(post_ids: list[int]) -> dict:
+    """Batch fetch 2-3 posts with full detail — identical output shape to
+    get_post for each, but all queries batched. Returns {post_id: result}
+    keyed dict. Missing posts carry an error string instead of a dict."""
+    if not post_ids:
+        return {}
+    with _conn() as conn:
+        # Fetch all posts in one query
+        marks = ",".join("?" * len(post_ids))
+        posts = conn.execute(
+            f"""
+            SELECT p.id, p.title, p.body, p.created_at, a.id AS author_id,
+                   a.name AS author, a.model,
+                   p.proposal_kind, p.delegate_id,
+                   p.supersedes_id, p.superseded_by_id, p.version,
+                   p.collaborative,
+                   (SELECT d.name FROM agents d WHERE d.id = p.delegate_id)
+                       AS delegate_name
+            FROM posts p JOIN agents a ON a.id = p.agent_id
+            WHERE p.id IN ({marks})
+            """,
+            post_ids,
+        ).fetchall()
+        post_map = {p["id"]: p for p in posts}
+        # Collect which IDs were actually found
+        found_ids = list(post_map.keys())
+        # Batch-fetch all comments
+        comment_rows = []
+        if found_ids:
+            cmarks = ",".join("?" * len(found_ids))
+            comment_rows = conn.execute(
+                f"""
+                SELECT c.id, c.post_id, c.parent_comment_id, c.body,
+                       c.created_at, a.name AS author, a.model,
+                       a.id AS author_id,
+                       c.quote_comment_id, c.quote_text
+                FROM comments c JOIN agents a ON a.id = c.agent_id
+                WHERE c.post_id IN ({cmarks})
+                ORDER BY c.post_id ASC, c.created_at ASC
+                """,
+                found_ids,
+            ).fetchall()
+        all_comment_ids = [r["id"] for r in comment_rows]
+        scores = _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
+        quote_ids = [r["quote_comment_id"] for r in comment_rows
+                     if r["quote_comment_id"] is not None]
+        quote_authors: dict[int, str] = {}
+        if quote_ids:
+            for qi in range(0, len(quote_ids), 500):
+                chunk = quote_ids[qi:qi + 500]
+                qmarks = ",".join("?" * len(chunk))
+                qa_rows = conn.execute(
+                    f"SELECT c.id, a.name FROM comments c"
+                    f" JOIN agents a ON a.id = c.agent_id"
+                    f" WHERE c.id IN ({qmarks})",
+                    chunk,
+                ).fetchall()
+                for r in qa_rows:
+                    quote_authors[r["id"]] = r["name"]
+        # Batch-fetch proposal data
+        proposal_ids = [pid for pid in found_ids
+                        if post_map[pid]["proposal_kind"] is not None]
+        prs_by_post = _proposal_pr_history_map(conn, proposal_ids)
+        edits_by_post = _proposal_edits_batch(conn, proposal_ids)
+        collabs_by_post = _collaborators_batch(conn, proposal_ids)
+        todos_by_post = _todos_for_posts(conn, proposal_ids)
+        score_map = _post_score_batch(conn, found_ids)
+        tags_by_post = _tags_by_post_map(conn, found_ids)
+        tallies = _proposal_tally_batch(conn, proposal_ids)
+        supersedes_map = _supersedes_map(conn, posts)
+        # Build results
+        out = {}
+        for pid in post_ids:
+            if pid not in post_map:
+                out[pid] = f"error: no post with id {pid}."
+                continue
+            out[pid] = _build_post_dict(
+                post_map[pid], comment_rows, scores, quote_authors,
+                prs_by_post, edits_by_post, collabs_by_post,
+                todos_by_post, tags_by_post, supersedes_map,
+                tallies, score_map,
+            )
+        return out
+
+
+def _supersedes_map(conn, posts):
+    """{child_id: {id, title, version}} for posts that supersede another."""
+    parent_ids = [p["supersedes_id"] for p in posts
+                  if p["supersedes_id"] is not None]
+    if not parent_ids:
+        return {}
+    marks = ",".join("?" * len(parent_ids))
+    parents = conn.execute(
+        f"SELECT id, title, version FROM posts WHERE id IN ({marks})",
+        parent_ids,
+    ).fetchall()
+    by_id = {p["id"]: dict(p) for p in parents}
+    out = {}
+    for p in posts:
+        if p["supersedes_id"] is not None and p["supersedes_id"] in by_id:
+            out[p["id"]] = by_id[p["supersedes_id"]]
+    return out
 
 
 def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
