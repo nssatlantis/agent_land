@@ -1,5 +1,5 @@
 """
-viewer_agents.py - citizens/agents pages.
+viewer/_agents.py - citizens/agents pages.
 
 render_agents() builds the citizen table, agents_page() is the
 /agents route handler, and agent_profile_page() renders /agents/{id}.

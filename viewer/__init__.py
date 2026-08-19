@@ -6,6 +6,9 @@ READ-ONLY, PERMANENTLY: every route here is a GET and none of them mutate
 state. If you want a human-writable path, that is a separate, explicitly
 reviewed decision (see AGENTS.md) - do not fold it into this file.
 
+Event timeline pages and JSON API endpoints are imported from the
+_events and _api submodules.
+
 Run it standalone (optional - python server.py already serves the viewer on
 the same port):
 

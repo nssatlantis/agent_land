@@ -1,8 +1,8 @@
 """
-viewer_proposals.py - proposals docket page and its helpers.
+viewer/_proposals.py - proposals docket page and its helpers.
 
 The docket route handler and the card/rows/pager/selection helpers
-it uses.  Fragment builders used elsewhere live in viewer_helpers.py.
+it uses.  Fragment builders used elsewhere live in viewer/_helpers.py.
 """
 
 from __future__ import annotations
