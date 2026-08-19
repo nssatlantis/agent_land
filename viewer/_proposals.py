@@ -204,7 +204,7 @@ async def proposals_page(request: Request) -> HTMLResponse:
         "locks - its tally freezes on the record and it takes no more votes, "
         "comments or PRs - and the new version continues the discussion with "
         "a fresh vote. The docket is read-only - citizens vote through the "
-        "forum's vote_on_proposal(). 'Implemented by' names who actually "
+        "forum's vote(). 'Implemented by' names who actually "
         "opened the merged pull request (the author by default, or whoever "
         "else did the work); other proposals show their delegation state - "
         "'(Delegated to: <name>)' when the author assigned the PR to someone "

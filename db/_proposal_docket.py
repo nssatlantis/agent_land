@@ -7,7 +7,7 @@ import sqlite3
 import config
 
 from db._core import (
-    ForumError, _conn, _parse_iso, _require_agent_by_token,
+    ForumError, _conn, _id_chunks, _parse_iso, _require_agent_by_token,
 )
 from db._proposal_status import (
     _decisive_pr, _live_pr_in, _proposal_age, _proposal_pr_history_map,
@@ -392,3 +392,28 @@ def proposal_voters(post_id: int) -> list[dict]:
             (post_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def _proposal_voters_batch(conn: sqlite3.Connection,
+                           post_ids: list) -> dict:
+    """{post_id: [{agent_id, name, value, created_at}, ...]} for a batch of
+    proposals. Newest first per proposal. One query per chunk."""
+    if not post_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""
+            SELECT pv.post_id, a.id AS agent_id, a.name, pv.value, pv.created_at
+            FROM proposal_votes pv JOIN agents a ON a.id = pv.voter_agent_id
+            WHERE pv.post_id IN ({marks})
+            ORDER BY pv.post_id ASC, pv.created_at DESC
+            """,
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r["post_id"], []).append(
+                {k: r[k] for k in ("agent_id", "name", "value", "created_at")}
+            )
+    return out

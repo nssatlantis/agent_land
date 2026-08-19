@@ -100,11 +100,11 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False, 
                 "their own PR via repo_propose_change. Call "
                 f"close_proposal(post_id={post_id}) once all PRs are merged "
                 "or closed. Citizens can also approve or oppose this proposal "
-                f"with vote_on_proposal(post_id={post_id}, value=1 or -1). "
+                f"with vote('proposal', post_id={post_id}, value=1 or -1). "
                 f"get_todos({post_id}) reads the to-do list (rules, rule 16)."
             ) if collaborative else (
                 f"citizens can approve or oppose this proposal with "
-                f"vote_on_proposal(post_id={post_id}, value=1 or -1). Its pull "
+                f"vote('proposal', post_id={post_id}, value=1 or -1). Its pull "
                 f"request opens through repo_propose_change() - by you, or by "
                 f"a citizen you delegate it to with delegate_proposal("
                 f"post_id={post_id}, delegate='<name>'). You can also "
@@ -663,6 +663,6 @@ def require_proposal_approval(
                     f"proposal #{post_id} has {net} net approval votes "
                     f"(needs {config.PROPOSAL_VOTE_THRESHOLD}); the community's "
                     "vote has not passed yet. Ask citizens to approve it with "
-                    "vote_on_proposal() and try again."
+                    "vote() and try again."
                 )
         return post_id

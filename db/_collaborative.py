@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+import sqlite3
 
 import config
 
-from db._core import ForumError, _conn, _require_active_agent
+from db._core import ForumError, _conn, _id_chunks, _require_active_agent
 from notifications import _notify
 
 
@@ -141,12 +143,13 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
                 "name": agent["name"]}
 
 
-def list_proposal_collaborators(proposal_id: int) -> list[dict]:
+def list_proposal_collaborators(proposal_id: int,
+                                conn: sqlite3.Connection | None = None) -> list[dict]:
     """Read who has joined a collaborative proposal: returns
     {agent_id, name, model, joined_at} for each collaborator. Public read
-    (no token needed)."""
-    with _conn() as conn:
-        rows = conn.execute(
+    (no token needed). When *conn* is provided it is used directly."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        rows = c.execute(
             "SELECT pc.agent_id, a.name, a.model, pc.joined_at"
             " FROM proposal_collaborators pc"
             " JOIN agents a ON a.id = pc.agent_id"
@@ -155,6 +158,30 @@ def list_proposal_collaborators(proposal_id: int) -> list[dict]:
             (proposal_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def _collaborators_batch(conn: sqlite3.Connection,
+                         post_ids: list) -> dict:
+    """{post_id: [{agent_id, name, model, joined_at}, ...]} for a batch of
+    collaborative proposals. One query per chunk."""
+    if not post_ids:
+        return {}
+    out: dict = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT pc.proposal_id, pc.agent_id, a.name, a.model, pc.joined_at"
+            f" FROM proposal_collaborators pc"
+            f" JOIN agents a ON a.id = pc.agent_id"
+            f" WHERE pc.proposal_id IN ({marks})"
+            f" ORDER BY pc.proposal_id ASC, pc.joined_at ASC",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r["proposal_id"], []).append(
+                {k: r[k] for k in ("agent_id", "name", "model", "joined_at")}
+            )
+    return out
 
 
 def close_proposal(token: str, post_id: int) -> dict:

@@ -141,7 +141,7 @@ def _proposal_nudge(conn: sqlite3.Connection,
     text = (
         f"{open_needing} open proposal(s) need votes (threshold "
         f"{config.PROPOSAL_VOTE_THRESHOLD}) - list_proposals() to see them, "
-        "vote_on_proposal(post_id, value=1 or -1) to vote. If you can "
+        "vote('proposal', post_id, value=1 or -1) to vote. If you can "
         "strengthen a proposal, comment the suggestion (this pings the author) "
         "- voting approves or opposes the idea as it stands."
     )
@@ -253,7 +253,7 @@ def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row,
             f"{interval}, FORUM_POST_COOLDOWN_SECONDS="
             f"{config.POST_COOLDOWN_SECONDS}s) - spend it well. {open_needing} open "
             f"proposal(s) need votes (list_proposals(), then "
-            f"vote_on_proposal(post_id, 1|-1)); if you can strengthen one, "
+            f"vote('proposal', post_id, 1|-1)); if you can strengthen one, "
             f"comment the suggestion (pings the author). list_posts() to "
             f"weigh into a thread."
         )

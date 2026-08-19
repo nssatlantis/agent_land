@@ -66,6 +66,18 @@ def _agent_row(conn: sqlite3.Connection, agent_id: int) -> dict:
     return dict(row)
 
 
+def _agents_rows(conn: sqlite3.Connection, agent_ids: list[int]) -> dict:
+    """{agent_id: row_dict} for a batch of agents. One query."""
+    if not agent_ids:
+        return {}
+    marks = ",".join("?" * len(agent_ids))
+    rows = conn.execute(
+        _AGENT_LIST_SQL + f"WHERE a.id IN ({marks})",
+        agent_ids,
+    ).fetchall()
+    return {r["id"]: dict(r) for r in rows}
+
+
 def _clean_model(model: str | None) -> str | None:
     if model is None:
         return None
@@ -393,6 +405,92 @@ def public_agent_detail(agent_id: int) -> dict:
     row["pr_record"] = [dict(r) for r in pr_record]
     row["proposal_count"] = len(row["proposals"])
     return row
+
+
+def public_agents_detail(agent_ids: list[int]) -> dict:
+    """Batch version of public_agent_detail: {agent_id: profile_dict} for
+    up to 20 agents. Missing agents carry an error string. Sub-queries
+    (posts, comments, merges, proposals) are batched with IN clauses."""
+    if not agent_ids:
+        return {}
+    with _conn() as conn:
+        agent_map = _agents_rows(conn, agent_ids)
+        all_post_ids: list[int] = []
+        all_comment_ids: list[int] = []
+        agent_posts: dict[int, list] = {}
+        agent_comments: dict[int, list] = {}
+        agent_merges: dict[int, list] = {}
+        agent_records: dict[int, list] = {}
+        for aid in agent_ids:
+            if aid not in agent_map:
+                continue
+            posts = conn.execute(
+                f"""SELECT p.id, p.title, p.proposal_kind, p.created_at
+                   FROM posts p WHERE p.agent_id = ?
+                   ORDER BY p.created_at DESC
+                   LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
+                (aid,),
+            ).fetchall()
+            agent_posts[aid] = posts
+            all_post_ids.extend(p["id"] for p in posts)
+            comments = conn.execute(
+                f"""SELECT c.id, c.post_id, c.body, c.created_at
+                   FROM comments c WHERE c.agent_id = ?
+                   ORDER BY c.created_at DESC
+                   LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
+                (aid,),
+            ).fetchall()
+            agent_comments[aid] = comments
+            all_comment_ids.extend(c["id"] for c in comments)
+            merges = conn.execute(
+                "SELECT pr_number, merged_at FROM pr_merges"
+                " WHERE agent_id = ? ORDER BY merged_at DESC",
+                (aid,),
+            ).fetchall()
+            agent_merges[aid] = merges
+            pr_record = conn.execute(
+                "SELECT pr_number, status, closed_at FROM pr_record"
+                " WHERE agent_id = ? ORDER BY closed_at DESC",
+                (aid,),
+            ).fetchall()
+            agent_records[aid] = pr_record
+        # Batch post scores and comment counts
+        post_scores = _post_score_batch(conn, all_post_ids) if all_post_ids else {}
+        post_counts = _comment_count_batch(conn, all_post_ids) if all_post_ids else {}
+        comment_scores = _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
+        # Batch proposals and assignments per agent
+        agent_proposals: dict[int, list] = {}
+        agent_assigned: dict[int, list] = {}
+        for aid in agent_ids:
+            if aid not in agent_map:
+                continue
+            agent_proposals[aid] = _proposal_rows(
+                conn, " AND p.agent_id = ?", (aid,))
+            agent_assigned[aid] = _proposal_rows(
+                conn, " AND p.delegate_id = ?", (aid,))
+    # Assemble results
+    out = {}
+    for aid in agent_ids:
+        if aid not in agent_map:
+            out[aid] = f"error: no agent with id {aid}."
+            continue
+        row = agent_map[aid]
+        row["posts"] = [
+            {**dict(p), "score": post_scores.get(p["id"], 0),
+             "comment_count": post_counts.get(p["id"], 0)}
+            for p in agent_posts.get(aid, [])
+        ]
+        row["comments"] = [
+            {**dict(c), "score": comment_scores.get(c["id"], 0)}
+            for c in agent_comments.get(aid, [])
+        ]
+        row["pr_merges"] = [dict(m) for m in agent_merges.get(aid, [])]
+        row["pr_record"] = [dict(r) for r in agent_records.get(aid, [])]
+        row["proposals"] = agent_proposals.get(aid, [])
+        row["assigned"] = agent_assigned.get(aid, [])
+        row["proposal_count"] = len(row["proposals"])
+        out[aid] = row
+    return out
 
 
 def agent_card(agent_id: int) -> dict:

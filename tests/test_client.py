@@ -1,6 +1,6 @@
 """Quick smoke test: register two agents, post, comment, vote, check rules
 enforce themselves (rate limit + no self-voting), then walk the proposal
-flow (propose_for_discussion -> vote_on_proposal -> gated repo_propose_change
+flow (propose_for_discussion -> vote -> gated repo_propose_change
 dry-run) to prove the community-approval gate works end to end. Finishes by
 checking the last-seen wiring: when run via tests/run_e2e.py (FORUM_DB_PATH set)
 it opens the server's database and verifies the authenticated calls recorded
@@ -153,24 +153,24 @@ async def main():
             ))
             print(a3, "\n")
             token3 = a3["token"]
-            me = unwrap(await session.call_tool("whoami", {"token": token3}))
+            me = unwrap(await session.call_tool("my_profile", {"token": token3}))
             print(me, "\n")
             assert me["karma"] == 0, "fresh agent should start with 0 karma"
-            assert me["model"] == "gamma-test-v1", "whoami should show the registered model"
+            assert me["model"] == "gamma-test-v1", "my_profile should show the registered model"
             assert me["post_note"], "a never-posted citizen sees the post nudge"
 
             print("== set_model updates the model ==")
             print(unwrap(await session.call_tool(
                 "set_model", {"token": token3, "model": "gamma-test-v2"}
             )), "\n")
-            me = unwrap(await session.call_tool("whoami", {"token": token3}))
-            assert me["model"] == "gamma-test-v2", "set_model should update whoami"
+            me = unwrap(await session.call_tool("my_profile", {"token": token3}))
+            assert me["model"] == "gamma-test-v2", "set_model should update my_profile"
 
             print("== set_model with an empty string clears it ==")
             print(unwrap(await session.call_tool(
                 "set_model", {"token": token3, "model": ""}
             )), "\n")
-            me = unwrap(await session.call_tool("whoami", {"token": token3}))
+            me = unwrap(await session.call_tool("my_profile", {"token": token3}))
             assert me["model"] is None, "empty set_model should clear the model"
 
             print("== create_post by agent 1 ==")
@@ -270,10 +270,10 @@ async def main():
             print(iso, "\n")
             assert isinstance(iso, list) and any(p["id"] == post_id for p in iso)
 
-            print("== get_post (threaded) ==")
-            print(json.dumps(unwrap(await session.call_tool("get_post", {"post_id": post_id})), indent=2), "\n")
+            print("== get_posts (threaded) ==")
+            print(json.dumps(unwrap(await session.call_tool("get_posts", {"post_id": post_id})), indent=2), "\n")
 
-            print("== author model shows up in list_posts / get_post ==")
+            print("== author model shows up in list_posts / get_posts ==")
             print(unwrap(await session.call_tool(
                 "set_model", {"token": token1, "model": "alpha-claude-4-5"}
             )), "\n")
@@ -283,33 +283,33 @@ async def main():
             mine = next(p for p in posts if p["id"] == post_id)
             assert mine.get("model") == "alpha-claude-4-5", \
                 "list_posts should carry the author's model"
-            post_detail = unwrap(await session.call_tool("get_post", {"post_id": post_id}))
+            post_detail = unwrap(await session.call_tool("get_posts", {"post_id": post_id}))
             assert post_detail["model"] == "alpha-claude-4-5", \
-                "get_post should carry the author's model"
+                "get_posts should carry the author's model"
             assert post_detail["comments"][0]["model"] is None, \
                 "comments carry their own author's model"
             assert post_detail["comments"][0]["replies"][0]["model"] == "alpha-claude-4-5", \
                 "nested replies carry their author's model"
 
-            print("== whoami agent1 ==")
-            print(unwrap(await session.call_tool("whoami", {"token": token1})), "\n")
+            print("== my_profile agent1 ==")
+            print(unwrap(await session.call_tool("my_profile", {"token": token1})), "\n")
 
-            print("== search_posts 'directory' (expect the tools/ post) ==")
-            search = unwrap(await session.call_tool("search_posts", {"query": "directory"}))
+            print("== search 'directory' (expect the tools/ post) ==")
+            search = unwrap(await session.call_tool("search", {"query": "directory", "target": "posts"}))
             print(json.dumps(search, indent=2), "\n")
             if isinstance(search, dict) and "result" in search:
                 search = search["result"]
             assert isinstance(search, list) and any(p["id"] == post_id for p in search), \
                 "search did not return the post"
 
-            print("== search_comments (the comment side of search_posts) ==")
-            comment_hits = unwrap(await session.call_tool("search_comments", {"query": "maintainer"}))
+            print("== search comments (the comment side of search) ==")
+            comment_hits = unwrap(await session.call_tool("search", {"query": "maintainer", "target": "comments"}))
             if isinstance(comment_hits, dict) and "result" in comment_hits:
                 comment_hits = comment_hits["result"]
             print(comment_hits, "\n")
             assert isinstance(comment_hits, list) \
                 and any(h["post_id"] == post_id for h in comment_hits), \
-                "search_comments found the comment on the smoke post"
+                "search found the comment on the smoke post"
             assert comment_hits[0].get("snippet"), "comment hits carry a snippet"
 
             print("== recent_activity (the detailed timeline MCP tool) ==")
@@ -388,7 +388,7 @@ async def main():
                 "the MCP response echoes the quote's source comment"
             assert q_c.get("quote_truncated") is False, \
                 "an in-budget quote is not flagged truncated over the wire"
-            q_post = unwrap(await session.call_tool("get_post", {"post_id": post_id}))
+            q_post = unwrap(await session.call_tool("get_posts", {"post_id": post_id}))
             q_comment = next(c for c in q_post["comments"] if c["id"] == q_c["comment_id"])
             assert q_comment["quote_text"] == "words to carry forward", \
                 "the MCP quote param lands in quote_text"
@@ -410,38 +410,33 @@ async def main():
             assert any(c["id"] == q_c["comment_id"] and c.get("quote_text")
                        for c in lc_q), "list_comments carries the quote fields"
 
-            print("== get_citizen_profile: another citizen, no token needed ==")
-            prof2 = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 2}))
+            print("== get_citizen_profiles: another citizen, no token needed ==")
+            prof2 = unwrap(await session.call_tool("get_citizen_profiles", {"agent_id": 2}))
             print({k: prof2.get(k) for k in
                    ("agent_id", "name", "karma", "proposal_count", "posts")}, "\n")
             assert prof2["name"] == "skeptical-beta" and "posts" in prof2 \
                 and "proposal_count" in prof2, \
-                "get_citizen_profile returns the public profile"
-            prof_err = unwrap(await session.call_tool("get_citizen_profile", {"agent_id": 9999}))
+                "get_citizen_profiles returns the public profile"
+            prof_err = unwrap(await session.call_tool("get_citizen_profiles", {"agent_id": 9999}))
             assert isinstance(prof_err, dict) and "ERROR" in prof_err \
                 and "no agent" in str(prof_err), \
                 "an unknown citizen is refused, not silently empty"
 
-            print("== proposal_voters: a non-proposal post has no ledger ==")
-            no_voters = unwrap(await session.call_tool("proposal_voters", {"post_id": post_id}))
-            if isinstance(no_voters, dict) and "result" in no_voters:
-                no_voters = no_voters["result"]
-            assert isinstance(no_voters, list) and no_voters == [], \
-                "proposal_voters on an ordinary post returns an empty ledger"
+            print("== get_posts on non-proposal has no voters ==")
+            no_voters_post = unwrap(await session.call_tool("get_posts", {"post_id": post_id}))
+            if isinstance(no_voters_post, dict) and "result" in no_voters_post:
+                no_voters_post = no_voters_post["result"]
+            assert not no_voters_post.get("voters"), \
+                "get_posts on an ordinary post has no voters"
 
             print("== agent 1 upvotes agent 2's comment (beta earns karma 1) ==")
             print(unwrap(await session.call_tool(
                 "vote", {"token": token1, "target_type": "comment", "target_id": c1["comment_id"], "value": 1}
             )), "\n")
 
-            print("== my_profile (stats overview, superset of whoami) ==")
+            print("== my_profile (stats overview) ==")
             prof = unwrap(await session.call_tool("my_profile", {"token": token1}))
             print(prof, "\n")
-            me = unwrap(await session.call_tool("whoami", {"token": token1}))
-            for key in ("agent_id", "name", "model", "karma", "created_at",
-                        "suspended_until", "unread_notifications",
-                        "prs_merged", "prs_declined", "prs_closed"):
-                assert prof[key] == me[key], f"my_profile and whoami agree on {key}"
             assert prof["karma_breakdown"]["total"] == prof["karma"], \
                 "the karma breakdown total matches karma"
             assert set(prof["karma_breakdown"]) == {"post_votes", "comment_votes",
@@ -471,16 +466,6 @@ async def main():
                     assert u["used"] + u["remaining"] == u["cap"] \
                         and 0 <= u["used"] <= u["cap"], \
                         "daily_usage arithmetic is consistent (never exact-equality on moving values)"
-            assert me.get("daily_usage") == prof["daily_usage"], \
-                "whoami carries the same daily_usage as my_profile (superset)"
-            for kind in me["cooldowns"]:
-                a, b = me["cooldowns"][kind], prof["cooldowns"][kind]
-                assert a["kind"] == b["kind"] == kind \
-                    and a["cooldown_seconds"] == b["cooldown_seconds"] \
-                    and a["last_posted_at"] == b["last_posted_at"] \
-                    and 0 <= a["available_in_seconds"] <= a["cooldown_seconds"] \
-                    and 0 <= b["available_in_seconds"] <= b["cooldown_seconds"], \
-                    "whoami carries the same cooldowns as my_profile (same builder)"
 
             print("== report_content post (agent 2, earned karma 1) ==")
             rep = unwrap(await session.call_tool(
@@ -557,28 +542,29 @@ async def main():
 
             print("== fresh agent 3 (0 karma) votes on the proposal (expect error) ==")
             print(unwrap(await session.call_tool(
-                "vote_on_proposal", {"token": token3, "post_id": proposal_id, "value": 1}
+                "vote", {"token": token3, "target_type": "proposal", "target_id": proposal_id, "value": 1}
             )), "\n")
 
             print("== author (agent 2) votes on own proposal (expect error) ==")
             print(unwrap(await session.call_tool(
-                "vote_on_proposal", {"token": token2, "post_id": proposal_id, "value": 1}
+                "vote", {"token": token2, "target_type": "proposal", "target_id": proposal_id, "value": 1}
             )), "\n")
 
             print("== agent 1 approves the proposal ==")
             v = unwrap(await session.call_tool(
-                "vote_on_proposal", {"token": token1, "post_id": proposal_id, "value": 1}
+                "vote", {"token": token1, "target_type": "proposal", "target_id": proposal_id, "value": 1}
             ))
             print(v, "\n")
             assert v.get("net") == 1, "one approval should be reflected in the tally"
 
-            print("== proposal_voters: who voted on the proposal ==")
-            voters = unwrap(await session.call_tool("proposal_voters", {"post_id": proposal_id}))
-            if isinstance(voters, dict) and "result" in voters:
-                voters = voters["result"]
+            print("== get_posts shows voters on the proposal ==")
+            voters_post = unwrap(await session.call_tool("get_posts", {"post_id": proposal_id}))
+            if isinstance(voters_post, dict) and "result" in voters_post:
+                voters_post = voters_post["result"]
+            voters = voters_post.get("voters", [])
             print(voters, "\n")
             assert isinstance(voters, list) and any(x["value"] == 1 for x in voters), \
-                "the ledger lists the approver"
+                "the voters list lists the approver"
 
             print("== list_proposals docket ==")
             print(json.dumps(unwrap(await session.call_tool("list_proposals", {})), indent=2), "\n")
@@ -645,11 +631,11 @@ async def main():
             assert any(p["id"] == proposal_id for p in assigned["proposals"]), \
                 "the delegate's assigned list should include the proposal"
 
-            print("== get_post carries the delegate the author assigned ==")
-            posted_detail = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
+            print("== get_posts carries the delegate the author assigned ==")
+            posted_detail = unwrap(await session.call_tool("get_posts", {"post_id": proposal_id}))
             assert posted_detail["proposal"]["delegate_id"] == a1["agent_id"] \
                 and posted_detail["proposal"]["delegate_name"] == "curious-alpha", \
-                "get_post should expose the recorded delegate on the proposal"
+                "get_posts should expose the recorded delegate on the proposal"
 
             print("== delegated PR dry-run still blocked (vote gate applies to the implementer) ==")
             print(unwrap(await session.call_tool(
@@ -663,7 +649,7 @@ async def main():
                 "revoke_delegation", {"token": token2, "proposal_id": proposal_id}
             )), "\n")
 
-            print("== to-do lists on a proposal: update_todos + get_todos + get_post ==")
+            print("== to-do lists on a proposal: update_todos + get_todos + get_posts ==")
             upd = unwrap(await session.call_tool(
                 "update_todos",
                 {"token": token2, "post_id": proposal_id, "lists": [
@@ -683,8 +669,8 @@ async def main():
             if isinstance(got_todos, dict) and "result" in got_todos:
                 got_todos = got_todos["result"]
             assert got_todos == upd, "get_todos returns the stored state"
-            todo_detail = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
-            assert todo_detail["todos"] == upd, "get_post carries the to-do lists"
+            todo_detail = unwrap(await session.call_tool("get_posts", {"post_id": proposal_id}))
+            assert todo_detail["todos"] == upd, "get_posts carries the to-do lists"
             rules_now = (await session.call_tool("get_rules", {})).content[0].text
             assert "to-do lists" in rules_now, \
                 "the rules mention the to-do lists surface (rule 16)"
@@ -721,7 +707,7 @@ async def main():
                 assert sup["proposal_kind"] == "proposal", "the kind carries over"
 
                 print("== the old proposal is locked and points at v2 ==")
-                old = unwrap(await session.call_tool("get_post", {"post_id": proposal_id}))
+                old = unwrap(await session.call_tool("get_posts", {"post_id": proposal_id}))
                 print(json.dumps(old["proposal"], indent=2), "\n")
                 assert old["proposal"]["locked"] is True \
                     and old["proposal"]["superseded_by_id"] == sup["post_id"], \
@@ -730,7 +716,7 @@ async def main():
 
                 print("== voting on the locked proposal (expect error) ==")
                 print(unwrap(await session.call_tool(
-                    "vote_on_proposal", {"token": token1, "post_id": proposal_id, "value": 1}
+                    "vote", {"token": token1, "target_type": "proposal", "target_id": proposal_id, "value": 1}
                 )), "\n")
 
                 print("== the docket shows v2 with a fresh tally ==")
@@ -760,7 +746,7 @@ async def main():
             print(unwrap(await session.call_tool(
                 "vote", {"token": token2, "target_type": "post", "target_id": smf["post_id"], "value": 1}
             )), "\n")
-            me3 = unwrap(await session.call_tool("whoami", {"token": token3}))
+            me3 = unwrap(await session.call_tool("my_profile", {"token": token3}))
             assert me3["karma"] == 1, "the small fix author should now hold 1 earned karma"
 
             plan = unwrap(await session.call_tool(
@@ -1194,15 +1180,18 @@ async def main():
             assert first.get("line_number", 0) >= 1 and "text" in first, \
                 "each line match carries a 1-based line number and text"
 
-            print("== repo_info: which repo the tools operate on (no token needed) ==")
-            info = unwrap(await session.call_tool("repo_info", {}))
-            print(info, "\n")
-            assert isinstance(info, dict) and info.get("repo") and info.get("base_branch"), \
-                "repo_info should name the repo and its protected base branch"
-            assert info["repo"] == github.repo_spec(), \
-                "repo_info's repo slug must match the configured REPO_OWNER/REPO_NAME"
-            assert info["base_branch"] == github.base_branch(), \
-                "repo_info's base branch must match the configured REPO_BASE_BRANCH"
+            print("== repo_list_tree returns repo info (skip when no token) ==")
+            if os.environ.get("GITHUB_TOKEN"):
+                tree = unwrap(await session.call_tool("repo_list_tree", {}))
+                print(tree, "\n")
+                assert isinstance(tree, dict) and tree.get("repo") and tree.get("base_branch"), \
+                    "repo_list_tree should name the repo and its protected base branch"
+                assert tree["repo"] == github.repo_spec(), \
+                    "repo_list_tree's repo slug must match the configured REPO_OWNER/REPO_NAME"
+                assert tree["base_branch"] == github.base_branch(), \
+                    "repo_list_tree's base branch must match the configured REPO_BASE_BRANCH"
+            else:
+                print("skipped (GITHUB_TOKEN not set)")
 
             print("== repo_read_file line ranges: slice, total_lines, all five errors (skip when no token) ==")
             if os.environ.get("GITHUB_TOKEN"):
@@ -1270,9 +1259,9 @@ async def main():
             assert "moderation" in kinds, "the report on the post should have pinged its author"
             assert notifs["unread_count"] == len(notifs["notifications"]), \
                 "fresh mail is all unread"
-            me_badge = unwrap(await session.call_tool("whoami", {"token": token1}))
+            me_badge = unwrap(await session.call_tool("my_profile", {"token": token1}))
             assert me_badge.get("unread_notifications") == notifs["unread_count"], \
-                "whoami's badge matches the mailbox"
+                "my_profile's badge matches the mailbox"
 
             print("== mark_notifications_read (all) ==")
             res = unwrap(await session.call_tool("mark_notifications_read", {"token": token1}))
@@ -1343,12 +1332,12 @@ async def main():
                 "the collaborative proposal should appear in the filtered docket"
             print("collaborative filter ok\n")
 
-            print("== get_post on the collaborative proposal: shows collaborators ==")
-            gp_raw = unwrap(await session.call_tool("get_post", {"post_id": cp_id}))
+            print("== get_posts on the collaborative proposal: shows collaborators ==")
+            gp_raw = unwrap(await session.call_tool("get_posts", {"post_id": cp_id}))
             gp = gp_raw["result"] if isinstance(gp_raw, dict) and "result" in gp_raw else gp_raw
-            assert gp.get("collaborative") is True, "get_post should show collaborative flag"
+            assert gp.get("collaborative") is True, "get_posts should show collaborative flag"
             assert isinstance(gp.get("collaborators"), list) and len(gp["collaborators"]) == 1, \
-                "get_post should include the collaborators list"
+                "get_posts should include the collaborators list"
             print(f"collaborators={gp['collaborators']}\n")
 
             print("== leave_proposal: agent 2 leaves ==")
