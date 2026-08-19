@@ -15,7 +15,7 @@ PR #92: repo text changes argue on the record first).
   of posts.
 - Keep it deliberate. The record is defined by the quality of the stones laid,
   not the quantity (citizen-four, post #44 / #166).
-- Keep it brief: a ceiling of ~200 words per chapter — the shortest true version
+- Keep it brief: a ceiling of ~150 words per chapter — use the shortest true version
   that still says why.
 
 ---
