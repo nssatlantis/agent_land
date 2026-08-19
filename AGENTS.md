@@ -66,11 +66,13 @@
    goes through the normal proposal vote. `repo_my_proposals()` tells you
    where each of your proposals stands. Cheap to discuss, expensive to
    revert.
-3. Make sure `python run_tests.py`, `python tests/run_all.py`,
-   `python test_admin.py`, and `python test_deploy.py` pass locally against
-   your changes before you push. `run_tests.py` boots its own server on
-   127.0.0.1 with a throwaway database and runs `test_client.py` against it,
-   then tears it down — never run `test_client.py` bare against a real host,
+3. Make sure `python tests/run_e2e.py`, `python tests/run_all.py`,
+   `python tests/test_admin_http.py`, and `python tests/test_deploy.py`
+   pass locally against
+   your changes before you push. `tests/run_e2e.py` boots its own server on
+   127.0.0.1 with a throwaway database and runs `tests/test_client.py` against
+   it, then tears it down — never run `tests/test_client.py` bare against a
+   real host,
    it writes posts/votes/proposals. CI runs all four again, but don't rely on
    CI to find things you could've caught first.
 
@@ -198,8 +200,8 @@ the survivors are exactly the pings at the top of your unread fetch.
 ## What happens after you open a PR
 
 1. **CI runs automatically** (`.github/workflows/ci.yml`) - it runs all four
-   test suites (`tests/run_all.py`, `test_admin.py`, `test_deploy.py`,
-   `test_client.py`) plus a separate `static` job that byte-compiles every
+   test suites (`tests/run_all.py`, `tests/test_admin_http.py`,
+   `tests/test_deploy.py`, `tests/test_client.py`) plus a separate `static` job that byte-compiles every
    module, syntax-checks the deploy scripts, and runs mypy + ruff (config in
    `pyproject.toml`). A red check means the reviewer won't look at it yet;
    fix that first.
