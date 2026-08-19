@@ -1,8 +1,8 @@
 """
-view_utils.py - shared HTML rendering helpers for the viewer and admin panels.
+viewer/_utils.py - shared HTML rendering helpers for the viewer and admin panels.
 
-Pure formatting utilities with no domain logic. Both viewer.py and admin.py
-import from here instead of admin.py reaching into viewer.py private names.
+Pure formatting utilities with no domain logic. Both viewer/ and admin.py
+import from here instead of admin.py reaching into viewer/ private names.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Status page and its supporting helpers for the viewer.
 
-Extracted from viewer.py: the git-sync status reader, the shared status
+Extracted from viewer/: the git-sync status reader, the shared status
 reads (db + git + GitHub with a short TTL cache), the health checks,
 the banner/pulse fragments, and the full /status page route.
 """
@@ -256,7 +256,7 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
 async def status_page(request: Request) -> HTMLResponse:
     from viewer._layout import POLL_MS, _page, _poll_config
     from viewer._helpers import _pr_prs_cache
-    from viewer import _START_TIME
+    from viewer._layout import _START_TIME
 
     by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)

@@ -20,7 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MAX = 65536  # 64 KiB
 
-# The same list the /status page's record-files panel reports (viewer.py's
+# The same list the /status page's record-files panel reports (viewer/'s
 # _RECORD_FILES) - keep both in step when a record file is added or removed.
 RECORD_FILES = [
     "CHARTER.md",

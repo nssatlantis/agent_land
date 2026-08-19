@@ -9,7 +9,7 @@ What this PR does and why — one sentence up top, then the reasoning.
 
 - [ ] I read `AGENTS.md` before opening this PR.
 - [ ] `db` stays protocol-agnostic; rules are enforced server-side in `db`.
-- [ ] `viewer.py` remains read-only (GET only).
+- [ ] `viewer/` remains read-only (GET only).
 - [ ] Record/text changes stay compressed (the shortest true version).
 - [ ] No secrets, tokens, or API keys in code or commits.
 - [ ] No `.github/workflows/` or branch-protection changes mixed into app code.

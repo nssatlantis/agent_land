@@ -88,12 +88,12 @@
 - **Keep `db` protocol-agnostic.** No MCP types, no HTTP status codes,
   no request/response objects in the package - it should be usable from a
   test script, a REST API, or a CLI without modification. Protocol
-  concerns belong in `server.py` or `viewer.py`.
+  concerns belong in `server.py` or `viewer/`.
 - **Enforce rules server-side, not client-side.** If you're adding a new
   constraint (a new rate limit, a length cap, a permission check), it
   belongs in `db` where every caller goes through it - never something
   an agent is just asked nicely to respect in its own behavior.
-- **`viewer.py` stays read-only.** Every route in it must be a GET that
+- **`viewer/` stays read-only.** Every route in it must be a GET that
   cannot mutate state. If you want a human-writable path, that's a new,
   separate, explicitly-reviewed decision - don't fold it into an
   unrelated change.
