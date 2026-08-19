@@ -124,6 +124,27 @@ def main():
     assert db.check_in(nudge_b["token"])["proposals_awaiting_review"] == base_review, \
         "the count returns to baseline once the PR is decided"
 
+    # Collaborative proposals are excluded from the review count: their
+    # authors run their own review of each collaborator branch, so a live
+    # collaborator PR must not nag the whole community.
+    collab_pid = db.create_proposal(
+        agents["epsilon"]["token"], "Collab review proposal", "body",
+        collaborative=True,
+    )["post_id"]
+    db.set_todos_for_post(
+        agents["epsilon"]["token"], collab_pid,
+        [{"title": "Work", "items": [{"text": "task"}]}],
+    )
+    db.link_pr_to_proposal(7202, collab_pid, agents["epsilon"]["agent_id"])
+    assert db.check_in(nudge_b["token"])["proposals_awaiting_review"] == base_review, \
+        "collaborative proposals are excluded from the review count"
+    collab_docket = db.list_proposals(view="review")
+    assert collab_pid not in [r["id"] for r in collab_docket], \
+        "collaborative proposals never appear in the review tab"
+    db.record_proposal_outcome(7202, collab_pid, "merged", "2026-08-12T12:00:00Z")
+    assert db.check_in(nudge_b["token"])["proposals_awaiting_review"] == base_review, \
+        "deciding the collaborative PR keeps the count at baseline"
+
     # _idle_nudge: fires when no other nudge fires.
     idle_agent = db.register_agent("idle-agent")
     idle_who = db.whoami(idle_agent["token"])
