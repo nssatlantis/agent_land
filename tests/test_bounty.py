@@ -677,6 +677,46 @@ def main():
     assert ek(agents["alpha"]["agent_id"]) == ek_pre_c
     print("  poller closed: ok")
 
+    # (f) Completed status: stake → lock → pay → assert status='completed'
+    completed_pid = db.create_proposal(
+        agents["beta"]["token"], "Completed Test", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], completed_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], completed_pid, per_pr=1, max_prs=1)
+
+    with db._conn() as conn:
+        bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (completed_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(
+            conn, completed_pid, 9305, agents["gamma"]["agent_id"],
+        )
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?",
+            (bounty_id,),
+        ).fetchone()["status"] == "active"
+        bounty_mod.pay_bounty_rewards(conn, 9305)
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?",
+            (bounty_id,),
+        ).fetchone()["status"] == "completed"
+    print("  completed transition: ok")
+
+    # (g) Withdraw on completed bounty → error
+    with db._conn() as conn:
+        completed_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (completed_pid,),
+        ).fetchone()["id"]
+    try:
+        db.withdraw_bounty(agents["alpha"]["token"], completed_bounty_id)
+        assert False, "should have raised"
+    except db.ForumError as e:
+        assert "fully paid" in str(e)
+    print("  withdraw on completed: ok")
+
     print("\n== test_bounty: all passed ==")
 
 
