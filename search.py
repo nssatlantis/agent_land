@@ -177,7 +177,6 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 )
             else:
                 r["proposal"] = None
-            r.pop("proposal_kind", None)
             r["snippet"] = _bounded_snippet(r.pop("highlighted"))
             results.append(r)
         return results
