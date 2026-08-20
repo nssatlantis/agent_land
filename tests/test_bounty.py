@@ -927,10 +927,10 @@ def main():
         db.vote_on_proposal(agents[name]["token"], sn_pid, 1)
     db.stake_bounty(agents["alpha"]["token"], sn_pid, per_pr=1, max_prs=1)
     with db._conn() as conn:
-        sn_bounty_id = conn.execute(
+        conn.execute(
             "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
             (sn_pid,),
-        ).fetchone()["id"]
+        ).fetchone()  # verify bounty exists
         bounty_mod.lock_bounties_for_pr(conn, sn_pid, 9440, agents["gamma"]["agent_id"])
         bounty_mod.pay_bounty_rewards(conn, 9440)
     # Check notifications for alpha (the staker).  The mailbox lives in the
