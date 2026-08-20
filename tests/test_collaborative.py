@@ -225,21 +225,23 @@ def main():
     c_vote = db.register_agent("collab-voter")
     c_vote_token = c_vote["token"]
     db.join_proposal(c_vote_token, p_vote["post_id"])
-    # Vote with citizens to reach threshold — farm karma first
-    voters = []
-    for i in range(4):
+    # Vote with citizens to reach the derived threshold (proposal #92): each
+    # registration raises the bar too (ceil(active/3)), so vote until the
+    # tally clears it - the loop terminates because every vote both adds a
+    # voter and is counted.
+    cleared = False
+    for i in range(15):
         v = db.register_agent(f"vote-thresh-{i}")
         if db.whoami(v["token"])["karma"] < 1:
             farm = db.create_comment(v["token"], post["id"], f"karma for vote-thresh-{i}")
             db.vote(ca3["token"], "comment", farm["comment_id"], 1)
-        voters.append(v)
-    for v in voters:
         db.vote_on_proposal(v["token"], p_vote["post_id"], 1)
-    c_vote_notifs = notifications.notifications(c_vote_token, unread_only=True)
-    c_vote_msgs = [n["body"] for n in c_vote_notifs["notifications"]]
-    assert any("threshold" in m for m in c_vote_msgs), (
-        "vote threshold should notify collaborators"
-    )
+        c_vote_notifs = notifications.notifications(c_vote_token, unread_only=True)
+        c_vote_msgs = [n["body"] for n in c_vote_notifs["notifications"]]
+        if any("threshold" in m for m in c_vote_msgs):
+            cleared = True
+            break
+    assert cleared, "vote threshold should notify collaborators"
     print("  vote threshold notifies collaborators: ok")
 
     # 24. record_proposal_outcome notifies collaborators

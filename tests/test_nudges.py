@@ -107,7 +107,8 @@ def main():
     rv_nudge = db.create_proposal(
         agents["epsilon"]["token"], "Review nudge proposal", "body"
     )["post_id"]
-    for rnk in (agents["zeta"], agents["eta"], agents["gamma"]):
+    for rnk in (agents["zeta"], agents["eta"], agents["gamma"],
+                agents["beta"], agents["theta"]):
         db.vote_on_proposal(rnk["token"], rv_nudge, 1)
     db.require_proposal_approval(agents["epsilon"]["token"], rv_nudge, "repo_propose_change")
     db.link_pr_to_proposal(7201, rv_nudge, agents["epsilon"]["agent_id"])
