@@ -527,12 +527,12 @@ def main():
         _aid = _c.execute(
             "SELECT id FROM agents ORDER BY id LIMIT 1"
         ).fetchone()[0]
-        for _i in range(200):
+        for _i in range(2000):
             _c.execute(
                 "INSERT INTO posts (agent_id, title, body, proposal_kind) "
                 "VALUES (?, ?, 'seed', ?)",
                 (_aid, f"perfidx {_i}",
-                 "proposal" if _i % 10 == 0 else None),
+                 "proposal" if _i % 1000 == 0 else None),
             )
         _c.execute("PRAGMA optimize")  # re-stat the newly seeded rows
         _plan = "".join(
