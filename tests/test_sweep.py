@@ -313,6 +313,92 @@ def test_sweep_handles_decline_error():
     print("  sweep handles decline error: ok")
 
 
+def test_sweep_normal_proposal_when_toggle_off():
+    """Normal-proposal PR merges when PR_AUTO_MERGE_SMALL_FIX_ONLY=0."""
+    proposal = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"Normal proposal toggle {_counter[0]}",
+        "Body",
+        small_fix=False,
+    )
+    _counter[0] += 1
+    pid = proposal["post_id"]
+    pr_number = 8000 + pid
+    db.link_pr_to_proposal(pr_number, pid, AGENTS["alpha"]["agent_id"])
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+
+    old = os.environ.get("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY")
+    try:
+        os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "0"
+        import importlib, config as _cfg
+        importlib.reload(_cfg)
+
+        log = _CallLog()
+        opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+        with _patch(
+            open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+            pr_has_label=_stub_pr_has_label(hold=False),
+            pr_checks=_stub_pr_checks("success"),
+            merge_pr=log.merge,
+            decline_pr=log.decline,
+        ):
+            _pr_vote_sweep()
+
+        assert ("merge", pr_number) in log.calls, \
+            f"merge_pr should be called for normal proposal when toggle=0: {log.calls}"
+    finally:
+        if old is None:
+            os.environ.pop("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", None)
+        else:
+            os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = old
+        importlib.reload(_cfg)
+    print("  sweep normal proposal toggle off: ok")
+
+
+def test_sweep_declines_normal_proposal_when_toggle_off():
+    """Normal-proposal PR declines when enough oppose and toggle=0."""
+    proposal = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"Normal decline toggle {_counter[0]}",
+        "Body",
+        small_fix=False,
+    )
+    _counter[0] += 1
+    pid = proposal["post_id"]
+    pr_number = 8000 + pid
+    db.link_pr_to_proposal(pr_number, pid, AGENTS["alpha"]["agent_id"])
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
+
+    old = os.environ.get("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY")
+    try:
+        os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "0"
+        import importlib, config as _cfg
+        importlib.reload(_cfg)
+
+        log = _CallLog()
+        opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+        with _patch(
+            open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+            pr_has_label=_stub_pr_has_label(hold=False),
+            pr_checks=_stub_pr_checks("success"),
+            merge_pr=log.merge,
+            decline_pr=log.decline,
+        ):
+            _pr_vote_sweep()
+
+        assert ("decline", pr_number) in log.calls, \
+            f"decline_pr should be called for normal proposal when toggle=0: {log.calls}"
+    finally:
+        if old is None:
+            os.environ.pop("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", None)
+        else:
+            os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = old
+        importlib.reload(_cfg)
+    print("  sweep declines normal proposal toggle off: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_sweep_merges_eligible()
@@ -323,4 +409,6 @@ if __name__ == "__main__":
     test_sweep_no_action_below_threshold()
     test_sweep_handles_merge_error()
     test_sweep_handles_decline_error()
+    test_sweep_normal_proposal_when_toggle_off()
+    test_sweep_declines_normal_proposal_when_toggle_off()
     print("\n== test_sweep: all passed ==")

@@ -263,16 +263,18 @@ def test_my_pr_vote():
 
 def test_min_karma_pr_vote():
     """Agents with less than MIN_KARMA_PR_VOTE are rejected."""
-    import config as _cfg
     pid, pr_number = _make_small_fix()
 
     # Give beta enough karma (needs 2 for the vote)
     c2 = db.create_comment(AGENTS["beta"]["token"], pid, "another comment")
     db.vote(AGENTS["gamma"]["token"], "comment", c2["comment_id"], 1)
 
-    old = _cfg.MIN_KARMA_PR_VOTE
+    old = os.environ.get("FORUM_MIN_KARMA_PR_VOTE")
     try:
-        _cfg.MIN_KARMA_PR_VOTE = 2
+        os.environ["FORUM_MIN_KARMA_PR_VOTE"] = "2"
+        import importlib
+        import config as _cfg
+        importlib.reload(_cfg)
         # "fresh" has 0 karma -> should be rejected
         err = expect_error(db.vote_on_pr, AGENTS["fresh"]["token"], pr_number, 1)
         assert "karma" in err.lower(), f"expected 'karma' in error, got: {err}"
@@ -280,7 +282,11 @@ def test_min_karma_pr_vote():
         result = db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
         assert result["up"] == 1
     finally:
-        _cfg.MIN_KARMA_PR_VOTE = old
+        if old is None:
+            os.environ.pop("FORUM_MIN_KARMA_PR_VOTE", None)
+        else:
+            os.environ["FORUM_MIN_KARMA_PR_VOTE"] = old
+        importlib.reload(_cfg)
     print("  min_karma_pr_vote: ok")
 
 
@@ -309,6 +315,57 @@ def test_proposal_author_notification():
     print("  proposal_author_notification: ok")
 
 
+def test_proposal_author_deduped_when_opener():
+    """No duplicate notification when proposal author == PR opener."""
+    from notifications import notifications as get_notifications
+    from notifications import mark_notifications_read
+
+    # alpha authors a proposal AND opens the PR
+    proposal = db.create_proposal(
+        AGENTS["alpha"]["token"], "Dedup opener test", "Body",
+    )
+    pid = proposal["post_id"]
+    pr_number = 9600 + pid
+    _link_manual(pid, pr_number, opener_name="alpha")
+
+    mark_notifications_read(AGENTS["alpha"]["token"])
+
+    # beta votes -> alpha should get ONE notification (as opener), not two
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    alpha_notifs = get_notifications(AGENTS["alpha"]["token"], unread_only=True)
+    pr_notifs = [n for n in alpha_notifs["notifications"] if n["kind"] == "pr"]
+    assert len(pr_notifs) == 1, \
+        f"expected exactly 1 notification (not {len(pr_notifs)}) when author == opener"
+    print("  proposal_author_deduped_when_opener: ok")
+
+
+def test_vote_change_renotifies():
+    """Changing a vote re-notifies the proposal author."""
+    from notifications import notifications as get_notifications
+    from notifications import mark_notifications_read
+
+    proposal = db.create_proposal(
+        AGENTS["gamma"]["token"], "Vote change renotify test", "Body",
+    )
+    pid = proposal["post_id"]
+    pr_number = 9700 + pid
+    _link_manual(pid, pr_number, opener_name="alpha")
+
+    mark_notifications_read(AGENTS["gamma"]["token"])
+
+    # beta votes +1 -> gamma notified
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    first = get_notifications(AGENTS["gamma"]["token"], unread_only=True)
+    first_count = first["unread_count"]
+
+    # beta changes to -1 -> gamma should be notified again
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
+    second = get_notifications(AGENTS["gamma"]["token"], unread_only=True)
+    assert second["unread_count"] > first_count, \
+        "vote change should generate a new notification for proposal author"
+    print("  vote_change_renotifies: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_pr_vote_schema()
@@ -327,4 +384,6 @@ if __name__ == "__main__":
     test_my_pr_vote()
     test_min_karma_pr_vote()
     test_proposal_author_notification()
+    test_proposal_author_deduped_when_opener()
+    test_vote_change_renotifies()
     print("\n== test_pr_vote: all passed ==")
