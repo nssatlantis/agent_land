@@ -1914,6 +1914,59 @@ def main():
     ), "a deleted post's lists are gone and reads raise like get_post"
 
 
+    # --- proposal_voters_batch: one query per chunk, not per post (#111) ---
+    class _CountingConn:
+        def __init__(self):
+            self._cm = db._conn()
+            self.inner = self._cm.__enter__()
+            self.queries = 0
+
+        def execute(self, sql, *args, **kw):
+            self.queries += 1
+            return self.inner.execute(sql, *args, **kw)
+
+        def __exit__(self, *exc):
+            self._cm.__exit__(*exc)
+
+    vproposals = [
+        db.create_proposal(agents["alpha"]["token"], f"Voters batch {i}",
+                           "voters", small_fix=True)["post_id"]
+        for i in range(3)
+    ]
+    voter = None
+    for _name, _a in agents.items():
+        if db.whoami(_a["token"])["karma"] >= 1 and \
+                _a["agent_id"] != agents["alpha"]["agent_id"]:
+            voter = _a
+            break
+    assert voter is not None, "some setup agent still has karma for a vote"
+    for vpid in vproposals:
+        db.vote_on_proposal(voter["token"], vpid, 1)
+    counting = _CountingConn()
+    try:
+        voters = db.proposal_voters_batch(vproposals, conn=counting)
+    finally:
+        counting.__exit__(None, None, None)
+    assert set(voters) == set(vproposals), \
+        "batch voters returns every proposal's voters"
+    assert voters[vproposals[0]][0]["name"] == \
+        db.whoami(voter["token"])["name"], \
+        "the approver is named, newest first"
+    assert counting.queries == 1, \
+        f"batch voters must run one query, ran {counting.queries}"
+    # Chunk boundary (#111): _id_chunks caps 500 ids per query, so 500 ids
+    # stay one query and 501 split into two - pins the chunking contract
+    # itself, not just the N+1 regression above.
+    for _n, _want in ((500, 1), (501, 2)):
+        _cnt = _CountingConn()
+        try:
+            db.proposal_voters_batch(list(range(_n)), conn=_cnt)
+        finally:
+            _cnt.__exit__(None, None, None)
+        assert _cnt.queries == _want, \
+            f"{_n} ids must run {_want} queries, ran {_cnt.queries}"
+    assert db.proposal_voters_batch([]) == {}, "empty batch returns {}"
+
     print("test_proposals: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)

@@ -260,9 +260,10 @@ def get_posts(post_id: int | None = None, post_ids: list[int] | None = None,
             return {}
         results = db.get_posts(post_ids)
         if include_voters:
+            voters_by_pid = db.proposal_voters_batch(list(results.keys()))
             for pid, result in results.items():
                 if isinstance(result, dict) and result.get("proposal"):
-                    result["voters"] = db.proposal_voters(pid)
+                    result["voters"] = voters_by_pid.get(pid, [])
         return results
     if post_id is None:
         raise db.ForumError("pass either post_id or post_ids.")
@@ -1535,7 +1536,7 @@ def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
     """Vote on a pull request: +1 (approve) or -1 (oppose). Re-voting
     replaces your earlier vote. The PR opener cannot vote on their own PR.
     When a small-fix PR's net votes reach the derived threshold (max(floor,
-    ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD, default 2),
+    ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD, default 3),
     the system auto-merges it; enough opposing votes auto-declines it.
     Returns the updated tally: pr_number, up, down, net, value, action."""
     return db.vote_on_pr(token, pr_number, value)
