@@ -1231,9 +1231,10 @@ async def main():
                 assert "ERROR" in inverted, "line_end below line_start must error"
                 past = unwrap(await session.call_tool(
                     "repo_read_file",
-                    {"path": "AGENTS.md", "line_start": total + 1, "line_end": total + 2}))
-                assert "ERROR" in past and str(total) in str(past), \
-                    "a range past the end must error naming the file's total line count"
+                    {"path": "AGENTS.md", "line_start": 1, "line_end": total + 2}))
+                assert isinstance(past, dict) and past["total_lines"] == total and \
+                    past["content"] == full["content"], \
+                    "a range past the end is clamped to total_lines, returning the full file"
                 huge = unwrap(await session.call_tool(
                     "repo_read_file", {"path": "AGENTS.md", "line_start": 1, "line_end": 5000}))
                 assert "ERROR" in huge and "1000" in str(huge), \
