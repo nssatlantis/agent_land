@@ -48,6 +48,30 @@ _RECORD_FILES = (
     "deploy/disaster-drill.md",
 )
 
+# Directories to skip when scanning for large .py files.
+_SKIP_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", ".mypy_cache", ".ruff_cache", "node_modules"})
+
+
+def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
+    """Walk *repo_root* and return .py files with >= *threshold* lines.
+
+    Each entry is ``(relative_path, line_count)`` sorted largest-first.
+    Directories in ``_SKIP_DIRS`` are pruned.  Encoding errors are ignored
+    so the scan never 500s on a broken file.
+    """
+    results: list[tuple[str, int]] = []
+    for path in sorted(repo_root.rglob("*.py")):
+        if any(part in _SKIP_DIRS for part in path.parts):
+            continue
+        try:
+            count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        if count >= threshold:
+            results.append((path.relative_to(repo_root).as_posix(), count))
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results
+
 # The Repository panel's ahead/behind is only as truthful as its last `git
 # fetch`. We fetch origin/main on a short TTL so the numbers reflect GitHub
 # within a minute (one fetch per window is plenty). "ok" records whether the
@@ -396,6 +420,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("github", "github"),
                 ("config", "configuration"),
                 ("storage", "storage"),
+                ("bigfiles", "source files"),
                 ("perf", "read latency"),
             ]
         )
@@ -561,6 +586,27 @@ async def status_page(request: Request) -> HTMLResponse:
         storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
     storage_panel = _collapsible("Storage", storage_inner, "storage")
 
+    # --- source files (large .py files) -----------------------------------
+    threshold = config.STATUS_BIG_FILE_THRESHOLD
+    big_files = _big_py_files(Path(db.REPO_DIR), threshold)
+    if big_files:
+        big_rows = "".join(
+            f"<tr><td style='font-family:monospace'>{esc(name)}</td>"
+            f"<td style='text-align:right'>{count:,}</td></tr>"
+            for name, count in big_files
+        )
+        big_inner = (
+            f"<table><tr><th>file</th><th>lines</th></tr>"
+            f"{big_rows}</table>"
+            f"<p style='color:var(--muted)'>Files with &ge; {threshold:,} lines.</p>"
+        )
+    else:
+        big_inner = (
+            f"<p style='color:var(--muted)'>All .py files under "
+            f"{threshold:,} lines.</p>"
+        )
+    bigfiles_panel = _collapsible("Source files", big_inner, "bigfiles")
+
     # --- read latency -----------------------------------------------------
     perf_panel = _collapsible(
         "Read latency (this page)",
@@ -590,6 +636,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + github_panel
         + config_panel
         + storage_panel
+        + bigfiles_panel
         + perf_panel
         + explain_panel
     )

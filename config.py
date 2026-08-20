@@ -201,6 +201,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # The full /status page always reads fresh: it is one request, not a
     # poll loop.
     "STATUS_CACHE_SECONDS": ("FORUM_STATUS_CACHE_SECONDS", 5, int),
+    # Viewer /status: minimum line count for a .py file to appear in the
+    # "Source files" panel. Higher values show only the biggest files.
+    "STATUS_BIG_FILE_THRESHOLD": ("FORUM_STATUS_BIG_FILE_THRESHOLD", 1500, int),
     # Tags (the karma-priced taxonomy; karma_spends is the only mover of
     # effective karma)
     # Creating a tag costs TAG_CREATE_COST karma and needs at least
