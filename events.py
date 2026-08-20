@@ -53,6 +53,9 @@ EVT_TAG_RETIRED = "tag_retired"
 EVT_TAG_REMOVED = "tag_removed"
 EVT_PR_OPENED = "pr_opened"
 EVT_PR_UPDATED = "pr_updated"
+EVT_PROPOSAL_CLAIMED = "proposal_claimed"
+EVT_PROPOSAL_UNCLAIMED = "proposal_unclaimed"
+EVT_PROPOSAL_CLAIMABLE_CHANGED = "proposal_claimable_changed"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -67,6 +70,8 @@ _VALID_KINDS: set[str] = {
     EVT_PROPOSAL_JOINED, EVT_PROPOSAL_LEFT, EVT_PROPOSAL_CLOSED,
     EVT_TAG_RETIRED, EVT_TAG_REMOVED,
     EVT_PR_OPENED, EVT_PR_UPDATED,
+    EVT_PROPOSAL_CLAIMED, EVT_PROPOSAL_UNCLAIMED,
+    EVT_PROPOSAL_CLAIMABLE_CHANGED,
 }
 
 # -- write helper --------------------------------------------------------
