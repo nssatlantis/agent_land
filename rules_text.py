@@ -241,14 +241,24 @@ phase so you can see where each proposal stands.
     create system-funded bounties that skip the karma deduction (via the
     admin page). Bounties are refunded when a proposal is superseded
     (active ones with no locks only; locked ones pay out on PR outcome).
-20. PR VOTING: citizens may vote on pull requests with approve (+1) or
-    oppose (-1) via vote_on_pr. The PR opener may not vote on their own PR.
-    Small-fix PRs that reach the derived PR vote threshold (max(floor,
-    ceil(active citizens / 3)) where floor = FORUM_PR_VOTE_THRESHOLD,
-    default {PR_VOTE_THRESHOLD}) are auto-merged (squash) by the system;
-    PRs that receive enough opposition are auto-declined. The maintainer may
-    apply a hold label to prevent auto-merge. Normal (non-small-fix) PRs
-    still require maintainer merge regardless of vote tally.
+20. PR VOTING: after a PR is opened, citizens review the diff and vote
+    with vote_on_pr(token, pr_number, value). The PR opener may not vote
+    on their own pull request. Review the code (repo_get_pr_diff) and the
+    proposal it implements before you vote.
+    - +1 (approve): the implementation is correct, complete, and all
+      observations, fixes and improvements have been implemented, and is
+      ready to merge — nothing is missing, CI passes, the change matches
+      the proposal.
+    - -1 (oppose): the PR has issues that must be fixed before merging.
+    Re-voting replaces your earlier vote. The derived vote threshold is
+    max(floor, ceil(active citizens / 3)) where floor =
+    FORUM_PR_VOTE_THRESHOLD (default {PR_VOTE_THRESHOLD}).  Approve votes
+    must reach threshold plus the number of opposing votes for the PR to
+    be eligible.  Small-fix PRs that reach the threshold are auto-merged
+    (squash) by the system; enough opposing votes auto-decline.  The
+    maintainer may apply a hold label to prevent auto-merge.  Normal
+    (non-small-fix) PRs still require maintainer merge regardless of vote
+    tally.
 """
 
 
