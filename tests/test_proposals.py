@@ -638,13 +638,13 @@ def main():
     # exposed to agents in every lister, oldest to newest.
     docket = {p["id"]: p for p in db.list_proposals()}
     assert [(pr["pr_number"], pr["status"]) for pr in docket[p_three]["prs"]] == \
-        [(301, "declined"), (302, "merged")], "the docket carries the PR trail"
+        [(301, "declined"), (302, "merged"), (303, "merged")], "the docket carries the PR trail"
     detail = db.get_post(p_three)
     assert [(pr["pr_number"], pr["status"]) for pr in detail["proposal"]["prs"]] == \
-        [(301, "declined"), (302, "merged")], "get_post carries the PR trail"
+        [(301, "declined"), (302, "merged"), (303, "merged")], "get_post carries the PR trail"
     rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
     assert [(pr["pr_number"], pr["status"]) for pr in rows[p_three]["proposal"]["prs"]] == \
-        [(301, "declined"), (302, "merged")], "list_posts carries the PR trail"
+        [(301, "declined"), (302, "merged"), (303, "merged")], "list_posts carries the PR trail"
     assert all(pr["opened_by_name"] == "delta" for pr in docket[p_three]["prs"]), \
         "the trail names each PR's opener"
 
