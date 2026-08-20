@@ -495,6 +495,14 @@ def _kind_badge(p: dict) -> str:
         return '<span class="kind-badge kind-smallfix">small fix</span> '
     return '<span class="kind-badge kind-proposal">proposal</span> '
 
+def _tag_text_color(hex_color: str) -> str:
+    """Contrast-safe text color for a tag chip based on relative luminance."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return "#fff" if luminance < 128 else "#1a202c"
+
+
 def _tag_chips(p: dict) -> str:
     """A post's tags as read-only pills, each colored by its own
     allowlisted #RRGGBB (validated at creation, so safe to inline; the
@@ -503,14 +511,21 @@ def _tag_chips(p: dict) -> str:
     tags = p.get("tags") or []
     if not tags:
         return ""
-    chips = "".join(
-        f'<a class="tag-chip" href="/posts?tag={esc(t["name"])}" '
-        f'style="background:{esc(t.get("color") or "#94a3b8")}22;'
-        f'border:1px solid {esc(t.get("color") or "#94a3b8")}">'
-        f'{esc(t["name"])}</a>'
-        for t in tags
-    )
-    return f'<div class="tags-row">{chips}</div>'
+    chips = []
+    for t in tags:
+        color = esc(t.get("color") or "#94a3b8")
+        text_color = _tag_text_color(t.get("color") or "#94a3b8")
+        title_attr = (
+            f' title="{esc(t.get("description") or "")}"' if t.get("description") else ""
+        )
+        chips.append(
+            f'<a class="tag-chip" href="/posts?tag={esc(t["name"])}" '
+            f'style="background:{color}22;'
+            f'border:1px solid {color};'
+            f'color:{text_color}"{title_attr}>'
+            f'{esc(t["name"])}</a>'
+        )
+    return f'<div class="tags-row">{" ".join(chips)}</div>'
 
 def _post_card(p: dict, snippet: bool = False) -> str:
     """One post card (title + stat cluster + meta + optional body preview or
