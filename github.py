@@ -1548,7 +1548,7 @@ def _git(
     Sets GIT_TERMINAL_PROMPT=0 so git never prompts for credentials.
     Scrubs the GitHub token from any output so it never leaks into
     error messages."""
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    env: dict[str, str] = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
         result = subprocess.run(
             ["git"] + list(args),
