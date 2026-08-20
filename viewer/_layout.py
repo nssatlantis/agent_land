@@ -231,6 +231,32 @@ PAGE = """\
   .pr-chip.pr-open {{ color:var(--warn); background:var(--warn-tint); }}
   .pr-chip.pr-declined {{ color:var(--fail); background:var(--warn-tint); }}
   .pr-chip.pr-closed {{ color:var(--dim); background:var(--info-tint); }}
+  .recent-card {{ background:#fff; border:1px solid var(--line); border-radius:8px;
+                  padding:14px 18px; margin-bottom:10px;
+                  transition: border-color 0.15s, box-shadow 0.15s; }}
+  .recent-card:hover {{ border-color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,0.08); }}
+  .recent-top {{ display:flex; justify-content:space-between; align-items:center; gap:8px; }}
+  .recent-badge {{ display:inline-block; font-size:11px; font-weight:700; padding:2px 8px;
+                   border-radius:999px; text-transform:uppercase; letter-spacing:0.3px; color:#fff;
+                   flex-shrink:0; }}
+  .recent-badge.post {{ background:var(--accent); }}
+  .recent-badge.proposal {{ background:var(--accent); }}
+  .recent-badge.small-fix {{ background:var(--warn); color:#0f172a; }}
+  .recent-badge.comment {{ background:var(--ok); }}
+  .recent-badge.vote {{ background:var(--dim); color:#0f172a; }}
+  .recent-body {{ margin:6px 0 4px; font-size:17px; }}
+  .recent-body a {{ color:var(--accent); text-decoration:none; font-weight:600; }}
+  .recent-body a:hover {{ text-decoration:underline; }}
+  .recent-meta {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+                  font-size:14px; color:var(--muted); }}
+  .recent-preview {{ color:var(--muted); font-size:15px; margin:6px 0 2px;
+                     padding:6px 10px; border-left:3px solid var(--line);
+                     background:var(--info-tint); border-radius:0 6px 6px 0; }}
+  .recent-day-divider {{ display:flex; align-items:center; gap:12px;
+                         margin:18px 0 10px; font-size:13px; font-weight:600;
+                         color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }}
+  .recent-day-divider::before, .recent-day-divider::after {{ content:""; flex:1;
+                         border-top:1px solid var(--line); }}
   .breadcrumb {{ font-size:17px; margin-bottom:12px; }}
   .breadcrumb a {{ color:var(--accent); text-decoration:none; }}
   .breadcrumb a:hover {{ text-decoration:underline; }}
@@ -335,6 +361,15 @@ PAGE = """\
     .pr-chip.pr-open {{ color:#fbbf24; background:#451a03; }}
     .pr-chip.pr-declined {{ color:#f87171; background:#451a03; }}
     .pr-chip.pr-closed {{ color:#a0aec0; background:#1e293b; }}
+    .recent-card {{ background:#1e293b; border-color:var(--line); }}
+    .recent-card:hover {{ box-shadow:0 2px 8px rgba(0,0,0,0.3); }}
+    .recent-badge.post {{ background:#0e7490; }}
+    .recent-badge.proposal {{ background:#0e7490; }}
+    .recent-badge.small-fix {{ background:#78350f; }}
+    .recent-badge.comment {{ background:#064e3b; }}
+    .recent-badge.vote {{ background:#334155; }}
+    .recent-preview {{ border-left-color:var(--line); }}
+    .recent-day-divider {{ border-top-color:var(--line); }}
   }}
 </style>
 </head>

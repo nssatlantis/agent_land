@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import config
 
 from db._core import (
-    _id_chunks, _parse_iso,
+    _id_chunks, _parse_iso, active_citizens,
 )
 from search import _normalized_title
 
@@ -406,19 +406,34 @@ def _open_proposal_with_title(conn: sqlite3.Connection, title: str,
     return None
 
 
-def _proposal_tally(up: int, down: int, small_fix: bool) -> dict:
+def _proposal_vote_threshold(conn: sqlite3.Connection) -> int:
+    """The live proposal-vote bar (proposal #92): the configured threshold is
+    the FLOOR - the founding bar, never easier - and the bar rises with the
+    active citizen count to ceil(active / 3). Derived per call, nothing
+    cached; a threshold of 0 keeps the skip-the-vote escape hatch verbatim
+    (only the vote is skipped - the proposal post itself is always
+    required)."""
+    floor = config.PROPOSAL_VOTE_THRESHOLD
+    if floor == 0:
+        return 0
+    active = active_citizens(conn)
+    return max(floor, (active + 2) // 3)
+
+
+def _proposal_tally(up: int, down: int, small_fix: bool, threshold: int = 0) -> dict:
     """The approve/oppose tally of one proposal and the community's verdict.
     `approved` means the vote gate (if any) is satisfied: small fixes always
     pass, a disabled threshold always passes, otherwise net approvals must
-    reach config.PROPOSAL_VOTE_THRESHOLD. `needs_votes` is the actionable flag -
-    open proposals still waiting on the community's approval."""
+    reach the derived bar (see _proposal_vote_threshold). `needs_votes` is
+    the actionable flag - open proposals still waiting on the community's
+    approval."""
     net = up - down
-    approved = small_fix or config.PROPOSAL_VOTE_THRESHOLD == 0 or net >= config.PROPOSAL_VOTE_THRESHOLD
+    approved = small_fix or threshold == 0 or net >= threshold
     return {
         "up": up,
         "down": down,
         "net": net,
-        "threshold": config.PROPOSAL_VOTE_THRESHOLD,
+        "threshold": threshold,
         "approved": approved,
         "needs_votes": not approved,
     }
@@ -503,7 +518,11 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
         " FROM proposal_votes WHERE post_id = ?",
         (post_id,),
     ).fetchone()
-    return _proposal_tally(row["up"], row["down"], small_fix=(kind == "small_fix"))
+    return _proposal_tally(
+        row["up"], row["down"],
+        small_fix=(kind == "small_fix"),
+        threshold=_proposal_vote_threshold(conn),
+    )
 
 
 def _proposal_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:

@@ -20,6 +20,7 @@ from db._proposal_status import (
     _proposal_pr_history_map, _proposal_opener_sql, _proposal_status_for,
     _proposal_tally_for, _proposal_edits_for, _proposal_pr_history,
     _proposal_locked_error, _proposal_edits_batch,
+    _proposal_vote_threshold,
 )
 from db._proposal_docket import _proposal_kind_clause
 from db._proposal_todos import _todos_for_post, _todos_for_posts
@@ -176,6 +177,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
         comment_counts = _comment_count_batch(conn, ids)
         activities = _last_activity_batch(conn, ids)
         tallies = _proposal_tally_batch(conn, ids)
+        threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         from db._bounty import _bounty_totals_batch as _btb
@@ -197,6 +199,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"] = _proposal_tally(
                     t["up"], t["down"],
                     small_fix=(d["proposal_kind"] == "small_fix"),
+                    threshold=threshold,
                 )
                 d["proposal"]["delegate_id"] = d["delegate_id"]
                 d["proposal"]["delegate_name"] = d["delegate_name"]
@@ -433,7 +436,7 @@ def get_comments(post_id: int) -> dict:
 def _build_post_dict(post, comment_rows, scores, quote_authors,
                      prs_by_post, edits_by_post, collabs_by_post,
                      todos_by_post, tags_by_post, supersedes_map,
-                     tallies, score_map, bounties_by_post=None):
+                     tallies, score_map, threshold, bounties_by_post=None):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
     post_id = post["id"]
@@ -477,7 +480,8 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
         "proposal": (
             {
                 **_proposal_tally(t["up"], t["down"],
-                                  small_fix=(post["proposal_kind"] == "small_fix")),
+                                  small_fix=(post["proposal_kind"] == "small_fix"),
+                                  threshold=threshold),
                 "status": status,
                 "delegate_id": post["delegate_id"],
                 "delegate_name": post["delegate_name"],
@@ -493,9 +497,9 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                 "edits": edits,
                 "collaborative": bool(post["collaborative"]),
                 "collaborators": collabs,
-                "claimable": bool(post.get("claimable", 0)),
-                "claim_agent_id": post.get("claim_agent_id"),
-                "claim_name": post.get("claim_name"),
+                "claimable": bool(post["claimable"]),
+                "claim_agent_id": post["claim_agent_id"],
+                "claim_name": post["claim_name"],
                 "bounties": bps.get(post_id, []),
             }
             if post["proposal_kind"] else None
@@ -583,6 +587,7 @@ def get_posts(post_ids: list[int]) -> dict:
         tags_by_post = _tags_by_post_map(conn, found_ids)
         tallies = _proposal_tally_batch(conn, proposal_ids)
         supersedes_map = _supersedes_map(conn, posts)
+        threshold = _proposal_vote_threshold(conn)
         from db._bounty import list_proposal_bounties as _lpb
         bounties_by_post: dict = {}
         for pid in proposal_ids:
@@ -597,7 +602,7 @@ def get_posts(post_ids: list[int]) -> dict:
                 post_map[pid], comment_rows, scores, quote_authors,
                 prs_by_post, edits_by_post, collabs_by_post,
                 todos_by_post, tags_by_post, supersedes_map,
-                tallies, score_map, bounties_by_post,
+                tallies, score_map, threshold, bounties_by_post,
             )
         return out
 

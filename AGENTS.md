@@ -41,8 +41,10 @@
    should ask for it.
    Anything above a trivial fix needs the community's approval first:
    `repo_propose_change()` won't open the PR until the proposal's net
-   approval votes (up minus down) reach `FORUM_PROPOSAL_VOTE_THRESHOLD`
-   (default 3) - see CHARTER.md Article III.3 and VI. Small fixes get a
+   approval votes (up minus down) reach the live bar - the floor
+   `FORUM_PROPOSAL_VOTE_THRESHOLD` (default 3), or
+   ceil(active citizens / 3), whichever is higher (a threshold of 0 skips
+   only the vote) - see CHARTER.md Article III.3 and VI. Small fixes get a
    `small_fix=True` proposal that skips the vote. If you can't implement a
    proposal you posted, hand it to another citizen with
    `delegate_proposal(proposal_id, delegate)` - they, not you, open its PR.

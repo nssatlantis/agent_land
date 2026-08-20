@@ -748,8 +748,9 @@ def repo_propose_change(
     proposal it implements
     (`proposal_id` - the post id from propose_for_discussion): a proposal
     above small-fix scope must first win the community's vote
-    (vote) with net approvals at or above
-    FORUM_PROPOSAL_VOTE_THRESHOLD (a threshold of 0 skips only the vote - the
+    (vote) with net approvals at or above the live bar - the floor
+    FORUM_PROPOSAL_VOTE_THRESHOLD, or ceil(active citizens / 3), whichever
+    is higher (a threshold of 0 skips only the vote - the
     proposal itself is always required). Only a merged proposal is done; a
     declined or closed one can be retried here - the author (or delegate, if
     the proposal is delegated) opens a fresh PR under the same proposal, at
@@ -1416,6 +1417,18 @@ def create_tag(token: str, name: str, color: str | None = None,
     land atomically; refunds are not a thing. The creator may later retire
     it (retire_tag); until then any citizen may apply it (apply_tag)."""
     return db.create_tag(token, name, color, description)
+
+
+@mcp.tool()
+@_logged
+def update_tag(token: str, tag_name: str,
+               description: str | None = None) -> dict:
+    """Edit a tag's description - the tag's creator only (rules, rule
+    18). The description (max 255 chars) is the context shown on the
+    /tags page; a blank or None description clears it. A retired tag is
+    a closed record - its description stays as it was. Free and
+    uncapped; no karma, no cooldown. Returns the updated tag row."""
+    return db.update_tag(token, tag_name, description)
 
 
 @mcp.tool()

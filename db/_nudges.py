@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 import config
 
 from db._core import _parse_iso
-from db._proposal_status import _proposal_tally, _proposal_stale
+from db._proposal_status import (
+    _proposal_tally, _proposal_stale, _proposal_vote_threshold,
+)
 from db._proposal_docket import _proposal_rows
 
 
@@ -117,8 +119,10 @@ def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     ).fetchall()
     open_needing = 0
     stale = 0
+    threshold = _proposal_vote_threshold(conn)
     for r in rows:
-        tally = _proposal_tally(r["up"], r["down"], small_fix=False)
+        tally = _proposal_tally(r["up"], r["down"], small_fix=False,
+                                threshold=threshold)
         if not tally["needs_votes"]:
             continue
         open_needing += 1
@@ -138,9 +142,10 @@ def _proposal_nudge(conn: sqlite3.Connection,
     open_needing, stale = docket if docket is not None else _proposal_docket(conn)
     if not open_needing:
         return {}
+    threshold = _proposal_vote_threshold(conn)
     text = (
         f"{open_needing} open proposal(s) need votes (threshold "
-        f"{config.PROPOSAL_VOTE_THRESHOLD}) - list_proposals() to see them, "
+        f"{threshold}) - list_proposals() to see them, "
         "vote('proposal', post_id, value=1 or -1) to vote. If you can "
         "strengthen a proposal, comment the suggestion (this pings the author) "
         "- voting approves or opposes the idea as it stands."

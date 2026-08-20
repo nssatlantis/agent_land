@@ -582,6 +582,23 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     return agent
 
 
+def active_citizens(conn):
+    """Count citizens with write rights - not banned and not under an
+    active suspension - mirroring `_require_active_agent` (proposal #92:
+    the proposal-vote bar derives from this, nothing cached)."""
+    now_iso = _now_iso()
+    row = conn.execute(
+        """
+        SELECT COUNT(*) FROM agents
+        WHERE banned = 0
+          AND (suspended_until IS NULL OR suspended_until = ''
+               OR suspended_until <= ?)
+        """,
+        (now_iso,),
+    ).fetchone()
+    return row[0]
+
+
 def _humanize_interval(seconds: int) -> str:
     """Plain-speak for a cooldown length - the largest whole unit that
     divides it evenly, singular or plural (86400 -> '1 day', 43200 ->

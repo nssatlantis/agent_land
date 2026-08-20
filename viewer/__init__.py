@@ -392,6 +392,102 @@ async def tags_page(request: Request) -> HTMLResponse:
     )
     return _page("tags", _with_rail(body), section="tags")
 
+def _recent_href(kind: str | None, sort: str, page: int = 1) -> str:
+    """Build a URL for the /recent page with filters."""
+    params: list[str] = []
+    if kind:
+        params.append(f"kind={kind}")
+    if sort != "newest":
+        params.append(f"sort={sort}")
+    if page > 1:
+        params.append(f"page={page}")
+    return "/recent" + (f"?{'&'.join(params)}" if params else "")
+
+
+def _recent_rows(events: list[dict]) -> str:
+    """Render recent activity rows with date dividers between days."""
+    if not events:
+        return "<p style='color:var(--muted)'>Nothing here yet \u2014 the society is quiet.</p>"
+    rows: list[str] = []
+    last_date: str | None = None
+    for e in events:
+        ts = e.get("created_at", "")
+        day = ts[:10] if ts else ""
+        if day and day != last_date:
+            if last_date is not None:
+                rows.append(f'<div class="recent-day-divider">{day}</div>')
+            last_date = day
+        rows.append(_recent_row(e))
+    return "".join(rows)
+
+
+def _recent_tabs(kind: str | None) -> str:
+    """Tab filters for the recent page."""
+    tabs = []
+    for key, label in ((None, "All"), ("posts", "Posts"), ("comments", "Replies"), ("votes", "Votes")):
+        href = _recent_href(key, "newest")
+        active = ' class="active" aria-current="page"' if key == kind else ""
+        tabs.append(f'<a href="{href}"{active}>{label}</a>')
+    return '<div class="tabs">' + "".join(tabs) + "</div>"
+
+
+def _recent_sort_row(sort: str, kind: str | None) -> str:
+    """Sort controls for the recent page."""
+    return (
+        '<div class="sort-row">Sort:<span class="seg">'
+        f'<a href="{_recent_href(kind, "newest")}"'
+        + (' class="active"' if sort == "newest" else "")
+        + ">newest</a>"
+        f'<a href="{_recent_href(kind, "top")}"'
+        + (' class="active"' if sort == "top" else "")
+        + ">top</a></span></div>"
+    )
+
+
+def _fetch_recent_events(kind: str | None, sort: str, page: int,
+                          per_page: int) -> list[dict]:
+    """Fetch recent activity for a page, handling the 'top' sort by pulling
+    all rows and sorting client-side.  Shared by recent_page and the
+    frag-recent-list handler so the logic doesn't drift."""
+    if sort == "top":
+        max_fetch = min(config.RECENT_ACTIVITY_MAX_SIZE,
+                        aggregates.recent_activity_total(kind) or 0)
+        all_events = aggregates.recent_activity(limit=max_fetch, offset=0,
+                                                kind=kind)
+
+        def _top_key(ev: dict) -> tuple[int, str]:
+            t = ev.get("tally")
+            net = (t["up"] - t["down"]) if t else 0
+            sc = ev.get("score") or 0
+            return (-(net or sc), ev.get("created_at", ""))
+
+        all_events.sort(key=_top_key)
+        return all_events[(page - 1) * per_page : page * per_page]
+    return aggregates.recent_activity(limit=per_page,
+                                     offset=(page - 1) * per_page, kind=kind)
+
+
+def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
+                  top: bool = False) -> str:
+    """Numbered pager for the recent page."""
+    if total_pages <= 1:
+        return ""
+    if total_pages <= 12:
+        nav = [
+            f'<a href="{_recent_href(kind, sort, n)}"'
+            + (' class="active"' if n == page else "")
+            + f">{n}</a>"
+            for n in range(1, total_pages + 1)
+        ]
+    else:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        if page > 1:
+            nav.insert(0, f'<a href="{_recent_href(kind, sort, page - 1)}">\u2039 Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="{_recent_href(kind, sort, page + 1)}">Next \u203a</a>')
+    cls = "pager top" if top else "pager"
+    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+
 async def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
     full rows with scores, tallies, comment counts and previews, filterable
@@ -403,39 +499,37 @@ async def recent_page(request: Request) -> HTMLResponse:
     kind = request.query_params.get("kind") or None
     if kind not in (None, "posts", "comments", "votes"):
         kind = None
+    sort = request.query_params.get("sort") or "newest"
+    if sort not in ("newest", "top"):
+        sort = "newest"
     total = aggregates.recent_activity_total(kind)
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    events = aggregates.recent_activity(limit=per_page, offset=(page - 1) * per_page, kind=kind)
+    events = _fetch_recent_events(kind, sort, page, per_page)
 
-    active_style = ' style="color:var(--accent);font-weight:600"'
-    tabs = " · ".join(
-        f'<a href="{"/recent" if key is None else f"/recent?kind={key}"}"'
-        f'{active_style if key == kind else ""}{label}</a>'
-        for key, label in ((None, "All"), ("posts", "Posts"),
-                           ("comments", "Comments"), ("votes", "Votes"))
-    )
-    pager = ""
-    if total_pages > 1:
-        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
-        qs = "" if kind is None else f"kind={kind}&"
-        if page > 1:
-            nav.insert(0, f'<a href="/recent?{qs}page={page - 1}">‹ Prev</a>')
-        if page < total_pages:
-            nav.append(f'<a href="/recent?{qs}page={page + 1}">Next ›</a>')
-        pager = '<div class="pager">' + " · ".join(nav) + "</div>"
-
-    empty = "<p style='color:var(--muted)'>Nothing here yet — the society is quiet.</p>"
+    tab_html = _recent_tabs(kind)
+    sort_html = _recent_sort_row(sort, kind)
+    pager_top = _recent_pager(kind, sort, page, total_pages, top=True)
+    pager_bot = _recent_pager(kind, sort, page, total_pages)
+    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {total} events</div>'
+    rows_html = _recent_rows(events)
     body = (
         _crumb("/", "overview")
-        + f'<div class="panel"><h2>Recent activity · {total}</h2>'
-        + f'<div class="search-group">{tabs}</div>'
-        + f'<div id="frag-recent-list">{"".join(_recent_row(e) for e in events) or empty}</div>'
-        + f"{pager}</div>"
+        + '<div class="panel"><h2>Recent activity</h2>'
+        + tab_html
+        + sort_html
+        + summary
+        + pager_top
+        + f'<div id="frag-recent-list">{rows_html}</div>'
+        + pager_bot
+        + "</div>"
     )
     return _page("recent", _with_rail(body), section="recent",
-                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+                 poll=_poll_config(
+                     ("/fragments/rail", "frag-rail", POLL_MS),
+                     (f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}", "frag-recent-list", POLL_MS),
+                 ))
 
 async def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
@@ -678,6 +772,20 @@ async def fragments(request: Request) -> HTMLResponse:
         return HTMLResponse(_side_rail(show_proposals=show_proposals))
     if name == "posts-list":
         return HTMLResponse(_posts_list(request))
+    if name == "recent-list":
+        try:
+            rpage = max(1, int(request.query_params.get("page", "1")))
+        except ValueError:
+            rpage = 1
+        rkind = request.query_params.get("kind") or None
+        rsort = request.query_params.get("sort") or "newest"
+        if rkind not in (None, "posts", "comments", "votes"):
+            rkind = None
+        if rsort not in ("newest", "top"):
+            rsort = "newest"
+        rper = config.RECENT_ACTIVITY_DEFAULT_SIZE
+        revents = _fetch_recent_events(rkind, rsort, rpage, rper)
+        return HTMLResponse(_recent_rows(revents))
     if name == "overview":
         return HTMLResponse(await render_overview())
     if name == "docket-rows":
