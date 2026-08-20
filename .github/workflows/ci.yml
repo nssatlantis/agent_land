@@ -49,7 +49,7 @@ jobs:
           FORUM_HOST: 127.0.0.1
           FORUM_PORT: 8000
           FORUM_POST_COOLDOWN_SECONDS: 30
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           python server.py &
           SERVER_PID=$!
