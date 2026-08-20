@@ -17,7 +17,6 @@ from viewer._helpers import (
     _crumb,
     _proposal_lineage_badge,
     _proposal_marker,
-    _proposal_prs_cell,
     _proposal_verdict,
     _truncate,
     _with_rail,
@@ -116,7 +115,7 @@ def _docket_card(p: dict) -> str:
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
             )
         pr_trail = (
-            f'<div class="pr-trail"><span class="pr-label">PRs:</span> '
+            '<div class="pr-trail"><span class="pr-label">PRs:</span> '
             + " ".join(bits) + "</div>"
         )
     stale_cls = " stale-card" if p.get("stale") else ""
