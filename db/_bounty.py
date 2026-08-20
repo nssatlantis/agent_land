@@ -239,7 +239,7 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
         new_ek = effective_karma(conn, agent["id"])
     return {
         "bounty_id": bounty_id,
-        "amount_refunded": bounty["per_pr"] * (
+        "amount_released": bounty["per_pr"] * (
             bounty["max_prs"] - bounty["paid_count"] - bounty["locked_count"]
         ),
         "new_effective_karma": new_ek,

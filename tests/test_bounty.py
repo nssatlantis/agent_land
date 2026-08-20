@@ -330,6 +330,308 @@ def main():
     )
     print("  multi-PR bounty independence: ok")
 
+    # --- poller integration: full financial state after merge/decline -------
+    # Simulate the poller's path: stake → lock → poller detects merge/decline
+    # and calls pay/refund.  Verify the full financial state at each step.
+    poll_pid = db.create_proposal(
+        agents["beta"]["token"], "Poller Test", "Body"
+    )["post_id"]
+    for name in ("alpha", "gamma", "delta"):
+        db.vote_on_proposal(agents[name]["token"], poll_pid, 1)
+
+    # Stake a bounty (per_pr=3, max_prs=2, total=6)
+    poll_result = db.stake_bounty(
+        agents["alpha"]["token"], poll_pid, per_pr=3, max_prs=2,
+    )
+    poll_bounty_id = poll_result["bounty_id"]
+    ek_alpha_before = ek(agents["alpha"]["agent_id"])
+
+    # Lock for PR 9100 — creates karma_spends under staker
+    db.lock_bounties_for_pr(
+        None, poll_pid, 9100, agents["gamma"]["agent_id"],
+    )
+    ek_after_lock = ek(agents["alpha"]["agent_id"])
+    assert ek_after_lock == ek_alpha_before - 3, (
+        f"lock should deduct per_pr=3 from staker, got {ek_after_lock}"
+        f" (before {ek_alpha_before})"
+    )
+
+    # Verify karma_spends row exists for this lock
+    with db._conn() as conn:
+        spend = conn.execute(
+            "SELECT id, amount FROM karma_spends"
+            " WHERE kind = 'bounty_lock' AND ref_id = ?",
+            (poll_bounty_id,),
+        ).fetchone()
+    assert spend is not None, "karma_spends row must exist after lock"
+    assert spend["amount"] == 3
+
+    # --- poller merge path: pay_bounty_rewards -----------------------------
+    paid = db.pay_bounty_rewards(None, 9100)
+    assert paid == 1, "should pay 1 bounty"
+    with db._conn() as conn:
+        # Lock status flipped to paid
+        lk = conn.execute(
+            "SELECT status FROM bounty_locks WHERE pr_number = 9100"
+        ).fetchone()
+        assert lk["status"] == "paid"
+        # Karma_spend persists (permanent debit on merge)
+        spend_after = conn.execute(
+            "SELECT id FROM karma_spends WHERE id = ?", (spend["id"],)
+        ).fetchone()
+        assert spend_after is not None, (
+            "karma_spends must persist after merge (permanent debit)"
+        )
+        # Bounty reward credited to PR opener (gamma)
+        reward = conn.execute(
+            "SELECT amount FROM bounty_rewards WHERE pr_number = 9100"
+        ).fetchone()
+        assert reward is not None and reward["amount"] == 3
+        # Bounty paid_count incremented
+        bstat = conn.execute(
+            "SELECT paid_count, locked_count FROM proposal_bounties"
+            " WHERE id = ?", (poll_bounty_id,),
+        ).fetchone()
+        assert bstat["paid_count"] == 1 and bstat["locked_count"] == 0
+    # Staker's ek unchanged by pay (spend already deducted at lock)
+    ek_alpha_after_pay = ek(agents["alpha"]["agent_id"])
+    assert ek_alpha_after_pay == ek_after_lock, (
+        "pay should not change staker ek (spend persists)"
+    )
+    print("  poller merge path: ok")
+
+    # --- poller decline path: refund_bounty_locks --------------------------
+    # Lock for PR 9101, then refund
+    db.lock_bounties_for_pr(
+        None, poll_pid, 9101, agents["gamma"]["agent_id"],
+    )
+    ek_before_refund = ek(agents["alpha"]["agent_id"])
+    assert ek_before_refund == ek_after_lock - 3, (
+        "2nd lock should deduct another per_pr=3"
+    )
+    refunded = db.refund_bounty_locks(None, 9101)
+    assert refunded == 1
+    with db._conn() as conn:
+        lk2 = conn.execute(
+            "SELECT status FROM bounty_locks WHERE pr_number = 9101"
+        ).fetchone()
+        assert lk2["status"] == "refunded"
+        # Karma_spend deleted on refund (karma restored); the paid lock's
+        # spend (PR 9100) persists as a permanent debit.
+        spend2 = conn.execute(
+            "SELECT id FROM karma_spends"
+            " WHERE kind = 'bounty_lock' AND ref_id = ?",
+            (poll_bounty_id,),
+        ).fetchall()
+        assert len(spend2) == 1, (
+            "only the paid lock's spend should remain after refund"
+        )
+    ek_after_refund = ek(agents["alpha"]["agent_id"])
+    assert ek_after_refund == ek_before_refund + 3, (
+        "refund should restore per_pr=3 to staker"
+    )
+    # Verify bounty state: 1 paid, 1 refunded, 0 locked
+    with db._conn() as conn:
+        bfinal = conn.execute(
+            "SELECT paid_count, locked_count, status"
+            " FROM proposal_bounties WHERE id = ?",
+            (poll_bounty_id,),
+        ).fetchone()
+        assert bfinal["paid_count"] == 1
+        assert bfinal["locked_count"] == 0
+        assert bfinal["status"] == "active"
+    print("  poller decline path: ok")
+
+    # --- amount_released naming (withdraw_bounty) --------------------------
+    # Stake a fresh bounty, withdraw it, verify amount_released field
+    wd_result = db.stake_bounty(
+        agents["alpha"]["token"], poll_pid, per_pr=1, max_prs=2,
+    )
+    wd_bounty_id = wd_result["bounty_id"]
+    withdrawn = db.withdraw_bounty(agents["alpha"]["token"], wd_bounty_id)
+    assert "amount_released" in withdrawn, (
+        "withdraw_bounty should return amount_released, not amount_refunded"
+    )
+    assert "amount_refunded" not in withdrawn, (
+        "old field name amount_refunded should not exist"
+    )
+    assert withdrawn["amount_released"] == 1 * 2, (
+        "amount_released = per_pr * max_prs when nothing locked"
+    )
+    print("  amount_released naming: ok")
+
+    # --- poller integration: simulate exact poller transaction patterns ---
+    import db._bounty as bounty_mod
+
+    # (a) Race idempotency: direct lock → poller fallback lock → poller pay
+    #     within one connection, matching poller.py lines 71-87.
+    race_pid = db.create_proposal(
+        agents["beta"]["token"], "Race Test", "Body"
+    )["post_id"]
+    for name in ("alpha", "gamma", "delta"):
+        db.vote_on_proposal(agents[name]["token"], race_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], race_pid, per_pr=2, max_prs=1)
+    ek_alpha_pre = ek(agents["alpha"]["agent_id"])
+
+    # Direct call (repo_propose_change path)
+    db.lock_bounties_for_pr(None, race_pid, 9300, agents["gamma"]["agent_id"])
+    ek_after_direct = ek(agents["alpha"]["agent_id"])
+    assert ek_after_direct == ek_alpha_pre - 2
+
+    # Poller fallback lock (same conn) — should be idempotent
+    with db._conn() as conn:
+        bounty_mod.lock_bounties_for_pr(
+            conn, race_pid, 9300, agents["gamma"]["agent_id"],
+        )
+        # No double charge
+        assert ek(agents["alpha"]["agent_id"]) == ek_after_direct
+        # Then pay — exactly 1 bounty paid
+        paid = bounty_mod.pay_bounty_rewards(conn, 9300)
+        assert paid == 1
+    with db._conn() as conn:
+        lk = conn.execute(
+            "SELECT status FROM bounty_locks WHERE pr_number = 9300"
+        ).fetchone()
+        assert lk["status"] == "paid"
+        # Exactly one karma_spend for this bounty (no duplicates from idempotent lock)
+        spends = conn.execute(
+            "SELECT id FROM karma_spends"
+            " WHERE kind = 'bounty_lock' AND ref_id = ?",
+            (conn.execute(
+                "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+                (race_pid,),
+            ).fetchone()["id"],),
+        ).fetchall()
+        assert len(spends) == 1, (
+            f"expected 1 spend after idempotent lock, got {len(spends)}"
+        )
+    print("  poller race idempotency: ok")
+
+    # (b) Full poller merge (no prior lock): poller calls lock + pay in same
+    #     conn, as it would for a PR whose direct lock was missed entirely.
+    merge_pid = db.create_proposal(
+        agents["beta"]["token"], "Poller Merge", "Body"
+    )["post_id"]
+    for name in ("alpha", "gamma", "delta"):
+        db.vote_on_proposal(agents[name]["token"], merge_pid, 1)
+    db.stake_bounty(agents["beta"]["token"], merge_pid, per_pr=1, max_prs=1)
+    ek_pre = ek(agents["beta"]["agent_id"])
+
+    with db._conn() as conn:
+        # Poller: lock first, then pay — single transaction
+        bounty_mod.lock_bounties_for_pr(
+            conn, merge_pid, 9301, agents["gamma"]["agent_id"],
+        )
+        assert db.effective_karma(conn, agents["beta"]["agent_id"]) == ek_pre - 1
+        bounty_mod.pay_bounty_rewards(conn, 9301)
+    with db._conn() as conn:
+        lk = conn.execute(
+            "SELECT status FROM bounty_locks WHERE pr_number = 9301"
+        ).fetchone()
+        assert lk["status"] == "paid"
+        reward = conn.execute(
+            "SELECT amount FROM bounty_rewards WHERE pr_number = 9301"
+        ).fetchone()
+        assert reward["amount"] == 1
+    print("  poller merge (no prior lock): ok")
+
+    # (c) Multi-staker poller merge: two stakers, poller processes both in
+    #     one transaction, verifying atomicity.
+    multi_pid = db.create_proposal(
+        agents["beta"]["token"], "Multi Staker Poller", "Body"
+    )["post_id"]
+    for name in ("alpha", "gamma", "epsilon"):
+        db.vote_on_proposal(agents[name]["token"], multi_pid, 1)
+    db.stake_bounty(agents["gamma"]["token"], multi_pid, per_pr=1, max_prs=1)
+    db.stake_bounty(agents["delta"]["token"], multi_pid, per_pr=1, max_prs=1)
+    ek_g_pre = ek(agents["gamma"]["agent_id"])
+    ek_d_pre = ek(agents["delta"]["agent_id"])
+
+    with db._conn() as conn:
+        bounty_mod.lock_bounties_for_pr(
+            conn, multi_pid, 9302, agents["epsilon"]["agent_id"],
+        )
+        assert db.effective_karma(conn, agents["gamma"]["agent_id"]) == ek_g_pre - 1
+        assert db.effective_karma(conn, agents["delta"]["agent_id"]) == ek_d_pre - 1
+        paid = bounty_mod.pay_bounty_rewards(conn, 9302)
+        assert paid == 2, "both bounties should pay"
+    with db._conn() as conn:
+        lks = conn.execute(
+            "SELECT status, amount FROM bounty_locks WHERE pr_number = 9302"
+        ).fetchall()
+        assert len(lks) == 2
+        assert all(l["status"] == "paid" for l in lks)
+        rewards = conn.execute(
+            "SELECT agent_id, amount FROM bounty_rewards"
+            " WHERE pr_number = 9302"
+        ).fetchall()
+        assert len(rewards) == 2
+        total_reward = sum(r["amount"] for r in rewards)
+        assert total_reward == 2
+        # Both rewards go to the PR opener (epsilon)
+        assert all(r["agent_id"] == agents["epsilon"]["agent_id"] for r in rewards)
+    print("  poller multi-staker merge: ok")
+
+    # (d) Poller decline path: lock first, then refund — simulates PR that
+    #     was locked but then declined by maintainer.
+    decline_pid = db.create_proposal(
+        agents["beta"]["token"], "Poller Decline", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], decline_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], decline_pid, per_pr=1, max_prs=1)
+    ek_pre_d = ek(agents["alpha"]["agent_id"])
+
+    with db._conn() as conn:
+        bounty_mod.lock_bounties_for_pr(
+            conn, decline_pid, 9303, agents["gamma"]["agent_id"],
+        )
+        assert db.effective_karma(conn, agents["alpha"]["agent_id"]) == ek_pre_d - 1
+        # Poller decline: refund_bounty_locks (poller.py line 93)
+        refunded = bounty_mod.refund_bounty_locks(conn, 9303)
+        assert refunded == 1
+    # Staker's ek restored
+    assert ek(agents["alpha"]["agent_id"]) == ek_pre_d
+    with db._conn() as conn:
+        lk = conn.execute(
+            "SELECT status FROM bounty_locks WHERE pr_number = 9303"
+        ).fetchone()
+        assert lk["status"] == "refunded"
+        # Spend deleted for this lock — no orphaned rows for decline_pid
+        spends = conn.execute(
+            "SELECT id FROM karma_spends"
+            " WHERE kind = 'bounty_lock' AND ref_id = ?",
+            (conn.execute(
+                "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+                (decline_pid,),
+            ).fetchone()["id"],),
+        ).fetchall()
+        assert len(spends) == 0, (
+            "refund should delete the bounty_lock spend for declined PR"
+        )
+    print("  poller decline: ok")
+
+    # (e) Poller closed path: same as decline — refund_bounty_locks on
+    #     plain close (not declined, not merged).
+    closed_pid = db.create_proposal(
+        agents["beta"]["token"], "Poller Closed", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], closed_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], closed_pid, per_pr=1, max_prs=1)
+    ek_pre_c = ek(agents["alpha"]["agent_id"])
+
+    with db._conn() as conn:
+        bounty_mod.lock_bounties_for_pr(
+            conn, closed_pid, 9304, agents["gamma"]["agent_id"],
+        )
+        assert db.effective_karma(conn, agents["alpha"]["agent_id"]) == ek_pre_c - 1
+        # Poller closed path (poller.py line 99)
+        refunded = bounty_mod.refund_bounty_locks(conn, 9304)
+        assert refunded == 1
+    assert ek(agents["alpha"]["agent_id"]) == ek_pre_c
+    print("  poller closed: ok")
+
     print("\n== test_bounty: all passed ==")
 
 

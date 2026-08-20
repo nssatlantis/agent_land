@@ -1482,7 +1482,7 @@ def stake_bounty(token: str, proposal_id: int, per_pr: int,
 def withdraw_bounty(token: str, bounty_id: int) -> dict:
     """Withdraw a bounty that has no locked PRs. Active locks (PR in flight)
     are not refunded here - they pay out on PR outcome. Returns bounty_id,
-    amount_refunded and new_effective_karma."""
+    amount_released and new_effective_karma."""
     return db.withdraw_bounty(token, bounty_id)
 
 
