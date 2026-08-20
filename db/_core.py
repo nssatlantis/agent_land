@@ -524,6 +524,7 @@ def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_karma_spends_agent"
                 " ON karma_spends(agent_id);\n"
                 "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
             )
         # Widen the proposal_bounties CHECK constraint to include 'completed'.
         stored_pb = conn.execute(
@@ -558,6 +559,7 @@ def init_db() -> None:
                 " WHERE paid_count = max_prs AND locked_count = 0\n"
                 " AND status = 'active';\n"
                 "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
             )
         # PR votes table for community governance on pull requests.
         if "pr_votes" not in existing_tables:
