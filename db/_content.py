@@ -178,6 +178,9 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
         tallies = _proposal_tally_batch(conn, ids)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
+        from db._bounty import _bounty_totals_batch as _btb
+        proposal_ids_for_bounties = [r["id"] for r in rows if r["proposal_kind"]]
+        bounty_totals = _btb(conn, proposal_ids_for_bounties)
         out = []
         for r in rows:
             d = dict(r)
@@ -210,6 +213,9 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"]["claimable"] = bool(d["claimable"])
                 d["proposal"]["claim_agent_id"] = d["claim_agent_id"]
                 d["proposal"]["claim_name"] = d["claim_name"]
+                bt = bounty_totals.get(d["id"])
+                d["proposal"]["bounty_total"] = bt["total"] if bt else 0
+                d["proposal"]["bounty_count"] = bt["count"] if bt else 0
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
                 d["stale"] = (
@@ -318,6 +324,8 @@ def get_post(post_id: int) -> dict:
         edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else []
         collabs = list_proposal_collaborators(post_id) if post["proposal_kind"] else []
         pr_history = _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
+        from db._bounty import list_proposal_bounties as _lpb
+        bounties = _lpb(conn, post_id) if post["proposal_kind"] else []
 
         return {
             "id": post["id"],
@@ -351,6 +359,7 @@ def get_post(post_id: int) -> dict:
                     "claimable": bool(post["claimable"]),
                     "claim_agent_id": post["claim_agent_id"],
                     "claim_name": post["claim_name"],
+                    "bounties": bounties,
                 }
                 if post["proposal_kind"] else None
             ),
@@ -424,7 +433,7 @@ def get_comments(post_id: int) -> dict:
 def _build_post_dict(post, comment_rows, scores, quote_authors,
                      prs_by_post, edits_by_post, collabs_by_post,
                      todos_by_post, tags_by_post, supersedes_map,
-                     tallies, score_map):
+                     tallies, score_map, bounties_by_post=None):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
     post_id = post["id"]
@@ -453,6 +462,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
     t = tallies.get(post_id, {"up": 0, "down": 0})
     decisive = _decisive_pr(pr_history)
     status = decisive["status"] if decisive else "open"
+    bps = bounties_by_post or {}
     return {
         "id": post["id"],
         "title": post["title"],
@@ -483,6 +493,10 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                 "edits": edits,
                 "collaborative": bool(post["collaborative"]),
                 "collaborators": collabs,
+                "claimable": bool(post.get("claimable", 0)),
+                "claim_agent_id": post.get("claim_agent_id"),
+                "claim_name": post.get("claim_name"),
+                "bounties": bps.get(post_id, []),
             }
             if post["proposal_kind"] else None
         ),
@@ -510,10 +524,14 @@ def get_posts(post_ids: list[int]) -> dict:
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative,
+                   p.collaborative, p.claimable,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id)
-                       AS delegate_name
+                       AS delegate_name,
+                   pc.agent_id AS claim_agent_id,
+                   ca.name AS claim_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
+            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+            LEFT JOIN agents ca ON ca.id = pc.agent_id
             WHERE p.id IN ({marks})
             """,
             post_ids,
@@ -565,6 +583,10 @@ def get_posts(post_ids: list[int]) -> dict:
         tags_by_post = _tags_by_post_map(conn, found_ids)
         tallies = _proposal_tally_batch(conn, proposal_ids)
         supersedes_map = _supersedes_map(conn, posts)
+        from db._bounty import list_proposal_bounties as _lpb
+        bounties_by_post: dict = {}
+        for pid in proposal_ids:
+            bounties_by_post[pid] = _lpb(conn, pid)
         # Build results
         out = {}
         for pid in post_ids:
@@ -575,7 +597,7 @@ def get_posts(post_ids: list[int]) -> dict:
                 post_map[pid], comment_rows, scores, quote_authors,
                 prs_by_post, edits_by_post, collabs_by_post,
                 todos_by_post, tags_by_post, supersedes_map,
-                tallies, score_map,
+                tallies, score_map, bounties_by_post,
             )
         return out
 

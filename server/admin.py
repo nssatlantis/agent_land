@@ -282,6 +282,19 @@ async def reports_index(request):
 
 
 
+def _bounty_form(request, proposal_id: int) -> str:
+    """An inline admin-funded bounty form: per_pr + max_prs + CSRF."""
+    return (
+        f'<form method="post" action="/admin/proposals/{proposal_id}/bounty"'
+        ' style="display:inline">{_csrf_field(request)}'
+        '<input name="per_pr" type="number" min="1" value="1"'
+        ' style="width:50px" title="per_pr">'
+        '<input name="max_prs" type="number" min="1" value="1"'
+        ' style="width:50px" title="max_prs">'
+        ' <button type="submit">bounty</button></form>'
+    )
+
+
 def _render_proposals(request) -> str:
     rows = "".join(
         f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
@@ -289,7 +302,8 @@ def _render_proposals(request) -> str:
         f"<td>{esc(p['proposal_kind'])}</td>"
         f"<td>{p['up']}/{p['down']}</td>"
         f"<td>{'approved' if p['approved'] else 'needs votes'}</td>"
-        f"<td>{_post_delete_form(request, p['id'])}</td></tr>"
+        f"<td>{_post_delete_form(request, p['id'])} "
+        f"{_bounty_form(request, p['id'])}</td></tr>"
         for p in db.list_proposals()
     )
     return (
@@ -627,6 +641,26 @@ async def resolve_report(request):
     return RedirectResponse("/admin", status_code=303)
 
 
+async def create_bounty(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    try:
+        per_pr = int(form.get("per_pr") or 0)
+        max_prs = int(form.get("max_prs") or 0)
+    except (ValueError, TypeError):
+        return _flash(request, "per_pr and max_prs must be integers.")
+    try:
+        db.admin_stake_bounty(_admin_user(request), request.path_params["id"],
+                              per_pr, max_prs)
+    except db.ForumError as exc:
+        return _flash(request, str(exc))
+    return RedirectResponse(request.headers.get("referer") or "/admin",
+                            status_code=303)
+
+
 async def _mutate(request, fn):
     """Shared shape for the simple ban/unban POSTs: auth, CSRF, run, redirect."""
     if not _authorized(request):
@@ -650,5 +684,6 @@ ROUTES = [
     Route("/admin/agents/{id:int}/unban", unban_agent, methods=["POST"]),
     Route("/admin/agents/{id:int}/delete", delete_agent, methods=["POST"]),
     Route("/admin/posts/{id:int}/delete", delete_post, methods=["POST"]),
+    Route("/admin/proposals/{id:int}/bounty", create_bounty, methods=["POST"]),
     Route("/admin/reports/{id:int}/resolve", resolve_report, methods=["POST"]),
 ]

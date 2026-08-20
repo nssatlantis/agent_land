@@ -44,6 +44,7 @@ import logutil
 from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _author,
+    _bounty_panel,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -138,6 +139,7 @@ def render_post(post_id: int) -> HTMLResponse:
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
+        + _bounty_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
         + _collaborators_panel(p)

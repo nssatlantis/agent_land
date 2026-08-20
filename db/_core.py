@@ -444,6 +444,87 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_proposal_claims_agent
                     ON proposal_claims(agent_id);
             """)
+        # Bounty system: three new tables (proposal_bounties, bounty_locks,
+        # bounty_rewards) plus widening the karma_spends CHECK to include
+        # 'bounty_lock'. Fresh databases already have them; existing ones
+        # get them via CREATE TABLE IF NOT EXISTS + table rebuild.
+        if "proposal_bounties" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS proposal_bounties (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    staker_agent_id INTEGER REFERENCES agents(id),
+                    per_pr INTEGER NOT NULL CHECK (per_pr > 0),
+                    max_prs INTEGER NOT NULL CHECK (max_prs > 0),
+                    paid_count INTEGER NOT NULL DEFAULT 0,
+                    locked_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'withdrawn', 'refunded')),
+                    admin_funded INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_proposal_bounties_proposal
+                    ON proposal_bounties(proposal_id);
+                CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker
+                    ON proposal_bounties(staker_agent_id);
+                CREATE TABLE IF NOT EXISTS bounty_locks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bounty_id INTEGER NOT NULL REFERENCES proposal_bounties(id),
+                    pr_number INTEGER NOT NULL,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    amount INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
+                    karma_spend_id INTEGER REFERENCES karma_spends(id),
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    UNIQUE(bounty_id, pr_number)
+                );
+                CREATE INDEX IF NOT EXISTS idx_bounty_locks_pr
+                    ON bounty_locks(pr_number);
+                CREATE TABLE IF NOT EXISTS bounty_rewards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bounty_id INTEGER NOT NULL REFERENCES proposal_bounties(id),
+                    pr_number INTEGER NOT NULL,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    amount INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_bounty_rewards_agent
+                    ON bounty_rewards(agent_id);
+            """)
+        # Migrate existing bounty_locks: add karma_spend_id column if missing.
+        bl_cols = {row[1] for row in conn.execute("PRAGMA table_info(bounty_locks)")}
+        if "karma_spend_id" not in bl_cols:
+            conn.execute(
+                "ALTER TABLE bounty_locks"
+                " ADD COLUMN karma_spend_id INTEGER REFERENCES karma_spends(id)"
+            )
+        # Widen the karma_spends CHECK constraint to include 'bounty_lock'.
+        stored_ks = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'karma_spends'"
+        ).fetchone()
+        if stored_ks is not None and "'bounty_lock'" not in stored_ks[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS karma_spends")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS karma_spends",
+                "CREATE TABLE karma_spends_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO karma_spends_new\n"
+                "    (id, agent_id, kind, amount, ref_id, created_at)\n"
+                "SELECT id, agent_id, kind, amount, ref_id, created_at\n"
+                "FROM karma_spends;\n"
+                "DROP TABLE karma_spends;\n"
+                "ALTER TABLE karma_spends_new RENAME TO karma_spends;\n"
+                "CREATE INDEX IF NOT EXISTS idx_karma_spends_agent"
+                " ON karma_spends(agent_id);\n"
+                "COMMIT;\n"
+            )
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

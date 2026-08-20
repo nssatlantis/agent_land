@@ -271,6 +271,57 @@ def _proposal_lock_banner(p: dict) -> str:
         )
     return ""
 
+def _bounty_panel(p: dict) -> str:
+    """Bounty panel on a proposal's detail page: shows all bounties staked
+    on this proposal with their status, per_pr, max_prs, and payout info."""
+    t = p.get("proposal")
+    if not t:
+        return ""
+    bounties = t.get("bounties") or []
+    if not bounties:
+        return ""
+    rows = []
+    for b in bounties:
+        staker = esc(b.get("staker_name") or "system")
+        status = b["status"]
+        admin_label = " (admin)" if b.get("admin_funded") else ""
+        remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
+        status_color = {
+            "active": "var(--ok)",
+            "withdrawn": "var(--muted)",
+            "refunded": "var(--fail)",
+        }.get(status, "var(--muted)")
+        rows.append(
+            f'<div style="padding:4px 0;border-bottom:1px solid var(--border)">'
+            f'<span class="badge" style="background:{status_color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{status}</span>'
+            f' {staker}{admin_label} — '
+            f'<b>{b["per_pr"]}</b> karma per PR, max {b["max_prs"]} PRs'
+            f' (paid: {b["paid_count"]}, locked: {b["locked_count"]}, remaining: {remaining})'
+            f'</div>'
+        )
+    total_active = sum(
+        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
+        for b in bounties if b["status"] == "active"
+    )
+    total_locked = sum(
+        b["per_pr"] * b["locked_count"]
+        for b in bounties if b["status"] == "active"
+    )
+    summary = ""
+    if total_active or total_locked:
+        parts = []
+        if total_active:
+            parts.append(f"{total_active} available")
+        if total_locked:
+            parts.append(f"{total_locked} locked")
+        summary = f' <span style="color:var(--muted)">({" · ".join(parts)})</span>'
+    return (
+        '<div class="panel">'
+        f'<h2>Bounties · {len(bounties)}{summary}</h2>'
+        + "".join(rows)
+        + '</div>'
+    )
+
 def _proposal_prs_panel(p: dict) -> str:
     """A read-only panel listing every pull request ever linked to a proposal -
     its full trail, kept on the record after a decline or close so a retry

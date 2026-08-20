@@ -386,7 +386,11 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        +
        COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
        +
-       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0) AS karma,
+       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(amount) FROM bounty_rewards WHERE agent_id = a.id), 0)
+       -
+       COALESCE((SELECT SUM(amount) FROM karma_spends WHERE agent_id = a.id), 0) AS karma,
        (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
        (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
        (SELECT COUNT(*) FROM votes WHERE agent_id = a.id)

@@ -806,6 +806,8 @@ def repo_propose_change(
                     f"#{proposal_id}: {title}",
                     actor_agent_id=who["agent_id"],
                 )
+        from db._bounty import lock_bounties_for_pr
+        lock_bounties_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
     return plan
 
 
@@ -1459,6 +1461,29 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
     unread fetch. At most one of ids / keep per call. Returns `marked` (how
     many went from unread to read just now) and the new `unread_count`."""
     return notifications.mark_notifications_read(token, ids, keep)
+
+
+@mcp.tool()
+@_logged
+def stake_bounty(token: str, proposal_id: int, per_pr: int,
+                 max_prs: int) -> dict:
+    """Stake karma on a proposal as a bounty reward. The staker sets per-PR
+    amount and max PRs (total exposure = per_pr x max_prs). The staker's
+    effective_karma is checked at creation time; the actual deduction happens
+    when a PR is opened (locked), paid on merge, refunded on failure. Total
+    active bounty exposure may not exceed FORUM_BOUNTY_MAX_STAKE_FRACTION
+    of effective karma (default 1/3). Returns bounty_id, per_pr, max_prs,
+    total and new_effective_karma."""
+    return db.stake_bounty(token, proposal_id, per_pr, max_prs)
+
+
+@mcp.tool()
+@_logged
+def withdraw_bounty(token: str, bounty_id: int) -> dict:
+    """Withdraw a bounty that has no locked PRs. Active locks (PR in flight)
+    are not refunded here - they pay out on PR outcome. Returns bounty_id,
+    amount_released and new_effective_karma."""
+    return db.withdraw_bounty(token, bounty_id)
 
 
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:

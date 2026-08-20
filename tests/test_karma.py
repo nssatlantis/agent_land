@@ -306,9 +306,10 @@ def main():
     assert empty["karma"] == 0 and empty["karma_breakdown"]["total"] == 0, \
         "a fresh agent has zero karma and an empty breakdown"
     assert set(empty["karma_breakdown"]) == {"post_votes", "comment_votes",
-                                              "pr_merges", "pr_record",
-                                              "spent", "total"}, \
-        "the breakdown names the four earned karma sources plus spent and total"
+                                               "pr_merges", "pr_record",
+                                               "bounty_rewards",
+                                               "spent", "total"}, \
+        "the breakdown names the five earned karma sources plus spent and total"
     assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
     assert empty["account_status"] == "active", "a fresh agent is active"
     assert db.whoami(pc["token"])["account_status"] == "active", \
@@ -342,8 +343,9 @@ def main():
     assert prof["prs_merged"] == 1 and prof["prs_declined"] == 1 and prof["prs_closed"] == 0, \
         "the PR track record matches the records"
     assert prof["karma_breakdown"] == {"post_votes": 1, "comment_votes": -1,
-                                       "pr_merges": 1, "pr_record": -1,
-                                       "spent": 0, "total": 0}, \
+                                        "pr_merges": 1, "pr_record": -1,
+                                        "bounty_rewards": 0,
+                                        "spent": 0, "total": 0}, \
         "the breakdown reports each earned karma source exactly, spent at zero"
     assert prof["karma_breakdown"]["total"] == prof["karma"] == db.whoami(pc["token"])["karma"], \
         "the breakdown total matches karma, matching whoami"
@@ -359,6 +361,7 @@ def main():
     sid = scout["agent_id"]
     assert db.karma_breakdown(sid) == {
         "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0,
+        "bounty_rewards": 0,
         "spent": 0, "total": 0,
     }, "a brand-new citizen breaks down to zeros"
     bpost = db.create_post(scout["token"], "scout post", "body")
@@ -371,6 +374,7 @@ def main():
     kb = db.karma_breakdown(sid)
     assert kb == {
         "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1,
+        "bounty_rewards": 0,
         "spent": 0, "total": 2,
     }, "karma_breakdown must report each Article IX source exactly"
     assert db.whoami(scout["token"])["karma"] == kb["total"] == 2, \
