@@ -1721,16 +1721,35 @@ def apply_merge_resolutions(
 
     *resolutions* is a list of ``{"file": str, "content": str}`` entries —
     one per conflicted file, carrying the fully-resolved file content.
+    All resolutions must exactly cover the set of conflicted files, and
+    resolved content must not still contain conflict markers.
     """
     _ensure_token()
     if not resolutions:
-        raise RepoError("resolutions must be a non-empty list of {file, content}.")
+        raise RepoError(
+            "resolutions must be a non-empty list of {file, content}."
+        )
     for i, r in enumerate(resolutions):
-        if not isinstance(r, dict) or not r.get("file") or not isinstance(r.get("content"), str):
+        if not isinstance(r, dict):
             raise RepoError(
-                f"resolutions[{i}] must have a 'file' path and a 'content' string."
+                f"resolutions[{i}] must be a dict, "
+                f"got {type(r).__name__}."
             )
-    pr = _request("GET", f"pulls/{number}")
+        if not isinstance(r.get("file"), str) or not r["file"]:
+            raise RepoError(
+                f"resolutions[{i}] 'file' must be a non-empty string."
+            )
+        if not isinstance(r.get("content"), str):
+            raise RepoError(
+                f"resolutions[{i}] 'content' must be a string."
+            )
+        if _has_conflict_markers(r["content"]):
+            raise RepoError(
+                f"resolutions[{i}] for {r['file']!r}: content still "
+                "contains conflict markers — resolve all conflicts "
+                "before submitting."
+            )
+    pr = _pr or _request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
     head = pr["head"]["ref"]
