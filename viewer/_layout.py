@@ -132,9 +132,7 @@ PAGE = """\
   .vote-fill.vote-fail {{ background:var(--fail); }}
   .vote-fill.vote-warn {{ background:var(--warn); }}
   .vote-label {{ color:var(--muted); font-size:13px; font-weight:600; white-space:nowrap; }}
-  .verdict-chip {{ display:inline-block; font-size:12px; font-weight:700; padding:2px 8px;
-                   border-radius:6px; text-transform:uppercase; letter-spacing:0.5px; }}
-  .verdict-chip.vc-ok {{ color:var(--ok); background:var(--ok-tint); }}
+
   .post-excerpt {{ color:var(--muted); font-size:15px; margin:8px 0 4px;
                    padding:8px 12px; border-left:3px solid var(--line);
                    background:var(--info-tint); border-radius:0 6px 6px 0; }}
@@ -211,12 +209,25 @@ PAGE = """\
   .verdict-chip.vc-warn {{ background:var(--warn); color:#0f172a; }}
   .verdict-chip.vc-dim {{ background:var(--dim); color:#0f172a; }}
   .docket-card {{ background:#fff; border:1px solid var(--line); border-radius:8px;
-                  padding:14px 18px; margin-bottom:14px; }}
-  .docket-card h3 {{ margin:2px 0 6px; font-size:19px; }}
-  .docket-card h3 a {{ color:var(--ink); text-decoration:none; }}
-  .docket-card h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
-  .docket-tally {{ margin-top:10px; font-size:16px; color:var(--ink); }}
-  .docket-prs {{ margin-top:6px; font-size:15px; color:var(--muted); }}
+                  padding:14px 18px; margin-bottom:14px;
+                  transition: border-color 0.15s, box-shadow 0.15s; }}
+  .docket-card:hover {{ border-color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,0.08); }}
+  .docket-card.stale-card {{ border-left:3px solid var(--warn); }}
+  .docket-top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }}
+  .docket-top h3 {{ flex:1; min-width:0; margin:0 0 4px; font-size:19px; }}
+  .docket-top h3 a {{ color:var(--ink); text-decoration:none; }}
+  .docket-top h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
+  .docket-chips {{ display:flex; gap:6px; align-items:center; flex-shrink:0; flex-wrap:wrap; }}
+  .docket-vote {{ display:flex; align-items:center; gap:8px; font-size:14px; margin:4px 0; }}
+  .pr-trail {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:14px; margin-top:6px; }}
+  .pr-trail span.pr-label {{ color:var(--muted); }}
+  .pr-trail a {{ text-decoration:none; font-weight:600; }}
+  .pr-chip {{ display:inline-block; font-size:11px; font-weight:700; padding:1px 5px;
+              border-radius:4px; text-transform:uppercase; }}
+  .pr-chip.pr-merged {{ color:var(--ok); background:var(--ok-tint); }}
+  .pr-chip.pr-open {{ color:var(--warn); background:var(--warn-tint); }}
+  .pr-chip.pr-declined {{ color:var(--fail); background:var(--warn-tint); }}
+  .pr-chip.pr-closed {{ color:var(--dim); background:var(--info-tint); }}
   .breadcrumb {{ font-size:17px; margin-bottom:12px; }}
   .breadcrumb a {{ color:var(--accent); text-decoration:none; }}
   .breadcrumb a:hover {{ text-decoration:underline; }}
@@ -254,7 +265,7 @@ PAGE = """\
   th:not(.sort-on) a::after {{ content: " ⇅"; font-size:12px; opacity:0.4; }}
   th:not(.sort-on) a:hover::after {{ opacity:1; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} .votes-grid {{ grid-template-columns:1fr; }} }}
-  @media (max-width: 600px) {{ .post-top {{ flex-direction:column; }} .post-stats {{ padding-top:0; }} }}
+  @media (max-width: 600px) {{ .post-top {{ flex-direction:column; }} .post-stats {{ padding-top:0; }} .docket-top {{ flex-direction:column; }} }}
   @media (prefers-color-scheme: dark) {{
     :root {{ --ink:#f1f5f9; --muted:#94a3b8; --line:#334155; --accent:#38bdf8;
              --ok:#34d399; --fail:#f87171; --warn:#fbbf24; --dim:#a0aec0;
@@ -307,14 +318,20 @@ PAGE = """\
     .sort-row a:hover {{ color:var(--accent); }}
     .sort-row a.active {{ color:var(--accent); }}
     .docket-card {{ background:#1e293b; border-color:var(--line); }}
+    .docket-card:hover {{ box-shadow:0 2px 8px rgba(0,0,0,0.3); }}
     .docket-card h3 a {{ color:var(--ink); }}
     .docket-card h3 a:hover {{ color:var(--accent); }}
+    .docket-card.stale-card {{ border-left-color:var(--warn); }}
     .search-group h3 {{ color:var(--ink); }}
     .sort-row .seg {{ background:#1e293b; }}
     .sort-row .seg a:hover {{ background:#334155; color:var(--accent); }}
     .sort-row .seg a.active {{ color:#0f172a; }}
     .stat-comments {{ color:var(--muted); }}
     .post-excerpt {{ border-left-color:var(--line); }}
+    .pr-chip.pr-merged {{ color:#34d399; background:#064e3b; }}
+    .pr-chip.pr-open {{ color:#fbbf24; background:#451a03; }}
+    .pr-chip.pr-declined {{ color:#f87171; background:#451a03; }}
+    .pr-chip.pr-closed {{ color:#a0aec0; background:#1e293b; }}
   }}
 </style>
 </head>
