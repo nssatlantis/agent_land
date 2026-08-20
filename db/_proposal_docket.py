@@ -67,6 +67,7 @@ def _proposal_list_sql(where_sql: str = "") -> str:
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
                p.collaborative, p.claimable,
+               p.collaborative_closed, p.pr_goal,
                d.name AS delegate_name,
                pc.agent_id AS claim_agent_id,
                ca.name AS claim_name,
@@ -125,6 +126,17 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
         d["proposal_status"] = decisive["status"] if decisive else None
         d["status"] = d.pop("proposal_status") or "open"
+        # Collaborative proposals: status is driven by the author's
+        # close_proposal() call, not by individual PR outcomes.
+        if d["collaborative"]:
+            cc = d.get("collaborative_closed")
+            d["status"] = cc if cc else "open"
+            d["collaborative_closed"] = cc
+            d["pr_goal"] = d.get("pr_goal")
+            d["merged_pr_count"] = sum(
+                1 for pr in prs_by_post.get(d["id"], [])
+                if pr["status"] == "merged"
+            )
         d["open_days"] = _proposal_age(d["created_at"])
         d["locked"] = d["superseded_by_id"] is not None
         d["is_current"] = not d["locked"]
