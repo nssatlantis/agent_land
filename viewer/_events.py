@@ -38,6 +38,10 @@ _EVENT_KIND_BADGES = {
     "bounty_locked": ("Bounty locked", "var(--warn)"),
     "bounty_paid": ("Bounty paid", "var(--ok)"),
     "bounty_refunded": ("Bounty refunded", "var(--muted)"),
+    "pr_vote_cast": ("PR vote", "var(--accent)"),
+    "pr_vote_changed": ("PR vote changed", "var(--warn)"),
+    "pr_auto_merged": ("Auto-merged", "var(--ok)"),
+    "pr_auto_declined": ("Auto-declined", "var(--fail)"),
 }
 
 def _event_description(e: dict) -> str:
@@ -109,6 +113,16 @@ def _event_description(e: dict) -> str:
         return f'Bounty #{d.get("bounty_id", tid)} paid for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
     if k == "bounty_refunded":
         return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+    if k == "pr_vote_cast":
+        v = "approved" if d.get("value") == 1 else "opposed"
+        return f'{actor} {v} <a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a>'
+    if k == "pr_vote_changed":
+        v = "approved" if d.get("value") == 1 else "opposed"
+        return f'{actor} changed vote to {v} on <a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a>'
+    if k == "pr_auto_merged":
+        return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-merged by vote sweep'
+    if k == "pr_auto_declined":
+        return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-declined by vote sweep'
     return f'{k} on {tt} #{tid}'
 
 def _event_row(e: dict) -> str:
@@ -151,7 +165,8 @@ async def events_page(request: Request) -> HTMLResponse:
         ("tag_created", "Tags"), ("tag_updated", "Tags"),
         ("report_filed", "Reports"), ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
-        ("pr_merged", "PRs"), ("agent_registered", "Joined"),
+        ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),
+        ("agent_registered", "Joined"),
     ]
     tabs = " \xb7 ".join(
         f'<a href="/events{"" if key is None else f"?kind={key}"}"'

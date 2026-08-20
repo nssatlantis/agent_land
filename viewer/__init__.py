@@ -64,6 +64,7 @@ from viewer._helpers import (
     _proposal_prs_panel,
     _proposal_stats,
     _proposal_votes_panel,
+    _pr_vote_panel,
     _profile_cards,
     _recent_posts,
     _recent_row,
@@ -739,15 +740,24 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     chip = _ci_chip(await _pr_checks(number))
     header = (
         '<div class="panel"><h2>'
-        f'<a href="{repo_url}" style="color:var(--accent)">PR diff #{esc(number)}</a> · {title}</h2>'
-        f"<p style='color:var(--muted);font-size:15px'>{head} \u2192 {base} · "
-        f"{len(diff['files'])} file{'s' if len(diff['files']) != 1 else ''} · "
+        f'<a href="{repo_url}" style="color:var(--accent)">PR #{esc(number)}</a> \xb7 {title}</h2>'
+        f"<p style='color:var(--muted);font-size:15px'>{head} \u2192 {base} \xb7 "
+        f"{len(diff['files'])} file{'s' if len(diff['files']) != 1 else ''} \xb7 "
         f"+{total_add}/<span style='color:var(--fail)'>\u2212{total_del}</span></p>"
         + (f"<p style='margin-top:8px'>{chip}</p>" if chip else "")
         + "</div>"
     )
-    body = _crumb("/status", "status") + header + sections
-    return _page(f"PR #{number} diff", _with_rail(body), section="status")
+    vote_panel = _pr_vote_panel(int(number))
+    proposal_id = db.proposal_for_pr(int(number))
+    proposal_link = ""
+    if proposal_id:
+        proposal_link = (
+            f'<div class="panel"><p style="color:var(--muted);font-size:13px">'
+            f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent)">#{proposal_id}</a>'
+            f'</p></div>'
+        )
+    body = _crumb("/status", "status") + header + vote_panel + proposal_link + sections
+    return _page(f"PR #{number}", _with_rail(body), section="status")
 
 # ------------------------------------------------- search, feed, status --
 

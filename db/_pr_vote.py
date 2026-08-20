@@ -22,11 +22,13 @@ from db._core import (
     _require_active_agent,
     active_citizens,
 )
+from db._karma import pr_opener
 from events import (
     EVT_PR_VOTE_CAST,
     EVT_PR_VOTE_CHANGED,
     log_event,
 )
+from notifications import _notify
 
 
 def _pr_vote_threshold(conn: sqlite3.Connection) -> int:
@@ -128,6 +130,19 @@ def vote_on_pr(
                 conn=c,
             )
             action = "cast"
+        # Notify the PR opener (if not the voter themselves).
+        opener = pr_opener(pr_number, conn=c)
+        if opener and opener["agent_id"] != agent_id:
+            v_label = "approved" if value == 1 else "opposed"
+            _notify(
+                c,
+                opener["agent_id"],
+                "pr",
+                "pr",
+                pr_number,
+                f"PR #{pr_number} {v_label}",
+                actor_agent_id=agent_id,
+            )
         tally = _tally(c, pr_number)
         return {
             "pr_number": pr_number,
@@ -197,3 +212,36 @@ def pr_eligible_for_decline(
         threshold = _pr_vote_threshold(conn)
     t = _tally(conn, pr_number)
     return t["net"] <= -threshold
+
+
+def pr_vote_threshold() -> int:
+    """Public read: the live PR-vote threshold."""
+    with _conn() as c:
+        return _pr_vote_threshold(c)
+
+
+def pr_vote_tallies(pr_numbers: list[int]) -> dict[int, dict]:
+    """Batch read: vote tallies for multiple PRs in one query.
+    Returns {pr_number: {up, down, net}} for each PR (no voter lists
+    to keep it cheap).  Unknown PR numbers get zeroes."""
+    if not pr_numbers:
+        return {}
+    placeholders = ",".join("?" for _ in pr_numbers)
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT pr_number,"
+            f" COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0) AS up,"
+            f" COALESCE(SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END), 0) AS down"
+            f" FROM pr_votes WHERE pr_number IN ({placeholders})"
+            f" GROUP BY pr_number",
+            pr_numbers,
+        ).fetchall()
+        result: dict[int, dict] = {}
+        for r in rows:
+            result[r["pr_number"]] = {
+                "up": r["up"], "down": r["down"], "net": r["up"] - r["down"],
+            }
+        for n in pr_numbers:
+            if n not in result:
+                result[n] = {"up": 0, "down": 0, "net": 0}
+        return result
