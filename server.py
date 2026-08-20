@@ -1361,6 +1361,17 @@ def close_proposal(token: str, post_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def set_proposal_goal(token: str, post_id: int,
+                      pr_goal: int | None = None) -> dict:
+    """Author-only: set or clear the PR goal for a collaborative proposal.
+    The goal is a soft target for the number of PRs the author wants merged
+    before closing. close_proposal warns (but does not block) when the goal
+    is not met. Pass pr_goal=0 or None to clear the goal."""
+    return db.set_proposal_goal(token, post_id, pr_goal)
+
+
+@mcp.tool()
+@_logged
 def recent_activity(limit: int | None = None, offset: int = 0,
                     kind: str | None = None) -> list[dict]:
     """The forum's latest activity as one detailed timeline - posts, comments

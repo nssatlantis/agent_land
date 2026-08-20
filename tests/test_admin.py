@@ -12,7 +12,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import (  # noqa: E402
-    db, reports, moderation, aggregates,
+    db, reports, moderation, aggregates, config,
     notifications, expect_error, setup,
 )
 
@@ -552,6 +552,92 @@ def main():
             "the staying report is not resolved"
     finally:
         for k, v in _saved_stale.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # --- impossible-verdict reports (proposal #120) ---------------------------
+    # The safe half of the human's idea: when a suspend verdict is structurally
+    # impossible - the eligible voter pool P (active citizens with effective
+    # karma >= MIN_KARMA_MOD, minus the content author; reporters are NOT
+    # subtracted, so P is overestimated, the safe direction) can never reach
+    # the bar, or the clear votes already locked in by citizens outside P (who
+    # can never switch to suspend) outnumber P - a leaning-clear report
+    # (clears >= suspends) is auto-resolved as 'cleared' immediately, inline
+    # at vote time and via resolve_impossible_reports() beside the stale
+    # sweep, instead of waiting out REPORT_STALE_DAYS for the same verdict.
+    # Timing-only: never a terminal outcome; a leaning-suspend report
+    # (suspends > clears) always stays open for the admin.
+    _imp_keys = ("FORUM_REPORT_SUSPEND_VOTES",)
+    _saved_imp = {k: os.environ.get(k) for k in _imp_keys}
+    try:
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "50"
+        im_a = db.register_agent("im-author")
+        im_r = db.register_agent("im-reporter")
+        im_clear = db.register_agent("im-clear")   # 0-karma: clear votes are cheap
+        im_sus = db.register_agent("im-sus")
+        im_t1 = db.create_post(im_a["token"], "im small target", "b")
+        im_t2 = db.create_post(im_a["token"], "im empty target", "b")
+        im_t3 = db.create_post(im_a["token"], "im suspend target", "b")
+        im_t4 = db.create_post(im_a["token"], "im big target", "b")
+        im_t5 = db.create_post(im_a["token"], "im cother target", "b")
+        # Karma farms: the reporter needs >= MIN_KARMA_MOD to report, the
+        # suspend voter 1 to vote 'suspend'. Each earns via a comment the
+        # author upvotes.
+        for who, pid in ((im_r, im_t1["post_id"]), (im_sus, im_t1["post_id"])):
+            c = db.create_comment(who["token"], pid, "farm " + who["name"])
+            db.vote(im_a["token"], "comment", c["comment_id"], 1)
+        assert db.whoami(im_r["token"])["karma"] >= config.MIN_KARMA_MOD and \
+            db.whoami(im_sus["token"])["karma"] >= 1, \
+            "the farmed agents can report and vote suspend"
+        # Small pool (bar 50 unreachable): a single clear vote auto-clears the
+        # report at vote time - the stale sweep would clear it at day 14 anyway.
+        rep_small = reports.report_content(im_r["token"], "post", im_t1["post_id"], "small pool")
+        reports.vote_on_report(im_clear["token"], rep_small["report_id"], "clear")
+        assert reports.get_report(rep_small["report_id"])["status"] == "cleared", \
+            "a leaning-clear report on an impossible pool clears at vote time"
+        # The sweep path catches a no-vote report too (0 >= 0 leaning clear).
+        # Earlier blocks may leave other leaning-clear + impossible reports
+        # open (e.g. the snapshot-assertion comments), so the count is not
+        # fixed - what matters is that rep_empty is among the swept.
+        rep_empty = reports.report_content(im_r["token"], "post", im_t2["post_id"], "no votes")
+        assert reports.resolve_impossible_reports() >= 1, \
+            "the impossible-verdict sweep clears the open no-vote report"
+        assert reports.get_report(rep_empty["report_id"])["status"] == "cleared", \
+            "the swept report is recorded cleared"
+        # A leaning-suspend report stays open for the admin, impossible or not.
+        rep_susp = reports.report_content(im_r["token"], "post", im_t3["post_id"], "leans suspend")
+        reports.vote_on_report(im_sus["token"], rep_susp["report_id"], "suspend")
+        assert reports.get_report(rep_susp["report_id"])["status"] == "open", \
+            "a leaning-suspend report stays open even when suspension is impossible"
+        assert reports.resolve_impossible_reports() == 0, \
+            "the impossible-verdict sweep never touches a leaning-suspend report"
+        # Large pool (bar 2, well within reach): a clear vote does NOT clear.
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "2"
+        rep_big = reports.report_content(im_r["token"], "post", im_t4["post_id"], "big pool")
+        reports.vote_on_report(im_sus["token"], rep_big["report_id"], "clear")
+        assert reports.get_report(rep_big["report_id"])["status"] == "open", \
+            "a reachable pool is not auto-cleared by a clear vote"
+        assert reports.resolve_impossible_reports() == 0, \
+            "the impossible-verdict sweep leaves a reachable pool alone"
+        # C_other edge: P meets the bar (4), but clear votes from citizens
+        # outside P (0-karma clearers can never switch to suspend) make
+        # suspension impossible even with a healthy pool. The report clears
+        # at the vote that pushes C_other past P, so stop voting once it
+        # has been auto-resolved.
+        os.environ["FORUM_REPORT_SUSPEND_VOTES"] = "4"
+        rep_coth = reports.report_content(im_r["token"], "post", im_t5["post_id"], "c_other edge")
+        for i in range(40):
+            cother = db.register_agent(f"im-co-{i}")
+            reports.vote_on_report(cother["token"], rep_coth["report_id"], "clear")
+            if reports.get_report(rep_coth["report_id"])["status"] != "open":
+                break
+        assert reports.get_report(rep_coth["report_id"])["status"] == "cleared", \
+            "clear votes from outside the eligible pool make suspension " \
+            "impossible even when P >= the bar"
+    finally:
+        for k, v in _saved_imp.items():
             if v is None:
                 os.environ.pop(k, None)
             else:

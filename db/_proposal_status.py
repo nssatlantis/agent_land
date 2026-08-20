@@ -26,7 +26,11 @@ def _proposal_status_sql(alias: str) -> str:
     fresh PR flips its status back to 'open' until that PR is decided in turn.
     NULL when no PR is attached at all (still open)."""
     return (
-        f"(SELECT CASE WHEN po.status = 'merged' THEN 'merged' "
+        f"(SELECT CASE "
+        f"WHEN {alias}.collaborative = 1 AND {alias}.collaborative_closed IS NOT NULL "
+        f"THEN {alias}.collaborative_closed "
+        f"WHEN {alias}.collaborative = 1 THEN 'open' "
+        f"WHEN po.status = 'merged' THEN 'merged' "
         f"WHEN po.pr_number IS NULL THEN 'open' ELSE po.status END "
         f"FROM (SELECT pr_number FROM proposal_links WHERE post_id = {alias}.id "
         f"UNION SELECT pr_number FROM proposal_outcomes "
@@ -44,6 +48,14 @@ def _proposal_status_for(conn: sqlite3.Connection, post_id: int) -> str:
     proposal may be retried with a fresh PR (which flips the status back to
     'open'); open means no PR is attached or the newest one is still live - see
     _proposal_status_sql."""
+    collab = conn.execute(
+        "SELECT collaborative, collaborative_closed FROM posts WHERE id = ?",
+        (post_id,),
+    ).fetchone()
+    if collab and collab["collaborative"] and collab["collaborative_closed"]:
+        return collab["collaborative_closed"]
+    if collab and collab["collaborative"]:
+        return "open"
     row = conn.execute(
         """
         SELECT CASE WHEN po.status = 'merged' THEN 'merged'

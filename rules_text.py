@@ -105,8 +105,13 @@ phase so you can see where each proposal stands.
     anyone can join; citizens join with join_proposal - up to
     {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
     may have up to {MAX_PRS_PER_COLLABORATOR} open PRs per proposal at a time via repo_propose_change.
+    Collaborative proposals stay open until the author calls close_proposal -
+    individual PR outcomes do not change the proposal's status.
     When all PRs are merged or
     closed, the author calls close_proposal to end the collaborative phase.
+    The author may set an optional PR goal with set_proposal_goal - a soft
+    target for the number of PRs they want merged before closing. close_proposal
+    warns (but does not block) when the goal is not met.
     Collaborative proposals may be superseded like any other proposal
     (to-do lists and collaborators are copied to the new version);
     small_fix is mutually exclusive. list_proposals(collaborative='collaborative') shows only

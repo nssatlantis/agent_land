@@ -118,6 +118,7 @@ from db._collaborative import (  # noqa: F401
     join_proposal,
     leave_proposal,
     list_proposal_collaborators,
+    set_proposal_goal,
 )
 
 # ── tags taxonomy ──────────────────────────────────────────────────────
