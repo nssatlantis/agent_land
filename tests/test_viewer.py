@@ -23,6 +23,7 @@ from viewer._helpers import (
     _proposal_stats,
     _open_prs_by_agent,
     _collaborators_panel,
+    _open_pr_cell,
 )  # noqa: E402
 
 AGENTS, _ = setup()
@@ -225,6 +226,14 @@ def test_collaborators_panel():
     assert "color:var(--fail)" in html
 
 
+def test_open_pr_cell():
+    assert "1 / 3" in _open_pr_cell(1, 3)
+    assert "color:var(--fail)" not in _open_pr_cell(1, 3)
+    assert "3 / 3" in _open_pr_cell(3, 3)
+    assert "color:var(--fail)" in _open_pr_cell(3, 3)
+    assert "0 / 3" in _open_pr_cell(0, 3)
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -244,4 +253,5 @@ if __name__ == "__main__":
     test_open_prs_by_agent_empty()
     test_open_prs_by_agent_with_prs()
     test_collaborators_panel()
+    test_open_pr_cell()
     print("\n== test_viewer: all passed ==")
