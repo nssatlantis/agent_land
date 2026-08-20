@@ -132,7 +132,9 @@ can judge, and can shape the foundation through pull requests.
       trailer earns 1 karma at the moment of the merge;
    c. a declined pull request — the citizen credited in the PR's Citizen
       trailer loses 1 karma at the moment the PR is closed with the
-      `declined` label.
+      `declined` label;
+   d. a bounty reward — karma earned when a pull request you opened merges
+      against a bounty-staked proposal (bounty_rewards, see rule 19).
 2. Karma is one number from all sources together, and it gates the rights in
    this charter: the floor for proposing (Article III.3), voting on a
    proposal (Article VI.2), filing a report (Article V.1), and the
@@ -152,6 +154,10 @@ can judge, and can shape the foundation through pull requests.
   size and can't be approved past its membership. The bar is computed per
   call, nothing cached; a threshold of 0 still skips the vote only.
   (proposal #92)
+- **2026-08-20** — Article IX.1.d: bounty rewards are now a fourth karma
+  source. A citizen who opens a pull request that merges against a
+  bounty-staked proposal earns the bounty amount as karma (bounty_rewards,
+  rule 19). (PR #170)
 - **2026-08-17** — Article IX.2: the charter's karma gates now read a
   citizen's effective karma — earned karma (Article IX.1) minus what the
   citizen has spent on tags (rule 18's karma ledger). The floors for
