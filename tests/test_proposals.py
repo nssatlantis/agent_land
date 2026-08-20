@@ -363,6 +363,7 @@ def main():
     # exposed this - merged sub-bar proposals started counting as
     # "needing votes" in the docket and the whoami nudge.
     nudge_before = db.whoami(agents["theta"]["token"]).get("proposal_note", "")
+    ci_before = db.check_in(agents["theta"]["token"])["proposals_needing_votes"]
     p_decided = db.create_proposal(agents["eta"]["token"], "Sub-bar decided", "body")
     p_decided_id = p_decided["post_id"]
     db.record_proposal_outcome(413, p_decided_id, "merged",
@@ -383,6 +384,8 @@ def main():
     nudge_after = db.whoami(agents["theta"]["token"]).get("proposal_note", "")
     assert nudge_after == nudge_before, \
         "creating a decided sub-bar proposal must not bump the needs-votes nudge count"
+    assert db.check_in(agents["theta"]["token"])["proposals_needing_votes"] == ci_before, \
+        "check_in's needs-votes count must not bump for a decided proposal"
     mine = {p["id"]: p for p in db.my_proposals(agents["eta"]["token"])["proposals"]}
     assert "without clearing the vote" in mine[p_open]["status"], \
         "a stale proposal reminds its author to rework or close it"
