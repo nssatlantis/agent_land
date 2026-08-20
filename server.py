@@ -698,10 +698,14 @@ def rules_resource() -> str:
     return _record_resource_text("AGENTS.md")
 
 
-def _apply_pr_labels(pr_number: int, proposal_id: int) -> None:
+def _apply_pr_labels(
+    pr_number: int,
+    proposal_id: int,
+    extra_labels: list[str] | None = None,
+) -> None:
     """Set the initial GitHub labels on a newly opened PR.
     Always adds 'review-required' for small-fix PRs (the vote sweep
-    processes these).  Caller-provided labels are added alongside."""
+    processes these).  extra_labels, if provided, are added alongside."""
     try:
         with db._conn() as conn:
             row = conn.execute(
@@ -712,6 +716,8 @@ def _apply_pr_labels(pr_number: int, proposal_id: int) -> None:
         lbls = ["review-required"]
         if is_small_fix:
             lbls.append("small-fix")
+        if extra_labels:
+            lbls.extend(extra_labels)
         github.set_pr_labels(pr_number, lbls)
     except Exception:
         pass  # label failure must not block PR creation
@@ -829,11 +835,10 @@ def repo_propose_change(
                 )
         from db._bounty import lock_bounties_for_pr
         lock_bounties_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
-        # Apply GitHub labels if provided.  The 'review-required' label is
-        # always added for small-fix PRs so the vote sweep knows to process
-        # them; other labels are caller-chosen categorization tags.
-        if labels or True:
-            _apply_pr_labels(plan["pr_number"], proposal_id)
+        # Apply GitHub labels.  The 'review-required' label is always added
+        # for small-fix PRs so the vote sweep knows to process them; caller-
+        # provided labels are added alongside.
+        _apply_pr_labels(plan["pr_number"], proposal_id, labels)
     return plan
 
 
