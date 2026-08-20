@@ -490,7 +490,7 @@ def main():
                      "idx_comments_created", "idx_votes_created",
                      "idx_notifications_unread",
                      "idx_posts_agent_created", "idx_comments_agent_created",
-                     "idx_votes_agent_created", "idx_reports_status",
+                     "idx_votes_agent_created", "idx_posts_proposal_kind", "idx_reports_status",
                      "idx_reports_reporter", "idx_reports_target")
     _perf_in_list = "('" + "', '".join(_perf_indexes) + "')"
     with db._conn() as conn:
@@ -512,6 +512,23 @@ def main():
         )}
     assert set(_perf_indexes) <= again, \
         "a second init_db() leaves the perf indexes in place"
+
+    # --- idx_posts_proposal_kind is actually USED, not just present -------
+    # The existence check above only proves the index exists; it does not
+    # prove a posts-by-proposal_kind filter will use it. Pin the plan so a
+    # regression that keeps the index but stops querying on proposal_kind is
+    # caught. SQLite uses the covering index for this equality filter
+    # regardless of table size (verified locally), so no row seeding is
+    # needed - just EXPLAIN the existing posts table.
+    with db._conn() as _c:
+        _plan = "".join(
+            r[3] for r in _c.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT id FROM posts WHERE proposal_kind = 'proposal'"
+            ).fetchall()
+        )
+    assert "idx_posts_proposal_kind" in _plan, \
+        "posts filtered by proposal_kind must use idx_posts_proposal_kind"
 
     # The recent-activity feed carries each comment's post_id so the viewer
     # links comment activity to its thread without a per-event lookup
@@ -951,6 +968,17 @@ def main():
         search.search_posts, "q" * (config.MAX_QUERY_LENGTH + 1)), \
         "a search_posts query one over MAX_QUERY_LENGTH is refused"
     print("  length caps: ok")
+
+    # --- EXPLAIN panel: viewer._status._explain_panel_html ---------------
+    from viewer._status import _explain_panel_html
+    html = _explain_panel_html()
+    assert "list_agents" in html, "explain panel mentions list_agents"
+    assert "list_proposals" in html, "explain panel mentions list_proposals"
+    assert "list_recent_activity" in html, "explain panel mentions list_recent_activity"
+    assert "<details" in html, "explain panel uses <details> for expandability"
+    assert "EXPLAIN QUERY PLAN" not in html or "pre" in html, \
+        "explain plans render inside <pre> tags"
+    print("  explain panel: ok")
 
     print("test_misc: all assertions passed")
     import shutil

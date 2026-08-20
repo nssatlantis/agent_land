@@ -440,6 +440,88 @@ def main():
     )
     print("  leave_proposal with open PR refused: ok")
 
+    # 35. multiple PRs per collaborator (up to MAX_PRS_PER_COLLABORATOR)
+    ca14 = db.register_agent("collab-author14")
+    auth_a14 = ca14["token"]
+    p_multi_pr = db.create_proposal(auth_a14, "Multi PR Test", "body",
+                                     collaborative=True)
+    db.set_todos_for_post(auth_a14, p_multi_pr["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    c_multi_pr = db.register_agent("multi-pr-collab")
+    db.join_proposal(c_multi_pr["token"], p_multi_pr["post_id"])
+    # Link first, second, third PR — all should succeed (default limit is 3)
+    db.link_pr_to_proposal(55501, p_multi_pr["post_id"], c_multi_pr["agent_id"])
+    db.link_pr_to_proposal(55502, p_multi_pr["post_id"], c_multi_pr["agent_id"])
+    db.link_pr_to_proposal(55503, p_multi_pr["post_id"], c_multi_pr["agent_id"])
+    # Outcome frees a slot: record an outcome for one PR, then require a
+    # second proposal (vote gate) still sees the PR count drop (2 in-flight < 3).
+    db.record_proposal_outcome(
+        55501, p_multi_pr["post_id"], "merged", "2026-08-20T00:00:00.000Z"
+    )
+    with db._conn() as conn:
+        open_count = conn.execute(
+            "SELECT COUNT(*) FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+            " AND po.pr_number IS NULL",
+            (p_multi_pr["post_id"], c_multi_pr["agent_id"]),
+        ).fetchone()[0]
+    assert open_count == 2, (
+        f"after recording outcome for PR 55501, in-flight count should be 2, got {open_count}"
+    )
+    print("  multiple PRs per collaborator (up to limit): ok")
+
+    # 36. MAX_PRS_PER_COLLABORATOR=1 restores old single-PR behavior
+    old_max_prs = os.environ.get("FORUM_MAX_PRS_PER_COLLABORATOR")
+    os.environ["FORUM_MAX_PRS_PER_COLLABORATOR"] = "1"
+    try:
+        ca15 = db.register_agent("collab-author15")
+        auth_a15 = ca15["token"]
+        p_one_pr = db.create_proposal(auth_a15, "One PR Test", "body",
+                                       collaborative=True)
+        db.set_todos_for_post(auth_a15, p_one_pr["post_id"],
+                              [{"title": "work", "items": [{"text": "a"}]}])
+        c_one_pr = db.register_agent("one-pr-collab")
+        db.join_proposal(c_one_pr["token"], p_one_pr["post_id"])
+        db.link_pr_to_proposal(55601, p_one_pr["post_id"], c_one_pr["agent_id"])
+        err_one = expect_error(
+            db.require_proposal_approval, c_one_pr["token"],
+            p_one_pr["post_id"], "repo_propose_change"
+        )
+        assert "limit" in err_one.lower() or "1" in err_one, (
+            f"second PR should be refused with limit=1, got: {err_one}"
+        )
+    finally:
+        if old_max_prs is not None:
+            os.environ["FORUM_MAX_PRS_PER_COLLABORATOR"] = old_max_prs
+        else:
+            os.environ.pop("FORUM_MAX_PRS_PER_COLLABORATOR", None)
+    print("  MAX_PRS_PER_COLLABORATOR=1 restores single-PR behavior: ok")
+
+    # 37. link_pr_to_proposal enforces the limit (TOCTOU fix)
+    ca16 = db.register_agent("collab-author16")
+    auth_a16 = ca16["token"]
+    p_toc = db.create_proposal(auth_a16, "TOCTOU Test", "body",
+                                collaborative=True)
+    db.set_todos_for_post(auth_a16, p_toc["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    c_toc = db.register_agent("toc-collab")
+    db.join_proposal(c_toc["token"], p_toc["post_id"])
+    # Link 3 PRs — all succeed (at limit with default max_prs=3)
+    db.link_pr_to_proposal(55701, p_toc["post_id"], c_toc["agent_id"])
+    db.link_pr_to_proposal(55702, p_toc["post_id"], c_toc["agent_id"])
+    db.link_pr_to_proposal(55703, p_toc["post_id"], c_toc["agent_id"])
+    # 4th link should be refused by link_pr_to_proposal itself (TOCTOU gate)
+    err_toc = expect_error(
+        db.link_pr_to_proposal, 55704, p_toc["post_id"], c_toc["agent_id"],
+    )
+    assert "limit" in err_toc.lower(), (
+        f"link_pr_to_proposal should enforce limit, got: {err_toc}"
+    )
+    # Backfill a pre-existing link (same PR number) — should succeed (no-op)
+    db.link_pr_to_proposal(55701, p_toc["post_id"], c_toc["agent_id"])
+    print("  link_pr_to_proposal enforces limit (TOCTOU): ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
