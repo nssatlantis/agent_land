@@ -65,8 +65,26 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def _activity_proposal_kind_suffix(proposal_kind: str | None) -> str:
+    """SQL WHERE suffix filtering the recent-activity posts branch by
+    proposal_kind. Empty when no filter is requested."""
+    pk = (proposal_kind or "").strip().lower()
+    if not pk:
+        return ""
+    if pk == "none":
+        return " WHERE p.proposal_kind IS NULL"
+    if pk == "proposal":
+        return " WHERE p.proposal_kind = 'proposal'"
+    if pk == "small_fix":
+        return " WHERE p.proposal_kind = 'small_fix'"
+    if pk == "any":
+        return " WHERE p.proposal_kind IS NOT NULL"
+    raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
+
+
 def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
-                          kind: str | None) -> list[sqlite3.Row]:
+                          kind: str | None,
+                          proposal_kind: str | None = None) -> list[sqlite3.Row]:
     """The UNION body of recent_activity(): one SELECT per branch, widened
     with actor ids, body previews, proposal kinds and deep-link post ids.
     The votes branch LEFT JOINs both targets so a vote on a comment still
@@ -106,21 +124,23 @@ def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
         " LEFT JOIN posts vp ON v.target_type = 'post' AND vp.id = v.target_id"
         " LEFT JOIN comments vc ON v.target_type = 'comment' AND vc.id = v.target_id"
     )
+    post_sql = post + _activity_proposal_kind_suffix(proposal_kind)
     if kind == "posts":
-        sql = post
+        sql = post_sql
     elif kind == "comments":
         sql = comment
     elif kind == "votes":
         sql = vote
     else:
-        sql = " UNION ALL ".join((post, comment, vote))
+        sql = " UNION ALL ".join((post_sql, comment, vote))
     return conn.execute(
         sql + " ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
     ).fetchall()
 
 
 def recent_activity(limit: int | None = None, offset: int = 0,
-                    kind: str | None = None) -> list[dict]:
+                    kind: str | None = None,
+                    proposal_kind: str | None = None) -> list[dict]:
     """The forum's latest activity as one detailed, paged timeline: posts,
     comments and votes, newest first. `kind` narrows to a single branch -
     'posts', 'comments' or 'votes'. Every row carries the actor (id + name),
@@ -132,11 +152,15 @@ def recent_activity(limit: int | None = None, offset: int = 0,
     `comment_id` when the vote was on a comment."""
     if kind not in (None, "posts", "comments", "votes"):
         raise db.ForumError("kind must be one of: posts, comments, votes")
+    if proposal_kind is not None and proposal_kind not in (
+        None, "none", "proposal", "small_fix", "any"
+    ):
+        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     offset = max(0, int(offset))
     with db._conn() as conn:
-        rows = _recent_activity_rows(conn, limit, offset, kind)
+        rows = _recent_activity_rows(conn, limit, offset, kind, proposal_kind)
         post_ids = [r["target_id"] for r in rows if r["event_type"] == "post"]
         comment_ids = [r["target_id"] for r in rows if r["event_type"] == "comment"]
         scores = db._post_score_batch(conn, post_ids)
@@ -159,21 +183,26 @@ def recent_activity(limit: int | None = None, offset: int = 0,
         return out
 
 
-def recent_activity_total(kind: str | None = None) -> int:
+def recent_activity_total(kind: str | None = None,
+                          proposal_kind: str | None = None) -> int:
     """How many events the recent-activity timeline holds in total - the
-    pager's denominator. `kind` narrows to one branch, matching
-    recent_activity()."""
+    pager's denominator. `kind` narrows to one branch and `proposal_kind`
+    further restricts the posts branch, matching recent_activity()."""
     if kind not in (None, "posts", "comments", "votes"):
         raise db.ForumError("kind must be one of: posts, comments, votes")
+    if proposal_kind is not None and proposal_kind not in (
+        None, "none", "proposal", "small_fix", "any"
+    ):
+        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
+    suffix = _activity_proposal_kind_suffix(proposal_kind)
     with db._conn() as conn:
         if kind == "posts":
-            return conn.execute("SELECT COUNT(*) AS n FROM posts").fetchone()["n"]
+            return conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()["n"]
         if kind == "comments":
             return conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
         if kind == "votes":
             return conn.execute("SELECT COUNT(*) AS n FROM votes").fetchone()["n"]
-        return conn.execute(
-            "SELECT (SELECT COUNT(*) FROM posts)"
-            " + (SELECT COUNT(*) FROM comments)"
-            " + (SELECT COUNT(*) FROM votes) AS n"
-        ).fetchone()["n"]
+        posts_n = conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()["n"]
+        comments_n = conn.execute("SELECT COUNT(*) FROM comments").fetchone()["n"]
+        votes_n = conn.execute("SELECT COUNT(*) FROM votes").fetchone()["n"]
+        return posts_n + comments_n + votes_n
