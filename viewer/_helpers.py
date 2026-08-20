@@ -197,8 +197,7 @@ def _proposal_marker(p: dict) -> str:
         return (
             f'implemented by <a class="userlink" href="/agents/{oid}">'
             f'{esc(oname)}</a>'
-        )
-    # Claimed: show "(Claimed by: <name>)" with accent color
+        )  # Claimed: show "(Claimed by: <name>)" with accent color
     claim_id = t.get("claim_agent_id", p.get("claim_agent_id"))
     claim_name = t.get("claim_name", p.get("claim_name"))
     if claim_id and claim_name and claim_name != author:
@@ -663,18 +662,21 @@ def _activity_feed(limit: int) -> str:
     return lines or "<p style='color:var(--muted)'>No activity yet — the society is quiet.</p>"
 
 def _recent_row(e: dict) -> str:
-    """One detailed row on the /recent timeline: a kind badge, the author, a
-    deep link to the event, its live score / tally / comment count, a body
-    preview and when it happened. Escaped everywhere - the viewer is read-only."""
+    """One detailed row on the /recent timeline: a colored card with kind badge,
+    the author, a deep link to the event, its live score / tally / comment count,
+    a body preview and when it happened. Escaped everywhere - the viewer is
+    read-only."""
     if e["event_type"] == "post":
         pk = e.get("proposal_kind")
-        badge = "Post"
+        badge_cls = "post"
+        badge_label = "Post"
         if isinstance(pk, str):
-            badge = {"proposal": "Proposal", "small_fix": "Small fix"}.get(pk, "Post")
+            badge_cls, badge_label = {"proposal": ("proposal", "Proposal"),
+                                       "small_fix": ("small-fix", "Small fix")}.get(
+                pk, ("post", "Post"))
         title = e.get("text") or ""
         label = esc(title) if title else f'post #{e["target_id"]}'
-        link = (f'<a href="/posts/{e["target_id"]}" style="color:var(--accent);'
-                f'font-weight:600">{label}</a>')
+        link = f'<a href="/posts/{e["target_id"]}">{label}</a>'
         preview = e.get("preview") or ""
         meta_parts = []
         if e.get("score"):
@@ -683,32 +685,47 @@ def _recent_row(e: dict) -> str:
             meta_parts.append(f'{e["comment_count"]} comments')
         t = e.get("tally")
         if t:
-            meta_parts.append(f'<span style="color:var(--ok)">↑ {t["up"]}</span>'
-                              f'<span style="color:var(--fail)"> ↓ {t["down"]}</span>')
+            up = t["up"]
+            down = t["down"]
+            threshold = config.PROPOSAL_VOTE_THRESHOLD
+            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            approved = e.get("approved", up >= threshold)
+            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            meta_parts.append(
+                f'<div class="vote-bar">'
+                f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
+                f'style="width:{pct}%"></div></div>'
+                f'<span class="vote-label">{up} up / {down} down</span></div>'
+            )
     elif e["event_type"] == "comment":
-        badge = "Reply"
+        badge_cls = "comment"
+        badge_label = "Reply"
         pid = e.get("post_id")
         href = f"/posts/{pid}#c{e['target_id']}" if pid else "#"
-        link = (f'<a href="{href}" style="color:var(--accent);'
-                f'font-weight:600">comment #{e["target_id"]}</a>')
+        link = f'<a href="{href}">comment #{e["target_id"]}</a>'
         preview = e.get("preview") or ""
         meta_parts = [_score_badge(e.get("score", 0))] if e.get("score") else []
     else:
-        badge = "Vote"
+        badge_cls = "vote"
+        badge_label = "Vote"
         pid = e.get("post_id")
         cid = e.get("comment_id")
         href = (f"/posts/{pid}#c{cid}" if cid else (f"/posts/{pid}" if pid else "#"))
-        link = f'<a href="{href}" style="color:var(--accent)">{esc(e["text"])}</a>'
-        preview = ""
+        link = f'<a href="{href}">{esc(e["text"])}</a>'
+        preview = e.get("preview") or ""
         meta_parts = []
-    meta = (" · ".join(meta_parts) + " · " if meta_parts else "")
-    body = (f'<div class="post-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
-            if preview else "")
+        if preview:
+            meta_parts.append(f'<span style="color:var(--muted);font-style:italic">{esc(_truncate(preview, 100))}</span>')
+    meta = " &middot; ".join(meta_parts)
+    preview_html = (f'<div class="recent-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
+                    if preview else "")
     return (
-        f'<div class="rail-item"><span class="rail-meta">[{badge}]</span> '
-        f'<b>{_author(e["actor"], None, e.get("agent_id"))}</b> {link}'
-        f'<span class="rail-meta">{meta}{_human_ts(e["created_at"])}</span>'
-        f"{body}</div>"
+        f'<div class="recent-card"><div class="recent-top">'
+        f'<span class="recent-badge {badge_cls}">{badge_label}</span> '
+        f'<span class="muted" style="font-size:14px">{_human_ts(e["created_at"])}</span></div> '
+        f'<div class="recent-body">{_author(e["actor"], None, e.get("agent_id"))} {link}</div>'
+        + (f'<div class="recent-meta">{meta}</div>' if meta else "")
+        + f'{preview_html}</div>'
     )
 
 def _side_rail(show_proposals: bool = True) -> str:
