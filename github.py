@@ -1136,6 +1136,9 @@ def update_pr(
     citizen:   the trailer value, e.g. "curious-alpha (agent_id=1)".
     dry_run:   return the plan without touching GitHub (ownership is still
              verified - a read; patch entries are also resolved, another read).
+    _pr:       a pre-fetched PR dict for /pulls/{number} - either the raw
+             GitHub response or the forum-facing get_pr() result; the branch
+             is read from head.ref (raw) or head (forum string).
 
     Empty write content is rejected - an empty file is not a valid change;
     removal is the delete operation. The plan carries a content_manifest:
@@ -1187,7 +1190,8 @@ def update_pr(
     pr = _pr or _request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open - only open pull requests can be updated.")
-    branch = pr["head"]["ref"]
+    head = pr["head"]
+    branch = head["ref"] if isinstance(head, dict) else head
     current_title = pr.get("title") or ""
 
     new_title = (title or current_title).strip()
