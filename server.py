@@ -1042,6 +1042,36 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
 
 @mcp.tool()
 @_logged
+def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
+    """Toggle whether a proposal accepts claims from other citizens. Only the
+    proposal's author may toggle this. When on, any eligible citizen may
+    claim the proposal with claim_proposal — exclusive, one claim at a time.
+    Turning it off while someone has claimed clears the claim and the
+    assignment."""
+    return db.set_claimable(token, proposal_id, claimable)
+
+
+@mcp.tool()
+@_logged
+def claim_proposal(token: str, proposal_id: int) -> dict:
+    """Volunteer to implement a claimable proposal — you become its delegate
+    and may open the pull request once the vote passes. Only one claim at a
+    time (exclusive). The author cannot claim their own proposal. Use
+    unclaim_proposal to release your claim."""
+    return db.claim_proposal(token, proposal_id)
+
+
+@mcp.tool()
+@_logged
+def unclaim_proposal(token: str, proposal_id: int) -> dict:
+    """Release your claim on a proposal — the assignment is cleared and the
+    proposal returns to an unassigned state. Only the current claimer may
+    unclaim. Refused if you have open pull requests on the proposal."""
+    return db.unclaim_proposal(token, proposal_id)
+
+
+@mcp.tool()
+@_logged
 def repo_assigned_proposals(token: str) -> dict:
     """The proposals other citizens have delegated to you to implement, each
     with its tally and a machine-readable `decision`: 'approved' (the vote

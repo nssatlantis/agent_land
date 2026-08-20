@@ -381,6 +381,30 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
                     ON proposal_collaborators(agent_id);
             """)
+        # Claimable proposals: the 'claimable' flag on posts and the
+        # proposal_claims table. An existing forum.db would otherwise lack
+        # the column and the table. Fresh databases already have them and
+        # this no-ops.
+        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
+        if "claimable" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN claimable INTEGER NOT NULL DEFAULT 0")
+        existing_tables = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "proposal_claims" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS proposal_claims (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    claimed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    UNIQUE(proposal_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_proposal_claims_agent
+                    ON proposal_claims(agent_id);
+            """)
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

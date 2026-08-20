@@ -570,7 +570,8 @@ def require_proposal_approval(
         row = c.execute(
             """
             SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
-                   p.superseded_by_id, p.collaborative, a.name AS author
+                   p.superseded_by_id, p.collaborative, p.claimable,
+                   a.name AS author
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
             """,
@@ -628,6 +629,21 @@ def require_proposal_approval(
                     f"(PR #{live}) - only one at a time. Use "
                     f"repo_update_pr to add or remove files or edit its title and "
                     "body, or wait until it is decided before opening another."
+                )
+            # Claiming gate: if the proposal is claimed by someone else,
+            # only the claimer may open the PR.  The author must revoke
+            # the claim first.
+            if row["claimable"] and row["delegate_id"] is not None \
+                    and row["delegate_id"] != agent["id"] \
+                    and row["agent_id"] == agent["id"]:
+                claimer = c.execute(
+                    "SELECT a.name FROM agents a WHERE a.id = ?",
+                    (row["delegate_id"],),
+                ).fetchone()
+                raise ForumError(
+                    f"proposal #{post_id} is claimed by {claimer['name']} — "
+                    f"revoke the claim with set_claimable(token, {post_id}, "
+                    "False) before opening a PR yourself."
                 )
         small_fix = row["proposal_kind"] == "small_fix"
         threshold = _proposal_vote_threshold(c)

@@ -61,8 +61,11 @@ _MAX_LOG_TAIL_BYTES = 65536
 class _TTLCache:
     """Minimal in-memory TTL cache keyed by an arbitrary hashable key.
     Stores (timestamp, value) pairs; ``get`` returns the value when fresh,
-    ``None`` on miss.  Errors are cached the same way so a flaky upstream
-    isn't hammered within the window."""
+    ``None`` on miss.  ``set`` accepts any value, including a BaseException:
+    ``get`` re-raises a stored exception instead of returning it, so a caller
+    that caches a failure can absorb a flaky upstream within the window.
+    Only ``open_prs`` currently opts into error caching (guarded by
+    ``_CACHE_FAILURES``); the other caches store successes only."""
 
     __slots__ = ("_store",)
 
@@ -83,8 +86,9 @@ class _TTLCache:
 
 
 # Module-level caches -- each function that uses one docs its TTL in the
-# docstring.  A short TTL also absorbs outages: a failure is cached and
-# re-raised instead of re-probed on every call within the window.
+# docstring.  Only ``open_prs`` caches failures (guarded by ``_CACHE_FAILURES``);
+# the other read caches store successes only.  All TTLs are read live from
+# config, so a .env change applies without a restart.
 _pr_cache = _TTLCache()       # PR reads (get_pr, pr_diff, pr_checks, ...)
 _tree_cache = _TTLCache()     # list_tree (long-lived, tree changes rarely)
 _open_prs_cache = _TTLCache() # open_prs (thin wrapper around the same class)
@@ -98,6 +102,22 @@ def clear_cache() -> None:
     _pr_cache._store.clear()
     _tree_cache._store.clear()
     _open_prs_cache._store.clear()
+
+
+def _invalidate_pr(number: int) -> None:
+    """Drop every cached read for one PR number after a write (comment, file
+    update, close) so callers don't read a stale cached copy within the TTL
+    window.  The open-PR list is cleared separately where a write changes
+    open/closed state."""
+    for key in (
+        ("get_pr", number),
+        ("pr_diff", number),
+        ("pr_files", number),
+        ("pr_commits", number),
+        ("pr_checks", number),
+        ("pr_comments", number),
+    ):
+        _pr_cache._store.pop(key, None)
 
 
 class RepoError(Exception):
@@ -226,8 +246,6 @@ def read_file(path: str, line_start: int | None = None, line_end: int | None = N
         if data is None:
             raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
         _pr_cache.set(cache_key, data)
-    if cached is None:
-        pass  # data already validated above
     raw = base64.b64decode(data.get("content", ""))
     try:
         content = raw.decode("utf-8")
@@ -296,13 +314,12 @@ def _slice_line_range(
 
 
 # Open-PR list cache -- shared by repo_list_prs, repo_my_prs, my_profile.
-# The viewer keeps its own outer cache on top.
-_OPEN_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
-
-
+# The viewer keeps its own outer cache on top.  TTL is read live from
+# config.PR_CACHE_SECONDS so a .env change applies without a restart
+# (matching every other cache in this module).
 def open_prs() -> list[dict]:
     """Open pull requests, newest first, cached briefly (PR_CACHE_SECONDS)."""
-    cached = _open_prs_cache.get("open_prs", _OPEN_PRS_CACHE_SECONDS)
+    cached = _open_prs_cache.get("open_prs", config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
     try:
@@ -678,6 +695,7 @@ def comment_on_pr(number: int, body: str) -> dict:
     if not body:
         raise RepoError("comment body cannot be empty.")
     data = _request("POST", f"issues/{number}/comments", {"body": body})
+    _invalidate_pr(number)
     return {
         "pr_number": number,
         "comment_id": data["id"],
@@ -1075,6 +1093,7 @@ def propose_change(
         "pulls",
         {"title": title, "head": branch, "base": base_branch, "body": pr_body},
     )
+    _open_prs_cache._store.pop("open_prs", None)
     return {
         "dry_run": False,
         "pr_number": pr["number"],
@@ -1117,6 +1136,9 @@ def update_pr(
     citizen:   the trailer value, e.g. "curious-alpha (agent_id=1)".
     dry_run:   return the plan without touching GitHub (ownership is still
              verified - a read; patch entries are also resolved, another read).
+    _pr:       a pre-fetched PR dict for /pulls/{number} - either the raw
+             GitHub response or the forum-facing get_pr() result; the branch
+             is read from head.ref (raw) or head (forum string).
 
     Empty write content is rejected - an empty file is not a valid change;
     removal is the delete operation. The plan carries a content_manifest:
@@ -1168,7 +1190,8 @@ def update_pr(
     pr = _pr or _request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open - only open pull requests can be updated.")
-    branch = pr["head"]["ref"]
+    head = pr["head"]
+    branch = head["ref"] if isinstance(head, dict) else head
     current_title = pr.get("title") or ""
 
     new_title = (title or current_title).strip()
@@ -1237,6 +1260,7 @@ def update_pr(
         patch["body"] = body
     if patch:
         _request("PATCH", f"pulls/{number}", patch)
+    _invalidate_pr(number)
     return plan
 
 
@@ -1248,6 +1272,8 @@ def close_pr(number: int, *, _pr: dict | None = None) -> dict:
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
     data = _request("PATCH", f"pulls/{number}", {"state": "closed"})
+    _invalidate_pr(number)
+    _open_prs_cache._store.pop("open_prs", None)
     return {
         "pr_number": number,
         "state": data.get("state"),

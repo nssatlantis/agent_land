@@ -181,6 +181,13 @@ from db._proposal_delegation import (  # noqa: F401
     revoke_delegation,
 )
 
+# ── proposal claiming ──────────────────────────────────────────────────
+from db._claiming import (  # noqa: F401
+    claim_proposal,
+    set_claimable,
+    unclaim_proposal,
+)
+
 # ── proposal docket (listing, filtering, sorting) ──────────────────────
 from db._proposal_docket import (  # noqa: F401
     _PROPOSAL_SORTS,
