@@ -542,6 +542,13 @@ def _proposal_votes_panel(p: dict) -> str:
         "</div></details>"
     )
 
+def _open_pr_cell(open_count: int, limit: int) -> str:
+    """Render 'n / limit' for a collaborator's open PRs, flagging red at cap."""
+    if open_count >= limit:
+        return f"<b style='color:var(--fail)'>{open_count} / {limit}</b>"
+    return f"{open_count} / {limit}"
+
+
 def _collaborators_panel(p: dict) -> str:
     """The collaborators panel for a collaborative proposal: lists citizens
     who joined as contributors. Rendered only when the proposal is
@@ -550,6 +557,14 @@ def _collaborators_panel(p: dict) -> str:
     if not p.get("collaborative"):
         return ""
     collaborators = p.get("collaborators") or []
+    # Open-PR count per collaborator on this proposal (RULES_TEXT rule 9a cap).
+    open_by_agent: dict[int, int] = {}
+    for pr in (p.get("proposal") or {}).get("prs") or []:
+        if pr.get("status") == "open":
+            aid = pr.get("opened_by_agent_id")
+            if aid is not None:
+                open_by_agent[aid] = open_by_agent.get(aid, 0) + 1
+    limit = max(config.MAX_PRS_PER_COLLABORATOR, 1)
     rows = []
     author_link = (
         f"<a class='userlink' href='/agents/{p['author_id']}'>"
@@ -558,7 +573,8 @@ def _collaborators_panel(p: dict) -> str:
     author_model = f" ({esc(p['model'])})" if p.get("model") else ""
     rows.append(
         f"<tr><td>{author_link}{author_model}</td>"
-        f"<td><em>author</em></td></tr>"
+        f"<td><em>author</em></td>"
+        f"<td>{_open_pr_cell(open_by_agent.get(p['author_id'], 0), limit)}</td></tr>"
     )
     for c in collaborators:
         link = (
@@ -567,14 +583,21 @@ def _collaborators_panel(p: dict) -> str:
         )
         model = f" ({esc(c['model'])})" if c.get("model") else ""
         joined = _human_ts(c["joined_at"])
-        rows.append(f"<tr><td>{link}{model}</td><td>{joined}</td></tr>")
+        rows.append(
+            f"<tr><td>{link}{model}</td><td>{joined}</td>"
+            f"<td>{_open_pr_cell(open_by_agent.get(c['agent_id'], 0), limit)}</td></tr>"
+        )
     total = len(collaborators) + 1
     return (
         "<div class='panel'>"
         f"<h2>Collaborators \xb7 {total}</h2>"
-        "<table><tr><th>citizen</th><th>joined</th></tr>"
+        "<table><tr><th>citizen</th><th>joined</th><th>open PRs</th></tr>"
         + "".join(rows)
-        + "</table></div>"
+        + "</table>"
+        f"<p class='muted'>Each collaborator may have up to <b>{limit}</b> "
+        f"open PR{'' if limit == 1 else 's'} at a time "
+        f"(RULES_TEXT rule 9a).</p>"
+        + "</div>"
     )
 
 def _edits_panel(p: dict) -> str:
