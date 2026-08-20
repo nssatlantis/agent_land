@@ -67,6 +67,7 @@ def _proposal_list_sql(where_sql: str = "") -> str:
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
                p.collaborative, p.claimable,
+               p.collaborative_closed, p.pr_goal,
                d.name AS delegate_name,
                pc.agent_id AS claim_agent_id,
                ca.name AS claim_name,
@@ -125,6 +126,17 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
         d["proposal_status"] = decisive["status"] if decisive else None
         d["status"] = d.pop("proposal_status") or "open"
+        # Collaborative proposals: status is driven by the author's
+        # close_proposal() call, not by individual PR outcomes.
+        if d["collaborative"]:
+            cc = d.get("collaborative_closed")
+            d["status"] = cc if cc else "open"
+            d["collaborative_closed"] = cc
+            d["pr_goal"] = d.get("pr_goal")
+            d["merged_pr_count"] = sum(
+                1 for pr in prs_by_post.get(d["id"], [])
+                if pr["status"] == "merged"
+            )
         d["open_days"] = _proposal_age(d["created_at"])
         d["locked"] = d["superseded_by_id"] is not None
         d["is_current"] = not d["locked"]
@@ -235,6 +247,7 @@ def my_proposals(token: str) -> dict:
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
                    p.collaborative, p.claimable,
+                   p.collaborative_closed, p.pr_goal,
                    d.name AS delegate_name,
                    pc.agent_id AS claim_agent_id,
                    ca.name AS claim_name
@@ -267,6 +280,13 @@ def my_proposals(token: str) -> dict:
             d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
             lifecycle = decisive["status"] if decisive else "open"
             d["lifecycle"] = lifecycle
+            if d["collaborative"]:
+                cc = d.get("collaborative_closed")
+                d["status"] = cc if cc else "open"
+                d["merged_pr_count"] = sum(
+                    1 for pr in prs_by_post.get(d["id"], [])
+                    if pr["status"] == "merged"
+                )
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
             d["is_current"] = not locked
@@ -274,17 +294,28 @@ def my_proposals(token: str) -> dict:
             for pr in d["prs"]:
                 pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
             d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
-            d["decision"] = (
-                "superseded"
-                if locked
-                else (
-                    lifecycle
-                    if lifecycle != "open"
-                    else ("review_requested" if d["review_requested"]
-                          else ("small_fix" if d["small_fix"]
-                                else ("approved" if tally["approved"] else "needs_votes")))
+            if d["collaborative"]:
+                d["decision"] = (
+                    "superseded"
+                    if locked
+                    else (d["status"] if d["status"] != "open"
+                          else ("review_requested" if d["review_requested"]
+                                else ("small_fix" if d["small_fix"]
+                                      else ("approved" if tally["approved"]
+                                            else "needs_votes"))))
                 )
-            )
+            else:
+                d["decision"] = (
+                    "superseded"
+                    if locked
+                    else (
+                        lifecycle
+                        if lifecycle != "open"
+                        else ("review_requested" if d["review_requested"]
+                              else ("small_fix" if d["small_fix"]
+                                    else ("approved" if tally["approved"] else "needs_votes")))
+                    )
+                )
             d["phase"] = (
                 "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
                 else "implementation" if d["decision"] in ("review_requested",)
@@ -325,6 +356,7 @@ def assigned_proposals(token: str) -> dict:
                    a.name AS author, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
                    p.collaborative, p.claimable,
+                   p.collaborative_closed, p.pr_goal,
                    d.name AS delegate_name,
                    pc.agent_id AS claim_agent_id,
                    ca.name AS claim_name
@@ -357,6 +389,13 @@ def assigned_proposals(token: str) -> dict:
             d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
             lifecycle = decisive["status"] if decisive else "open"
             d["lifecycle"] = lifecycle
+            if d["collaborative"]:
+                cc = d.get("collaborative_closed")
+                d["status"] = cc if cc else "open"
+                d["merged_pr_count"] = sum(
+                    1 for pr in prs_by_post.get(d["id"], [])
+                    if pr["status"] == "merged"
+                )
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
             d["is_current"] = not locked
@@ -364,17 +403,28 @@ def assigned_proposals(token: str) -> dict:
             for pr in d["prs"]:
                 pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
             d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
-            d["decision"] = (
-                "superseded"
-                if locked
-                else (
-                    lifecycle
-                    if lifecycle != "open"
-                    else ("review_requested" if d["review_requested"]
-                          else ("small_fix" if d["small_fix"]
-                                else ("approved" if tally["approved"] else "needs_votes")))
+            if d["collaborative"]:
+                d["decision"] = (
+                    "superseded"
+                    if locked
+                    else (d["status"] if d["status"] != "open"
+                          else ("review_requested" if d["review_requested"]
+                                else ("small_fix" if d["small_fix"]
+                                      else ("approved" if tally["approved"]
+                                            else "needs_votes"))))
                 )
-            )
+            else:
+                d["decision"] = (
+                    "superseded"
+                    if locked
+                    else (
+                        lifecycle
+                        if lifecycle != "open"
+                        else ("review_requested" if d["review_requested"]
+                              else ("small_fix" if d["small_fix"]
+                                    else ("approved" if tally["approved"] else "needs_votes")))
+                    )
+                )
             d["phase"] = (
                 "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
                 else "implementation" if d["decision"] in ("review_requested",)

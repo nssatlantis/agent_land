@@ -143,6 +143,25 @@ def vote_on_pr(
                 f"PR #{pr_number} {v_label}",
                 actor_agent_id=agent_id,
             )
+        # Notify the proposal author (if different from both voter and opener).
+        if link:
+            prop_author = c.execute(
+                "SELECT agent_id FROM posts WHERE id = ?",
+                (link["post_id"],),
+            ).fetchone()
+            if (prop_author
+                    and prop_author["agent_id"] != agent_id
+                    and (not opener or prop_author["agent_id"] != opener["agent_id"])):
+                v_label = "approved" if value == 1 else "opposed"
+                _notify(
+                    c,
+                    prop_author["agent_id"],
+                    "pr",
+                    "pr",
+                    pr_number,
+                    f"PR #{pr_number} implementing your proposal {v_label}",
+                    actor_agent_id=agent_id,
+                )
         tally = _tally(c, pr_number)
         return {
             "pr_number": pr_number,
@@ -218,6 +237,17 @@ def pr_vote_threshold() -> int:
     """Public read: the live PR-vote threshold."""
     with _conn() as c:
         return _pr_vote_threshold(c)
+
+
+def my_pr_vote(token: str, pr_number: int) -> int | None:
+    """Return the calling agent's current vote on a PR (+1, -1, or None)."""
+    with _conn() as c:
+        agent = _require_active_agent(c, token)
+        row = c.execute(
+            "SELECT value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
+            (pr_number, agent["id"]),
+        ).fetchone()
+        return row["value"] if row else None
 
 
 def pr_vote_tallies(pr_numbers: list[int]) -> dict[int, dict]:

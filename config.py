@@ -201,6 +201,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # The full /status page always reads fresh: it is one request, not a
     # poll loop.
     "STATUS_CACHE_SECONDS": ("FORUM_STATUS_CACHE_SECONDS", 5, int),
+    # Viewer /status: minimum line count for a .py file to appear in the
+    # "Source files" panel. Higher values show only the biggest files.
+    "STATUS_BIG_FILE_THRESHOLD": ("FORUM_STATUS_BIG_FILE_THRESHOLD", 1500, int),
     # Tags (the karma-priced taxonomy; karma_spends is the only mover of
     # effective karma)
     # Creating a tag costs TAG_CREATE_COST karma and needs at least
@@ -231,10 +234,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # PR voting: floor for the derived PR vote threshold (live bar = max(floor,
     # ceil(active citizens / 3))).  0 disables auto-merge/decline.
-    # Normal (non-small-fix) PRs still require maintainer merge.
     "PR_VOTE_THRESHOLD": ("FORUM_PR_VOTE_THRESHOLD", 3, int),
+    # When set to 1 (default), only small-fix PRs are eligible for
+    # auto-merge/decline via PR votes.  Set to 0 to extend auto-merge
+    # and auto-decline to all PRs with linked proposals (CI green + no
+    # hold label required).
+    "PR_AUTO_MERGE_SMALL_FIX_ONLY": (
+        "FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", 1, int,
+    ),
     # Minimum effective_karma to vote on a PR.
-    "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 1, int),
+    "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 2, int),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.

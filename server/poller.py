@@ -36,6 +36,11 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
             reports.resolve_stale_reports()
+            # Proposal #120: also auto-resolve leaning-clear reports whose
+            # suspend verdict is structurally impossible (the eligible pool
+            # can never reach the bar) - timing-only, the stale sweep would
+            # clear them at day 14 anyway.
+            reports.resolve_impossible_reports()
         except Exception:
             pass  # the sweep must never stall the poller; retry next interval
         try:
@@ -234,8 +239,9 @@ _HOLD_LABEL = "hold"
 def _pr_vote_sweep() -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
-    Only small-fix PRs are eligible for auto-merge (normal PRs still
-    require maintainer merge).  A PR is auto-merged when:
+    By default (PR_AUTO_MERGE_SMALL_FIX_ONLY=1) only small-fix PRs are
+    eligible; when set to 0, all linked PRs qualify.  A PR is auto-merged
+    when:
       - net votes >= the derived PR vote threshold (max(floor,
         ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD)
       - CI is green (or no CI required)
@@ -258,13 +264,16 @@ def _pr_vote_sweep() -> list[dict]:
         if not proposal_post_id:
             continue
         with db._conn() as conn:
-            # Check if the proposal is a small_fix
-            prow = conn.execute(
-                "SELECT proposal_kind FROM posts WHERE id = ?",
-                (proposal_post_id,),
-            ).fetchone()
-            if prow is None or prow["proposal_kind"] != "small_fix":
-                continue  # only small-fix PRs are auto-merge eligible
+            # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
+            # small-fix PRs are auto-merge eligible.  Set to 0 to extend
+            # to all PRs with linked proposals.
+            if config.PR_AUTO_MERGE_SMALL_FIX_ONLY:
+                prow = conn.execute(
+                    "SELECT proposal_kind FROM posts WHERE id = ?",
+                    (proposal_post_id,),
+                ).fetchone()
+                if prow is None or prow["proposal_kind"] != "small_fix":
+                    continue
             # Check for hold label
             try:
                 if github.pr_has_label(number, _HOLD_LABEL):

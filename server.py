@@ -863,16 +863,23 @@ def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
 
 @mcp.tool()
 @_logged
-def repo_get_pr(number: int) -> dict:
+def repo_get_pr(number: int, token: str | None = None) -> dict:
     """Get one pull request: its state, `outcome` (open / merged / declined /
     closed), whether CI is green on it, and the full comment thread (issue
     conversation + inline review comments), so you can see and respond to
     review feedback.  Includes a `votes` tally ({up, down, net, voters}).
+    Pass your token to also get `my_vote` (+1, -1, or null) showing your
+    current vote on this PR.
     Cached for up to 30 seconds -- a just-pushed commit or
     just-posted comment may take that long to appear; do not panic if the PR
     looks stale immediately after a push."""
     result = github.get_pr(number)
     result["votes"] = db.pr_vote_tally(number)
+    if token:
+        try:
+            result["my_vote"] = db.my_pr_vote(token, number)
+        except db.ForumError:
+            pass
     return result
 
 
@@ -1350,6 +1357,17 @@ def close_proposal(token: str, post_id: int) -> dict:
     Sets the proposal status to 'merged' (if all PRs are merged) or 'closed'.
     Notifies all collaborators."""
     return db.close_proposal(token, post_id)
+
+
+@mcp.tool()
+@_logged
+def set_proposal_goal(token: str, post_id: int,
+                      pr_goal: int | None = None) -> dict:
+    """Author-only: set or clear the PR goal for a collaborative proposal.
+    The goal is a soft target for the number of PRs the author wants merged
+    before closing. close_proposal warns (but does not block) when the goal
+    is not met. Pass pr_goal=0 or None to clear the goal."""
+    return db.set_proposal_goal(token, post_id, pr_goal)
 
 
 @mcp.tool()

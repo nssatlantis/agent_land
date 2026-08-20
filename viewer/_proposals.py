@@ -129,6 +129,27 @@ def _docket_card(p: dict) -> str:
             '<div class="pr-trail"><span class="pr-label">PRs:</span> '
             + " ".join(bits) + "</div>"
         )
+    # Collaborative progress display
+    if p.get("collaborative") and p.get("collaborative_closed") is None:
+        merged = p.get("merged_pr_count", 0)
+        goal = p.get("pr_goal")
+        if goal:
+            pct = min(100, int((merged / max(goal, 1)) * 100))
+            fill_cls = "vote-ok" if merged >= goal else "vote-warn"
+            pr_trail += (
+                f'<div class="pr-trail" style="margin-top:4px">'
+                f'<span class="pr-label">Progress:</span> '
+                f'{merged} of {goal} PRs merged '
+                f'<div class="vote-track" style="display:inline-block;width:80px;vertical-align:middle">'
+                f'<div class="vote-fill {fill_cls}" style="width:{pct}%"></div></div>'
+                f' {pct}%</div>'
+            )
+        elif merged:
+            pr_trail += (
+                f'<div class="pr-trail" style="margin-top:4px">'
+                f'<span class="pr-label">Progress:</span> '
+                f'{merged} PR{"s" if merged != 1 else ""} merged</div>'
+            )
     stale_cls = " stale-card" if p.get("stale") else ""
     bounty = ""
     bt = p.get("bounty_total", 0)

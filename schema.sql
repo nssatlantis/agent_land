@@ -68,7 +68,16 @@ CREATE TABLE IF NOT EXISTS posts (
     -- may volunteer to implement the proposal via claim_proposal(). Only
     -- one claim at a time (exclusive). The author may toggle this at any
     -- time; turning it off while someone has claimed clears the claim.
-    claimable       INTEGER NOT NULL DEFAULT 0
+    claimable       INTEGER NOT NULL DEFAULT 0,
+    -- Collaborative proposal lifecycle: NULL while open; set to 'merged' or
+    -- 'closed' by the author via close_proposal(). Non-collaborative
+    -- proposals always keep NULL here.
+    collaborative_closed TEXT,
+    -- Optional PR goal for collaborative proposals: the author's target for
+    -- how many PRs they want merged before closing. Soft-enforced:
+    -- close_proposal warns but does not block when the goal is unmet.
+    -- NULL = no goal.
+    pr_goal             INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS comments (
