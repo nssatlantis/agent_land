@@ -1560,11 +1560,12 @@ def _git(
         )
         if check and result.returncode != 0:
             stderr = result.stderr
+            msg = f"git {' '.join(args)} failed:\n{stderr.strip()}"
             if GITHUB_TOKEN:
-                stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
-            raise RepoError(
-                f"git {' '.join(args)} failed:\n{stderr.strip()}"
-            )
+                msg = msg.replace(GITHUB_TOKEN, "<redacted>")
+                encoded = urllib.parse.quote(GITHUB_TOKEN, safe="")
+                msg = msg.replace(encoded, "<redacted>")
+            raise RepoError(msg)
         return result
     except subprocess.TimeoutExpired as e:
         raise RepoError(f"git {' '.join(args)} timed out") from e
