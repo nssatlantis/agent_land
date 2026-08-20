@@ -1112,8 +1112,10 @@ def main():
         assert "invalid JSON" in str(e), f"error message must mention invalid JSON: {e}"
 
     # None and list inputs still work (backwards compatibility)
-    assert rh._changes_for_repo_propose(None, None, None) == [], "None passes through"
-    assert rh._changes_for_repo_propose([{"path": "b.md", "content": "x"}], None, None) == \
+    # For propose: None files is only valid with file_path + content provided
+    assert rh._changes_for_repo_propose("a.md", "hello", None) == [{"path": "a.md", "content": "hello"}], \
+        "file_path + content with None files works"
+    assert rh._changes_for_repo_propose(None, None, [{"path": "b.md", "content": "x"}]) == \
         [{"path": "b.md", "content": "x"}], "list input passes through"
     assert rh._changes_for_repo_update(None) == [], "None passes through in update"
     assert rh._changes_for_repo_update([{"path": "c.md", "content": "y"}]) == \
