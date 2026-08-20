@@ -144,6 +144,8 @@ async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, st
 # own cache, which a 5s TTL makes harmlessly eventually-consistent.
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
+_NETWORK_TIMEOUT_SECONDS = 10
+
 async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | None]:
     """The status page's shared reads: (by_name, latency, repo, prs). Both the
     full page and the soft-refresh banner/pulse fragments run the same reads
