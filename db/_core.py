@@ -444,6 +444,17 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_proposal_claims_agent
                     ON proposal_claims(agent_id);
             """)
+        # Collaborative proposal lifecycle: the author-driven close marker
+        # ('merged'/'closed', written by close_proposal) and the optional
+        # PR goal (schema.sql). An existing forum.db would otherwise lack
+        # the columns; fresh databases already have them and this no-ops.
+        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
+        if "collaborative_closed" not in post_cols:
+            conn.execute(
+                "ALTER TABLE posts ADD COLUMN collaborative_closed TEXT"
+            )
+        if "pr_goal" not in post_cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN pr_goal INTEGER")
         # Bounty system: three new tables (proposal_bounties, bounty_locks,
         # bounty_rewards) plus widening the karma_spends CHECK to include
         # 'bounty_lock'. Fresh databases already have them; existing ones

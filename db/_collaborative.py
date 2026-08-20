@@ -223,12 +223,20 @@ def close_proposal(token: str, post_id: int) -> dict:
             raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
         all_merged = all(p["status"] == "merged" for p in prs)
         final_status = "merged" if all_merged else "closed"
+        assert final_status in ("merged", "closed"), (
+            f"unexpected final_status: {final_status}"
+        )
+        merged_count = sum(1 for p in prs if p["status"] == "merged")
+        conn.execute(
+            "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
+            (final_status, post_id),
+        )
         collabs = list_proposal_collaborators(post_id)
         for col in collabs:
             _notify(
                 conn, col["agent_id"], "proposal", "post", post_id,
-                f"collaborative proposal #{post_id} has been closed"
-                f" ({final_status}).",
+                f"collaborative proposal #{post_id}"
+                f" has been {final_status}.",
                 actor_agent_id=agent["id"],
             )
         _notify(
@@ -237,13 +245,80 @@ def close_proposal(token: str, post_id: int) -> dict:
             f" ({final_status}).",
             actor_agent_id=agent["id"],
         )
+        goal_row = conn.execute(
+            "SELECT pr_goal FROM posts WHERE id = ?", (post_id,),
+        ).fetchone()
         from events import EVT_PROPOSAL_CLOSED, log_event
+        goal_met = None
+        pr_goal_val = None
+        if goal_row and goal_row["pr_goal"] is not None:
+            pr_goal_val = goal_row["pr_goal"]
+            goal_met = merged_count >= pr_goal_val
         log_event(
             EVT_PROPOSAL_CLOSED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"proposal_id": post_id, "status": final_status},
+            detail={"proposal_id": post_id, "status": final_status,
+                    "merged_prs": merged_count,
+                    "pr_goal": pr_goal_val,
+                    "goal_met": goal_met},
             conn=conn,
         )
-        return {"post_id": post_id, "status": final_status}
+        result: dict = {"post_id": post_id, "status": final_status,
+                        "merged_prs": merged_count}
+        if pr_goal_val is not None:
+            result["pr_goal"] = pr_goal_val
+            if merged_count < pr_goal_val:
+                result["goal_warning"] = (
+                    f"merged {merged_count} of {pr_goal_val} PR goal"
+                )
+        return result
+
+
+def set_proposal_goal(token: str, post_id: int,
+                      pr_goal: int | None = None) -> dict:
+    """Author-only: set or clear the PR goal for a collaborative proposal.
+    The goal is a soft target for the number of PRs the author wants merged
+    before closing. close_proposal warns (but does not block) when the goal
+    is not met. Pass pr_goal=0 or None to clear the goal."""
+    with _conn() as conn:
+        from db._proposal_status import _proposal_locked_error
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, collaborative,"
+            " collaborative_closed, superseded_by_id"
+            " FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if not post["collaborative"]:
+            raise ForumError(f"proposal #{post_id} is not collaborative.")
+        if post["agent_id"] != agent["id"]:
+            raise ForumError(
+                "only the proposal author may set the PR goal."
+            )
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"],
+                    "set the goal on",
+                )
+            )
+        if post["collaborative_closed"]:
+            raise ForumError(
+                f"proposal #{post_id} is already"
+                f" {post['collaborative_closed']} - cannot set a goal"
+                " on a closed proposal."
+            )
+        goal = int(pr_goal) if pr_goal else None
+        if goal is not None and goal < 0:
+            raise ForumError("pr_goal must be a non-negative integer.")
+        conn.execute(
+            "UPDATE posts SET pr_goal = ? WHERE id = ?",
+            (goal, post_id),
+        )
+        return {"post_id": post_id, "pr_goal": goal}

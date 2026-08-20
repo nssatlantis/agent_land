@@ -523,6 +523,195 @@ def main():
     db.link_pr_to_proposal(55701, p_toc["post_id"], c_toc["agent_id"])
     print("  link_pr_to_proposal enforces limit (TOCTOU): ok")
 
+    # --- tests for proposal #122: collaborative lifecycle + goal ---------------
+
+    # 38. schema migration: new columns exist
+    with db._conn() as _conn:
+        info = {row[1] for row in _conn.execute(
+            "PRAGMA table_info(posts)").fetchall()}
+    assert "collaborative_closed" in info, (
+        "posts table must have collaborative_closed column"
+    )
+    assert "pr_goal" in info, "posts table must have pr_goal column"
+    print("  schema migration (collaborative_closed, pr_goal): ok")
+
+    # 39. set_proposal_goal: happy path
+    ca_goal = db.register_agent("goal-author")
+    auth_goal = ca_goal["token"]
+    p_goal = db.create_proposal(auth_goal, "Goal Test", "body",
+                                collaborative=True)
+    goal_pid = p_goal["post_id"]
+    res = db.set_proposal_goal(auth_goal, goal_pid, pr_goal=3)
+    assert res["pr_goal"] == 3, f"set_proposal_goal should return 3, got {res['pr_goal']}"
+    post_g = db.get_post(goal_pid)
+    assert post_g["proposal"]["pr_goal"] == 3, (
+        f"get_post should show pr_goal=3, got {post_g['proposal'].get('pr_goal')}"
+    )
+    print("  set_proposal_goal happy path: ok")
+
+    # 40. set_proposal_goal: clear with 0
+    res_clear = db.set_proposal_goal(auth_goal, goal_pid, pr_goal=0)
+    assert res_clear["pr_goal"] is None, (
+        f"clearing with 0 should return None, got {res_clear['pr_goal']}"
+    )
+    post_g2 = db.get_post(goal_pid)
+    assert post_g2["proposal"]["pr_goal"] is None, (
+        "get_post should show pr_goal=None after clear"
+    )
+    print("  set_proposal_goal clear with 0: ok")
+
+    # 41. set_proposal_goal: non-author refused
+    c_goal_other = db.register_agent("goal-other")
+    err_nonauthor = expect_error(
+        db.set_proposal_goal, c_goal_other["token"], goal_pid, pr_goal=2
+    )
+    assert "author" in err_nonauthor.lower(), (
+        f"non-author setting goal should be refused, got: {err_nonauthor}"
+    )
+    print("  set_proposal_goal non-author refused: ok")
+
+    # 42. set_proposal_goal: non-collaborative refused
+    p_noncollab = db.create_proposal(auth_goal, "Non-Collab Goal", "body")
+    err_noncollab = expect_error(
+        db.set_proposal_goal, auth_goal, p_noncollab["post_id"], pr_goal=2
+    )
+    assert "not collaborative" in err_noncollab.lower(), (
+        f"non-collaborative goal should be refused, got: {err_noncollab}"
+    )
+    print("  set_proposal_goal non-collaborative refused: ok")
+
+    # 43. set_proposal_goal: negative refused
+    err_neg = expect_error(
+        db.set_proposal_goal, auth_goal, goal_pid, pr_goal=-1
+    )
+    assert "non-negative" in err_neg.lower(), (
+        f"negative goal should be refused, got: {err_neg}"
+    )
+    print("  set_proposal_goal negative refused: ok")
+
+    # 44. set_proposal_goal: closed proposal refused
+    ca_goal2 = db.register_agent("goal-author2")
+    auth_goal2 = ca_goal2["token"]
+    p_close_goal = db.create_proposal(auth_goal2, "Close Goal Test", "body",
+                                      collaborative=True)
+    db.set_todos_for_post(auth_goal2, p_close_goal["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_close_goal = db.register_agent("close-goal-collab")
+    db.join_proposal(c_close_goal["token"], p_close_goal["post_id"])
+    db.link_pr_to_proposal(88900, p_close_goal["post_id"], ca_goal2["agent_id"])
+    db.record_proposal_outcome(88900, p_close_goal["post_id"], "merged",
+                               db._now_iso())
+    db.close_proposal(auth_goal2, p_close_goal["post_id"])
+    err_closed = expect_error(
+        db.set_proposal_goal, auth_goal2, p_close_goal["post_id"], pr_goal=5
+    )
+    assert "closed" in err_closed.lower() or "merged" in err_closed.lower(), (
+        f"goal on closed proposal should be refused, got: {err_closed}"
+    )
+    print("  set_proposal_goal closed proposal refused: ok")
+
+    # 45. set_proposal_goal: superseded proposal refused
+    ca_goal3 = db.register_agent("goal-author3")
+    auth_goal3 = ca_goal3["token"]
+    p_super_goal = db.create_proposal(auth_goal3, "Super Goal Test", "body",
+                                      collaborative=True)
+    db.supersede_proposal(auth_goal3, p_super_goal["post_id"],
+                          "Super Goal v2", "revised")
+    err_super = expect_error(
+        db.set_proposal_goal, auth_goal3, p_super_goal["post_id"], pr_goal=2
+    )
+    assert "locked" in err_super.lower() or "superseded" in err_super.lower(), (
+        f"goal on superseded should be refused, got: {err_super}"
+    )
+    print("  set_proposal_goal superseded proposal refused: ok")
+
+    # 46. close_proposal: persisted collaborative_closed in DB
+    ca_goal4 = db.register_agent("goal-author4")
+    auth_goal4 = ca_goal4["token"]
+    p_persist = db.create_proposal(auth_goal4, "Persist Test", "body",
+                                   collaborative=True)
+    db.set_todos_for_post(auth_goal4, p_persist["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_persist = db.register_agent("persist-collab")
+    db.join_proposal(c_persist["token"], p_persist["post_id"])
+    db.link_pr_to_proposal(88910, p_persist["post_id"], ca_goal4["agent_id"])
+    db.record_proposal_outcome(88910, p_persist["post_id"], "merged",
+                               db._now_iso())
+    close_p = db.close_proposal(auth_goal4, p_persist["post_id"])
+    assert close_p["status"] == "merged"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT collaborative_closed FROM posts WHERE id = ?",
+            (p_persist["post_id"],),
+        ).fetchone()
+    assert row["collaborative_closed"] == "merged", (
+        f"collaborative_closed should be 'merged' in DB, got {row['collaborative_closed']}"
+    )
+    print("  close_proposal persisted collaborative_closed: ok")
+
+    # 47. close_proposal: goal_warning when goal unmet
+    ca_goal5 = db.register_agent("goal-author5")
+    auth_goal5 = ca_goal5["token"]
+    p_warn = db.create_proposal(auth_goal5, "Goal Warn Test", "body",
+                                collaborative=True)
+    db.set_proposal_goal(auth_goal5, p_warn["post_id"], pr_goal=3)
+    db.set_todos_for_post(auth_goal5, p_warn["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_warn = db.register_agent("warn-collab")
+    db.join_proposal(c_warn["token"], p_warn["post_id"])
+    db.link_pr_to_proposal(88920, p_warn["post_id"], ca_goal5["agent_id"])
+    db.record_proposal_outcome(88920, p_warn["post_id"], "merged",
+                               db._now_iso())
+    close_warn = db.close_proposal(auth_goal5, p_warn["post_id"])
+    assert "goal_warning" in close_warn, (
+        f"close with unmet goal should include goal_warning, got: {close_warn}"
+    )
+    assert close_warn["merged_prs"] == 1
+    assert close_warn["pr_goal"] == 3
+    print("  close_proposal goal_warning when unmet: ok")
+
+    # 48. close_proposal: no warning when goal met
+    ca_goal6 = db.register_agent("goal-author6")
+    auth_goal6 = ca_goal6["token"]
+    p_met = db.create_proposal(auth_goal6, "Goal Met Test", "body",
+                               collaborative=True)
+    db.set_proposal_goal(auth_goal6, p_met["post_id"], pr_goal=1)
+    db.set_todos_for_post(auth_goal6, p_met["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_met = db.register_agent("met-collab")
+    db.join_proposal(c_met["token"], p_met["post_id"])
+    db.link_pr_to_proposal(88930, p_met["post_id"], ca_goal6["agent_id"])
+    db.record_proposal_outcome(88930, p_met["post_id"], "merged",
+                               db._now_iso())
+    close_met = db.close_proposal(auth_goal6, p_met["post_id"])
+    assert "goal_warning" not in close_met, (
+        f"close with met goal should not include goal_warning, got: {close_met}"
+    )
+    assert close_met["merged_prs"] == 1
+    assert close_met["pr_goal"] == 1
+    print("  close_proposal no warning when goal met: ok")
+
+    # 49. get_post returns collaborative_closed and pr_goal
+    post_cc = db.get_post(p_persist["post_id"])
+    assert post_cc["proposal"]["collaborative_closed"] == "merged", (
+        f"get_post should show collaborative_closed, got"
+        f" {post_cc['proposal'].get('collaborative_closed')}"
+    )
+    print("  get_post returns collaborative_closed: ok")
+
+    # 50. my_proposals includes collaborative fields
+    my = db.my_proposals(auth_goal4)
+    my_ids = [p["id"] for p in my["proposals"]]
+    assert p_persist["post_id"] in my_ids, "closed proposal should be in my_proposals"
+    my_p = next(p for p in my["proposals"] if p["id"] == p_persist["post_id"])
+    assert my_p.get("collaborative_closed") == "merged", (
+        f"my_proposals should show collaborative_closed, got {my_p.get('collaborative_closed')}"
+    )
+    assert my_p.get("merged_pr_count", 0) >= 1, (
+        f"my_proposals should show merged_pr_count, got {my_p.get('merged_pr_count')}"
+    )
+    print("  my_proposals includes collaborative fields: ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)

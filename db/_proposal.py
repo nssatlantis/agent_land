@@ -573,6 +573,7 @@ def require_proposal_approval(
             """
             SELECT p.id, p.agent_id, p.proposal_kind, p.body, p.delegate_id,
                    p.superseded_by_id, p.collaborative, p.claimable,
+                   p.collaborative_closed,
                    a.name AS author
             FROM posts p JOIN agents a ON a.id = p.agent_id
             WHERE p.id = ?
@@ -596,6 +597,12 @@ def require_proposal_approval(
                 "request; pursue a new idea with a new proposal."
             )
         if row["collaborative"]:
+            if row["collaborative_closed"]:
+                raise ForumError(
+                    f"proposal #{post_id} has been"
+                    f" {row['collaborative_closed']} by the author - no"
+                    " more pull requests may be opened."
+                )
             open_pr_count = c.execute(
                 "SELECT COUNT(*) FROM proposal_links pl"
                 " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
