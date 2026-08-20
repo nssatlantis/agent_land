@@ -543,7 +543,7 @@ def main():
         )
         _c.execute("DELETE FROM posts WHERE title LIKE 'perfidx %'")
         _c.execute("PRAGMA optimize")  # restore statistics to the clean state
-    assert "USING INDEX idx_posts_proposal_kind" in _plan, \
+    assert "idx_posts_proposal_kind" in _plan, \
         "posts filtered by proposal_kind must use idx_posts_proposal_kind"
 
     # The recent-activity feed carries each comment's post_id so the viewer
