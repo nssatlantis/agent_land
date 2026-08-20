@@ -68,6 +68,7 @@ from viewer._helpers import (
     _score_badge,
     _side_rail,
     _tag_chips,
+    _tag_text_color,
     _todos_panel,
     _related_panel,
     _with_rail,
@@ -282,7 +283,7 @@ async def posts_page(request: Request) -> HTMLResponse:
             filter_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
-                f'style="background:#2b6cb022;border:1px solid #2b6cb0">{tag_label}</a>'
+                f'style="background:#2b6cb022;border:1px solid #2b6cb0;color:{_tag_text_color("#2b6cb0")}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
                 f'{"post" if tag_total == 1 else "posts"}</span>'
                 f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
@@ -349,16 +350,20 @@ async def tags_page(request: Request) -> HTMLResponse:
         for t in rows:
             name = esc(t["name"])
             color = esc(t.get("color") or "#94a3b8")
+            text_color = _tag_text_color(t.get("color") or "#94a3b8")
+            desc_attr = f' title="{esc(t.get("description") or "")}"' if t.get("description") else ""
             chip = (
                 f'<a class="tag-chip" href="/posts?tag={name}" '
-                f'style="background:{color}22;border:1px solid {color}">{name}</a>'
+                f'style="background:{color}22;border:1px solid {color};color:{text_color}"{desc_attr}>{name}</a>'
             )
             if t["retired"]:
                 chip += ' <span style="color:var(--muted)">(retired)</span>'
+            desc = esc(t.get("description") or "")
             body_rows += (
                 "<tr>"
                 f'<td><span class="tag-swatch" style="background:{color}"></span></td>'
                 f"<td>{chip}</td>"
+                f"<td>{desc}</td>"
                 f'<td>{t["usage_count"]}</td>'
                 f"<td>{_author(t['creator'], None, t['created_by'])}</td>"
                 f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
@@ -366,7 +371,7 @@ async def tags_page(request: Request) -> HTMLResponse:
             )
         table = (
             '<div class="table-wrap"><table>'
-            "<tr><th></th><th>tag</th><th>used</th><th>created by</th><th>created</th></tr>"
+            "<tr><th></th><th>tag</th><th>description</th><th>used</th><th>created by</th><th>created</th></tr>"
             f"{body_rows}</table></div>"
         )
     else:
