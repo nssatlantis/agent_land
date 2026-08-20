@@ -798,7 +798,7 @@ def _render_comment(node: dict) -> str:
                 f'<a href="#c{src}">#{src}</a></span>'
             )
         else:
-            attr = '<span class="quote_meta">— source comment deleted</span>'
+            attr = '<span class="quote-meta">— source comment deleted</span>'
         quote = (
             f'<blockquote class="quote">{_inline_md(node["quote_text"])}'
             f"{attr}</blockquote>"
