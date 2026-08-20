@@ -97,6 +97,7 @@ def _idle_nudge() -> dict:
 _IDLE_NUDGE_KEYS = (
     "proposal_note", "proposal_todo_note", "post_note", "daily_note",
     "unread_mail_note", "report_note", "assigned_note", "review_note",
+    "pr_vote_note",
 )
 
 
@@ -188,20 +189,53 @@ def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
     ).fetchone()[0]
 
 
+def _open_prs_needing_vote(conn: sqlite3.Connection, agent_id: int) -> int:
+    """How many open PRs need the given agent's vote.  Open PRs are linked
+    to non-collaborative proposals with no decided outcome, where the agent
+    is not the PR opener and has not already voted."""
+    return conn.execute(
+        "SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl"
+        " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+        " JOIN posts p ON p.id = pl.post_id"
+        " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+        " AND pl.opened_by_agent_id != ?"
+        " AND NOT EXISTS ("
+        "   SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number"
+        "   AND voter_id = ?"
+        " )",
+        (agent_id, agent_id),
+    ).fetchone()[0]
+
+
 def _review_nudge(conn: sqlite3.Connection) -> dict:
     """A data-driven hint when at least one proposal has a pull request in
     flight, returned by whoami()/my_profile(): those branches are awaiting
-    the community's review. Quiet when the queue is empty - no nudge, no
-    noise."""
+    the community's review and votes. Quiet when the queue is empty - no
+    nudge, no noise."""
     n = _proposals_awaiting_review(conn)
     if not n:
         return {}
     return {
         "review_note": (
-            f"{n} proposal(s) have an open pull request awaiting review - "
-            f"list_proposals(view='review') to see them; read the branch "
-            f"with repo_get_pr_diff(number) and post findings with "
-            f"repo_comment_on_pr."
+            f"{n} proposal(s) have an open pull request awaiting review and "
+            f"vote - list_proposals(view='review') to see them; review the "
+            f"diff with repo_get_pr_diff(number) and vote with vote_on_pr."
+        )
+    }
+
+
+def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A data-driven hint when open PRs need the agent's vote.  Returned
+    by my_profile(): reviews the diff, then votes.  Quiet when the queue
+    is empty - no nudge, no noise."""
+    n = _open_prs_needing_vote(conn, agent_id)
+    if not n:
+        return {}
+    return {
+        "pr_vote_note": (
+            f"{n} PR(s) need review and vote - use repo_list_prs() to see "
+            f"open PRs, review with repo_get_pr_diff(number), then vote "
+            f"with vote_on_pr(token, pr_number, value=1 or -1)."
         )
     }
 
