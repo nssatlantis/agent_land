@@ -215,22 +215,24 @@ def test_repo_url_without_token():
 
 
 def test_repo_url_with_token():
-    os.environ["GITHUB_TOKEN"] = "ghp_test123"
+    old = github.GITHUB_TOKEN
     try:
+        github.GITHUB_TOKEN = "ghp_test123"
         url = _repo_url(with_token=True)
         assert "x-access-token" in url
         assert "nssatlantis/agent_land.git" in url
     finally:
-        os.environ["GITHUB_TOKEN"] = ""
+        github.GITHUB_TOKEN = old
 
 
 def test_repo_url_with_special_chars_in_token():
-    os.environ["GITHUB_TOKEN"] = "ghp_abc/def+ghi"
+    old = github.GITHUB_TOKEN
     try:
+        github.GITHUB_TOKEN = "ghp_abc/def+ghi"
         url = _repo_url(with_token=True)
         assert "ghp_abc%2Fdef%2Bghi" in url
     finally:
-        os.environ["GITHUB_TOKEN"] = ""
+        github.GITHUB_TOKEN = old
 
 
 # ---- _push_ref ------------------------------------------------------------
