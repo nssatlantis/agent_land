@@ -154,11 +154,15 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative,
+                   p.collaborative, p.claimable,
                    d.name AS delegate_name,
+                   pc.agent_id AS claim_agent_id,
+                   ca.name AS claim_name,
                    substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
             FROM posts p JOIN agents a ON a.id = p.agent_id
             LEFT JOIN agents d ON d.id = p.delegate_id
+            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+            LEFT JOIN agents ca ON ca.id = pc.agent_id
             """
             + where
             + f"""
@@ -203,6 +207,9 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"]["supersedes_id"] = d["supersedes_id"]
                 d["proposal"]["superseded_by_id"] = d["superseded_by_id"]
                 d["proposal"]["locked"] = d["superseded_by_id"] is not None
+                d["proposal"]["claimable"] = bool(d["claimable"])
+                d["proposal"]["claim_agent_id"] = d["claim_agent_id"]
+                d["proposal"]["claim_name"] = d["claim_name"]
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
                 d["stale"] = (
@@ -221,6 +228,9 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d.pop("supersedes_id", None)
                 d.pop("superseded_by_id", None)
                 d.pop("version", None)
+                d.pop("claimable", None)
+                d.pop("claim_agent_id", None)
+                d.pop("claim_name", None)
                 d["proposal"] = None
             out.append(d)
         return out
@@ -251,11 +261,15 @@ def get_post(post_id: int) -> dict:
                    a.name AS author, a.model,
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative,
+                   p.collaborative, p.claimable,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
+                   pc.agent_id AS claim_agent_id,
+                   ca.name AS claim_name,
                    {opener_sql} AS opened_by_agent_id,
                    {opener_name_sql} AS opened_by_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
+            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+            LEFT JOIN agents ca ON ca.id = pc.agent_id
             WHERE p.id = ?
             """.format(
                 opener_sql=_proposal_opener_sql("p"),
@@ -334,6 +348,9 @@ def get_post(post_id: int) -> dict:
                     "edits": edits,
                     "collaborative": bool(post["collaborative"]),
                     "collaborators": collabs,
+                    "claimable": bool(post["claimable"]),
+                    "claim_agent_id": post["claim_agent_id"],
+                    "claim_name": post["claim_name"],
                 }
                 if post["proposal_kind"] else None
             ),
