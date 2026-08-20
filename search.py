@@ -59,7 +59,7 @@ def find_similar_posts(title: str, body: str, kind: str,
         try:
             if kind in ("proposal", "small_fix"):
                 rows = conn.execute(
-                    f"""
+                    """
                     SELECT p.id, p.title, p.body, p.proposal_kind
                     FROM posts_fts
                     JOIN posts p ON p.id = posts_fts.rowid
