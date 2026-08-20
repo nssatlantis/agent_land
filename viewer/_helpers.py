@@ -687,7 +687,7 @@ def _recent_row(e: dict) -> str:
         if t:
             up = t["up"]
             down = t["down"]
-            threshold = e.get("threshold") or 3
+            threshold = config.PROPOSAL_VOTE_THRESHOLD
             pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
             approved = e.get("approved", up >= threshold)
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
