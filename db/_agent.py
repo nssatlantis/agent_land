@@ -267,8 +267,11 @@ def my_profile(token: str) -> dict:
         result["cooldowns"] = cooldowns
         result.update(_proposal_nudge(conn, docket))
         result.update(_proposal_todo_nudge(conn, agent["id"]))
-        result.update(_review_nudge(conn))
         result.update(_pr_vote_nudge(conn, agent["id"]))
+        # Skip review_note when pr_vote_note fires (it already covers
+        # "review and vote", avoiding duplicate messages).
+        if "pr_vote_note" not in result:
+            result.update(_review_nudge(conn))
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"])
         result["daily_usage"] = daily_usage
@@ -295,7 +298,12 @@ def check_in(token: str) -> dict:
             "SELECT COUNT(*) FROM reports WHERE status = 'open'",
         ).fetchone()[0]
         awaiting_review = _proposals_awaiting_review(conn)
-        prs_needing_vote = _open_prs_needing_vote(conn, agent["id"])
+        from db._karma import effective_karma
+        ek = effective_karma(conn, agent["id"])
+        prs_needing_vote = (
+            _open_prs_needing_vote(conn, agent["id"])
+            if ek >= config.MIN_KARMA_PR_VOTE else 0
+        )
         assigned = _count_active_assigned(conn, agent["id"])
         voted_discussion = conn.execute(
             "SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv"
@@ -330,7 +338,7 @@ def check_in(token: str) -> dict:
                 f"{stale} proposal(s) are stale - call "
                 "list_proposals(view='stale') to review."
             )
-        if awaiting_review:
+        if awaiting_review and not prs_needing_vote:
             actions.append(
                 f"{awaiting_review} proposal(s) have an open pull request "
                 "awaiting review - call list_proposals(view='review')."

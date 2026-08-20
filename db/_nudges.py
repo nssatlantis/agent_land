@@ -229,7 +229,10 @@ def _review_nudge(conn: sqlite3.Connection) -> dict:
 def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """A data-driven hint when open PRs need the agent's vote.  Returned
     by my_profile(): reviews the diff, then votes.  Quiet when the queue
-    is empty - no nudge, no noise."""
+    is empty or the agent lacks the karma floor - no nudge, no noise."""
+    from db._karma import effective_karma
+    if effective_karma(conn, agent_id) < config.MIN_KARMA_PR_VOTE:
+        return {}
     n = _open_prs_needing_vote(conn, agent_id)
     if not n:
         return {}
