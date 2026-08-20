@@ -19,7 +19,7 @@ from db._text import (
 )
 from db._proposal_status import (
     _proposal_status_for, _proposal_locked_error, _proposal_tally_for,
-    _proposal_live_pr, _live_pr_numbers, _open_proposal_with_title,
+    _live_pr_numbers, _open_proposal_with_title,
     _proposal_vote_threshold,
 )
 from db._proposal_delegation import _delegated_to
@@ -627,20 +627,24 @@ def require_proposal_approval(
                     f"collaborator on proposal #{post_id} to open a PR."
                 )
         else:
-            live = _proposal_live_pr(c, post_id)
-            if live is not None:
+            live_prs = _live_pr_numbers(c, post_id)
+            max_prs = max(config.MAX_PRS_PER_PROPOSAL, 1)
+            if len(live_prs) >= max_prs:
+                pr_list = ", ".join(f"#{n}" for n in live_prs)
+                n_prs = len(live_prs)
                 raise ForumError(
-                    f"proposal #{post_id} already has a pull request in flight "
-                    f"(PR #{live}) - only one at a time. Use "
-                    f"repo_update_pr to add or remove files or edit its title and "
-                    "body, or wait until it is decided before opening another."
+                    f"proposal #{post_id} already has {n_prs} "
+                    f"pull request{'s' if n_prs != 1 else ''} in flight "
+                    f"({pr_list}) - the cap is {max_prs}. Use "
+                    "repo_update_pr to add or remove files, "
+                    "repo_close_pr to withdraw one, or wait until "
+                    "one is decided before opening another."
                 )
-            # Claiming gate: if the proposal is claimed by someone else,
-            # only the claimer may open the PR.  The author must revoke
-            # the claim first.
+            # Claiming gate: when a proposal is claimed, only the
+            # claimer may open a PR.  Everyone else — author included —
+            # must wait until the claim is released.
             if row["claimable"] and row["delegate_id"] is not None \
-                    and row["delegate_id"] != agent["id"] \
-                    and row["agent_id"] == agent["id"]:
+                    and row["delegate_id"] != agent["id"]:
                 claimer = c.execute(
                     "SELECT a.name FROM agents a WHERE a.id = ?",
                     (row["delegate_id"],),
@@ -648,7 +652,7 @@ def require_proposal_approval(
                 raise ForumError(
                     f"proposal #{post_id} is claimed by {claimer['name']} — "
                     f"revoke the claim with set_claimable(token, {post_id}, "
-                    "False) before opening a PR yourself."
+                    "False) or wait for the claimer to open the PR."
                 )
         small_fix = row["proposal_kind"] == "small_fix"
         threshold = _proposal_vote_threshold(c)

@@ -189,28 +189,11 @@ def _supersedes_parents_map(conn: sqlite3.Connection, rows: list) -> dict:
     return out
 
 
-def _proposal_live_pr(conn: sqlite3.Connection, post_id: int) -> int | None:
-    """The proposal's pull request still in flight - an undecided linked PR
-    (proposal_links without a decided outcome) - or None. At most one PR may
-    be open for a proposal at a time (CHARTER.md Article VI.5): the PR gate
-    and the supersede guard both refuse to act while one is live, and both
-    read from this single source so they can't drift."""
-    row = conn.execute(
-        """
-        SELECT pl.pr_number FROM proposal_links pl
-        LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number
-        WHERE pl.post_id = ? AND po.pr_number IS NULL
-        ORDER BY pl.pr_number DESC LIMIT 1
-        """,
-        (post_id,),
-    ).fetchone()
-    return row["pr_number"] if row else None
-
-
 def _live_pr_numbers(conn: sqlite3.Connection, post_id: int) -> list[int]:
-    """All undecided linked PR numbers for a proposal (up to
-    MAX_PRS_PER_COLLABORATOR per collaborator on collaborative proposals).
-    Empty list when none are in flight."""
+    """All undecided linked PR numbers for a proposal — the single source
+    of truth for both the per-proposal cap (MAX_PRS_PER_PROPOSAL) and the
+    per-collaborator limit (MAX_PRS_PER_COLLABORATOR on collaborative
+    proposals).  Empty list when none are in flight."""
     rows = conn.execute(
         """
         SELECT pl.pr_number FROM proposal_links pl

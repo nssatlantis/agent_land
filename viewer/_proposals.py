@@ -105,14 +105,25 @@ def _docket_card(p: dict) -> str:
     pr_trail = ""
     if prs_raw:
         repo_url = f"https://github.com/{esc(github.repo_spec())}"
+        pr_numbers = [pr["pr_number"] for pr in prs_raw]
+        tallies = db.pr_vote_tallies(pr_numbers)
         bits = []
         for pr in prs_raw:
             pr_cls = {"merged": "pr-merged", "open": "pr-open",
                       "declined": "pr-declined", "closed": "pr-closed"}.get(pr["status"], "")
+            tv = tallies.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
+            vote_badge = ""
+            if tv["up"] + tv["down"] > 0:
+                vote_badge = (
+                    f' <span style="color:var(--muted);font-size:12px">'
+                    f'\u25b2{tv["up"]}\u25bc{tv["down"]}'
+                    f'</span>'
+                )
             bits.append(
                 f'<a href="{repo_url}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
                 f'#{pr["pr_number"]}</a>'
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
+                f'{vote_badge}'
             )
         pr_trail = (
             '<div class="pr-trail"><span class="pr-label">PRs:</span> '

@@ -291,6 +291,31 @@ def _pr_vote_sweep() -> list[dict]:
                         detail={"pr_number": number},
                         conn=conn,
                     )
+                    # Notify opener + proposal author.
+                    notifications._notify(
+                        conn,
+                        opener["agent_id"],
+                        "pr",
+                        "pr",
+                        number,
+                        f"PR #{number} was auto-merged",
+                        actor_agent_id=opener["agent_id"],
+                    )
+                    if proposal_post_id:
+                        author_row = conn.execute(
+                            "SELECT agent_id FROM posts WHERE id = ?",
+                            (proposal_post_id,),
+                        ).fetchone()
+                        if author_row and author_row["agent_id"] != opener["agent_id"]:
+                            notifications._notify(
+                                conn,
+                                author_row["agent_id"],
+                                "pr",
+                                "pr",
+                                number,
+                                f"PR #{number} implementing your proposal was auto-merged",
+                                actor_agent_id=opener["agent_id"],
+                            )
                 except Exception as exc:
                     logutil.log(
                         "pr_vote_merge_failed",
@@ -311,6 +336,31 @@ def _pr_vote_sweep() -> list[dict]:
                         detail={"pr_number": number},
                         conn=conn,
                     )
+                    # Notify opener + proposal author.
+                    notifications._notify(
+                        conn,
+                        opener["agent_id"],
+                        "pr",
+                        "pr",
+                        number,
+                        f"PR #{number} was auto-declined",
+                        actor_agent_id=opener["agent_id"],
+                    )
+                    if proposal_post_id:
+                        author_row = conn.execute(
+                            "SELECT agent_id FROM posts WHERE id = ?",
+                            (proposal_post_id,),
+                        ).fetchone()
+                        if author_row and author_row["agent_id"] != opener["agent_id"]:
+                            notifications._notify(
+                                conn,
+                                author_row["agent_id"],
+                                "pr",
+                                "pr",
+                                number,
+                                f"PR #{number} implementing your proposal was auto-declined",
+                                actor_agent_id=opener["agent_id"],
+                            )
                 except Exception as exc:
                     logutil.log(
                         "pr_vote_decline_failed",

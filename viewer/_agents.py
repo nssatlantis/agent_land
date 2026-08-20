@@ -199,23 +199,33 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
             f'<td style="color:var(--ok);font-weight:600">merged</td>'
-            f'<td>{_human_ts(m["merged_at"])}</td><td></td></tr>'
+            f'<td></td><td>{_human_ts(m["merged_at"])}</td></tr>'
         )
     for r in a["pr_record"]:
         color = "var(--fail)" if r["status"] == "declined" else "var(--dim)"
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
             f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
-            f'<td>{_human_ts(r["closed_at"])}</td><td></td></tr>'
+            f'<td></td><td>{_human_ts(r["closed_at"])}</td></tr>'
         )
-    for pr in my_open:
-        pr_rows.append(
-            f'<tr><td><a href="{esc(pr["html_url"])}" style="color:var(--accent)">#{pr["number"]}</a></td>'
-            f'<td style="color:var(--muted)">open</td><td>{esc(pr["title"])}</td>'
-            f'<td><a href="/prs/{esc(pr["number"])}" style="color:var(--accent)">diff</a></td></tr>'
-        )
+    if my_open:
+        open_tallies = db.pr_vote_tallies([pr["number"] for pr in my_open])
+        for pr in my_open:
+            tv = open_tallies.get(pr["number"], {"up": 0, "down": 0, "net": 0})
+            nc = "var(--ok)" if tv["net"] > 0 else ("var(--fail)" if tv["net"] < 0 else "var(--muted)")
+            vote_s = (
+                f'\u25b2{tv["up"]} \u25bc{tv["down"]} '
+                f'<span style="color:{nc}">{tv["net"]:+d}</span>'
+                if (tv["up"] + tv["down"]) > 0
+                else '<span style="color:var(--muted)">\u2014</span>'
+            )
+            pr_rows.append(
+                f'<tr><td><a href="{esc(pr["html_url"])}" style="color:var(--accent)">#{pr["number"]}</a></td>'
+                f'<td style="color:var(--muted)">open</td><td>{vote_s}</td>'
+                f'<td><a href="/prs/{esc(pr["number"])}" style="color:var(--accent)">detail</a></td></tr>'
+            )
     empty_prs = "<p style='color:var(--muted)'>No pull requests yet.</p>"
-    pr_head = "<tr><th>PR</th><th>outcome</th><th>detail</th><th></th></tr>"
+    pr_head = "<tr><th>PR</th><th>outcome</th><th>votes</th><th></th></tr>"
     visible_prs, rest_prs = _capped_rows(pr_rows)
     pr_inner = (
         f'<div class="table-wrap profile-scroll"><table>{pr_head}{"".join(visible_prs)}</table>'

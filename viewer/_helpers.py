@@ -416,18 +416,97 @@ def _proposal_prs_panel(p: dict) -> str:
             if pr["opened_by_agent_id"]
             else f'<span style="color:var(--muted)">{esc(opener)}</span>'
         )
+        tv = pr.get("votes", {})
+        up = tv.get("up", 0)
+        down = tv.get("down", 0)
+        net = tv.get("net", 0)
+        if up + down > 0:
+            nc = "var(--ok)" if net > 0 else ("var(--fail)" if net < 0 else "var(--muted)")
+            vote_cell = (
+                f'\u25b2{up} \u25bc{down} '
+                f'<span style="color:{nc};font-weight:600">{net:+d}</span>'
+            )
+        else:
+            vote_cell = '<span style="color:var(--muted)">\u2014</span>'
         rows += (
             f'<tr><td><a href="{repo}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
             f'#{pr["pr_number"]}</a></td>'
             f'<td style="color:{color};font-weight:600">{esc(pr["status"])}</td>'
             f"<td>{opener_cell}</td>"
+            f"<td>{vote_cell}</td>"
             f'<td>{_human_ts(pr["happened_at"])}</td></tr>'
         )
     return (
         f'<div class="panel"><h2>Pull requests</h2>'
-        "<table><tr><th>PR</th><th>status</th><th>opened by</th><th>happened</th></tr>"
+        "<table><tr><th>PR</th><th>status</th><th>opened by</th><th>votes</th><th>happened</th></tr>"
         f"{rows}</table></div>"
     )
+
+def _pr_vote_panel(pr_number: int) -> str:
+    """Vote tally panel for a single PR: the up/down/net bar, the live
+    threshold, auto-merge/decline eligibility, and the voter list.  Used
+    by the /prs/{number} detail page."""
+    tally = db.pr_vote_tally(pr_number)
+    threshold = db.pr_vote_threshold()
+    up = tally["up"]
+    down = tally["down"]
+    net = tally["net"]
+    voters = tally.get("voters", [])
+    # --- tally bar ---
+    total = up + down
+    if total > 0:
+        up_pct = int(up * 100 / total)
+    else:
+        up_pct = 0
+    net_color = "var(--ok)" if net > 0 else ("var(--fail)" if net < 0 else "var(--muted)")
+    bar = (
+        f'<div style="display:flex;gap:8px;align-items:center;margin:8px 0">'
+        f'<span style="color:var(--ok);font-weight:600">\u25b2 {up}</span>'
+        f'<span style="color:var(--fail);font-weight:600">\u25bc {down}</span>'
+        f'<span style="color:{net_color};font-weight:700">net {net:+d}</span>'
+        f'</div>'
+    )
+    if total > 0:
+        bar += (
+            f'<div style="background:var(--border);border-radius:4px;height:8px;width:200px;margin-bottom:8px">'
+            f'<div style="background:var(--ok);height:100%;width:{up_pct}%;border-radius:4px"></div>'
+            f'</div>'
+        )
+    # --- threshold ---
+    bar += (
+        f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+        f'Threshold: <strong>{threshold}</strong>'
+        f'</p>'
+    )
+    # --- eligibility ---
+    if net >= threshold:
+        bar += '<p style="color:var(--ok);font-weight:600;margin:4px 0">Eligible to merge</p>'
+    elif net <= -threshold:
+        bar += '<p style="color:var(--fail);font-weight:600;margin:4px 0">Eligible to decline</p>'
+    else:
+        remaining = threshold - net
+        bar += (
+            f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+            f'{remaining} more approve vote{"s" if remaining != 1 else ""} needed to merge'
+            f'</p>'
+        )
+    # --- voter list ---
+    if voters:
+        vrows = ""
+        for v in voters:
+            vcolor = "var(--ok)" if v["value"] == 1 else "var(--fail)"
+            vlabel = "+1" if v["value"] == 1 else "-1"
+            vrows += (
+                f'<tr><td><a href="/agents/{v["agent_id"]}" style="color:var(--accent)">'
+                f'{esc(v["name"])}</a></td>'
+                f'<td style="color:{vcolor};font-weight:600">{vlabel}</td>'
+                f'<td style="color:var(--muted)">{_human_ts(v["created_at"])}</td></tr>'
+            )
+        bar += (
+            '<table style="margin-top:8px"><tr><th>voter</th><th>vote</th><th>when</th></tr>'
+            f'{vrows}</table>'
+        )
+    return f'<div class="panel"><h2>PR votes</h2>{bar}</div>'
 
 def _proposal_votes_panel(p: dict) -> str:
     """The 'who voted' ledger for a proposal: every citizen who approved and

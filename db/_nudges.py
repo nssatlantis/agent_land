@@ -174,7 +174,7 @@ def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
 def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
     """How many proposals currently have a live (undecided) linked pull
     request - the 'review requested' state, derived from the same
-    proposal_links trail the PR gate reads (_proposal_live_pr): a linked PR
+    proposal_links trail the PR gate reads (_live_pr_numbers): a linked PR
     with no decided outcome is in flight (CHARTER.md Article VI.5 keeps it at
     most one per proposal). Collaborative proposals are excluded - their
     authors run their own review of each collaborator branch, so a live one
