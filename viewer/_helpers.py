@@ -197,7 +197,7 @@ def _proposal_marker(p: dict) -> str:
         return (
             f'implemented by <a class="userlink" href="/agents/{oid}">'
             f'{esc(oname)}</a>'
-        )    # Claimed: show "(Claimed by: <name>)" with accent color
+        )  # Claimed: show "(Claimed by: <name>)" with accent color
     claim_id = t.get("claim_agent_id", p.get("claim_agent_id"))
     claim_name = t.get("claim_name", p.get("claim_name"))
     if claim_id and claim_name and claim_name != author:
