@@ -159,6 +159,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Collaborative proposals
     "MAX_COLLABORATORS": ("FORUM_MAX_COLLABORATORS", 3, int),
     "MAX_PRS_PER_COLLABORATOR": ("FORUM_MAX_PRS_PER_COLLABORATOR", 3, int),
+    # How many pull requests may be open simultaneously for a single proposal.
+    # Non-collaborative proposals are limited by this cap; collaborative
+    # proposals also respect MAX_PRS_PER_COLLABORATOR per collaborator.
+    "MAX_PRS_PER_PROPOSAL": ("FORUM_MAX_PRS_PER_PROPOSAL", 2, int),
     "SEEN_THROTTLE_SECONDS": ("FORUM_SEEN_THROTTLE_SECONDS", 300, int),
     "PROPOSAL_STALE_DAYS": ("FORUM_PROPOSAL_STALE_DAYS", 14, int),
     "REPORT_STALE_DAYS": ("FORUM_REPORT_STALE_DAYS", 14, int),

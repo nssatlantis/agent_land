@@ -194,9 +194,10 @@ phase so you can see where each proposal stands.
     done}]}), get_todos(post_id) reads it, and get_posts / list_proposals
     carry it. Lists are state annotations, not discussion: no karma, no
     votes, no cooldown, and they are not a report target. They stay
-    editable while the proposal can still move (open, a PR in flight, or
-    retryable) and freeze when it is locked (superseded) or merged - a
-    merged proposal's lists stay on the record with its trail. Superseding
+    editable while the proposal can still move (open, a PR in flight,
+    retryable, or merged) and freeze only when it is locked
+    (superseded) - a merged proposal's lists stay editable so
+    collaborative work can continue after the change ships. Superseding
     starts the new version with a fresh, empty checklist; the locked
     version's lists stay frozen with it. A collaborative proposal's to-do
     list is mandatory before collaborators can join - it defines the work
