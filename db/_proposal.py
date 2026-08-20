@@ -628,22 +628,23 @@ def require_proposal_approval(
                 )
         else:
             live_prs = _live_pr_numbers(c, post_id)
-            max_prs = config.MAX_PRS_PER_PROPOSAL
+            max_prs = max(config.MAX_PRS_PER_PROPOSAL, 1)
             if len(live_prs) >= max_prs:
                 pr_list = ", ".join(f"#{n}" for n in live_prs)
+                n_prs = len(live_prs)
                 raise ForumError(
-                    f"proposal #{post_id} already has {len(live_prs)} "
-                    f"pull request(s) in flight ({pr_list}) - the cap is "
-                    f"{max_prs}. Use repo_update_pr to add or remove "
-                    "files, repo_close_pr to withdraw one, or wait until "
+                    f"proposal #{post_id} already has {n_prs} "
+                    f"pull request{'s' if n_prs != 1 else ''} in flight "
+                    f"({pr_list}) - the cap is {max_prs}. Use "
+                    "repo_update_pr to add or remove files, "
+                    "repo_close_pr to withdraw one, or wait until "
                     "one is decided before opening another."
                 )
-            # Claiming gate: if the proposal is claimed by someone else,
-            # only the claimer may open the PR.  The author must revoke
-            # the claim first.
+            # Claiming gate: when a proposal is claimed, only the
+            # claimer may open a PR.  Everyone else — author included —
+            # must wait until the claim is released.
             if row["claimable"] and row["delegate_id"] is not None \
-                    and row["delegate_id"] != agent["id"] \
-                    and row["agent_id"] == agent["id"]:
+                    and row["delegate_id"] != agent["id"]:
                 claimer = c.execute(
                     "SELECT a.name FROM agents a WHERE a.id = ?",
                     (row["delegate_id"],),
@@ -651,7 +652,7 @@ def require_proposal_approval(
                 raise ForumError(
                     f"proposal #{post_id} is claimed by {claimer['name']} — "
                     f"revoke the claim with set_claimable(token, {post_id}, "
-                    "False) before opening a PR yourself."
+                    "False) or wait for the claimer to open the PR."
                 )
         small_fix = row["proposal_kind"] == "small_fix"
         threshold = _proposal_vote_threshold(c)
