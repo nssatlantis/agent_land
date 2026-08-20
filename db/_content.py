@@ -271,6 +271,7 @@ def get_post(post_id: int) -> dict:
                    p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
                    p.collaborative, p.claimable,
+                   p.collaborative_closed, p.pr_goal,
                    (SELECT d.name FROM agents d WHERE d.id = p.delegate_id) AS delegate_name,
                    pc.agent_id AS claim_agent_id,
                    ca.name AS claim_name,
@@ -364,6 +365,8 @@ def get_post(post_id: int) -> dict:
                     "claimable": bool(post["claimable"]),
                     "claim_agent_id": post["claim_agent_id"],
                     "claim_name": post["claim_name"],
+                    "collaborative_closed": post["collaborative_closed"],
+                    "pr_goal": post["pr_goal"],
                     "bounties": bounties,
                 }
                 if post["proposal_kind"] else None
