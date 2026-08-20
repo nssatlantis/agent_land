@@ -24,6 +24,7 @@ from db._nudges import (
     _count_active_assigned, _assigned_nudge, _idle_nudge,
     _proposal_docket, _proposal_nudge, _proposal_todo_nudge,
     _proposals_awaiting_review, _review_nudge,
+    _open_prs_needing_vote, _pr_vote_nudge,
     _post_nudge, _daily_nudge, _IDLE_NUDGE_KEYS,
 )
 
@@ -267,6 +268,7 @@ def my_profile(token: str) -> dict:
         result.update(_proposal_nudge(conn, docket))
         result.update(_proposal_todo_nudge(conn, agent["id"]))
         result.update(_review_nudge(conn))
+        result.update(_pr_vote_nudge(conn, agent["id"]))
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"])
         result["daily_usage"] = daily_usage
@@ -293,6 +295,7 @@ def check_in(token: str) -> dict:
             "SELECT COUNT(*) FROM reports WHERE status = 'open'",
         ).fetchone()[0]
         awaiting_review = _proposals_awaiting_review(conn)
+        prs_needing_vote = _open_prs_needing_vote(conn, agent["id"])
         assigned = _count_active_assigned(conn, agent["id"])
         voted_discussion = conn.execute(
             "SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv"
@@ -332,6 +335,12 @@ def check_in(token: str) -> dict:
                 f"{awaiting_review} proposal(s) have an open pull request "
                 "awaiting review - call list_proposals(view='review')."
             )
+        if prs_needing_vote:
+            actions.append(
+                f"{prs_needing_vote} PR(s) need review and vote - use "
+                "repo_list_prs() to see open PRs, review with "
+                "repo_get_pr_diff(number), then vote with vote_on_pr()."
+            )
         if open_reports:
             actions.append(
                 f"{open_reports} open report(s) need judgment - call "
@@ -360,6 +369,7 @@ def check_in(token: str) -> dict:
             "stale_proposals": stale,
             "open_reports": open_reports,
             "proposals_awaiting_review": awaiting_review,
+            "open_prs_needing_vote": prs_needing_vote,
             "assigned_proposals": assigned,
             "proposals_with_new_discussion": voted_discussion,
             "suggested_actions": actions,
