@@ -260,9 +260,10 @@ def get_posts(post_id: int | None = None, post_ids: list[int] | None = None,
             return {}
         results = db.get_posts(post_ids)
         if include_voters:
+            voters_by_pid = db.proposal_voters_batch(list(results.keys()))
             for pid, result in results.items():
                 if isinstance(result, dict) and result.get("proposal"):
-                    result["voters"] = db.proposal_voters(pid)
+                    result["voters"] = voters_by_pid.get(pid, [])
         return results
     if post_id is None:
         raise db.ForumError("pass either post_id or post_ids.")
@@ -1042,6 +1043,75 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
         "note": "Recorded as 'closed' (withdrawn) - karma-neutral, and the "
                 "proposal stays retryable.",
     }
+
+
+@mcp.tool()
+@_logged
+def repo_resolve_conflicts(
+    token: str,
+    number: int,
+    resolutions: list[dict] | None = None,
+) -> dict:
+    """Resolve merge conflicts on one of your own pull requests.
+
+    Two-step detect + resolve:
+
+    **Step 1 — Detect** (omit ``resolutions``): Attempts to merge the base
+    branch into the PR's head branch.  Returns ``{"status": "clean"}`` when
+    the merge is trivial, or ``{"status": "conflicts", "conflicts": [...]}``
+    with structured per-file conflict data: each file carries a ``regions``
+    list where every entry has ``line`` (1-based), ``ours`` (the PR's
+    version), ``theirs`` (main's version), ``context_before`` and
+    ``context_after`` (surrounding code for orientation).
+
+    **Step 2 — Resolve** (pass ``resolutions``): Re-clones, re-merges,
+    writes the resolved content for each conflicted file, commits the merge
+    and pushes.  ``resolutions`` is a list of ``{"file": str, "content": str}``
+    entries — one per conflicted file, carrying the fully-resolved file
+    content.  Only the PR owner may resolve conflicts (same ownership gate
+    as repo_update_pr).
+
+    Both steps are stateless — the temp clone is cleaned up after each call.
+    An ownership check verifies the caller opened the PR before any write
+    touches GitHub."""
+    pr = github.get_pr(number)
+    if pr.get("state") != "open":
+        raise db.ForumError(
+            f"pull request #{number} is not open."
+        )
+    if resolutions is not None:
+        # Validate input shape early -- before the ownership gate.
+        if not resolutions:
+            raise db.ForumError(
+                "repo_resolve_conflicts: resolutions must be a non-empty "
+                "list of {file, content} entries."
+            )
+        for i, r in enumerate(resolutions):
+            if not isinstance(r, dict):
+                raise db.ForumError(
+                    f"resolutions[{i}] must be a dict, "
+                    f"got {type(r).__name__}."
+                )
+            if not isinstance(r.get("file"), str) or not r["file"]:
+                raise db.ForumError(
+                    f"resolutions[{i}] 'file' must be a non-empty string."
+                )
+            if not isinstance(r.get("content"), str):
+                raise db.ForumError(
+                    f"resolutions[{i}] 'content' must be a string."
+                )
+        # Ownership gate -- only for the write step.
+        with db._conn() as conn:
+            db.require_active(token, conn)
+            who, pr = _require_pr_owner(token, number, conn, pr=pr)
+        citizen = f"{who['name']} (agent_id={who['agent_id']})"
+        return github.apply_merge_resolutions(
+            number, resolutions, citizen, _pr=pr,
+        )
+    # Detect is read-only -- any active citizen may detect.
+    with db._conn() as conn:
+        db.require_active(token, conn)
+    return github.detect_merge_conflicts(number)
 
 
 @mcp.tool()

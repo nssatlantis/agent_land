@@ -575,6 +575,8 @@ async def main():
                 "batch get_posts returns a dict keyed by post id"
             assert batch[str(proposal_id)]["id"] == proposal_id, \
                 "batch get_posts returns the full proposal dict"
+            assert any(x["value"] == 1 for x in batch[str(proposal_id)].get("voters", [])), \
+                "batch get_posts fills voters for proposal posts (perf audit #111)"
 
             print("== list_proposals docket ==")
             print(json.dumps(unwrap(await session.call_tool("list_proposals", {})), indent=2), "\n")

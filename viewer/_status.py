@@ -144,6 +144,8 @@ async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, st
 # own cache, which a 5s TTL makes harmlessly eventually-consistent.
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
+_NETWORK_TIMEOUT_SECONDS = 10
+
 async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | None]:
     """The status page's shared reads: (by_name, latency, repo, prs). Both the
     full page and the soft-refresh banner/pulse fragments run the same reads
@@ -158,7 +160,8 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     if not force and cached is not None and time.monotonic() - ts < config.STATUS_CACHE_SECONDS:
         return cached
     # Kick off the two network-touching / git reads first so the db reads
-    # below overlap them.
+    # below overlap them. Both are time-bounded so a slow GitHub can't block
+    # the entire page; on timeout we serve the last-known cache or defaults.
     repo_task = asyncio.create_task(asyncio.to_thread(_git_sync_status))
 
     # Import here to avoid circular at module level: viewer_status imports
@@ -178,10 +181,29 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     )
     latency = {label: ms for label, _, ms, _ in reads}
     by_name = {label: value for label, value, _, _ in reads}
-    repo = await repo_task
-    prs = await prs_task
+    # Collect network results with a timeout. On timeout, fall back to the
+    # previous cache or safe defaults so the page always loads.
+    _cached_repo = cached[2] if cached else None
+    _cached_prs = cached[3] if cached else None
+    _repo_timeout = False
+    try:
+        repo = await asyncio.wait_for(repo_task, timeout=_NETWORK_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        repo = _cached_repo or {"error": "timeout", "stale": True}
+        _repo_timeout = True
+    _prs_timeout = False
+    try:
+        prs = await asyncio.wait_for(prs_task, timeout=_NETWORK_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        prs = _cached_prs
+        _prs_timeout = True
     result = (by_name, latency, repo, prs)
-    _STATUS_CACHE = (time.monotonic(), result)
+    # Only persist to cache when both network reads succeeded. On timeout
+    # the stale-good result is still returned to the caller, but the cache
+    # keeps the last-known-good values so subsequent fragment reads within
+    # the TTL don't serve a timeout error as if it were data.
+    if not _repo_timeout and not _prs_timeout:
+        _STATUS_CACHE = (time.monotonic(), result)
     return result
 
 def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
@@ -252,6 +274,91 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
         + card(undeclared, "no model declared")
         + "</div>"
     )
+
+def _explain_panel_html() -> str:
+    """EXPLAIN QUERY PLAN panel for the three most expensive queries."""
+    from db._agent import _AGENT_LIST_SQL
+    from db._proposal_docket import _proposal_list_sql
+    from db._aggregates import _recent_activity_rows
+
+    queries = [
+        ("list_agents", _AGENT_LIST_SQL),
+        ("list_proposals", _proposal_list_sql()),
+    ]
+    sections = []
+    for label, sql in queries:
+        try:
+            with db._conn() as conn:
+                plan = "\n".join(
+                    r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
+                )
+        except Exception as exc:
+            plan = f"error: {exc}"
+        sections.append(
+            f"<details><summary><b>{esc(label)}</b></summary>"
+            f"<pre style='font-size:0.85em;overflow-x:auto'>{esc(plan)}</pre></details>"
+        )
+    # recent_activity needs a dummy call to get the SQL
+    try:
+        with db._conn() as conn:
+            _recent_activity_rows(conn, 1, 0, None)
+        # Re-explain the full UNION ALL by reconstructing the SQL
+        preview = config.BODY_PREVIEW_LENGTH
+        post_branch = (
+            "SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
+            f" a.name AS actor, p.title AS text, 'post' AS target_type,"
+            f" substr(p.body, 1, {preview}) AS preview, p.proposal_kind,"
+            " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id"
+            " FROM posts p JOIN agents a ON a.id = p.agent_id"
+        )
+        comment_branch = (
+            "SELECT 'comment' AS event_type, c.id AS target_id, a.id AS agent_id,"
+            f" a.name AS actor, substr(c.body, 1, {preview}) AS text,"
+            " 'comment' AS target_type,"
+            f" substr(c.body, 1, {preview}) AS preview, NULL AS proposal_kind,"
+            " c.created_at AS created_at, c.post_id, NULL AS comment_id"
+            " FROM comments c JOIN agents a ON a.id = c.agent_id"
+        )
+        vote_branch = (
+            "SELECT 'vote' AS event_type, v.target_id AS target_id, a.id AS agent_id,"
+            " a.name AS actor,"
+            " CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||"
+            " v.target_type || ' #' || v.target_id AS text,"
+            " v.target_type AS target_type,"
+            " CASE WHEN v.target_type = 'post' THEN vp.title"
+            " WHEN v.target_type = 'comment' THEN substr(vc.body, 1, {preview})"
+            " ELSE NULL END AS preview,"
+            " NULL AS proposal_kind, v.created_at AS created_at,"
+            " COALESCE(vp.id, vc.post_id) AS post_id, vc.id AS comment_id"
+            " FROM votes v JOIN agents a ON a.id = v.agent_id"
+            " LEFT JOIN posts vp ON v.target_type = 'post' AND vp.id = v.target_id"
+            " LEFT JOIN comments vc ON v.target_type = 'comment' AND vc.id = v.target_id"
+        )
+        activity_sql = " UNION ALL ".join((post_branch, comment_branch, vote_branch))
+        with db._conn() as conn:
+            plan = "\n".join(
+                r[3] for r in conn.execute(
+                    "EXPLAIN QUERY PLAN " + activity_sql
+                ).fetchall()
+            )
+        sections.append(
+            "<details><summary><b>list_recent_activity</b></summary>"
+            f"<pre style='font-size:0.85em;overflow-x:auto'>{esc(plan)}</pre></details>"
+        )
+    except Exception as exc:
+        sections.append(
+            "<details><summary><b>list_recent_activity</b></summary>"
+            f"<pre>error: {esc(str(exc))}</pre></details>"
+        )
+
+    inner = (
+        "<p style='color:var(--muted)'>SQLite EXPLAIN QUERY PLAN for the three "
+        "most expensive queries. Useful for spotting missing index usage or "
+        "unexpected table scans after schema changes.</p>"
+        + "\n".join(sections)
+    )
+    return _collapsible("Query plans", inner, "explain")
+
 
 async def status_page(request: Request) -> HTMLResponse:
     from viewer._layout import POLL_MS, _page, _poll_config
@@ -446,6 +553,8 @@ async def status_page(request: Request) -> HTMLResponse:
         "perf",
     )
 
+    explain_panel = _explain_panel_html()
+
     banner = f'<div id="frag-status-banner">{_status_banner_html(checks)}</div>'
     pulse = f'<div id="frag-status-pulse">{_pulse_cards(by_name, prs)}</div>'
 
@@ -461,6 +570,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + config_panel
         + storage_panel
         + perf_panel
+        + explain_panel
     )
     return _page("status", body, section="status",
                  poll=_poll_config(

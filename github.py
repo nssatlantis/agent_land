@@ -23,10 +23,15 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import config  # noqa: E402 - for the GitHub API / repo-search tunables
@@ -1584,3 +1589,369 @@ def _branch_name(citizen: str) -> str:
         slug = "agent"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"proposal/{slug[:40]}/{stamp}"
+
+
+# ------------------------------------------------- merge-conflict tools ---
+
+_CONTEXT_LINES = 3
+
+
+def _parse_conflict_markers(text: str) -> list[dict]:
+    """Parse git conflict markers from a file's content.  Returns a list of
+    conflict regions, each with ``line`` (1-based start of ``<<<<<<<``),
+    ``ours``, ``theirs``, ``context_before`` and ``context_after``.
+
+    Handles standard git markers (``<<<<<<<``, ``=======``, ``>>>>>>>``)
+    and diff3-style markers (``|||||||`` base section between ``<<<<<<<``
+    and the first ``=======``).  Uses ``startswith`` with a trailing space (to allow ``<<<<<<< HEAD``)
+or exact match (for bare ``<<<<<<<``), so code lines that begin with a
+marker-like prefix but lack the space separator are not false-positived."""
+    lines = text.splitlines()
+    regions: list[dict] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith("<<<<<<< ") or lines[i] == "<<<<<<<":
+            start = i  # 0-based index of the <<<<<<< line
+            ours_lines: list[str] = []
+            i += 1
+            # Skip diff3 base section if present (||||||| ... =======)
+            if i < len(lines) and lines[i].startswith("|||||||"):
+                i += 1
+                while i < len(lines) and lines[i] != "=======":
+                    i += 1
+            # Now parse ours
+            while i < len(lines) and lines[i] != "=======":
+                ours_lines.append(lines[i])
+                i += 1
+            # skip =======
+            i += 1
+            theirs_lines: list[str] = []
+            while i < len(lines) and not (lines[i] == ">>>>>>>" or lines[i].startswith(">>>>>>> ")):
+                theirs_lines.append(lines[i])
+                i += 1
+            # skip >>>>>>>
+            i += 1
+            ctx_before = lines[max(0, start - _CONTEXT_LINES):start]
+            ctx_after = lines[i:i + _CONTEXT_LINES]
+            regions.append({
+                "line": start + 1,  # 1-based
+                "ours": "\n".join(ours_lines),
+                "theirs": "\n".join(theirs_lines),
+                "context_before": "\n".join(ctx_before),
+                "context_after": "\n".join(ctx_after),
+            })
+        else:
+            i += 1
+    return regions
+
+
+def _repo_url(with_token: bool = False) -> str:
+    """Build the clone/push URL for the repo.  When *with_token* is True,
+    embed the PAT (URL-encoded) for authenticated push.  When False, return
+    the plain public URL (the repo is public, no auth needed to read)."""
+    base = f"https://github.com/{GITHUB_REPO}.git"
+    if not with_token:
+        return base
+    _ensure_token()
+    encoded = urllib.parse.quote(GITHUB_TOKEN, safe="")
+    return f"https://x-access-token:{encoded}@github.com/{GITHUB_REPO}.git"
+
+
+def _git(
+    repo_dir: str, *args: str, check: bool = True
+) -> subprocess.CompletedProcess:
+    """Run a git command in *repo_dir*.  Raises RepoError on failure.
+    Sets GIT_TERMINAL_PROMPT=0 so git never prompts for credentials.
+    Scrubs the GitHub token from any output so it never leaks into
+    error messages."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = subprocess.run(
+            ["git"] + list(args),
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+        if check and result.returncode != 0:
+            stderr = result.stderr
+            msg = f"git {' '.join(args)} failed:\n{stderr.strip()}"
+            if GITHUB_TOKEN:
+                msg = msg.replace(GITHUB_TOKEN, "<redacted>")
+                encoded = urllib.parse.quote(GITHUB_TOKEN, safe="")
+                msg = msg.replace(encoded, "<redacted>")
+            raise RepoError(msg)
+        return result
+    except subprocess.TimeoutExpired as e:
+        msg = f"git {' '.join(args)} timed out"
+        if GITHUB_TOKEN:
+            msg = msg.replace(GITHUB_TOKEN, "<redacted>")
+            encoded = urllib.parse.quote(GITHUB_TOKEN, safe="")
+            msg = msg.replace(encoded, "<redacted>")
+        raise RepoError(msg) from e
+    except FileNotFoundError:
+        raise RepoError("git is not installed or not in PATH")
+
+
+def _clone_repo() -> str:
+    """Clone the repo into a temp directory.  Returns the repo subdir path.
+    The clone is anonymous (no auth) since the repo is public; push auth
+    is set up separately by ``_setup_push_auth``."""
+    tmp = tempfile.mkdtemp(prefix="agentland_merge_")
+    try:
+        _git(tmp, "clone", "--depth=1", _repo_url(with_token=False), "repo")
+    except RepoError:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    return os.path.join(tmp, "repo")
+
+
+def _cleanup(repo_dir: str) -> None:
+    """Best-effort removal of a temp clone."""
+    parent = os.path.dirname(repo_dir)
+    shutil.rmtree(parent, ignore_errors=True)
+
+
+def _abort_merge(repo_dir: str) -> None:
+    """Abort any in-progress merge in *repo_dir*."""
+    _git(repo_dir, "merge", "--abort", check=False)
+
+
+def _setup_push_auth(repo_dir: str) -> None:
+    """Set the remote URL to include the token for authenticated push."""
+    _ensure_token()
+    _git(repo_dir, "remote", "set-url", "origin", _repo_url(with_token=True))
+
+
+def _push_ref(branch: str) -> str:
+    """Build a HEAD:branch ref string for git push."""
+    return f"HEAD:{branch}"
+
+
+def _safe_path(repo_dir: str, file_path: str) -> str:
+    """Resolve *file_path* under *repo_dir* and reject path traversal.
+    Returns the resolved absolute path when safe; raises RepoError when
+    the resolved path escapes the repository root."""
+    real_repo = os.path.realpath(repo_dir)
+    fpath = os.path.realpath(os.path.join(repo_dir, file_path))
+    if not (fpath == real_repo or fpath.startswith(real_repo + os.sep)):
+        raise RepoError(
+            f"path {file_path!r} escapes the repository root"
+        )
+    return fpath
+
+
+def _detect_conflict_files(repo_dir: str) -> list[str]:
+    """Return the list of unmerged (conflicted) files after a failed merge.
+    Uses ``git diff --name-only --diff-filter=U`` to distinguish real merge
+    conflicts from other merge failures."""
+    result = _git(
+        repo_dir, "diff", "--name-only", "--diff-filter=U", check=False
+    )
+    return [f for f in result.stdout.strip().splitlines() if f]
+
+
+def _has_conflict_markers(text: str) -> bool:
+    """Check whether *text* still contains unresolved conflict markers.
+    Used to reject resolution content that was not actually cleaned up."""
+    for marker in ("<<<<<<<", "=======", ">>>>>>>"):
+        if marker in text:
+            return True
+    return False
+
+
+def detect_merge_conflicts(number: int) -> dict:
+    """Attempt to merge the base branch into a PR's head branch.
+
+    Returns ``{"status": "clean", ...}`` when the merge is trivial, or
+    ``{"status": "conflicts", "conflicts": [...]}`` with structured
+    per-file, per-region conflict data so an agent can decide how to
+    resolve each one.
+
+    Note: detect is owner-agnostic — any active citizen may call it on
+    any open PR.  The operation is read-only and citizenship-rate-limited,
+    but triggers a full clone+fetch.  Abuse mitigation is left to the
+    existing rate-limit infrastructure.
+    """
+    pr = _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open.")
+    head = pr["head"]["ref"]
+    base = pr["base"]["ref"]
+    repo_dir = _clone_repo()
+    try:
+        _git(repo_dir, "fetch", "--depth=1", "origin", base, head)
+        _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
+        result = _git(
+            repo_dir, "merge", "--no-commit", "--no-ff",
+            f"origin/{base}", check=False,
+        )
+        # Distinguish clean merge, conflict, and other failure
+        conflicted = _detect_conflict_files(repo_dir)
+        if result.returncode == 0 and not conflicted:
+            _abort_merge(repo_dir)
+            return {
+                "status": "clean",
+                "pr_number": number,
+                "head": head,
+                "base": base,
+                "message": "No conflicts — the merge is clean.",
+            }
+        if result.returncode != 0 and not conflicted:
+            stderr = result.stderr
+            if GITHUB_TOKEN:
+                stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
+            raise RepoError(
+                f"merge failed (not a conflict): {stderr.strip()}"
+            )
+        # Conflicts — read each conflicted file for structured data
+        conflicts: list[dict[str, Any]] = []
+        for fpath in conflicted:
+            try:
+                safe = _safe_path(repo_dir, fpath)
+                text = Path(safe).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except (OSError, RepoError):
+                conflicts.append({
+                    "file": fpath,
+                    "error": "could not read conflicted file",
+                    "regions": [],
+                })
+                continue
+            regions = _parse_conflict_markers(text)
+            conflicts.append({
+                "file": fpath,
+                "regions": regions,
+            })
+        _abort_merge(repo_dir)
+        return {
+            "status": "conflicts",
+            "pr_number": number,
+            "head": head,
+            "base": base,
+            "conflicts": conflicts,
+        }
+    finally:
+        _cleanup(repo_dir)
+
+
+def apply_merge_resolutions(
+    number: int,
+    resolutions: list[dict],
+    citizen: str,
+    *,
+    _pr: dict | None = None,
+) -> dict:
+    """Re-clone, re-merge, apply resolutions, commit and push.
+
+    *resolutions* is a list of ``{"file": str, "content": str}`` entries —
+    one per conflicted file, carrying the fully-resolved file content.
+    All resolutions must exactly cover the set of conflicted files, and
+    resolved content must not still contain conflict markers.
+    """
+    _ensure_token()
+    if not resolutions:
+        raise RepoError(
+            "resolutions must be a non-empty list of {file, content}."
+        )
+    for i, r in enumerate(resolutions):
+        if not isinstance(r, dict):
+            raise RepoError(
+                f"resolutions[{i}] must be a dict, "
+                f"got {type(r).__name__}."
+            )
+        if not isinstance(r.get("file"), str) or not r["file"]:
+            raise RepoError(
+                f"resolutions[{i}] 'file' must be a non-empty string."
+            )
+        if not isinstance(r.get("content"), str):
+            raise RepoError(
+                f"resolutions[{i}] 'content' must be a string."
+            )
+        if _has_conflict_markers(r["content"]):
+            raise RepoError(
+                f"resolutions[{i}] for {r['file']!r}: content still "
+                "contains conflict markers — resolve all conflicts "
+                "before submitting."
+            )
+    pr = _pr or _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open.")
+    head = pr["head"]["ref"]
+    base = pr["base"]["ref"]
+    repo_dir = _clone_repo()
+    try:
+        _git(repo_dir, "fetch", "--depth=1", "origin", base, head)
+        _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
+        result = _git(
+            repo_dir, "merge", "--no-commit", "--no-ff",
+            f"origin/{base}", check=False,
+        )
+        conflicted = _detect_conflict_files(repo_dir)
+        if result.returncode == 0 and not conflicted:
+            _abort_merge(repo_dir)
+            return {
+                "status": "clean",
+                "pr_number": number,
+                "message": "No conflicts found — nothing to resolve.",
+            }
+        if result.returncode != 0 and not conflicted:
+            stderr = result.stderr
+            if GITHUB_TOKEN:
+                stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
+            raise RepoError(
+                f"merge failed (not a conflict): {stderr.strip()}"
+            )
+        # Validate coverage: provided files must exactly equal conflicted
+        provided = {r["file"] for r in resolutions}
+        if provided != set(conflicted):
+            missing = set(conflicted) - provided
+            extra = provided - set(conflicted)
+            parts = []
+            if missing:
+                parts.append(f"missing: {sorted(missing)}")
+            if extra:
+                parts.append(f"extra: {sorted(extra)}")
+            raise RepoError(
+                "resolutions must cover exactly the conflicted files "
+                f"({', '.join(parts)})."
+            )
+        # Write resolutions with path-traversal guard
+        for r in resolutions:
+            fpath = _safe_path(repo_dir, r["file"])
+            parent = os.path.dirname(fpath)
+            os.makedirs(parent, exist_ok=True)
+            Path(fpath).write_text(r["content"], encoding="utf-8")
+            _git(repo_dir, "add", r["file"])
+        # Commit the merge with explicit git identity
+        commit_msg = (
+            f"Merge main into {head} — resolve conflicts\n"
+            f"\nCitizen: {citizen}"
+        )
+        _git(
+            repo_dir, "-c", "user.name=agentland",
+            "-c", "user.email=agentland@agentland.dev",
+            "commit", "-m", commit_msg,
+        )
+        # Authenticate for push, then push
+        _setup_push_auth(repo_dir)
+        _git(repo_dir, "push", "origin", _push_ref(head))
+        sha_result = _git(repo_dir, "rev-parse", "HEAD")
+        commit_sha = sha_result.stdout.strip()
+        _invalidate_pr(number)
+        return {
+            "status": "resolved",
+            "pr_number": number,
+            "head": head,
+            "base": base,
+            "commit_sha": commit_sha,
+            "files_resolved": sorted(provided),
+            "message": (
+                f"Merged main into {head} with "
+                f"{len(provided)} file(s) resolved."
+            ),
+        }
+    finally:
+        _cleanup(repo_dir)
