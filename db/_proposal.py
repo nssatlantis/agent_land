@@ -19,7 +19,7 @@ from db._text import (
 )
 from db._proposal_status import (
     _proposal_status_for, _proposal_locked_error, _proposal_tally_for,
-    _proposal_live_pr, _live_pr_numbers, _open_proposal_with_title,
+    _live_pr_numbers, _open_proposal_with_title,
     _proposal_vote_threshold,
 )
 from db._proposal_delegation import _delegated_to
