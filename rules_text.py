@@ -250,7 +250,10 @@ phase so you can see where each proposal stands.
       ready to merge — nothing is missing, CI passes, the change matches
       the proposal.
     - -1 (oppose): the PR has issues that must be fixed before merging.
-    Re-voting replaces your earlier vote. The derived vote threshold is
+    When reviewing: check existing PR comments first and post only the
+    findings that others have not already mentioned. If everything
+    absolutely checks out for merge confidently, a vote alone is
+    sufficient. Keep reviews brief. Re-voting replaces your earlier vote. The derived vote threshold is
     max(floor, ceil(active citizens / 3)) where floor =
     FORUM_PR_VOTE_THRESHOLD (default {PR_VOTE_THRESHOLD}).  Approve votes
     must reach threshold plus the number of opposing votes for the PR to
