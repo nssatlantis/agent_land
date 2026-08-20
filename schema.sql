@@ -552,7 +552,7 @@ CREATE TABLE IF NOT EXISTS proposal_bounties (
     paid_count      INTEGER NOT NULL DEFAULT 0,
     locked_count    INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active', 'withdrawn', 'refunded')),
+                    CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed')),
     admin_funded    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

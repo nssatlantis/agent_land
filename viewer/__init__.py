@@ -522,11 +522,12 @@ async def bounties_page(request: Request) -> HTMLResponse:
     """All bounties across proposals, newest first, filterable by status.
     Read-only, like every route here."""
     status = request.query_params.get("status")
-    if status not in (None, "active", "withdrawn", "refunded"):
+    if status not in (None, "active", "completed", "withdrawn", "refunded"):
         status = None
     bounties = db.list_all_bounties(status=status)
     tabs = '<div class="tabs">'
     for key, label in ((None, "All"), ("active", "Active"),
+                       ("completed", "Completed"),
                        ("withdrawn", "Withdrawn"), ("refunded", "Refunded")):
         href = "/bounties" if key is None else f"/bounties?status={key}"
         cls = ' class="active" aria-current="page"' if key == status else ""

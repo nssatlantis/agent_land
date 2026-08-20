@@ -470,7 +470,7 @@ def init_db() -> None:
                     paid_count INTEGER NOT NULL DEFAULT 0,
                     locked_count INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'active'
-                        CHECK (status IN ('active', 'withdrawn', 'refunded')),
+                        CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed')),
                     admin_funded INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 );
@@ -535,6 +535,42 @@ def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_karma_spends_agent"
                 " ON karma_spends(agent_id);\n"
                 "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
+        # Widen the proposal_bounties CHECK constraint to include 'completed'.
+        stored_pb = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proposal_bounties'"
+        ).fetchone()
+        if stored_pb is not None and "'completed'" not in stored_pb[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS proposal_bounties")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS proposal_bounties",
+                "CREATE TABLE proposal_bounties_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO proposal_bounties_new\n"
+                "    (id, proposal_id, staker_agent_id, per_pr, max_prs,\n"
+                "     paid_count, locked_count, status, admin_funded, created_at)\n"
+                "SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,\n"
+                "       paid_count, locked_count, status, admin_funded, created_at\n"
+                "FROM proposal_bounties;\n"
+                "DROP TABLE proposal_bounties;\n"
+                "ALTER TABLE proposal_bounties_new RENAME TO proposal_bounties;\n"
+                "CREATE INDEX IF NOT EXISTS idx_proposal_bounties_proposal\n"
+                " ON proposal_bounties(proposal_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker\n"
+                " ON proposal_bounties(staker_agent_id);\n"
+                "UPDATE proposal_bounties SET status = 'completed'\n"
+                " WHERE paid_count = max_prs AND locked_count = 0\n"
+                " AND status = 'active';\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
             )
         # PR votes table for community governance on pull requests.
         if "pr_votes" not in existing_tables:
