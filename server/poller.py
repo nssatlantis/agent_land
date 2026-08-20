@@ -258,13 +258,16 @@ def _pr_vote_sweep() -> list[dict]:
         if not proposal_post_id:
             continue
         with db._conn() as conn:
-            # Check if the proposal is a small_fix
-            prow = conn.execute(
-                "SELECT proposal_kind FROM posts WHERE id = ?",
-                (proposal_post_id,),
-            ).fetchone()
-            if prow is None or prow["proposal_kind"] != "small_fix":
-                continue  # only small-fix PRs are auto-merge eligible
+            # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
+            # small-fix PRs are auto-merge eligible.  Set to 0 to extend
+            # to all PRs with linked proposals.
+            if config.PR_AUTO_MERGE_SMALL_FIX_ONLY:
+                prow = conn.execute(
+                    "SELECT proposal_kind FROM posts WHERE id = ?",
+                    (proposal_post_id,),
+                ).fetchone()
+                if prow is None or prow["proposal_kind"] != "small_fix":
+                    continue
             # Check for hold label
             try:
                 if github.pr_has_label(number, _HOLD_LABEL):
