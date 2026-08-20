@@ -380,7 +380,7 @@ def init_db() -> None:
                     ON proposal_collaborators(proposal_id);
                 CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
                     ON proposal_collaborators(agent_id);
-            """
+            """)
         # Tag descriptions: an optional free-text annotation on each tag
         # (schema.sql). An existing forum.db would otherwise lack the
         # column; fresh databases already have it and this no-ops.
