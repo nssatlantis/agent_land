@@ -696,8 +696,8 @@ def main():
     assert ("GET", "commits/abc123/check-runs?per_page=50") in calls, calls
     assert ("GET", "actions/runs?head_sha=abc123&per_page=50") in calls, calls
 
-    # the check-runs tier wins when it answers (no Actions fallback), and its
-    # failure annotations carry path/line/message.
+    # the check-runs tier wins when it answers, and the supplement merges
+    # Actions log error-lines in front of annotations (deduped by prefix).
     calls = []
 
     def fake_request(method, path, body=None, ok_404=False):
@@ -713,21 +713,41 @@ def main():
             ]}
         if method == "GET" and path == "check-runs/21/annotations?per_page=100":
             return [{"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}]
+        if method == "GET" and path.startswith("actions/runs?head_sha=def456"):
+            return {"workflow_runs": [
+                {"id": 31, "name": "CI", "status": "completed", "conclusion": "failure",
+                 "html_url": "u31"},
+            ]}
+        if method == "GET" and path == "actions/runs/31/jobs?per_page=100":
+            return {"jobs": [
+                {"id": 311, "name": "test", "status": "completed", "conclusion": "failure"},
+                {"id": 312, "name": "other", "status": "completed", "conclusion": "failure"},
+            ]}
+        if method == "GET" and path in ("actions/jobs/311/logs", "actions/jobs/312/logs"):
+            return "FAILED tests/test_db.py::test_x - AssertionError: undefined name 'x'\n"
         raise AssertionError(f"unexpected request {method} {path}")
 
+    real_request_text = github._request_text
     github._request = fake_request
+    github._request_text = fake_request
     github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
         github._request = real_request
+        github._request_text = real_request_text
     assert checks["source"] == "check_runs", checks
     assert checks["state"] == "failure", checks
-    assert checks["failures"] == [{
-        "name": "test", "path": "db.py", "line": 42,
-        "message": "undefined name 'x'", "log_url": "u21",
-    }], checks["failures"]
-    assert ("GET", "actions/runs?head_sha=def456&per_page=50") not in calls, calls
+    # log lines come first (supplement), annotation follows
+    assert checks["failures"][0]["name"] == "CI / test", checks["failures"]
+    assert checks["failures"][0]["message"].startswith("FAILED tests/test_db.py"), checks["failures"]
+    # dedup: two jobs with identical log line → one entry
+    assert len(checks["failures"]) == 2, checks["failures"]
+    # annotation preserved
+    assert checks["failures"][1]["path"] == "db.py", checks["failures"]
+    assert checks["failures"][1]["line"] == 42, checks["failures"]
+    # supplement was called
+    assert ("GET", "actions/runs?head_sha=def456&per_page=50") in calls, calls
 
     # empty check runs and empty Actions fall through to the combined commit
     # status tier; its failure entries carry the description.
