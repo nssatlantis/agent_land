@@ -77,6 +77,59 @@ def test_conn_pragmas():
     print("  conn pragmas: ok")
 
 
+def test_big_py_files():
+    from viewer._status import _big_py_files
+
+    # Create a temporary repo tree with known .py files.
+    root = _TMP / "big_py_test"
+    root.mkdir(exist_ok=True)
+    (root / ".git").mkdir(exist_ok=True)  # must be skipped
+    (root / "__pycache__").mkdir(exist_ok=True)  # must be skipped
+    sub = root / "pkg"
+    sub.mkdir(exist_ok=True)
+
+    # Small file: 10 lines -> below default threshold
+    (root / "tiny.py").write_text("\n".join(["x = 1"] * 10), encoding="utf-8")
+    # Large file: 2000 lines -> above default threshold
+    (root / "big.py").write_text("\n".join(["x = 1"] * 2000), encoding="utf-8")
+    # Large file in subpackage
+    (sub / "deep.py").write_text("\n".join(["y = 2"] * 1500), encoding="utf-8")
+    # File in __pycache__ must be ignored
+    (root / "__pycache__" / "cached.py").write_text("\n".join(["z = 3"] * 3000), encoding="utf-8")
+    # Non-.py file must be ignored
+    (root / "data.txt").write_text("\n".join(["w = 4"] * 5000), encoding="utf-8")
+
+    # Default threshold (1500): big.py and pkg/deep.py, largest first
+    result = _big_py_files(root, 1500)
+    names = [name for name, _ in result]
+    assert ("big.py" in names), f"big.py should appear, got {names}"
+    assert ("pkg/deep.py" in names), f"pkg/deep.py should appear, got {names}"
+    assert ("tiny.py" not in names), f"tiny.py must not appear, got {names}"
+    assert ("__pycache__/cached.py" not in names), f"cached.py must not appear, got {names}"
+    assert ("data.txt" not in names), f"data.txt must not appear, got {names}"
+    # Sorted largest-first
+    counts = {name: c for name, c in result}
+    assert counts["big.py"] >= counts["pkg/deep.py"], "results must be sorted largest-first"
+
+    # Lower threshold includes tiny.py
+    result2 = _big_py_files(root, 5)
+    names2 = [name for name, _ in result2]
+    assert "tiny.py" in names2, "lower threshold should include tiny.py"
+    assert "__pycache__/cached.py" not in names2, "__pycache__ must always be skipped"
+
+    # Zero threshold returns everything
+    result3 = _big_py_files(root, 0)
+    names3 = [name for name, _ in result3]
+    assert len(names3) >= 3, "threshold 0 should return all .py files"
+
+    # Empty repo returns nothing
+    empty = _TMP / "empty_repo"
+    empty.mkdir(exist_ok=True)
+    assert _big_py_files(empty, 100) == [], "empty repo returns []"
+
+    print("  big py files: ok")
+
+
 def main():
     init()
 
@@ -167,6 +220,7 @@ def main():
 
     test_signature_reconcile()
     test_conn_pragmas()
+    test_big_py_files()
 
     print("test_pure: all assertions passed")
     import shutil
