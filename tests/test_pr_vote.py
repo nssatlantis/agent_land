@@ -241,6 +241,74 @@ def test_vote_blocked_after_outcome_recorded():
     print("  vote blocked after outcome recorded: ok")
 
 
+def test_my_pr_vote():
+    """my_pr_vote returns the caller's vote or None."""
+    pid, pr_number = _make_small_fix()
+
+    # No vote yet -> None
+    assert db.my_pr_vote(AGENTS["beta"]["token"], pr_number) is None
+
+    # Cast +1
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    assert db.my_pr_vote(AGENTS["beta"]["token"], pr_number) == 1
+
+    # Change to -1
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
+    assert db.my_pr_vote(AGENTS["beta"]["token"], pr_number) == -1
+
+    # Opener sees None (they can't vote, so no row exists)
+    assert db.my_pr_vote(AGENTS["alpha"]["token"], pr_number) is None
+    print("  my_pr_vote: ok")
+
+
+def test_min_karma_pr_vote():
+    """Agents with less than MIN_KARMA_PR_VOTE are rejected."""
+    import config as _cfg
+    pid, pr_number = _make_small_fix()
+
+    # Give beta enough karma (needs 2 for the vote)
+    c2 = db.create_comment(AGENTS["beta"]["token"], pid, "another comment")
+    db.vote(AGENTS["gamma"]["token"], "comment", c2["comment_id"], 1)
+
+    old = _cfg.MIN_KARMA_PR_VOTE
+    try:
+        _cfg.MIN_KARMA_PR_VOTE = 2
+        # "fresh" has 0 karma -> should be rejected
+        err = expect_error(db.vote_on_pr, AGENTS["fresh"]["token"], pr_number, 1)
+        assert "karma" in err.lower(), f"expected 'karma' in error, got: {err}"
+        # "beta" has karma -> should succeed
+        result = db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+        assert result["up"] == 1
+    finally:
+        _cfg.MIN_KARMA_PR_VOTE = old
+    print("  min_karma_pr_vote: ok")
+
+
+def test_proposal_author_notification():
+    """Proposal author is notified when someone votes on their proposal's PR."""
+    from notifications import notifications as get_notifications
+
+    # Create a normal (non-small-fix) proposal authored by gamma
+    proposal = db.create_proposal(
+        AGENTS["gamma"]["token"], "Author notification test", "Body",
+    )
+    pid = proposal["post_id"]
+    pr_number = 9500 + pid
+    _link_manual(pid, pr_number, opener_name="alpha")
+
+    # Clear gamma's mailbox
+    from notifications import mark_notifications_read
+    mark_notifications_read(AGENTS["gamma"]["token"])
+
+    # beta votes on the PR -> gamma (proposal author) should be notified
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    gamma_notifs = get_notifications(AGENTS["gamma"]["token"], unread_only=True)
+    pr_notifs = [n for n in gamma_notifs["notifications"] if n["kind"] == "pr"]
+    assert len(pr_notifs) >= 1, "proposal author should receive a pr notification"
+    assert "implementing your proposal" in pr_notifs[0]["body"]
+    print("  proposal_author_notification: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_pr_vote_schema()
@@ -256,4 +324,7 @@ if __name__ == "__main__":
     test_pr_vote_events()
     test_custom_threshold()
     test_vote_blocked_after_outcome_recorded()
+    test_my_pr_vote()
+    test_min_karma_pr_vote()
+    test_proposal_author_notification()
     print("\n== test_pr_vote: all passed ==")
