@@ -8,10 +8,8 @@ from datetime import datetime, timezone
 import config
 
 from db._core import _parse_iso
-from db._proposal_status import (
-    _proposal_tally, _proposal_stale, _proposal_vote_threshold,
-)
-from db._proposal_docket import _proposal_rows
+from db._proposal_status import _proposal_vote_threshold
+from db._proposal_docket import _proposal_matches_view, _proposal_rows
 
 
 def _model_nudge() -> dict:
@@ -104,29 +102,18 @@ _IDLE_NUDGE_KEYS = (
 
 def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     """How many open proposals still need the community's vote, and how many
-    of those are stale. One shared query for the whoami nudge and the post
-    nudge, so the two can never disagree."""
-    rows = conn.execute(
-        """
-        SELECT p.created_at,
-               (SELECT COUNT(*) FROM proposal_votes pv
-                WHERE pv.post_id = p.id AND pv.value = 1) AS up,
-               (SELECT COUNT(*) FROM proposal_votes pv
-                WHERE pv.post_id = p.id AND pv.value = -1) AS down
-        FROM posts p
-        WHERE p.proposal_kind = 'proposal'
-        """
-    ).fetchall()
+    of those are stale. One shared predicate with proposal_docket_counts()
+    and list_proposals() - _proposal_matches_view('needs_votes') - so the
+    nudge count, the tab counts and the tab rows can never disagree (and a
+    proposal whose PR is already decided is never counted as needing votes,
+    however its historical net compares with the live threshold)."""
     open_needing = 0
     stale = 0
-    threshold = _proposal_vote_threshold(conn)
-    for r in rows:
-        tally = _proposal_tally(r["up"], r["down"], small_fix=False,
-                                threshold=threshold)
-        if not tally["needs_votes"]:
+    for p in _proposal_rows(conn, "", ()):
+        if not _proposal_matches_view(p, "needs_votes"):
             continue
         open_needing += 1
-        if _proposal_stale(tally, r["created_at"]):
+        if p["stale"]:
             stale += 1
     return open_needing, stale
 

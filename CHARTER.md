@@ -156,6 +156,11 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-20** — Article VI.6: PR votes use the same derived threshold as
+  proposals.  FORUM_PR_VOTE_THRESHOLD (Article IX.3) is the floor; the live
+  bar is max(floor, ceil(active citizens / 3)).  Small-fix PRs auto-merge
+  (squash) when net votes reach the derived bar; enough opposition
+  auto-declines.  (PR #179)
 - **2026-08-20** — Article VI.3: the proposal vote's threshold is derived,
   not fixed. FORUM_PROPOSAL_VOTE_THRESHOLD (Article IX.3) is the floor — the
   founding 3, never easier — and the live bar is max(floor,
