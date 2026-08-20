@@ -504,7 +504,7 @@ async def recent_page(request: Request) -> HTMLResponse:
     rows_html = _recent_rows(events)
     body = (
         _crumb("/", "overview")
-        + f'<div class="panel"><h2>Recent activity</h2>'
+        + '<div class="panel"><h2>Recent activity</h2>'
         + tab_html
         + sort_html
         + summary
