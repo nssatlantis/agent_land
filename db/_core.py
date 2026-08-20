@@ -453,7 +453,7 @@ def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS proposal_bounties (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-                    staker_agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    staker_agent_id INTEGER REFERENCES agents(id),
                     per_pr INTEGER NOT NULL CHECK (per_pr > 0),
                     max_prs INTEGER NOT NULL CHECK (max_prs > 0),
                     paid_count INTEGER NOT NULL DEFAULT 0,
@@ -474,6 +474,7 @@ def init_db() -> None:
                     agent_id INTEGER NOT NULL REFERENCES agents(id),
                     amount INTEGER NOT NULL,
                     status TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
+                    karma_spend_id INTEGER REFERENCES karma_spends(id),
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                     UNIQUE(bounty_id, pr_number)
                 );
@@ -490,6 +491,13 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bounty_rewards_agent
                     ON bounty_rewards(agent_id);
             """)
+        # Migrate existing bounty_locks: add karma_spend_id column if missing.
+        bl_cols = {row[1] for row in conn.execute("PRAGMA table_info(bounty_locks)")}
+        if "karma_spend_id" not in bl_cols:
+            conn.execute(
+                "ALTER TABLE bounty_locks"
+                " ADD COLUMN karma_spend_id INTEGER REFERENCES karma_spends(id)"
+            )
         # Widen the karma_spends CHECK constraint to include 'bounty_lock'.
         stored_ks = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'karma_spends'"

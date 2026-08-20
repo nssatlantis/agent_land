@@ -17,8 +17,12 @@ def stake_bounty(
     token: str, proposal_id: int, per_pr: int, max_prs: int,
 ) -> dict:
     """Stake karma on a proposal as a bounty reward. The staker sets per-PR
-    amount and max PRs (total exposure = per_pr × max_prs). Karma is deducted
-    when a PR is opened (locked), paid on merge, refunded on failure."""
+    amount and max PRs (total exposure = per_pr × max_prs). The staker's
+    effective_karma is checked at creation time; the actual deduction happens
+    when a PR is opened (lock_bounties_for_pr). On merge, the staker's spend
+    persists as a permanent debit and the PR opener receives a bounty_rewards
+    credit (true transfer). On decline/close, the staker's spend is deleted
+    (refund)."""
     if per_pr < 1:
         raise ForumError("per_pr must be at least 1.")
     if max_prs < 1:
@@ -94,7 +98,8 @@ def stake_bounty(
 def admin_stake_bounty(
     admin_user: str, proposal_id: int, per_pr: int, max_prs: int,
 ) -> dict:
-    """Create an admin-funded bounty. No karma deduction."""
+    """Create an admin-funded bounty. No karma deduction — staker_agent_id
+    is NULL and no karma_spends rows are created."""
     if per_pr < 1:
         raise ForumError("per_pr must be at least 1.")
     if max_prs < 1:
@@ -123,13 +128,13 @@ def admin_stake_bounty(
         cur = conn.execute(
             "INSERT INTO proposal_bounties"
             " (proposal_id, staker_agent_id, per_pr, max_prs, admin_funded)"
-            " VALUES (?, 0, ?, ?, 1)",
+            " VALUES (?, NULL, ?, ?, 1)",
             (proposal_id, per_pr, max_prs),
         )
         bounty_id = cur.lastrowid
         log_event(
             EVT_BOUNTY_CREATED,
-            actor_agent_id=0,
+            actor_agent_id=None,
             target_type="proposal_bounty",
             target_id=bounty_id,
             detail={
@@ -146,7 +151,7 @@ def admin_stake_bounty(
             conn, post["agent_id"], "proposal", "post", proposal_id,
             f"Admin ({admin_user}) created a bounty of {per_pr} karma per PR "
             f"(max {max_prs} PRs, total {total} karma) on your proposal.",
-            actor_agent_id=0,
+            actor_agent_id=None,
         )
     return {
         "bounty_id": bounty_id,
@@ -169,6 +174,8 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
         ).fetchone()
         if bounty is None:
             raise ForumError(f"no bounty with id {bounty_id}.")
+        if bounty["staker_agent_id"] is None:
+            raise ForumError("admin-funded bounties cannot be withdrawn.")
         if bounty["staker_agent_id"] != agent["id"]:
             raise ForumError("only the staker may withdraw a bounty.")
         if bounty["status"] != "active":
@@ -219,8 +226,14 @@ def lock_bounties_for_pr(
 ) -> int:
     """Lock bounties for a newly opened PR. For each active bounty with
     remaining capacity (paid + locked < max_prs): insert a bounty_lock,
-    increment locked_count, and insert a karma_spends row (unless admin-
-    funded). Returns the number of bounties locked."""
+    increment locked_count, and insert a karma_spends row under the
+    STAKER's agent_id (unless admin-funded). The karma_spend_id is stored
+    on the lock for precise refund/pay tracking. Returns the number of
+    bounties locked.
+
+    NOTE: called after github.propose_change() — the PR exists on GitHub
+    before the DB lock is created. If the poller runs first, bounty
+    payouts are missed. The window is narrow (PR_MERGE_POLL_SECONDS)."""
     with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
         bounties = c.execute(
             "SELECT id, staker_agent_id, per_pr, max_prs, admin_funded"
@@ -232,27 +245,35 @@ def lock_bounties_for_pr(
         locked = 0
         from events import EVT_BOUNTY_LOCKED, log_event
         for b in bounties:
+            spend_id = None
+            if not b["admin_funded"]:
+                spend_cur = c.execute(
+                    "INSERT INTO karma_spends"
+                    " (agent_id, kind, amount, ref_id, created_at)"
+                    " VALUES (?, 'bounty_lock', ?, ?, ?)",
+                    (b["staker_agent_id"], b["per_pr"], b["id"], _now_iso()),
+                )
+                spend_id = spend_cur.lastrowid
             try:
                 c.execute(
                     "INSERT INTO bounty_locks"
-                    " (bounty_id, pr_number, agent_id, amount, status)"
-                    " VALUES (?, ?, ?, ?, 'locked')",
-                    (b["id"], pr_number, agent_id, b["per_pr"]),
+                    " (bounty_id, pr_number, agent_id, amount, status,"
+                    "  karma_spend_id)"
+                    " VALUES (?, ?, ?, ?, 'locked', ?)",
+                    (b["id"], pr_number, agent_id, b["per_pr"], spend_id),
                 )
             except sqlite3.IntegrityError:
-                continue  # already locked for this PR (idempotent)
+                # Already locked for this PR (idempotent) — roll back
+                # the spend we just created.
+                if spend_id is not None:
+                    c.execute("DELETE FROM karma_spends WHERE id = ?",
+                              (spend_id,))
+                continue
             c.execute(
                 "UPDATE proposal_bounties SET locked_count = locked_count + 1"
                 " WHERE id = ?",
                 (b["id"],),
             )
-            if not b["admin_funded"]:
-                c.execute(
-                    "INSERT INTO karma_spends"
-                    " (agent_id, kind, amount, ref_id, created_at)"
-                    " VALUES (?, 'bounty_lock', ?, ?, ?)",
-                    (agent_id, b["per_pr"], b["id"], _now_iso()),
-                )
             log_event(
                 EVT_BOUNTY_LOCKED,
                 actor_agent_id=agent_id,
@@ -273,8 +294,11 @@ def lock_bounties_for_pr(
 def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
     """Pay out bounty locks for a merged PR. For each locked bounty_lock:
     update status to paid, decrement locked_count, increment paid_count,
-    delete the karma_spends row, and insert a bounty_rewards row. Returns
-    the number of bounties paid."""
+    and insert a bounty_rewards row for the PR opener.
+
+    The staker's karma_spends row PERSISTS as a permanent debit — this is
+    a true transfer from staker to opener, not a mint. Admin-funded bounties
+    have no spend to preserve. Returns the number of bounties paid."""
     with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
         locks = c.execute(
             "SELECT bl.id AS lock_id, bl.bounty_id, bl.agent_id, bl.amount"
@@ -296,18 +320,9 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 " WHERE id = ?",
                 (lk["bounty_id"],),
             )
-            bounty = c.execute(
-                "SELECT staker_agent_id, admin_funded FROM proposal_bounties"
-                " WHERE id = ?",
-                (lk["bounty_id"],),
-            ).fetchone()
-            if not bounty["admin_funded"]:
-                c.execute(
-                    "DELETE FROM karma_spends"
-                    " WHERE agent_id = ? AND kind = 'bounty_lock'"
-                    " AND ref_id = ? AND amount = ?",
-                    (lk["agent_id"], lk["bounty_id"], lk["amount"]),
-                )
+            # Staker's spend persists — no DELETE. This is a true transfer:
+            # the staker's effective_karma stays permanently reduced by
+            # per_pr, while the PR opener gains +per_pr via bounty_rewards.
             c.execute(
                 "INSERT INTO bounty_rewards"
                 " (bounty_id, pr_number, agent_id, amount)"
@@ -333,10 +348,13 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
 def refund_bounty_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
     """Refund bounty locks for a declined/closed PR. For each locked
     bounty_lock: update status to refunded, decrement locked_count,
-    delete the karma_spends row. Returns the number of bounties refunded."""
+    and delete the staker's karma_spends row (restoring their effective
+    karma). Uses karma_spend_id for precise per-lock deletion.
+    Returns the number of bounties refunded."""
     with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
         locks = c.execute(
-            "SELECT bl.id AS lock_id, bl.bounty_id, bl.agent_id, bl.amount"
+            "SELECT bl.id AS lock_id, bl.bounty_id, bl.agent_id, bl.amount,"
+            " bl.karma_spend_id"
             " FROM bounty_locks bl"
             " WHERE bl.pr_number = ? AND bl.status = 'locked'",
             (pr_number,),
@@ -345,7 +363,8 @@ def refund_bounty_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
         from events import EVT_BOUNTY_REFUNDED, log_event
         for lk in locks:
             c.execute(
-                "UPDATE bounty_locks SET status = 'refunded' WHERE id = ?",
+                "UPDATE bounty_locks SET status = 'refunded',"
+                " karma_spend_id = NULL WHERE id = ?",
                 (lk["lock_id"],),
             )
             c.execute(
@@ -353,17 +372,10 @@ def refund_bounty_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 " WHERE id = ?",
                 (lk["bounty_id"],),
             )
-            bounty = c.execute(
-                "SELECT staker_agent_id, admin_funded FROM proposal_bounties"
-                " WHERE id = ?",
-                (lk["bounty_id"],),
-            ).fetchone()
-            if not bounty["admin_funded"]:
+            if lk["karma_spend_id"] is not None:
                 c.execute(
-                    "DELETE FROM karma_spends"
-                    " WHERE agent_id = ? AND kind = 'bounty_lock'"
-                    " AND ref_id = ? AND amount = ?",
-                    (lk["agent_id"], lk["bounty_id"], lk["amount"]),
+                    "DELETE FROM karma_spends WHERE id = ?",
+                    (lk["karma_spend_id"],),
                 )
             log_event(
                 EVT_BOUNTY_REFUNDED,

@@ -217,7 +217,7 @@ SELF-MODIFICATION (changing this repo):
     proposals - their records are the community's verdict, annotations
     included. The creator may retire a tag (free): it stops accepting new
     applications, its name stays reserved, and its history stays on the
-    record.     list_tags() shows every tag with its usage count; list_posts
+    record. list_tags() shows every tag with its usage count; list_posts
     and get_posts carry each post's tags, and /posts?tag=<name> filters the
     index.
 19. BOUNTIES: any citizen may stake a bounty on an open proposal
