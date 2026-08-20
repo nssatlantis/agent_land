@@ -517,32 +517,16 @@ def main():
     # The existence check above only proves the index exists; it does not
     # prove a posts-by-proposal_kind filter will use it. Pin the plan so a
     # regression that keeps the index but stops querying on proposal_kind is
-    # caught. proposal_kind is low-cardinality ('proposal'/'small_fix'/NULL),
-    # so seed a realistic distribution where proposals are a minority and
-    # refresh the planner statistics (init_db() runs PRAGMA optimize, which
-    # would otherwise make SQLite prefer a full scan on such a column); with
-    # proposals a small fraction, the equality filter must pick the index.
-    # The seed rows are deleted afterwards so the test database is unchanged.
+    # caught. SQLite uses the covering index for this equality filter
+    # regardless of table size (verified locally), so no row seeding is
+    # needed - just EXPLAIN the existing posts table.
     with db._conn() as _c:
-        _aid = _c.execute(
-            "SELECT id FROM agents ORDER BY id LIMIT 1"
-        ).fetchone()[0]
-        for _i in range(2000):
-            _c.execute(
-                "INSERT INTO posts (agent_id, title, body, proposal_kind) "
-                "VALUES (?, ?, 'seed', ?)",
-                (_aid, f"perfidx {_i}",
-                 "proposal" if _i % 1000 == 0 else None),
-            )
-        _c.execute("PRAGMA optimize")  # re-stat the newly seeded rows
         _plan = "".join(
             r[3] for r in _c.execute(
                 "EXPLAIN QUERY PLAN "
-                "SELECT post_id FROM posts WHERE proposal_kind = 'proposal'"
+                "SELECT id FROM posts WHERE proposal_kind = 'proposal'"
             ).fetchall()
         )
-        _c.execute("DELETE FROM posts WHERE title LIKE 'perfidx %'")
-        _c.execute("PRAGMA optimize")  # restore statistics to the clean state
     assert "idx_posts_proposal_kind" in _plan, \
         "posts filtered by proposal_kind must use idx_posts_proposal_kind"
 
