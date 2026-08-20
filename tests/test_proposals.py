@@ -527,9 +527,13 @@ def main():
         ).fetchone()[0]
     assert n_links == 1 and linked_by == agents["epsilon"]["agent_id"], \
         "linking the same PR twice is a no-op"
+
+    # One live PR no longer blocks (MAX_PRS_PER_PROPOSAL=2); need two
+    # to hit the cap and trigger the error.
+    db.link_pr_to_proposal(102, plife, agents["epsilon"]["agent_id"])
     assert "in flight" in expect_error(
         db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
-    ), "a live PR blocks a second one from opening"
+    ), "two live PRs hit the cap and block a third"
 
     # proposal_for_pr resolves the linked proposal a PR implements (used by
     # repo_update_pr to re-stamp a body the agent edited), None when unlinked.
