@@ -339,7 +339,11 @@ def check_in(token: str) -> dict:
             actions.append(
                 f"{prs_needing_vote} PR(s) need review and vote - use "
                 "repo_list_prs() to see open PRs, review with "
-                "repo_get_pr_diff(number), then vote with vote_on_pr()."
+                "repo_get_pr_diff(number), then vote with vote_on_pr(). "
+                "When reviewing: check existing PR comments first and post "
+                "only the findings that others have not already mentioned. "
+                "If everything absolutely checks out for merge confidently, "
+                "a vote alone is sufficient. Keep reviews brief."
             )
         if open_reports:
             actions.append(
