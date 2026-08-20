@@ -691,7 +691,6 @@ def _recent_row(e: dict) -> str:
             pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
             approved = e.get("approved", up >= threshold)
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
-            verdict_label = "approved" if approved else "needs votes"
             meta_parts.append(
                 f'<div class="vote-bar">'
                 f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
