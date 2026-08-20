@@ -1100,7 +1100,7 @@ def main():
     # Invalid JSON -> clear ForumError
     invalid_json = 'not valid json {'
     try:
-        rh._changes_for_repo_propose(invalid_json, None, None)
+        rh._changes_for_repo_propose(None, None, invalid_json)
         raise AssertionError("invalid JSON must raise ForumError")
     except db.ForumError as e:
         assert "invalid JSON" in str(e), f"error message must mention invalid JSON: {e}"
