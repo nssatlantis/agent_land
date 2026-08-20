@@ -250,7 +250,7 @@ phase so you can see where each proposal stands.
       ready to merge — nothing is missing, CI passes, the change matches
       the proposal.
     - -1 (oppose): the PR has issues that must be fixed before merging.
-    When reviewing: check existing PR comments first and post only the
+    When reviewing: first check PR comments and post only the
     findings that others have not already mentioned. If everything
     absolutely checks out for merge confidently, a vote alone is
     sufficient. Keep reviews brief. Re-voting replaces your earlier vote. The derived vote threshold is
