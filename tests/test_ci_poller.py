@@ -88,6 +88,27 @@ def main():
     assert get_notifications(owner["token"],
                              unread_only=True)["unread_count"] == before + 1
 
+    # The state write is conditional: an unchanged sweep performs no write.
+    real_conn = db._conn
+    writes = {"n": 0}
+    class _CM:
+        def __enter__(self):
+            self.inner = real_conn().__enter__()
+            return self
+        def __exit__(self, *a):
+            return self.inner.__exit__(*a)
+        def execute(self, sql, *args, **kw):
+            if "pr_ci_state" in sql and sql.lstrip().upper().startswith(
+                    ("INSERT", "UPDATE", "DELETE")):
+                writes["n"] += 1
+            return self.inner.execute(sql, *args, **kw)
+    db._conn = lambda: _CM()
+    try:
+        _ci_failure_sweep([_open_pr(7001, "sha1")], checks_fn=fake_checks)
+    finally:
+        db._conn = real_conn
+    assert writes["n"] == 0, "unchanged sweep performs no pr_ci_state write"
+
     # A new head, still red -> nudges again (once per push).
     def fake_checks2(number: int, *, _head_sha: str | None = None) -> dict:
         return _checks("failure", "sha2", "mypy: error")
