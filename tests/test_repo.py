@@ -1086,9 +1086,9 @@ def main():
     # parse these correctly and raise clear ForumError for invalid JSON.
     from server import repo_helpers as rh
 
-    # Valid JSON string -> list[dict]
+    # Valid JSON string -> list[dict] (passed as files parameter, not file_path)
     valid_json = '[{"path": "a.md", "content": "hello"}]'
-    parsed = rh._changes_for_repo_propose(valid_json, None, None)
+    parsed = rh._changes_for_repo_propose(None, None, valid_json)
     assert parsed == [{"path": "a.md", "content": "hello"}], \
         "valid JSON string must be parsed to list[dict]"
 
