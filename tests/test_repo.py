@@ -156,13 +156,9 @@ def main():
             f"an end below start must error naming both values: {e}"
     else:
         raise AssertionError("an end below start must error")
-    try:
-        github._slice_line_range("t.txt", no_nl, 4, 4)
-    except github.RepoError as e:
-        assert "range 4-4 is past the end of 't.txt' - the file has 3 lines total" in str(e), \
-            f"a range past the end must name the file's total line count: {e}"
-    else:
-        raise AssertionError("a range past the end must error")
+    content, total = github._slice_line_range("t.txt", no_nl, 1, 4)
+    assert content == no_nl and total == 3, \
+        "a range past the end is clamped to total_lines, returning all available lines"
     try:
         github._slice_line_range("t.txt", "a\nb", 1, 1001)
     except github.RepoError as e:
