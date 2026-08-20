@@ -1,13 +1,13 @@
 """PR voting: community governance votes on pull requests.
 
 Citizens approve or oppose a PR with +1/-1 votes.  When enough approving
-votes accumulate (net >= FORUM_PR_VOTE_THRESHOLD), a small-fix PR may be
+votes accumulate (net >= the derived threshold), a small-fix PR may be
 auto-merged by the poller.  Enough opposing votes auto-declines it.
 The PR opener cannot vote on their own PR.
 
-Design follows db/_proposal.py's voting pattern: check-then-write inside a
-single transaction, re-vote replaces the earlier vote (UNIQUE upsert).
-"""
+The threshold is derived, not fixed: max(floor, ceil(active/3)) where
+floor = FORUM_PR_VOTE_THRESHOLD (the founding gate, never easier).
+A threshold of 0 keeps the escape hatch (only the vote is skipped)."""
 
 from __future__ import annotations
 
@@ -20,12 +20,25 @@ from db._core import (
     _conn,
     _now_iso,
     _require_active_agent,
+    active_citizens,
 )
 from events import (
     EVT_PR_VOTE_CAST,
     EVT_PR_VOTE_CHANGED,
     log_event,
 )
+
+
+def _pr_vote_threshold(conn: sqlite3.Connection) -> int:
+    """The live PR-vote bar: the configured threshold is the FLOOR — the
+    founding bar, never easier — and the bar rises with the active citizen
+    count to ceil(active / 3).  Derived per call, nothing cached; a
+    threshold of 0 keeps the escape hatch (only the vote is skipped)."""
+    floor = config.PR_VOTE_THRESHOLD
+    if floor == 0:
+        return 0
+    active = active_citizens(conn)
+    return max(floor, (active + 2) // 3)
 
 
 def vote_on_pr(
@@ -161,9 +174,9 @@ def pr_eligible_for_merge(
     threshold: int | None = None,
 ) -> bool:
     """Check whether a PR has enough net votes to auto-merge.  The threshold
-    is FORUM_PR_VOTE_THRESHOLD (default 2) unless overridden."""
+    is derived: max(floor, ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD."""
     if threshold is None:
-        threshold = config.PR_VOTE_THRESHOLD
+        threshold = _pr_vote_threshold(conn)
     t = _tally(conn, pr_number)
     return t["net"] >= threshold
 
@@ -177,6 +190,6 @@ def pr_eligible_for_decline(
     """Check whether a PR has enough opposing votes to auto-decline.
     Auto-decline when net <= -threshold."""
     if threshold is None:
-        threshold = config.PR_VOTE_THRESHOLD
+        threshold = _pr_vote_threshold(conn)
     t = _tally(conn, pr_number)
     return t["net"] <= -threshold

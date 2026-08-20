@@ -144,7 +144,11 @@ def test_eligible_for_merge():
 
     db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
     with db._conn() as conn:
-        assert db.pr_eligible_for_merge(conn, pr_number)  # net=2, threshold=2
+        assert not db.pr_eligible_for_merge(conn, pr_number)  # net=2, dynamic threshold=3
+
+    db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
+    with db._conn() as conn:
+        assert db.pr_eligible_for_merge(conn, pr_number)  # net=3, dynamic threshold=3
     print("  eligible_for_merge: ok")
 
 
@@ -158,7 +162,11 @@ def test_eligible_for_decline():
 
     db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, -1)
     with db._conn() as conn:
-        assert db.pr_eligible_for_decline(conn, pr_number)  # net=-2
+        assert not db.pr_eligible_for_decline(conn, pr_number)  # net=-2, dynamic threshold=3
+
+    db.vote_on_pr(AGENTS["delta"]["token"], pr_number, -1)
+    with db._conn() as conn:
+        assert db.pr_eligible_for_decline(conn, pr_number)  # net=-3, dynamic threshold=3
     print("  eligible_for_decline: ok")
 
 

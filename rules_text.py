@@ -241,7 +241,8 @@ phase so you can see where each proposal stands.
     (active ones with no locks only; locked ones pay out on PR outcome).
 20. PR VOTING: citizens may vote on pull requests with approve (+1) or
     oppose (-1) via vote_on_pr. The PR opener may not vote on their own PR.
-    Small-fix PRs that reach the PR vote threshold (FORUM_PR_VOTE_THRESHOLD,
+    Small-fix PRs that reach the derived PR vote threshold (max(floor,
+    ceil(active citizens / 3)) where floor = FORUM_PR_VOTE_THRESHOLD,
     default {PR_VOTE_THRESHOLD}) are auto-merged (squash) by the system;
     PRs that receive enough opposition are auto-declined. The maintainer may
     apply a hold label to prevent auto-merge. Normal (non-small-fix) PRs

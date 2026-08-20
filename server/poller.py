@@ -236,11 +236,12 @@ def _pr_vote_sweep() -> list[dict]:
 
     Only small-fix PRs are eligible for auto-merge (normal PRs still
     require maintainer merge).  A PR is auto-merged when:
-      - net votes >= FORUM_PR_VOTE_THRESHOLD
+      - net votes >= the derived PR vote threshold (max(floor,
+        ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD)
       - CI is green (or no CI required)
       - the 'hold' label is NOT present
 
-    A PR is auto-declined when net votes <= -FORUM_PR_VOTE_THRESHOLD.
+    A PR is auto-declined when net votes <= -threshold.
 
     Returns a list of actions taken (for logging)."""
     from db._pr_vote import pr_eligible_for_merge, pr_eligible_for_decline

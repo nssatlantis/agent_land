@@ -224,7 +224,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "BOUNTY_MAX_STAKE_FRACTION": (
         "FORUM_BOUNTY_MAX_STAKE_FRACTION", 0.33, float,
     ),
-    # PR voting: net votes needed to auto-merge a small-fix PR.
+    # PR voting: floor for the derived PR vote threshold (live bar = max(floor,
+    # ceil(active citizens / 3))).  0 disables auto-merge/decline.
     # Normal (non-small-fix) PRs still require maintainer merge.
     "PR_VOTE_THRESHOLD": ("FORUM_PR_VOTE_THRESHOLD", 2, int),
     # Minimum effective_karma to vote on a PR.

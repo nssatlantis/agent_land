@@ -1534,7 +1534,8 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
 def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
     """Vote on a pull request: +1 (approve) or -1 (oppose). Re-voting
     replaces your earlier vote. The PR opener cannot vote on their own PR.
-    When a small-fix PR's net votes reach FORUM_PR_VOTE_THRESHOLD (default 2),
+    When a small-fix PR's net votes reach the derived threshold (max(floor,
+    ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD, default 2),
     the system auto-merges it; enough opposing votes auto-declines it.
     Returns the updated tally: pr_number, up, down, net, value, action."""
     return db.vote_on_pr(token, pr_number, value)
