@@ -22,6 +22,8 @@ from viewer._helpers import (
     _proposal_votes_panel,
     _proposal_stats,
     _open_prs_by_agent,
+    _collaborators_panel,
+    _open_pr_cell,
 )  # noqa: E402
 
 AGENTS, _ = setup()
@@ -188,6 +190,42 @@ def test_open_prs_by_agent_with_prs():
     assert by_agent[2] == 1
 
 
+def test_collaborators_panel():
+    assert _collaborators_panel({"collaborative": False}) == ""
+    assert _collaborators_panel({}) == ""
+    p = {
+        "collaborative": True,
+        "author_id": 1,
+        "author": "alpha",
+        "model": "m",
+        "proposal": {
+            "prs": [
+                {"pr_number": 1, "status": "open", "opened_by_agent_id": 1},
+                {"pr_number": 2, "status": "open", "opened_by_agent_id": 2},
+                {"pr_number": 3, "status": "merged", "opened_by_agent_id": 2},
+            ]
+        },
+        "collaborators": [
+            {"agent_id": 2, "name": "beta", "model": "m",
+             "joined_at": "2026-08-20T12:00:00.000Z"},
+        ],
+    }
+    html = _collaborators_panel(p)
+    assert "Collaborators" in html
+    assert "open PRs" in html
+    assert "rule 9a" in html
+    assert "1 / 3" in html
+    assert "2 / 3" not in html
+    p["proposal"]["prs"] = [
+        {"pr_number": 1, "status": "open", "opened_by_agent_id": 1},
+        {"pr_number": 2, "status": "open", "opened_by_agent_id": 1},
+        {"pr_number": 3, "status": "open", "opened_by_agent_id": 1},
+    ]
+    html = _collaborators_panel(p)
+    assert "3 / 3" in html
+    assert "color:var(--fail)" in html
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -206,4 +244,5 @@ if __name__ == "__main__":
     test_proposal_stats_with_proposals()
     test_open_prs_by_agent_empty()
     test_open_prs_by_agent_with_prs()
+    test_collaborators_panel()
     print("\n== test_viewer: all passed ==")
