@@ -185,16 +185,25 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     # previous cache or safe defaults so the page always loads.
     _cached_repo = cached[2] if cached else None
     _cached_prs = cached[3] if cached else None
+    _repo_timeout = False
     try:
         repo = await asyncio.wait_for(repo_task, timeout=_NETWORK_TIMEOUT_SECONDS)
-    except (asyncio.TimeoutError, Exception):
+    except asyncio.TimeoutError:
         repo = _cached_repo or {"error": "timeout", "stale": True}
+        _repo_timeout = True
+    _prs_timeout = False
     try:
         prs = await asyncio.wait_for(prs_task, timeout=_NETWORK_TIMEOUT_SECONDS)
-    except (asyncio.TimeoutError, Exception):
+    except asyncio.TimeoutError:
         prs = _cached_prs
+        _prs_timeout = True
     result = (by_name, latency, repo, prs)
-    _STATUS_CACHE = (time.monotonic(), result)
+    # Only persist to cache when both network reads succeeded. On timeout
+    # the stale-good result is still returned to the caller, but the cache
+    # keeps the last-known-good values so subsequent fragment reads within
+    # the TTL don't serve a timeout error as if it were data.
+    if not _repo_timeout and not _prs_timeout:
+        _STATUS_CACHE = (time.monotonic(), result)
     return result
 
 def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
