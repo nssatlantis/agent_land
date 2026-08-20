@@ -198,6 +198,7 @@ from db._proposal_docket import (  # noqa: F401
     _proposal_matches_view,
     _proposal_rows,
     _proposal_voters_batch,
+    proposal_voters_batch,
     assigned_proposals,
     list_proposals,
     my_proposals,
