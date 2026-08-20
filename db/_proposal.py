@@ -627,13 +627,16 @@ def require_proposal_approval(
                     f"collaborator on proposal #{post_id} to open a PR."
                 )
         else:
-            live = _proposal_live_pr(c, post_id)
-            if live is not None:
+            live_prs = _live_pr_numbers(c, post_id)
+            max_prs = config.MAX_PRS_PER_PROPOSAL
+            if len(live_prs) >= max_prs:
+                pr_list = ", ".join(f"#{n}" for n in live_prs)
                 raise ForumError(
-                    f"proposal #{post_id} already has a pull request in flight "
-                    f"(PR #{live}) - only one at a time. Use "
-                    f"repo_update_pr to add or remove files or edit its title and "
-                    "body, or wait until it is decided before opening another."
+                    f"proposal #{post_id} already has {len(live_prs)} open "
+                    f"PR(s) ({pr_list}) - the cap is {max_prs}. Use "
+                    f"repo_update_pr to add or remove files, "
+                    "repo_close_pr to withdraw one, or wait until one is "
+                    "decided before opening another."
                 )
             # Claiming gate: if the proposal is claimed by someone else,
             # only the claimer may open the PR.  The author must revoke
