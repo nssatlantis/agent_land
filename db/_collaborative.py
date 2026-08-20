@@ -235,8 +235,8 @@ def close_proposal(token: str, post_id: int) -> dict:
         for col in collabs:
             _notify(
                 conn, col["agent_id"], "proposal", "post", post_id,
-                f"collaborative proposal #{post_id} has been closed"
-                f" ({final_status}).",
+                f"collaborative proposal #{post_id}"
+                f" has been {final_status}.",
                 actor_agent_id=agent["id"],
             )
         _notify(
@@ -251,7 +251,16 @@ def close_proposal(token: str, post_id: int) -> dict:
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"proposal_id": post_id, "status": final_status},
+            detail={"proposal_id": post_id, "status": final_status,
+                    "merged_prs": merged_count,
+                    "pr_goal": goal_row["pr_goal"]
+                    if goal_row and goal_row["pr_goal"] is not None
+                    else None,
+                    "goal_met": (
+                        merged_count >= goal_row["pr_goal"]
+                        if goal_row and goal_row["pr_goal"] is not None
+                        else None
+                    )},
             conn=conn,
         )
         result: dict = {"post_id": post_id, "status": final_status,
