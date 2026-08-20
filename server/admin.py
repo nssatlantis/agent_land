@@ -282,20 +282,42 @@ async def reports_index(request):
 
 
 
-def _bounty_form(request, proposal_id: int) -> str:
-    """An inline admin-funded bounty form: per_pr + max_prs + CSRF."""
+def _bounty_form(request, proposal_id: int, bounties: list | None = None) -> str:
+    """Admin-funded bounty form: shows existing bounties + a form to add new."""
+    existing = ""
+    if bounties:
+        for b in bounties:
+            remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
+            existing += (
+                f'<div style="font-size:13px;color:var(--muted);margin:2px 0">'
+                f'{esc(b.get("staker_name") or "system")}: {b["per_pr"]} \u00d7 {b["max_prs"]} PRs'
+                f' (paid:{b["paid_count"]} locked:{b["locked_count"]} remain:{remaining})'
+                f' [{b["status"]}]</div>'
+            )
     return (
+        f'<div style="margin:4px 0;padding:4px 0;border-top:1px solid var(--border)">'
+        f'<div style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:2px">'
+        f'Bounties</div>{existing}'
         f'<form method="post" action="/admin/proposals/{proposal_id}/bounty"'
-        ' style="display:inline">{_csrf_field(request)}'
+        f' style="display:inline">{_csrf_field(request)}'
+        '<label style="font-size:13px;color:var(--muted)">per PR: '
         '<input name="per_pr" type="number" min="1" value="1"'
-        ' style="width:50px" title="per_pr">'
+        ' style="width:50px"></label> '
+        '<label style="font-size:13px;color:var(--muted)">max PRs: '
         '<input name="max_prs" type="number" min="1" value="1"'
-        ' style="width:50px" title="max_prs">'
-        ' <button type="submit">bounty</button></form>'
+        ' style="width:50px"></label> '
+        '<button type="submit" style="font-size:13px">fund</button></form></div>'
     )
 
 
 def _render_proposals(request) -> str:
+    proposals = db.list_proposals()
+    bounties_map: dict[int, list] = {}
+    with db._conn() as conn:
+        for p in proposals:
+            b = db.list_proposal_bounties(conn, p["id"])
+            if b:
+                bounties_map[p["id"]] = b
     rows = "".join(
         f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
         f"<td>{esc(p['author'])}</td>"
@@ -303,8 +325,8 @@ def _render_proposals(request) -> str:
         f"<td>{p['up']}/{p['down']}</td>"
         f"<td>{'approved' if p['approved'] else 'needs votes'}</td>"
         f"<td>{_post_delete_form(request, p['id'])} "
-        f"{_bounty_form(request, p['id'])}</td></tr>"
-        for p in db.list_proposals()
+        f"{_bounty_form(request, p['id'], bounties_map.get(p['id']))}</td></tr>"
+        for p in proposals
     )
     return (
         '<div class="panel"><h2>Proposals</h2>'

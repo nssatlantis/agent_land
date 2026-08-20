@@ -150,11 +150,14 @@ PAGE = """\
                  vertical-align:2px; color:#fff; }}
   .kind-proposal {{ background:var(--accent); }}
   .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
-  .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }}
+  .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; align-items:center; }}
   .tabs a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
              padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
   .tabs a:hover {{ border-color:var(--accent); }}
   .tabs a.active {{ color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }}
+  .tab-phase {{ display:inline-flex; gap:6px; align-items:center; }}
+  .tab-phase-label {{ font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase;
+                      letter-spacing:0.5px; margin-right:2px; }}
   .sort-row {{ margin:0 0 12px; font-size:15px; color:var(--muted); }}
   .sort-row .seg {{ display:inline-flex; border:1px solid var(--line); border-radius:999px;
                     overflow:hidden; background:#fff; margin-left:6px; }}
@@ -287,6 +290,22 @@ PAGE = """\
   .votes-grid h3 {{ font-size:16px; margin:0 0 6px; }}
   .search-group {{ margin:0 0 14px; }}
   .search-group h3 {{ font-size:17px; margin:0 0 6px; color:var(--ink); }}
+  .bounty-row {{ padding:10px 0; border-bottom:1px solid var(--border); }}
+  .bounty-row:last-child {{ border-bottom:none; }}
+  .bounty-row-top {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; }}
+  .bounty-badge {{ font-size:12px; padding:1px 8px; border-radius:4px; font-weight:600; }}
+  .bounty-active {{ background:var(--ok-tint); color:var(--ok); border:1px solid var(--ok-border); }}
+  .bounty-withdrawn {{ background:var(--info-tint); color:var(--muted); border:1px solid var(--info-border); }}
+  .bounty-refunded {{ background:var(--warn-tint); color:var(--warn); border:1px solid var(--warn-border); }}
+  .bounty-staker {{ color:var(--muted); }}
+  .bounty-amount {{ color:var(--ink); font-size:15px; }}
+  .bounty-proposal-link {{ color:var(--accent); font-weight:600; text-decoration:none; }}
+  .bounty-proposal-link:hover {{ text-decoration:underline; }}
+  .bounty-bar {{ margin-top:4px; display:flex; align-items:center; gap:8px; }}
+  .bounty-bar-track {{ flex:1; max-width:200px; height:6px; background:var(--line); border-radius:3px; overflow:hidden; }}
+  .bounty-bar-fill {{ height:100%; background:var(--ok); border-radius:3px; }}
+  .bounty-bar-label {{ color:var(--muted); font-size:13px; }}
+  .bounty-row-detail {{ color:var(--muted); font-size:14px; margin-top:2px; }}
   th:not(.sort-on) a {{ position:relative; padding-right:18px; }}
   th:not(.sort-on) a::after {{ content: " ⇅"; font-size:12px; opacity:0.4; }}
   th:not(.sort-on) a:hover::after {{ opacity:1; }}
@@ -425,6 +444,7 @@ _NAV_ITEMS = [
     ("/posts", "posts", "Posts"),
     ("/recent", "recent", "Recent"),
     ("/proposals", "proposals", "Proposals"),
+    ("/bounties", "bounties", "Bounties"),
     ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Citizens"),
     ("/citizens", "citizens", "Registry"),
