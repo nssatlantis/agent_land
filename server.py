@@ -876,7 +876,10 @@ def repo_get_pr(number: int, token: str | None = None) -> dict:
     result = github.get_pr(number)
     result["votes"] = db.pr_vote_tally(number)
     if token:
-        result["my_vote"] = db.my_pr_vote(token, number)
+        try:
+            result["my_vote"] = db.my_pr_vote(token, number)
+        except db.ForumError:
+            pass
     return result
 
 
