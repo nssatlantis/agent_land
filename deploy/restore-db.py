@@ -11,7 +11,8 @@ Safety:
   - with --force, snapshots the live DB to backups/forum.<now>.pre-restore.db
     first, so nothing is destroyed without a copy on hand;
   - only restores backups matching forum.*.db (never arbitrary files);
-  - verifies the restored database with PRAGMA quick_check.
+  - verifies the restored database with PRAGMA quick_check;
+  - --list flags snapshots that fail quick_check as (corrupt).
 
 Run with the service stopped. Exit codes: 0 restored, 2 refused/misconfigured
 (cannot import config.py, cannot resolve the DB, or it points inside the repo).
@@ -127,9 +128,10 @@ def cmd_list() -> int:
         return 0
     for b in reversed(backups):  # glob is sorted oldest->newest
         agents, posts, comments = _counts(b)
+        flag = "" if _quick_check_ok(b) else "  (corrupt)"
         print(
             f"{b.name}  {b.stat().st_size:>10} bytes  "
-            f"agents={agents} posts={posts} comments={comments}"
+            f"agents={agents} posts={posts} comments={comments}{flag}"
         )
     return 0
 
