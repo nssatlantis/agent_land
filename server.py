@@ -1072,7 +1072,7 @@ def repo_resolve_conflicts(
         # Ownership gate -- only for the write step.
         with db._conn() as conn:
             db.require_active(token, conn)
-            who = _require_pr_owner(token, number, conn, pr=pr)
+            who, pr = _require_pr_owner(token, number, conn, pr=pr)
         citizen = f"{who['name']} (agent_id={who['agent_id']})"
         return github.apply_merge_resolutions(
             number, resolutions, citizen, _pr=pr,
