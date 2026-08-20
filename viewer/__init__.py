@@ -444,6 +444,29 @@ def _recent_sort_row(sort: str, kind: str | None) -> str:
     )
 
 
+def _fetch_recent_events(kind: str | None, sort: str, page: int,
+                          per_page: int) -> list[dict]:
+    """Fetch recent activity for a page, handling the 'top' sort by pulling
+    all rows and sorting client-side.  Shared by recent_page and the
+    frag-recent-list handler so the logic doesn't drift."""
+    if sort == "top":
+        max_fetch = min(config.RECENT_ACTIVITY_MAX_SIZE,
+                        aggregates.recent_activity_total(kind) or 0)
+        all_events = aggregates.recent_activity(limit=max_fetch, offset=0,
+                                                kind=kind)
+
+        def _top_key(ev: dict) -> tuple[int, str]:
+            t = ev.get("tally")
+            net = (t["up"] - t["down"]) if t else 0
+            sc = ev.get("score") or 0
+            return (-(net or sc), ev.get("created_at", ""))
+
+        all_events.sort(key=_top_key)
+        return all_events[(page - 1) * per_page : page * per_page]
+    return aggregates.recent_activity(limit=per_page,
+                                     offset=(page - 1) * per_page, kind=kind)
+
+
 def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
                   top: bool = False) -> str:
     """Numbered pager for the recent page."""
@@ -483,18 +506,7 @@ async def recent_page(request: Request) -> HTMLResponse:
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    if sort == "top":
-        max_fetch = min(config.RECENT_ACTIVITY_MAX_SIZE, total or 0)
-        all_events = aggregates.recent_activity(limit=max_fetch, offset=0, kind=kind)
-        def _top_key(ev: dict) -> tuple[int, str]:
-            t = ev.get("tally")
-            net = (t["up"] - t["down"]) if t else 0
-            sc = ev.get("score") or 0
-            return (-(net or sc), ev.get("created_at", ""))
-        all_events.sort(key=_top_key)
-        events = all_events[(page - 1) * per_page : page * per_page]
-    else:
-        events = aggregates.recent_activity(limit=per_page, offset=(page - 1) * per_page, kind=kind)
+    events = _fetch_recent_events(kind, sort, page, per_page)
 
     tab_html = _recent_tabs(kind)
     sort_html = _recent_sort_row(sort, kind)
@@ -772,18 +784,7 @@ async def fragments(request: Request) -> HTMLResponse:
         if rsort not in ("newest", "top"):
             rsort = "newest"
         rper = config.RECENT_ACTIVITY_DEFAULT_SIZE
-        if rsort == "top":
-            rmax = min(config.RECENT_ACTIVITY_MAX_SIZE, aggregates.recent_activity_total(rkind) or 0)
-            revents = aggregates.recent_activity(limit=rmax, offset=0, kind=rkind)
-            def _rfk(ev: dict) -> tuple[int, str]:
-                t = ev.get("tally")
-                net = (t["up"] - t["down"]) if t else 0
-                sc = ev.get("score") or 0
-                return (-(net or sc), ev.get("created_at", ""))
-            revents.sort(key=_rfk)
-            revents = revents[(rpage - 1) * rper : rpage * rper]
-        else:
-            revents = aggregates.recent_activity(limit=rper, offset=(rpage - 1) * rper, kind=rkind)
+        revents = _fetch_recent_events(rkind, rsort, rpage, rper)
         return HTMLResponse(_recent_rows(revents))
     if name == "overview":
         return HTMLResponse(await render_overview())
