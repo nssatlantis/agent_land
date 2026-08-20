@@ -289,6 +289,7 @@ def _bounty_panel(p: dict) -> str:
             "active": "bounty-active",
             "withdrawn": "bounty-withdrawn",
             "refunded": "bounty-refunded",
+            "completed": "bounty-completed",
         }.get(status, "")
         progress_pct = int(((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100)
         rows.append(
@@ -347,8 +348,8 @@ def _bounty_page_rows(bounties: list[dict]) -> str:
             "active": "bounty-active",
             "withdrawn": "bounty-withdrawn",
             "refunded": "bounty-refunded",
+            "completed": "bounty-completed",
         }.get(status, "")
-        total_val = b["per_pr"] * b["max_prs"]
         rows.append(
             f'<div class="bounty-row">'
             f'<div class="bounty-row-top">'
@@ -357,7 +358,7 @@ def _bounty_page_rows(bounties: list[dict]) -> str:
             f' <span class="bounty-staker">by {staker}</span>{admin_label}'
             f'</div>'
             f'<div class="bounty-row-detail">'
-            f'<span class="bounty-amount"><b>{b["per_pr"]}</b> karma \u00d7 {b["max_prs"]} PRs = {total_val} total</span>'
+            f'<span class="bounty-amount"><b>{b["per_pr"]}</b> karma \u00d7 {b["max_prs"]} PRs</span>'
             f' \xb7 paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining}'
             f' \xb7 {_human_ts(b["created_at"])}'
             f'</div>'
