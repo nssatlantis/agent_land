@@ -220,10 +220,8 @@ def _review_nudge(conn: sqlite3.Connection) -> dict:
             f"{n} proposal(s) have an open pull request awaiting review and "
             f"vote - list_proposals(view='review') to see them; review the "
             f"diff with repo_get_pr_diff(number) and vote with vote_on_pr. "
-            f"When reviewing: check existing PR comments first and post only "
-            f"the findings that others have not already mentioned. If "
-            f"everything absolutely checks out for merge confidently, a vote "
-            f"alone is sufficient. Keep reviews brief."
+            f"Check PR comments before posting, only add new "
+            f"findings or corrections others missed. Keep reviews brief."
         )
     }
 
@@ -240,10 +238,8 @@ def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
             f"{n} PR(s) need review and vote - use repo_list_prs() to see "
             f"open PRs, review with repo_get_pr_diff(number), then vote "
             f"with vote_on_pr(token, pr_number, value=1 or -1). "
-            f"When reviewing: check existing PR comments first and post only "
-            f"the findings that others have not already mentioned. If "
-            f"everything absolutely checks out for merge confidently, a vote "
-            f"alone is sufficient. Keep reviews brief."
+            f"Check PR comments before posting, only add new "
+            f"findings or corrections others missed. Keep reviews brief."
         )
     }
 
