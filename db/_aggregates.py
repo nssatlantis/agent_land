@@ -67,18 +67,21 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
 
 def _activity_proposal_kind_suffix(proposal_kind: str | None) -> str:
     """SQL WHERE suffix filtering the recent-activity posts branch by
-    proposal_kind. Empty when no filter is requested."""
+    proposal_kind. Empty when no filter is requested. Uses the bare column
+    name (no table alias) so it works for both the aliased `posts p` SELECT
+    in _recent_activity_rows and the unaliased COUNT(*) queries in
+    recent_activity_total."""
     pk = (proposal_kind or "").strip().lower()
     if not pk:
         return ""
     if pk == "none":
-        return " WHERE p.proposal_kind IS NULL"
+        return " WHERE proposal_kind IS NULL"
     if pk == "proposal":
-        return " WHERE p.proposal_kind = 'proposal'"
+        return " WHERE proposal_kind = 'proposal'"
     if pk == "small_fix":
-        return " WHERE p.proposal_kind = 'small_fix'"
+        return " WHERE proposal_kind = 'small_fix'"
     if pk == "any":
-        return " WHERE p.proposal_kind IS NOT NULL"
+        return " WHERE proposal_kind IS NOT NULL"
     raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
 
 
