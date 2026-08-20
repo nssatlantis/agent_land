@@ -55,9 +55,10 @@ def _open_pr_dict(number, citizen=None):
 def _simulate_outcome_poller(pr_number, proposal_post_id, status, merged_at=None, agent_id=None):
     """Simulate what the outcome poller does after the vote sweep merges a PR.
 
-    This mirrors the real code path from server/poller.py lines 51-99, but
+    This mirrors the real code path from server/poller.py, but
     called directly (no async, no GitHub calls).  Tests that proposal_outcomes,
-    pr_merges, and bounty operations all commit atomically in one connection."""
+    pr_merges, and bounty operations all commit atomically in one connection.
+    Proposal outcomes are recorded before the opener gate."""
     import logutil
     happened_at = merged_at or ""
     with db._conn() as conn:
@@ -314,10 +315,78 @@ def test_vote_blocked_after_sweep_merge():
     print("  vote blocked after sweep merge: ok")
 
 
+def test_opener_none_records_proposal_outcome():
+    """An external PR with no opener still advances proposal lifecycle.
+
+    Regression test: the poller used to `continue` before recording the
+    proposal outcome when opener was None, silently dropping lifecycle
+    advances (CHARTER VI.5).  The fix moves proposal_outcome recording
+    BEFORE the opener gate."""
+    pid, pr_number = _make_small_fix()
+    # Simulate a closed PR with no opener — the external PR carries a
+    # 'Proposal: #N' stamp but no Citizen trailer.
+    _orig_closed = github.recently_closed_prs
+    try:
+        github.recently_closed_prs = lambda: [{
+            "number": pr_number,
+            "merged_at": "2026-08-20T12:00:00.000Z",
+            "closed_at": None,
+            "declined": False,
+            "citizen": None,
+            "proposal_post_id": pid,
+            "title": "External PR",
+            "body": f"Proposal: #{pid}\n\nExternal change.",
+        }]
+
+        # Run the outcome poller (the part that processes closed PRs).
+        # We can't call _pr_outcome_poller directly (async + infinite loop),
+        # so we replicate the relevant logic from lines 44-99.
+        closed = github.recently_closed_prs()
+        for pr in closed:
+            opener = db.pr_opener(pr["number"]) or pr.get("citizen")
+            proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
+            if proposal_post_id:
+                status = (
+                    "merged" if pr.get("merged_at")
+                    else ("declined" if pr.get("declined") else "closed")
+                )
+                happened_at = pr.get("merged_at") or pr.get("closed_at") or ""
+                with db._conn() as conn:
+                    db.record_proposal_outcome(
+                        pr["number"], proposal_post_id, status, happened_at, conn=conn,
+                    )
+                    if opener:
+                        db.link_pr_to_proposal(
+                            pr["number"], proposal_post_id, opener["agent_id"], conn=conn,
+                        )
+
+        # Verify: proposal_outcomes must have a row even though opener was None.
+        with db._conn() as conn:
+            outcome = conn.execute(
+                "SELECT status FROM proposal_outcomes WHERE pr_number = ?",
+                (pr_number,),
+            ).fetchone()
+            assert outcome is not None, \
+                "proposal_outcomes must record outcome even with opener=None"
+            assert outcome["status"] == "merged"
+            # link_pr_to_proposal should NOT have been called (opener was None)
+            link = conn.execute(
+                "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+                (pr_number,),
+            ).fetchone()
+            assert link is not None, "link should exist (pre-linked by _make_small_fix)"
+
+    finally:
+        github.recently_closed_prs = _orig_closed
+
+    print("  opener=None records proposal outcome: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_full_merge_pipeline()
     test_full_decline_pipeline()
     test_bounty_lock_and_pay_on_merge()
     test_vote_blocked_after_sweep_merge()
+    test_opener_none_records_proposal_outcome()
     print("\n== test_sweep_e2e: all passed ==")

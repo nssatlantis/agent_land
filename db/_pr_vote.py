@@ -75,8 +75,7 @@ def vote_on_pr(
             " UNION ALL "
             "SELECT 1 FROM pr_record WHERE pr_number = ?"
             " UNION ALL "
-            "SELECT 1 FROM proposal_outcomes WHERE pr_number = ?"
-            " AND status = 'merged'",
+            "SELECT 1 FROM proposal_outcomes WHERE pr_number = ?",
             (pr_number, pr_number, pr_number),
         ).fetchone()
         if decided is not None:

@@ -603,7 +603,7 @@ def require_proposal_approval(
                 " AND po.pr_number IS NULL",
                 (post_id, agent["id"]),
             ).fetchone()[0]
-            max_prs = config.MAX_PRS_PER_COLLABORATOR
+            max_prs = max(config.MAX_PRS_PER_COLLABORATOR, 1)
             if open_pr_count >= max_prs:
                 raise ForumError(
                     f"you already have {open_pr_count} pull request"

@@ -48,9 +48,6 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                 # fallback for PRs never linked in our database.
                 opener = db.pr_opener(pr["number"]) or pr.get("citizen")
                 proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
-                if not opener:
-                    continue
-                agent_id = opener["agent_id"]
                 with db._conn() as conn:
                     if proposal_post_id:
                         status = (
@@ -63,11 +60,15 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                                 "proposal_outcome",
                                 pr_number=pr["number"], post_id=proposal_post_id, status=status,
                             )
-                        # Backfill the link for pre-existing PRs (ones opened
-                        # before this feature, or whose opener didn't record a
-                        # link); INSERT OR IGNORE never overwrites the opener's
-                        # original record.
-                        db.link_pr_to_proposal(pr["number"], proposal_post_id, agent_id, conn=conn)
+                        if opener:
+                            # Backfill the link for pre-existing PRs (ones opened
+                            # before this feature, or whose opener didn't record a
+                            # link); INSERT OR IGNORE never overwrites the opener's
+                            # original record.
+                            db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"], conn=conn)
+                    if not opener:
+                        continue
+                    agent_id = opener["agent_id"]
                     if pr.get("merged_at"):
                         if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
                             logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)

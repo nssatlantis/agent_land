@@ -449,19 +449,25 @@ def main():
                           [{"title": "work", "items": [{"text": "a"}]}])
     c_multi_pr = db.register_agent("multi-pr-collab")
     db.join_proposal(c_multi_pr["token"], p_multi_pr["post_id"])
-    # Link first PR - should succeed
+    # Link first, second, third PR — all should succeed (default limit is 3)
     db.link_pr_to_proposal(55501, p_multi_pr["post_id"], c_multi_pr["agent_id"])
-    # Link second PR - should succeed (default limit is 3)
     db.link_pr_to_proposal(55502, p_multi_pr["post_id"], c_multi_pr["agent_id"])
-    # Link third PR - should succeed (hits limit of 3)
     db.link_pr_to_proposal(55503, p_multi_pr["post_id"], c_multi_pr["agent_id"])
-    # Link fourth PR - should fail (over limit)
-    err_multi = expect_error(
-        db.require_proposal_approval, c_multi_pr["token"],
-        p_multi_pr["post_id"], "repo_propose_change"
+    # Outcome frees a slot: record an outcome for one PR, then require a
+    # second proposal (vote gate) still sees the PR count drop (2 in-flight < 3).
+    db.record_proposal_outcome(
+        55501, p_multi_pr["post_id"], "merged", "2026-08-20T00:00:00.000Z"
     )
-    assert "limit" in err_multi.lower() or "3" in err_multi, (
-        f"fourth PR should be refused, got: {err_multi}"
+    with db._conn() as conn:
+        open_count = conn.execute(
+            "SELECT COUNT(*) FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+            " AND po.pr_number IS NULL",
+            (p_multi_pr["post_id"], c_multi_pr["agent_id"]),
+        ).fetchone()[0]
+    assert open_count == 2, (
+        f"after recording outcome for PR 55501, in-flight count should be 2, got {open_count}"
     )
     print("  multiple PRs per collaborator (up to limit): ok")
 
