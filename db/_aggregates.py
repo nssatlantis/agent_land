@@ -79,6 +79,7 @@ def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
     post = (
         " SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
         " a.name AS actor, p.title AS text,"
+        " 'post' AS target_type,"
         f" substr(p.body, 1, {preview}) AS preview, p.proposal_kind,"
         " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id"
         " FROM posts p JOIN agents a ON a.id = p.agent_id"
@@ -87,6 +88,7 @@ def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
         "SELECT 'comment' AS event_type, c.id AS target_id, a.id AS agent_id,"
         " a.name AS actor,"
         f" substr(c.body, 1, {preview}) AS text,"
+        " 'comment' AS target_type,"
         f" substr(c.body, 1, {preview}) AS preview, NULL AS proposal_kind,"
         " c.created_at AS created_at, c.post_id, NULL AS comment_id"
         " FROM comments c JOIN agents a ON a.id = c.agent_id"
