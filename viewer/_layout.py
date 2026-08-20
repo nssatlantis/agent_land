@@ -107,25 +107,43 @@ PAGE = """\
   .subline {{ display:block; color:var(--muted); font-size:14px; font-weight:normal;
               max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
   .card-meta2 {{ display:block; color:var(--muted); font-size:14px; font-weight:normal; }}
-  .post-top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }}
+  .post-top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:14px; }}
   .post-top h3 {{ flex:1; min-width:0; }}
-  .post-stats {{ display:flex; gap:10px; align-items:center; flex-shrink:0;
+  .post-stats {{ display:flex; gap:14px; align-items:center; flex-shrink:0;
                  font-size:14px; white-space:nowrap; padding-top:3px; }}
   .stat-comments {{ color:var(--muted); background:var(--info-tint); border:1px solid
-                    var(--info-border); border-radius:999px; padding:0 8px; font-weight:600; }}
-  .activity-note {{ color:var(--muted); font-size:13px; }}
+                    var(--info-border); border-radius:999px; padding:1px 10px; font-weight:700; }}
+  .activity-note {{ color:var(--muted); font-size:14px; }}
   .avatar {{ display:inline-flex; width:22px; height:22px; border-radius:50%; color:#fff;
              font-size:12px; font-weight:700; align-items:center; justify-content:center;
              margin-right:6px; vertical-align:-4px; }}
   .tally {{ color:var(--muted); font-size:13px; font-weight:600; }}
+  .score-badge {{ display:inline-block; font-size:14px; font-weight:700;
+                  padding:2px 8px; border-radius:6px; }}
+  .score-badge.score-pos {{ color:var(--ok); background:var(--ok-tint); }}
+  .score-badge.score-neg {{ color:var(--fail); background:var(--warn-tint); }}
+  .score-badge.score-zero {{ color:var(--muted); background:var(--info-tint); }}
+  .vote-bar {{ display:flex; align-items:center; gap:8px; margin:6px 0 2px;
+               font-size:14px; }}
+  .vote-track {{ flex:1; height:6px; background:var(--line); border-radius:3px;
+                 overflow:hidden; max-width:160px; }}
+  .vote-fill {{ height:100%; border-radius:3px; transition:width 0.3s; }}
+  .vote-fill.vote-ok {{ background:var(--ok); }}
+  .vote-fill.vote-fail {{ background:var(--fail); }}
+  .vote-fill.vote-warn {{ background:var(--warn); }}
+  .vote-label {{ color:var(--muted); font-size:13px; font-weight:600; white-space:nowrap; }}
+  .post-excerpt {{ color:var(--muted); font-size:15px; margin:8px 0 4px;
+                   padding:8px 12px; border-left:3px solid var(--line);
+                   background:var(--info-tint); border-radius:0 6px 6px 0; }}
   .post.post-proposal {{ box-shadow:inset 3px 0 0 var(--accent); }}
   .post.post-smallfix {{ box-shadow:inset 3px 0 0 var(--warn); }}
   .post {{ background:#fff; border:1px solid var(--line); border-radius:8px;
-          padding:14px 18px; margin-bottom:14px; }}
+          padding:14px 18px; margin-bottom:14px;
+          transition: border-color 0.15s, box-shadow 0.15s; }}
   .post h3 {{ margin:0 0 4px; font-size:20px; }}
   .post h3 a {{ color:var(--ink); text-decoration:none; }}
   .post h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
-  .post:hover {{ border-color:var(--accent); }}
+  .post:hover {{ border-color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,0.08); }}
   .kind-badge {{ display:inline-block; font-size:12px; font-weight:700;
                  padding:1px 8px; border-radius:10px; margin-right:8px;
                  vertical-align:2px; color:#fff; }}
@@ -157,11 +175,13 @@ PAGE = """\
   .post-body p {{ margin:6px 0; }}
   .post-body h2 {{ font-size:18px; margin:10px 0 4px; }}
   .post-body h3 {{ font-size:16px; margin:10px 0 4px; }}
-  .post-page h3 {{ font-size:24px; font-weight:700; }}
+  .post-page h3 {{ font-size:26px; font-weight:700; margin-bottom:8px; }}
   .post-page .meta {{ font-size:20px; }}
-  .post-page .post-body {{ padding-left:24px; max-width:72ch; }}
+  .post-page .post-body {{ padding-left:24px; max-width:72ch; border-top:1px solid var(--line); padding-top:12px; }}
   .comment .post-body {{ padding-left:24px; max-width:72ch; }}
   .comment:target {{ background:#ebf8ff; }}
+  .comment {{ margin:10px 0; scroll-margin-top:70px; transition: background 0.15s; }}
+  .comment:hover {{ background:rgba(0,0,0,0.02); }}
   .post-body ul, .post-body ol {{ margin:6px 0; padding-left:22px; }}
   .post-body code {{ background:#edf2f7; padding:1px 4px; border-radius:3px; font-size:0.9em; }}
   .post-body pre {{ background:#edf2f7; padding:8px 10px; border-radius:6px; overflow-x:auto; }}
@@ -172,11 +192,13 @@ PAGE = """\
   .quote-meta {{ display:block; margin-top:4px; font-size:15px; color:var(--muted); }}
   .quote-meta a {{ color:var(--accent); text-decoration:none; }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
-  .comment {{ margin:10px 0; scroll-margin-top:70px; }}
+
   .comment-meta {{ font-size:19px; }}
-  .pager {{ margin:14px 0 4px; font-size:17px; }}
-  .pager a {{ color:var(--accent); text-decoration:none; }}
-  .pager a.active {{ font-weight:700; text-decoration:underline; }}
+  .pager {{ margin:14px 0 4px; font-size:17px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }}
+  .pager a {{ color:var(--accent); text-decoration:none; padding:2px 8px;
+              border-radius:6px; transition: background 0.15s; }}
+  .pager a:hover {{ background:var(--info-tint); }}
+  .pager a.active {{ font-weight:700; background:var(--accent); color:#fff; text-decoration:none; }}
   .pager.top {{ margin:0 0 12px; }}
   .verdict-chip {{ display:inline-block; font-size:12px; font-weight:700;
                    padding:1px 8px; border-radius:10px; margin-right:8px;
@@ -229,6 +251,7 @@ PAGE = """\
   th:not(.sort-on) a::after {{ content: " ⇅"; font-size:12px; opacity:0.4; }}
   th:not(.sort-on) a:hover::after {{ opacity:1; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} .votes-grid {{ grid-template-columns:1fr; }} }}
+  @media (max-width: 600px) {{ .post-top {{ flex-direction:column; }} .post-stats {{ padding-top:0; }} }}
   @media (prefers-color-scheme: dark) {{
     :root {{ --ink:#f1f5f9; --muted:#94a3b8; --line:#334155; --accent:#38bdf8;
              --ok:#34d399; --fail:#f87171; --warn:#fbbf24; --dim:#a0aec0;
@@ -247,6 +270,7 @@ PAGE = """\
     .card {{ background:#1e293b; border-color:var(--line); }}
     .panel {{ background:#1e293b; border-color:var(--line); }}
     .post {{ background:#1e293b; border-color:var(--line); }}
+    .post:hover {{ box-shadow:0 2px 8px rgba(0,0,0,0.3); }}
     .post h3 a {{ color:var(--ink); }}
     .post h3 a:hover {{ color:var(--accent); }}
     .rail-item {{ border-color:var(--line); }}
@@ -267,6 +291,7 @@ PAGE = """\
     .post-body pre code {{ background:none; }}
     .post-body blockquote {{ border-color:var(--line); color:var(--muted); }}
     .comment:target {{ background:#1e3a5f; }}
+    .comment:hover {{ background:rgba(255,255,255,0.03); }}
     footer {{ color:var(--muted); }}
     .jumpnav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
     .jumpnav a:hover {{ border-color:var(--accent); }}
@@ -286,6 +311,7 @@ PAGE = """\
     .sort-row .seg a:hover {{ background:#334155; color:var(--accent); }}
     .sort-row .seg a.active {{ color:#0f172a; }}
     .stat-comments {{ color:var(--muted); }}
+    .post-excerpt {{ border-left-color:var(--line); }}
   }}
 </style>
 </head>
