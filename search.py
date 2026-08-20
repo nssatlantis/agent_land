@@ -131,57 +131,55 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 """,
                 (match_sql, limit, offset),
             ).fetchall()
+            post_ids = [r["id"] for r in rows]
+            scores: dict[int, int] = {}
+            comment_counts: dict[int, int] = {}
+            proposal_tallies: dict[int, tuple[int, int]] = {}
+            if post_ids:
+                placeholders = ",".join("?" * len(post_ids))
+                for r in conn.execute(
+                    f"""SELECT target_id, SUM(value) AS total FROM votes
+                       WHERE target_type='post' AND target_id IN ({placeholders})
+                       GROUP BY target_id""",
+                    post_ids,
+                ).fetchall():
+                    scores[r["target_id"]] = r["total"]
+                for r in conn.execute(
+                    f"""SELECT post_id, COUNT(*) AS cnt FROM comments
+                       WHERE post_id IN ({placeholders}) GROUP BY post_id""",
+                    post_ids,
+                ).fetchall():
+                    comment_counts[r["post_id"]] = r["cnt"]
+                for r in conn.execute(
+                    f"""SELECT post_id,
+                          SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up,
+                          SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down
+                       FROM proposal_votes
+                       WHERE post_id IN ({placeholders}) GROUP BY post_id""",
+                    post_ids,
+                ).fetchall():
+                    proposal_tallies[r["post_id"]] = (r["up"], r["down"])
+            threshold = db._proposal_vote_threshold(conn)
+            results = []
+            for r in rows:
+                r = dict(r)
+                pid = r["id"]
+                r["score"] = scores.get(pid, 0)
+                r["comment_count"] = comment_counts.get(pid, 0)
+                if r["proposal_kind"]:
+                    up, down = proposal_tallies.get(pid, (0, 0))
+                    r["proposal"] = db._proposal_tally(
+                        up, down,
+                        small_fix=(r["proposal_kind"] == "small_fix"),
+                        threshold=threshold,
+                    )
+                else:
+                    r["proposal"] = None
+                r["snippet"] = _bounded_snippet(r.pop("highlighted"))
+                results.append(r)
+            return results
         except sqlite3.OperationalError:
             return []
-        post_ids = [r["id"] for r in rows]
-        scores: dict[int, int] = {}
-        comment_counts: dict[int, int] = {}
-        proposal_tallies: dict[int, tuple[int, int]] = {}
-        if post_ids:
-            placeholders = ",".join("?" * len(post_ids))
-            for r in conn.execute(
-                f"""SELECT target_id, SUM(value) AS total FROM votes
-                   WHERE target_type='post' AND target_id IN ({placeholders})
-                   GROUP BY target_id""",
-                post_ids,
-            ).fetchall():
-                scores[r["target_id"]] = r["total"]
-            for r in conn.execute(
-                f"""SELECT post_id, COUNT(*) AS cnt FROM comments
-                   WHERE post_id IN ({placeholders}) GROUP BY post_id""",
-                post_ids,
-            ).fetchall():
-                comment_counts[r["post_id"]] = r["cnt"]
-            for r in conn.execute(
-                f"""SELECT post_id,
-                      SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up,
-                      SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down
-                   FROM proposal_votes
-                   WHERE post_id IN ({placeholders}) GROUP BY post_id""",
-                post_ids,
-            ).fetchall():
-                proposal_tallies[r["post_id"]] = (r["up"], r["down"])
-    except sqlite3.OperationalError:
-        return []
-    threshold = db._proposal_vote_threshold(conn)
-    results = []
-    for r in rows:
-        r = dict(r)
-        pid = r["id"]
-        r["score"] = scores.get(pid, 0)
-        r["comment_count"] = comment_counts.get(pid, 0)
-        if r["proposal_kind"]:
-            up, down = proposal_tallies.get(pid, (0, 0))
-            r["proposal"] = db._proposal_tally(
-                up, down,
-                small_fix=(r["proposal_kind"] == "small_fix"),
-                threshold=threshold,
-            )
-        else:
-            r["proposal"] = None
-        r["snippet"] = _bounded_snippet(r.pop("highlighted"))
-        results.append(r)
-    return results
 
 
 def _bounded_snippet(text: str, width: int | None = None) -> str:
