@@ -294,17 +294,28 @@ def my_proposals(token: str) -> dict:
             for pr in d["prs"]:
                 pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
             d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
-            d["decision"] = (
-                "superseded"
-                if locked
-                else (
-                    lifecycle
-                    if lifecycle != "open"
-                    else ("review_requested" if d["review_requested"]
-                          else ("small_fix" if d["small_fix"]
-                                else ("approved" if tally["approved"] else "needs_votes")))
+            if d["collaborative"]:
+                d["decision"] = (
+                    "superseded"
+                    if locked
+                    else (d["status"] if d["status"] != "open"
+                          else ("review_requested" if d["review_requested"]
+                                else ("small_fix" if d["small_fix"]
+                                      else ("approved" if tally["approved"]
+                                            else "needs_votes"))))
                 )
-            )
+            else:
+                d["decision"] = (
+                    "superseded"
+                    if locked
+                    else (
+                        lifecycle
+                        if lifecycle != "open"
+                        else ("review_requested" if d["review_requested"]
+                              else ("small_fix" if d["small_fix"]
+                                    else ("approved" if tally["approved"] else "needs_votes")))
+                    )
+                )
             d["phase"] = (
                 "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
                 else "implementation" if d["decision"] in ("review_requested",)
