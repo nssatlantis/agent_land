@@ -147,6 +147,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_MERGE_KARMA": ("FORUM_PR_MERGE_KARMA", 1, int),
     "PR_DECLINE_KARMA": ("FORUM_PR_DECLINE_KARMA", -1, int),
     "PR_MERGE_POLL_SECONDS": ("FORUM_PR_MERGE_POLL_SECONDS", 300, int),
+    "CI_POLL_SECONDS": ("FORUM_CI_POLL_SECONDS", 300, int),
     "PROPOSAL_VOTE_THRESHOLD": ("FORUM_PROPOSAL_VOTE_THRESHOLD", 3, int),
     "MIN_KARMA_PROPOSAL_VOTE": ("FORUM_MIN_KARMA_PROPOSAL_VOTE", 1, int),
     # Collaborative proposals

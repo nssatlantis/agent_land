@@ -89,3 +89,121 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
             # try again next interval.
             logutil.log("pr_outcome_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)
+
+
+# Maximum length of a CI-failure nudge body: title + first failure,
+# capped so the mailbox stays scannable.
+_CI_NUDGE_BODY_MAX = 300
+
+
+def _first_failure(checks: dict) -> str:
+    """One-line summary of the first actionable failure in a pr_checks
+    result, for a nudge body: the annotation's path/line/message when the
+    check-runs tier answered, the error line when Actions or the combined
+    status did. Empty when the result carries no failures."""
+    failures = checks.get("failures") or []
+    if not failures:
+        return ""
+    first = failures[0]
+    if isinstance(first, dict):
+        bits = []
+        path = first.get("path")
+        if path:
+            bits.append(str(path))
+        line = first.get("line")
+        if line is not None:
+            bits.append(f"line {line}")
+        message = (first.get("message") or "").strip()
+        if message:
+            bits.append(message)
+        return ": ".join(bits)
+    return str(first).strip()
+
+
+def _ci_failure_sweep(open_prs: list[dict],
+                      checks_fn=github.pr_checks) -> list[int]:
+    """Nudge each open PR's citizen owner once per new failing head commit.
+
+    CI state lives on GitHub, so the mailbox would never learn about it on
+    its own - this is the one sweep that reads live check status. For every
+    open PR owned by a citizen (the recorded opener, falling back to the
+    body trailer; Maintainer-Helper PRs have no citizen owner and are
+    skipped), consult the tiered checks builder and notify the owner when
+    the head is failing AND that head has not been nudged yet - exactly one
+    nudge per push, no spam while a PR sits red unchanged. Green re-arms
+    the state, so a regression after a fix nudges again. The current
+    pr_ci_state is read once for all owned PRs in a single batched query,
+    and a state row is written only when the observation actually changes -
+    an unchanged sweep performs no write, and no connection is ever held
+    open across the checks call. `checks_fn` is injectable so tests need
+    no GitHub. Returns the pr numbers nudged."""
+    openers = db.linked_pr_openers()
+    owners = {
+        pr["number"]: (openers.get(pr["number"]) or pr.get("citizen"))
+        for pr in open_prs
+    }
+    owners = {num: opener for num, opener in owners.items() if opener}
+    with db._conn() as conn:
+        state: dict[int, tuple[str, int]] = {}
+        if owners:
+            marks = ",".join("?" * len(owners))
+            rows = conn.execute(
+                f"SELECT pr_number, head_sha, red_notified FROM pr_ci_state"
+                f" WHERE pr_number IN ({marks})",
+                list(owners),
+            ).fetchall()
+            state = {r["pr_number"]: (r["head_sha"], r["red_notified"]) for r in rows}
+    notified: list[int] = []
+    for pr in open_prs:
+        opener = owners.get(pr["number"])
+        if not opener:
+            continue
+        checks = checks_fn(pr["number"], _head_sha=pr.get("head_sha") or None)
+        head_sha = checks.get("head_sha") or pr.get("head_sha") or ""
+        red = checks.get("state") == "failure"
+        row = state.get(pr["number"])
+        need_notify = red and (row is None or row[0] != head_sha or not row[1])
+        need_write = row is None or row[0] != head_sha or bool(row[1]) != red
+        if need_notify or need_write:
+            with db._conn() as conn:
+                if need_write:
+                    if row is None:
+                        conn.execute(
+                            "INSERT INTO pr_ci_state (pr_number, head_sha, red_notified)"
+                            " VALUES (?, ?, ?)",
+                            (pr["number"], head_sha, 1 if red else 0),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE pr_ci_state SET head_sha = ?, red_notified = ?"
+                            " WHERE pr_number = ?",
+                            (head_sha, 1 if red else 0, pr["number"]),
+                        )
+                if need_notify:
+                    title = " ".join((pr.get("title") or "").split())
+                    body = f"PR #{pr['number']} ({title}) is failing CI: {_first_failure(checks)}"
+                    if len(body) > _CI_NUDGE_BODY_MAX:
+                        body = body[:_CI_NUDGE_BODY_MAX - 1] + "…"
+                    notifications._notify(
+                        conn, opener["agent_id"], "pr_ci", "pr", pr["number"],
+                        body, actor_agent_id=None,
+                    )
+                    notified.append(pr["number"])
+    return notified
+
+
+async def _ci_failure_poller(interval_seconds: int) -> None:
+    """Nudge a PR's citizen owner when its CI fails - once per new head
+    commit, so 'go fix it' lands exactly when there is something new to
+    fix and never while a red PR sits unchanged. The tiered checks builder
+    is the same one repo_pr_checks uses. All blocking calls run in worker
+    threads so the MCP loop never stalls; any error is logged and retried
+    next interval."""
+    while True:
+        interval_seconds = config.CI_POLL_SECONDS
+        try:
+            open_prs = await asyncio.to_thread(github.open_prs)
+            await asyncio.to_thread(_ci_failure_sweep, open_prs)
+        except Exception as exc:
+            logutil.log("ci_failure_poll", error=str(exc))
+        await asyncio.sleep(interval_seconds)

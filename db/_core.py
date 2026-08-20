@@ -304,6 +304,39 @@ def init_db() -> None:
                 "ALTER TABLE notifications_new RENAME TO notifications;\n"
                 "COMMIT;\n"
             )
+        # The mailbox gained a 'pr_ci' notification kind (schema.sql) when
+        # the CI-failure nudge landed, but CREATE TABLE IF NOT EXISTS can't
+        # widen a constraint on a table that already exists, so a database
+        # created before that change still rejects the mail the CI poller
+        # writes (a CHECK constraint failure on notifications.kind). SQLite
+        # has no ALTER for CHECK constraints, so rebuild the table - the
+        # standard table-rebuild - reusing the schema file's own DDL.
+        # Idempotent: once migrated, the stored DDL contains 'pr_ci' and
+        # this no-ops.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'pr_ci'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(";", start) + 1
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
         # The mention syntax is a semantics change, not a schema one: a plain-
         # text '@Name' mention is expanded in the stored body to its
         # self-documenting form '@Name (agent_id=N)', and agent ids are no

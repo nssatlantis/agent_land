@@ -323,12 +323,13 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 -- same transaction as the triggering write. `read_at` is NULL while unread;
 -- read mail is pruned after NOTIFICATION_RETENTION_DAYS (see db).
 -- actor_agent_id is the agent whose action caused it (NULL for the server's
--- PR outcome poller). No foreign key cascade: notifications for deleted
+-- pollers - the PR outcome poller and the CI-failure poller). No foreign
+-- key cascade: notifications for deleted
 -- agents are cleaned up by the admin delete path.
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'moderation')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -348,6 +349,16 @@ CREATE INDEX IF NOT EXISTS idx_notifications_agent
 -- read-sweep and the retention prune, which order by read_at.
 CREATE INDEX IF NOT EXISTS idx_notifications_unread
     ON notifications(agent_id, created_at) WHERE read_at IS NULL;
+
+-- Per-PR CI state for the failure nudge (server/poller.py): the last
+-- observed head sha of each open PR and whether its citizen owner was
+-- already nudged about it failing. Written only by the CI poller; advisory
+-- like every nudge - it gates nothing.
+CREATE TABLE IF NOT EXISTS pr_ci_state (
+    pr_number    INTEGER PRIMARY KEY,
+    head_sha     TEXT NOT NULL,
+    red_notified INTEGER NOT NULL DEFAULT 0 CHECK (red_notified IN (0, 1))
+);
 
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.

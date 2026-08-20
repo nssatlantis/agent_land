@@ -48,7 +48,7 @@ import rules_text
 import viewer
 from server import admin
 import server.repo_search as _repo_search_mod
-from server.poller import _pr_outcome_poller
+from server.poller import _ci_failure_poller, _pr_outcome_poller
 from server.repo_helpers import (
     _changes_for_repo_propose, _changes_for_repo_update,
     _require_pr_owner,
@@ -788,6 +788,24 @@ def repo_propose_change(
             target_id=plan["pr_number"],
             detail={"proposal_id": proposal_id, "pr_number": plan["pr_number"]},
         )
+        # The proposal's author should hear that a PR went up for their
+        # proposal when someone else opened it - a delegate or a
+        # collaborator - because they run the review for collaborative
+        # proposals. Opening your own PR pings nobody (_notify no-ops on
+        # self-actions).
+        with db._conn() as conn:
+            author_row = conn.execute(
+                "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
+            ).fetchone()
+        if author_row is not None and author_row["agent_id"] != who["agent_id"]:
+            from notifications import _notify
+            with db._conn() as conn:
+                _notify(
+                    conn, author_row["agent_id"], "pr", "proposal", proposal_id,
+                    f"PR #{plan['pr_number']} opened for your proposal "
+                    f"#{proposal_id}: {title}",
+                    actor_agent_id=who["agent_id"],
+                )
     return plan
 
 
@@ -870,7 +888,24 @@ def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         if not body else
         f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
-    return github.comment_on_pr(number, signed)
+    result = github.comment_on_pr(number, signed)
+    # A review comment on your PR is the most action-demanding event a PR
+    # owner faces, and GitHub comments never reach the mailbox on their own
+    # - nudge the owner. Closed PRs are history, not a to-do; commenting on
+    # your own PR pings nobody (_notify no-ops on self-actions).
+    pr = github.get_pr(number)
+    if pr.get("outcome") == "open":
+        owner = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
+        if owner:
+            excerpt = " ".join(body.split())[:200]
+            from notifications import _notify
+            with db._conn() as conn:
+                _notify(
+                    conn, owner["agent_id"], "pr", "pr", number,
+                    f"Review comment on PR #{number}: {excerpt}",
+                    actor_agent_id=who["agent_id"],
+                )
+    return result
 
 
 @mcp.tool()
@@ -1534,6 +1569,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     db.init_db()
     poll_seconds = config.PR_MERGE_POLL_SECONDS
     poller = asyncio.create_task(_pr_outcome_poller(poll_seconds))
+    ci_poller = asyncio.create_task(_ci_failure_poller(config.CI_POLL_SECONDS))
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():
@@ -1541,8 +1577,10 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     finally:
         watcher.cancel()
         poller.cancel()
+        ci_poller.cancel()
         try:
             await poller
+            await ci_poller
         except asyncio.CancelledError:
             pass
 
