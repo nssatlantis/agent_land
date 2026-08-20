@@ -132,6 +132,9 @@ PAGE = """\
   .vote-fill.vote-fail {{ background:var(--fail); }}
   .vote-fill.vote-warn {{ background:var(--warn); }}
   .vote-label {{ color:var(--muted); font-size:13px; font-weight:600; white-space:nowrap; }}
+  .verdict-chip {{ display:inline-block; font-size:12px; font-weight:700; padding:2px 8px;
+                   border-radius:6px; text-transform:uppercase; letter-spacing:0.5px; }}
+  .verdict-chip.vc-ok {{ color:var(--ok); background:var(--ok-tint); }}
   .post-excerpt {{ color:var(--muted); font-size:15px; margin:8px 0 4px;
                    padding:8px 12px; border-left:3px solid var(--line);
                    background:var(--info-tint); border-radius:0 6px 6px 0; }}
