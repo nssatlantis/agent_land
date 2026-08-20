@@ -52,10 +52,28 @@ def stake_bounty(
         ek = effective_karma(conn, agent["id"])
         if ek < total:
             raise ForumError(
-                f"staking a bounty of {per_pr} per PR × {max_prs} PRs = "
+                f"staking a bounty of {per_pr} per PR x {max_prs} PRs = "
                 f"{total} total karma requires {total} effective karma; "
                 f"{agent['name']} has {ek}."
             )
+        import config
+        max_frac = config.BOUNTY_MAX_STAKE_FRACTION
+        if max_frac > 0:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(per_pr * (max_prs - paid_count"
+                " - locked_count)), 0) FROM proposal_bounties"
+                " WHERE staker_agent_id = ? AND status = 'active'",
+                (agent["id"],),
+            ).fetchone()
+            current_exposure = row[0]
+            cap = int(ek * max_frac)
+            if current_exposure + total > cap:
+                raise ForumError(
+                    f"aggregate bounty exposure would be "
+                    f"{current_exposure + total} (current {current_exposure}"
+                    f" + new {total}), exceeding {max_frac:.0%} of your"
+                    f" effective karma ({ek}, cap {cap})."
+                )
         from events import EVT_BOUNTY_CREATED, log_event
         cur = conn.execute(
             "INSERT INTO proposal_bounties"
@@ -242,9 +260,8 @@ def lock_bounties_for_pr(
     on the lock for precise refund/pay tracking. Returns the number of
     bounties locked.
 
-    NOTE: called after github.propose_change() — the PR exists on GitHub
-    before the DB lock is created. If the poller runs first, bounty
-    payouts are missed. The window is narrow (PR_MERGE_POLL_SECONDS)."""
+    NOTE: also called by the poller as a fallback before pay/refund —
+    the UNIQUE(bounty_id, pr_number) constraint makes this idempotent."""
     with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
         bounties = c.execute(
             "SELECT id, staker_agent_id, per_pr, max_prs, admin_funded"

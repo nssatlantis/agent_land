@@ -98,6 +98,17 @@ def main():
     )
     print("  stake_bounty validation: ok")
 
+    # --- stake_bounty: aggregate cap ----------------------------------------
+    try:
+        # alpha has ~4 ek; cap = int(4*0.33) = 1. Staking total=2 > 1 should fail.
+        os.environ["FORUM_BOUNTY_MAX_STAKE_FRACTION"] = "0.33"
+        assert "aggregate" in expect_error(
+            db.stake_bounty, agents["alpha"]["token"], pid, 2, 1
+        ), "aggregate cap should block over-commitment"
+        print("  stake_bounty aggregate cap: ok")
+    finally:
+        os.environ["FORUM_BOUNTY_MAX_STAKE_FRACTION"] = "0"
+
     # --- lock_bounties_for_pr: charges staker, not PR opener --------------
     # gamma will open the PR; alpha is the staker
     ek_alpha_before = ek(agents["alpha"]["agent_id"])

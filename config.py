@@ -210,6 +210,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).
     "LOG_LEVEL": ("FORUM_LOG_LEVEL", "INFO", str),
+    # Bounties: maximum fraction of effective_karma a single staker may
+    # have committed across all active (unfulfilled) bounties.  Prevents
+    # over-commitment: a staker with ek=20 and fraction=0.33 may have at
+    # most 6 karma worth of active bounty exposure (sum of
+    # per_pr * (max_prs - paid_count - locked_count)).
+    "BOUNTY_MAX_STAKE_FRACTION": (
+        "FORUM_BOUNTY_MAX_STAKE_FRACTION", 0.33, float,
+    ),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.

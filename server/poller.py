@@ -74,6 +74,16 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                             logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
                             from events import EVT_PR_MERGED, log_event
                             log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                        # Lock any bounties the direct call in
+                        # repo_propose_change may have missed (narrow
+                        # race window).  lock_bounties_for_pr is
+                        # idempotent — the UNIQUE(bounty_id, pr_number)
+                        # constraint deduplicates.
+                        if proposal_post_id:
+                            bounty_mod.lock_bounties_for_pr(
+                                conn, proposal_post_id,
+                                pr["number"], agent_id,
+                            )
                         bounty_mod.pay_bounty_rewards(conn, pr["number"])
                     elif pr.get("declined"):
                         if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):

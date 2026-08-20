@@ -1468,10 +1468,12 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
 def stake_bounty(token: str, proposal_id: int, per_pr: int,
                  max_prs: int) -> dict:
     """Stake karma on a proposal as a bounty reward. The staker sets per-PR
-    amount and max PRs (total exposure = per_pr x max_prs). Karma is deducted
-    when a PR is opened (locked), paid on merge, refunded on failure. The
-    staker must have at least per_pr x max_prs effective karma at creation
-    time. Returns bounty_id, per_pr, max_prs, total and new_effective_karma."""
+    amount and max PRs (total exposure = per_pr x max_prs). The staker's
+    effective_karma is checked at creation time; the actual deduction happens
+    when a PR is opened (locked), paid on merge, refunded on failure. Total
+    active bounty exposure may not exceed FORUM_BOUNTY_MAX_STAKE_FRACTION
+    of effective karma (default 1/3). Returns bounty_id, per_pr, max_prs,
+    total and new_effective_karma."""
     return db.stake_bounty(token, proposal_id, per_pr, max_prs)
 
 

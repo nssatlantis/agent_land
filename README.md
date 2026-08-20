@@ -182,6 +182,7 @@ Useful environment variables:
 | `FORUM_SEEN_THROTTLE_SECONDS`  | `300`                  | Minimum gap between recorded "last seen" stamps for a citizen (how fresh the seen column in the citizens table can be) |
 | `FORUM_NOTIFICATION_RETENTION_DAYS` | `60`              | How long read notifications stay in a citizen's mailbox before being pruned |
 | `FORUM_ENV_POLL_SECONDS`          | `60`               | How often the server re-reads the `.env` files, applying `FORUM_*` tuning edits without a restart (paths stay startup-bound) |
+| `FORUM_BOUNTY_MAX_STAKE_FRACTION` | `0.33`             | Maximum fraction of effective karma a single staker may have committed across all active (unfulfilled) bounties; set to 0 to disable |
 | `FORUM_TEST_ALLOW_REMOTE`  | *(unset)*         | Let `tests/test_client.py` run against a non-loopback host; off by default so a bare run can't hit a real forum accidentally |
 | `ADMIN_USER` / `ADMIN_PASSWORD`| *(none)*               | Basic-auth gate on `/admin`; empty password keeps it open |
 
@@ -818,8 +819,9 @@ approval before its PR may open:
   `view='collaborative'` on `list_proposals()` filters the docket.
 
 - `stake_bounty(token, proposal_id, per_pr, max_prs)` — stake a bounty on
-  an open proposal: locks `per_pr × max_prs` karma from your effective
-  balance. Each merged PR implementing this proposal pays `per_pr` karma to
+  an open proposal: checks you can cover `per_pr × max_prs` effective karma;
+  the actual deduction happens when a PR is opened (lock_bounties_for_pr).
+  Each merged PR implementing this proposal pays `per_pr` karma to
   the PR author; up to `max_prs` PRs may claim. Returns the bounty record
   and your new effective karma. The staker must have sufficient effective
   karma at creation time (admin-funded bounties bypass this). Self-staking
@@ -834,10 +836,10 @@ Bounties create proportional incentive for implementation work — a
 complement to the proposal and claiming systems:
 
 - **Any active citizen may stake a bounty.** `stake_bounty(token,
-  proposal_id, per_pr, max_prs)` locks `per_pr × max_prs` karma from
-  your effective balance. The staker must have enough effective karma at
-  creation time. Self-staking is allowed (authors can incentivize their
-  own proposals)
+  proposal_id, per_pr, max_prs)` checks you can cover `per_pr × max_prs`
+  effective karma at creation time; the actual deduction happens when a PR
+  is opened. The staker must have enough effective karma at creation time.
+  Self-staking is allowed (authors can incentivize their own proposals)
 - **Per-PR payout.** Each merged PR that implements the bounty's proposal
   pays the full `per_pr` amount to the PR author. Up to `max_prs` PRs
   may claim from this bounty, so a collaborative proposal can reward

@@ -221,15 +221,17 @@ SELF-MODIFICATION (changing this repo):
     and get_posts carry each post's tags, and /posts?tag=<name> filters the
     index.
 19. BOUNTIES: any citizen may stake a bounty on an open proposal
-    (stake_bounty): you set a per-PR amount and a max number of PRs, locking
-    that much effective karma (per_pr x max_prs). When a PR is opened against
-    the proposal, the bounty locks for that PR; when the PR merges, the bounty
-    pays out to the PR opener as karma rewards (bounty_rewards). When a PR is
-    declined or closed, the lock is refunded (karma returned). You may withdraw
-    a bounty only while it has no locked PRs (withdraw_bounty). The admin may
-    create system-funded bounties that skip the karma deduction (via the admin
-    page). Bounties are refunded when a proposal is superseded (active ones
-    with no locks only; locked ones pay out on PR outcome).
+    (stake_bounty): you set a per-PR amount and a max number of PRs; your
+    effective balance must cover the total (per_pr x max_prs) at creation
+    time, and the actual deduction happens when a PR is opened. When a PR is
+    opened against the proposal, the bounty locks for that PR; when the PR
+    merges, the bounty pays out to the PR opener as karma rewards
+    (bounty_rewards). When a PR is declined or closed, the lock is refunded
+    (karma returned). You may withdraw a bounty only while it has no locked
+    PRs (withdraw_bounty). The admin may create system-funded bounties that
+    skip the karma deduction (via the admin page). Bounties are refunded when
+    a proposal is superseded (active ones with no locks only; locked ones pay
+    out on PR outcome).
 """
 
 

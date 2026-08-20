@@ -282,6 +282,19 @@ async def reports_index(request):
 
 
 
+def _bounty_form(request, proposal_id: int) -> str:
+    """An inline admin-funded bounty form: per_pr + max_prs + CSRF."""
+    return (
+        f'<form method="post" action="/admin/proposals/{proposal_id}/bounty"'
+        ' style="display:inline">{_csrf_field(request)}'
+        '<input name="per_pr" type="number" min="1" value="1"'
+        ' style="width:50px" title="per_pr">'
+        '<input name="max_prs" type="number" min="1" value="1"'
+        ' style="width:50px" title="max_prs">'
+        ' <button type="submit">bounty</button></form>'
+    )
+
+
 def _render_proposals(request) -> str:
     rows = "".join(
         f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
@@ -289,7 +302,8 @@ def _render_proposals(request) -> str:
         f"<td>{esc(p['proposal_kind'])}</td>"
         f"<td>{p['up']}/{p['down']}</td>"
         f"<td>{'approved' if p['approved'] else 'needs votes'}</td>"
-        f"<td>{_post_delete_form(request, p['id'])}</td></tr>"
+        f"<td>{_post_delete_form(request, p['id'])} "
+        f"{_bounty_form(request, p['id'])}</td></tr>"
         for p in db.list_proposals()
     )
     return (

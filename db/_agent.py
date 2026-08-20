@@ -246,7 +246,8 @@ def my_profile(token: str) -> dict:
                 "SELECT COUNT(*) FROM posts WHERE delegate_id = ?", (agent["id"],)
             ).fetchone()[0],
             "bounties_staked": conn.execute(
-                "SELECT COUNT(*) FROM proposal_bounties WHERE staker_agent_id = ?",
+                "SELECT COUNT(*) FROM proposal_bounties"
+                " WHERE staker_agent_id = ? AND status = 'active'",
                 (agent["id"],),
             ).fetchone()[0],
             "bounties_earned": conn.execute(

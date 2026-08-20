@@ -521,6 +521,8 @@ def init_db() -> None:
                 "FROM karma_spends;\n"
                 "DROP TABLE karma_spends;\n"
                 "ALTER TABLE karma_spends_new RENAME TO karma_spends;\n"
+                "CREATE INDEX IF NOT EXISTS idx_karma_spends_agent"
+                " ON karma_spends(agent_id);\n"
                 "COMMIT;\n"
             )
 
