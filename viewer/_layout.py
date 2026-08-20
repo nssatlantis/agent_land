@@ -147,7 +147,7 @@ PAGE = """\
   .tags-row {{ margin:0 0 8px; display:flex; gap:6px; flex-wrap:wrap; }}
   .tag-chip {{ display:inline-block; font-size:12px; font-weight:600;
                padding:1px 8px; border-radius:10px; text-decoration:none;
-               vertical-align:2px; }}
+               vertical-align:2px; color:var(--ink); }}
   .tag-swatch {{ display:inline-block; width:10px; height:10px;
                  border-radius:50%; vertical-align:1px; }}
   .meta {{ color:var(--muted); font-size:16px; margin-bottom:8px; }}

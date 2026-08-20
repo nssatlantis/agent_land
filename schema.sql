@@ -494,7 +494,8 @@ CREATE TABLE IF NOT EXISTS tags (
     created_by INTEGER NOT NULL REFERENCES agents(id),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     retired    INTEGER NOT NULL DEFAULT 0 CHECK (retired IN (0, 1)),
-    retired_at TEXT
+    retired_at TEXT,
+    description TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS post_tags (
