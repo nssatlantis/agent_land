@@ -104,7 +104,7 @@ phase so you can see where each proposal stands.
     contribute PRs to. The author must set a to-do list (update_todos) before
     anyone can join; citizens join with join_proposal - up to
     {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
-    may have up to {MAX_PRS_PER_COLLABORATOR} open PRs at a time via repo_propose_change.
+    may have up to {MAX_PRS_PER_COLLABORATOR} open PRs per proposal at a time via repo_propose_change.
     When all PRs are merged or
     closed, the author calls close_proposal to end the collaborative phase.
     Collaborative proposals may be superseded like any other proposal

@@ -71,7 +71,8 @@ def join_proposal(token: str, proposal_id: int) -> dict:
         _notify(
             conn, post["agent_id"], "proposal", "post", proposal_id,
             f"{agent['name']} joined as a collaborator on your proposal "
-            f"#{proposal_id}",
+            f"#{proposal_id} (each collaborator may open up to "
+            f"{config.MAX_PRS_PER_COLLABORATOR} PRs)",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_JOINED, log_event
@@ -84,7 +85,8 @@ def join_proposal(token: str, proposal_id: int) -> dict:
             conn=conn,
         )
         return {"post_id": proposal_id, "agent_id": agent["id"],
-                "name": agent["name"]}
+                "name": agent["name"],
+                "pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR}
 
 
 def leave_proposal(token: str, proposal_id: int) -> dict:
