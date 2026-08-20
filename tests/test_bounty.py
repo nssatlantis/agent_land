@@ -717,6 +717,272 @@ def main():
         assert "fully paid" in str(e)
     print("  withdraw on completed: ok")
 
+    # (h) Migration: build old-schema DB, seed bounty, run init_db, verify
+    #     The test harness creates a fresh DB with 'completed' in CHECK.
+    #     To test the migration, we start from the CURRENT schema, then
+    #     downgrade ONLY proposal_bounties to the OLD CHECK (without
+    #     'completed') - the exact state an older forum.db is in - seed a
+    #     qualifying bounty, then call init_db and verify the transition.
+    import sqlite3 as _sqlite3
+    import shutil as _shutil
+    _mig_tmp = _TMP / "migration_test"
+    _mig_tmp.mkdir(exist_ok=True)
+    _mig_db = _mig_tmp / "old_schema.db"
+    # Point FORUM_DB_PATH to the fresh DB.  db._conn()/init_db resolve the
+    # path via getattr(db, "DB_PATH", ...) at call time, so the module
+    # attribute must be patched too - the env var alone is not enough.
+    old_db_path = os.environ.get("FORUM_DB_PATH")
+    real_db_path = db.DB_PATH
+    os.environ["FORUM_DB_PATH"] = str(_mig_db)
+    db.DB_PATH = str(_mig_db)
+    try:
+        db.init_db()
+        # Downgrade proposal_bounties to the pre-'completed' CHECK
+        _mig_conn = _sqlite3.connect(str(_mig_db))
+        _mig_conn.executescript("""
+            CREATE TABLE proposal_bounties_old (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                staker_agent_id INTEGER REFERENCES agents(id),
+                per_pr INTEGER NOT NULL CHECK (per_pr > 0),
+                max_prs INTEGER NOT NULL CHECK (max_prs > 0),
+                paid_count INTEGER NOT NULL DEFAULT 0,
+                locked_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'withdrawn', 'refunded')),
+                admin_funded INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+            INSERT INTO proposal_bounties_old
+                (id, proposal_id, staker_agent_id, per_pr, max_prs,
+                 paid_count, locked_count, status, admin_funded, created_at)
+            SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,
+                   paid_count, locked_count, status, admin_funded, created_at
+            FROM proposal_bounties;
+            DROP TABLE proposal_bounties;
+            ALTER TABLE proposal_bounties_old RENAME TO proposal_bounties;
+        """)
+        # Seed a qualifying bounty: paid_count=2, max_prs=2, locked_count=0
+        _mig_conn.execute(
+            "INSERT INTO agents (name, token) VALUES ('mig-staker', 'tok-mig')"
+        )
+        _mig_conn.execute(
+            "INSERT INTO posts (agent_id, title, body)"
+            " VALUES (1, 'Mig Prop', 'body')"
+        )
+        _mig_conn.execute(
+            "INSERT INTO proposal_bounties (proposal_id, staker_agent_id,"
+            " per_pr, max_prs, paid_count, locked_count, status)"
+            " VALUES (1, 1, 5, 2, 2, 0, 'active')"
+        )
+        _mig_conn.commit()
+        _mig_conn.close()
+        db.init_db()
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT status FROM proposal_bounties WHERE id = 1"
+            ).fetchone()
+        assert row["status"] == "completed", (
+            f"migration should auto-transition qualifying bounty to completed, got {row['status']}"
+        )
+        # Verify the CHECK now accepts 'completed'
+        with db._conn() as conn:
+            stored = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='proposal_bounties'"
+            ).fetchone()
+        assert "'completed'" in stored["sql"], (
+            "CHECK constraint should include 'completed' after migration"
+        )
+    finally:
+        if old_db_path:
+            os.environ["FORUM_DB_PATH"] = old_db_path
+        else:
+            os.environ.pop("FORUM_DB_PATH", None)
+        db.DB_PATH = real_db_path
+        _shutil.rmtree(_mig_tmp, ignore_errors=True)
+    print("  migration (old schema -> completed): ok")
+
+    # Top up alpha's karma: the lock/pay cycles above permanently
+    # transferred it to the PR opener, and the tests below stake again.
+    top_pid = db.create_post(
+        agents["alpha"]["token"], "Karma Top Up", "Body"
+    )["post_id"]
+    for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
+        db.vote(agents[name]["token"], "post", top_pid, 1)
+
+    # (i) Multi-lock completion: max_prs=2, two PRs locked+paid → completed
+    ml_pid = db.create_proposal(
+        agents["beta"]["token"], "Multi Lock Complete", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], ml_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], ml_pid, per_pr=1, max_prs=2)
+    with db._conn() as conn:
+        ml_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (ml_pid,),
+        ).fetchone()["id"]
+        # Lock for two different PRs
+        bounty_mod.lock_bounties_for_pr(conn, ml_pid, 9400, agents["gamma"]["agent_id"])
+        bounty_mod.lock_bounties_for_pr(conn, ml_pid, 9401, agents["gamma"]["agent_id"])
+        # Still active (1 paid, 1 locked)
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?", (ml_bounty_id,)
+        ).fetchone()["status"] == "active"
+        # Pay first PR
+        bounty_mod.pay_bounty_rewards(conn, 9400)
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?", (ml_bounty_id,)
+        ).fetchone()["status"] == "active", "should still be active after 1st pay"
+        # Pay second PR → should transition to completed
+        bounty_mod.pay_bounty_rewards(conn, 9401)
+        final = conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?", (ml_bounty_id,)
+        ).fetchone()
+        assert final["status"] == "completed", (
+            f"multi-lock completion should set status=completed, got {final['status']}"
+        )
+    print("  multi-lock completion: ok")
+
+    # (j) Admin-funded bounty completion: staker_agent_id=NULL, no crash
+    adm_pid = db.create_proposal(
+        agents["beta"]["token"], "Admin Complete", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], adm_pid, 1)
+    db.admin_stake_bounty("admin", adm_pid, per_pr=1, max_prs=1)
+    with db._conn() as conn:
+        adm_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (adm_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(conn, adm_pid, 9410, agents["gamma"]["agent_id"])
+        # Should not crash — staker_agent_id is NULL, notification skipped
+        bounty_mod.pay_bounty_rewards(conn, 9410)
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?", (adm_bounty_id,)
+        ).fetchone()["status"] == "completed"
+    print("  admin-funded bounty completion: ok")
+
+    # (k) Partial completion stays active: max_prs=2, one paid, one declined
+    pc_pid = db.create_proposal(
+        agents["beta"]["token"], "Partial Complete", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], pc_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], pc_pid, per_pr=1, max_prs=2)
+    with db._conn() as conn:
+        pc_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (pc_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(conn, pc_pid, 9420, agents["gamma"]["agent_id"])
+        bounty_mod.lock_bounties_for_pr(conn, pc_pid, 9421, agents["gamma"]["agent_id"])
+        # Pay one, refund the other
+        bounty_mod.pay_bounty_rewards(conn, 9420)
+        bounty_mod.refund_bounty_locks(conn, 9421)
+        final = conn.execute(
+            "SELECT status, paid_count, locked_count FROM proposal_bounties WHERE id = ?",
+            (pc_bounty_id,),
+        ).fetchone()
+        assert final["status"] == "active", (
+            f"partial completion should stay active, got {final['status']}"
+        )
+        assert final["paid_count"] == 1
+        assert final["locked_count"] == 0
+    print("  partial completion stays active: ok")
+
+    # (l) locked_count != 0 guard: paid but still locked → no transition
+    lk_pid = db.create_proposal(
+        agents["beta"]["token"], "Locked Guard", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], lk_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], lk_pid, per_pr=1, max_prs=2)
+    with db._conn() as conn:
+        lk_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (lk_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(conn, lk_pid, 9430, agents["gamma"]["agent_id"])
+        bounty_mod.lock_bounties_for_pr(conn, lk_pid, 9431, agents["gamma"]["agent_id"])
+        # Pay only one — locked_count is still 1
+        bounty_mod.pay_bounty_rewards(conn, 9430)
+        row = conn.execute(
+            "SELECT status, paid_count, locked_count FROM proposal_bounties WHERE id = ?",
+            (lk_bounty_id,),
+        ).fetchone()
+        assert row["status"] == "active", (
+            f"should stay active when locked_count>0, got {row['status']}"
+        )
+        assert row["paid_count"] == 1
+        assert row["locked_count"] == 1
+    print("  locked_count guard (no premature transition): ok")
+
+    # (m) Staker notification on completion: verify notification is created
+    sn_pid = db.create_proposal(
+        agents["beta"]["token"], "Staker Notify", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], sn_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], sn_pid, per_pr=1, max_prs=1)
+    with db._conn() as conn:
+        sn_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (sn_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(conn, sn_pid, 9440, agents["gamma"]["agent_id"])
+        bounty_mod.pay_bounty_rewards(conn, 9440)
+    # Check notifications for alpha (the staker).  The mailbox lives in the
+    # notifications module (db re-exports no get_notifications), and rows
+    # carry the message under `body`.
+    import notifications as _notifications_mod
+    notifs = _notifications_mod.notifications(agents["alpha"]["token"])
+    bounty_notifs = [n for n in notifs["notifications"]
+                     if "fully paid" in n.get("body", "")]
+    assert len(bounty_notifs) >= 1, (
+        f"staker should receive 'fully paid' notification, got {len(bounty_notifs)}"
+    )
+    print("  staker notification on completion: ok")
+
+    # (n) Refund on completed bounty should NOT happen (verify refund_proposal_bounties filters)
+    # Completed bounties should NOT be refunded when proposal is superseded
+    # Top up the voters first - proposal votes need >= 1 effective karma
+    # and the earlier tests drained beta.
+    for voter in ("beta", "gamma", "delta"):
+        v_pid = db.create_post(
+            agents[voter]["token"], f"Karma Top Up {voter}", "Body"
+        )["post_id"]
+        for name in ("alpha", "beta", "gamma", "delta",
+                     "epsilon", "zeta", "eta", "theta"):
+            if name != voter:
+                db.vote(agents[name]["token"], "post", v_pid, 1)
+    rf_pid = db.create_proposal(
+        agents["alpha"]["token"], "No Refund Completed", "Body"
+    )["post_id"]
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_proposal(agents[name]["token"], rf_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], rf_pid, per_pr=1, max_prs=1)
+    with db._conn() as conn:
+        rf_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (rf_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(conn, rf_pid, 9450, agents["gamma"]["agent_id"])
+        bounty_mod.pay_bounty_rewards(conn, 9450)
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?", (rf_bounty_id,)
+        ).fetchone()["status"] == "completed"
+    # Supersede the proposal — refund_proposal_bounties should skip completed
+    db.supersede_proposal(
+        agents["alpha"]["token"], rf_pid, "No Refund v2", "new"
+    )
+    with db._conn() as conn:
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?", (rf_bounty_id,)
+        ).fetchone()["status"] == "completed", "completed bounty should NOT be refunded"
+    print("  refund skips completed bounties: ok")
+
     print("\n== test_bounty: all passed ==")
 
 
