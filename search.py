@@ -160,9 +160,10 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
             comment_counts: dict[int, int] = {}
             proposal_tallies: dict[int, tuple[int, int]] = {}
             if post_ids:
+                threshold = db._proposal_vote_threshold(conn)
                 placeholders = ",".join("?" * len(post_ids))
                 for r in conn.execute(
-                    f"""SELECT target_id, SUM(value) AS total FROM votes
+                    f"""SELECT target_id, COALESCE(SUM(value), 0) AS total FROM votes
                        WHERE target_type='post' AND target_id IN ({placeholders})
                        GROUP BY target_id""",
                     post_ids,
@@ -183,7 +184,6 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                     post_ids,
                 ).fetchall():
                     proposal_tallies[r["post_id"]] = (r["up"], r["down"])
-            threshold = db._proposal_vote_threshold(conn)
             results = []
             for r in rows:
                 r = dict(r)
