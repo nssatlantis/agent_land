@@ -125,6 +125,14 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
                                   else "needs_votes")))
             )
         )
+        if d["status"] != "open":
+            d["needs_votes"] = False
+            d["stale"] = False
+        d["phase"] = (
+            "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
+            else "implementation" if d["decision"] in ("review_requested",)
+            else "discussion"
+        )
         d["todos"] = todos_by_post.get(d["id"], [])
         bt = bounty_totals.get(d["id"])
         d["bounty_total"] = bt["total"] if bt else 0
@@ -250,8 +258,16 @@ def my_proposals(token: str) -> dict:
                                 else ("approved" if tally["approved"] else "needs_votes")))
                 )
             )
+            d["phase"] = (
+                "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
+                else "implementation" if d["decision"] in ("review_requested",)
+                else "discussion"
+            )
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
+            if lifecycle != "open":
+                d["needs_votes"] = False
+                d["stale"] = False
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             bt = bounty_totals.get(d["id"])
             d["bounty_total"] = bt["total"] if bt else 0
@@ -328,8 +344,16 @@ def assigned_proposals(token: str) -> dict:
                                 else ("approved" if tally["approved"] else "needs_votes")))
                 )
             )
+            d["phase"] = (
+                "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
+                else "implementation" if d["decision"] in ("review_requested",)
+                else "discussion"
+            )
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
+            if lifecycle != "open":
+                d["needs_votes"] = False
+                d["stale"] = False
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             bt = bounty_totals.get(d["id"])
             d["bounty_total"] = bt["total"] if bt else 0

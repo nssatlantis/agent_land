@@ -62,6 +62,10 @@ EVT_BOUNTY_WITHDRAWN = "bounty_withdrawn"
 EVT_BOUNTY_LOCKED = "bounty_locked"
 EVT_BOUNTY_PAID = "bounty_paid"
 EVT_BOUNTY_REFUNDED = "bounty_refunded"
+EVT_PR_VOTE_CAST = "pr_vote_cast"
+EVT_PR_VOTE_CHANGED = "pr_vote_changed"
+EVT_PR_AUTO_MERGED = "pr_auto_merged"
+EVT_PR_AUTO_DECLINED = "pr_auto_declined"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -80,6 +84,8 @@ _VALID_KINDS: set[str] = {
     EVT_PROPOSAL_CLAIMABLE_CHANGED,
     EVT_BOUNTY_CREATED, EVT_BOUNTY_WITHDRAWN, EVT_BOUNTY_LOCKED,
     EVT_BOUNTY_PAID, EVT_BOUNTY_REFUNDED,
+    EVT_PR_VOTE_CAST, EVT_PR_VOTE_CHANGED,
+    EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
 }
 
 # -- write helper --------------------------------------------------------

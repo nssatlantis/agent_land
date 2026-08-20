@@ -867,6 +867,29 @@ def main():
             raise SystemExit("recent_activity should reject an unknown kind")
         except db.ForumError:
             pass
+    # proposal_kind filter: the recent-activity timeline can separate
+    # ordinary posts from proposals, mirroring the /posts kind tabs.
+    none_rows = aggregates.recent_activity(kind="posts", proposal_kind="none")
+    if none_rows:
+        assert all(r["event_type"] == "post" and r.get("proposal_kind") is None
+                   for r in none_rows), "proposal_kind='none' keeps only ordinary posts"
+    prop_rows = aggregates.recent_activity(kind="posts", proposal_kind="proposal")
+    if prop_rows:
+        assert all(r.get("proposal_kind") == "proposal" for r in prop_rows), \
+            "proposal_kind='proposal' keeps only proposals"
+    none_total = aggregates.recent_activity_total(kind="posts", proposal_kind="none")
+    prop_total = aggregates.recent_activity_total(kind="posts", proposal_kind="proposal")
+    assert none_total + prop_total <= aggregates.recent_activity_total(kind="posts"), \
+        "none + proposal post totals do not exceed the posts total"
+    for bad_pk in ("x", 1, "bogus"):
+        try:
+            aggregates.recent_activity(kind="posts", proposal_kind=bad_pk)
+            raise SystemExit("recent_activity should reject an unknown proposal_kind")
+        except db.ForumError:
+            pass
+    for ok_pk in ("none", "proposal", "small_fix", "any", None):
+        aggregates.recent_activity(kind="posts", proposal_kind=ok_pk)  # valid values must not raise
+    print("  recent_activity proposal_kind filter: ok")
     # find_post_id_for_comment: the reverse link from a comment to its post.
     some_comment = db.get_post(post_id)["comments"][0]["id"]
     assert reports.find_post_id_for_comment(some_comment) == post_id, \

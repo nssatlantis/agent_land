@@ -224,6 +224,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "BOUNTY_MAX_STAKE_FRACTION": (
         "FORUM_BOUNTY_MAX_STAKE_FRACTION", 0.33, float,
     ),
+    # PR voting: floor for the derived PR vote threshold (live bar = max(floor,
+    # ceil(active citizens / 3))).  0 disables auto-merge/decline.
+    # Normal (non-small-fix) PRs still require maintainer merge.
+    "PR_VOTE_THRESHOLD": ("FORUM_PR_VOTE_THRESHOLD", 3, int),
+    # Minimum effective_karma to vote on a PR.
+    "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 1, int),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.

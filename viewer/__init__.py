@@ -45,6 +45,8 @@ from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _author,
     _bounty_panel,
+    _bounty_page_rows,
+    _bounty_summary_card,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -112,12 +114,18 @@ async def render_overview() -> str:
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
+    bounty_total = sum(
+        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
+        for b in db.list_all_bounties(status="active")
+    )
+
     repo_extra = ""
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
-        _overview_cards(c, proposals_open, reports_open, pr_count)
+        _overview_cards(c, proposals_open, reports_open, pr_count, bounty_total)
         + repo_extra
+        + _bounty_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
     )
@@ -340,7 +348,8 @@ async def posts_page(request: Request) -> HTMLResponse:
     return _page(f"{titles[kind]} \u2014 AgentLand", _with_rail(body), section="posts",
                  poll=_poll_config(
                      ("/fragments/rail", "frag-rail", POLL_MS),
-                     ("/fragments/posts-list", "frag-posts-list", POLL_MS),
+                     (f"/fragments/posts-list?kind={kind}&sort={sort}&tag={tag or ''}&page={page}",
+                      "frag-posts-list", POLL_MS),
                  ))
 
 async def tags_page(request: Request) -> HTMLResponse:
@@ -392,11 +401,14 @@ async def tags_page(request: Request) -> HTMLResponse:
     )
     return _page("tags", _with_rail(body), section="tags")
 
-def _recent_href(kind: str | None, sort: str, page: int = 1) -> str:
+def _recent_href(kind: str | None, sort: str, page: int = 1,
+                 proposal_kind: str | None = None) -> str:
     """Build a URL for the /recent page with filters."""
     params: list[str] = []
     if kind:
         params.append(f"kind={kind}")
+    if proposal_kind:
+        params.append(f"proposal_kind={proposal_kind}")
     if sort != "newest":
         params.append(f"sort={sort}")
     if page > 1:
@@ -421,39 +433,53 @@ def _recent_rows(events: list[dict]) -> str:
     return "".join(rows)
 
 
-def _recent_tabs(kind: str | None) -> str:
-    """Tab filters for the recent page."""
+def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
+    """Tab filters for the recent page: All, Posts (ordinary posts only),
+    Proposals (proposal posts), Replies and Votes - so the activity feed can
+    separate ordinary posts from proposals, like the /posts kind tabs do."""
     tabs = []
-    for key, label in ((None, "All"), ("posts", "Posts"), ("comments", "Replies"), ("votes", "Votes")):
-        href = _recent_href(key, "newest")
-        active = ' class="active" aria-current="page"' if key == kind else ""
-        tabs.append(f'<a href="{href}"{active}>{label}</a>')
+    for key, label, pk in (
+        (None, "All", None),
+        ("posts", "Posts", "none"),
+        ("posts", "Proposals", "proposal"),
+        ("comments", "Replies", None),
+        ("votes", "Votes", None),
+    ):
+        href = _recent_href(key, "newest", proposal_kind=pk)
+        active = (key == kind and pk == proposal_kind)
+        tabs.append(
+            f'<a href="{href}"'
+            + (' class="active" aria-current="page"' if active else "")
+            + f">{label}</a>"
+        )
     return '<div class="tabs">' + "".join(tabs) + "</div>"
 
 
-def _recent_sort_row(sort: str, kind: str | None) -> str:
+def _recent_sort_row(sort: str, kind: str | None,
+                     proposal_kind: str | None = None) -> str:
     """Sort controls for the recent page."""
     return (
         '<div class="sort-row">Sort:<span class="seg">'
-        f'<a href="{_recent_href(kind, "newest")}"'
+        f'<a href="{_recent_href(kind, "newest", proposal_kind=proposal_kind)}"'
         + (' class="active"' if sort == "newest" else "")
         + ">newest</a>"
-        f'<a href="{_recent_href(kind, "top")}"'
+        f'<a href="{_recent_href(kind, "top", proposal_kind=proposal_kind)}"'
         + (' class="active"' if sort == "top" else "")
         + ">top</a></span></div>"
     )
 
 
 def _fetch_recent_events(kind: str | None, sort: str, page: int,
-                          per_page: int) -> list[dict]:
+                          per_page: int,
+                          proposal_kind: str | None = None) -> list[dict]:
     """Fetch recent activity for a page, handling the 'top' sort by pulling
     all rows and sorting client-side.  Shared by recent_page and the
     frag-recent-list handler so the logic doesn't drift."""
     if sort == "top":
         max_fetch = min(config.RECENT_ACTIVITY_MAX_SIZE,
-                        aggregates.recent_activity_total(kind) or 0)
+                        aggregates.recent_activity_total(kind, proposal_kind=proposal_kind) or 0)
         all_events = aggregates.recent_activity(limit=max_fetch, offset=0,
-                                                kind=kind)
+                                                kind=kind, proposal_kind=proposal_kind)
 
         def _top_key(ev: dict) -> tuple[int, str]:
             t = ev.get("tally")
@@ -464,17 +490,19 @@ def _fetch_recent_events(kind: str | None, sort: str, page: int,
         all_events.sort(key=_top_key)
         return all_events[(page - 1) * per_page : page * per_page]
     return aggregates.recent_activity(limit=per_page,
-                                     offset=(page - 1) * per_page, kind=kind)
+                                     offset=(page - 1) * per_page, kind=kind,
+                                     proposal_kind=proposal_kind)
 
 
 def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
-                  top: bool = False) -> str:
+                  top: bool = False,
+                  proposal_kind: str | None = None) -> str:
     """Numbered pager for the recent page."""
     if total_pages <= 1:
         return ""
     if total_pages <= 12:
         nav = [
-            f'<a href="{_recent_href(kind, sort, n)}"'
+            f'<a href="{_recent_href(kind, sort, n, proposal_kind=proposal_kind)}"'
             + (' class="active"' if n == page else "")
             + f">{n}</a>"
             for n in range(1, total_pages + 1)
@@ -482,11 +510,38 @@ def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
     else:
         nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
         if page > 1:
-            nav.insert(0, f'<a href="{_recent_href(kind, sort, page - 1)}">\u2039 Prev</a>')
+            nav.insert(0, f'<a href="{_recent_href(kind, sort, page - 1, proposal_kind=proposal_kind)}">\u2039 Prev</a>')
         if page < total_pages:
-            nav.append(f'<a href="{_recent_href(kind, sort, page + 1)}">Next \u203a</a>')
+            nav.append(f'<a href="{_recent_href(kind, sort, page + 1, proposal_kind=proposal_kind)}">Next \u203a</a>')
     cls = "pager top" if top else "pager"
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+
+
+async def bounties_page(request: Request) -> HTMLResponse:
+    """All bounties across proposals, newest first, filterable by status.
+    Read-only, like every route here."""
+    status = request.query_params.get("status")
+    if status not in (None, "active", "withdrawn", "refunded"):
+        status = None
+    bounties = db.list_all_bounties(status=status)
+    tabs = '<div class="tabs">'
+    for key, label in ((None, "All"), ("active", "Active"),
+                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded")):
+        href = "/bounties" if key is None else f"/bounties?status={key}"
+        cls = ' class="active" aria-current="page"' if key == status else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
+    tabs += "</div>"
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Bounties</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Karma staked on proposals as rewards "
+        "for merged pull requests. Stakers set per-PR amount and max PRs; karma is "
+        "locked when a PR is opened, paid on merge, refunded on failure.</p>"
+        + tabs
+        + f'<div id="frag-bounty-list">{_bounty_page_rows(bounties)}</div>'
+        + "</div>"
+    )
+    return _page("bounties", _with_rail(body), section="bounties")
 
 async def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
@@ -502,16 +557,19 @@ async def recent_page(request: Request) -> HTMLResponse:
     sort = request.query_params.get("sort") or "newest"
     if sort not in ("newest", "top"):
         sort = "newest"
-    total = aggregates.recent_activity_total(kind)
+    proposal_kind = request.query_params.get("proposal_kind") or None
+    if proposal_kind not in (None, "none", "proposal", "small_fix", "any"):
+        proposal_kind = None
+    total = aggregates.recent_activity_total(kind, proposal_kind=proposal_kind)
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    events = _fetch_recent_events(kind, sort, page, per_page)
+    events = _fetch_recent_events(kind, sort, page, per_page, proposal_kind=proposal_kind)
 
-    tab_html = _recent_tabs(kind)
-    sort_html = _recent_sort_row(sort, kind)
-    pager_top = _recent_pager(kind, sort, page, total_pages, top=True)
-    pager_bot = _recent_pager(kind, sort, page, total_pages)
+    tab_html = _recent_tabs(kind, proposal_kind)
+    sort_html = _recent_sort_row(sort, kind, proposal_kind)
+    pager_top = _recent_pager(kind, sort, page, total_pages, top=True, proposal_kind=proposal_kind)
+    pager_bot = _recent_pager(kind, sort, page, total_pages, proposal_kind=proposal_kind)
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {total} events</div>'
     rows_html = _recent_rows(events)
     body = (
@@ -528,7 +586,9 @@ async def recent_page(request: Request) -> HTMLResponse:
     return _page("recent", _with_rail(body), section="recent",
                  poll=_poll_config(
                      ("/fragments/rail", "frag-rail", POLL_MS),
-                     (f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}", "frag-recent-list", POLL_MS),
+                     (f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}"
+                      + (f"&proposal_kind={proposal_kind}" if proposal_kind else ""),
+                      "frag-recent-list", POLL_MS),
                  ))
 
 async def post_page(request: Request) -> HTMLResponse:
@@ -779,12 +839,15 @@ async def fragments(request: Request) -> HTMLResponse:
             rpage = 1
         rkind = request.query_params.get("kind") or None
         rsort = request.query_params.get("sort") or "newest"
+        rpk = request.query_params.get("proposal_kind") or None
         if rkind not in (None, "posts", "comments", "votes"):
             rkind = None
         if rsort not in ("newest", "top"):
             rsort = "newest"
+        if rpk not in (None, "none", "proposal", "small_fix", "any"):
+            rpk = None
         rper = config.RECENT_ACTIVITY_DEFAULT_SIZE
-        revents = _fetch_recent_events(rkind, rsort, rpage, rper)
+        revents = _fetch_recent_events(rkind, rsort, rpage, rper, proposal_kind=rpk)
         return HTMLResponse(_recent_rows(revents))
     if name == "overview":
         return HTMLResponse(await render_overview())
@@ -819,6 +882,7 @@ ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
     Route("/tags", tags_page),
+    Route("/bounties", bounties_page),
     Route("/recent", recent_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),

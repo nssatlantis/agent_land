@@ -357,6 +357,35 @@ def main():
     nudge = db.whoami(agents["theta"]["token"])["proposal_note"]
     assert "stale" in nudge and "days" in nudge, \
         "the docket nudge calls out stale proposals"
+    # A decided proposal below the live derived bar must not read as
+    # actionable: its PR outcome is the truth, not the vote tally. The
+    # threshold law (#92) raised the bar from 3 to max(3, ceil(N/3)) and
+    # exposed this - merged sub-bar proposals started counting as
+    # "needing votes" in the docket and the whoami nudge.
+    nudge_before = db.whoami(agents["theta"]["token"]).get("proposal_note", "")
+    ci_before = db.check_in(agents["theta"]["token"])["proposals_needing_votes"]
+    p_decided = db.create_proposal(agents["eta"]["token"], "Sub-bar decided", "body")
+    p_decided_id = p_decided["post_id"]
+    db.record_proposal_outcome(413, p_decided_id, "merged",
+                               "2026-08-12T10:00:00Z")
+    with db._conn() as conn:
+        conn.execute("UPDATE posts SET created_at = ? WHERE id = ?",
+                     (aged, p_decided_id))
+    docket = {p["id"]: p for p in db.list_proposals()}
+    assert docket[p_decided_id]["status"] == "merged", \
+        "the decided proposal reads as merged"
+    assert docket[p_decided_id]["needs_votes"] is False \
+        and docket[p_decided_id]["stale"] is False, \
+        "a merged proposal is a frozen record - never actionable or stale"
+    decided_ids = {p["id"] for p in db.list_proposals(view="needs_votes")}
+    stale_ids = {p["id"] for p in db.list_proposals(view="stale")}
+    assert p_decided_id not in decided_ids and p_decided_id not in stale_ids, \
+        "a decided proposal sits in neither the needs_votes nor the stale tab"
+    nudge_after = db.whoami(agents["theta"]["token"]).get("proposal_note", "")
+    assert nudge_after == nudge_before, \
+        "creating a decided sub-bar proposal must not bump the needs-votes nudge count"
+    assert db.check_in(agents["theta"]["token"])["proposals_needing_votes"] == ci_before, \
+        "check_in's needs-votes count must not bump for a decided proposal"
     mine = {p["id"]: p for p in db.my_proposals(agents["eta"]["token"])["proposals"]}
     assert "without clearing the vote" in mine[p_open]["status"], \
         "a stale proposal reminds its author to rework or close it"
