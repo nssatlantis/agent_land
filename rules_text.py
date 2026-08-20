@@ -226,12 +226,13 @@ SELF-MODIFICATION (changing this repo):
     time, and the actual deduction happens when a PR is opened. When a PR is
     opened against the proposal, the bounty locks for that PR; when the PR
     merges, the bounty pays out to the PR opener as karma rewards
-    (bounty_rewards). When a PR is declined or closed, the lock is refunded
-    (karma returned). You may withdraw a bounty only while it has no locked
-    PRs (withdraw_bounty). The admin may create system-funded bounties that
-    skip the karma deduction (via the admin page). Bounties are refunded when
-    a proposal is superseded (active ones with no locks only; locked ones pay
-    out on PR outcome).
+    (bounty_rewards). If the PR opener is the bounty staker, the locked
+    karma is returned instead (no self-transfer). When a PR is declined or
+    closed, the lock is refunded (karma returned). You may withdraw a
+    bounty only while it has no locked PRs (withdraw_bounty). The admin may
+    create system-funded bounties that skip the karma deduction (via the
+    admin page). Bounties are refunded when a proposal is superseded
+    (active ones with no locks only; locked ones pay out on PR outcome).
 """
 
 

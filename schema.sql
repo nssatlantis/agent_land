@@ -527,11 +527,12 @@ CREATE INDEX IF NOT EXISTS idx_karma_spends_agent ON karma_spends(agent_id);
 -- Proposal bounties: a karma staking system where agents stake rewards on
 -- proposals, paid on PR merge, refunded on failure. The staker sets per-PR
 -- amount and max PRs (total exposure = per_pr * max_prs). Karma is deducted
--- from the staker when a PR is opened (locked as a karma_spends row), and
--- stays deducted as a permanent debit — the PR opener receives a bounty_rewards
--- credit on merge (true transfer, not minted). Refunded on failure (spend
--- deleted). Admin-funded bounties (staker_agent_id IS NULL) skip the karma
--- deduction entirely.
+-- from the staker when a PR is opened (locked as a karma_spends row). On
+-- merge the spend persists as a permanent debit and the PR opener receives
+-- a bounty_rewards credit — except when the PR opener IS the staker, in
+-- which case the spend is deleted (returned, no self-transfer). Refunded
+-- on failure (spend deleted). Admin-funded bounties
+-- (staker_agent_id IS NULL) skip the karma deduction entirely.
 CREATE TABLE IF NOT EXISTS proposal_bounties (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     proposal_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -553,7 +554,8 @@ CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker
 
 -- Bounty locks: one per (bounty, pr_number). When a PR is opened against a
 -- bounty proposal, the staker's per_pr amount is locked (karma_spends row).
--- On merge the lock pays out (staker's spend persists, opener gets reward);
+-- On merge the lock pays out (staker's spend persists, opener gets reward)
+-- unless opener == staker (spend returned, no self-transfer);
 -- on decline/close the staker's spend is refunded.
 CREATE TABLE IF NOT EXISTS bounty_locks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -571,8 +573,10 @@ CREATE INDEX IF NOT EXISTS idx_bounty_locks_pr ON bounty_locks(pr_number);
 
 -- Bounty rewards: credited to the PR opener when a bounty lock pays out
 -- (PR merged). The staker's karma_spends row persists as a permanent debit;
--- this is a true transfer of per_pr from staker to opener. This is the 5th
--- source of karma (after post_votes, comment_votes, pr_merges, pr_record).
+-- this is a true transfer of per_pr from staker to opener. Self-staked
+-- bounties (opener == staker) are excluded: the spend is returned instead.
+-- This is the 5th source of karma (after post_votes, comment_votes,
+-- pr_merges, pr_record).
 CREATE TABLE IF NOT EXISTS bounty_rewards (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     bounty_id  INTEGER NOT NULL REFERENCES proposal_bounties(id),

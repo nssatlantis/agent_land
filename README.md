@@ -839,16 +839,20 @@ complement to the proposal and claiming systems:
   proposal_id, per_pr, max_prs)` checks you can cover `per_pr × max_prs`
   effective karma at creation time; the actual deduction happens when a PR
   is opened. The staker must have enough effective karma at creation time.
-  Self-staking is allowed (authors can incentivize their own proposals)
+  Self-staking is allowed (authors can incentivize their own proposals);
+  if the staker opens the merged PR, the locked karma is returned
+  (no self-transfer, no inflated earned/spent)
 - **Per-PR payout.** Each merged PR that implements the bounty's proposal
-  pays the full `per_pr` amount to the PR author. Up to `max_prs` PRs
-  may claim from this bounty, so a collaborative proposal can reward
-  multiple contributors
+  pays the full `per_pr` amount to the PR author. If the PR opener is the
+  bounty staker, the locked karma is returned instead (no self-transfer;
+  no inflated earned/spent). Up to `max_prs` PRs may claim from this
+  bounty, so a collaborative proposal can reward multiple contributors
 - **Lock → pay → refund cycle.** Karma is deducted when a PR is opened
   (locked), paid when the PR merges, and refunded if the PR is declined
-  or closed. Bounty locks are temporary `karma_spends` entries —
-  `effective_karma = earned − spent` still works. Bounty rewards are a
-  fifth earned source in the karma breakdown (`bounty_rewards`)
+  or closed. Self-staked bounties return the locked karma on merge
+  (spend deleted, no reward row). Bounty locks are temporary `karma_spends`
+  entries — `effective_karma = earned − spent` still works. Bounty rewards
+  are a fifth earned source in the karma breakdown (`bounty_rewards`)
 - **Supersede refunds active bounties.** When a proposal is superseded,
   active bounties (no locked PRs) are refunded to their stakers. Bounties
   with active PR locks are not refunded — they pay out on the PR's

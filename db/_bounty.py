@@ -329,22 +329,33 @@ def lock_bounties_for_pr(
 
 def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
     """Pay out bounty locks for a merged PR. For each locked bounty_lock:
-    update status to paid, decrement locked_count, increment paid_count,
-    and insert a bounty_rewards row for the PR opener.
+    update status to paid, decrement locked_count, increment paid_count.
 
-    The staker's karma_spends row PERSISTS as a permanent debit — this is
-    a true transfer from staker to opener, not a mint. Admin-funded bounties
-    have no spend to preserve. Returns the number of bounties paid."""
+    Self-staking: when the PR opener is the bounty staker, the spend is
+    refunded (deleted) instead of creating a bounty_rewards row — a transfer
+    to yourself would be net-zero but inflate earned/spent.  The lock still
+    records as 'paid' (the PR merged) and paid_count increments.
+
+    Normal: the staker's karma_spends row PERSISTS as a permanent debit
+    (true transfer), and a bounty_rewards row credits the PR opener.
+    Admin-funded bounties have no spend to preserve.  Returns the number
+    of bounties paid."""
     with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
         locks = c.execute(
-            "SELECT bl.id AS lock_id, bl.bounty_id, bl.agent_id, bl.amount"
+            "SELECT bl.id AS lock_id, bl.bounty_id, bl.agent_id, bl.amount,"
+            " bl.karma_spend_id, b.staker_agent_id"
             " FROM bounty_locks bl"
+            " JOIN proposal_bounties b ON b.id = bl.bounty_id"
             " WHERE bl.pr_number = ? AND bl.status = 'locked'",
             (pr_number,),
         ).fetchall()
         paid = 0
         from events import EVT_BOUNTY_PAID, log_event
         for lk in locks:
+            self_stake = (
+                lk["staker_agent_id"] is not None
+                and lk["agent_id"] == lk["staker_agent_id"]
+            )
             c.execute(
                 "UPDATE bounty_locks SET status = 'paid' WHERE id = ?",
                 (lk["lock_id"],),
@@ -356,33 +367,63 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 " WHERE id = ?",
                 (lk["bounty_id"],),
             )
-            # Staker's spend persists — no DELETE. This is a true transfer:
-            # the staker's effective_karma stays permanently reduced by
-            # per_pr, while the PR opener gains +per_pr via bounty_rewards.
-            c.execute(
-                "INSERT INTO bounty_rewards"
-                " (bounty_id, pr_number, agent_id, amount)"
-                " VALUES (?, ?, ?, ?)",
-                (lk["bounty_id"], pr_number, lk["agent_id"], lk["amount"]),
-            )
-            log_event(
-                EVT_BOUNTY_PAID,
-                actor_agent_id=lk["agent_id"],
-                target_type="bounty_reward",
-                target_id=lk["bounty_id"],
-                detail={
-                    "bounty_id": lk["bounty_id"],
-                    "pr_number": pr_number,
-                    "amount": lk["amount"],
-                },
-                conn=c,
-            )
-            _notify(
-                c, lk["agent_id"], "pr", "bounty_reward",
-                lk["bounty_id"],
-                f"Your PR #{pr_number} earned a bounty reward of "
-                f"{lk['amount']} karma.",
-            )
+            if self_stake:
+                # Refund the staker's own spend — no transfer to yourself.
+                if lk["karma_spend_id"] is not None:
+                    c.execute(
+                        "UPDATE bounty_locks SET karma_spend_id = NULL"
+                        " WHERE id = ?",
+                        (lk["lock_id"],),
+                    )
+                    c.execute(
+                        "DELETE FROM karma_spends WHERE id = ?",
+                        (lk["karma_spend_id"],),
+                    )
+                log_event(
+                    EVT_BOUNTY_PAID,
+                    actor_agent_id=lk["agent_id"],
+                    target_type="bounty_reward",
+                    target_id=lk["bounty_id"],
+                    detail={
+                        "bounty_id": lk["bounty_id"],
+                        "pr_number": pr_number,
+                        "amount": lk["amount"],
+                        "self_stake": True,
+                    },
+                    conn=c,
+                )
+                _notify(
+                    c, lk["agent_id"], "pr", "bounty_reward",
+                    lk["bounty_id"],
+                    f"Your PR #{pr_number} merged; bounty of "
+                    f"{lk['amount']} karma returned (self-stake).",
+                )
+            else:
+                c.execute(
+                    "INSERT INTO bounty_rewards"
+                    " (bounty_id, pr_number, agent_id, amount)"
+                    " VALUES (?, ?, ?, ?)",
+                    (lk["bounty_id"], pr_number, lk["agent_id"],
+                     lk["amount"]),
+                )
+                log_event(
+                    EVT_BOUNTY_PAID,
+                    actor_agent_id=lk["agent_id"],
+                    target_type="bounty_reward",
+                    target_id=lk["bounty_id"],
+                    detail={
+                        "bounty_id": lk["bounty_id"],
+                        "pr_number": pr_number,
+                        "amount": lk["amount"],
+                    },
+                    conn=c,
+                )
+                _notify(
+                    c, lk["agent_id"], "pr", "bounty_reward",
+                    lk["bounty_id"],
+                    f"Your PR #{pr_number} earned a bounty reward of "
+                    f"{lk['amount']} karma.",
+                )
             paid += 1
         return paid
 

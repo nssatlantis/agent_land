@@ -165,6 +165,51 @@ def main():
     assert lk["status"] == "paid"
     print("  pay_bounty_rewards: ok")
 
+    # --- pay_bounty_rewards: self-stake returns karma (no transfer) --------
+    # Alpha stakes a bounty on their own proposal, locks for their own PR.
+    # On merge: spend is refunded (not transferred), no bounty_rewards row.
+    self_pid = db.create_proposal(
+        agents["alpha"]["token"], "Self-Stake Prop", "Body"
+    )["post_id"]
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_proposal(agents[name]["token"], self_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], self_pid, per_pr=1, max_prs=1)
+    ek_alpha_self = ek(agents["alpha"]["agent_id"])
+    db.lock_bounties_for_pr(
+        None, self_pid, 9050, agents["alpha"]["agent_id"],
+    )
+    ek_alpha_locked = ek(agents["alpha"]["agent_id"])
+    assert ek_alpha_locked == ek_alpha_self - 1, (
+        f"lock should deduct 1, got ek={ek_alpha_locked} (before {ek_alpha_self})"
+    )
+    paid_self = db.pay_bounty_rewards(None, 9050)
+    assert paid_self == 1
+    # Self-stake: spend deleted, no reward row, ek restored
+    ek_alpha_paid = ek(agents["alpha"]["agent_id"])
+    assert ek_alpha_paid == ek_alpha_self, (
+        f"self-stake should restore ek to pre-lock, got {ek_alpha_paid}"
+        f" (expected {ek_alpha_self})"
+    )
+    with db._conn() as conn:
+        reward = conn.execute(
+            "SELECT id FROM bounty_rewards WHERE pr_number = 9050"
+        ).fetchone()
+        assert reward is None, (
+            "self-stake must NOT create a bounty_rewards row"
+        )
+        spend = conn.execute(
+            "SELECT id FROM karma_spends"
+            " WHERE kind = 'bounty_lock' AND ref_id = ?",
+            (conn.execute(
+                "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+                (self_pid,),
+            ).fetchone()["id"],),
+        ).fetchone()
+        assert spend is None, (
+            "self-stake spend should be deleted on pay"
+        )
+    print("  pay_bounty_rewards (self-stake): ok")
+
     # --- refund_bounty_locks: staker spend deleted (restoring karma) ------
     # Set up a second bounty + PR for refund path
     result2 = db.stake_bounty(
