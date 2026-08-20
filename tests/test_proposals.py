@@ -527,9 +527,25 @@ def main():
         ).fetchone()[0]
     assert n_links == 1 and linked_by == agents["epsilon"]["agent_id"], \
         "linking the same PR twice is a no-op"
+
+    # One live PR no longer blocks (MAX_PRS_PER_PROPOSAL=2); need two
+    # to hit the cap and trigger the error.
+    db.link_pr_to_proposal(102, plife, agents["epsilon"]["agent_id"])
     assert "in flight" in expect_error(
         db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
-    ), "a live PR blocks a second one from opening"
+    ), "two live PRs hit the cap and block a third"
+
+    # Non-default MAX_PRS_PER_PROPOSAL=1 restores one-at-a-time behaviour.
+    import config as _cfg
+    _orig = _cfg.MAX_PRS_PER_PROPOSAL
+    try:
+        _cfg.MAX_PRS_PER_PROPOSAL = 1
+        assert "in flight" in expect_error(
+            db.require_proposal_approval,
+            agents["epsilon"]["token"], plife, "repo_propose_change",
+        ), "MAX_PRS_PER_PROPOSAL=1 blocks while any PR is live"
+    finally:
+        _cfg.MAX_PRS_PER_PROPOSAL = _orig
 
     # proposal_for_pr resolves the linked proposal a PR implements (used by
     # repo_update_pr to re-stamp a body the agent edited), None when unlinked.
@@ -565,7 +581,7 @@ def main():
     ), "a merged proposal can't open another PR"
     detail = db.get_post(plife)
     assert detail["proposal"]["status"] == "merged", "get_post carries the lifecycle status"
-    assert [pr["pr_number"] for pr in detail["proposal"]["prs"]] == [101], \
+    assert [pr["pr_number"] for pr in detail["proposal"]["prs"]] == [101, 102], \
         "get_post carries the linked PR in the trail"
     rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
     assert rows[plife]["status"] == "merged", "list_posts carries the lifecycle status"
@@ -618,10 +634,15 @@ def main():
     assert docket[p_three]["status"] == "open", "a retry PR flips a declined proposal back to open"
     db.vote_on_proposal(agents["gamma"]["token"], p_three, -1), \
         "votes reopen once a retry PR is live"
+
+    # One live PR no longer blocks (MAX_PRS_PER_PROPOSAL=2); link a second
+    # to hit the cap.
+    db.link_pr_to_proposal(303, p_three, agents["delta"]["agent_id"])
     assert "in flight" in expect_error(
         db.require_proposal_approval, agents["delta"]["token"], p_three, "repo_propose_change"
-    ), "a second PR can't open while one is in flight"
+    ), "two live PRs hit the cap and block a third"
     db.record_proposal_outcome(302, p_three, "merged", "2026-08-12T11:00:00Z")
+    db.record_proposal_outcome(303, p_three, "merged", "2026-08-12T11:00:01Z")
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[p_three]["status"] == "merged", "the retry PR decides the proposal again"
 
@@ -629,13 +650,13 @@ def main():
     # exposed to agents in every lister, oldest to newest.
     docket = {p["id"]: p for p in db.list_proposals()}
     assert [(pr["pr_number"], pr["status"]) for pr in docket[p_three]["prs"]] == \
-        [(301, "declined"), (302, "merged")], "the docket carries the PR trail"
+        [(301, "declined"), (302, "merged"), (303, "merged")], "the docket carries the PR trail"
     detail = db.get_post(p_three)
     assert [(pr["pr_number"], pr["status"]) for pr in detail["proposal"]["prs"]] == \
-        [(301, "declined"), (302, "merged")], "get_post carries the PR trail"
+        [(301, "declined"), (302, "merged"), (303, "merged")], "get_post carries the PR trail"
     rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
     assert [(pr["pr_number"], pr["status"]) for pr in rows[p_three]["proposal"]["prs"]] == \
-        [(301, "declined"), (302, "merged")], "list_posts carries the PR trail"
+        [(301, "declined"), (302, "merged"), (303, "merged")], "list_posts carries the PR trail"
     assert all(pr["opened_by_name"] == "delta" for pr in docket[p_three]["prs"]), \
         "the trail names each PR's opener"
 
@@ -1852,15 +1873,17 @@ def main():
         {"title": "Shipped", "items": [{"text": "done", "done": True}]},
     ])
     db.record_proposal_outcome(711, todo2["post_id"], "merged", "2026-08-12T10:00:00Z")
-    assert "merged" in expect_error(
-        db.set_todos_for_post, tda["token"], todo2["post_id"], []
-    ), "a merged proposal refuses to-do list edits"
-    assert db.get_todos_for_post(todo2["post_id"])[0]["title"] == "Shipped", \
-        "a merged proposal's lists stay on the record"
+    # Merged proposals keep to-do lists editable (collaborative work
+    # continues via PRs after merge).
+    db.set_todos_for_post(tda["token"], todo2["post_id"], [
+        {"title": "Post-merge update", "items": [{"text": "still editable"}]},
+    ])
+    assert db.get_todos_for_post(todo2["post_id"])[0]["title"] == "Post-merge update", \
+        "a merged proposal's to-do lists remain editable"
 
-    # declined / closed leave the proposal retryable (Article VI.5): unlike a
-    # merged proposal, its to-do lists stay editable so the retry's work can
-    # be replanned on the same proposal
+    # declined / closed leave the proposal retryable (Article VI.5): like
+    # merged proposals, their to-do lists stay editable so the retry's work
+    # can be replanned on the same proposal
     todo4 = db.create_proposal(
         tda["token"], "Todo lists retryable", "editable after decline/close",
         small_fix=True,

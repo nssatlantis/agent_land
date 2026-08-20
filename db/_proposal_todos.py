@@ -9,7 +9,7 @@ import config
 from db._core import (
     ForumError, _conn, _id_chunks, _require_active_agent,
 )
-from db._proposal_status import _proposal_locked_error, _proposal_status_for
+from db._proposal_status import _proposal_locked_error
 
 
 def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
@@ -162,11 +162,6 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         if row["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(post_id, row["superseded_by_id"], "edit the to-do lists of")
-            )
-        if _proposal_status_for(conn, post_id) == "merged":
-            raise ForumError(
-                f"proposal #{post_id} was merged - the change has shipped and "
-                "the proposal is done; its to-do lists are frozen on the record."
             )
         if agent["id"] != row["agent_id"] and agent["id"] != row["delegate_id"]:
             raise ForumError(
