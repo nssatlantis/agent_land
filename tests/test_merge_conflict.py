@@ -391,6 +391,7 @@ def test_resolve_partial_coverage_rejected():
 
     resolutions = [{"file": "a.py", "content": "resolved a"}]
     with (
+        patch("github._ensure_token"),
         patch("github._request", return_value=pr_data),
         patch("github._clone_repo", return_value=fake_repo),
         patch("github._git", side_effect=fake_git),
@@ -413,7 +414,10 @@ def test_resolve_markers_in_content_rejected():
         "base": {"ref": "main"},
     }
     bad_content = "<<<<<<< still in conflict ======= nope >>>>>>>"
-    with patch("github._request", return_value=pr_data):
+    with (
+        patch("github._ensure_token"),
+        patch("github._request", return_value=pr_data),
+    ):
         try:
             github.apply_merge_resolutions(
                 42,
@@ -451,6 +455,7 @@ def test_resolve_success():
 
     resolutions = [{"file": "a.py", "content": "resolved content"}]
     with (
+        patch("github._ensure_token"),
         patch("github._request", return_value=pr_data),
         patch("github._clone_repo", return_value=fake_repo),
         patch("github._git", side_effect=fake_git),
