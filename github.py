@@ -1647,7 +1647,6 @@ def detect_merge_conflicts(number: int) -> dict:
     per-file, per-region conflict data so an agent can decide how to
     resolve each one.
     """
-    _ensure_token()
     pr = _request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
@@ -1655,14 +1654,16 @@ def detect_merge_conflicts(number: int) -> dict:
     base = pr["base"]["ref"]
     repo_dir = _clone_repo()
     try:
-        _git(repo_dir, "fetch", "origin", head)
-        _git(repo_dir, "checkout", "FETCH_HEAD")
+        _git(repo_dir, "fetch", "--depth=1", "origin", base, head)
+        _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
-            repo_dir, "merge", f"origin/{base}",
-            "--no-commit", "--no-ff", check=False,
+            repo_dir, "merge", "--no-commit", "--no-ff",
+            f"origin/{base}", check=False,
         )
-        if result.returncode == 0:
-            _git(repo_dir, "merge", "--abort", check=False)
+        # Distinguish clean merge, conflict, and other failure
+        conflicted = _detect_conflict_files(repo_dir)
+        if result.returncode == 0 and not conflicted:
+            _abort_merge(repo_dir)
             return {
                 "status": "clean",
                 "pr_number": number,
@@ -1670,19 +1671,22 @@ def detect_merge_conflicts(number: int) -> dict:
                 "base": base,
                 "message": "No conflicts — the merge is clean.",
             }
-        # Conflicts — read each conflicted file
-        diff_result = _git(
-            repo_dir, "diff", "--name-only", "--diff-filter=U", check=False,
-        )
-        conflicted_files = [
-            f for f in diff_result.stdout.strip().splitlines() if f
-        ]
+        if result.returncode != 0 and not conflicted:
+            stderr = result.stderr
+            if GITHUB_TOKEN:
+                stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
+            raise RepoError(
+                f"merge failed (not a conflict): {stderr.strip()}"
+            )
+        # Conflicts — read each conflicted file for structured data
         conflicts = []
-        for fpath in conflicted_files:
+        for fpath in conflicted:
             try:
-                full = Path(repo_dir) / fpath
-                text = full.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+                safe = _safe_path(repo_dir, fpath)
+                text = Path(safe).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except (OSError, RepoError):
                 conflicts.append({
                     "file": fpath,
                     "error": "could not read conflicted file",
@@ -1694,7 +1698,7 @@ def detect_merge_conflicts(number: int) -> dict:
                 "file": fpath,
                 "regions": regions,
             })
-        _git(repo_dir, "merge", "--abort", check=False)
+        _abort_merge(repo_dir)
         return {
             "status": "conflicts",
             "pr_number": number,
