@@ -93,10 +93,11 @@ def main():
     writes = {"n": 0}
     class _CM:
         def __enter__(self):
-            self.inner = real_conn().__enter__()
+            self._cm = real_conn()
+            self.inner = self._cm.__enter__()
             return self
         def __exit__(self, *a):
-            return self.inner.__exit__(*a)
+            return self._cm.__exit__(*a)
         def execute(self, sql, *args, **kw):
             if "pr_ci_state" in sql and sql.lstrip().upper().startswith(
                     ("INSERT", "UPDATE", "DELETE")):
