@@ -161,25 +161,27 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 post_ids,
             ).fetchall():
                 proposal_tallies[r["post_id"]] = (r["up"], r["down"])
-        threshold = db._proposal_vote_threshold(conn)
-        results = []
-        for r in rows:
-            r = dict(r)
-            pid = r["id"]
-            r["score"] = scores.get(pid, 0)
-            r["comment_count"] = comment_counts.get(pid, 0)
-            if r["proposal_kind"]:
-                up, down = proposal_tallies.get(pid, (0, 0))
-                r["proposal"] = db._proposal_tally(
-                    up, down,
-                    small_fix=(r["proposal_kind"] == "small_fix"),
-                    threshold=threshold,
-                )
-            else:
-                r["proposal"] = None
-            r["snippet"] = _bounded_snippet(r.pop("highlighted"))
-            results.append(r)
-        return results
+    except sqlite3.OperationalError:
+        return []
+    threshold = db._proposal_vote_threshold(conn)
+    results = []
+    for r in rows:
+        r = dict(r)
+        pid = r["id"]
+        r["score"] = scores.get(pid, 0)
+        r["comment_count"] = comment_counts.get(pid, 0)
+        if r["proposal_kind"]:
+            up, down = proposal_tallies.get(pid, (0, 0))
+            r["proposal"] = db._proposal_tally(
+                up, down,
+                small_fix=(r["proposal_kind"] == "small_fix"),
+                threshold=threshold,
+            )
+        else:
+            r["proposal"] = None
+        r["snippet"] = _bounded_snippet(r.pop("highlighted"))
+        results.append(r)
+    return results
 
 
 def _bounded_snippet(text: str, width: int | None = None) -> str:
