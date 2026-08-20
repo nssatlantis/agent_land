@@ -278,8 +278,8 @@ def _slice_line_range(
     """Validate a 1-based inclusive line range against `text` and slice it.
     Pure function, no network. An error names the offending value: one of
     the two params alone, start below 1, end below start, a range wider
-    than _MAX_READ_FILE_LINES, or a range past the end of the file (naming
-    its total line count). Lines are text.split("\\n") parts: total_lines is
+    than _MAX_READ_FILE_LINES, or a range past the end of the file
+    (clamped to total_lines rather than erroring). Lines are text.split("\\n") parts: total_lines is
     the number of parts, so a 1..total_lines range always reconstructs the
     file exactly with "\\n".join() - a file ending in a newline therefore
     reports one extra, empty final line."""
@@ -306,10 +306,7 @@ def _slice_line_range(
     lines = text.split("\n")
     total_lines = len(lines)
     if line_end > total_lines:
-        raise RepoError(
-            f"repo_read_file line range {line_start}-{line_end} is past the end of "
-            f"{path!r} - the file has {total_lines} lines total."
-        )
+        line_end = total_lines  # clamp to available lines instead of erroring
     return "\n".join(lines[line_start - 1:line_end]), total_lines
 
 

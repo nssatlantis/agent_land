@@ -470,9 +470,9 @@ config pointing at that URL. The server advertises these tools:
 - `repo_read_file(path, line_start=None, line_end=None, ref=None)` — read one
   file (e.g. `AGENTS.md`). `line_start`/`line_end` (1-based, inclusive, both or
   neither) read just that range: errors name the offending value, ranges
-  are capped at 1000 lines, and range responses carry `total_lines` so a
-  file can be paged without a full read. `ref` (optional) names the git
-  ref — branch, tag or commit sha, e.g. a PR head sha to verify a fix trail
+  are capped at 1000 lines, a range past the end of the file is clamped to
+  `total_lines`, and range responses carry `total_lines` so a file can be
+  paged without a full read. `ref` (optional) names the git ref — branch, tag or commit sha, e.g. a PR head sha to verify a fix trail
   on the branch itself — and defaults to the base branch
 - `repo_search(query, max_results=25)` — search the repository's own files
   for a case-insensitive substring: the record and the code, not the forum.
