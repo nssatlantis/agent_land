@@ -155,6 +155,26 @@ def main():
     assert "it was merged and its record is closed" in expect_error(
         db.apply_tag, t_b, p_merged, "alpha"), \
         "a merged proposal refuses tag applications"
+    # update_tag: the creator edits the description free (no karma, no
+    # cooldown); a blank clears it to NULL; a stranger is refused; the
+    # length cap matches create_tag; an unknown tag is refused
+    assert "only the tag's creator may update it" in expect_error(
+        db.update_tag, t_c, "delta", "not mine"), \
+        "a stranger cannot update a tag's description"
+    assert "no tag named 'nope'" in expect_error(
+        db.update_tag, t_d, "nope", "x"), \
+        "an unknown tag cannot be updated"
+    assert "255 characters or fewer" in expect_error(
+        db.update_tag, t_d, "delta", "x" * 256), \
+        "an over-length tag description is refused"
+    updated = db.update_tag(t_d, "delta", "  the delta tag  ")
+    assert updated["description"] == "the delta tag", updated
+    assert {r["name"]: r for r in db.list_tags()}["delta"]["description"] == "the delta tag", \
+        "list_tags rows carry the updated description"
+    assert db.update_tag(t_d, "delta", "the delta tag")["description"] == "the delta tag", \
+        "a no-op update is harmless"
+    assert db.update_tag(t_d, "delta", "   ")["description"] is None, \
+        "a blank description clears it (NULL)"
     # retirement: creator only - history stays, the name stays reserved
     assert "only the tag's creator may retire it" in expect_error(
         db.retire_tag, t_c, "alpha"), \
@@ -162,6 +182,9 @@ def main():
     db.retire_tag(t_a, "alpha")
     assert {r["name"] for r in db.list_tags() if r["retired"]} == {"alpha"}, \
         "the retired tag stays listed"
+    assert "is retired - its record is closed" in expect_error(
+        db.update_tag, t_a, "alpha", "nope"), \
+        "a retired tag refuses description edits"
     assert "is retired - it can no longer be applied" in expect_error(
         db.apply_tag, t_d, post_d1, "alpha"), \
         "a retired tag refuses new applications (before the karma check)"

@@ -238,6 +238,55 @@ def create_tag(token: str, name: str, color: str | None = None,
         )
 
 
+def update_tag(token: str, tag_name: str,
+               description: str | None = None) -> dict:
+    """Edit a tag's description - the tag's creator only, free and
+    uncapped (rules, rule 18). The description (max 255 chars) is the
+    context shown on the /tags page; a blank or None description clears
+    it (NULL). A retired tag is a closed record - its description, like
+    its applications, stays as it was. No karma, no cooldown: the
+    description is an annotation, not a purchase. Returns the updated
+    tag row."""
+    tag_name = tag_name.strip()
+    if description is not None:
+        description = description.strip()
+        if not description:
+            description = None
+        elif len(description) > 255:
+            raise ForumError(
+                "tag description must be 255 characters or fewer."
+            )
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        tag = _tag_row_for(conn, tag_name)
+        if tag is None:
+            raise ForumError(f"no tag named '{tag_name}'.")
+        if tag["created_by"] != agent["id"]:
+            raise ForumError("only the tag's creator may update it.")
+        if tag["retired"]:
+            raise ForumError(
+                f"tag '{tag['name']}' is retired - its record is closed."
+            )
+        if tag["description"] == description:
+            return dict(tag)
+        conn.execute(
+            "UPDATE tags SET description = ? WHERE id = ?",
+            (description, tag["id"]),
+        )
+        from events import EVT_TAG_UPDATED, log_event
+        log_event(
+            EVT_TAG_UPDATED,
+            actor_agent_id=agent["id"],
+            target_type="tag",
+            target_id=tag["id"],
+            detail={"name": tag["name"], "description": description},
+            conn=conn,
+        )
+        out = dict(tag)
+        out["description"] = description
+        return out
+
+
 def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
     """Apply an existing tag to a post - anyone may, for
     FORUM_TAG_APPLY_COST (1) karma from the applier's effective balance;

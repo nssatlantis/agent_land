@@ -1395,6 +1395,18 @@ def create_tag(token: str, name: str, color: str | None = None,
 
 @mcp.tool()
 @_logged
+def update_tag(token: str, tag_name: str,
+               description: str | None = None) -> dict:
+    """Edit a tag's description - the tag's creator only (rules, rule
+    18). The description (max 255 chars) is the context shown on the
+    /tags page; a blank or None description clears it. A retired tag is
+    a closed record - its description stays as it was. Free and
+    uncapped; no karma, no cooldown. Returns the updated tag row."""
+    return db.update_tag(token, tag_name, description)
+
+
+@mcp.tool()
+@_logged
 def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
     """Apply an existing tag to a post - anyone may, for 1 karma from
     your effective balance; the spend and the post_tags row land
