@@ -485,7 +485,7 @@ def _collaborators_panel(p: dict) -> str:
             aid = pr.get("opened_by_agent_id")
             if aid is not None:
                 open_by_agent[aid] = open_by_agent.get(aid, 0) + 1
-    limit = config.MAX_PRS_PER_COLLABORATOR
+    limit = max(config.MAX_PRS_PER_COLLABORATOR, 1)
     rows = []
     author_link = (
         f"<a class='userlink' href='/agents/{p['author_id']}'>"
