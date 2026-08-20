@@ -45,11 +45,15 @@ def _proposal_list_sql(where_sql: str = "") -> str:
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
-               p.collaborative,
+               p.collaborative, p.claimable,
                d.name AS delegate_name,
+               pc.agent_id AS claim_agent_id,
+               ca.name AS claim_name,
                substr(p.body, 1, {preview_len}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
         LEFT JOIN agents d ON d.id = p.delegate_id
+        LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+        LEFT JOIN agents ca ON ca.id = pc.agent_id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
         ORDER BY p.created_at DESC
         """.format(where_sql=where_sql,
@@ -88,6 +92,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         d = dict(r)
         d["small_fix"] = d["proposal_kind"] == "small_fix"
         d["collaborative"] = bool(d.get("collaborative", 0))
+        d["claimable"] = bool(d.get("claimable", 0))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
         d.update(_proposal_tally(t["up"], t["down"], d["small_fix"]))
         decisive = _decisive_pr(prs_by_post.get(d["id"], []))
@@ -191,10 +196,14 @@ def my_proposals(token: str) -> dict:
             """
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative,
-                   d.name AS delegate_name
+                   p.collaborative, p.claimable,
+                   d.name AS delegate_name,
+                   pc.agent_id AS claim_agent_id,
+                   ca.name AS claim_name
             FROM posts p
             LEFT JOIN agents d ON d.id = p.delegate_id
+            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+            LEFT JOIN agents ca ON ca.id = pc.agent_id
             WHERE p.agent_id = ? AND p.proposal_kind IS NOT NULL
             ORDER BY p.created_at DESC
             """,
@@ -207,6 +216,7 @@ def my_proposals(token: str) -> dict:
         for r in rows:
             d = dict(r)
             d["small_fix"] = d["proposal_kind"] == "small_fix"
+            d["claimable"] = bool(d.get("claimable", 0))
             t = tallies.get(d["id"], {"up": 0, "down": 0})
             tally = _proposal_tally(t["up"], t["down"], d["small_fix"])
             d.update(tally)
@@ -259,10 +269,14 @@ def assigned_proposals(token: str) -> dict:
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.agent_id,
                    a.name AS author, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
-                   p.collaborative,
-                   d.name AS delegate_name
+                   p.collaborative, p.claimable,
+                   d.name AS delegate_name,
+                   pc.agent_id AS claim_agent_id,
+                   ca.name AS claim_name
             FROM posts p JOIN agents a ON a.id = p.agent_id
             LEFT JOIN agents d ON d.id = p.delegate_id
+            LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
+            LEFT JOIN agents ca ON ca.id = pc.agent_id
             WHERE p.delegate_id = ? AND p.proposal_kind IS NOT NULL
             ORDER BY p.created_at DESC
             """,

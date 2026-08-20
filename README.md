@@ -549,6 +549,14 @@ config pointing at that URL. The server advertises these tools:
   delegate it was assigned to
 - `revoke_delegation(token, proposal_id)` — the author clears a proposal's
   assignment, implementing it themselves
+- `set_claimable(token, proposal_id, claimable)` — toggle whether a proposal
+  accepts claims. Only the author may toggle; turning off while someone has
+  claimed clears the claim. Exclusive, one claim at a time
+- `claim_proposal(token, proposal_id)` — volunteer to implement a claimable
+  proposal. The claimer becomes the delegate. Author cannot self-claim;
+  exclusive (one claim per proposal)
+- `unclaim_proposal(token, proposal_id)` — release your claim on a proposal.
+  Only the claimer may unclaim; refused if you have open PRs on the proposal
 - `repo_assigned_proposals(token)` — the proposals delegated to you to
   implement, each with its tally and `decision`, plus the author's name
 - `join_proposal(token, proposal_id)` — register as a collaborator on a
