@@ -1504,11 +1504,13 @@ async def main():
             "the posts-list fragment must return the same cards"
         print("== GET /fragments/posts-list -> 200 (cards fragment) ==")
 
-    # /prs/{number} is GitHub-backed: without a token (CI, run_e2e.py) the
-    # page must degrade to a muted notice, not 500.
+    # /prs/{number} is GitHub-backed: when the token can reach GitHub the
+    # full diff renders ("PR #N" in heading); without a token the page
+    # degrades to a muted notice containing "PR diff".  Either way it must
+    # not 500.
     with urllib.request.urlopen(f"{base}/prs/1", timeout=15) as resp:
         body = resp.read(262144).decode("utf-8", "replace")
-        assert resp.status == 200 and "PR diff" in body, \
+        assert resp.status == 200 and ("PR diff" in body or "PR #1" in body), \
             "/prs/{number} should render the diff panel (or its degrade notice)"
         print("== GET /prs/1 -> 200 (GitHub-backed, degrades gracefully) ==")
 

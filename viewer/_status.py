@@ -477,15 +477,36 @@ async def status_page(request: Request) -> HTMLResponse:
     if prs is None:
         github_inner += "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
     elif prs:
-        github_inner += (
-            "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th><th></th></tr>"
-            + "".join(
+        pr_numbers = [p["number"] for p in prs[:20]]
+        tallies = db.pr_vote_tallies(pr_numbers)
+        threshold = db.pr_vote_threshold()
+        rows_html = ""
+        for p in prs[:20]:
+            t = tallies.get(p["number"], {"up": 0, "down": 0, "net": 0})
+            net = t["net"]
+            if net > 0:
+                net_s = f'<span style="color:var(--ok);font-weight:600">+{net}</span>'
+            elif net < 0:
+                net_s = f'<span style="color:var(--fail);font-weight:600">{net}</span>'
+            else:
+                net_s = '<span style="color:var(--muted)">0</span>'
+            vote_cell = f'\u25b2{t["up"]} \u25bc{t["down"]} {net_s}'
+            merge_chip = ""
+            if net >= threshold and (t["up"] + t["down"]) > 0:
+                merge_chip = ' <span style="color:var(--ok);font-size:12px;font-weight:600">merge eligible</span>'
+            elif net <= -threshold and (t["up"] + t["down"]) > 0:
+                merge_chip = ' <span style="color:var(--fail);font-size:12px;font-weight:600">decline eligible</span>'
+            rows_html += (
                 f'<tr><td><a href="{esc(p["html_url"])}">#{p["number"]}</a></td>'
                 f"<td>{esc(p['title'])}</td><td>{esc(p.get('author') or '?')}</td>"
                 f"<td>{esc(p.get('head') or '')}</td>"
-                f'<td><a href="/prs/{esc(p["number"])}" style="color:var(--accent)">diff</a></td></tr>'
-                for p in prs[:20]
+                f"<td>{vote_cell}{merge_chip}</td>"
+                f'<td><a href="/prs/{esc(p["number"])}" style="color:var(--accent)">detail</a></td></tr>'
             )
+        github_inner += (
+            "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th>"
+            f"<th>votes ({threshold})</th><th></th></tr>"
+            + rows_html
             + "</table>"
         )
     else:

@@ -19,6 +19,25 @@ from db._proposal_todos import _todos_for_posts
 from db._bounty import _bounty_totals_batch
 
 
+def _batch_pr_vote_tallies(
+    conn: sqlite3.Connection, pr_numbers: list[int]
+) -> dict[int, dict]:
+    """Batch fetch {pr_number: {up, down, net}} for a list of PRs."""
+    if not pr_numbers:
+        return {}
+    placeholders = ",".join("?" * len(pr_numbers))
+    rows = conn.execute(
+        f"SELECT pr_number,"
+        f" COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0) AS up,"
+        f" COALESCE(SUM(CASE WHEN value = -1 THEN 1 ELSE 0 END), 0) AS down"
+        f" FROM pr_votes WHERE pr_number IN ({placeholders})"
+        f" GROUP BY pr_number",
+        pr_numbers,
+    ).fetchall()
+    return {r["pr_number"]: {"up": r["up"], "down": r["down"], "net": r["up"] - r["down"]}
+            for r in rows}
+
+
 def _proposal_kind_clause(kind: str) -> dict:
     """SQL fragment filtering posts by proposal_kind. Returns {"sql", "params"}.
     'proposal' and 'small_fix' match exactly; 'any' matches every proposal;
@@ -85,6 +104,8 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     tallies = _proposal_tally_batch(conn, ids)
     threshold = _proposal_vote_threshold(conn)
     prs_by_post = _proposal_pr_history_map(conn, ids)
+    all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
+    pr_vote_tallies = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
     todos_by_post = _todos_for_posts(conn, ids)
     bounty_totals = _bounty_totals_batch(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
@@ -112,6 +133,8 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             False if d["locked"] else _proposal_stale(d, d["created_at"])
         )
         d["prs"] = prs_by_post.get(d["id"], [])
+        for pr in d["prs"]:
+            pr["votes"] = pr_vote_tallies.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
         d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
         d["decision"] = (
             "superseded"
@@ -228,6 +251,8 @@ def my_proposals(token: str) -> dict:
         tallies = _proposal_tally_batch(conn, ids)
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
+        all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
+        pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         bounty_totals = _bounty_totals_batch(conn, ids)
         proposals = []
         for r in rows:
@@ -246,6 +271,8 @@ def my_proposals(token: str) -> dict:
             d["locked"] = locked
             d["is_current"] = not locked
             d["prs"] = prs_by_post.get(d["id"], [])
+            for pr in d["prs"]:
+                pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
             d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
             d["decision"] = (
                 "superseded"
@@ -314,6 +341,8 @@ def assigned_proposals(token: str) -> dict:
         tallies = _proposal_tally_batch(conn, ids)
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
+        all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
+        pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         bounty_totals = _bounty_totals_batch(conn, ids)
         proposals = []
         for r in rows:
@@ -332,6 +361,8 @@ def assigned_proposals(token: str) -> dict:
             d["locked"] = locked
             d["is_current"] = not locked
             d["prs"] = prs_by_post.get(d["id"], [])
+            for pr in d["prs"]:
+                pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
             d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
             d["decision"] = (
                 "superseded"

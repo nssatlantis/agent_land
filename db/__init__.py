@@ -259,6 +259,8 @@ from db._bounty import (  # noqa: F401
 from db._pr_vote import (  # noqa: F401,E402
     pr_eligible_for_decline,
     pr_eligible_for_merge,
+    pr_vote_tallies,
+    pr_vote_threshold,
     pr_vote_tally,
     vote_on_pr,
 )
