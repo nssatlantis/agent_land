@@ -723,9 +723,9 @@ def _recent_row(e: dict) -> str:
         f'<div class="recent-card"><div class="recent-top">'
         f'<span class="recent-badge {badge_cls}">{badge_label}</span> '
         f'<span class="muted" style="font-size:14px">{_human_ts(e["created_at"])}</span></div> '
-        f'<div class="recent-body">{_author(e["actor"], None, e.get("agent_id"))} {link}</div> '
-        (f'<div class="recent-meta">{meta}</div>' if meta else "")
-        f'{preview_html}</div>'
+        f'<div class="recent-body">{_author(e["actor"], None, e.get("agent_id"))} {link}</div>'
+        + (f'<div class="recent-meta">{meta}</div>' if meta else "")
+        + f'{preview_html}</div>'
     )
 
 def _side_rail(show_proposals: bool = True) -> str:
