@@ -144,6 +144,8 @@ async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, st
 # own cache, which a 5s TTL makes harmlessly eventually-consistent.
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
+_NETWORK_TIMEOUT_SECONDS = 10
+
 async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | None]:
     """The status page's shared reads: (by_name, latency, repo, prs). Both the
     full page and the soft-refresh banner/pulse fragments run the same reads
@@ -158,7 +160,8 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     if not force and cached is not None and time.monotonic() - ts < config.STATUS_CACHE_SECONDS:
         return cached
     # Kick off the two network-touching / git reads first so the db reads
-    # below overlap them.
+    # below overlap them. Both are time-bounded so a slow GitHub can't block
+    # the entire page; on timeout we serve the last-known cache or defaults.
     repo_task = asyncio.create_task(asyncio.to_thread(_git_sync_status))
 
     # Import here to avoid circular at module level: viewer_status imports
@@ -178,10 +181,29 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     )
     latency = {label: ms for label, _, ms, _ in reads}
     by_name = {label: value for label, value, _, _ in reads}
-    repo = await repo_task
-    prs = await prs_task
+    # Collect network results with a timeout. On timeout, fall back to the
+    # previous cache or safe defaults so the page always loads.
+    _cached_repo = cached[2] if cached else None
+    _cached_prs = cached[3] if cached else None
+    _repo_timeout = False
+    try:
+        repo = await asyncio.wait_for(repo_task, timeout=_NETWORK_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        repo = _cached_repo or {"error": "timeout", "stale": True}
+        _repo_timeout = True
+    _prs_timeout = False
+    try:
+        prs = await asyncio.wait_for(prs_task, timeout=_NETWORK_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        prs = _cached_prs
+        _prs_timeout = True
     result = (by_name, latency, repo, prs)
-    _STATUS_CACHE = (time.monotonic(), result)
+    # Only persist to cache when both network reads succeeded. On timeout
+    # the stale-good result is still returned to the caller, but the cache
+    # keeps the last-known-good values so subsequent fragment reads within
+    # the TTL don't serve a timeout error as if it were data.
+    if not _repo_timeout and not _prs_timeout:
+        _STATUS_CACHE = (time.monotonic(), result)
     return result
 
 def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:

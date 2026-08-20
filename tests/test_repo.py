@@ -696,8 +696,9 @@ def main():
     assert ("GET", "commits/abc123/check-runs?per_page=50") in calls, calls
     assert ("GET", "actions/runs?head_sha=abc123&per_page=50") in calls, calls
 
-    # the check-runs tier wins when it answers (no Actions fallback), and its
-    # failure annotations carry path/line/message.
+    # the check-runs tier wins when it answers, and the supplement merges
+    # Actions log error-lines in front of thin annotations (deduped by
+    # normalized message). Thin = no entry carries a path.
     calls = []
 
     def fake_request(method, path, body=None, ok_404=False):
@@ -712,22 +713,80 @@ def main():
                  "html_url": "u22"},
             ]}
         if method == "GET" and path == "check-runs/21/annotations?per_page=100":
-            return [{"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}]
+            return [{"message": "Process completed with exit code 1."}]
+        if method == "GET" and path.startswith("actions/runs?head_sha=def456"):
+            return {"workflow_runs": [
+                {"id": 31, "name": "CI", "status": "completed", "conclusion": "failure",
+                 "html_url": "u31"},
+            ]}
+        if method == "GET" and path == "actions/runs/31/jobs?per_page=100":
+            return {"jobs": [
+                {"id": 311, "name": "test", "status": "completed", "conclusion": "failure"},
+                {"id": 312, "name": "other", "status": "completed", "conclusion": "failure"},
+            ]}
+        if method == "GET" and path == "actions/jobs/311/logs":
+            return "FAILED tests/test_db.py::test_x - AssertionError: undefined name 'x'\n"
+        if method == "GET" and path == "actions/jobs/312/logs":
+            return ("FAILED tests/test_db.py::test_x - AssertionError: undefined name 'x'\n"
+                    "FAILED tests/test_db.py::test_y - AssertionError: expected 3 but got 4\n")
         raise AssertionError(f"unexpected request {method} {path}")
 
+    real_request_text = github._request_text
     github._request = fake_request
+    github._request_text = fake_request
     github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
         github._request = real_request
+        github._request_text = real_request_text
     assert checks["source"] == "check_runs", checks
     assert checks["state"] == "failure", checks
-    assert checks["failures"] == [{
-        "name": "test", "path": "db.py", "line": 42,
-        "message": "undefined name 'x'", "log_url": "u21",
-    }], checks["failures"]
-    assert ("GET", "actions/runs?head_sha=def456&per_page=50") not in calls, calls
+    # log lines come first (supplement), distinct failures preserved
+    assert checks["failures"][0]["name"] == "CI / test", checks["failures"]
+    assert "test_x" in checks["failures"][0]["message"], checks["failures"]
+    assert checks["failures"][1]["name"] == "CI / other", checks["failures"]
+    assert "test_y" in checks["failures"][1]["message"], checks["failures"]
+    # dedup: test_x appears in both jobs, kept once (first wins)
+    assert len(checks["failures"]) == 3, checks["failures"]
+    # thin annotation preserved (last)
+    assert checks["failures"][2]["message"] == "Process completed with exit code 1.", checks["failures"]
+    assert checks["failures"][2].get("path") is None, checks["failures"]
+    # supplement was called
+    assert ("GET", "actions/runs?head_sha=def456&per_page=50") in calls, calls
+
+    # gate: annotation with a path is already informative, no supplement
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        if method == "GET" and path == "pulls/9":
+            return {"head": {"sha": "jkl012"}, "state": "open"}
+        if method == "GET" and path.startswith("commits/jkl012/check-runs"):
+            return {"check_runs": [
+                {"id": 41, "name": "test", "status": "completed", "conclusion": "failure",
+                 "html_url": "u41"},
+            ]}
+        if method == "GET" and path == "check-runs/41/annotations?per_page=100":
+            return [{"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}]
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    github._request_text = fake_request
+    github.clear_cache()
+    try:
+        checks = github.pr_checks(9)
+    finally:
+        github._request = real_request
+        github._request_text = real_request_text
+    assert checks["source"] == "check_runs", checks
+    assert checks["state"] == "failure", checks
+    # no supplement: annotation with path is already informative
+    assert len(checks["failures"]) == 1, checks["failures"]
+    assert checks["failures"][0]["path"] == "db.py", checks["failures"]
+    assert checks["failures"][0]["line"] == 42, checks["failures"]
+    # no actions fetch
+    assert not any("actions/runs" in p for _, p in calls), calls
 
     # empty check runs and empty Actions fall through to the combined commit
     # status tier; its failure entries carry the description.
