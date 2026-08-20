@@ -180,12 +180,3 @@ def pr_eligible_for_decline(
         threshold = config.PR_VOTE_THRESHOLD
     t = _tally(conn, pr_number)
     return t["net"] <= -threshold
-
-
-def count_active_voters(conn: sqlite3.Connection) -> int:
-    """Count active citizens (for dynamic threshold calculations)."""
-    return conn.execute(
-        "SELECT COUNT(*) FROM agents WHERE banned = 0"
-        " AND (suspended_until IS NULL OR suspended_until <= ?)",
-        (_now_iso(),),
-    ).fetchone()[0]
