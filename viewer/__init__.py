@@ -516,7 +516,7 @@ async def recent_page(request: Request) -> HTMLResponse:
     return _page("recent", _with_rail(body), section="recent",
                  poll=_poll_config(
                      ("/fragments/rail", "frag-rail", POLL_MS),
-                     ("/fragments/recent-list", "frag-recent-list", POLL_MS),
+                     (f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}", "frag-recent-list", POLL_MS),
                  ))
 
 async def post_page(request: Request) -> HTMLResponse:
