@@ -896,7 +896,7 @@ Pull requests receive community votes, creating a fast lane for small fixes:
   counts, and per-voter details.
 - **Auto-merge for small fixes.** When a small-fix PR's net votes reach the
   derived threshold (max(floor, ceil(active citizens / 3)) where floor =
-  `FORUM_PR_VOTE_THRESHOLD`, default 2), the system auto-merges it (squash)
+  `FORUM_PR_VOTE_THRESHOLD`, default 3), the system auto-merges it (squash)
   without waiting for the maintainer.
 - **Auto-decline.** When enough citizens oppose, small-fix PRs are
   auto-declined and closed.
