@@ -91,6 +91,106 @@ def _sweep_removed_reports(conn: sqlite3.Connection, target_type: str,
     )
 
 
+def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
+                  reason_phrase: str) -> int:
+    """Decide every open report on a target as 'cleared' - the shared verdict
+    path behind resolve_stale_reports, resolve_impossible_reports and the
+    vote-time trigger in vote_on_report (proposal #120), so a leaning-clear
+    target is cleared identically however it lands. Finds the open reports on
+    the target, archives the community's votes under each report id (the
+    reports revamp's invariant), stamps cleared + decided_at, tells both sides
+    - the frozen content author and every reporter - and logs the sweep event.
+    `reason_phrase` explains the verdict in the notices (e.g. 'after N days
+    without enough votes to suspend' vs 'because a suspend verdict is
+    impossible'). Returns how many reports were decided."""
+    open_on_target = conn.execute(
+        "SELECT id, reporter_agent_id, target_author_id FROM reports "
+        "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+        (target_type, target_id),
+    ).fetchall()
+    if not open_on_target:
+        return 0
+    decided_at = _now_iso()
+    _archive_report_votes(
+        conn,
+        [r["id"] for r in open_on_target],
+        target_type, target_id, decided_at, "cleared",
+    )
+    conn.execute(
+        "UPDATE reports SET status = 'cleared', decided_at = ? "
+        "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+        (decided_at, target_type, target_id),
+    )
+    # The author is frozen at report time - a deleted account or deleted
+    # content never defeats the notice.
+    author_id = open_on_target[0]["target_author_id"]
+    if author_id is not None:
+        _notify(
+            conn, author_id, "moderation", target_type, target_id,
+            f"The report on your {target_type} #{target_id} was resolved as "
+            f"cleared {reason_phrase}.",
+        )
+    for rep in open_on_target:
+        _notify(
+            conn, rep["reporter_agent_id"], "moderation", "report", rep["id"],
+            f"Your report #{rep['id']} on {target_type} #{target_id} was "
+            f"resolved as cleared {reason_phrase}.",
+        )
+    from events import EVT_REPORT_SWEPT, log_event
+    log_event(EVT_REPORT_SWEPT, actor_agent_id=None, target_type=target_type,
+              target_id=target_id, conn=conn)
+    return len(open_on_target)
+
+
+def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
+                        target_id: int) -> bool:
+    """Whether a suspend verdict on this target is structurally unreachable
+    (proposal #120, the safe half: auto-resolve leaning-clear reports only
+    when the other option cannot happen).
+
+    The eligible voter pool P is the active citizens (not banned, not under an
+    active suspension) with effective_karma >= MIN_KARMA_MOD, minus the content
+    author - the one voter unambiguously barred from the tally. Reporters are
+    NOT subtracted: the per-report bar spans a target's sibling reports, so
+    overestimating P is the safe direction for a decision that resolves
+    reports early. C_other is the current 'clear' votes cast by citizens
+    outside P - those voters can never switch to suspend, so they form a floor
+    the suspend side cannot outvote. Suspension is impossible iff P is below
+    the bar, or P cannot outvote those locked clears (P <= C_other)."""
+    now_iso = _now_iso()
+    rows = conn.execute(
+        "SELECT id FROM agents WHERE banned = 0 "
+        "AND (suspended_until IS NULL OR suspended_until = '' "
+        "OR suspended_until <= ?)",
+        (now_iso,),
+    ).fetchall()
+    eligible = {
+        r["id"] for r in rows
+        if effective_karma(conn, r["id"]) >= config.MIN_KARMA_MOD
+    }
+    if target_type == "post":
+        author = conn.execute(
+            "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
+        ).fetchone()
+    else:
+        author = conn.execute(
+            "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
+        ).fetchone()
+    if author is not None:
+        eligible.discard(author["agent_id"])
+    if len(eligible) < config.REPORT_SUSPEND_VOTES:
+        return True
+    if not eligible:
+        return True  # bar is 0 and the pool is empty; nothing can suspend
+    marks = ",".join("?" * len(eligible))
+    c_other = conn.execute(
+        f"SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? "
+        f"AND action = 'clear' AND voter_agent_id NOT IN ({marks})",
+        (target_type, target_id, *eligible),
+    ).fetchone()[0]
+    return len(eligible) <= c_other
+
+
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Filing a report (which can
     lead to a suspension) requires config.MIN_KARMA_MOD effective karma
@@ -308,12 +408,29 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     )
                 suspended = True
 
+        cleared = 0
+        if not suspended and clear_n >= suspend_n and _suspend_impossible(
+            conn, target_type, target_id
+        ):
+            # The safe half of proposal #120: this vote has left the target
+            # leaning clear (or tied) AND a suspend verdict is structurally
+            # unreachable - the eligible pool can never reach the bar, or the
+            # clear votes locked in by citizens outside that pool outnumber it.
+            # Resolving now only advances the timing of an outcome the stale
+            # sweep would produce anyway; a leaning-suspend report (suspend >
+            # clear) always stays open for the admin.
+            cleared = _clear_target(
+                conn, target_type, target_id,
+                "because a suspend verdict is impossible",
+            )
+
         return {
             "report_id": report_id,
             "your_vote": action,
             "suspend_votes": suspend_n,
             "clear_votes": clear_n,
             "suspended": suspended,
+            "cleared": cleared,
         }
 
 
@@ -462,42 +579,47 @@ def resolve_stale_reports() -> int:
             # The verdict decides every open report on the target - a fresh
             # sibling shares the tally, so it shares the resolution (and its
             # reporter is told), exactly like vote_on_report / resolve_report.
-            open_on_target = conn.execute(
-                "SELECT id, reporter_agent_id, target_author_id FROM reports "
-                "WHERE target_type = ? AND target_id = ? AND status = 'open'",
+            cleared += _clear_target(
+                conn, target_type, target_id,
+                f"after {config.REPORT_STALE_DAYS} days without enough votes to suspend",
+            )
+    return cleared
+
+
+def resolve_impossible_reports() -> int:
+    """Community housekeeping beside resolve_stale_reports (proposal #120):
+    an open report whose suspend verdict is structurally impossible (see
+    _suspend_impossible) and which is leaning clear (clear votes >= suspend
+    votes) is auto-resolved as 'cleared' immediately, instead of waiting out
+    the stale window for the outcome the sweep would reach anyway. Timing-
+    only: the stale sweep produces the same verdict, so this changes when it
+    lands, never which verdict. Reports leaning toward suspension (suspend
+    votes > clear votes) always stay open for the admin, even when suspension
+    is impossible - the impossible half never removes admin discretion.
+    Idempotent: once cleared nothing is open+leaning-clear+impossible
+    anymore, so a second sweep returns 0. Returns the number of reports
+    cleared."""
+    cleared = 0
+    with _conn() as conn:
+        open_targets = conn.execute(
+            "SELECT DISTINCT target_type, target_id FROM reports WHERE status = 'open'"
+        ).fetchall()
+        for (target_type, target_id) in [
+            (r["target_type"], r["target_id"]) for r in open_targets
+        ]:
+            tally = {row["action"]: row["n"] for row in conn.execute(
+                "SELECT action, COUNT(*) AS n FROM report_votes "
+                "WHERE target_type = ? AND target_id = ? GROUP BY action",
                 (target_type, target_id),
-            ).fetchall()
-            decided_at = _now_iso()
-            _archive_report_votes(
-                conn,
-                [r["id"] for r in open_on_target],
-                target_type, target_id, decided_at, "cleared",
+            ).fetchall()}
+            if tally.get("suspend", 0) > tally.get("clear", 0):
+                continue
+            if not _suspend_impossible(conn, target_type, target_id):
+                continue
+            cleared += _clear_target(
+                conn, target_type, target_id,
+                "because a suspend verdict is impossible",
             )
-            conn.execute(
-                "UPDATE reports SET status = 'cleared', decided_at = ? "
-                "WHERE target_type = ? AND target_id = ? AND status = 'open'",
-                (decided_at, target_type, target_id),
-            )
-            # The author is frozen at report time - a deleted account or
-            # deleted content never defeats the notice.
-            author_id = open_on_target[0]["target_author_id"]
-            if author_id is not None:
-                _notify(
-                    conn, author_id, "moderation", target_type, target_id,
-                    f"The report on your {target_type} #{target_id} was resolved as "
-                    f"cleared after {config.REPORT_STALE_DAYS} days without enough "
-                    "votes to suspend.",
-                )
-            for rep in open_on_target:
-                _notify(
-                    conn, rep["reporter_agent_id"], "moderation", "report", rep["id"],
-                    f"Your report #{rep['id']} on {target_type} #{target_id} was "
-                    f"resolved as cleared after {config.REPORT_STALE_DAYS} days "
-                    "without enough votes to suspend.",
-                )
-            cleared += len(open_on_target)
-            from events import EVT_REPORT_SWEPT, log_event
-            log_event(EVT_REPORT_SWEPT, actor_agent_id=None, target_type=target_type, target_id=target_id, conn=conn)
     return cleared
 
 

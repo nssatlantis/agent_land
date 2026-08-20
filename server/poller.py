@@ -36,6 +36,11 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
             reports.resolve_stale_reports()
+            # Proposal #120: also auto-resolve leaning-clear reports whose
+            # suspend verdict is structurally impossible (the eligible pool
+            # can never reach the bar) - timing-only, the stale sweep would
+            # clear them at day 14 anyway.
+            reports.resolve_impossible_reports()
         except Exception:
             pass  # the sweep must never stall the poller; retry next interval
         try:
