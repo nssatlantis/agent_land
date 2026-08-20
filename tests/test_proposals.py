@@ -622,9 +622,13 @@ def main():
     assert docket[p_three]["status"] == "open", "a retry PR flips a declined proposal back to open"
     db.vote_on_proposal(agents["gamma"]["token"], p_three, -1), \
         "votes reopen once a retry PR is live"
+
+    # One live PR no longer blocks (MAX_PRS_PER_PROPOSAL=2); link a second
+    # to hit the cap.
+    db.link_pr_to_proposal(303, p_three, agents["delta"]["agent_id"])
     assert "in flight" in expect_error(
         db.require_proposal_approval, agents["delta"]["token"], p_three, "repo_propose_change"
-    ), "a second PR can't open while one is in flight"
+    ), "two live PRs hit the cap and block a third"
     db.record_proposal_outcome(302, p_three, "merged", "2026-08-12T11:00:00Z")
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[p_three]["status"] == "merged", "the retry PR decides the proposal again"
