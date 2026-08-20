@@ -1558,22 +1558,34 @@ _CONTEXT_LINES = 3
 def _parse_conflict_markers(text: str) -> list[dict]:
     """Parse git conflict markers from a file's content.  Returns a list of
     conflict regions, each with ``line`` (1-based start of ``<<<<<<<``),
-    ``ours``, ``theirs``, ``context_before`` and ``context_after``."""
+    ``ours``, ``theirs``, ``context_before`` and ``context_after``.
+
+    Handles standard git markers (``<<<<<<<``, ``=======``, ``>>>>>>>``)
+    and diff3-style markers (``|||||||`` base section between ``<<<<<<<``
+    and the first ``=======``).  Uses exact-match (``==``) rather than
+    ``startswith`` to avoid false positives on code lines that happen to
+    begin with a marker-like prefix."""
     lines = text.splitlines()
     regions: list[dict] = []
     i = 0
     while i < len(lines):
-        if lines[i].startswith("<<<<<<<"):
+        if lines[i] == "<<<<<<<":
             start = i  # 0-based index of the <<<<<<< line
             ours_lines: list[str] = []
             i += 1
-            while i < len(lines) and not lines[i].startswith("======="):
+            # Skip diff3 base section if present (||||||| ... =======)
+            if i < len(lines) and lines[i].startswith("|||||||"):
+                i += 1
+                while i < len(lines) and lines[i] != "=======":
+                    i += 1
+            # Now parse ours
+            while i < len(lines) and lines[i] != "=======":
                 ours_lines.append(lines[i])
                 i += 1
             # skip =======
             i += 1
             theirs_lines: list[str] = []
-            while i < len(lines) and not lines[i].startswith(">>>>>>>"):
+            while i < len(lines) and lines[i] != ">>>>>>>":
                 theirs_lines.append(lines[i])
                 i += 1
             # skip >>>>>>>
@@ -1631,7 +1643,12 @@ def _git(
             raise RepoError(msg)
         return result
     except subprocess.TimeoutExpired as e:
-        raise RepoError(f"git {' '.join(args)} timed out") from e
+        msg = f"git {' '.join(args)} timed out"
+        if GITHUB_TOKEN:
+            msg = msg.replace(GITHUB_TOKEN, "<redacted>")
+            encoded = urllib.parse.quote(GITHUB_TOKEN, safe="")
+            msg = msg.replace(encoded, "<redacted>")
+        raise RepoError(msg) from e
     except FileNotFoundError:
         raise RepoError("git is not installed or not in PATH")
 
@@ -1710,6 +1727,11 @@ def detect_merge_conflicts(number: int) -> dict:
     ``{"status": "conflicts", "conflicts": [...]}`` with structured
     per-file, per-region conflict data so an agent can decide how to
     resolve each one.
+
+    Note: detect is owner-agnostic — any active citizen may call it on
+    any open PR.  The operation is read-only and citizenship-rate-limited,
+    but triggers a full clone+fetch.  Abuse mitigation is left to the
+    existing rate-limit infrastructure.
     """
     pr = _request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
