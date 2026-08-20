@@ -371,26 +371,6 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 " WHERE id = ?",
                 (lk["bounty_id"],),
             )
-            # Transition to 'completed' when fully paid.
-            pb_row = c.execute(
-                "SELECT paid_count, locked_count, max_prs, staker_agent_id"
-                " FROM proposal_bounties WHERE id = ?",
-                (lk["bounty_id"],),
-            ).fetchone()
-            if (
-                pb_row["paid_count"] == pb_row["max_prs"]
-                and pb_row["locked_count"] == 0
-            ):
-                c.execute(
-                    "UPDATE proposal_bounties SET status = 'completed' WHERE id = ?",
-                    (lk["bounty_id"],),
-                )
-                if pb_row["staker_agent_id"] is not None:
-                    _notify(
-                        c, pb_row["staker_agent_id"], "proposal", "bounty_completed",
-                        lk["bounty_id"],
-                        f"Bounty #{lk['bounty_id']} is now fully paid.",
-                    )
             if self_stake:
                 # Refund the staker's own spend — no transfer to yourself.
                 if lk["karma_spend_id"] is not None:
@@ -449,6 +429,47 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     f"{lk['amount']} karma.",
                 )
             paid += 1
+
+        # After the loop: check for bounty completions.
+        if paid > 0:
+            from events import (
+                EVT_BOUNTY_COMPLETED,
+                log_event as _log_bounty_event,
+            )
+
+            # Collect unique bounty IDs that were paid in this call.
+            bounty_ids_paid = {lk["bounty_id"] for lk in locks}
+            for bid in bounty_ids_paid:
+                pb_row = c.execute(
+                    "SELECT paid_count, locked_count, max_prs,"
+                    " staker_agent_id, status"
+                    " FROM proposal_bounties WHERE id = ?",
+                    (bid,),
+                ).fetchone()
+                if (
+                    pb_row["status"] != "completed"
+                    and pb_row["paid_count"] == pb_row["max_prs"]
+                    and pb_row["locked_count"] == 0
+                ):
+                    c.execute(
+                        "UPDATE proposal_bounties"
+                        " SET status = 'completed' WHERE id = ?",
+                        (bid,),
+                    )
+                    _log_bounty_event(
+                        EVT_BOUNTY_COMPLETED,
+                        actor_agent_id=pb_row["staker_agent_id"],
+                        target_type="proposal_bounty",
+                        target_id=bid,
+                        detail={"bounty_id": bid},
+                        conn=c,
+                    )
+                    if pb_row["staker_agent_id"] is not None:
+                        _notify(
+                            c, pb_row["staker_agent_id"], "proposal",
+                            "bounty_completed", bid,
+                            f"Bounty #{bid} is now fully paid.",
+                        )
         return paid
 
 
