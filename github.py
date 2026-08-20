@@ -770,6 +770,22 @@ def _ci_state(mapped: list[dict]) -> str:
     return "success"
 
 
+def _dedup_failures(failures: list[dict]) -> list[dict]:
+    """Deduplicate failure entries by normalized message (whitespace-collapsed,
+    lowercased). Preserves insertion order - the first occurrence wins, so
+    log lines (added first) beat annotations."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for f in failures:
+        key = " ".join((f.get("message") or "").split()).lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append(f)
+    return out
+
+
 def _checks_from_check_runs(runs: list[dict]) -> dict:
     """Map check runs (the richest tier) to per-check entries and pull the
     failure annotations - path, start line, message - capped, so a red PR
@@ -854,6 +870,28 @@ def _checks_from_actions(runs: list[dict]) -> dict:
     return {"source": "actions", "state": _ci_state(mapped), "runs": mapped, "failures": failures}
 
 
+def _supplement_check_run_failures(result: dict, head_sha: str) -> None:
+    """When the check-runs tier answered red but its annotations are thin
+    (no entry carries a path), fetch the Actions log error lines for the
+    same head and merge them in front of the annotations. Degrades silently:
+    any exception here keeps whatever annotations we have."""
+    if any(f.get("path") for f in result.get("failures") or []):
+        return
+    try:
+        data = _request("GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}")
+        runs = data.get("workflow_runs") or []
+        if not runs:
+            return
+        actions = _checks_from_actions(runs)
+        log_lines = actions.get("failures") or []
+        if not log_lines:
+            return
+        merged = log_lines + result["failures"]
+        result["failures"] = _dedup_failures(merged)
+    except Exception:
+        pass
+
+
 def _checks_for_head(head_sha: str) -> dict | None:
     """CI detail for one commit, tiered and never failing the read: (1) check
     runs with annotations, then (2) GitHub Actions workflow runs with log
@@ -863,7 +901,10 @@ def _checks_for_head(head_sha: str) -> dict | None:
         data = _request("GET", f"commits/{head_sha}/check-runs?per_page={_MAX_CHECK_RUNS}")
         runs = data.get("check_runs") or []
         if runs:
-            return _checks_from_check_runs(runs)
+            result = _checks_from_check_runs(runs)
+            if result["state"] == "failure":
+                _supplement_check_run_failures(result, head_sha)
+            return result
     except RepoError:
         pass
     try:
