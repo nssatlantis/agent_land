@@ -1073,12 +1073,67 @@ def main():
     db.link_pr_to_proposal(778, map_prop["post_id"], agents["theta"]["agent_id"])
     links = db.linked_pr_openers()
     assert links[777] == {
-        "name": agents["zeta"]["name"], "agent_id": agents["zeta"]["agent_id"],
+        "name": agents["zeta"]["name"], "agent_id": agents["zeta"]["agent_id"]
     }, "a fresh link appears in the map with its recorded opener"
     assert links[778] == {
-        "name": agents["theta"]["name"], "agent_id": agents["theta"]["agent_id"],
+        "name": agents["theta"]["name"], "agent_id": agents["theta"]["agent_id"]
     }, "the map holds every linked PR in one lookup"
     print("  linked_pr_openers: ok")
+
+    # --- regression test for PR #169: defensive JSON parsing in repo helpers ---
+    # FastMCP sometimes passes list[dict] parameters as raw JSON strings.
+    # The server's _changes_for_repo_propose and _changes_for_repo_update must
+    # parse these correctly and raise clear ForumError for invalid JSON.
+    from server import repo_helpers as rh
+
+    # Valid JSON string -> list[dict] (passed as files parameter, not file_path)
+    valid_json = '[{"path": "a.md", "content": "hello"}]'
+    parsed = rh._changes_for_repo_propose(None, None, valid_json)
+    assert parsed == [{"path": "a.md", "content": "hello"}], \
+        "valid JSON string must be parsed to list[dict]"
+
+    # Valid JSON string for update
+    parsed_update = rh._changes_for_repo_update(valid_json)
+    assert parsed_update == [{"path": "a.md", "content": "hello"}], \
+        "valid JSON string must be parsed in update path too"
+
+    # Invalid JSON -> clear ForumError
+    invalid_json = 'not valid json {'
+    try:
+        rh._changes_for_repo_propose(None, None, invalid_json)
+        raise AssertionError("invalid JSON must raise ForumError")
+    except db.ForumError as e:
+        assert "invalid JSON" in str(e), f"error message must mention invalid JSON: {e}"
+
+    try:
+        rh._changes_for_repo_update(invalid_json)
+        raise AssertionError("invalid JSON must raise ForumError in update path")
+    except db.ForumError as e:
+        assert "invalid JSON" in str(e), f"error message must mention invalid JSON: {e}"
+
+    # None and list inputs still work (backwards compatibility)
+    # For propose: None files is only valid with file_path + content provided
+    assert rh._changes_for_repo_propose("a.md", "hello", None) == [{"path": "a.md", "content": "hello"}], \
+        "file_path + content with None files works"
+    assert rh._changes_for_repo_propose(None, None, [{"path": "b.md", "content": "x"}]) == \
+        [{"path": "b.md", "content": "x"}], "list input passes through"
+    assert rh._changes_for_repo_update(None) == [], "None passes through in update"
+    assert rh._changes_for_repo_update([{"path": "c.md", "content": "y"}]) == \
+        [{"path": "c.md", "content": "y"}], "list input passes through in update"
+
+    # Empty list is rejected (existing behavior)
+    try:
+        rh._changes_for_repo_propose([], None, None)
+        raise AssertionError("empty list must be rejected")
+    except db.ForumError:
+        pass
+    try:
+        rh._changes_for_repo_update([])
+        raise AssertionError("empty list must be rejected in update")
+    except db.ForumError:
+        pass
+
+    print("  defensive JSON parsing: ok")
 
     print("test_repo: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
