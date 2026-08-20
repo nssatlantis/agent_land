@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 
 import db
@@ -18,6 +19,12 @@ def _changes_for_repo_propose(
     without sending its full content, or the single-file file_path/content
     shorthand; never more than one. Path hygiene itself is enforced per-file
     in github._validate_path."""
+    # FastMCP sometimes passes list[dict] as raw JSON string; parse it
+    if isinstance(files, str):
+        try:
+            files = json.loads(files)
+        except json.JSONDecodeError as e:
+            raise db.ForumError(f"files parameter is invalid JSON: {e}")
     if files is not None:
         if file_path is not None or content is not None:
             raise db.ForumError(
@@ -115,6 +122,12 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
     to find-replace an existing file on the PR branch, or {"path",
     "delete": True} to remove. Path hygiene is enforced per-file in
     github._validate_path."""
+    # FastMCP sometimes passes list[dict] as raw JSON string; parse it
+    if isinstance(files, str):
+        try:
+            files = json.loads(files)
+        except json.JSONDecodeError as e:
+            raise db.ForumError(f"files parameter is invalid JSON: {e}")
     if files is None:
         return []
     if not isinstance(files, list) or not files:
