@@ -291,13 +291,14 @@ def _bounty_panel(p: dict) -> str:
             "refunded": "bounty-refunded",
             "completed": "bounty-completed",
         }.get(status, "")
+        total_val = b["per_pr"] * b["max_prs"]
         progress_pct = int(((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100)
         rows.append(
             f'<div class="bounty-row">'
             f'<div class="bounty-row-top">'
             f'<span class="bounty-badge {status_cls}">{status}</span>'
             f' <span class="bounty-staker">{staker}</span>{admin_label}'
-            f' <span class="bounty-amount"><b>{b["per_pr"]}</b> karma \u00d7 {b["max_prs"]} PRs</span>'
+            f' <span class="bounty-amount"><b>{b["per_pr"]}</b> karma \u00d7 {b["max_prs"]} PRs = {total_val} total</span>'
             f'</div>'
             f'<div class="bounty-bar">'
             f'<div class="bounty-bar-track"><div class="bounty-bar-fill" style="width:{progress_pct}%"></div></div>'
