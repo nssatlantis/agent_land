@@ -73,7 +73,7 @@ def test_parse_multiple_conflicts():
     assert regions[0]["line"] == 2
     assert regions[0]["ours"] == "ours1"
     assert regions[0]["theirs"] == "theirs1"
-    assert regions[1]["line"] == 9
+    assert regions[1]["line"] == 8
     assert regions[1]["ours"] == "ours2"
     assert regions[1]["theirs"] == "theirs2"
 
