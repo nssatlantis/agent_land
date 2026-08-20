@@ -386,7 +386,7 @@ def init_db() -> None:
         # column; fresh databases already have it and this no-ops.
         tag_cols = {row[1] for row in conn.execute("PRAGMA table_info(tags)")}
         if "description" not in tag_cols:
-            conn.execute("ALTER TABLE tags ADD COLUMN description TEXT DEFAULT NULL"))
+            conn.execute("ALTER TABLE tags ADD COLUMN description TEXT DEFAULT NULL")
         # Claimable proposals: the 'claimable' flag on posts and the
         # proposal_claims table. An existing forum.db would otherwise lack
         # the column and the table. Fresh databases already have them and
