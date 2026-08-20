@@ -234,7 +234,8 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_VOTE_THRESHOLD": ("FORUM_PR_VOTE_THRESHOLD", 3, int),
     # When set to 1 (default), only small-fix PRs are eligible for
     # auto-merge/decline via PR votes.  Set to 0 to extend auto-merge
-    # to all PRs with linked proposals (CI green + no hold label required).
+    # and auto-decline to all PRs with linked proposals (CI green + no
+    # hold label required).
     "PR_AUTO_MERGE_SMALL_FIX_ONLY": (
         "FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", 1, int,
     ),
