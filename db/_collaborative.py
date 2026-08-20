@@ -223,6 +223,9 @@ def close_proposal(token: str, post_id: int) -> dict:
             raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
         all_merged = all(p["status"] == "merged" for p in prs)
         final_status = "merged" if all_merged else "closed"
+        assert final_status in ("merged", "closed"), (
+            f"unexpected final_status: {final_status}"
+        )
         merged_count = sum(1 for p in prs if p["status"] == "merged")
         conn.execute(
             "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
