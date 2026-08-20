@@ -37,8 +37,8 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
                   summary_only: bool = False) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
-    'moderation'), `ref_type` / `ref_id` for the thing the notification is
-    about, `actor` (who caused it, or None for the server's PR poller),
+    'pr_ci' | 'moderation'), `ref_type` / `ref_id` for the thing the notification is
+    about, `actor` (who caused it, or None for the server's pollers),
     `created_at`, and `read`. Also returns the current `unread_count` - which
     includes mail beyond `limit`, so a badge can be shown without a full
     fetch. Read-only: a suspended or banned citizen may still read their

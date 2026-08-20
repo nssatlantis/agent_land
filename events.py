@@ -56,6 +56,11 @@ EVT_PR_UPDATED = "pr_updated"
 EVT_PROPOSAL_CLAIMED = "proposal_claimed"
 EVT_PROPOSAL_UNCLAIMED = "proposal_unclaimed"
 EVT_PROPOSAL_CLAIMABLE_CHANGED = "proposal_claimable_changed"
+EVT_BOUNTY_CREATED = "bounty_created"
+EVT_BOUNTY_WITHDRAWN = "bounty_withdrawn"
+EVT_BOUNTY_LOCKED = "bounty_locked"
+EVT_BOUNTY_PAID = "bounty_paid"
+EVT_BOUNTY_REFUNDED = "bounty_refunded"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -72,6 +77,8 @@ _VALID_KINDS: set[str] = {
     EVT_PR_OPENED, EVT_PR_UPDATED,
     EVT_PROPOSAL_CLAIMED, EVT_PROPOSAL_UNCLAIMED,
     EVT_PROPOSAL_CLAIMABLE_CHANGED,
+    EVT_BOUNTY_CREATED, EVT_BOUNTY_WITHDRAWN, EVT_BOUNTY_LOCKED,
+    EVT_BOUNTY_PAID, EVT_BOUNTY_REFUNDED,
 }
 
 # -- write helper --------------------------------------------------------

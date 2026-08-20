@@ -107,25 +107,44 @@ PAGE = """\
   .subline {{ display:block; color:var(--muted); font-size:14px; font-weight:normal;
               max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
   .card-meta2 {{ display:block; color:var(--muted); font-size:14px; font-weight:normal; }}
-  .post-top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }}
+  .post-top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:14px; }}
   .post-top h3 {{ flex:1; min-width:0; }}
-  .post-stats {{ display:flex; gap:10px; align-items:center; flex-shrink:0;
+  .post-stats {{ display:flex; gap:14px; align-items:center; flex-shrink:0;
                  font-size:14px; white-space:nowrap; padding-top:3px; }}
   .stat-comments {{ color:var(--muted); background:var(--info-tint); border:1px solid
-                    var(--info-border); border-radius:999px; padding:0 8px; font-weight:600; }}
-  .activity-note {{ color:var(--muted); font-size:13px; }}
+                    var(--info-border); border-radius:999px; padding:1px 10px; font-weight:700; }}
+  .activity-note {{ color:var(--muted); font-size:14px; }}
   .avatar {{ display:inline-flex; width:22px; height:22px; border-radius:50%; color:#fff;
              font-size:12px; font-weight:700; align-items:center; justify-content:center;
              margin-right:6px; vertical-align:-4px; }}
   .tally {{ color:var(--muted); font-size:13px; font-weight:600; }}
+  .score-badge {{ display:inline-block; font-size:14px; font-weight:700;
+                  padding:2px 8px; border-radius:6px; }}
+  .score-badge.score-pos {{ color:var(--ok); background:var(--ok-tint); }}
+  .score-badge.score-neg {{ color:var(--fail); background:var(--warn-tint); }}
+  .score-badge.score-zero {{ color:var(--muted); background:var(--info-tint); }}
+  .vote-bar {{ display:flex; align-items:center; gap:8px; margin:6px 0 2px;
+               font-size:14px; }}
+  .vote-track {{ flex:1; height:6px; background:var(--line); border-radius:3px;
+                 overflow:hidden; max-width:160px; }}
+  .vote-fill {{ height:100%; border-radius:3px; transition:width 0.3s; }}
+  .vote-fill.vote-ok {{ background:var(--ok); }}
+  .vote-fill.vote-fail {{ background:var(--fail); }}
+  .vote-fill.vote-warn {{ background:var(--warn); }}
+  .vote-label {{ color:var(--muted); font-size:13px; font-weight:600; white-space:nowrap; }}
+
+  .post-excerpt {{ color:var(--muted); font-size:15px; margin:8px 0 4px;
+                   padding:8px 12px; border-left:3px solid var(--line);
+                   background:var(--info-tint); border-radius:0 6px 6px 0; }}
   .post.post-proposal {{ box-shadow:inset 3px 0 0 var(--accent); }}
   .post.post-smallfix {{ box-shadow:inset 3px 0 0 var(--warn); }}
   .post {{ background:#fff; border:1px solid var(--line); border-radius:8px;
-          padding:14px 18px; margin-bottom:14px; }}
+          padding:14px 18px; margin-bottom:14px;
+          transition: border-color 0.15s, box-shadow 0.15s; }}
   .post h3 {{ margin:0 0 4px; font-size:20px; }}
   .post h3 a {{ color:var(--ink); text-decoration:none; }}
   .post h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
-  .post:hover {{ border-color:var(--accent); }}
+  .post:hover {{ border-color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,0.08); }}
   .kind-badge {{ display:inline-block; font-size:12px; font-weight:700;
                  padding:1px 8px; border-radius:10px; margin-right:8px;
                  vertical-align:2px; color:#fff; }}
@@ -157,11 +176,13 @@ PAGE = """\
   .post-body p {{ margin:6px 0; }}
   .post-body h2 {{ font-size:18px; margin:10px 0 4px; }}
   .post-body h3 {{ font-size:16px; margin:10px 0 4px; }}
-  .post-page h3 {{ font-size:24px; font-weight:700; }}
+  .post-page h3 {{ font-size:26px; font-weight:700; margin-bottom:8px; }}
   .post-page .meta {{ font-size:20px; }}
-  .post-page .post-body {{ padding-left:24px; max-width:72ch; }}
+  .post-page .post-body {{ padding-left:24px; max-width:72ch; border-top:1px solid var(--line); padding-top:12px; }}
   .comment .post-body {{ padding-left:24px; max-width:72ch; }}
   .comment:target {{ background:#ebf8ff; }}
+  .comment {{ margin:10px 0; scroll-margin-top:70px; transition: background 0.15s; }}
+  .comment:hover {{ background:rgba(0,0,0,0.02); }}
   .post-body ul, .post-body ol {{ margin:6px 0; padding-left:22px; }}
   .post-body code {{ background:#edf2f7; padding:1px 4px; border-radius:3px; font-size:0.9em; }}
   .post-body pre {{ background:#edf2f7; padding:8px 10px; border-radius:6px; overflow-x:auto; }}
@@ -172,11 +193,13 @@ PAGE = """\
   .quote-meta {{ display:block; margin-top:4px; font-size:15px; color:var(--muted); }}
   .quote-meta a {{ color:var(--accent); text-decoration:none; }}
   .thread {{ border-left:2px solid var(--line); margin:8px 0 0 16px; padding-left:12px; }}
-  .comment {{ margin:10px 0; scroll-margin-top:70px; }}
+
   .comment-meta {{ font-size:19px; }}
-  .pager {{ margin:14px 0 4px; font-size:17px; }}
-  .pager a {{ color:var(--accent); text-decoration:none; }}
-  .pager a.active {{ font-weight:700; text-decoration:underline; }}
+  .pager {{ margin:14px 0 4px; font-size:17px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }}
+  .pager a {{ color:var(--accent); text-decoration:none; padding:2px 8px;
+              border-radius:6px; transition: background 0.15s; }}
+  .pager a:hover {{ background:var(--info-tint); }}
+  .pager a.active {{ font-weight:700; background:var(--accent); color:#fff; text-decoration:none; }}
   .pager.top {{ margin:0 0 12px; }}
   .verdict-chip {{ display:inline-block; font-size:12px; font-weight:700;
                    padding:1px 8px; border-radius:10px; margin-right:8px;
@@ -186,12 +209,51 @@ PAGE = """\
   .verdict-chip.vc-warn {{ background:var(--warn); color:#0f172a; }}
   .verdict-chip.vc-dim {{ background:var(--dim); color:#0f172a; }}
   .docket-card {{ background:#fff; border:1px solid var(--line); border-radius:8px;
-                  padding:14px 18px; margin-bottom:14px; }}
-  .docket-card h3 {{ margin:2px 0 6px; font-size:19px; }}
-  .docket-card h3 a {{ color:var(--ink); text-decoration:none; }}
-  .docket-card h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
-  .docket-tally {{ margin-top:10px; font-size:16px; color:var(--ink); }}
-  .docket-prs {{ margin-top:6px; font-size:15px; color:var(--muted); }}
+                  padding:14px 18px; margin-bottom:14px;
+                  transition: border-color 0.15s, box-shadow 0.15s; }}
+  .docket-card:hover {{ border-color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,0.08); }}
+  .docket-card.stale-card {{ border-left:3px solid var(--warn); }}
+  .docket-top {{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }}
+  .docket-top h3 {{ flex:1; min-width:0; margin:0 0 4px; font-size:19px; }}
+  .docket-top h3 a {{ color:var(--ink); text-decoration:none; }}
+  .docket-top h3 a:hover {{ color:var(--accent); text-decoration:underline; }}
+  .docket-chips {{ display:flex; gap:6px; align-items:center; flex-shrink:0; flex-wrap:wrap; }}
+  .docket-vote {{ display:flex; align-items:center; gap:8px; font-size:14px; margin:4px 0; }}
+  .pr-trail {{ display:flex; gap:6px; align-items:center; flex-wrap:wrap; font-size:14px; margin-top:6px; }}
+  .pr-trail span.pr-label {{ color:var(--muted); }}
+  .pr-trail a {{ text-decoration:none; font-weight:600; }}
+  .pr-chip {{ display:inline-block; font-size:11px; font-weight:700; padding:1px 5px;
+              border-radius:4px; text-transform:uppercase; }}
+  .pr-chip.pr-merged {{ color:var(--ok); background:var(--ok-tint); }}
+  .pr-chip.pr-open {{ color:var(--warn); background:var(--warn-tint); }}
+  .pr-chip.pr-declined {{ color:var(--fail); background:var(--warn-tint); }}
+  .pr-chip.pr-closed {{ color:var(--dim); background:var(--info-tint); }}
+  .recent-card {{ background:#fff; border:1px solid var(--line); border-radius:8px;
+                  padding:14px 18px; margin-bottom:10px;
+                  transition: border-color 0.15s, box-shadow 0.15s; }}
+  .recent-card:hover {{ border-color:var(--accent); box-shadow:0 2px 8px rgba(0,0,0,0.08); }}
+  .recent-top {{ display:flex; justify-content:space-between; align-items:center; gap:8px; }}
+  .recent-badge {{ display:inline-block; font-size:11px; font-weight:700; padding:2px 8px;
+                   border-radius:999px; text-transform:uppercase; letter-spacing:0.3px; color:#fff;
+                   flex-shrink:0; }}
+  .recent-badge.post {{ background:var(--accent); }}
+  .recent-badge.proposal {{ background:var(--accent); }}
+  .recent-badge.small-fix {{ background:var(--warn); color:#0f172a; }}
+  .recent-badge.comment {{ background:var(--ok); }}
+  .recent-badge.vote {{ background:var(--dim); color:#0f172a; }}
+  .recent-body {{ margin:6px 0 4px; font-size:17px; }}
+  .recent-body a {{ color:var(--accent); text-decoration:none; font-weight:600; }}
+  .recent-body a:hover {{ text-decoration:underline; }}
+  .recent-meta {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+                  font-size:14px; color:var(--muted); }}
+  .recent-preview {{ color:var(--muted); font-size:15px; margin:6px 0 2px;
+                     padding:6px 10px; border-left:3px solid var(--line);
+                     background:var(--info-tint); border-radius:0 6px 6px 0; }}
+  .recent-day-divider {{ display:flex; align-items:center; gap:12px;
+                         margin:18px 0 10px; font-size:13px; font-weight:600;
+                         color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }}
+  .recent-day-divider::before, .recent-day-divider::after {{ content:""; flex:1;
+                         border-top:1px solid var(--line); }}
   .breadcrumb {{ font-size:17px; margin-bottom:12px; }}
   .breadcrumb a {{ color:var(--accent); text-decoration:none; }}
   .breadcrumb a:hover {{ text-decoration:underline; }}
@@ -229,6 +291,7 @@ PAGE = """\
   th:not(.sort-on) a::after {{ content: " ⇅"; font-size:12px; opacity:0.4; }}
   th:not(.sort-on) a:hover::after {{ opacity:1; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns:1fr; }} .votes-grid {{ grid-template-columns:1fr; }} }}
+  @media (max-width: 600px) {{ .post-top {{ flex-direction:column; }} .post-stats {{ padding-top:0; }} .docket-top {{ flex-direction:column; }} }}
   @media (prefers-color-scheme: dark) {{
     :root {{ --ink:#f1f5f9; --muted:#94a3b8; --line:#334155; --accent:#38bdf8;
              --ok:#34d399; --fail:#f87171; --warn:#fbbf24; --dim:#a0aec0;
@@ -247,6 +310,7 @@ PAGE = """\
     .card {{ background:#1e293b; border-color:var(--line); }}
     .panel {{ background:#1e293b; border-color:var(--line); }}
     .post {{ background:#1e293b; border-color:var(--line); }}
+    .post:hover {{ box-shadow:0 2px 8px rgba(0,0,0,0.3); }}
     .post h3 a {{ color:var(--ink); }}
     .post h3 a:hover {{ color:var(--accent); }}
     .rail-item {{ border-color:var(--line); }}
@@ -267,6 +331,7 @@ PAGE = """\
     .post-body pre code {{ background:none; }}
     .post-body blockquote {{ border-color:var(--line); color:var(--muted); }}
     .comment:target {{ background:#1e3a5f; }}
+    .comment:hover {{ background:rgba(255,255,255,0.03); }}
     footer {{ color:var(--muted); }}
     .jumpnav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
     .jumpnav a:hover {{ border-color:var(--accent); }}
@@ -279,13 +344,29 @@ PAGE = """\
     .sort-row a:hover {{ color:var(--accent); }}
     .sort-row a.active {{ color:var(--accent); }}
     .docket-card {{ background:#1e293b; border-color:var(--line); }}
+    .docket-card:hover {{ box-shadow:0 2px 8px rgba(0,0,0,0.3); }}
     .docket-card h3 a {{ color:var(--ink); }}
     .docket-card h3 a:hover {{ color:var(--accent); }}
+    .docket-card.stale-card {{ border-left-color:var(--warn); }}
     .search-group h3 {{ color:var(--ink); }}
     .sort-row .seg {{ background:#1e293b; }}
     .sort-row .seg a:hover {{ background:#334155; color:var(--accent); }}
     .sort-row .seg a.active {{ color:#0f172a; }}
     .stat-comments {{ color:var(--muted); }}
+    .post-excerpt {{ border-left-color:var(--line); }}
+    .pr-chip.pr-merged {{ color:#34d399; background:#064e3b; }}
+    .pr-chip.pr-open {{ color:#fbbf24; background:#451a03; }}
+    .pr-chip.pr-declined {{ color:#f87171; background:#451a03; }}
+    .pr-chip.pr-closed {{ color:#a0aec0; background:#1e293b; }}
+    .recent-card {{ background:#1e293b; border-color:var(--line); }}
+    .recent-card:hover {{ box-shadow:0 2px 8px rgba(0,0,0,0.3); }}
+    .recent-badge.post {{ background:#0e7490; }}
+    .recent-badge.proposal {{ background:#0e7490; }}
+    .recent-badge.small-fix {{ background:#78350f; }}
+    .recent-badge.comment {{ background:#064e3b; }}
+    .recent-badge.vote {{ background:#334155; }}
+    .recent-preview {{ border-left-color:var(--line); }}
+    .recent-day-divider {{ border-top-color:var(--line); }}
   }}
 </style>
 </head>

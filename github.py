@@ -278,8 +278,8 @@ def _slice_line_range(
     """Validate a 1-based inclusive line range against `text` and slice it.
     Pure function, no network. An error names the offending value: one of
     the two params alone, start below 1, end below start, a range wider
-    than _MAX_READ_FILE_LINES, or a range past the end of the file (naming
-    its total line count). Lines are text.split("\\n") parts: total_lines is
+    than _MAX_READ_FILE_LINES, or a range past the end of the file
+    (clamped to total_lines rather than erroring). Lines are text.split("\\n") parts: total_lines is
     the number of parts, so a 1..total_lines range always reconstructs the
     file exactly with "\\n".join() - a file ending in a newline therefore
     reports one extra, empty final line."""
@@ -306,10 +306,7 @@ def _slice_line_range(
     lines = text.split("\n")
     total_lines = len(lines)
     if line_end > total_lines:
-        raise RepoError(
-            f"repo_read_file line range {line_start}-{line_end} is past the end of "
-            f"{path!r} - the file has {total_lines} lines total."
-        )
+        line_end = total_lines  # clamp to available lines instead of erroring
     return "\n".join(lines[line_start - 1:line_end]), total_lines
 
 
@@ -318,7 +315,13 @@ def _slice_line_range(
 # config.PR_CACHE_SECONDS so a .env change applies without a restart
 # (matching every other cache in this module).
 def open_prs() -> list[dict]:
-    """Open pull requests, newest first, cached briefly (PR_CACHE_SECONDS)."""
+    """Open pull requests, newest first, cached briefly (PR_CACHE_SECONDS).
+
+    Rows carry the head sha and the parsed 'Citizen: ...' trailer alongside
+    the usual fields - the CI-failure poller needs both and gets them with
+    the same list call. ``citizen`` is a hint: ownership checks prefer
+    db.pr_opener() (the record written from the forum token at open time).
+    """
     cached = _open_prs_cache.get("open_prs", config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
@@ -335,6 +338,8 @@ def open_prs() -> list[dict]:
                 "html_url": p["html_url"],
                 "mergeable_state": p.get("mergeable_state"),
                 "body": p.get("body") or "",
+                "head_sha": (p.get("head") or {}).get("sha") or "",
+                "citizen": _parse_citizen(p.get("body") or ""),
             }
             for p in pulls
         ]
@@ -892,7 +897,8 @@ def _checks_for_head(head_sha: str) -> dict | None:
         return None
 
 
-def pr_checks(number: int, *, _pr: dict | None = None) -> dict:
+def pr_checks(number: int, *, _pr: dict | None = None,
+              _head_sha: str | None = None) -> dict:
     """One pull request's CI detail: per-run name/status/conclusion plus the
     actionable failures (annotations with path/line/message, or error lines
     extracted from a capped Actions log tail). The backend is tiered (check
@@ -902,13 +908,18 @@ def pr_checks(number: int, *, _pr: dict | None = None) -> dict:
     builder, so a red PR carries its reason everywhere it is read.
 
     Cached for PR_CACHE_SECONDS (default 30 s).  ``_pr`` is an optional
-    pre-fetched raw PR dict to avoid a redundant API call."""
+    pre-fetched raw PR dict to avoid a redundant API call; ``_head_sha`` is
+    a private shortcut for callers that already hold the head sha (the CI
+    poller) - it skips the PR fetch entirely."""
     cache_key = ("pr_checks", number)
     cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
-    pr = _pr or _request("GET", f"pulls/{number}")
-    head_sha = pr["head"]["sha"]
+    if _head_sha:
+        head_sha = _head_sha
+    else:
+        pr = _pr or _request("GET", f"pulls/{number}")
+        head_sha = pr["head"]["sha"]
     checks = _checks_for_head(head_sha) or {
         "source": None, "state": "unknown", "runs": [], "failures": []
     }

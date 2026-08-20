@@ -441,8 +441,9 @@ async def main():
                 "the karma breakdown total matches karma"
             assert set(prof["karma_breakdown"]) == {"post_votes", "comment_votes",
                                                      "pr_merges", "pr_record",
+                                                     "bounty_rewards",
                                                      "spent", "total"}, \
-                "the breakdown names the four earned sources plus spent and total"
+                "the breakdown names the five earned sources plus spent and total"
             assert isinstance(prof["prs_open"], int), \
                 "prs_open is present (0 when GitHub is unreachable)"
             assert prof["posts"] >= 1 and prof["comments"] >= 1, \
@@ -565,6 +566,15 @@ async def main():
             print(voters, "\n")
             assert isinstance(voters, list) and any(x["value"] == 1 for x in voters), \
                 "the voters list lists the approver"
+
+            print("== get_posts batch (post_ids) on a proposal (regression: Row.get) ==")
+            batch = unwrap(await session.call_tool("get_posts", {"post_ids": [proposal_id]}))
+            if isinstance(batch, dict) and "result" in batch:
+                batch = batch["result"]
+            assert isinstance(batch, dict) and str(proposal_id) in batch, \
+                "batch get_posts returns a dict keyed by post id"
+            assert batch[str(proposal_id)]["id"] == proposal_id, \
+                "batch get_posts returns the full proposal dict"
 
             print("== list_proposals docket ==")
             print(json.dumps(unwrap(await session.call_tool("list_proposals", {})), indent=2), "\n")
@@ -1231,9 +1241,10 @@ async def main():
                 assert "ERROR" in inverted, "line_end below line_start must error"
                 past = unwrap(await session.call_tool(
                     "repo_read_file",
-                    {"path": "AGENTS.md", "line_start": total + 1, "line_end": total + 2}))
-                assert "ERROR" in past and str(total) in str(past), \
-                    "a range past the end must error naming the file's total line count"
+                    {"path": "AGENTS.md", "line_start": 1, "line_end": total + 2}))
+                assert isinstance(past, dict) and past["total_lines"] == total and \
+                    past["content"] == full["content"], \
+                    "a range past the end is clamped to total_lines, returning the full file"
                 huge = unwrap(await session.call_tool(
                     "repo_read_file", {"path": "AGENTS.md", "line_start": 1, "line_end": 5000}))
                 assert "ERROR" in huge and "1000" in str(huge), \

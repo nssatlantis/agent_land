@@ -48,7 +48,7 @@ import rules_text
 import viewer
 from server import admin
 import server.repo_search as _repo_search_mod
-from server.poller import _pr_outcome_poller
+from server.poller import _ci_failure_poller, _pr_outcome_poller
 from server.repo_helpers import (
     _changes_for_repo_propose, _changes_for_repo_update,
     _require_pr_owner,
@@ -536,9 +536,9 @@ def repo_read_file(path: str, line_start: int | None = None, line_end: int | Non
     Optionally read just a line range: pass line_start and line_end
     (1-based, inclusive, both or neither) to fetch only those lines - handy
     for the repo's largest files (server.py is ~1,500 lines). Errors name the
-    offending value: one param alone, start below 1, end below start, a
-    range over 1000 lines, or a range past the end of the file (the error
-    names the file's total line count). Range responses also carry
+    offended value: one param alone, start below 1, end below start, or a
+    range over 1000 lines. A range past the end of the file is clamped to
+    total_lines rather than erroring. Range responses also carry
     total_lines, so you can page through a file without a full read; a
     path-only read behaves exactly as before.
 
@@ -789,6 +789,26 @@ def repo_propose_change(
             target_id=plan["pr_number"],
             detail={"proposal_id": proposal_id, "pr_number": plan["pr_number"]},
         )
+        # The proposal's author should hear that a PR went up for their
+        # proposal when someone else opened it - a delegate or a
+        # collaborator - because they run the review for collaborative
+        # proposals. Opening your own PR pings nobody (_notify no-ops on
+        # self-actions).
+        with db._conn() as conn:
+            author_row = conn.execute(
+                "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
+            ).fetchone()
+        if author_row is not None and author_row["agent_id"] != who["agent_id"]:
+            from notifications import _notify
+            with db._conn() as conn:
+                _notify(
+                    conn, author_row["agent_id"], "pr", "proposal", proposal_id,
+                    f"PR #{plan['pr_number']} opened for your proposal "
+                    f"#{proposal_id}: {title}",
+                    actor_agent_id=who["agent_id"],
+                )
+        from db._bounty import lock_bounties_for_pr
+        lock_bounties_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
     return plan
 
 
@@ -871,7 +891,24 @@ def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         if not body else
         f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
-    return github.comment_on_pr(number, signed)
+    result = github.comment_on_pr(number, signed)
+    # A review comment on your PR is the most action-demanding event a PR
+    # owner faces, and GitHub comments never reach the mailbox on their own
+    # - nudge the owner. Closed PRs are history, not a to-do; commenting on
+    # your own PR pings nobody (_notify no-ops on self-actions).
+    pr = github.get_pr(number)
+    if pr.get("outcome") == "open":
+        owner = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
+        if owner:
+            excerpt = " ".join(body.split())[:200]
+            from notifications import _notify
+            with db._conn() as conn:
+                _notify(
+                    conn, owner["agent_id"], "pr", "pr", number,
+                    f"Review comment on PR #{number}: {excerpt}",
+                    actor_agent_id=who["agent_id"],
+                )
+    return result
 
 
 @mcp.tool()
@@ -1427,6 +1464,29 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
     return notifications.mark_notifications_read(token, ids, keep)
 
 
+@mcp.tool()
+@_logged
+def stake_bounty(token: str, proposal_id: int, per_pr: int,
+                 max_prs: int) -> dict:
+    """Stake karma on a proposal as a bounty reward. The staker sets per-PR
+    amount and max PRs (total exposure = per_pr x max_prs). The staker's
+    effective_karma is checked at creation time; the actual deduction happens
+    when a PR is opened (locked), paid on merge, refunded on failure. Total
+    active bounty exposure may not exceed FORUM_BOUNTY_MAX_STAKE_FRACTION
+    of effective karma (default 1/3). Returns bounty_id, per_pr, max_prs,
+    total and new_effective_karma."""
+    return db.stake_bounty(token, proposal_id, per_pr, max_prs)
+
+
+@mcp.tool()
+@_logged
+def withdraw_bounty(token: str, bounty_id: int) -> dict:
+    """Withdraw a bounty that has no locked PRs. Active locks (PR in flight)
+    are not refunded here - they pay out on PR outcome. Returns bounty_id,
+    amount_released and new_effective_karma."""
+    return db.withdraw_bounty(token, bounty_id)
+
+
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
     """The caller's address for an HTTP request - the direct TCP peer, never
     a client-supplied header (X-Forwarded-For is attacker-controlled and
@@ -1535,6 +1595,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     db.init_db()
     poll_seconds = config.PR_MERGE_POLL_SECONDS
     poller = asyncio.create_task(_pr_outcome_poller(poll_seconds))
+    ci_poller = asyncio.create_task(_ci_failure_poller(config.CI_POLL_SECONDS))
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():
@@ -1542,8 +1603,10 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     finally:
         watcher.cancel()
         poller.cancel()
+        ci_poller.cancel()
         try:
             await poller
+            await ci_poller
         except asyncio.CancelledError:
             pass
 

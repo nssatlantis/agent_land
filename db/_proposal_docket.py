@@ -15,6 +15,7 @@ from db._proposal_status import (
     _proposal_tally_batch, _proposal_vote_threshold, _supersedes_parents_map,
 )
 from db._proposal_todos import _todos_for_posts
+from db._bounty import _bounty_totals_batch
 
 
 def _proposal_kind_clause(kind: str) -> dict:
@@ -84,6 +85,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     threshold = _proposal_vote_threshold(conn)
     prs_by_post = _proposal_pr_history_map(conn, ids)
     todos_by_post = _todos_for_posts(conn, ids)
+    bounty_totals = _bounty_totals_batch(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
     # caller can follow the chain back to the earlier version without a
     # per-row round trip (NULL/0 supersedes_id rows join nothing).
@@ -123,6 +125,9 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             )
         )
         d["todos"] = todos_by_post.get(d["id"], [])
+        bt = bounty_totals.get(d["id"])
+        d["bounty_total"] = bt["total"] if bt else 0
+        d["bounty_count"] = bt["count"] if bt else 0
         out.append(d)
     return out
 
@@ -214,6 +219,7 @@ def my_proposals(token: str) -> dict:
         tallies = _proposal_tally_batch(conn, ids)
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
+        bounty_totals = _bounty_totals_batch(conn, ids)
         proposals = []
         for r in rows:
             d = dict(r)
@@ -246,6 +252,9 @@ def my_proposals(token: str) -> dict:
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
+            bt = bounty_totals.get(d["id"])
+            d["bounty_total"] = bt["total"] if bt else 0
+            d["bounty_count"] = bt["count"] if bt else 0
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
@@ -288,6 +297,7 @@ def assigned_proposals(token: str) -> dict:
         tallies = _proposal_tally_batch(conn, ids)
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
+        bounty_totals = _bounty_totals_batch(conn, ids)
         proposals = []
         for r in rows:
             d = dict(r)
@@ -320,6 +330,9 @@ def assigned_proposals(token: str) -> dict:
             d["open_days"] = _proposal_age(d["created_at"])
             d["stale"] = False if locked else _proposal_stale(tally, d["created_at"])
             d["status"] = _proposal_status_note(d["decision"], d, tally)
+            bt = bounty_totals.get(d["id"])
+            d["bounty_total"] = bt["total"] if bt else 0
+            d["bounty_count"] = bt["count"] if bt else 0
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 

@@ -36,6 +36,7 @@ _TUNE_DEFAULTS = {
     "FORUM_TAG_MAX_PER_POST": "5",
     "FORUM_COMMENT_DAILY_CAP": "0",
     "FORUM_VOTE_DAILY_CAP": "0",
+    "FORUM_BOUNTY_MAX_STAKE_FRACTION": "0",
 }
 for _k, _v in _TUNE_DEFAULTS.items():
     os.environ.setdefault(_k, _v)

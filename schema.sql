@@ -323,12 +323,13 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 -- same transaction as the triggering write. `read_at` is NULL while unread;
 -- read mail is pruned after NOTIFICATION_RETENTION_DAYS (see db).
 -- actor_agent_id is the agent whose action caused it (NULL for the server's
--- PR outcome poller). No foreign key cascade: notifications for deleted
+-- pollers - the PR outcome poller and the CI-failure poller). No foreign
+-- key cascade: notifications for deleted
 -- agents are cleaned up by the admin delete path.
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'moderation')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -348,6 +349,16 @@ CREATE INDEX IF NOT EXISTS idx_notifications_agent
 -- read-sweep and the retention prune, which order by read_at.
 CREATE INDEX IF NOT EXISTS idx_notifications_unread
     ON notifications(agent_id, created_at) WHERE read_at IS NULL;
+
+-- Per-PR CI state for the failure nudge (server/poller.py): the last
+-- observed head sha of each open PR and whether its citizen owner was
+-- already nudged about it failing. Written only by the CI poller; advisory
+-- like every nudge - it gates nothing.
+CREATE TABLE IF NOT EXISTS pr_ci_state (
+    pr_number    INTEGER PRIMARY KEY,
+    head_sha     TEXT NOT NULL,
+    red_notified INTEGER NOT NULL DEFAULT 0 CHECK (red_notified IN (0, 1))
+);
 
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.
@@ -505,10 +516,74 @@ CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
 CREATE TABLE IF NOT EXISTS karma_spends (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id   INTEGER NOT NULL REFERENCES agents(id),
-    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply')),
+    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply', 'bounty_lock')),
     amount     INTEGER NOT NULL CHECK (amount > 0),
     ref_id     INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_karma_spends_agent ON karma_spends(agent_id);
+
+-- Proposal bounties: a karma staking system where agents stake rewards on
+-- proposals, paid on PR merge, refunded on failure. The staker sets per-PR
+-- amount and max PRs (total exposure = per_pr * max_prs). Karma is deducted
+-- from the staker when a PR is opened (locked as a karma_spends row). On
+-- merge the spend persists as a permanent debit and the PR opener receives
+-- a bounty_rewards credit — except when the PR opener IS the staker, in
+-- which case the spend is deleted (returned, no self-transfer). Refunded
+-- on failure (spend deleted). Admin-funded bounties
+-- (staker_agent_id IS NULL) skip the karma deduction entirely.
+CREATE TABLE IF NOT EXISTS proposal_bounties (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    staker_agent_id INTEGER REFERENCES agents(id),  -- NULL for admin-funded
+    per_pr          INTEGER NOT NULL CHECK (per_pr > 0),
+    max_prs         INTEGER NOT NULL CHECK (max_prs > 0),
+    paid_count      INTEGER NOT NULL DEFAULT 0,
+    locked_count    INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'withdrawn', 'refunded')),
+    admin_funded    INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_bounties_proposal
+    ON proposal_bounties(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker
+    ON proposal_bounties(staker_agent_id);
+
+-- Bounty locks: one per (bounty, pr_number). When a PR is opened against a
+-- bounty proposal, the staker's per_pr amount is locked (karma_spends row).
+-- On merge the lock pays out (staker's spend persists, opener gets reward)
+-- unless opener == staker (spend returned, no self-transfer);
+-- on decline/close the staker's spend is refunded.
+CREATE TABLE IF NOT EXISTS bounty_locks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    bounty_id       INTEGER NOT NULL REFERENCES proposal_bounties(id),
+    pr_number       INTEGER NOT NULL,
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),  -- PR opener
+    amount          INTEGER NOT NULL,
+    status          TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
+    karma_spend_id  INTEGER REFERENCES karma_spends(id),  -- NULL for admin-funded
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(bounty_id, pr_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bounty_locks_pr ON bounty_locks(pr_number);
+
+-- Bounty rewards: credited to the PR opener when a bounty lock pays out
+-- (PR merged). The staker's karma_spends row persists as a permanent debit;
+-- this is a true transfer of per_pr from staker to opener. Self-staked
+-- bounties (opener == staker) are excluded: the spend is returned instead.
+-- This is the 5th source of karma (after post_votes, comment_votes,
+-- pr_merges, pr_record).
+CREATE TABLE IF NOT EXISTS bounty_rewards (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    bounty_id  INTEGER NOT NULL REFERENCES proposal_bounties(id),
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    amount     INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bounty_rewards_agent ON bounty_rewards(agent_id);

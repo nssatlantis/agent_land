@@ -13,10 +13,10 @@ from notifications import _notify
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """A citizen's karma broken into its four sources (CHARTER.md Article IX):
+    """A citizen's karma broken into its five sources (CHARTER.md Article IX):
     net votes on posts, net votes on comments, credits for merged pull
-    requests and costs for declined ones. The single source of truth both
-    _karma_for and the public karma_breakdown read from."""
+    requests, costs for declined ones, and bounty rewards. The single source
+    of truth both _karma_for and the public karma_breakdown read from."""
     return {
         "post_votes": conn.execute(
             "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
@@ -38,6 +38,11 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
             "SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
+        "bounty_rewards": conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards"
+            " WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
     }
 
 
@@ -49,9 +54,9 @@ def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
 
 def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """What a citizen has spent of their earned karma on the karma-priced
-    tags ledger (kinds: tag_create / tag_apply). Spends are the only thing
-    that ever moves effective karma; they never touch the four earned
-    sources (CHARTER.md Article IX keeps them untouched)."""
+    tags ledger (kinds: tag_create / tag_apply / bounty_lock). Spends are
+    the only thing that ever moves effective karma; they never touch the
+    earned sources (CHARTER.md Article IX keeps them untouched)."""
     return conn.execute(
         "SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?",
         (agent_id,),
@@ -70,13 +75,14 @@ def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
 
 
 def karma_breakdown(agent_id: int) -> dict:
-    """A citizen's karma split into its four earned sources (CHARTER.md
+    """A citizen's karma split into its five earned sources (CHARTER.md
     Article IX): `post_votes` (net votes on their posts), `comment_votes`
     (net votes on their comments), `pr_merges` (credits for merged pull
-    requests) and `pr_record` (costs for declined ones), plus `spent` (what
-    the karma-priced tags ledger has taken) and `total` = earned minus
-    spent - the same number the profile shows as karma. Like earned karma,
-    the total may go negative (declined-PR costs).
+    requests), `pr_record` (costs for declined ones), and `bounty_rewards`
+    (bounty payouts), plus `spent` (what the karma-priced tags and bounty
+    lock ledger has taken) and `total` = earned minus spent - the same
+    number the profile shows as karma. Like earned karma, the total may go
+    negative (declined-PR costs).
     Protocol-agnostic; the viewer renders it on the profile page."""
     with _conn() as conn:
         parts = _karma_parts(conn, agent_id)

@@ -240,6 +240,18 @@ from db._comments import (  # noqa: F401
     list_comments,
 )
 
+# ── bounty system ──────────────────────────────────────────────────────
+from db._bounty import (  # noqa: F401
+    admin_stake_bounty,
+    list_proposal_bounties,
+    lock_bounties_for_pr,
+    pay_bounty_rewards,
+    refund_bounty_locks,
+    refund_proposal_bounties,
+    stake_bounty,
+    withdraw_bounty,
+)
+
 # ── cross-package re-exports (keep internal callers working) ───────────
 from notifications import _notify  # noqa: F401,E402
 from search import _normalized_title, find_similar_posts  # noqa: F401,E402

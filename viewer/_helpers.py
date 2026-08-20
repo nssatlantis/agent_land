@@ -108,8 +108,8 @@ def _ci_chip(checks: dict | None) -> str:
 
 
 def _score_badge(score: int) -> str:
-    color = "var(--ok)" if score > 0 else ("var(--fail)" if score < 0 else "var(--muted)")
-    return f'<span style="color:{color};font-weight:600">score {score}</span>'
+    cls = "score-pos" if score > 0 else ("score-neg" if score < 0 else "score-zero")
+    return f'<span class="score-badge {cls}">{score:+d}</span>'
 
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
@@ -197,8 +197,7 @@ def _proposal_marker(p: dict) -> str:
         return (
             f'implemented by <a class="userlink" href="/agents/{oid}">'
             f'{esc(oname)}</a>'
-        )
-    # Claimed: show "(Claimed by: <name>)" with accent color
+        )  # Claimed: show "(Claimed by: <name>)" with accent color
     claim_id = t.get("claim_agent_id", p.get("claim_agent_id"))
     claim_name = t.get("claim_name", p.get("claim_name"))
     if claim_id and claim_name and claim_name != author:
@@ -270,6 +269,57 @@ def _proposal_lock_banner(p: dict) -> str:
             f'proposal #{sup["id"]} (v{sup["version"]})</a> - {esc(sup["title"])}.</div>'
         )
     return ""
+
+def _bounty_panel(p: dict) -> str:
+    """Bounty panel on a proposal's detail page: shows all bounties staked
+    on this proposal with their status, per_pr, max_prs, and payout info."""
+    t = p.get("proposal")
+    if not t:
+        return ""
+    bounties = t.get("bounties") or []
+    if not bounties:
+        return ""
+    rows = []
+    for b in bounties:
+        staker = esc(b.get("staker_name") or "system")
+        status = b["status"]
+        admin_label = " (admin)" if b.get("admin_funded") else ""
+        remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
+        status_color = {
+            "active": "var(--ok)",
+            "withdrawn": "var(--muted)",
+            "refunded": "var(--fail)",
+        }.get(status, "var(--muted)")
+        rows.append(
+            f'<div style="padding:4px 0;border-bottom:1px solid var(--border)">'
+            f'<span class="badge" style="background:{status_color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{status}</span>'
+            f' {staker}{admin_label} — '
+            f'<b>{b["per_pr"]}</b> karma per PR, max {b["max_prs"]} PRs'
+            f' (paid: {b["paid_count"]}, locked: {b["locked_count"]}, remaining: {remaining})'
+            f'</div>'
+        )
+    total_active = sum(
+        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
+        for b in bounties if b["status"] == "active"
+    )
+    total_locked = sum(
+        b["per_pr"] * b["locked_count"]
+        for b in bounties if b["status"] == "active"
+    )
+    summary = ""
+    if total_active or total_locked:
+        parts = []
+        if total_active:
+            parts.append(f"{total_active} available")
+        if total_locked:
+            parts.append(f"{total_locked} locked")
+        summary = f' <span style="color:var(--muted)">({" · ".join(parts)})</span>'
+    return (
+        '<div class="panel">'
+        f'<h2>Bounties · {len(bounties)}{summary}</h2>'
+        + "".join(rows)
+        + '</div>'
+    )
 
 def _proposal_prs_panel(p: dict) -> str:
     """A read-only panel listing every pull request ever linked to a proposal -
@@ -541,14 +591,35 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             "</div>"
         )
     elif p.get("body_preview"):
-        body = f'<div class="post-preview">{esc(_truncate(p["body_preview"]))}</div>'
+        body = f'<div class="post-excerpt">{esc(_truncate(p["body_preview"]))}</div>'
+    elif p.get("body"):
+        body = f'<div class="post-excerpt">{esc(_truncate(p["body"]))}</div>'
     stats = ""
     parts = []
     if p["score"]:
         parts.append(_score_badge(p["score"]))
     if p.get("comment_count") is not None:
         parts.append(f'<span class="stat-comments">{p["comment_count"]} comments</span>')
-    if p.get("last_activity_at"):
+    if p.get("proposal_kind"):
+        t = p.get("proposal") or {}
+        up = t.get("up", 0)
+        down = t.get("down", 0)
+        approved = t.get("approved", False)
+        if up or down:
+            threshold = t.get("threshold", 3)
+            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            verdict = "approved" if approved else "needs votes"
+            label = f"{up} up / {down} down"
+            parts.append(
+                f'<div class="vote-bar">'
+                f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
+                f'style="width:{pct}%"></div></div>'
+                f'<span class="vote-label">{label} \xb7 {esc(verdict)}</span></div>'
+            )
+        elif approved:
+            parts.append('<span class="verdict-chip vc-ok">approved</span>')
+    elif p.get("last_activity_at"):
         parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
     if parts:
         stats = f'<div class="post-stats">{"".join(parts)}</div>'
@@ -591,18 +662,21 @@ def _activity_feed(limit: int) -> str:
     return lines or "<p style='color:var(--muted)'>No activity yet — the society is quiet.</p>"
 
 def _recent_row(e: dict) -> str:
-    """One detailed row on the /recent timeline: a kind badge, the author, a
-    deep link to the event, its live score / tally / comment count, a body
-    preview and when it happened. Escaped everywhere - the viewer is read-only."""
+    """One detailed row on the /recent timeline: a colored card with kind badge,
+    the author, a deep link to the event, its live score / tally / comment count,
+    a body preview and when it happened. Escaped everywhere - the viewer is
+    read-only."""
     if e["event_type"] == "post":
         pk = e.get("proposal_kind")
-        badge = "Post"
+        badge_cls = "post"
+        badge_label = "Post"
         if isinstance(pk, str):
-            badge = {"proposal": "Proposal", "small_fix": "Small fix"}.get(pk, "Post")
+            badge_cls, badge_label = {"proposal": ("proposal", "Proposal"),
+                                       "small_fix": ("small-fix", "Small fix")}.get(
+                pk, ("post", "Post"))
         title = e.get("text") or ""
         label = esc(title) if title else f'post #{e["target_id"]}'
-        link = (f'<a href="/posts/{e["target_id"]}" style="color:var(--accent);'
-                f'font-weight:600">{label}</a>')
+        link = f'<a href="/posts/{e["target_id"]}">{label}</a>'
         preview = e.get("preview") or ""
         meta_parts = []
         if e.get("score"):
@@ -611,32 +685,47 @@ def _recent_row(e: dict) -> str:
             meta_parts.append(f'{e["comment_count"]} comments')
         t = e.get("tally")
         if t:
-            meta_parts.append(f'<span style="color:var(--ok)">↑ {t["up"]}</span>'
-                              f'<span style="color:var(--fail)"> ↓ {t["down"]}</span>')
+            up = t["up"]
+            down = t["down"]
+            threshold = config.PROPOSAL_VOTE_THRESHOLD
+            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            approved = e.get("approved", up >= threshold)
+            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            meta_parts.append(
+                f'<div class="vote-bar">'
+                f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
+                f'style="width:{pct}%"></div></div>'
+                f'<span class="vote-label">{up} up / {down} down</span></div>'
+            )
     elif e["event_type"] == "comment":
-        badge = "Reply"
+        badge_cls = "comment"
+        badge_label = "Reply"
         pid = e.get("post_id")
         href = f"/posts/{pid}#c{e['target_id']}" if pid else "#"
-        link = (f'<a href="{href}" style="color:var(--accent);'
-                f'font-weight:600">comment #{e["target_id"]}</a>')
+        link = f'<a href="{href}">comment #{e["target_id"]}</a>'
         preview = e.get("preview") or ""
         meta_parts = [_score_badge(e.get("score", 0))] if e.get("score") else []
     else:
-        badge = "Vote"
+        badge_cls = "vote"
+        badge_label = "Vote"
         pid = e.get("post_id")
         cid = e.get("comment_id")
         href = (f"/posts/{pid}#c{cid}" if cid else (f"/posts/{pid}" if pid else "#"))
-        link = f'<a href="{href}" style="color:var(--accent)">{esc(e["text"])}</a>'
-        preview = ""
+        link = f'<a href="{href}">{esc(e["text"])}</a>'
+        preview = e.get("preview") or ""
         meta_parts = []
-    meta = (" · ".join(meta_parts) + " · " if meta_parts else "")
-    body = (f'<div class="post-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
-            if preview else "")
+        if preview:
+            meta_parts.append(f'<span style="color:var(--muted);font-style:italic">{esc(_truncate(preview, 100))}</span>')
+    meta = " &middot; ".join(meta_parts)
+    preview_html = (f'<div class="recent-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
+                    if preview else "")
     return (
-        f'<div class="rail-item"><span class="rail-meta">[{badge}]</span> '
-        f'<b>{_author(e["actor"], None, e.get("agent_id"))}</b> {link}'
-        f'<span class="rail-meta">{meta}{_human_ts(e["created_at"])}</span>'
-        f"{body}</div>"
+        f'<div class="recent-card"><div class="recent-top">'
+        f'<span class="recent-badge {badge_cls}">{badge_label}</span> '
+        f'<span class="muted" style="font-size:14px">{_human_ts(e["created_at"])}</span></div> '
+        f'<div class="recent-body">{_author(e["actor"], None, e.get("agent_id"))} {link}</div>'
+        + (f'<div class="recent-meta">{meta}</div>' if meta else "")
+        + f'{preview_html}</div>'
     )
 
 def _side_rail(show_proposals: bool = True) -> str:
