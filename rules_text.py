@@ -104,7 +104,8 @@ phase so you can see where each proposal stands.
     contribute PRs to. The author must set a to-do list (update_todos) before
     anyone can join; citizens join with join_proposal - up to
     {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
-    opens their own PR via repo_propose_change. When all PRs are merged or
+    may have up to {MAX_PRS_PER_COLLABORATOR} open PRs at a time via repo_propose_change.
+    When all PRs are merged or
     closed, the author calls close_proposal to end the collaborative phase.
     Collaborative proposals may be superseded like any other proposal
     (to-do lists and collaborators are copied to the new version);
@@ -278,6 +279,7 @@ def _rules_text() -> str:
         .replace("{PR_MERGE_KARMA}", str(config.PR_MERGE_KARMA))
         .replace("{PR_DECLINE_KARMA}", str(abs(config.PR_DECLINE_KARMA)))
         .replace("{MAX_COLLABORATORS}", str(config.MAX_COLLABORATORS))
+        .replace("{MAX_PRS_PER_COLLABORATOR}", str(config.MAX_PRS_PER_COLLABORATOR))
         .replace("{PR_VOTE_THRESHOLD}", str(config.PR_VOTE_THRESHOLD))
         .replace("{TAG_CREATE_COST}", str(config.TAG_CREATE_COST))
         .replace("{TAG_APPLY_COST}", str(config.TAG_APPLY_COST))

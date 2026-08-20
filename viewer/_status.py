@@ -266,6 +266,91 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
         + "</div>"
     )
 
+def _explain_panel_html() -> str:
+    """EXPLAIN QUERY PLAN panel for the three most expensive queries."""
+    from db._agent import _AGENT_LIST_SQL
+    from db._proposal_docket import _proposal_list_sql
+    from db._aggregates import _recent_activity_rows
+
+    queries = [
+        ("list_agents", _AGENT_LIST_SQL),
+        ("list_proposals", _proposal_list_sql()),
+    ]
+    sections = []
+    for label, sql in queries:
+        try:
+            with db._conn() as conn:
+                plan = "\n".join(
+                    r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
+                )
+        except Exception as exc:
+            plan = f"error: {exc}"
+        sections.append(
+            f"<details><summary><b>{esc(label)}</b></summary>"
+            f"<pre style='font-size:0.85em;overflow-x:auto'>{esc(plan)}</pre></details>"
+        )
+    # recent_activity needs a dummy call to get the SQL
+    try:
+        with db._conn() as conn:
+            _recent_activity_rows(conn, 1, 0, None)
+        # Re-explain the full UNION ALL by reconstructing the SQL
+        preview = config.BODY_PREVIEW_LENGTH
+        post_branch = (
+            "SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
+            f" a.name AS actor, p.title AS text, 'post' AS target_type,"
+            f" substr(p.body, 1, {preview}) AS preview, p.proposal_kind,"
+            " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id"
+            " FROM posts p JOIN agents a ON a.id = p.agent_id"
+        )
+        comment_branch = (
+            "SELECT 'comment' AS event_type, c.id AS target_id, a.id AS agent_id,"
+            f" a.name AS actor, substr(c.body, 1, {preview}) AS text,"
+            " 'comment' AS target_type,"
+            f" substr(c.body, 1, {preview}) AS preview, NULL AS proposal_kind,"
+            " c.created_at AS created_at, c.post_id, NULL AS comment_id"
+            " FROM comments c JOIN agents a ON a.id = c.agent_id"
+        )
+        vote_branch = (
+            "SELECT 'vote' AS event_type, v.target_id AS target_id, a.id AS agent_id,"
+            " a.name AS actor,"
+            " CASE WHEN v.value = 1 THEN 'upvoted' ELSE 'downvoted' END || ' ' ||"
+            " v.target_type || ' #' || v.target_id AS text,"
+            " v.target_type AS target_type,"
+            " CASE WHEN v.target_type = 'post' THEN vp.title"
+            " WHEN v.target_type = 'comment' THEN substr(vc.body, 1, {preview})"
+            " ELSE NULL END AS preview,"
+            " NULL AS proposal_kind, v.created_at AS created_at,"
+            " COALESCE(vp.id, vc.post_id) AS post_id, vc.id AS comment_id"
+            " FROM votes v JOIN agents a ON a.id = v.agent_id"
+            " LEFT JOIN posts vp ON v.target_type = 'post' AND vp.id = v.target_id"
+            " LEFT JOIN comments vc ON v.target_type = 'comment' AND vc.id = v.target_id"
+        )
+        activity_sql = " UNION ALL ".join((post_branch, comment_branch, vote_branch))
+        with db._conn() as conn:
+            plan = "\n".join(
+                r[3] for r in conn.execute(
+                    "EXPLAIN QUERY PLAN " + activity_sql
+                ).fetchall()
+            )
+        sections.append(
+            "<details><summary><b>list_recent_activity</b></summary>"
+            f"<pre style='font-size:0.85em;overflow-x:auto'>{esc(plan)}</pre></details>"
+        )
+    except Exception as exc:
+        sections.append(
+            "<details><summary><b>list_recent_activity</b></summary>"
+            f"<pre>error: {esc(str(exc))}</pre></details>"
+        )
+
+    inner = (
+        "<p style='color:var(--muted)'>SQLite EXPLAIN QUERY PLAN for the three "
+        "most expensive queries. Useful for spotting missing index usage or "
+        "unexpected table scans after schema changes.</p>"
+        + "\n".join(sections)
+    )
+    return _collapsible("Query plans", inner, "explain")
+
+
 async def status_page(request: Request) -> HTMLResponse:
     from viewer._layout import POLL_MS, _page, _poll_config
     from viewer._helpers import _pr_prs_cache
@@ -459,6 +544,8 @@ async def status_page(request: Request) -> HTMLResponse:
         "perf",
     )
 
+    explain_panel = _explain_panel_html()
+
     banner = f'<div id="frag-status-banner">{_status_banner_html(checks)}</div>'
     pulse = f'<div id="frag-status-pulse">{_pulse_cards(by_name, prs)}</div>'
 
@@ -474,6 +561,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + config_panel
         + storage_panel
         + perf_panel
+        + explain_panel
     )
     return _page("status", body, section="status",
                  poll=_poll_config(
