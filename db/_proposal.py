@@ -596,17 +596,20 @@ def require_proposal_approval(
                 "request; pursue a new idea with a new proposal."
             )
         if row["collaborative"]:
-            caller_has_pr = c.execute(
-                "SELECT 1 FROM proposal_links pl"
+            open_pr_count = c.execute(
+                "SELECT COUNT(*) FROM proposal_links pl"
                 " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
                 " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
                 " AND po.pr_number IS NULL",
                 (post_id, agent["id"]),
-            ).fetchone()
-            if caller_has_pr is not None:
+            ).fetchone()[0]
+            max_prs = config.MAX_PRS_PER_COLLABORATOR
+            if open_pr_count >= max_prs:
                 raise ForumError(
-                    f"you already have a pull request in flight for proposal "
-                    f"#{post_id} - only one per collaborator at a time."
+                    f"you already have {open_pr_count} pull request"
+                    f"{'s' if open_pr_count != 1 else ''} in flight for "
+                    f"proposal #{post_id} - the limit is "
+                    f"{max_prs} per collaborator."
                 )
             is_author_or_delegate = (
                 row["agent_id"] == agent["id"]

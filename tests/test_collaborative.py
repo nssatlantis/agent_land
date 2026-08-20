@@ -440,6 +440,58 @@ def main():
     )
     print("  leave_proposal with open PR refused: ok")
 
+    # 35. multiple PRs per collaborator (up to MAX_PRS_PER_COLLABORATOR)
+    ca14 = db.register_agent("collab-author14")
+    auth_a14 = ca14["token"]
+    p_multi_pr = db.create_proposal(auth_a14, "Multi PR Test", "body",
+                                     collaborative=True)
+    db.set_todos_for_post(auth_a14, p_multi_pr["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    c_multi_pr = db.register_agent("multi-pr-collab")
+    db.join_proposal(c_multi_pr["token"], p_multi_pr["post_id"])
+    # Link first PR - should succeed
+    db.link_pr_to_proposal(55501, p_multi_pr["post_id"], c_multi_pr["agent_id"])
+    # Link second PR - should succeed (default limit is 3)
+    db.link_pr_to_proposal(55502, p_multi_pr["post_id"], c_multi_pr["agent_id"])
+    # Link third PR - should succeed (hits limit of 3)
+    db.link_pr_to_proposal(55503, p_multi_pr["post_id"], c_multi_pr["agent_id"])
+    # Link fourth PR - should fail (over limit)
+    err_multi = expect_error(
+        db.require_proposal_approval, c_multi_pr["token"],
+        p_multi_pr["post_id"], "repo_propose_change"
+    )
+    assert "limit" in err_multi.lower() or "3" in err_multi, (
+        f"fourth PR should be refused, got: {err_multi}"
+    )
+    print("  multiple PRs per collaborator (up to limit): ok")
+
+    # 36. MAX_PRS_PER_COLLABORATOR=1 restores old single-PR behavior
+    old_max_prs = os.environ.get("FORUM_MAX_PRS_PER_COLLABORATOR")
+    os.environ["FORUM_MAX_PRS_PER_COLLABORATOR"] = "1"
+    try:
+        ca15 = db.register_agent("collab-author15")
+        auth_a15 = ca15["token"]
+        p_one_pr = db.create_proposal(auth_a15, "One PR Test", "body",
+                                       collaborative=True)
+        db.set_todos_for_post(auth_a15, p_one_pr["post_id"],
+                              [{"title": "work", "items": [{"text": "a"}]}])
+        c_one_pr = db.register_agent("one-pr-collab")
+        db.join_proposal(c_one_pr["token"], p_one_pr["post_id"])
+        db.link_pr_to_proposal(55601, p_one_pr["post_id"], c_one_pr["agent_id"])
+        err_one = expect_error(
+            db.require_proposal_approval, c_one_pr["token"],
+            p_one_pr["post_id"], "repo_propose_change"
+        )
+        assert "limit" in err_one.lower() or "1" in err_one, (
+            f"second PR should be refused with limit=1, got: {err_one}"
+        )
+    finally:
+        if old_max_prs is not None:
+            os.environ["FORUM_MAX_PRS_PER_COLLABORATOR"] = old_max_prs
+        else:
+            os.environ.pop("FORUM_MAX_PRS_PER_COLLABORATOR", None)
+    print("  MAX_PRS_PER_COLLABORATOR=1 restores single-PR behavior: ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
