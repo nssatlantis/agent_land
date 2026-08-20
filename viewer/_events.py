@@ -33,6 +33,11 @@ _EVENT_KIND_BADGES = {
     "pr_declined": ("PR declined", "var(--fail)"),
     "pr_closed": ("PR closed", "var(--muted)"),
     "agent_registered": ("Joined", "var(--accent)"),
+    "bounty_created": ("Bounty", "var(--ok)"),
+    "bounty_withdrawn": ("Bounty withdrawn", "var(--muted)"),
+    "bounty_locked": ("Bounty locked", "var(--warn)"),
+    "bounty_paid": ("Bounty paid", "var(--ok)"),
+    "bounty_refunded": ("Bounty refunded", "var(--muted)"),
 }
 
 def _event_description(e: dict) -> str:
@@ -94,6 +99,16 @@ def _event_description(e: dict) -> str:
         return f'PR #{d.get("pr_number", tid)} closed'
     if k == "agent_registered":
         return f'{actor} joined the society'
+    if k == "bounty_created":
+        return f'{actor} staked a bounty of {d.get("per_pr", "?")} karma/PR (max {d.get("max_prs", "?")}, total {d.get("total", "?")}) on <a href="/posts/{d.get("proposal_id", tid)}">#{d.get("proposal_id", tid)}</a>'
+    if k == "bounty_withdrawn":
+        return f'{actor} withdrew bounty #{tid}'
+    if k == "bounty_locked":
+        return f'Bounty #{d.get("bounty_id", tid)} locked for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+    if k == "bounty_paid":
+        return f'Bounty #{d.get("bounty_id", tid)} paid for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+    if k == "bounty_refunded":
+        return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
     return f'{k} on {tt} #{tid}'
 
 def _event_row(e: dict) -> str:

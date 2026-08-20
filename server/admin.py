@@ -627,6 +627,26 @@ async def resolve_report(request):
     return RedirectResponse("/admin", status_code=303)
 
 
+async def create_bounty(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    try:
+        per_pr = int(form.get("per_pr") or 0)
+        max_prs = int(form.get("max_prs") or 0)
+    except (ValueError, TypeError):
+        return _flash(request, "per_pr and max_prs must be integers.")
+    try:
+        db.admin_stake_bounty(_admin_user(request), request.path_params["id"],
+                              per_pr, max_prs)
+    except db.ForumError as exc:
+        return _flash(request, str(exc))
+    return RedirectResponse(request.headers.get("referer") or "/admin",
+                            status_code=303)
+
+
 async def _mutate(request, fn):
     """Shared shape for the simple ban/unban POSTs: auth, CSRF, run, redirect."""
     if not _authorized(request):
@@ -650,5 +670,6 @@ ROUTES = [
     Route("/admin/agents/{id:int}/unban", unban_agent, methods=["POST"]),
     Route("/admin/agents/{id:int}/delete", delete_agent, methods=["POST"]),
     Route("/admin/posts/{id:int}/delete", delete_post, methods=["POST"]),
+    Route("/admin/proposals/{id:int}/bounty", create_bounty, methods=["POST"]),
     Route("/admin/reports/{id:int}/resolve", resolve_report, methods=["POST"]),
 ]

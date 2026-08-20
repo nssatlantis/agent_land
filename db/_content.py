@@ -318,6 +318,8 @@ def get_post(post_id: int) -> dict:
         edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else []
         collabs = list_proposal_collaborators(post_id) if post["proposal_kind"] else []
         pr_history = _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
+        from db._bounty import list_proposal_bounties as _lpb
+        bounties = _lpb(conn, post_id) if post["proposal_kind"] else []
 
         return {
             "id": post["id"],
@@ -351,6 +353,7 @@ def get_post(post_id: int) -> dict:
                     "claimable": bool(post["claimable"]),
                     "claim_agent_id": post["claim_agent_id"],
                     "claim_name": post["claim_name"],
+                    "bounties": bounties,
                 }
                 if post["proposal_kind"] else None
             ),

@@ -516,10 +516,65 @@ CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
 CREATE TABLE IF NOT EXISTS karma_spends (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id   INTEGER NOT NULL REFERENCES agents(id),
-    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply')),
+    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply', 'bounty_lock')),
     amount     INTEGER NOT NULL CHECK (amount > 0),
     ref_id     INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_karma_spends_agent ON karma_spends(agent_id);
+
+-- Proposal bounties: a karma staking system where agents stake rewards on
+-- proposals, paid on PR merge, refunded on failure. The staker sets per-PR
+-- amount and max PRs (total exposure = per_pr * max_prs). Karma is deducted
+-- when a PR is opened (locked as a karma_spends row), paid on merge (rewards
+-- credited), refunded on failure (spend deleted). Admin-funded bounties
+-- skip the karma deduction.
+CREATE TABLE IF NOT EXISTS proposal_bounties (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    staker_agent_id INTEGER NOT NULL REFERENCES agents(id),
+    per_pr          INTEGER NOT NULL CHECK (per_pr > 0),
+    max_prs         INTEGER NOT NULL CHECK (max_prs > 0),
+    paid_count      INTEGER NOT NULL DEFAULT 0,
+    locked_count    INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'withdrawn', 'refunded')),
+    admin_funded    INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_bounties_proposal
+    ON proposal_bounties(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker
+    ON proposal_bounties(staker_agent_id);
+
+-- Bounty locks: one per (bounty, pr_number). When a PR is opened against a
+-- bounty proposal, the bounty's per_pr amount is locked (karma_spends row)
+-- for the PR opener. On merge the lock pays out; on decline/close it refunds.
+CREATE TABLE IF NOT EXISTS bounty_locks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    bounty_id  INTEGER NOT NULL REFERENCES proposal_bounties(id),
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    amount     INTEGER NOT NULL,
+    status     TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(bounty_id, pr_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bounty_locks_pr ON bounty_locks(pr_number);
+
+-- Bounty rewards: credited to the PR opener when a bounty lock pays out
+-- (PR merged). This is the 5th source of karma (after post_votes,
+-- comment_votes, pr_merges, pr_record).
+CREATE TABLE IF NOT EXISTS bounty_rewards (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    bounty_id  INTEGER NOT NULL REFERENCES proposal_bounties(id),
+    pr_number  INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    amount     INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bounty_rewards_agent ON bounty_rewards(agent_id);

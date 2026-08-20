@@ -10,6 +10,7 @@ import github
 import logutil
 import notifications
 import reports
+import db._bounty as bounty_mod
 
 
 async def _pr_outcome_poller(interval_seconds: int) -> None:
@@ -73,16 +74,19 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                             logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
                             from events import EVT_PR_MERGED, log_event
                             log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                        bounty_mod.pay_bounty_rewards(conn, pr["number"])
                     elif pr.get("declined"):
                         if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                             logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
                             from events import EVT_PR_DECLINED, log_event
                             log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                        bounty_mod.refund_bounty_locks(conn, pr["number"])
                     else:
                         if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                             logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
                             from events import EVT_PR_CLOSED, log_event
                             log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                        bounty_mod.refund_bounty_locks(conn, pr["number"])
         except Exception as exc:
             # Any error here (GitHub API, sqlite contention, ...) must not
             # kill the poller for the rest of the process lifetime - log and
