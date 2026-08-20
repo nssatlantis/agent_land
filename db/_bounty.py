@@ -189,6 +189,10 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
                 "locked PR(s) in flight — wait for them to resolve."
             )
         from events import EVT_BOUNTY_WITHDRAWN, log_event
+        post_author = conn.execute(
+            "SELECT agent_id FROM posts WHERE id = ?",
+            (bounty["proposal_id"],),
+        ).fetchone()
         conn.execute(
             "UPDATE proposal_bounties SET status = 'withdrawn'"
             " WHERE id = ?",
@@ -205,6 +209,13 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
                 "remaining_prs": bounty["max_prs"] - bounty["paid_count"],
             },
             conn=conn,
+        )
+        _notify(
+            conn, post_author["agent_id"], "proposal", "post",
+            bounty["proposal_id"],
+            f"{agent['name']} withdrew a bounty of {bounty['per_pr']} karma "
+            f"per PR (max {bounty['max_prs']} PRs) from your proposal.",
+            actor_agent_id=agent["id"],
         )
         from db._karma import effective_karma
         new_ek = effective_karma(conn, agent["id"])
@@ -287,6 +298,14 @@ def lock_bounties_for_pr(
                 },
                 conn=c,
             )
+            if b["staker_agent_id"] is not None:
+                _notify(
+                    c, b["staker_agent_id"], "proposal", "bounty_lock",
+                    b["id"],
+                    f"Bounty of {b['per_pr']} karma locked for PR "
+                    f"#{pr_number}.",
+                    actor_agent_id=agent_id,
+                )
             locked += 1
         return locked
 
@@ -341,6 +360,12 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 },
                 conn=c,
             )
+            _notify(
+                c, lk["agent_id"], "pr", "bounty_reward",
+                lk["bounty_id"],
+                f"Your PR #{pr_number} earned a bounty reward of "
+                f"{lk['amount']} karma.",
+            )
             paid += 1
         return paid
 
@@ -354,8 +379,9 @@ def refund_bounty_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
     with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
         locks = c.execute(
             "SELECT bl.id AS lock_id, bl.bounty_id, bl.agent_id, bl.amount,"
-            " bl.karma_spend_id"
+            " bl.karma_spend_id, b.staker_agent_id"
             " FROM bounty_locks bl"
+            " JOIN proposal_bounties b ON b.id = bl.bounty_id"
             " WHERE bl.pr_number = ? AND bl.status = 'locked'",
             (pr_number,),
         ).fetchall()
@@ -390,6 +416,13 @@ def refund_bounty_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 },
                 conn=c,
             )
+            if lk["staker_agent_id"] is not None:
+                _notify(
+                    c, lk["staker_agent_id"], "proposal", "bounty_refund",
+                    lk["bounty_id"],
+                    f"Bounty lock of {lk['amount']} karma on PR #{pr_number}"
+                    " was refunded (PR declined or closed).",
+                )
             refunded += 1
         return refunded
 

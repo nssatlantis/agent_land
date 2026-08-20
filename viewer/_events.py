@@ -147,6 +147,8 @@ async def events_page(request: Request) -> HTMLResponse:
         ("post_created", "Posts"), ("comment_created", "Comments"),
         ("vote_cast", "Votes"), ("vote_changed", "Vote changes"),
         ("proposal_created", "Proposals"), ("proposal_vote_cast", "Proposal votes"),
+        ("bounty_created", "Bounties"), ("proposal_claimed", "Claims"),
+        ("tag_created", "Tags"),
         ("report_filed", "Reports"), ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
         ("pr_merged", "PRs"), ("agent_registered", "Joined"),
