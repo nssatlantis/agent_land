@@ -144,10 +144,6 @@ def vote_on_pr(
                 actor_agent_id=agent_id,
             )
         # Notify the proposal author (if different from both voter and opener).
-        link = c.execute(
-            "SELECT post_id FROM proposal_links WHERE pr_number = ?",
-            (pr_number,),
-        ).fetchone()
         if link:
             prop_author = c.execute(
                 "SELECT agent_id FROM posts WHERE id = ?",
