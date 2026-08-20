@@ -545,12 +545,12 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
         fill_cls = "vote-ok" if approved else ("vote-fail" if net < 0 else "vote-warn")
         verdict = "approved" if approved else "needs votes"
+        label = f'{up} up / {down} down'
         parts.append(
             f'<div class="vote-bar">'
             f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
             f'style="width:{pct}%"></div></div>'
-            f'<span class="vote-label">\u2191 {up} / \u2193 {down} \xb7 '
-            f'{esc(verdict)}</span></div>'
+            f'<span class="vote-label">{label} \xb7 {esc(verdict)}</span></div>'
         )
     elif p.get("last_activity_at"):
         parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
