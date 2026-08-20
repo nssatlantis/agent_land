@@ -1562,14 +1562,14 @@ def _parse_conflict_markers(text: str) -> list[dict]:
 
     Handles standard git markers (``<<<<<<<``, ``=======``, ``>>>>>>>``)
     and diff3-style markers (``|||||||`` base section between ``<<<<<<<``
-    and the first ``=======``).  Uses exact-match (``==``) rather than
-    ``startswith`` to avoid false positives on code lines that happen to
-    begin with a marker-like prefix."""
+    and the first ``=======``).  Uses ``startswith`` with a trailing space (to allow ``<<<<<<< HEAD``)
+or exact match (for bare ``<<<<<<<``), so code lines that begin with a
+marker-like prefix but lack the space separator are not false-positived."""
     lines = text.splitlines()
     regions: list[dict] = []
     i = 0
     while i < len(lines):
-        if lines[i] == "<<<<<<<":
+        if lines[i].startswith("<<<<<<< ") or lines[i] == "<<<<<<<":
             start = i  # 0-based index of the <<<<<<< line
             ours_lines: list[str] = []
             i += 1
@@ -1585,7 +1585,7 @@ def _parse_conflict_markers(text: str) -> list[dict]:
             # skip =======
             i += 1
             theirs_lines: list[str] = []
-            while i < len(lines) and lines[i] != ">>>>>>>":
+            while i < len(lines) and not (lines[i] == ">>>>>>>" or lines[i].startswith(">>>>>>> ")):
                 theirs_lines.append(lines[i])
                 i += 1
             # skip >>>>>>>
