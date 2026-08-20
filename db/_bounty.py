@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import nullcontext
 
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 from db._proposal_status import _proposal_status_for
 from notifications import _notify
 
@@ -437,6 +437,42 @@ def list_proposal_bounties(conn: sqlite3.Connection, proposal_id: int) -> list[d
         (proposal_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _bounty_totals_batch(
+    conn: sqlite3.Connection, proposal_ids: list[int],
+) -> dict[int, dict]:
+    """Batch version of bounty_total_for_proposal: {proposal_id: {total,
+    count, available, locked, paid}} for all given proposal IDs at once."""
+    if not proposal_ids:
+        return {}
+    out: dict[int, dict] = {}
+    for chunk in _id_chunks(proposal_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"""
+            SELECT proposal_id,
+                   COALESCE(SUM(
+                     per_pr * (max_prs - paid_count - locked_count)
+                   ), 0) AS available,
+                   COALESCE(SUM(per_pr * locked_count), 0) AS locked,
+                   COALESCE(SUM(per_pr * paid_count), 0) AS paid,
+                   COUNT(*) AS count
+            FROM proposal_bounties
+            WHERE proposal_id IN ({marks}) AND status = 'active'
+            GROUP BY proposal_id
+            """,
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out[r["proposal_id"]] = {
+                "total": r["available"] + r["locked"] + r["paid"],
+                "count": r["count"],
+                "available": r["available"],
+                "locked": r["locked"],
+                "paid": r["paid"],
+            }
+    return out
 
 
 def bounty_total_for_proposal(

@@ -119,10 +119,17 @@ def _docket_card(p: dict) -> str:
             + " ".join(bits) + "</div>"
         )
     stale_cls = " stale-card" if p.get("stale") else ""
+    bounty = ""
+    bt = p.get("bounty_total", 0)
+    if bt:
+        bounty = (
+            f' <span class="verdict-chip vc-ok" title="bounty">'
+            f'bounty {bt}</span>'
+        )
     return (
         f'<div class="docket-card{stale_cls}">'
         f'<div class="docket-top"><h3>{kind}{_proposal_lineage_badge(p)}'
-        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
+        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a>{bounty}</h3>'
         f'<div class="docket-chips">{"".join(chips)}</div></div>'
         f'<div class="docket-vote">{vote_html}</div>'
         f'<div class="meta">{meta}</div>'

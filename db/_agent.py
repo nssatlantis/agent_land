@@ -46,6 +46,8 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
        +
        COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0)
+       +
+       COALESCE((SELECT SUM(amount) FROM bounty_rewards WHERE agent_id = a.id), 0)
        -
        COALESCE((SELECT SUM(amount) FROM karma_spends WHERE agent_id = a.id), 0) AS karma,
        (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
@@ -242,6 +244,14 @@ def my_profile(token: str) -> dict:
             ).fetchone()[0],
             "assigned": conn.execute(
                 "SELECT COUNT(*) FROM posts WHERE delegate_id = ?", (agent["id"],)
+            ).fetchone()[0],
+            "bounties_staked": conn.execute(
+                "SELECT COUNT(*) FROM proposal_bounties WHERE staker_agent_id = ?",
+                (agent["id"],),
+            ).fetchone()[0],
+            "bounties_earned": conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards WHERE agent_id = ?",
+                (agent["id"],),
             ).fetchone()[0],
             "unread_notifications": conn.execute(
                 "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
