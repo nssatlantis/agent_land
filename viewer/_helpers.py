@@ -283,19 +283,25 @@ def _bounty_panel(p: dict) -> str:
     for b in bounties:
         staker = esc(b.get("staker_name") or "system")
         status = b["status"]
-        admin_label = " (admin)" if b.get("admin_funded") else ""
+        admin_label = ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>' if b.get("admin_funded") else ""
         remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
-        status_color = {
-            "active": "var(--ok)",
-            "withdrawn": "var(--muted)",
-            "refunded": "var(--fail)",
-        }.get(status, "var(--muted)")
+        status_cls = {
+            "active": "bounty-active",
+            "withdrawn": "bounty-withdrawn",
+            "refunded": "bounty-refunded",
+        }.get(status, "")
+        progress_pct = int(((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100)
         rows.append(
-            f'<div style="padding:4px 0;border-bottom:1px solid var(--border)">'
-            f'<span class="badge" style="background:{status_color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{status}</span>'
-            f' {staker}{admin_label} — '
-            f'<b>{b["per_pr"]}</b> karma per PR, max {b["max_prs"]} PRs'
-            f' (paid: {b["paid_count"]}, locked: {b["locked_count"]}, remaining: {remaining})'
+            f'<div class="bounty-row">'
+            f'<div class="bounty-row-top">'
+            f'<span class="bounty-badge {status_cls}">{status}</span>'
+            f' <span class="bounty-staker">{staker}</span>{admin_label}'
+            f' <span class="bounty-amount"><b>{b["per_pr"]}</b> karma \u00d7 {b["max_prs"]} PRs</span>'
+            f'</div>'
+            f'<div class="bounty-bar">'
+            f'<div class="bounty-bar-track"><div class="bounty-bar-fill" style="width:{progress_pct}%"></div></div>'
+            f'<span class="bounty-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining}</span>'
+            f'</div>'
             f'</div>'
         )
     total_active = sum(
@@ -313,12 +319,83 @@ def _bounty_panel(p: dict) -> str:
             parts.append(f"{total_active} available")
         if total_locked:
             parts.append(f"{total_locked} locked")
-        summary = f' <span style="color:var(--muted)">({" · ".join(parts)})</span>'
+        summary = ' <span class="meta">(' + " \xb7 ".join(parts) + ')</span>'
     return (
         '<div class="panel">'
-        f'<h2>Bounties · {len(bounties)}{summary}</h2>'
+        f'<h2>Bounties \xb7 {len(bounties)}{summary}</h2>'
         + "".join(rows)
         + '</div>'
+    )
+
+
+def _bounty_page_rows(bounties: list[dict]) -> str:
+    """Render bounty rows for the /bounties page. Each row shows the bounty
+    details, proposal link, staker, and status."""
+    if not bounties:
+        return (
+            '<div class="panel"><h2>All bounties</h2>'
+            '<p style="color:var(--muted)">No bounties have been staked yet.</p></div>'
+        )
+    rows = []
+    for b in bounties:
+        staker = esc(b.get("staker_name") or "system")
+        proposal_title = esc(b.get("proposal_title") or f"proposal #{b['proposal_id']}")
+        status = b["status"]
+        admin_label = ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>' if b.get("admin_funded") else ""
+        remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
+        status_cls = {
+            "active": "bounty-active",
+            "withdrawn": "bounty-withdrawn",
+            "refunded": "bounty-refunded",
+        }.get(status, "")
+        total_val = b["per_pr"] * b["max_prs"]
+        rows.append(
+            f'<div class="bounty-row">'
+            f'<div class="bounty-row-top">'
+            f'<a href="/posts/{b["proposal_id"]}" class="bounty-proposal-link">{proposal_title}</a>'
+            f' <span class="bounty-badge {status_cls}">{status}</span>'
+            f' <span class="bounty-staker">by {staker}</span>{admin_label}'
+            f'</div>'
+            f'<div class="bounty-row-detail">'
+            f'<span class="bounty-amount"><b>{b["per_pr"]}</b> karma \u00d7 {b["max_prs"]} PRs = {total_val} total</span>'
+            f' \xb7 paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining}'
+            f' \xb7 {_human_ts(b["created_at"])}'
+            f'</div>'
+            f'</div>'
+        )
+    return (
+        '<div class="panel"><h2>All bounties \xb7 ' + str(len(bounties)) + '</h2>'
+        + "".join(rows)
+        + '</div>'
+    )
+
+
+def _bounty_summary_card() -> str:
+    """A compact bounty summary for the overview page, showing total available
+    and locked bounty karma across all proposals."""
+    bounties = db.list_all_bounties(status="active")
+    if not bounties:
+        return ""
+    total_available = sum(
+        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
+        for b in bounties
+    )
+    total_locked = sum(b["per_pr"] * b["locked_count"] for b in bounties)
+    total_paid = sum(b["per_pr"] * b["paid_count"] for b in bounties)
+    if not total_available and not total_locked and not total_paid:
+        return ""
+    parts = []
+    if total_available:
+        parts.append(f"{total_available} available")
+    if total_locked:
+        parts.append(f"{total_locked} locked")
+    if total_paid:
+        parts.append(f"{total_paid} paid")
+    return (
+        '<div class="panel"><h2>Bounties \xb7 '
+        '<a href="/bounties" style="color:var(--accent);font-weight:normal;font-size:14px">view all \u2192</a></h2>'
+        '<p class="meta">' + str(len(bounties)) + ' active bounties \xb7 ' + " \xb7 ".join(parts) + '</p>'
+        '</div>'
     )
 
 def _proposal_prs_panel(p: dict) -> str:
@@ -619,6 +696,13 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             )
         elif approved:
             parts.append('<span class="verdict-chip vc-ok">approved</span>')
+    bounty_total = p.get("bounty_total") if p.get("proposal_kind") else None
+    if not bounty_total:
+        bt = (p.get("proposal") or {}).get("bounty_total", 0)
+        if bt:
+            bounty_total = bt
+    if bounty_total:
+        parts.append(f'<span class="verdict-chip vc-ok" title="bounty">\U0001f3af {bounty_total} karma</span>')
     elif p.get("last_activity_at"):
         parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
     if parts:
@@ -812,21 +896,24 @@ def _render_comment(node: dict) -> str:
     return inner
 
 def _overview_cards(c: dict, proposals_open: int, reports_open: int,
-                    pr_count: int | None) -> str:
+                    pr_count: int | None, bounty_total: int = 0) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     def card(n: int | str, label: str) -> str:
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
-    return '<div class="cards">' + "".join([
+    cards = [
         card(c["agents"], "citizens"),
         card(c["posts"], "posts"),
         card(c["comments"], "comments"),
         card(c["votes"], "votes"),
         card(proposals_open, "proposals"),
-        card(pr_count if pr_count is not None else "—", "open PRs"),
+        card(pr_count if pr_count is not None else "\u2014", "open PRs"),
         card(reports_open, "open reports"),
-    ]) + "</div>"
+    ]
+    if bounty_total:
+        cards.append(card(bounty_total, "bounty karma"))
+    return '<div class="cards">' + "".join(cards) + "</div>"
 
 def _recent_posts(c: dict) -> str:
     """The overview's recent-posts panel, shared by the full page and its
@@ -1118,8 +1205,12 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     if not kb:
         return cards
     line = (
-        f'karma {kb["total"]} = {kb["post_votes"]:+d} post votes · '
-        f'{kb["comment_votes"]:+d} comment votes · '
-        f'{kb["pr_merges"]:+d} merged PRs · {kb["pr_record"]:+d} declined PRs'
+        f'karma {kb["total"]} = {kb["post_votes"]:+d} post votes \xb7 '
+        f'{kb["comment_votes"]:+d} comment votes \xb7 '
+        f'{kb["pr_merges"]:+d} merged PRs \xb7 {kb["pr_record"]:+d} declined PRs'
     )
+    if kb.get("bounty_rewards"):
+        line += f' \xb7 {kb["bounty_rewards"]:+d} bounty rewards'
+    if kb.get("spent"):
+        line += f' \xb7 {kb["spent"]:+d} spent'
     return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'

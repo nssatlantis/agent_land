@@ -1297,6 +1297,69 @@ def close_pr(number: int, *, _pr: dict | None = None) -> dict:
     }
 
 
+def merge_pr(number: int, *, method: str = "squash",
+             _pr: dict | None = None) -> dict:
+    """Merge a pull request. ``method`` is 'squash', 'merge', or 'rebase'.
+    Raises RepoError if the PR is not open or the merge fails (e.g. conflicts,
+    branch protection).  Returns {pr_number, merged, sha}."""
+    pr = _pr or _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open.")
+    data = _request("PUT", f"pulls/{number}/merge", {
+        "merge_method": method,
+    })
+    _invalidate_pr(number)
+    _open_prs_cache._store.pop("open_prs", None)
+    return {
+        "pr_number": number,
+        "merged": True,
+        "sha": data.get("sha", ""),
+    }
+
+
+def decline_pr(number: int, *, _pr: dict | None = None) -> dict:
+    """Apply the 'declined' label and close a PR — the automated equivalent
+    of the maintainer declining via the GitHub UI.  Raises RepoError if the
+    PR is not open."""
+    pr = _pr or _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open.")
+    # Apply the 'declined' label (idempotent — label may already exist).
+    _request("POST", f"issues/{number}/labels", {"labels": ["declined"]})
+    # Close the PR.
+    data = _request("PATCH", f"pulls/{number}", {"state": "closed"})
+    _invalidate_pr(number)
+    _open_prs_cache._store.pop("open_prs", None)
+    return {
+        "pr_number": number,
+        "state": data.get("state"),
+        "closed_at": data.get("closed_at"),
+    }
+
+
+def set_pr_labels(number: int, labels: list[str]) -> None:
+    """Replace all labels on a PR with the given set.  Pass an empty list
+    to clear all labels.  Idempotent."""
+    _request("PUT", f"issues/{number}/labels", {"labels": labels})
+
+
+def add_pr_label(number: int, label: str) -> None:
+    """Add a single label to a PR (idempotent)."""
+    _request("POST", f"issues/{number}/labels", {"labels": [label]})
+
+
+def remove_pr_label(number: int, label: str) -> None:
+    """Remove a label from a PR.  Ignores 404 (label not present)."""
+    _request("DELETE", f"issues/{number}/labels/{label}", ok_404=True)
+
+
+def pr_has_label(number: int, label: str) -> bool:
+    """Check whether a PR carries a specific label."""
+    pr = _request("GET", f"pulls/{number}")
+    labels = [l.get("name", "").lower() for l in (pr.get("labels") or [])]
+    return label.lower() in labels
+
+
 # ---------------------------------------------------------------- helpers --
 
 def _content_manifest(planned: list[dict]) -> list[dict]:

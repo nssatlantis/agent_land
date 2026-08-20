@@ -244,6 +244,7 @@ from db._comments import (  # noqa: F401
 # ── bounty system ──────────────────────────────────────────────────────
 from db._bounty import (  # noqa: F401
     admin_stake_bounty,
+    list_all_bounties,
     list_proposal_bounties,
     lock_bounties_for_pr,
     pay_bounty_rewards,
@@ -251,6 +252,14 @@ from db._bounty import (  # noqa: F401
     refund_proposal_bounties,
     stake_bounty,
     withdraw_bounty,
+)
+
+# ── PR voting ─────────────────────────────────────────────────────────
+from db._pr_vote import (  # noqa: F401,E402
+    pr_eligible_for_decline,
+    pr_eligible_for_merge,
+    pr_vote_tally,
+    vote_on_pr,
 )
 
 # ── cross-package re-exports (keep internal callers working) ───────────

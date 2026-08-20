@@ -48,7 +48,7 @@ import rules_text
 import viewer
 from server import admin
 import server.repo_search as _repo_search_mod
-from server.poller import _ci_failure_poller, _pr_outcome_poller
+from server.poller import _ci_failure_poller, _pr_outcome_poller, _pr_vote_poller
 from server.repo_helpers import (
     _changes_for_repo_propose, _changes_for_repo_update,
     _require_pr_owner,
@@ -698,6 +698,31 @@ def rules_resource() -> str:
     return _record_resource_text("AGENTS.md")
 
 
+def _apply_pr_labels(
+    pr_number: int,
+    proposal_id: int,
+    extra_labels: list[str] | None = None,
+) -> None:
+    """Set the initial GitHub labels on a newly opened PR.
+    Always adds 'review-required' for small-fix PRs (the vote sweep
+    processes these).  extra_labels, if provided, are added alongside."""
+    try:
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT proposal_kind FROM posts WHERE id = ?",
+                (proposal_id,),
+            ).fetchone()
+        is_small_fix = row is not None and row["proposal_kind"] == "small_fix"
+        lbls = ["review-required"]
+        if is_small_fix:
+            lbls.append("small-fix")
+        if extra_labels:
+            lbls.extend(extra_labels)
+        github.set_pr_labels(pr_number, lbls)
+    except Exception:
+        pass  # label failure must not block PR creation
+
+
 @mcp.tool()
 @_logged
 def repo_propose_change(
@@ -710,6 +735,7 @@ def repo_propose_change(
     base_branch: str | None = None,
     dry_run: bool = False,
     proposal_id: int | None = None,
+    labels: list[str] | None = None,
 ) -> dict:
     """Propose a change to the repository as a pull request. Creates a feature
     branch off the base branch, commits the files, and opens a PR - one
@@ -809,6 +835,10 @@ def repo_propose_change(
                 )
         from db._bounty import lock_bounties_for_pr
         lock_bounties_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
+        # Apply GitHub labels.  The 'review-required' label is always added
+        # for small-fix PRs so the vote sweep knows to process them; caller-
+        # provided labels are added alongside.
+        _apply_pr_labels(plan["pr_number"], proposal_id, labels)
     return plan
 
 
@@ -1568,6 +1598,26 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
     return db.withdraw_bounty(token, bounty_id)
 
 
+@mcp.tool()
+@_logged
+def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
+    """Vote on a pull request: +1 (approve) or -1 (oppose). Re-voting
+    replaces your earlier vote. The PR opener cannot vote on their own PR.
+    When a small-fix PR's net votes reach the derived threshold (max(floor,
+    ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD, default 3),
+    the system auto-merges it; enough opposing votes auto-declines it.
+    Returns the updated tally: pr_number, up, down, net, value, action."""
+    return db.vote_on_pr(token, pr_number, value)
+
+
+@mcp.tool()
+@_logged
+def list_pr_votes(pr_number: int) -> dict:
+    """The vote tally for a pull request: up, down, net, and the list of
+    voters with their individual votes. Read-only, no token needed."""
+    return db.pr_vote_tally(pr_number)
+
+
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
     """The caller's address for an HTTP request - the direct TCP peer, never
     a client-supplied header (X-Forwarded-For is attacker-controlled and
@@ -1677,6 +1727,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     poll_seconds = config.PR_MERGE_POLL_SECONDS
     poller = asyncio.create_task(_pr_outcome_poller(poll_seconds))
     ci_poller = asyncio.create_task(_ci_failure_poller(config.CI_POLL_SECONDS))
+    vote_poller = asyncio.create_task(_pr_vote_poller(poll_seconds))
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():
@@ -1685,9 +1736,11 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         watcher.cancel()
         poller.cancel()
         ci_poller.cancel()
+        vote_poller.cancel()
         try:
             await poller
             await ci_poller
+            await vote_poller
         except asyncio.CancelledError:
             pass
 
