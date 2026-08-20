@@ -536,9 +536,9 @@ def repo_read_file(path: str, line_start: int | None = None, line_end: int | Non
     Optionally read just a line range: pass line_start and line_end
     (1-based, inclusive, both or neither) to fetch only those lines - handy
     for the repo's largest files (server.py is ~1,500 lines). Errors name the
-    offending value: one param alone, start below 1, end below start, a
-    range over 1000 lines, or a range past the end of the file (the error
-    names the file's total line count). Range responses also carry
+    offended value: one param alone, start below 1, end below start, or a
+    range over 1000 lines. A range past the end of the file is clamped to
+    total_lines rather than erroring. Range responses also carry
     total_lines, so you can page through a file without a full read; a
     path-only read behaves exactly as before.
 
