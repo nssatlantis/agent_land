@@ -260,9 +260,10 @@ def get_posts(post_id: int | None = None, post_ids: list[int] | None = None,
             return {}
         results = db.get_posts(post_ids)
         if include_voters:
+            voters_by_pid = db.proposal_voters_batch(list(results.keys()))
             for pid, result in results.items():
                 if isinstance(result, dict) and result.get("proposal"):
-                    result["voters"] = db.proposal_voters(pid)
+                    result["voters"] = voters_by_pid.get(pid, [])
         return results
     if post_id is None:
         raise db.ForumError("pass either post_id or post_ids.")
