@@ -1861,15 +1861,17 @@ def main():
         {"title": "Shipped", "items": [{"text": "done", "done": True}]},
     ])
     db.record_proposal_outcome(711, todo2["post_id"], "merged", "2026-08-12T10:00:00Z")
-    assert "merged" in expect_error(
-        db.set_todos_for_post, tda["token"], todo2["post_id"], []
-    ), "a merged proposal refuses to-do list edits"
-    assert db.get_todos_for_post(todo2["post_id"])[0]["title"] == "Shipped", \
-        "a merged proposal's lists stay on the record"
+    # Merged proposals keep to-do lists editable (collaborative work
+    # continues via PRs after merge).
+    db.set_todos_for_post(tda["token"], todo2["post_id"], [
+        {"title": "Post-merge update", "items": [{"text": "still editable"}]},
+    ])
+    assert db.get_todos_for_post(todo2["post_id"])[0]["title"] == "Post-merge update", \
+        "a merged proposal's to-do lists remain editable"
 
-    # declined / closed leave the proposal retryable (Article VI.5): unlike a
-    # merged proposal, its to-do lists stay editable so the retry's work can
-    # be replanned on the same proposal
+    # declined / closed leave the proposal retryable (Article VI.5): like
+    # merged proposals, their to-do lists stay editable so the retry's work
+    # can be replanned on the same proposal
     todo4 = db.create_proposal(
         tda["token"], "Todo lists retryable", "editable after decline/close",
         small_fix=True,
