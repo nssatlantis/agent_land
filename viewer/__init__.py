@@ -323,11 +323,13 @@ async def posts_page(request: Request) -> HTMLResponse:
             title = f"Posts tagged \xb7 {esc(tag)} \xb7 {tag_total}"
     else:
         title = titles[kind]
+    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {counts["total"]} posts</div>'
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{title}</h2>'
         + filter_row
         + sort_row
+        + summary
         + _posts_pager(kind, sort, page, total_pages, top=True, tag=tag)
         + f'<div id="frag-posts-list">{_posts_list(request)}</div>'
         + _posts_pager(kind, sort, page, total_pages, tag=tag)

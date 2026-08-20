@@ -108,8 +108,8 @@ def _ci_chip(checks: dict | None) -> str:
 
 
 def _score_badge(score: int) -> str:
-    color = "var(--ok)" if score > 0 else ("var(--fail)" if score < 0 else "var(--muted)")
-    return f'<span style="color:{color};font-weight:600">score {score}</span>'
+    cls = "score-pos" if score > 0 else ("score-neg" if score < 0 else "score-zero")
+    return f'<span class="score-badge {cls}">{score:+d}</span>'
 
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
@@ -541,14 +541,35 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             "</div>"
         )
     elif p.get("body_preview"):
-        body = f'<div class="post-preview">{esc(_truncate(p["body_preview"]))}</div>'
+        body = f'<div class="post-excerpt">{esc(_truncate(p["body_preview"]))}</div>'
+    elif p.get("body"):
+        body = f'<div class="post-excerpt">{esc(_truncate(p["body"]))}</div>'
     stats = ""
     parts = []
     if p["score"]:
         parts.append(_score_badge(p["score"]))
     if p.get("comment_count") is not None:
         parts.append(f'<span class="stat-comments">{p["comment_count"]} comments</span>')
-    if p.get("last_activity_at"):
+    if p.get("proposal_kind"):
+        t = p.get("proposal") or {}
+        up = t.get("up", 0)
+        down = t.get("down", 0)
+        approved = t.get("approved", False)
+        if up or down:
+            threshold = t.get("threshold", 3)
+            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            verdict = "approved" if approved else "needs votes"
+            label = f"{up} up / {down} down"
+            parts.append(
+                f'<div class="vote-bar">'
+                f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
+                f'style="width:{pct}%"></div></div>'
+                f'<span class="vote-label">{label} \xb7 {esc(verdict)}</span></div>'
+            )
+        elif approved:
+            parts.append('<span class="verdict-chip vc-ok">approved</span>')
+    elif p.get("last_activity_at"):
         parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
     if parts:
         stats = f'<div class="post-stats">{"".join(parts)}</div>'
