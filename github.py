@@ -766,13 +766,13 @@ def _ci_state(mapped: list[dict]) -> str:
 
 
 def _dedup_failures(failures: list[dict]) -> list[dict]:
-    """Deduplicate failure entries by normalized prefix (first 100 chars,
-    whitespace-collapsed, lowercased). Preserves insertion order - the first
-    occurrence wins, so log lines (added first) beat annotations."""
+    """Deduplicate failure entries by normalized message (whitespace-collapsed,
+    lowercased). Preserves insertion order - the first occurrence wins, so
+    log lines (added first) beat annotations."""
     seen: set[str] = set()
     out: list[dict] = []
     for f in failures:
-        key = " ".join((f.get("message") or "").split())[:100].lower()
+        key = " ".join((f.get("message") or "").split()).lower()
         if key and key in seen:
             continue
         if key:
@@ -867,9 +867,11 @@ def _checks_from_actions(runs: list[dict]) -> dict:
 
 def _supplement_check_run_failures(result: dict, head_sha: str) -> None:
     """When the check-runs tier answered red but its annotations are thin
-    (e.g. 'exit code 1' with no path/line), fetch the Actions log error
-    lines for the same head and merge them in front of the annotations.
-    Degrades silently: a RepoError here keeps whatever annotations we have."""
+    (no entry carries a path), fetch the Actions log error lines for the
+    same head and merge them in front of the annotations. Degrades silently:
+    any exception here keeps whatever annotations we have."""
+    if any(f.get("path") for f in result.get("failures") or []):
+        return
     try:
         data = _request("GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}")
         runs = data.get("workflow_runs") or []
@@ -881,7 +883,7 @@ def _supplement_check_run_failures(result: dict, head_sha: str) -> None:
             return
         merged = log_lines + result["failures"]
         result["failures"] = _dedup_failures(merged)
-    except RepoError:
+    except Exception:
         pass
 
 
