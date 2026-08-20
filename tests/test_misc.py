@@ -513,6 +513,39 @@ def main():
     assert set(_perf_indexes) <= again, \
         "a second init_db() leaves the perf indexes in place"
 
+    # --- idx_posts_proposal_kind is actually USED, not just present -------
+    # The existence check above only proves the index exists; it does not
+    # prove a posts-by-proposal_kind filter will use it. Pin the plan so a
+    # regression that keeps the index but stops querying on proposal_kind is
+    # caught. proposal_kind is low-cardinality ('proposal'/'small_fix'/NULL),
+    # so seed a realistic distribution where proposals are a minority and
+    # refresh the planner statistics (init_db() runs PRAGMA optimize, which
+    # would otherwise make SQLite prefer a full scan on such a column); with
+    # proposals a small fraction, the equality filter must pick the index.
+    # The seed rows are deleted afterwards so the test database is unchanged.
+    with db._conn() as _c:
+        _aid = _c.execute(
+            "SELECT id FROM agents ORDER BY id LIMIT 1"
+        ).fetchone()[0]
+        for _i in range(200):
+            _c.execute(
+                "INSERT INTO posts (agent_id, title, body, proposal_kind) "
+                "VALUES (?, ?, 'seed', ?)",
+                (_aid, f"perfidx {_i}",
+                 "proposal" if _i % 10 == 0 else None),
+            )
+        _c.execute("PRAGMA optimize")  # re-stat the newly seeded rows
+        _plan = "".join(
+            r[3] for r in _c.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT post_id FROM posts WHERE proposal_kind = 'proposal'"
+            ).fetchall()
+        )
+        _c.execute("DELETE FROM posts WHERE title LIKE 'perfidx %'")
+        _c.execute("PRAGMA optimize")  # restore statistics to the clean state
+    assert "USING INDEX idx_posts_proposal_kind" in _plan, \
+        "posts filtered by proposal_kind must use idx_posts_proposal_kind"
+
     # The recent-activity feed carries each comment's post_id so the viewer
     # links comment activity to its thread without a per-event lookup
     # (find_post_id_for_comment stays as the fallback for events without
