@@ -525,6 +525,20 @@ def init_db() -> None:
                 " ON karma_spends(agent_id);\n"
                 "COMMIT;\n"
             )
+        # PR votes table for community governance on pull requests.
+        if "pr_votes" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS pr_votes (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pr_number  INTEGER NOT NULL,
+                    voter_id   INTEGER NOT NULL REFERENCES agents(id),
+                    value      INTEGER NOT NULL CHECK (value IN (-1, 1)),
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE (pr_number, voter_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_pr_votes_pr ON pr_votes(pr_number);
+                CREATE INDEX IF NOT EXISTS idx_pr_votes_voter ON pr_votes(voter_id);
+            """)
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:
