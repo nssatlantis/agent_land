@@ -245,6 +245,245 @@ def test_push_ref():
     assert _push_ref("main") == "HEAD:main"
 
 
+# ---- Integration tests (mocked _git / _clone_repo / _request) ----------
+
+
+def _fake_completed(returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(
+        args=[], returncode=returncode, stdout=stdout, stderr=stderr,
+    )
+
+
+def test_detect_clean_merge():
+    """detect_merge_conflicts returns clean when merge succeeds."""
+    fake_dir = tempfile.mkdtemp()
+    fake_repo = os.path.join(fake_dir, "repo")
+    os.makedirs(fake_repo)
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+
+    def fake_git(repo_dir, *args, check=True):
+        cmd = " ".join(args)
+        if "merge" in cmd and "--no-commit" in cmd:
+            return _fake_completed(returncode=0)
+        if "diff" in cmd and "--diff-filter=U" in cmd:
+            return _fake_completed(stdout="")
+        if "merge" in cmd and "--abort" in cmd:
+            return _fake_completed()
+        return _fake_completed()
+
+    with (
+        patch("github._request", return_value=pr_data),
+        patch("github._clone_repo", return_value=fake_repo),
+        patch("github._git", side_effect=fake_git),
+        patch("github._cleanup") as mc,
+    ):
+        result = github.detect_merge_conflicts(42)
+    assert result["status"] == "clean", result
+    assert result["pr_number"] == 42
+    assert result["head"] == "pr-head"
+    assert result["base"] == "main"
+    mc.assert_called_once_with(fake_repo)
+
+
+def test_detect_conflicts_with_regions():
+    """detect_merge_conflicts returns structured conflict data."""
+    fake_dir = tempfile.mkdtemp()
+    fake_repo = os.path.join(fake_dir, "repo")
+    os.makedirs(fake_repo)
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+    conflict_content = "<<<<<<< ours line ======= theirs line >>>>>>>"
+
+    def fake_git(repo_dir, *args, check=True):
+        cmd = " ".join(args)
+        if "merge" in cmd and "--no-commit" in cmd:
+            return _fake_completed(returncode=1, stderr="CONFLICT")
+        if "diff" in cmd and "--diff-filter=U" in cmd:
+            return _fake_completed(stdout="conflicted.py\n")
+        if "merge" in cmd and "--abort" in cmd:
+            return _fake_completed()
+        return _fake_completed()
+
+    def fake_sp(repo_dir, file_path):
+        return os.path.join(repo_dir, file_path)
+
+    with (
+        patch("github._request", return_value=pr_data),
+        patch("github._clone_repo", return_value=fake_repo),
+        patch("github._git", side_effect=fake_git),
+        patch("github._safe_path", side_effect=fake_sp),
+        patch("github._cleanup"),
+    ):
+        with patch.object(Path, "read_text", return_value=conflict_content):
+            result = github.detect_merge_conflicts(42)
+    assert result["status"] == "conflicts", result
+    assert len(result["conflicts"]) == 1
+    c = result["conflicts"][0]
+    assert c["file"] == "conflicted.py"
+    assert len(c["regions"]) == 1
+    assert c["regions"][0]["ours"] == "ours line"
+    assert c["regions"][0]["theirs"] == "theirs line"
+
+
+def test_detect_unreadable_file_graceful():
+    """detect_merge_conflicts handles unreadable conflicted files gracefully."""
+    fake_dir = tempfile.mkdtemp()
+    fake_repo = os.path.join(fake_dir, "repo")
+    os.makedirs(fake_repo)
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+
+    def fake_git(repo_dir, *args, check=True):
+        cmd = " ".join(args)
+        if "merge" in cmd and "--no-commit" in cmd:
+            return _fake_completed(returncode=1, stderr="CONFLICT")
+        if "diff" in cmd and "--diff-filter=U" in cmd:
+            return _fake_completed(stdout="binary.bin\n")
+        if "merge" in cmd and "--abort" in cmd:
+            return _fake_completed()
+        return _fake_completed()
+
+    def fake_sp(repo_dir, file_path):
+        raise github.RepoError("path escapes the repository root")
+
+    with (
+        patch("github._request", return_value=pr_data),
+        patch("github._clone_repo", return_value=fake_repo),
+        patch("github._git", side_effect=fake_git),
+        patch("github._safe_path", side_effect=fake_sp),
+        patch("github._cleanup"),
+    ):
+        result = github.detect_merge_conflicts(42)
+    assert result["status"] == "conflicts", result
+    assert len(result["conflicts"]) == 1
+    assert result["conflicts"][0]["error"] == "could not read conflicted file"
+    assert result["conflicts"][0]["regions"] == []
+
+
+def test_resolve_partial_coverage_rejected():
+    """apply_merge_resolutions rejects incomplete coverage."""
+    fake_dir = tempfile.mkdtemp()
+    fake_repo = os.path.join(fake_dir, "repo")
+    os.makedirs(fake_repo)
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+
+    def fake_git(repo_dir, *args, check=True):
+        cmd = " ".join(args)
+        if "merge" in cmd and "--no-commit" in cmd:
+            return _fake_completed(returncode=1, stderr="CONFLICT")
+        if "diff" in cmd and "--diff-filter=U" in cmd:
+            return _fake_completed(stdout="a.py\nb.py\n")
+        return _fake_completed()
+
+    resolutions = [{"file": "a.py", "content": "resolved a"}]
+    with (
+        patch("github._request", return_value=pr_data),
+        patch("github._clone_repo", return_value=fake_repo),
+        patch("github._git", side_effect=fake_git),
+        patch("github._cleanup"),
+    ):
+        try:
+            github.apply_merge_resolutions(
+                42, resolutions, "test-citizen", _pr=pr_data,
+            )
+            assert False, "should have raised RepoError"
+        except github.RepoError as e:
+            assert "missing" in str(e) and "b.py" in str(e), str(e)
+
+
+def test_resolve_markers_in_content_rejected():
+    """apply_merge_resolutions rejects content with conflict markers."""
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+    bad_content = "<<<<<<< still in conflict ======= nope >>>>>>>"
+    with patch("github._request", return_value=pr_data):
+        try:
+            github.apply_merge_resolutions(
+                42,
+                [{"file": "x.py", "content": bad_content}],
+                "test-citizen",
+                _pr=pr_data,
+            )
+            assert False, "should have raised RepoError"
+        except github.RepoError as e:
+            assert "conflict markers" in str(e), str(e)
+
+
+def test_resolve_success():
+    """apply_merge_resolutions succeeds with valid resolutions."""
+    fake_dir = tempfile.mkdtemp()
+    fake_repo = os.path.join(fake_dir, "repo")
+    os.makedirs(fake_repo)
+    pr_data = {
+        "state": "open",
+        "head": {"ref": "pr-head"},
+        "base": {"ref": "main"},
+    }
+
+    def fake_git(repo_dir, *args, check=True):
+        cmd = " ".join(args)
+        if "merge" in cmd and "--no-commit" in cmd:
+            return _fake_completed(returncode=1, stderr="CONFLICT")
+        if "diff" in cmd and "--diff-filter=U" in cmd:
+            return _fake_completed(stdout="a.py\n")
+        if any(k in cmd for k in ("abort", "add", "commit", "push", "remote")):
+            return _fake_completed()
+        if "rev-parse" in cmd:
+            return _fake_completed(stdout="abc123\n")
+        return _fake_completed()
+
+    resolutions = [{"file": "a.py", "content": "resolved content"}]
+    with (
+        patch("github._request", return_value=pr_data),
+        patch("github._clone_repo", return_value=fake_repo),
+        patch("github._git", side_effect=fake_git),
+        patch("github._cleanup"),
+        patch("github._setup_push_auth"),
+        patch("github._invalidate_pr"),
+    ):
+        result = github.apply_merge_resolutions(
+            42, resolutions, "test-citizen", _pr=pr_data,
+        )
+    assert result["status"] == "resolved", result
+    assert result["commit_sha"] == "abc123"
+    assert result["files_resolved"] == ["a.py"]
+
+
+def test_git_timeout_scrubs_token():
+    """_git scrubbing works in the timeout path too."""
+    old = github.GITHUB_TOKEN
+    try:
+        github.GITHUB_TOKEN = "ghp_secret123"
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                github._git(tmp, "sleep", "300", check=True)
+                assert False, "should have raised"
+            except github.RepoError as e:
+                msg = str(e)
+                assert "ghp_secret123" not in msg, f"token leaked: {msg}"
+                assert "secret123" not in msg, f"token leaked (partial): {msg}"
+                assert "timed out" in msg
+    finally:
+        github.GITHUB_TOKEN = old
+
+
 # ---- runner ---------------------------------------------------------------
 
 def main():
@@ -266,6 +505,13 @@ def main():
     test_repo_url_with_token()
     test_repo_url_with_special_chars_in_token()
     test_push_ref()
+    test_detect_clean_merge()
+    test_detect_conflicts_with_regions()
+    test_detect_unreadable_file_graceful()
+    test_resolve_partial_coverage_rejected()
+    test_resolve_markers_in_content_rejected()
+    test_resolve_success()
+    test_git_timeout_scrubs_token()
     print("test_merge_conflict: all assertions passed")
 
 
