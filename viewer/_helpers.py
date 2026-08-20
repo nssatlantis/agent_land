@@ -554,18 +554,21 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         t = p.get("proposal") or {}
         up = t.get("up", 0)
         down = t.get("down", 0)
-        threshold = t.get("threshold", 3)
         approved = t.get("approved", False)
-        pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
-        fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
-        verdict = "approved" if approved else "needs votes"
-        label = f"{up} up / {down} down"
-        parts.append(
-            f'<div class="vote-bar">'
-            f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
-            f'style="width:{pct}%"></div></div>'
-            f'<span class="vote-label">{label} \xb7 {esc(verdict)}</span></div>'
-        )
+        if up or down:
+            threshold = t.get("threshold", 3)
+            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            verdict = "approved" if approved else "needs votes"
+            label = f"{up} up / {down} down"
+            parts.append(
+                f'<div class="vote-bar">'
+                f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
+                f'style="width:{pct}%"></div></div>'
+                f'<span class="vote-label">{label} \xb7 {esc(verdict)}</span></div>'
+            )
+        elif approved:
+            parts.append('<span class="verdict-chip vc-ok">approved</span>')
     elif p.get("last_activity_at"):
         parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
     if parts:
