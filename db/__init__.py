@@ -257,6 +257,7 @@ from db._bounty import (  # noqa: F401
 
 # ── PR voting ─────────────────────────────────────────────────────────
 from db._pr_vote import (  # noqa: F401,E402
+    my_pr_vote,
     pr_eligible_for_decline,
     pr_eligible_for_merge,
     pr_vote_tallies,
