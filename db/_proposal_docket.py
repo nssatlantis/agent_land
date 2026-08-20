@@ -247,6 +247,7 @@ def my_proposals(token: str) -> dict:
             SELECT p.id, p.title, p.created_at, p.proposal_kind, p.delegate_id,
                    p.supersedes_id, p.superseded_by_id, p.version,
                    p.collaborative, p.claimable,
+                   p.collaborative_closed, p.pr_goal,
                    d.name AS delegate_name,
                    pc.agent_id AS claim_agent_id,
                    ca.name AS claim_name
