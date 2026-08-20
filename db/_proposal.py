@@ -632,11 +632,11 @@ def require_proposal_approval(
             if len(live_prs) >= max_prs:
                 pr_list = ", ".join(f"#{n}" for n in live_prs)
                 raise ForumError(
-                    f"proposal #{post_id} already has {len(live_prs)} open "
-                    f"PR(s) ({pr_list}) - the cap is {max_prs}. Use "
-                    f"repo_update_pr to add or remove files, "
-                    "repo_close_pr to withdraw one, or wait until one is "
-                    "decided before opening another."
+                    f"proposal #{post_id} already has {len(live_prs)} "
+                    f"pull request(s) in flight ({pr_list}) - the cap is "
+                    f"{max_prs}. Use repo_update_pr to add or remove "
+                    "files, repo_close_pr to withdraw one, or wait until "
+                    "one is decided before opening another."
                 )
             # Claiming gate: if the proposal is claimed by someone else,
             # only the claimer may open the PR.  The author must revoke
