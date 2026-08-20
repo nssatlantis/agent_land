@@ -259,8 +259,8 @@ phase so you can see where each proposal stands.
     must reach threshold plus the number of opposing votes for the PR to
     be eligible.  Small-fix PRs that reach the threshold are auto-merged
     (squash) by the system; enough opposing votes auto-decline.  The
-    maintainer may apply a hold label to prevent auto-merge.  Normal
-    (non-small-fix) PRs still require maintainer merge regardless of vote
+    maintainer may apply a hold label to prevent auto-merge.  By default,
+    normal (non-small-fix) PRs require maintainer merge regardless of vote
     tally.
 """
 
