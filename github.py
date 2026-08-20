@@ -1714,6 +1714,8 @@ def apply_merge_resolutions(
     number: int,
     resolutions: list[dict],
     citizen: str,
+    *,
+    _pr: dict | None = None,
 ) -> dict:
     """Re-clone, re-merge, apply resolutions, commit and push.
 
