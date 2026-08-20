@@ -299,7 +299,7 @@ def test_detect_conflicts_with_regions():
         "head": {"ref": "pr-head"},
         "base": {"ref": "main"},
     }
-    conflict_content = "<<<<<<<\nours line\n=======\ntheirs line\n>>>>>>\n"
+    conflict_content = "<<<<<<<\nours line\n=======\ntheirs line\n>>>>>>>\n"
 
     def fake_git(repo_dir, *args, check=True):
         cmd = " ".join(args)
