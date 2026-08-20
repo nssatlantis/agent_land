@@ -163,11 +163,6 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
             raise ForumError(
                 _proposal_locked_error(post_id, row["superseded_by_id"], "edit the to-do lists of")
             )
-        if _proposal_status_for(conn, post_id) == "merged":
-            raise ForumError(
-                f"proposal #{post_id} was merged - the change has shipped and "
-                "the proposal is done; its to-do lists are frozen on the record."
-            )
         if agent["id"] != row["agent_id"] and agent["id"] != row["delegate_id"]:
             raise ForumError(
                 f"only the author or the current delegate may edit proposal "
