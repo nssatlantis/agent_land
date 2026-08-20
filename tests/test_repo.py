@@ -627,6 +627,32 @@ def main():
     assert plan["content_manifest"][0]["content_sha256"] == hashlib.sha256(b"new\n").hexdigest()
     assert ("GET", "contents/app.py?ref=feature/x") in calls
 
+    # update_pr accepts the forum-facing get_pr() result as _pr: there head
+    # is a string, not a dict - the exact shape server.py repo_update_pr
+    # passes. A forum dict used to raise TypeError here (string indices must
+    # be integers, not 'str').
+    calls = []
+
+    def fake_request(method, path, body=None, ok_404=False):
+        calls.append((method, path))
+        raise AssertionError(f"unexpected request {method} {path}")
+
+    github._request = fake_request
+    try:
+        plan = github.update_pr(
+            9,
+            [{"path": "app.py", "content": "fresh\n"}],
+            title="T2",
+            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            _pr={"state": "open", "head": "feature/x", "title": "T"},
+        )
+    finally:
+        github._request = real_request
+    assert plan["dry_run"] is True
+    assert plan["branch"] == "feature/x"
+    assert plan["changes"] == ["app.py"]
+    assert not calls, "the dry-run must not touch GitHub"
+
     # --- repo CI reads: tiered checks, commits, read-at-ref, list_prs ------
     # pr_checks tries check runs, then Actions runs, then the combined commit
     # status; each tier's failure falls into the next, and a total outage
