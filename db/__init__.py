@@ -244,6 +244,7 @@ from db._comments import (  # noqa: F401
 # ── bounty system ──────────────────────────────────────────────────────
 from db._bounty import (  # noqa: F401
     admin_stake_bounty,
+    list_all_bounties,
     list_proposal_bounties,
     lock_bounties_for_pr,
     pay_bounty_rewards,

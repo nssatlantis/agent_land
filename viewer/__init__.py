@@ -45,6 +45,8 @@ from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _author,
     _bounty_panel,
+    _bounty_page_rows,
+    _bounty_summary_card,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -112,12 +114,18 @@ async def render_overview() -> str:
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
+    bounty_total = sum(
+        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
+        for b in db.list_all_bounties(status="active")
+    )
+
     repo_extra = ""
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
-        _overview_cards(c, proposals_open, reports_open, pr_count)
+        _overview_cards(c, proposals_open, reports_open, pr_count, bounty_total)
         + repo_extra
+        + _bounty_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
     )
@@ -488,6 +496,33 @@ def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
     cls = "pager top" if top else "pager"
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
+
+async def bounties_page(request: Request) -> HTMLResponse:
+    """All bounties across proposals, newest first, filterable by status.
+    Read-only, like every route here."""
+    status = request.query_params.get("status")
+    if status not in (None, "active", "withdrawn", "refunded"):
+        status = None
+    bounties = db.list_all_bounties(status=status)
+    tabs = '<div class="tabs">'
+    for key, label in ((None, "All"), ("active", "Active"),
+                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded")):
+        href = "/bounties" if key is None else f"/bounties?status={key}"
+        cls = ' class="active" aria-current="page"' if key == status else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
+    tabs += "</div>"
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Bounties</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Karma staked on proposals as rewards "
+        "for merged pull requests. Stakers set per-PR amount and max PRs; karma is "
+        "locked when a PR is opened, paid on merge, refunded on failure.</p>"
+        + tabs
+        + f'<div id="frag-bounty-list">{_bounty_page_rows(bounties)}</div>'
+        + "</div>"
+    )
+    return _page("bounties", _with_rail(body), section="bounties")
+
 async def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
     full rows with scores, tallies, comment counts and previews, filterable
@@ -819,6 +854,7 @@ ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
     Route("/tags", tags_page),
+    Route("/bounties", bounties_page),
     Route("/recent", recent_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),

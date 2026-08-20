@@ -154,7 +154,7 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     return "".join(_docket_card(p) for p in rows)
 
 _DOCKET_TITLES = {
-    "all": "All",
+    "all": "Proposals docket",
     "needs_votes": "Needs votes",
     "small_fix": "Small fixes",
     "stale": "Stale",
@@ -207,7 +207,7 @@ async def proposals_page(request: Request) -> HTMLResponse:
     tabs = (
         f'<a href="/proposals{_proposals_href("all", sort)}"'
         + (' class="active"' if view == "all" else "")
-        + f">All ({counts['all']})</a>"
+        + f">{_DOCKET_TITLES[view]} ({counts['all']})</a>"
     )
     for phase_name, phase_views in _DOCKET_PHASES:
         phase_tabs = "".join(
