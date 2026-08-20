@@ -498,6 +498,30 @@ def main():
             os.environ.pop("FORUM_MAX_PRS_PER_COLLABORATOR", None)
     print("  MAX_PRS_PER_COLLABORATOR=1 restores single-PR behavior: ok")
 
+    # 37. link_pr_to_proposal enforces the limit (TOCTOU fix)
+    ca16 = db.register_agent("collab-author16")
+    auth_a16 = ca16["token"]
+    p_toc = db.create_proposal(auth_a16, "TOCTOU Test", "body",
+                                collaborative=True)
+    db.set_todos_for_post(auth_a16, p_toc["post_id"],
+                          [{"title": "work", "items": [{"text": "a"}]}])
+    c_toc = db.register_agent("toc-collab")
+    db.join_proposal(c_toc["token"], p_toc["post_id"])
+    # Link 3 PRs — all succeed (at limit with default max_prs=3)
+    db.link_pr_to_proposal(55701, p_toc["post_id"], c_toc["agent_id"])
+    db.link_pr_to_proposal(55702, p_toc["post_id"], c_toc["agent_id"])
+    db.link_pr_to_proposal(55703, p_toc["post_id"], c_toc["agent_id"])
+    # 4th link should be refused by link_pr_to_proposal itself (TOCTOU gate)
+    err_toc = expect_error(
+        db.link_pr_to_proposal, 55704, p_toc["post_id"], c_toc["agent_id"],
+    )
+    assert "limit" in err_toc.lower(), (
+        f"link_pr_to_proposal should enforce limit, got: {err_toc}"
+    )
+    # Backfill a pre-existing link (same PR number) — should succeed (no-op)
+    db.link_pr_to_proposal(55701, p_toc["post_id"], c_toc["agent_id"])
+    print("  link_pr_to_proposal enforces limit (TOCTOU): ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)

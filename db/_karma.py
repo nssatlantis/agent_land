@@ -221,9 +221,40 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
     repo_propose_change() when a PR opens and by the outcome poller to
     backfill pre-existing PRs. Idempotent (UNIQUE pr_number): a PR is linked
     once, and a backfill never overwrites the record the opener wrote.
+
+    For collaborative proposals with a MAX_PRS_PER_COLLABORATOR limit, new
+    links are gated atomically (count + insert in one transaction) so two
+    concurrent repo_propose_change calls cannot both pass the gate.  Backfills
+    (PRs already linked) skip the check — INSERT OR IGNORE is a no-op.
+
     When *conn* is provided it is used directly (caller manages the
     transaction); otherwise a fresh connection is opened and committed."""
     with (_conn() if conn is None else nullcontext(conn)) as c:
+        existing = c.execute(
+            "SELECT 1 FROM proposal_links WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if existing is None:
+            # New link — enforce the collaborative PR limit atomically.
+            row = c.execute(
+                "SELECT collaborative FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()
+            if row is not None and row["collaborative"]:
+                open_count = c.execute(
+                    "SELECT COUNT(*) FROM proposal_links pl"
+                    " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+                    " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+                    " AND po.pr_number IS NULL",
+                    (post_id, agent_id),
+                ).fetchone()[0]
+                max_prs = max(config.MAX_PRS_PER_COLLABORATOR, 1)
+                if open_count >= max_prs:
+                    raise ForumError(
+                        f"you already have {open_count} pull request"
+                        f"{'s' if open_count != 1 else ''} in flight for "
+                        f"proposal #{post_id} - the limit is "
+                        f"{max_prs} per collaborator."
+                    )
         c.execute(
             "INSERT OR IGNORE INTO proposal_links (pr_number, post_id, opened_by_agent_id) "
             "VALUES (?, ?, ?)",
