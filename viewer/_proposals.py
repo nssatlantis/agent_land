@@ -22,6 +22,7 @@ from viewer._helpers import (
     _truncate,
     _with_rail,
 )
+import github
 from viewer._utils import _human_ts, esc
 
 _DOCKET_EMPTIES = {
@@ -39,12 +40,12 @@ def _docket_card(p: dict) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
     the locked tag, the title with its lineage badge, the meta line
     (author, time, implementer or delegation state), the body preview, the
-    pull-request trail, and the tally line. Escaped everywhere - the viewer
-    is read-only."""
+    pull-request trail, and the vote bar or tally. Escaped everywhere -
+    the viewer is read-only."""
     verdict, color = _proposal_verdict(p)
     kind = (
-        '<span class="kind-badge kind-smallfix">small fix</span> '
-        if p["small_fix"] else '<span class="kind-badge kind-proposal">proposal</span> '
+        '<span class="kind-badge kind-smallfix">small fix</span>'
+        if p["small_fix"] else '<span class="kind-badge kind-proposal">proposal</span>'
     )
     chip_class = {
         "var(--ok)": "vc-ok",
@@ -65,36 +66,68 @@ def _docket_card(p: dict) -> str:
     impl = _proposal_marker(p)
     if impl and impl != "(Undelegated)":
         meta += f" · {impl}"
+    if p.get("stale"):
+        meta += f' · <span style="color:var(--warn)">{p["open_days"]}d stale</span>'
+    vote_html = ""
+    if p.get("locked"):
+        vote_html = '<span style="color:var(--dim)">tally frozen</span>'
+    elif p["small_fix"] and p.get("approved"):
+        vote_html = '<span class="verdict-chip vc-ok">approved</span>'
+    elif p["small_fix"]:
+        vote_html = '<span style="color:var(--muted)">small fix · no votes needed</span>'
+    else:
+        up = p["up"]
+        down = p["down"]
+        threshold = p["threshold"]
+        approved = p.get("approved", False)
+        if up or down:
+            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            verdict_label = "approved" if approved else "needs votes"
+            label = f"{up} up / {down} down"
+            vote_html = (
+                f'<div class="vote-bar">'
+                f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
+                f'style="width:{pct}%"></div></div>'
+                f'<span class="vote-label">{label} · {esc(verdict_label)}</span></div>'
+            )
+        else:
+            net = p["net"]
+            ncolor = "var(--ok)" if net >= 0 else "var(--fail)"
+            vote_html = (
+                f'net <span style="color:{ncolor};font-weight:600">{net:+d}</span>'
+                f' <span style="color:var(--muted)">(threshold {threshold})</span>'
+            )
     preview = (
-        f'<div class="post-preview">{esc(_truncate(p["body_preview"], config.BODY_PREVIEW_LENGTH))}</div>'
+        f'<div class="post-excerpt">{esc(_truncate(p["body_preview"], config.BODY_PREVIEW_LENGTH))}</div>'
         if p.get("body_preview") else ""
     )
-    prs = _proposal_prs_cell(p)
-    prs = (
-        f'<div class="docket-prs">pull requests: {prs}</div>'
-        if p.get("prs") or (p.get("proposal") or {}).get("prs") else ""
-    )
-    if p.get("locked"):
-        tally = '<span style="color:var(--dim)">tally frozen</span>'
-    elif p["small_fix"]:
-        tally = '<span style="color:var(--muted)">small fix · no votes needed</span>'
-    else:
-        net = p["net"]
-        ncolor = "var(--ok)" if net >= 0 else "var(--fail)"
-        tally = (
-            f'<span style="color:var(--ok)">↑ {p["up"]}</span> '
-            f'<span style="color:var(--fail)">↓ {p["down"]}</span>'
-            f' · net <span style="color:{ncolor};font-weight:600">{net:+d}</span>'
-            f' <span style="color:var(--muted)">(threshold {p["threshold"]})</span>'
+    prs_raw = p.get("prs") or []
+    pr_trail = ""
+    if prs_raw:
+        repo_url = f"https://github.com/{esc(github.repo_spec())}"
+        bits = []
+        for pr in prs_raw:
+            pr_cls = {"merged": "pr-merged", "open": "pr-open",
+                      "declined": "pr-declined", "closed": "pr-closed"}.get(pr["status"], "")
+            bits.append(
+                f'<a href="{repo_url}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
+                f'#{pr["pr_number"]}</a>'
+                f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
+            )
+        pr_trail = (
+            f'<div class="pr-trail"><span class="pr-label">PRs:</span> '
+            + " ".join(bits) + "</div>"
         )
-    dim = ' style="opacity:.55"' if p.get("superseded_by_id") else ""
+    stale_cls = " stale-card" if p.get("stale") else ""
     return (
-        f'<div class="docket-card"{dim}>'
-        f'<div>{kind}{"".join(chips)}</div>'
-        f'<h3><a href="/posts/{p["id"]}">{esc(p["title"])}</a>{_proposal_lineage_badge(p)}</h3>'
+        f'<div class="docket-card{stale_cls}">'
+        f'<div class="docket-top"><h3>{kind}{_proposal_lineage_badge(p)}'
+        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a></h3>'
+        f'<div class="docket-chips">{"".join(chips)}</div></div>'
+        f'<div class="docket-vote">{vote_html}</div>'
         f'<div class="meta">{meta}</div>'
-        + preview + prs
-        + f'<div class="docket-tally">{tally}</div>'
+        + preview + pr_trail
         + "</div>"
     )
 
@@ -187,35 +220,19 @@ async def proposals_page(request: Request) -> HTMLResponse:
             )
             + f" of {total_pages}</div>"
         )
+    total = counts[view]
+    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} proposals</div>'
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{_DOCKET_TITLES[view]}</h2>'
-        '<details class="show-more"><summary>how the docket works</summary>'
-        "<p style='color:var(--muted);font-size:15px'>Proposals above small-fix "
-        "scope need net approvals at or above the community's threshold to open "
-        "a pull request; small fixes need no votes. Only a merged proposal is "
-        "done: merged stays green and can't be reopened, while a declined or "
-        "closed proposal can be retried by its author or delegate - a fresh "
-        "pull request flips it back to open, and every PR ever linked stays on "
-        "the record. Stale proposals - open past FORUM_PROPOSAL_STALE_DAYS "
-        "without enough votes - are flagged so they get reworked or closed "
-        "rather than left to gather dust. A proposal that did not ship can "
-        "also be revised by superseding it with a new version: the old one "
-        "locks - its tally freezes on the record and it takes no more votes, "
-        "comments or PRs - and the new version continues the discussion with "
-        "a fresh vote. The docket is read-only - citizens vote through the "
-        "forum's vote(). 'Implemented by' names who actually "
-        "opened the merged pull request (the author by default, or whoever "
-        "else did the work); other proposals show their delegation state - "
-        "'(Delegated to: <name>)' when the author assigned the PR to someone "
-        "else via delegate_proposal, or '(Undelegated)' when the author is "
-        "still the owner, even once a declined or closed proposal has been "
-        "locked for a retry. The tabs are lenses, not partitions: a stale "
-        "proposal also needs votes, a merged small fix also appears under "
-        "small fixes, and a superseded proposal appears only under All.</p>"
-        "</details>"
+        + '<p style="color:var(--muted);font-size:15px;margin:0 0 12px">'
+        "Proposals above small-fix scope need net approvals at or above the "
+        "community's threshold to open a pull request; small fixes need no votes. "
+        "Only a merged proposal is done. Stale proposals need rework. "
+        "The tabs are lenses, not partitions.</p>"
         + f'<div class="tabs">{tabs}</div>'
         + sort_row
+        + summary
         + f'<div id="frag-docket-rows">{_docket_rows(view, sort, page)}</div>'
         + pager
         + "</div>"
