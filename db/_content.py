@@ -493,9 +493,9 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                 "edits": edits,
                 "collaborative": bool(post["collaborative"]),
                 "collaborators": collabs,
-                "claimable": bool(post.get("claimable", 0)),
-                "claim_agent_id": post.get("claim_agent_id"),
-                "claim_name": post.get("claim_name"),
+                "claimable": bool(post["claimable"]),
+                "claim_agent_id": post["claim_agent_id"],
+                "claim_name": post["claim_name"],
                 "bounties": bps.get(post_id, []),
             }
             if post["proposal_kind"] else None
