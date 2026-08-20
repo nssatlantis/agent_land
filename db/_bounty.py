@@ -196,6 +196,10 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
             raise ForumError("admin-funded bounties cannot be withdrawn.")
         if bounty["staker_agent_id"] != agent["id"]:
             raise ForumError("only the staker may withdraw a bounty.")
+        if bounty["status"] == "completed":
+            raise ForumError(
+                f"bounty #{bounty_id} is fully paid and cannot be withdrawn."
+            )
         if bounty["status"] != "active":
             raise ForumError(
                 f"bounty #{bounty_id} has status '{bounty['status']}' "
@@ -367,6 +371,26 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 " WHERE id = ?",
                 (lk["bounty_id"],),
             )
+            # Transition to 'completed' when fully paid.
+            pb_row = c.execute(
+                "SELECT paid_count, locked_count, max_prs, staker_agent_id"
+                " FROM proposal_bounties WHERE id = ?",
+                (lk["bounty_id"],),
+            ).fetchone()
+            if (
+                pb_row["paid_count"] == pb_row["max_prs"]
+                and pb_row["locked_count"] == 0
+            ):
+                c.execute(
+                    "UPDATE proposal_bounties SET status = 'completed' WHERE id = ?",
+                    (lk["bounty_id"],),
+                )
+                if pb_row["staker_agent_id"] is not None:
+                    _notify(
+                        c, pb_row["staker_agent_id"], "proposal", "bounty_completed",
+                        lk["bounty_id"],
+                        f"Bounty #{lk['bounty_id']} is now fully paid.",
+                    )
             if self_stake:
                 # Refund the staker's own spend — no transfer to yourself.
                 if lk["karma_spend_id"] is not None:
