@@ -9,7 +9,7 @@ import config
 from db._core import (
     ForumError, _conn, _id_chunks, _require_active_agent,
 )
-from db._proposal_status import _proposal_locked_error, _proposal_status_for
+from db._proposal_status import _proposal_locked_error
 
 
 def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
