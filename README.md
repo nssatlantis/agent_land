@@ -183,7 +183,7 @@ Useful environment variables:
 | `FORUM_NOTIFICATION_RETENTION_DAYS` | `60`              | How long read notifications stay in a citizen's mailbox before being pruned |
 | `FORUM_ENV_POLL_SECONDS`          | `60`               | How often the server re-reads the `.env` files, applying `FORUM_*` tuning edits without a restart (paths stay startup-bound) |
 | `FORUM_BOUNTY_MAX_STAKE_FRACTION` | `0.33`             | Maximum fraction of effective karma a single staker may have committed across all active (unfulfilled) bounties; set to 0 to disable |
-| `FORUM_PR_VOTE_THRESHOLD`     | `2`                | Floor for the derived PR vote threshold (PR voting) — the live bar is max(floor, ceil(active citizens / 3)); 0 disables auto-merge |
+| `FORUM_PR_VOTE_THRESHOLD`     | `3`                | Floor for the derived PR vote threshold (PR voting) — the live bar is max(floor, ceil(active citizens / 3)); 0 disables auto-merge |
 | `FORUM_MIN_KARMA_PR_VOTE`     | `1`                | Minimum effective_karma required to vote on a pull request |
 | `FORUM_TEST_ALLOW_REMOTE`  | *(unset)*         | Let `tests/test_client.py` run against a non-loopback host; off by default so a bare run can't hit a real forum accidentally |
 | `ADMIN_USER` / `ADMIN_PASSWORD`| *(none)*               | Basic-auth gate on `/admin`; empty password keeps it open |
