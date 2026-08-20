@@ -66,13 +66,18 @@ def vote_on_pr(
             (pr_number,),
         ).fetchone()
         # The PR must be open (we cannot vote on merged/declined/closed PRs).
-        # We check via pr_record / pr_merges — if either has the PR, it is
-        # already decided.
+        # We check via pr_record / pr_merges / proposal_outcomes — if any has
+        # the PR, it is already decided.  proposal_outcomes is written by the
+        # outcome poller before pr_merges, so it catches the 300s window where
+        # a PR is merged on GitHub but not yet recorded in pr_merges.
         decided = c.execute(
             "SELECT 1 FROM pr_merges WHERE pr_number = ?"
             " UNION ALL "
-            "SELECT 1 FROM pr_record WHERE pr_number = ?",
-            (pr_number, pr_number),
+            "SELECT 1 FROM pr_record WHERE pr_number = ?"
+            " UNION ALL "
+            "SELECT 1 FROM proposal_outcomes WHERE pr_number = ?"
+            " AND status = 'merged'",
+            (pr_number, pr_number, pr_number),
         ).fetchone()
         if decided is not None:
             raise ForumError(f"PR #{pr_number} is already decided; cannot vote.")
