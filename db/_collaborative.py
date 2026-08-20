@@ -275,6 +275,7 @@ def set_proposal_goal(token: str, post_id: int,
     before closing. close_proposal warns (but does not block) when the goal
     is not met. Pass pr_goal=0 or None to clear the goal."""
     with _conn() as conn:
+        from db._proposal_status import _proposal_locked_error
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
