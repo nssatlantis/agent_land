@@ -71,7 +71,16 @@ async def api_recent(request: Request) -> JSONResponse:
     if kind not in (None, "posts", "comments", "votes"):
         return JSONResponse({"error": "kind must be one of: posts, comments, votes"},
                             status_code=400)
-    events = aggregates.recent_activity(limit=limit, offset=offset, kind=kind)
+    proposal_kind = request.query_params.get("proposal_kind") or None
+    if proposal_kind is not None and proposal_kind not in (
+        None, "none", "proposal", "small_fix", "any"
+    ):
+        return JSONResponse(
+            {"error": "proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'"},
+            status_code=400,
+        )
+    events = aggregates.recent_activity(limit=limit, offset=offset, kind=kind,
+                                        proposal_kind=proposal_kind)
     return JSONResponse(events)
 
 async def api_events(request: Request) -> JSONResponse:
