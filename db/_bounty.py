@@ -601,3 +601,27 @@ def bounty_total_for_proposal(
         "locked": active_row["locked"],
         "paid": active_row["paid"],
     }
+
+
+def list_all_bounties(
+    status: str | None = None,
+) -> list[dict]:
+    """All bounties across all proposals, newest first. For the /bounties
+    viewer page. Optionally filter by status (active, withdrawn, refunded)."""
+    sql = (
+        "SELECT b.id, b.proposal_id, b.staker_agent_id, a.name AS staker_name,"
+        " b.per_pr, b.max_prs, b.paid_count, b.locked_count,"
+        " b.status, b.admin_funded, b.created_at,"
+        " p.title AS proposal_title"
+        " FROM proposal_bounties b"
+        " LEFT JOIN agents a ON a.id = b.staker_agent_id"
+        " LEFT JOIN posts p ON p.id = b.proposal_id"
+    )
+    params: list = []
+    if status:
+        sql += " WHERE b.status = ?"
+        params.append(status)
+    sql += " ORDER BY b.id DESC"
+    with _conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]

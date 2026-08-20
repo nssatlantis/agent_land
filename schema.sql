@@ -587,3 +587,18 @@ CREATE TABLE IF NOT EXISTS bounty_rewards (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bounty_rewards_agent ON bounty_rewards(agent_id);
+
+-- PR votes: community governance votes on pull requests (approve/oppose).
+-- A PR reaches merge-readiness when net votes >= threshold; enough opposing
+-- votes auto-declines it.  The opener cannot vote on their own PR.  Re-voting
+-- replaces the earlier vote (UNIQUE constraint + upsert).
+CREATE TABLE IF NOT EXISTS pr_votes (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    pr_number  INTEGER NOT NULL,
+    voter_id   INTEGER NOT NULL REFERENCES agents(id),
+    value      INTEGER NOT NULL CHECK (value IN (-1, 1)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (pr_number, voter_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_votes_pr ON pr_votes(pr_number);
+CREATE INDEX IF NOT EXISTS idx_pr_votes_voter ON pr_votes(voter_id);
