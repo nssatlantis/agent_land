@@ -35,6 +35,13 @@ Scenarios:
 - update.sh installs the scripts (self-sync) BEFORE the guard runs, and its
   hint and the guard's message restore a named backup via --file, never the
   newest snapshot with --force
+- backup-db.py verifies each fresh snapshot with PRAGMA quick_check at write
+  time: a corrupt live DB fails loudly, the snapshot is removed, and exit is
+  nonzero
+- check-db-boot.py treats a corrupt-only backup set as a wipe (exit 1, not a
+  first run), skips corrupt backups when naming a restore candidate, and
+  passes (exit 0) when the live DB is healthy even if a backup is corrupt
+- restore-db.py --list flags snapshots that fail quick_check as (corrupt)
 """
 
 import os
@@ -174,6 +181,13 @@ def wipe(db_path):
     for p in (db_path, pathlib.Path(str(db_path) + "-wal"), pathlib.Path(str(db_path) + "-shm")):
         if p.exists():
             p.unlink()
+
+
+def corrupt(db_path):
+    """Overwrite a database file with garbage so it fails PRAGMA quick_check
+    (and any read of it raises sqlite3.Error) - a stand-in for a torn write or
+    a disk-level bit rot."""
+    db_path.write_bytes(b"this is not a sqlite database " * 64)
 
 
 def main():
@@ -550,6 +564,111 @@ def main():
                            str(pathlib.Path(td) / "missing"))
         assert rc == 2, (rc, out, err)
     print("== record-size watch ==")
+
+    # == backup-db.py fails loudly on a corrupt source and leaves no snapshot ==
+    # A live DB that fails quick_check (or can't be read at all) must not
+    # silently produce a worthless backup: backup-db.py removes the partial/
+    # corrupt snapshot and exits nonzero so update.sh's WARNING path fires.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        corrupt(db_path)
+        rc, out, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc != 0, (rc, out, err)
+        assert "corrupt" in (out + err).lower(), (out, err)
+        assert backups_of(td) == [], f"a corrupt snapshot must not be kept: {backups_of(td)}"
+    print("== backup-db on a corrupt source -> nonzero, no snapshot kept ==")
+
+    # == backup-db.py of a healthy db still succeeds and the snapshot verifies ==
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed(db_path, ["alpha", "beta"], posts=1)
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, err
+        snap = backups_of(td)[-1]
+        code = (
+            "import sqlite3, sys\n"
+            f"conn = sqlite3.connect({str(snap)!r})\n"
+            "ok = conn.execute('PRAGMA quick_check').fetchone()[0] == 'ok'\n"
+            "print('QC', ok)\n"
+        )
+        out = _python(code)
+        assert "QC True" in out, out
+    print("== backup-db on a healthy db -> snapshot passes quick_check ==")
+
+    # == check-db-boot: corrupt-only backup set is a wipe, not a first run ==
+    # If the live DB is wiped and every snapshot that exists fails integrity
+    # check, booting an empty forum silently would mask the wipe - the guard
+    # must fail closed (exit 1), never call it a first run.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed(db_path, ["alpha", "beta"], posts=1)
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, err
+        snap = backups_of(td)[-1]
+        corrupt(snap)
+        wipe(db_path)
+        rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 1, (rc, out, err)
+        assert "first run" not in out, out
+        assert "corrupt" in (out + err).lower(), (out, err)
+        assert snap.name in err, f"the guard must name the corrupt backup: {err}"
+    print("== corrupt-only backup set -> guard fails closed (exit 1) ==")
+
+    # == check-db-boot: corrupt backup + a good one -> names the good backup ==
+    # When a content-bearing backup still exists, the guard must pick it (the
+    # newest INTACT snapshot), never the corrupt newer one, and note the skip.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed(db_path, ["alpha", "beta"], posts=1)
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, err
+        good = backups_of(td)[-1]
+        seed(db_path, ["gamma", "delta"], posts=1)  # newer live state
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, err
+        newest = backups_of(td)[-1]
+        corrupt(newest)
+        wipe(db_path)
+        rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 1, (rc, out, err)
+        assert good.name in err, f"must name the intact backup: {err}"
+        assert f"--file {good.name}" in err, f"must hint the intact backup: {err}"
+        assert f"--file {newest.name}" not in err, \
+            f"must not hint the corrupt newest as the restore candidate: {err}"
+    print("== corrupt + good backups -> guard names the intact backup ==")
+
+    # == check-db-boot: healthy live DB passes even with a corrupt backup ==
+    # The guard's corrupt handling must not fire on a healthy forum - a corrupt
+    # snapshot is only a problem when there is nothing else to restore.
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed(db_path, ["alpha", "beta"], posts=1)
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, err
+        corrupt(backups_of(td)[-1])
+        rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, (rc, out, err)
+        assert "ok" in out, out
+    print("== healthy live DB + corrupt backup -> guard passes ==")
+
+    # == restore-db.py --list flags corrupt snapshots ==
+    with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
+        db_path = pathlib.Path(td) / "forum.db"
+        seed(db_path, ["alpha", "beta"], posts=1)
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, err
+        good = backups_of(td)[-1]
+        seed(db_path, ["gamma"], posts=0)
+        rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, err
+        newest = backups_of(td)[-1]
+        corrupt(newest)
+        rc, out, err = run("restore-db.py", "--list", env={"FORUM_DB_PATH": str(db_path)})
+        assert rc == 0, (rc, out, err)
+        assert good.name in out, out
+        assert newest.name in out, out
+        assert "(corrupt)" in out, f"the corrupt snapshot must be flagged: {out}"
+    print("== restore --list flags corrupt snapshots ==")
 
     print("test_deploy: all assertions passed")
 
