@@ -596,7 +596,8 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         body = f'<div class="post-excerpt">{esc(_truncate(p["body"]))}</div>'
     stats = ""
     parts = []
-    if p["score"]:        parts.append(_score_badge(p["score"]))
+    if p["score"]:
+        parts.append(_score_badge(p["score"]))
     if p.get("comment_count") is not None:
         parts.append(f'<span class="stat-comments">{p["comment_count"]} comments</span>')
     if p.get("proposal_kind"):
