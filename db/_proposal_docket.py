@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import sqlite3
 
 import config
@@ -424,6 +425,19 @@ def proposal_voters(post_id: int) -> list[dict]:
             (post_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def proposal_voters_batch(post_ids: list[int], *,
+                          conn: sqlite3.Connection | None = None) -> dict:
+    """{post_id: [{agent_id, name, value, created_at}, ...]} for many
+    proposals, newest first per proposal - the batch twin of
+    proposal_voters: one query per chunk of ids instead of one query
+    per post. Accepts an injected ``conn`` for testable query-count
+    guards."""
+    if not post_ids:
+        return {}
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        return _proposal_voters_batch(c, post_ids)
 
 
 def _proposal_voters_batch(conn: sqlite3.Connection,
