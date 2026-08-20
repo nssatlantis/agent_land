@@ -569,7 +569,7 @@ def main():
     ), "a merged proposal can't open another PR"
     detail = db.get_post(plife)
     assert detail["proposal"]["status"] == "merged", "get_post carries the lifecycle status"
-    assert [pr["pr_number"] for pr in detail["proposal"]["prs"]] == [101], \
+    assert [pr["pr_number"] for pr in detail["proposal"]["prs"]] == [101, 102], \
         "get_post carries the linked PR in the trail"
     rows = {p["id"]: p for p in db.list_posts(proposal_kind="any")}
     assert rows[plife]["status"] == "merged", "list_posts carries the lifecycle status"
