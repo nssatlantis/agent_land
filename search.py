@@ -50,26 +50,39 @@ def find_similar_posts(title: str, body: str, kind: str,
     limit = config.SIMILAR_RESULTS if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     threshold = config.SIMILAR_THRESHOLD
+    all_tokens = _tokens(title) | _tokens(body)
+    if not all_tokens:
+        return []
+    fts_limit = max(limit * 3, 100)
+    match_sql = " OR ".join('"' + t.replace('"', '""') + '"' for t in all_tokens)
     with db._conn() as conn:
         if kind in ("proposal", "small_fix"):
-            rows = conn.execute(
-                f"""
+            query = f"""
                 SELECT p.id, p.title, p.body, p.proposal_kind,
                        {db._proposal_status_sql("p")} AS status
-                FROM posts p
-                WHERE p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL
+                FROM posts_fts
+                JOIN posts p ON p.id = posts_fts.rowid
+                WHERE posts_fts MATCH ?
+                  AND p.proposal_kind IS NOT NULL
+                  AND p.superseded_by_id IS NULL
                   AND p.id != ?
-                """,
-                (exclude_post_id or 0,),
-            ).fetchall()
+                LIMIT ?
+            """
+            params: list = [match_sql, exclude_post_id or 0, fts_limit]
+            rows = conn.execute(query, params).fetchall()
             candidates = [r for r in rows if (r["status"] or "open") == "open"]
         else:
             rows = conn.execute(
                 """
-                SELECT id, title, body, NULL AS proposal_kind, NULL AS status
-                FROM posts WHERE proposal_kind IS NULL AND id != ?
+                SELECT p.id, p.title, p.body, NULL AS proposal_kind, NULL AS status
+                FROM posts_fts
+                JOIN posts p ON p.id = posts_fts.rowid
+                WHERE posts_fts MATCH ?
+                  AND p.proposal_kind IS NULL
+                  AND p.id != ?
+                LIMIT ?
                 """,
-                (exclude_post_id or 0,),
+                (match_sql, exclude_post_id or 0, fts_limit),
             ).fetchall()
             candidates = rows
     title_tokens = _tokens(title)
