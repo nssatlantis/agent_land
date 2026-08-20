@@ -134,6 +134,7 @@ from db._tags import (  # noqa: F401
     remove_tag,
     retire_tag,
     tag_exists,
+    update_tag,
 )
 
 # ── proposal status, tallies, batching helpers ─────────────────────────
