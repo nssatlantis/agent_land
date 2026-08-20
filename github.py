@@ -1529,8 +1529,26 @@ def _parse_conflict_markers(text: str) -> list[dict]:
     return regions
 
 
-def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    """Run a git command in *repo_dir*.  Raises RepoError on failure."""
+def _repo_url(with_token: bool = False) -> str:
+    """Build the clone/push URL for the repo.  When *with_token* is True,
+    embed the PAT (URL-encoded) for authenticated push.  When False, return
+    the plain public URL (the repo is public, no auth needed to read)."""
+    base = f"https://github.com/{GITHUB_REPO}.git"
+    if not with_token:
+        return base
+    _ensure_token()
+    encoded = urllib.parse.quote(GITHUB_TOKEN, safe="")
+    return f"https://x-access-token:{encoded}@github.com/{GITHUB_REPO}.git"
+
+
+def _git(
+    repo_dir: str, *args: str, check: bool = True
+) -> subprocess.CompletedProcess:
+    """Run a git command in *repo_dir*.  Raises RepoError on failure.
+    Sets GIT_TERMINAL_PROMPT=0 so git never prompts for credentials.
+    Scrubs the GitHub token from any output so it never leaks into
+    error messages."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
         result = subprocess.run(
             ["git"] + list(args),
@@ -1538,10 +1556,14 @@ def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedP
             capture_output=True,
             text=True,
             timeout=120,
+            env=env,
         )
         if check and result.returncode != 0:
+            stderr = result.stderr
+            if GITHUB_TOKEN:
+                stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
             raise RepoError(
-                f"git {' '.join(args)} failed:\n{result.stderr.strip()}"
+                f"git {' '.join(args)} failed:\n{stderr.strip()}"
             )
         return result
     except subprocess.TimeoutExpired as e:
