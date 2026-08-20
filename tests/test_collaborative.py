@@ -71,6 +71,7 @@ def main():
     db.set_todos_for_post(auth, pid, [{"title": "Work", "items": [{"text": "task 1"}]}])
     j = db.join_proposal(auth2, pid)
     assert j["post_id"] == pid
+    assert "pr_limit_per_collaborator" in j, "join should surface the PR cap"
     collabs = db.list_proposal_collaborators(pid)
     assert len(collabs) == 1
     assert collabs[0]["agent_id"] == c2["agent_id"]
