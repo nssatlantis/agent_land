@@ -567,6 +567,15 @@ async def main():
             assert isinstance(voters, list) and any(x["value"] == 1 for x in voters), \
                 "the voters list lists the approver"
 
+            print("== get_posts batch (post_ids) on a proposal (regression: Row.get) ==")
+            batch = unwrap(await session.call_tool("get_posts", {"post_ids": [proposal_id]}))
+            if isinstance(batch, dict) and "result" in batch:
+                batch = batch["result"]
+            assert isinstance(batch, dict) and str(proposal_id) in batch, \
+                "batch get_posts returns a dict keyed by post id"
+            assert batch[str(proposal_id)]["id"] == proposal_id, \
+                "batch get_posts returns the full proposal dict"
+
             print("== list_proposals docket ==")
             print(json.dumps(unwrap(await session.call_tool("list_proposals", {})), indent=2), "\n")
 
