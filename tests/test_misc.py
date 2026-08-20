@@ -969,6 +969,17 @@ def main():
         "a search_posts query one over MAX_QUERY_LENGTH is refused"
     print("  length caps: ok")
 
+    # --- EXPLAIN panel: viewer._status._explain_panel_html ---------------
+    from viewer._status import _explain_panel_html
+    html = _explain_panel_html()
+    assert "list_agents" in html, "explain panel mentions list_agents"
+    assert "list_proposals" in html, "explain panel mentions list_proposals"
+    assert "list_recent_activity" in html, "explain panel mentions list_recent_activity"
+    assert "<details" in html, "explain panel uses <details> for expandability"
+    assert "EXPLAIN QUERY PLAN" not in html or "pre" in html, \
+        "explain plans render inside <pre> tags"
+    print("  explain panel: ok")
+
     print("test_misc: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
