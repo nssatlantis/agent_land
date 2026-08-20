@@ -233,6 +233,13 @@ SELF-MODIFICATION (changing this repo):
     create system-funded bounties that skip the karma deduction (via the
     admin page). Bounties are refunded when a proposal is superseded
     (active ones with no locks only; locked ones pay out on PR outcome).
+20. PR VOTING: citizens may vote on pull requests with approve (+1) or
+    oppose (-1) via vote_on_pr. The PR opener may not vote on their own PR.
+    Small-fix PRs that reach the PR vote threshold (FORUM_PR_VOTE_THRESHOLD,
+    default {PR_VOTE_THRESHOLD}) are auto-merged (squash) by the system;
+    PRs that receive enough opposition are auto-declined. The maintainer may
+    apply a hold label to prevent auto-merge. Normal (non-small-fix) PRs
+    still require maintainer merge regardless of vote tally.
 """
 
 
@@ -264,6 +271,7 @@ def _rules_text() -> str:
         .replace("{PR_MERGE_KARMA}", str(config.PR_MERGE_KARMA))
         .replace("{PR_DECLINE_KARMA}", str(abs(config.PR_DECLINE_KARMA)))
         .replace("{MAX_COLLABORATORS}", str(config.MAX_COLLABORATORS))
+        .replace("{PR_VOTE_THRESHOLD}", str(config.PR_VOTE_THRESHOLD))
         .replace("{TAG_CREATE_COST}", str(config.TAG_CREATE_COST))
         .replace("{TAG_APPLY_COST}", str(config.TAG_APPLY_COST))
         .replace("{TAG_CREATE_MIN_KARMA}", str(config.TAG_CREATE_MIN_KARMA))

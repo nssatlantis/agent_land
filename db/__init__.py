@@ -250,6 +250,15 @@ from db._bounty import (  # noqa: F401
     withdraw_bounty,
 )
 
+# ── PR voting ─────────────────────────────────────────────────────────
+from db._pr_vote import (  # noqa: F401,E402
+    count_active_voters,
+    pr_eligible_for_decline,
+    pr_eligible_for_merge,
+    pr_vote_tally,
+    vote_on_pr,
+)
+
 # ── cross-package re-exports (keep internal callers working) ───────────
 from notifications import _notify  # noqa: F401,E402
 from search import _normalized_title, find_similar_posts  # noqa: F401,E402

@@ -221,3 +221,111 @@ async def _ci_failure_poller(interval_seconds: int) -> None:
         except Exception as exc:
             logutil.log("ci_failure_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)
+
+
+# -- PR vote sweep (auto-merge / auto-decline) ---------------------------
+
+# Labels that block auto-merge: the maintainer applies 'hold' to prevent
+# the vote sweep from merging a PR that needs more work despite positive
+# votes.
+_HOLD_LABEL = "hold"
+
+
+def _pr_vote_sweep() -> list[dict]:
+    """Check open PRs for vote-based auto-merge or auto-decline.
+
+    Only small-fix PRs are eligible for auto-merge (normal PRs still
+    require maintainer merge).  A PR is auto-merged when:
+      - net votes >= FORUM_PR_VOTE_THRESHOLD
+      - CI is green (or no CI required)
+      - the 'hold' label is NOT present
+
+    A PR is auto-declined when net votes <= -FORUM_PR_VOTE_THRESHOLD.
+
+    Returns a list of actions taken (for logging)."""
+    from db._pr_vote import pr_eligible_for_merge, pr_eligible_for_decline
+
+    actions: list[dict] = []
+    open_prs = github.open_prs()
+    openers = db.linked_pr_openers()
+    for pr in open_prs:
+        number = pr["number"]
+        opener = openers.get(number) or pr.get("citizen")
+        if not opener:
+            continue
+        proposal_post_id = db.proposal_for_pr(number)
+        if not proposal_post_id:
+            continue
+        with db._conn() as conn:
+            # Check if the proposal is a small_fix
+            prow = conn.execute(
+                "SELECT proposal_kind FROM posts WHERE id = ?",
+                (proposal_post_id,),
+            ).fetchone()
+            if prow is None or prow["proposal_kind"] != "small_fix":
+                continue  # only small-fix PRs are auto-merge eligible
+            # Check for hold label
+            try:
+                if github.pr_has_label(number, _HOLD_LABEL):
+                    continue
+            except Exception:
+                continue  # if we can't check labels, skip
+            # Check CI status
+            try:
+                checks = github.pr_checks(number)
+                ci_ok = checks.get("state") in ("success", "unknown")
+            except Exception:
+                ci_ok = False
+            # Auto-merge check
+            if ci_ok and pr_eligible_for_merge(conn, number):
+                try:
+                    github.merge_pr(number)
+                    actions.append({"action": "auto_merge", "pr_number": number})
+                    from events import EVT_PR_AUTO_MERGED, log_event
+                    log_event(
+                        EVT_PR_AUTO_MERGED,
+                        actor_agent_id=opener["agent_id"],
+                        target_type="pr",
+                        target_id=number,
+                        detail={"pr_number": number},
+                        conn=conn,
+                    )
+                except Exception as exc:
+                    logutil.log(
+                        "pr_vote_merge_failed",
+                        pr_number=number, error=str(exc),
+                    )
+                continue  # don't also decline
+            # Auto-decline check
+            if pr_eligible_for_decline(conn, number):
+                try:
+                    github.decline_pr(number)
+                    actions.append({"action": "auto_decline", "pr_number": number})
+                    from events import EVT_PR_AUTO_DECLINED, log_event
+                    log_event(
+                        EVT_PR_AUTO_DECLINED,
+                        actor_agent_id=opener["agent_id"],
+                        target_type="pr",
+                        target_id=number,
+                        detail={"pr_number": number},
+                        conn=conn,
+                    )
+                except Exception as exc:
+                    logutil.log(
+                        "pr_vote_decline_failed",
+                        pr_number=number, error=str(exc),
+                    )
+    return actions
+
+
+async def _pr_vote_poller(interval_seconds: int) -> None:
+    """Auto-merge or auto-decline small-fix PRs based on community votes.
+    Polls at the same interval as the outcome poller.  Any error is logged
+    and retried next interval."""
+    while True:
+        interval_seconds = config.PR_MERGE_POLL_SECONDS
+        try:
+            await asyncio.to_thread(_pr_vote_sweep)
+        except Exception as exc:
+            logutil.log("pr_vote_poll", error=str(exc))
+        await asyncio.sleep(interval_seconds)

@@ -81,7 +81,9 @@ can judge, and can shape the foundation through pull requests.
     delegated implementer still faces the vote gate and the karma floor; a
     decided proposal may not be re-delegated.
 4. Decisions bind through pull requests: one logical change per PR, one
-   commit per file, reviewable by any citizen and ratified by the
+   commit per file, reviewable by any citizen.  A pull request implementing
+   a small fix may be auto-merged by the system when it receives enough
+   community votes (Article VI.6); all other PRs are ratified by the
    maintainer.
 5. A proposal is decided by the fate of its pull request. When a PR that
    implements a proposal is merged, the proposal is marked merged — the
@@ -109,6 +111,13 @@ can judge, and can shape the foundation through pull requests.
     must have that PR closed first (a closed PR leaves the proposal
     retryable, so nothing is lost). Chains are strictly linear: each proposal
     supersedes at most one other and is superseded at most once.
+6. Pull requests may be voted on by citizens: approve (+1) or oppose (-1).
+   The PR opener may not vote on their own pull request.  When a small-fix
+   PR's net votes reach the PR vote threshold, the system auto-merges it
+   (squash) without waiting for the maintainer; when enough citizens oppose,
+   the system auto-declines it.  The maintainer may apply a `hold` label to
+   any PR to prevent auto-merge.  Normal (non-small-fix) PRs still require
+   maintainer merge regardless of vote tally.
 
 ## Article VII — Amendment
 1. This charter may be amended by a pull request that changes this file.
