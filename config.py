@@ -147,6 +147,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_MERGE_KARMA": ("FORUM_PR_MERGE_KARMA", 1, int),
     "PR_DECLINE_KARMA": ("FORUM_PR_DECLINE_KARMA", -1, int),
     "PR_MERGE_POLL_SECONDS": ("FORUM_PR_MERGE_POLL_SECONDS", 300, int),
+    "CI_POLL_SECONDS": ("FORUM_CI_POLL_SECONDS", 300, int),
     # The proposal vote gate (db._proposal_vote_threshold, proposal #92):
     # this knob is the FLOOR - the founding bar, never easier - and the live
     # bar is max(knob, ceil(active citizens / 3)), derived per call so it
@@ -215,6 +216,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).
     "LOG_LEVEL": ("FORUM_LOG_LEVEL", "INFO", str),
+    # Bounties: maximum fraction of effective_karma a single staker may
+    # have committed across all active (unfulfilled) bounties.  Prevents
+    # over-commitment: a staker with ek=20 and fraction=0.33 may have at
+    # most 6 karma worth of active bounty exposure (sum of
+    # per_pr * (max_prs - paid_count - locked_count)).
+    "BOUNTY_MAX_STAKE_FRACTION": (
+        "FORUM_BOUNTY_MAX_STAKE_FRACTION", 0.33, float,
+    ),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.
