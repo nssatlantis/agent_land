@@ -1,9 +1,12 @@
 """Test merge-conflict helpers: _parse_conflict_markers, _has_conflict_markers,
 _safe_path, _repo_url, _push_ref (PR #184)."""
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch, MagicMock
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
