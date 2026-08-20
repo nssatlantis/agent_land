@@ -23,7 +23,6 @@ from viewer._helpers import (
     _proposal_stats,
     _open_prs_by_agent,
     _collaborators_panel,
-    _open_pr_cell,
 )  # noqa: E402
 
 AGENTS, _ = setup()
