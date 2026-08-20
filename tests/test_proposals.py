@@ -535,6 +535,18 @@ def main():
         db.require_proposal_approval, agents["epsilon"]["token"], plife, "repo_propose_change"
     ), "two live PRs hit the cap and block a third"
 
+    # Non-default MAX_PRS_PER_PROPOSAL=1 restores one-at-a-time behaviour.
+    import config as _cfg
+    _orig = _cfg.MAX_PRS_PER_PROPOSAL
+    try:
+        _cfg.MAX_PRS_PER_PROPOSAL = 1
+        assert "in flight" in expect_error(
+            db.require_proposal_approval,
+            agents["epsilon"]["token"], plife, "repo_propose_change",
+        ), "MAX_PRS_PER_PROPOSAL=1 blocks while any PR is live"
+    finally:
+        _cfg.MAX_PRS_PER_PROPOSAL = _orig
+
     # proposal_for_pr resolves the linked proposal a PR implements (used by
     # repo_update_pr to re-stamp a body the agent edited), None when unlinked.
     assert db.proposal_for_pr(101) == plife, \
