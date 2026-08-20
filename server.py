@@ -851,8 +851,14 @@ def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     `since` (an ISO-8601 UTC timestamp) keeps only PRs updated (closed/all)
     or created (open) at or after that time, so 'what merged since my last
     visit' is one call. Closed/all rows also carry state / merged_at /
-    closed_at / outcome."""
-    return github.list_prs(state=state, since=since)
+    closed_at / outcome.  Open PRs include a `votes` tally
+    ({up, down, net})."""
+    rows = github.list_prs(state=state, since=since)
+    if state == "open" and rows:
+        tallies = db.pr_vote_tallies([r["number"] for r in rows])
+        for r in rows:
+            r["votes"] = tallies.get(r["number"], {"up": 0, "down": 0, "net": 0})
+    return rows
 
 
 @mcp.tool()
@@ -861,10 +867,13 @@ def repo_get_pr(number: int) -> dict:
     """Get one pull request: its state, `outcome` (open / merged / declined /
     closed), whether CI is green on it, and the full comment thread (issue
     conversation + inline review comments), so you can see and respond to
-    review feedback.  Cached for up to 30 seconds -- a just-pushed commit or
+    review feedback.  Includes a `votes` tally ({up, down, net, voters}).
+    Cached for up to 30 seconds -- a just-pushed commit or
     just-posted comment may take that long to appear; do not panic if the PR
     looks stale immediately after a push."""
-    return github.get_pr(number)
+    result = github.get_pr(number)
+    result["votes"] = db.pr_vote_tally(number)
+    return result
 
 
 @mcp.tool()
