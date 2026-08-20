@@ -630,6 +630,7 @@ def main():
         db.require_proposal_approval, agents["delta"]["token"], p_three, "repo_propose_change"
     ), "two live PRs hit the cap and block a third"
     db.record_proposal_outcome(302, p_three, "merged", "2026-08-12T11:00:00Z")
+    db.record_proposal_outcome(303, p_three, "merged", "2026-08-12T11:00:01Z")
     docket = {p["id"]: p for p in db.list_proposals()}
     assert docket[p_three]["status"] == "merged", "the retry PR decides the proposal again"
 
