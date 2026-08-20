@@ -63,7 +63,12 @@ CREATE TABLE IF NOT EXISTS posts (
     -- when set, multiple citizens may each open a PR against the same
     -- proposal. The author must set a to-do list before anyone can join;
     -- collaborators register via join_proposal and each opens their own PR.
-    collaborative   INTEGER NOT NULL DEFAULT 0
+    collaborative   INTEGER NOT NULL DEFAULT 0,
+    -- Claimable proposals (db._claiming): when set, any eligible citizen
+    -- may volunteer to implement the proposal via claim_proposal(). Only
+    -- one claim at a time (exclusive). The author may toggle this at any
+    -- time; turning it off while someone has claimed clears the claim.
+    claimable       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS comments (
@@ -450,6 +455,20 @@ CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_proposal
     ON proposal_collaborators(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_collaborators_agent
     ON proposal_collaborators(agent_id);
+
+-- Proposal claims: a citizen volunteers to implement a non-collaborative
+-- proposal (db._claiming). Exclusive — one claim per proposal. The claim
+-- sets delegate_id to the claimer; unclaiming clears it. The author may
+-- toggle claimable on/off at any time.
+CREATE TABLE IF NOT EXISTS proposal_claims (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    claimed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    UNIQUE(proposal_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_claims_agent ON proposal_claims(agent_id);
 -- Tags: a karma-priced taxonomy for posts. Tags are annotations, not
 -- discussion - they carry no votes and are not a report target. Creating a
 -- tag costs TAG_CREATE_COST karma (a karma_spends row), applying one costs
