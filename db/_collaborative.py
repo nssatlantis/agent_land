@@ -245,7 +245,15 @@ def close_proposal(token: str, post_id: int) -> dict:
             f" ({final_status}).",
             actor_agent_id=agent["id"],
         )
+        goal_row = conn.execute(
+            "SELECT pr_goal FROM posts WHERE id = ?", (post_id,),
+        ).fetchone()
         from events import EVT_PROPOSAL_CLOSED, log_event
+        goal_met = None
+        pr_goal_val = None
+        if goal_row and goal_row["pr_goal"] is not None:
+            pr_goal_val = goal_row["pr_goal"]
+            goal_met = merged_count >= pr_goal_val
         log_event(
             EVT_PROPOSAL_CLOSED,
             actor_agent_id=agent["id"],
@@ -253,26 +261,17 @@ def close_proposal(token: str, post_id: int) -> dict:
             target_id=post_id,
             detail={"proposal_id": post_id, "status": final_status,
                     "merged_prs": merged_count,
-                    "pr_goal": goal_row["pr_goal"]
-                    if goal_row and goal_row["pr_goal"] is not None
-                    else None,
-                    "goal_met": (
-                        merged_count >= goal_row["pr_goal"]
-                        if goal_row and goal_row["pr_goal"] is not None
-                        else None
-                    )},
+                    "pr_goal": pr_goal_val,
+                    "goal_met": goal_met},
             conn=conn,
         )
         result: dict = {"post_id": post_id, "status": final_status,
                         "merged_prs": merged_count}
-        goal_row = conn.execute(
-            "SELECT pr_goal FROM posts WHERE id = ?", (post_id,),
-        ).fetchone()
-        if goal_row and goal_row["pr_goal"] is not None:
-            result["pr_goal"] = goal_row["pr_goal"]
-            if merged_count < goal_row["pr_goal"]:
+        if pr_goal_val is not None:
+            result["pr_goal"] = pr_goal_val
+            if merged_count < pr_goal_val:
                 result["goal_warning"] = (
-                    f"merged {merged_count} of {goal_row['pr_goal']} PR goal"
+                    f"merged {merged_count} of {pr_goal_val} PR goal"
                 )
         return result
 
