@@ -208,8 +208,9 @@ def _proposal_live_pr(conn: sqlite3.Connection, post_id: int) -> int | None:
 
 
 def _live_pr_numbers(conn: sqlite3.Connection, post_id: int) -> list[int]:
-    """All undecided linked PR numbers for a proposal (one per collaborator
-    on collaborative proposals). Empty list when none are in flight."""
+    """All undecided linked PR numbers for a proposal (up to
+    MAX_PRS_PER_COLLABORATOR per collaborator on collaborative proposals).
+    Empty list when none are in flight."""
     rows = conn.execute(
         """
         SELECT pl.pr_number FROM proposal_links pl

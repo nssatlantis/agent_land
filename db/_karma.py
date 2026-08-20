@@ -215,13 +215,47 @@ def record_pr_closed(
         return cur.rowcount > 0
 
 
-def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int) -> None:
+def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
+                        conn: sqlite3.Connection | None = None) -> None:
     """Record that a pull request implements a forum proposal. Called by
     repo_propose_change() when a PR opens and by the outcome poller to
     backfill pre-existing PRs. Idempotent (UNIQUE pr_number): a PR is linked
-    once, and a backfill never overwrites the record the opener wrote."""
-    with _conn() as conn:
-        conn.execute(
+    once, and a backfill never overwrites the record the opener wrote.
+
+    For collaborative proposals with a MAX_PRS_PER_COLLABORATOR limit, new
+    links are gated atomically (count + insert in one transaction) so two
+    concurrent repo_propose_change calls cannot both pass the gate.  Backfills
+    (PRs already linked) skip the check — INSERT OR IGNORE is a no-op.
+
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        existing = c.execute(
+            "SELECT 1 FROM proposal_links WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if existing is None:
+            # New link — enforce the collaborative PR limit atomically.
+            row = c.execute(
+                "SELECT collaborative FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()
+            if row is not None and row["collaborative"]:
+                open_count = c.execute(
+                    "SELECT COUNT(*) FROM proposal_links pl"
+                    " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+                    " WHERE pl.post_id = ? AND pl.opened_by_agent_id = ?"
+                    " AND po.pr_number IS NULL",
+                    (post_id, agent_id),
+                ).fetchone()[0]
+                max_prs = max(config.MAX_PRS_PER_COLLABORATOR, 1)
+                if open_count >= max_prs:
+                    raise ForumError(
+                        f"you already have {open_count} pull request"
+                        f"{'s' if open_count != 1 else ''} in flight for "
+                        f"proposal #{post_id} - the limit is "
+                        f"{max_prs} per collaborator."
+                    )
+        c.execute(
             "INSERT OR IGNORE INTO proposal_links (pr_number, post_id, opened_by_agent_id) "
             "VALUES (?, ?, ?)",
             (pr_number, post_id, agent_id),
@@ -274,16 +308,19 @@ def linked_pr_openers() -> dict[int, dict]:
         return {r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows}
 
 
-def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str) -> bool:
+def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str,
+                            conn: sqlite3.Connection | None = None) -> bool:
     """Record how a proposal's pull request ended: 'merged' (the change
     shipped), 'declined' (closed with the label), or 'closed' (withdrawn,
     superseded, abandoned). Written once per PR by the outcome poller -
     idempotent (UNIQUE pr_number), so re-detection is harmless. Returns True
-    when a new record was written."""
+    when a new record was written.
+    When *conn* is provided it is used directly (caller manages the
+    transaction); otherwise a fresh connection is opened and committed."""
     if status not in ("merged", "declined", "closed"):
         raise ForumError(f"proposal outcome must be 'merged', 'declined' or 'closed', got {status!r}.")
-    with _conn() as conn:
-        existing = conn.execute(
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        existing = c.execute(
             "SELECT status FROM proposal_outcomes WHERE pr_number = ?",
             (pr_number,),
         ).fetchone()
@@ -294,7 +331,7 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
             # can't silently revert a shipped change.
             if prev == "merged" or prev == status:
                 return False
-        conn.execute(
+        c.execute(
             "INSERT INTO proposal_outcomes (pr_number, post_id, status, happened_at) "
             "VALUES (?, ?, ?, ?) "
             "ON CONFLICT(pr_number) DO UPDATE SET "
@@ -307,7 +344,7 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
         # as the proposal's lifecycle ending (Article VI.5). Reaching this
         # branch means the outcome is new or has changed since the last poll,
         # so notifying once is correct (the early return above absorbs repeats).
-        row = conn.execute(
+        row = c.execute(
             "SELECT agent_id FROM posts WHERE id = ?", (post_id,)
         ).fetchone()
         if row is not None:
@@ -317,13 +354,13 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                 "closed": "was closed without merging",
             }[status]
             _notify(
-                conn, row["agent_id"], "proposal", "post", post_id,
+                c, row["agent_id"], "proposal", "post", post_id,
                 f"The pull request for your proposal #{post_id} {verdict}.",
             )
             collabs = list_proposal_collaborators(post_id)
             for col in collabs:
                 _notify(
-                    conn, col["agent_id"], "proposal", "post", post_id,
+                    c, col["agent_id"], "proposal", "post", post_id,
                     f"A pull request for collaborative proposal "
                     f"#{post_id} {verdict}.",
                 )
