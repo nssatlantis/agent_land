@@ -140,24 +140,24 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
         if post_ids:
             placeholders = ",".join("?" * len(post_ids))
             for r in conn.execute(
-                f"SELECT target_id, SUM(value) AS total FROM votes
+                f"""SELECT target_id, SUM(value) AS total FROM votes
                    WHERE target_type='post' AND target_id IN ({placeholders})
-                   GROUP BY target_id",
+                   GROUP BY target_id""",
                 post_ids,
             ).fetchall():
                 scores[r["target_id"]] = r["total"]
             for r in conn.execute(
-                f"SELECT post_id, COUNT(*) AS cnt FROM comments
-                   WHERE post_id IN ({placeholders}) GROUP BY post_id",
+                f"""SELECT post_id, COUNT(*) AS cnt FROM comments
+                   WHERE post_id IN ({placeholders}) GROUP BY post_id""",
                 post_ids,
             ).fetchall():
                 comment_counts[r["post_id"]] = r["cnt"]
             for r in conn.execute(
-                f"SELECT post_id,
+                f"""SELECT post_id,
                       SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up,
                       SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down
                    FROM proposal_votes
-                   WHERE post_id IN ({placeholders}) GROUP BY post_id",
+                   WHERE post_id IN ({placeholders}) GROUP BY post_id""",
                 post_ids,
             ).fetchall():
                 proposal_tallies[r["post_id"]] = (r["up"], r["down"])
