@@ -234,8 +234,9 @@ _HOLD_LABEL = "hold"
 def _pr_vote_sweep() -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
-    Only small-fix PRs are eligible for auto-merge (normal PRs still
-    require maintainer merge).  A PR is auto-merged when:
+    By default (PR_AUTO_MERGE_SMALL_FIX_ONLY=1) only small-fix PRs are
+    eligible; when set to 0, all linked PRs qualify.  A PR is auto-merged
+    when:
       - net votes >= the derived PR vote threshold (max(floor,
         ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD)
       - CI is green (or no CI required)
