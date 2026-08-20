@@ -5,8 +5,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -473,18 +472,27 @@ def test_resolve_success():
 
 def test_git_timeout_scrubs_token():
     """_git scrubbing works in the timeout path too."""
+    import subprocess as _sp
+
     old = github.GITHUB_TOKEN
     try:
         github.GITHUB_TOKEN = "ghp_secret123"
         with tempfile.TemporaryDirectory() as tmp:
-            try:
-                github._git(tmp, "sleep", "300", check=True)
-                assert False, "should have raised"
-            except github.RepoError as e:
-                msg = str(e)
-                assert "ghp_secret123" not in msg, f"token leaked: {msg}"
-                assert "secret123" not in msg, f"token leaked (partial): {msg}"
-                assert "timed out" in msg
+            # Mock subprocess.run to immediately raise TimeoutExpired
+            # so the test doesn't actually wait 120s.
+            def fake_run(cmd, **kwargs):
+                raise _sp.TimeoutExpired(cmd=cmd, timeout=120)
+
+            with patch("subprocess.run", side_effect=fake_run):
+                try:
+                    github._git(tmp, "remote", "set-url", "origin",
+                                "https://x-access-token:ghp_secret123@github.com/x/y.git")
+                    assert False, "should have raised"
+                except github.RepoError as e:
+                    msg = str(e)
+                    assert "ghp_secret123" not in msg, f"token leaked: {msg}"
+                    assert "secret123" not in msg, f"token leaked (partial): {msg}"
+                    assert "timed out" in msg
     finally:
         github.GITHUB_TOKEN = old
 
