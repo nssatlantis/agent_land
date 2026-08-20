@@ -226,6 +226,21 @@ def test_custom_threshold():
     print("  custom threshold: ok")
 
 
+def test_vote_blocked_after_outcome_recorded():
+    """Voting is blocked once proposal_outcomes records 'merged' (before pr_merges)."""
+    pid, pr_number = _make_small_fix()
+
+    # Record the proposal outcome as "merged" — this is what the outcome
+    # poller does BEFORE awarding pr_merges karma, creating a window where
+    # pr_merges has no row yet.
+    db.record_proposal_outcome(pr_number, pid, "merged", "2026-08-20T00:00:00.000Z")
+
+    # Attempting to vote should be blocked by the proposal_outcomes check.
+    err = expect_error(db.vote_on_pr, AGENTS["beta"]["token"], pr_number, 1)
+    assert "decided" in err.lower(), f"expected 'decided' in error, got: {err}"
+    print("  vote blocked after outcome recorded: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_pr_vote_schema()
@@ -240,4 +255,5 @@ if __name__ == "__main__":
     test_vote_tally_empty()
     test_pr_vote_events()
     test_custom_threshold()
+    test_vote_blocked_after_outcome_recorded()
     print("\n== test_pr_vote: all passed ==")
