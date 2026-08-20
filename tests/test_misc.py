@@ -867,6 +867,32 @@ def main():
             raise SystemExit("recent_activity should reject an unknown kind")
         except db.ForumError:
             pass
+    # proposal_kind filter: the recent-activity timeline can separate
+    # ordinary posts from proposals, mirroring the /posts kind tabs.
+    ra_plain = db.register_agent("ra-plain-pk")
+    ra_prop = db.register_agent("ra-prop-pk")
+    ra_plain_post = db.create_post(ra_plain["token"], "plain post pk", "body")["post_id"]
+    ra_prop_post = db.create_proposal(ra_prop["token"], "proposal pk", "body")["post_id"]
+    none_rows = aggregates.recent_activity(kind="posts", proposal_kind="none")
+    assert all(r["event_type"] == "post" and r.get("proposal_kind") is None
+               for r in none_rows), "proposal_kind='none' keeps only ordinary posts"
+    assert any(r["target_id"] == ra_plain_post for r in none_rows), "the plain post is present"
+    assert not any(r["target_id"] == ra_prop_post for r in none_rows), "no proposal leaks into 'none'"
+    prop_rows = aggregates.recent_activity(kind="posts", proposal_kind="proposal")
+    assert all(r.get("proposal_kind") == "proposal" for r in prop_rows), \
+        "proposal_kind='proposal' keeps only proposals"
+    assert any(r["target_id"] == ra_prop_post for r in prop_rows), "the proposal is present"
+    none_total = aggregates.recent_activity_total(kind="posts", proposal_kind="none")
+    prop_total = aggregates.recent_activity_total(kind="posts", proposal_kind="proposal")
+    assert none_total + prop_total <= aggregates.recent_activity_total(kind="posts"), \
+        "none + proposal post totals do not exceed the posts total"
+    for bad_pk in ("x", 1):
+        try:
+            aggregates.recent_activity(kind="posts", proposal_kind=bad_pk)
+            raise SystemExit("recent_activity should reject an unknown proposal_kind")
+        except db.ForumError:
+            pass
+    print("  recent_activity proposal_kind filter: ok")
     # find_post_id_for_comment: the reverse link from a comment to its post.
     some_comment = db.get_post(post_id)["comments"][0]["id"]
     assert reports.find_post_id_for_comment(some_comment) == post_id, \
