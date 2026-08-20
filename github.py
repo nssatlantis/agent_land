@@ -1573,18 +1573,13 @@ def _git(
 
 
 def _clone_repo() -> str:
-    """Clone the repo into a temp directory and return the path."""
+    """Clone the repo into a temp directory.  Returns the repo subdir path.
+    The clone is anonymous (no auth) since the repo is public; push auth
+    is set up separately by ``_setup_push_auth``."""
     tmp = tempfile.mkdtemp(prefix="agentland_merge_")
-    clone_url = f"https://github.com/{GITHUB_REPO}.git"
-    if GITHUB_TOKEN:
-        clone_url = clone_url.replace(
-            "https://",
-            f"https://x-access-token:{GITHUB_TOKEN}@",
-        )
     try:
-        _git(tmp, "clone", "--depth=0", clone_url, "repo")
+        _git(tmp, "clone", "--depth=1", _repo_url(with_token=False), "repo")
     except RepoError:
-        import shutil
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     return os.path.join(tmp, "repo")
@@ -1592,9 +1587,56 @@ def _clone_repo() -> str:
 
 def _cleanup(repo_dir: str) -> None:
     """Best-effort removal of a temp clone."""
-    import shutil
     parent = os.path.dirname(repo_dir)
     shutil.rmtree(parent, ignore_errors=True)
+
+
+def _abort_merge(repo_dir: str) -> None:
+    """Abort any in-progress merge in *repo_dir*."""
+    _git(repo_dir, "merge", "--abort", check=False)
+
+
+def _setup_push_auth(repo_dir: str) -> None:
+    """Set the remote URL to include the token for authenticated push."""
+    _ensure_token()
+    _git(repo_dir, "remote", "set-url", "origin", _repo_url(with_token=True))
+
+
+def _push_ref(branch: str) -> str:
+    """Build a HEAD:branch ref string for git push."""
+    return f"HEAD:{branch}"
+
+
+def _safe_path(repo_dir: str, file_path: str) -> str:
+    """Resolve *file_path* under *repo_dir* and reject path traversal.
+    Returns the resolved absolute path when safe; raises RepoError when
+    the resolved path escapes the repository root."""
+    real_repo = os.path.realpath(repo_dir)
+    fpath = os.path.realpath(os.path.join(repo_dir, file_path))
+    if not (fpath == real_repo or fpath.startswith(real_repo + os.sep)):
+        raise RepoError(
+            f"path {file_path!r} escapes the repository root"
+        )
+    return fpath
+
+
+def _detect_conflict_files(repo_dir: str) -> list[str]:
+    """Return the list of unmerged (conflicted) files after a failed merge.
+    Uses ``git diff --name-only --diff-filter=U`` to distinguish real merge
+    conflicts from other merge failures."""
+    result = _git(
+        repo_dir, "diff", "--name-only", "--diff-filter=U", check=False
+    )
+    return [f for f in result.stdout.strip().splitlines() if f]
+
+
+def _has_conflict_markers(text: str) -> bool:
+    """Check whether *text* still contains unresolved conflict markers.
+    Used to reject resolution content that was not actually cleaned up."""
+    for marker in ("<<<<<<<", "=======", ">>>>>>>"):
+        if marker in text:
+            return True
+    return False
 
 
 def detect_merge_conflicts(number: int) -> dict:
