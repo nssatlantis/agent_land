@@ -1756,32 +1756,61 @@ def apply_merge_resolutions(
     base = pr["base"]["ref"]
     repo_dir = _clone_repo()
     try:
-        _git(repo_dir, "fetch", "origin", head)
-        _git(repo_dir, "checkout", "FETCH_HEAD")
+        _git(repo_dir, "fetch", "--depth=1", "origin", base, head)
+        _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
-            repo_dir, "merge", f"origin/{base}",
-            "--no-commit", "--no-ff", check=False,
+            repo_dir, "merge", "--no-commit", "--no-ff",
+            f"origin/{base}", check=False,
         )
-        if result.returncode == 0:
-            _git(repo_dir, "merge", "--abort", check=False)
+        conflicted = _detect_conflict_files(repo_dir)
+        if result.returncode == 0 and not conflicted:
+            _abort_merge(repo_dir)
             return {
                 "status": "clean",
                 "pr_number": number,
                 "message": "No conflicts found — nothing to resolve.",
             }
-        # Write resolutions
-        resolved_files = []
+        if result.returncode != 0 and not conflicted:
+            stderr = result.stderr
+            if GITHUB_TOKEN:
+                stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
+            raise RepoError(
+                f"merge failed (not a conflict): {stderr.strip()}"
+            )
+        # Validate coverage: provided files must exactly equal conflicted
+        provided = {r["file"] for r in resolutions}
+        if provided != set(conflicted):
+            missing = set(conflicted) - provided
+            extra = provided - set(conflicted)
+            parts = []
+            if missing:
+                parts.append(f"missing: {sorted(missing)}")
+            if extra:
+                parts.append(f"extra: {sorted(extra)}")
+            raise RepoError(
+                "resolutions must cover exactly the conflicted files "
+                f"({', '.join(parts)})."
+            )
+        # Write resolutions with path-traversal guard
         for r in resolutions:
-            fpath = os.path.join(repo_dir, r["file"])
-            os.makedirs(os.path.dirname(fpath), exist_ok=True)
+            fpath = _safe_path(repo_dir, r["file"])
+            parent = os.path.dirname(fpath)
+            os.makedirs(parent, exist_ok=True)
             Path(fpath).write_text(r["content"], encoding="utf-8")
             _git(repo_dir, "add", r["file"])
-            resolved_files.append(r["file"])
-        # Commit the merge
-        commit_msg = f"Merge main into {head} — resolve conflicts\n\nCitizen: {citizen}"
-        _git(repo_dir, "commit", "-m", commit_msg)
-        _git(repo_dir, "push", "origin", f"HEAD:{head}")
-        # Get the commit sha
+        # Commit the merge with explicit git identity
+        commit_msg = (
+            f"Merge main into {head} — resolve conflicts\n"
+            f"\nCitizen: {citizen}"
+        )
+        _git(
+            repo_dir, "-c", "user.name=agentland",
+            "-c", "user.email=agentland@agentland.dev",
+            "commit", "-m", commit_msg,
+        )
+        # Authenticate for push, then push
+        _setup_push_auth(repo_dir)
+        _git(repo_dir, "push", "origin", _push_ref(head))
         sha_result = _git(repo_dir, "rev-parse", "HEAD")
         commit_sha = sha_result.stdout.strip()
         _invalidate_pr(number)
@@ -1791,8 +1820,11 @@ def apply_merge_resolutions(
             "head": head,
             "base": base,
             "commit_sha": commit_sha,
-            "files_resolved": resolved_files,
-            "message": f"Merged main into {head} with {len(resolved_files)} file(s) resolved.",
+            "files_resolved": sorted(provided),
+            "message": (
+                f"Merged main into {head} with "
+                f"{len(provided)} file(s) resolved."
+            ),
         }
     finally:
         _cleanup(repo_dir)
