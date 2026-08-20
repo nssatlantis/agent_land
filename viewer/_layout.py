@@ -150,11 +150,14 @@ PAGE = """\
                  vertical-align:2px; color:#fff; }}
   .kind-proposal {{ background:var(--accent); }}
   .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
-  .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }}
+  .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; align-items:center; }}
   .tabs a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
              padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
   .tabs a:hover {{ border-color:var(--accent); }}
   .tabs a.active {{ color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }}
+  .tab-phase {{ display:inline-flex; gap:6px; align-items:center; }}
+  .tab-phase-label {{ font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase;
+                      letter-spacing:0.5px; margin-right:2px; }}
   .sort-row {{ margin:0 0 12px; font-size:15px; color:var(--muted); }}
   .sort-row .seg {{ display:inline-flex; border:1px solid var(--line); border-radius:999px;
                     overflow:hidden; background:#fff; margin-left:6px; }}

@@ -154,15 +154,21 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     return "".join(_docket_card(p) for p in rows)
 
 _DOCKET_TITLES = {
-    "all": "Proposals docket",
+    "all": "All",
     "needs_votes": "Needs votes",
-    "approved": "Approved",
-    "review": "Review requested",
-    "stale": "Stale",
-    "merged": "Merged",
     "small_fix": "Small fixes",
+    "stale": "Stale",
+    "approved": "Approved",
+    "review": "Review",
     "collaborative": "Collaborative",
+    "merged": "Merged",
 }
+
+_DOCKET_PHASES = [
+    ("Discussion", ["needs_votes", "small_fix", "stale"]),
+    ("Implementation", ["approved", "review", "collaborative"]),
+    ("Done", ["merged"]),
+]
 
 def _proposals_href(view: str, sort: str, page: int = 1) -> str:
     """Query-string builder for the docket's tabs, sort row and pager, so
@@ -198,12 +204,19 @@ async def proposals_page(request: Request) -> HTMLResponse:
     counts = db.proposal_docket_counts()
     total_pages = max(1, (counts[view] + config.PROPOSALS_PER_PAGE - 1) // config.PROPOSALS_PER_PAGE)
     page = min(page, total_pages)
-    tabs = "".join(
-        f'<a href="/proposals{_proposals_href(v, sort)}"'
-        + (' class="active"' if v == view else "")
-        + f">{_DOCKET_TITLES[v]} ({counts[v]})</a>"
-        for v in _DOCKET_TITLES
+    tabs = (
+        f'<a href="/proposals{_proposals_href("all", sort)}"'
+        + (' class="active"' if view == "all" else "")
+        + f">All ({counts['all']})</a>"
     )
+    for phase_name, phase_views in _DOCKET_PHASES:
+        phase_tabs = "".join(
+            f'<a href="/proposals{_proposals_href(v, sort)}"'
+            + (' class="active"' if v == view else "")
+            + f">{_DOCKET_TITLES[v]} ({counts[v]})</a>"
+            for v in phase_views
+        )
+        tabs += f'<span class="tab-phase"><span class="tab-phase-label">{phase_name}</span>{phase_tabs}</span>'
     sort_row = (
         '<span class="sort-row">sort: '
         + " · ".join(
@@ -232,9 +245,9 @@ async def proposals_page(request: Request) -> HTMLResponse:
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{_DOCKET_TITLES[view]}</h2>'
         + '<p style="color:var(--muted);font-size:15px;margin:0 0 12px">'
-        "Proposals above small-fix scope need net approvals at or above the "
-        "community's threshold to open a pull request; small fixes need no votes. "
-        "Only a merged proposal is done. Stale proposals need rework. "
+        "Proposals move through two phases: <b>Discussion</b> (vote on the idea, "
+        "small fixes need no votes) then <b>Implementation</b> (PR is open, "
+        "review or auto-merge). Only a merged proposal is done. "
         "The tabs are lenses, not partitions.</p>"
         + f'<div class="tabs">{tabs}</div>'
         + sort_row
