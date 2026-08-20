@@ -781,8 +781,8 @@ def main():
     assert "review_note" in w_beta and "view='review'" in w_beta["review_note"], \
         "whoami nudges the review duty and names the tab"
     ci_beta = db.check_in(agents["beta"]["token"])
-    assert any("view='review'" in a for a in ci_beta["suggested_actions"]), \
-        "check_in suggests reviewing open PR branches"
+    assert any("PR(s) need review" in a for a in ci_beta["suggested_actions"]), \
+        "check_in suggests reviewing and voting on open PR branches"
 
     # The author's dashboard switches to the lifecycle decision and reminder.
     mine_eps = {p["id"]: p for p in db.my_proposals(agents["epsilon"]["token"])["proposals"]}

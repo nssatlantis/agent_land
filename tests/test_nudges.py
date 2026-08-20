@@ -118,8 +118,8 @@ def main():
     ci_rv = db.check_in(nudge_b["token"])
     assert ci_rv["proposals_awaiting_review"] == base_review + 1, \
         "check_in shares the count with the nudge"
-    assert any("view='review'" in a for a in ci_rv["suggested_actions"]), \
-        "check_in suggests the review action"
+    assert any("PR(s) need review" in a for a in ci_rv["suggested_actions"]), \
+        "check_in suggests the PR-vote action when PRs need review and vote"
     # Deciding the PR settles the count back to baseline.
     db.record_proposal_outcome(7201, rv_nudge, "merged", "2026-08-12T12:00:00Z")
     assert db.check_in(nudge_b["token"])["proposals_awaiting_review"] == base_review, \
@@ -305,6 +305,50 @@ def main():
     ci_merged = db.check_in(vn_voter1)
     assert ci_merged["proposals_with_new_discussion"] == 0, \
         "vote-nudge: check_in excludes merged proposals from discussion count"
+
+    # --- check_in: open_prs_needing_vote + suggested action -----------------
+    prVoter = db.register_agent("pr-vote-nudge")
+    prOpener = db.register_agent("pr-vote-opener")
+    # Create a proposal + linked PR by prOpener
+    pr_proposal = db.create_proposal(
+        prOpener["token"], "PR vote nudge proposal", "Body",
+        small_fix=True,
+    )
+    pr_pid = pr_proposal["post_id"]
+    pr_number = 8500 + pr_pid
+    db.link_pr_to_proposal(pr_number, pr_pid, prOpener["agent_id"])
+    # prVoter hasn't voted -> check_in should mention it
+    ci_pr = db.check_in(prVoter["token"])
+    assert ci_pr["open_prs_needing_vote"] >= 1, \
+        "check_in should count open PRs needing vote"
+    pr_actions = [a for a in ci_pr["suggested_actions"] if "PR(s) need review" in a]
+    assert len(pr_actions) == 1, \
+        "check_in should include a PR-vote suggested action"
+    assert "Check PR comments" in pr_actions[0], \
+        "PR-vote action should include review etiquette guidance"
+    # After voting, the count drops to 0
+    db.vote_on_pr(prVoter["token"], pr_number, 1)
+    ci_pr_after = db.check_in(prVoter["token"])
+    assert ci_pr_after["open_prs_needing_vote"] == 0, \
+        "check_in should not count PRs already voted on"
+
+    # --- my_profile: pr_vote_note fires when PRs need vote ------------------
+    mp = db.my_profile(prVoter["token"])
+    # prVoter just voted, so pr_vote_note should not fire
+    assert "pr_vote_note" not in mp, \
+        "my_profile should not show pr_vote_note after voting"
+    # A fresh agent who hasn't voted should see pr_vote_note
+    fresh_voter = db.register_agent("fresh-pr-voter")
+    mp_fresh = db.my_profile(fresh_voter["token"])
+    # Need to give fresh_voter enough karma for the nudge to fire
+    # (MIN_KARMA_PR_VOTE is 0 in tests, so it should fire)
+    assert "pr_vote_note" in mp_fresh, \
+        "my_profile should show pr_vote_note when PRs need vote"
+
+    # --- deduplication: review_note suppressed when pr_vote_note fires ------
+    # fresh_voter should see pr_vote_note but not review_note
+    assert "review_note" not in mp_fresh or "pr_vote_note" in mp_fresh, \
+        "when pr_vote_note fires, review_note should be suppressed"
 
     print("test_nudges: all assertions passed")
     import shutil

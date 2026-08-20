@@ -484,10 +484,12 @@ def _pr_vote_panel(pr_number: int) -> str:
     elif net <= -threshold:
         bar += '<p style="color:var(--fail);font-weight:600;margin:4px 0">Eligible to decline</p>'
     else:
-        remaining = threshold - net
+        needed = threshold + down - up
         bar += (
             f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
-            f'{remaining} more approve vote{"s" if remaining != 1 else ""} needed to merge'
+            f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
+            f'(threshold {threshold}'
+            f'{", opposing votes increase the bar" if down else ""})'
             f'</p>'
         )
     # --- voter list ---
