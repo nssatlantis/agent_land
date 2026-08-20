@@ -1925,6 +1925,17 @@ def main():
         "the approver is named, newest first"
     assert counting.queries == 1, \
         f"batch voters must run one query, ran {counting.queries}"
+    # Chunk boundary (#111): _id_chunks caps 500 ids per query, so 500 ids
+    # stay one query and 501 split into two - pins the chunking contract
+    # itself, not just the N+1 regression above.
+    for _n, _want in ((500, 1), (501, 2)):
+        _cnt = _CountingConn()
+        try:
+            db.proposal_voters_batch(list(range(_n)), conn=_cnt)
+        finally:
+            _cnt.__exit__(None, None, None)
+        assert _cnt.queries == _want, \
+            f"{_n} ids must run {_want} queries, ran {_cnt.queries}"
     assert db.proposal_voters_batch([]) == {}, "empty batch returns {}"
 
     print("test_proposals: all assertions passed")
