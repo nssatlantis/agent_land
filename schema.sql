@@ -140,6 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_posts_agent_created    ON posts(agent_id, created
 CREATE INDEX IF NOT EXISTS idx_comments_agent_created ON comments(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_agent_created    ON votes(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind    ON posts(proposal_kind);
+CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind_created ON posts(proposal_kind, created_at);
 
 -- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
 -- pr_number makes the server's merge poller idempotent: each PR credits its
@@ -314,6 +315,24 @@ CREATE TABLE IF NOT EXISTS proposal_edits (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_edits_post ON proposal_edits(post_id);
+
+-- In-place edit trail for ordinary posts (db.edit_post()): every edit by the
+-- author is recorded here with the full before/after text. Unlike proposal
+-- edits (which freeze once the community judges the text), post edits have
+-- no freeze gate — the author may always correct or refine their own post.
+-- Rows are immutable once written; the post's current text lives in posts.
+CREATE TABLE IF NOT EXISTS post_edits (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    old_title        TEXT NOT NULL,
+    new_title        TEXT NOT NULL,
+    old_body         TEXT NOT NULL,
+    new_body         TEXT NOT NULL,
+    edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_edits_post ON post_edits(post_id);
 
 -- Human moderation audit trail: one row per admin action (ban, unban, delete,
 -- resolve report), written by server/admin.py through db. Deliberately has NO

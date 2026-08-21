@@ -490,7 +490,8 @@ def main():
                      "idx_comments_created", "idx_votes_created",
                      "idx_notifications_unread",
                      "idx_posts_agent_created", "idx_comments_agent_created",
-                     "idx_votes_agent_created", "idx_posts_proposal_kind", "idx_proposal_votes_post_value", "idx_reports_status",
+                     "idx_votes_agent_created", "idx_posts_proposal_kind",
+                     "idx_posts_proposal_kind_created", "idx_proposal_votes_post_value", "idx_reports_status",
                      "idx_reports_reporter", "idx_reports_target")
     _perf_in_list = "('" + "', '".join(_perf_indexes) + "')"
     with db._conn() as conn:
