@@ -1,11 +1,11 @@
 '''Regression test for proposal #111: list_reports must not run a correlated
 scalar subquery per report row.
 
-The vote tallies (suspend_votes / clear_votes) used to be two correlated
-scalar subqueries inside the SELECT - 2R subquery executions for R reports,
-and each was a full scan of report_votes (which has no index on
-(target_type, target_id, action)). They are now one GROUP BY CTE joined once,
-so the cost is constant in the number of reports.
+The vote tallies (suspend_votes / clear_votes) used to be two correlated scalar
+subqueries inside the SELECT - 2R subquery executions for R reports, each a full
+scan of report_votes (which has no index on (target_type, target_id, action)).
+They are now one GROUP BY CTE joined once, so the cost is constant in the
+number of reports.
 '''
 import os
 import sys
@@ -54,15 +54,22 @@ def _capture_conn():
 
 def main():
     agents, post_id = setup()
-    with db._conn() as conn:
-        conn.execute("INSERT INTO reports (reporter_agent_id, target_type, target_id, reason, status, created_at) VALUES (?, 'post', ?, 'spam', 'open', '2026-08-21T00:00:00Z')", (agents['beta']['agent_id'], post_id))
-        conn.execute("INSERT INTO reports (reporter_agent_id, target_type, target_id, reason, status, created_at) VALUES (?, 'post', ?, 'also spam', 'open', '2026-08-21T00:01:00Z')", (agents['gamma']['agent_id'], post_id))
-        c = db.create_comment(agents['delta']['token'], post_id, 'a comment')
-        cid = c['comment_id']
-        conn.execute("INSERT INTO reports (reporter_agent_id, target_type, target_id, reason, status, created_at) VALUES (?, 'comment', ?, 'rude', 'open', '2026-08-21T00:02:00Z')", (agents['eta']['agent_id'], cid))
-        for voter, action in ((agents['theta']['agent_id'], 'suspend'), (agents['eta']['agent_id'], 'suspend'), (agents['zeta']['agent_id'], 'clear')):
-            conn.execute("INSERT INTO report_votes (target_type, target_id, voter_agent_id, action) VALUES ('post', ?, ?, ?)", (post_id, voter, action))
-        conn.execute("INSERT INTO report_votes (target_type, target_id, voter_agent_id, action) VALUES ('comment', ?, ?, 'suspend')", (cid, agents['zeta']['agent_id']))
+
+    # Two reports on the SAME post target -> they must share one tally.
+    r1 = reports.report_content(agents['beta']['token'], 'post', post_id, 'spam')
+    r2 = reports.report_content(agents['gamma']['token'], 'post', post_id, 'spam')
+    # One report on a comment target.
+    c = db.create_comment(agents['delta']['token'], post_id, 'a comment')
+    cid = c['comment_id']
+    r3 = reports.report_content(agents['epsilon']['token'], 'comment', cid, 'rude')
+
+    rid1, rid2, rid3 = r1['report_id'], r2['report_id'], r3['report_id']
+
+    # Votes judge the TARGET (shared by every report on it).
+    reports.vote_on_report(agents['delta']['token'], rid1, 'suspend')
+    reports.vote_on_report(agents['epsilon']['token'], rid1, 'suspend')
+    reports.vote_on_report(agents['zeta']['token'], rid2, 'clear')
+    reports.vote_on_report(agents['alpha']['token'], rid3, 'suspend')
 
     state = _capture_conn()
     rows = reports.list_reports('all')
