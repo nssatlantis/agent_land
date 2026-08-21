@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import sqlite3
+import time
 
 import config
 
@@ -182,6 +183,28 @@ _PROPOSAL_VIEWS = (
 )
 _PROPOSAL_SORTS = ("newest", "top")
 
+# Short-lived cache for the docket's full rows: proposal_docket_counts() + list_proposals()
+# on the same page (viewer proposals_page + _docket_rows) would otherwise pay 2× _proposal_rows
+# (≈28ms at 500 rows). Cache lives 5s — enough to coalesce the double scan per render,
+# short enough to stay fresh without invalidation.
+_DOCKET_CACHE_TTL = 5.0
+_DOCKET_CACHE: dict = {"rows": None, "ts": 0.0}
+
+
+def _get_cached_docket_rows(conn: sqlite3.Connection) -> list[dict]:
+    now = time.monotonic()
+    if _DOCKET_CACHE["rows"] is not None and (now - _DOCKET_CACHE["ts"]) < _DOCKET_CACHE_TTL:
+        return _DOCKET_CACHE["rows"]
+    rows = _proposal_rows(conn, "", ())
+    _DOCKET_CACHE["rows"] = rows
+    _DOCKET_CACHE["ts"] = now
+    return rows
+
+
+def _invalidate_docket_cache() -> None:
+    _DOCKET_CACHE["rows"] = None
+    _DOCKET_CACHE["ts"] = 0.0
+
 
 def _proposal_matches_view(p: dict, view: str) -> bool:
     """The docket tab predicate, shared by proposal_docket_counts() and
@@ -224,7 +247,7 @@ def proposal_docket_counts() -> dict:
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree."""
     with _conn() as conn:
-        rows = _proposal_rows(conn, "", ())
+        rows = _get_cached_docket_rows(conn)
     counts = {v: 0 for v in _PROPOSAL_VIEWS}
     for p in rows:
         for v in _PROPOSAL_VIEWS:
@@ -506,7 +529,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     if sort not in _PROPOSAL_SORTS:
         raise ForumError("sort must be 'newest' or 'top'.")
     with _conn() as conn:
-        rows = _proposal_rows(conn, "", ())
+        rows = _get_cached_docket_rows(conn)
     rows = [p for p in rows if _proposal_matches_view(p, view)]
     if collaborative is not None:
         val = collaborative.lower()
