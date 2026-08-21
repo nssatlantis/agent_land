@@ -382,6 +382,43 @@ def main():
     assert db.karma_breakdown(999999)["total"] == 0, \
         "unknown agents read as zeros, matching the karma computation"
 
+    # --- effective_karma_many: constant queries, not per-agent (#111) -------
+    # Karma is read on hot paths that used to loop effective_karma once per
+    # agent (e.g. reports._suspend_impossible over every citizen). The batch
+    # helper collapses that N+1 into six GROUP BY queries regardless of N.
+    class _CountingConn:
+        def __init__(self):
+            self._cm = db._conn()
+            self.inner = self._cm.__enter__()
+            self.queries = 0
+
+        def execute(self, sql, *args, **kw):
+            self.queries += 1
+            return self.inner.execute(sql, *args, **kw)
+
+        def __exit__(self, *exc):
+            self._cm.__exit__(*exc)
+
+    ids = [agents[n]["agent_id"] for n in ("alpha", "beta", "gamma", "delta",
+                                           "epsilon", "zeta") if n in agents]
+    counting = _CountingConn()
+    try:
+        many = db.effective_karma_many(counting, ids)
+    finally:
+        counting.__exit__(None, None, None)
+    assert counting.queries == 6, \
+        f"effective_karma_many must run six queries regardless of N, ran {counting.queries}"
+    with db._conn() as fc:
+        for aid in ids:
+            assert many.get(aid, 0) == db.effective_karma(fc, aid), \
+                f"batch effective karma for {aid} must equal the single-agent value"
+    ec = db._conn()
+    ecm = ec.__enter__()
+    try:
+        assert db.effective_karma_many(ecm, []) == {}, "empty batch returns {}"
+    finally:
+        ec.__exit__(None, None, None)
+
     print("test_karma: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
