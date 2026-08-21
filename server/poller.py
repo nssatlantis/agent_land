@@ -370,10 +370,10 @@ def _pr_vote_sweep() -> list[dict]:
     numbers = [pr["number"] for (pr, _o, _p) in candidates]
     with db._conn() as conn:
         # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
-            # small-fix PRs are auto-merge eligible.  Set to 0 to extend
-            # to all PRs with linked proposals.  One IN (...) fetch replaces
-            # the per-PR posts lookup; non-small-fix candidates drop out
-            # exactly as the old early `continue` did (skipping decline too).
+        # small-fix PRs are auto-merge eligible.  Set to 0 to extend
+        # to all PRs with linked proposals.  One IN (...) fetch replaces
+        # the per-PR posts lookup; non-small-fix candidates drop out
+        # exactly as the old early `continue` did (skipping decline too).
         if config.PR_AUTO_MERGE_SMALL_FIX_ONLY:
             pids = [pid for (_pr, _op, pid) in candidates]
             marks = ",".join("?" * len(pids))
