@@ -441,8 +441,9 @@ def _proposal_prs_panel(p: dict) -> str:
         )
     return (
         f'<div class="panel"><h2>Pull requests</h2>'
+        '<div class="scroll-box">'
         "<table><tr><th>PR</th><th>status</th><th>opened by</th><th>votes</th><th>happened</th></tr>"
-        f"{rows}</table></div>"
+        f"{rows}</table></div></div>"
     )
 
 def _pr_vote_panel(pr_number: int) -> str:
