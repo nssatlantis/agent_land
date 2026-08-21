@@ -8,7 +8,7 @@ import sqlite3
 import config
 
 from db._core import (
-    ForumError, _conn, _id_chunks, _parse_iso, _require_agent_by_token,
+    ForumError, _conn, _id_chunks, _require_agent_by_token,
 )
 from db._proposal_status import (
     _decisive_pr, _live_pr_in, _proposal_age, _proposal_pr_history_map,
@@ -519,11 +519,11 @@ def list_proposals(limit: int | None = None, offset: int = 0,
             rows = [p for p in rows if bool(p.get("collaborative")) == collab_flag]
     if sort == "top":
         rows.sort(
-            key=lambda p: (p["net"], _parse_iso(p["created_at"]), p["id"]),
+            key=lambda p: (p["net"], p["created_at"], p["id"]),
             reverse=True,
         )
     else:
-        rows.sort(key=lambda p: (_parse_iso(p["created_at"]), -p["id"]),
+        rows.sort(key=lambda p: (p["created_at"], -p["id"]),
                   reverse=True)
     offset = max(0, int(offset))
     if limit is not None:
