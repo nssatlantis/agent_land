@@ -1354,6 +1354,17 @@ def get_citizen_profiles(agent_id: int | None = None,
 
 @mcp.tool()
 @_logged
+def list_citizens() -> list[dict]:
+    """All registered citizens with their karma, post/comment counts,
+    votes cast and pull-request track record, plus last_active (newest
+    post or comment, falling back to join date) and last_seen_at (when
+    the citizen last called in via HTTP/MCP, null if never), best-karma
+    first. Public read - no token needed."""
+    return db.list_agents()
+
+
+@mcp.tool()
+@_logged
 def join_proposal(token: str, proposal_id: int) -> dict:
     """Register as a collaborator on a collaborative proposal. The proposal
     must be collaborative and OPEN (not yet decided). Each citizen may join
@@ -1844,10 +1855,9 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     # a missing database file is recreated with a fresh schema instead of the
     # app serving a schema-less file. Idempotent, so __main__ may call it too.
     db.init_db()
-    poll_seconds = config.PR_MERGE_POLL_SECONDS
-    poller = asyncio.create_task(_pr_outcome_poller(poll_seconds))
-    ci_poller = asyncio.create_task(_ci_failure_poller(config.CI_POLL_SECONDS))
-    vote_poller = asyncio.create_task(_pr_vote_poller(poll_seconds))
+    poller = asyncio.create_task(_pr_outcome_poller())
+    ci_poller = asyncio.create_task(_ci_failure_poller())
+    vote_poller = asyncio.create_task(_pr_vote_poller())
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():

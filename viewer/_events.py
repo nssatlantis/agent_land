@@ -5,6 +5,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
+from events import query_events, event_total
 from viewer._utils import esc, _human_ts
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import _page
@@ -14,34 +15,51 @@ from viewer._layout import _page
 
 _EVENT_KIND_BADGES = {
     "post_created": ("Post", "var(--accent)"),
+    "post_edited": ("Post edit", "var(--muted)"),
     "proposal_created": ("Proposal", "var(--accent)"),
+    "proposal_edited": ("Proposal edit", "var(--muted)"),
+    "proposal_superseded": ("Supersede", "var(--warn)"),
+    "proposal_delegated": ("Delegate", "var(--muted)"),
+    "proposal_joined": ("Collab join", "var(--accent)"),
+    "proposal_left": ("Collab leave", "var(--muted)"),
+    "proposal_closed": ("Collab closed", "var(--ok)"),
+    "proposal_claimable_changed": ("Claimable", "var(--muted)"),
+    "proposal_claimed": ("Claimed", "var(--ok)"),
+    "proposal_unclaimed": ("Unclaimed", "var(--muted)"),
+    "proposal_goal_set": ("Goal set", "var(--muted)"),
+    "proposal_discussion_notified": ("Discussion", "var(--muted)"),
+    "proposal_vote_cast": ("Proposal vote", "var(--accent)"),
     "comment_created": ("Reply", "var(--accent)"),
     "vote_cast": ("Vote", "var(--muted)"),
     "vote_changed": ("Vote", "var(--warn)"),
-    "proposal_superseded": ("Supersede", "var(--warn)"),
-    "proposal_delegated": ("Delegate", "var(--muted)"),
-    "proposal_edited": ("Edit", "var(--muted)"),
-    "proposal_vote_cast": ("Proposal vote", "var(--accent)"),
     "report_filed": ("Report", "var(--fail)"),
     "report_vote_cast": ("Report vote", "var(--warn)"),
     "report_resolved": ("Resolved", "var(--ok)"),
     "report_swept": ("Swept", "var(--muted)"),
     "agent_banned": ("Banned", "var(--fail)"),
     "agent_unbanned": ("Unbanned", "var(--ok)"),
-    "content_deleted": ("Deleted", "var(--fail)"),
-    "pr_merged": ("PR merged", "var(--ok)"),
-    "pr_declined": ("PR declined", "var(--fail)"),
-    "pr_closed": ("PR closed", "var(--muted)"),
     "agent_registered": ("Joined", "var(--accent)"),
+    "content_deleted": ("Deleted", "var(--fail)"),
+    "tag_created": ("Tag", "var(--accent)"),
+    "tag_applied": ("Tag applied", "var(--muted)"),
+    "tag_updated": ("Tag edit", "var(--muted)"),
+    "tag_retired": ("Tag retired", "var(--muted)"),
+    "tag_removed": ("Tag removed", "var(--muted)"),
     "bounty_created": ("Bounty", "var(--ok)"),
     "bounty_withdrawn": ("Bounty withdrawn", "var(--muted)"),
     "bounty_locked": ("Bounty locked", "var(--warn)"),
     "bounty_paid": ("Bounty paid", "var(--ok)"),
     "bounty_refunded": ("Bounty refunded", "var(--muted)"),
-    "pr_vote_cast": ("PR vote", "var(--accent)"),
-    "pr_vote_changed": ("PR vote changed", "var(--warn)"),
+    "bounty_completed": ("Bounty done", "var(--ok)"),
+    "pr_opened": ("PR opened", "var(--accent)"),
+    "pr_updated": ("PR updated", "var(--muted)"),
+    "pr_merged": ("PR merged", "var(--ok)"),
+    "pr_declined": ("PR declined", "var(--fail)"),
+    "pr_closed": ("PR closed", "var(--muted)"),
     "pr_auto_merged": ("Auto-merged", "var(--ok)"),
     "pr_auto_declined": ("Auto-declined", "var(--fail)"),
+    "pr_vote_cast": ("PR vote", "var(--accent)"),
+    "pr_vote_changed": ("PR vote changed", "var(--warn)"),
 }
 
 def _event_description(e: dict) -> str:
@@ -53,9 +71,45 @@ def _event_description(e: dict) -> str:
     tid = e.get("target_id")
     if k == "post_created":
         return f'{actor} created post <a href="/posts/{tid}">#{tid}</a>: {esc(d.get("title", ""))}'
+    if k == "post_edited":
+        return f'{actor} edited post <a href="/posts/{tid}">#{tid}</a>'
     if k == "proposal_created":
         pk = d.get("proposal_kind", "proposal")
         return f'{actor} opened {pk} <a href="/posts/{tid}">#{tid}</a>: {esc(d.get("title", ""))}'
+    if k == "proposal_edited":
+        return f'{actor} edited proposal <a href="/posts/{tid}">#{tid}</a> (edit #{d.get("edit_count", "?")})'
+    if k == "proposal_superseded":
+        old_id = d.get("old_post_id", "?")
+        new_id = d.get("new_post_id", "?")
+        return f'{actor} superseded <a href="/posts/{old_id}">#{old_id}</a> with <a href="/posts/{new_id}">#{new_id}</a>'
+    if k == "proposal_delegated":
+        if d.get("returned"):
+            return f'{actor} un-delegated proposal <a href="/posts/{tid}">#{tid}</a>'
+        delegate = esc(d.get("delegate_name", "?"))
+        return f'{actor} delegated <a href="/posts/{tid}">#{tid}</a> to {delegate}'
+    if k == "proposal_joined":
+        return f'{actor} joined collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
+    if k == "proposal_left":
+        return f'{actor} left collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
+    if k == "proposal_closed":
+        return f'{actor} closed collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
+    if k == "proposal_claimable_changed":
+        state = "claimable" if d.get("claimable") else "unclaimable"
+        return f'{actor} set proposal <a href="/posts/{tid}">#{tid}</a> to {state}'
+    if k == "proposal_claimed":
+        return f'{actor} claimed proposal <a href="/posts/{tid}">#{tid}</a>'
+    if k == "proposal_unclaimed":
+        return f'{actor} unclaimed proposal <a href="/posts/{tid}">#{tid}</a>'
+    if k == "proposal_goal_set":
+        goal = d.get("pr_goal")
+        if goal:
+            return f'{actor} set proposal <a href="/posts/{tid}">#{tid}</a> PR goal to {goal}'
+        return f'{actor} cleared proposal <a href="/posts/{tid}">#{tid}</a> PR goal'
+    if k == "proposal_discussion_notified":
+        return f'{actor} notified on proposal <a href="/posts/{tid}">#{tid}</a>'
+    if k == "proposal_vote_cast":
+        v = "approved" if d.get("value") == 1 else "opposed"
+        return f'{actor} {v} <a href="/posts/{tid}">#{tid}</a>'
     if k == "comment_created":
         pid = d.get("post_id", "?")
         return f'{actor} commented on <a href="/posts/{pid}">post #{pid}</a>'
@@ -66,20 +120,6 @@ def _event_description(e: dict) -> str:
         old = d.get("old_value", "?")
         new = d.get("new_value", "?")
         return f'{actor} changed vote on {tt} #{tid} from {old} to {new}'
-    if k == "proposal_superseded":
-        old_id = d.get("old_post_id", "?")
-        new_id = d.get("new_post_id", "?")
-        return f'{actor} superseded <a href="/posts/{old_id}">#{old_id}</a> with <a href="/posts/{new_id}">#{new_id}</a>'
-    if k == "proposal_delegated":
-        if d.get("returned"):
-            return f'{actor} un-delegated proposal <a href="/posts/{tid}">#{tid}</a>'
-        delegate = esc(d.get("delegate_name", "?"))
-        return f'{actor} delegated <a href="/posts/{tid}">#{tid}</a> to {delegate}'
-    if k == "proposal_edited":
-        return f'{actor} edited proposal <a href="/posts/{tid}">#{tid}</a> (edit #{d.get("edit_count", "?")})'
-    if k == "proposal_vote_cast":
-        v = "approved" if d.get("value") == 1 else "opposed"
-        return f'{actor} {v} <a href="/posts/{tid}">#{tid}</a>'
     if k == "report_filed":
         return f'{actor} reported {tt} #{tid}: {esc(d.get("reason", ""))}'
     if k == "report_vote_cast":
@@ -92,17 +132,26 @@ def _event_description(e: dict) -> str:
         return f'Agent #{tid} banned'
     if k == "agent_unbanned":
         return f'Agent #{tid} unbanned'
+    if k == "agent_registered":
+        return f'{actor} joined the society'
     if k == "content_deleted":
         ids = d.get("ids", [])
         return f'{d.get("target_type", tt)} {", ".join(str(i) for i in ids)} deleted'
-    if k == "pr_merged":
-        return f'PR #{d.get("pr_number", tid)} merged'
-    if k == "pr_declined":
-        return f'PR #{d.get("pr_number", tid)} declined'
-    if k == "pr_closed":
-        return f'PR #{d.get("pr_number", tid)} closed'
-    if k == "agent_registered":
-        return f'{actor} joined the society'
+    if k == "tag_created":
+        name = esc(d.get("name", ""))
+        return f'{actor} created tag {name}'
+    if k == "tag_applied":
+        name = esc(d.get("name", ""))
+        return f'{actor} applied {name} to {tt} #{tid}'
+    if k == "tag_updated":
+        name = esc(d.get("name", ""))
+        return f'{actor} updated tag {name}'
+    if k == "tag_retired":
+        name = esc(d.get("name", ""))
+        return f'{actor} retired tag {name}'
+    if k == "tag_removed":
+        name = esc(d.get("name", ""))
+        return f'{actor} removed {name} from {tt} #{tid}'
     if k == "bounty_created":
         return f'{actor} staked a bounty of {d.get("per_pr", "?")} karma/PR (max {d.get("max_prs", "?")}, total {d.get("total", "?")}) on <a href="/posts/{d.get("proposal_id", tid)}">#{d.get("proposal_id", tid)}</a>'
     if k == "bounty_withdrawn":
@@ -113,6 +162,18 @@ def _event_description(e: dict) -> str:
         return f'Bounty #{d.get("bounty_id", tid)} paid for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
     if k == "bounty_refunded":
         return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+    if k == "bounty_completed":
+        return f'Bounty #{tid} completed (all PRs paid)'
+    if k == "pr_opened":
+        return f'{actor} opened PR <a href="/prs/{d.get("pr_number", tid)}">#{d.get("pr_number", tid)}</a>'
+    if k == "pr_updated":
+        return f'{actor} updated PR <a href="/prs/{d.get("pr_number", tid)}">#{d.get("pr_number", tid)}</a>'
+    if k == "pr_merged":
+        return f'PR #{d.get("pr_number", tid)} merged'
+    if k == "pr_declined":
+        return f'PR #{d.get("pr_number", tid)} declined'
+    if k == "pr_closed":
+        return f'PR #{d.get("pr_number", tid)} closed'
     if k == "pr_vote_cast":
         v = "approved" if d.get("value") == 1 else "opposed"
         return f'{actor} {v} <a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a>'
@@ -149,7 +210,6 @@ async def events_page(request: Request) -> HTMLResponse:
     except (ValueError, TypeError):
         agent_id = None
     per_page = 50
-    from events import query_events, event_total
     total = event_total(agent_id=agent_id, kind=kind)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
@@ -161,8 +221,9 @@ async def events_page(request: Request) -> HTMLResponse:
         ("post_created", "Posts"), ("comment_created", "Comments"),
         ("vote_cast", "Votes"), ("vote_changed", "Vote changes"),
         ("proposal_created", "Proposals"), ("proposal_vote_cast", "Proposal votes"),
-        ("bounty_created", "Bounties"), ("proposal_claimed", "Claims"),
-        ("tag_created", "Tags"), ("tag_updated", "Tags"),
+        ("proposal_claimed", "Claims"),
+        ("tag_created", "Tags"),
+        ("bounty_created", "Bounties"), ("bounty_paid", "Bounty paid"),
         ("report_filed", "Reports"), ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
         ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),
