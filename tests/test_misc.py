@@ -488,7 +488,7 @@ def main():
     # pre-delegation mailbox migration above).
     _perf_indexes = ("idx_posts_agent", "idx_comments_agent",
                      "idx_comments_created", "idx_votes_created", "idx_votes_target",
-                     "idx_notifications_unread",
+                     "idx_notifications_unread", "idx_comments_post_parent_created",
                      "idx_posts_agent_created", "idx_comments_agent_created",
                      "idx_votes_agent_created", "idx_posts_proposal_kind",
                      "idx_posts_proposal_kind_created", "idx_proposal_votes_post_value", "idx_reports_status",
