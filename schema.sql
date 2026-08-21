@@ -241,6 +241,15 @@ CREATE TABLE IF NOT EXISTS report_votes (
     UNIQUE (target_type, target_id, voter_agent_id)
 );
 
+-- A report's votes are read per TARGET (every report of a target shares one
+-- tally) and aggregated by action. The UNIQUE index covers (target_type,
+-- target_id, ...) for grouping but not `action`, so the list_reports tally CTE
+-- and the per-target COUNT(...) ... AND action = ? queries must fetch the
+-- table row for `action`. A covering index on (target_type, target_id, action)
+-- lets those reads serve entirely from the index (O(log n) seek, no table
+-- fetch) - see PR #231 (#111 item 764 follow-up).
+CREATE INDEX IF NOT EXISTS idx_report_votes_target_action ON report_votes(target_type, target_id, action);
+
 -- Proposal votes: citizens approve or oppose a forum proposal (a post with
 -- proposal_kind set). Separate from ordinary content votes - they decide
 -- whether the proposal may open a pull request (CHARTER.md Article III.3 /

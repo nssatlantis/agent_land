@@ -91,6 +91,7 @@ from db._karma import (  # noqa: F401
     link_pr_to_proposal,
     pr_opener,
     linked_pr_openers,
+    linked_pr_proposals,
     proposal_for_pr,
     record_pr_closed,
     record_pr_decline,
