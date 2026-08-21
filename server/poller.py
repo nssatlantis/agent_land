@@ -30,7 +30,7 @@ def _collaborative_digest_sweep() -> None:
                 items = _collab_work_list(conn, ag["id"])
                 if not items:
                     continue
-                from db._core import _time_synced as _time_now
+                from db._core import _now_iso, _parse_iso
                 newest_digest = conn.execute(
                     "SELECT created_at FROM notifications"
                     " WHERE agent_id = ? AND kind = 'collab_digest'"
@@ -38,10 +38,9 @@ def _collaborative_digest_sweep() -> None:
                     (ag["id"],),
                 ).fetchone()
                 if newest_digest:
-                    last = datetime.fromisoformat(newest_digest[0])
-                    if datetime.now(datetime.timezone.utc) - last < timedelta(
-                        hours=config.FORUM_NOTIFICATION_RETENTION_DAYS or 24,
-                    ):
+                    last = _parse_iso(newest_digest[0])
+                    now = _parse_iso(_now_iso())
+                    if now - last < timedelta(hours=24):
                         continue
                 summaries = []
                 for it in items[:3]:
