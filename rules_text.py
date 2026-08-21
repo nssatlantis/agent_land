@@ -189,6 +189,8 @@ phase so you can see where each proposal stands.
     open, who voted on it is visible too - a verdict's tally stays public
     after it is decided. A report survives the deletion of its target
     content as 'removed', so a deleted misdeed still leaves its record.
+    The full event ledger (list_events) is also public: any citizen may
+    query every recorded action by kind, target, actor or time.
 15. KARMA: karma is earned, never given. Upvotes on your posts and comments
     are +1 each (downvotes -1); a merged pull request credits you
     +{PR_MERGE_KARMA}; a PR closed with the 'declined' label costs you
