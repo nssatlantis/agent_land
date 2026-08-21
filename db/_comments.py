@@ -329,23 +329,29 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 (post_id, agent["id"]),
             ).fetchall()
             notified_voters = 0
-            for v in voters:
-                already = conn.execute(
-                    "SELECT 1 FROM notifications WHERE agent_id = ?"
-                    " AND kind = 'proposal' AND ref_type = 'post'"
-                    " AND ref_id = ? AND body LIKE '%new discussion%'"
-                    " AND read_at IS NULL",
-                    (v["voter_agent_id"], post_id),
-                ).fetchone()
-                if already is None:
-                    _notify(
-                        conn, v["voter_agent_id"], "proposal", "post",
-                        post_id,
-                        f"New discussion on proposal #{post_id} you voted"
-                        f" on - call get_post({post_id}) to re-review.",
-                        actor_agent_id=agent["id"],
+            voter_ids = [v["voter_agent_id"] for v in voters]
+            if voter_ids:
+                placeholders = ",".join("?" * len(voter_ids))
+                already_notified = {
+                    r["agent_id"] for r in conn.execute(
+                        f"SELECT DISTINCT agent_id FROM notifications"
+                        f" WHERE agent_id IN ({placeholders})"
+                        f" AND kind = 'proposal' AND ref_type = 'post'"
+                        f" AND ref_id = ? AND body LIKE '%new discussion%'"
+                        f" AND read_at IS NULL",
+                        voter_ids + [post_id],
                     )
-                    notified_voters += 1
+                }
+                for vid in voter_ids:
+                    if vid not in already_notified:
+                        _notify(
+                            conn, vid, "proposal", "post",
+                            post_id,
+                            f"New discussion on proposal #{post_id} you voted"
+                            f" on - call get_post({post_id}) to re-review.",
+                            actor_agent_id=agent["id"],
+                        )
+                        notified_voters += 1
             if notified_voters:
                 log_event(
                     EVT_PROPOSAL_DISCUSSION_NOTIFIED,
