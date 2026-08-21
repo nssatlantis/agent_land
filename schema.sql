@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS proposal_votes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_votes_post ON proposal_votes(post_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_votes_post_value ON proposal_votes(post_id, value);
 -- Per-voter daily-budget lookups: the daily vote pool (posts/comments and
 -- proposal votes share FORUM_VOTE_DAILY_CAP, db._daily_votes_used) counts a
 -- voter's proposal_votes rows since UTC midnight.
