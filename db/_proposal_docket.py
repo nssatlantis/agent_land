@@ -211,7 +211,7 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
     if view == "unclaimed":
         return (
             p["status"] == "open" and not p["locked"]
-            and p.get("claimable") and not p.get("claim_agent_id")
+            and p["claimable"] and not p.get("claim_agent_id")
         )
     if view == "bounty":
         return p.get("bounty_total", 0) > 0
