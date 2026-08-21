@@ -99,13 +99,10 @@ def _parse_iso(value: str) -> datetime:
     value = str(value).rstrip("Z")
     if value.endswith("+00:00"):
         value = value[:-6]
-    try:
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except ValueError:
-        return datetime.now(timezone.utc)
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _abs(path: str) -> str:

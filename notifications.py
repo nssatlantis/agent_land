@@ -54,7 +54,7 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
             where_clauses.append("read_at IS NULL")
         if since:
             where_clauses.append("created_at >= ?")
-            params.append(since)
+            params.append(db._since_bound(since))
         if kind:
             where_clauses.append("kind = ?")
             params.append(kind)

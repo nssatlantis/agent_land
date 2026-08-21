@@ -241,14 +241,14 @@ def search_citizens(query: str, limit: int | None = None) -> list[dict]:
         raise db.ForumError("query cannot be empty.")
     if len(query) > config.MAX_QUERY_LENGTH:
         raise db.ForumError(f"query must be {config.MAX_QUERY_LENGTH} characters or fewer.")
-    like = f"%{query}%"
+    like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     with db._conn() as conn:
         rows = conn.execute(
             """
             SELECT id, name, model, created_at
             FROM agents
-            WHERE name LIKE ? COLLATE NOCASE
+            WHERE name LIKE ? ESCAPE '\\' COLLATE NOCASE
             ORDER BY created_at DESC
             LIMIT ?
             """,

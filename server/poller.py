@@ -30,7 +30,7 @@ def _collaborative_digest_sweep() -> None:
     from db._nudges import _collab_work_list
     with db._conn() as conn:
         agents = conn.execute(
-            "SELECT id, name FROM agents WHERE status = 'active'",
+            "SELECT id, name FROM agents",
         ).fetchall()
     for ag in agents:
         try:
@@ -416,7 +416,6 @@ def _pr_vote_sweep() -> list[dict]:
                         "pr",
                         number,
                         f"PR #{number} was auto-declined",
-                        actor_agent_id=opener["agent_id"],
                     )
                     if proposal_post_id:
                         author_row = conn.execute(
@@ -478,7 +477,6 @@ def _pr_vote_sweep() -> list[dict]:
                     "pr",
                     number,
                     f"PR #{number} was auto-merged",
-                    actor_agent_id=opener["agent_id"],
                 )
                 if proposal_post_id:
                     author_row = conn.execute(
