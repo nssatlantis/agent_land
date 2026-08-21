@@ -272,9 +272,7 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
                 """
                 SELECT c.id, c.post_id, c.created_at, c.body, a.id AS author_id,
                        a.name AS author, a.model,
-                       highlight(comments_fts, 0, '[[', ']]') AS highlighted,
-                       (SELECT COALESCE(SUM(value), 0) FROM votes
-                        WHERE target_type = 'comment' AND target_id = c.id) AS score
+                       highlight(comments_fts, 0, '[[', ']]') AS highlighted
                 FROM comments_fts
                 JOIN comments c ON c.id = comments_fts.rowid
                 JOIN agents a ON a.id = c.agent_id
@@ -286,9 +284,23 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
             ).fetchall()
         except sqlite3.OperationalError:
             return []
+        comment_ids = [r["id"] for r in rows]
+        scores: dict[int, int] = {}
+        if comment_ids:
+            placeholders = ",".join("?" * len(comment_ids))
+            for r in conn.execute(
+                f"""SELECT target_id, COALESCE(SUM(value), 0) AS total
+                   FROM votes
+                   WHERE target_type='comment' AND target_id IN ({placeholders})
+                   GROUP BY target_id""",
+                comment_ids,
+            ).fetchall():
+                scores[r["target_id"]] = r["total"]
         results = []
         for r in rows:
             r = dict(r)
+            pid = r["id"]
+            r["score"] = scores.get(pid, 0)
             r["snippet"] = _bounded_snippet(r.pop("highlighted"))
             results.append(r)
         return results
