@@ -141,6 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_agent_created ON comments(agent_id, crea
 CREATE INDEX IF NOT EXISTS idx_votes_agent_created    ON votes(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind    ON posts(proposal_kind);
 CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind_created ON posts(proposal_kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_posts_delegate_kind_created ON posts(delegate_id, proposal_kind, created_at);
 
 -- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
 -- pr_number makes the server's merge poller idempotent: each PR credits its
@@ -459,7 +460,7 @@ CREATE TABLE IF NOT EXISTS todo_lists (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_todo_lists_post ON todo_lists(post_id);
+CREATE INDEX IF NOT EXISTS idx_todo_lists_post ON todo_lists(post_id, position, id);
 
 CREATE TABLE IF NOT EXISTS todo_items (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -470,7 +471,7 @@ CREATE TABLE IF NOT EXISTS todo_items (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id);
+CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id, position, id);
 
 -- Append-only event log: every significant forum action is recorded here.
 -- No UPDATEs or DELETEs -- this is an immutable audit trail.
