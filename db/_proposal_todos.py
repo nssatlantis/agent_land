@@ -147,7 +147,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         row = conn.execute(
             """
             SELECT p.id, p.agent_id, p.proposal_kind, p.delegate_id,
-                   p.superseded_by_id
+                   p.superseded_by_id, p.collaborative
             FROM posts p WHERE p.id = ?
             """,
             (post_id,),
@@ -170,6 +170,13 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
             )
         # Everything validated: replace atomically. Deleting the lists cascades
         # their items; positions are normalized 0..n on the way in.
+        old_items = conn.execute(
+            "SELECT ti.text FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE tl.post_id = ?",
+            (post_id,),
+        ).fetchall()
+        old_item_texts = {r["text"] for r in old_items}
         conn.execute("DELETE FROM todo_lists WHERE post_id = ?", (post_id,))
         for lpos, lst in enumerate(normalized):
             cur = conn.execute(
@@ -183,4 +190,27 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
                     "VALUES (?, ?, ?, ?)",
                     (list_id, item["text"], int(item["done"]), ipos),
                 )
+        # Notify collaborators when new to-do items are added.
+        if row["collaborative"]:
+            new_texts = {
+                item["text"]
+                for lst in normalized
+                for item in lst["items"]
+            }
+            added = new_texts - old_item_texts
+            if added:
+                from db._collaborative import list_proposal_collaborators
+                collabs = list_proposal_collaborators(post_id, conn=conn)
+                summary = ", ".join(sorted(added)[:3])
+                if len(added) > 3:
+                    summary += f" and {len(added) - 3} more"
+                for col in collabs:
+                    _notify(
+                        conn, col["agent_id"], "proposal", "post",
+                        post_id,
+                        f"To-do list updated on collaborative proposal "
+                        f"#{post_id}: new items added ({summary}). "
+                        f"Use get_todos({post_id}) to see the full list.",
+                        actor_agent_id=agent["id"],
+                    )
         return _todos_for_post(conn, post_id)
