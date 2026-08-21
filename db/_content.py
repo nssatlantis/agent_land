@@ -603,10 +603,8 @@ def get_posts(post_ids: list[int]) -> dict:
         tallies = _proposal_tally_batch(conn, proposal_ids)
         supersedes_map = _supersedes_map(conn, posts)
         threshold = _proposal_vote_threshold(conn)
-        from db._bounty import list_proposal_bounties as _lpb
-        bounties_by_post: dict = {}
-        for pid in proposal_ids:
-            bounties_by_post[pid] = _lpb(conn, pid)
+        from db._bounty import list_proposal_bounties_batch as _lpb_batch
+        bounties_by_post = _lpb_batch(conn, proposal_ids)
         # Build results
         out = {}
         for pid in post_ids:
