@@ -218,13 +218,15 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
     return True  # 'all' (and any future default)
 
 
-def proposal_docket_counts() -> dict:
+def proposal_docket_counts(rows: list[dict] | None = None) -> dict:
     """Per-tab proposal counts for the docket's tabs: {'all',
     'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'bounty'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
-    with, so the tab counts and the rows they label can never disagree."""
-    with _conn() as conn:
-        rows = _proposal_rows(conn, "", ())
+    with, so the tab counts and the rows they label can never disagree. Pass
+    pre-fetched `rows` (from list_proposals) to avoid a second _proposal_rows."""
+    if rows is None:
+        with _conn() as conn:
+            rows = _proposal_rows(conn, "", ())
     counts = {v: 0 for v in _PROPOSAL_VIEWS}
     for p in rows:
         for v in _PROPOSAL_VIEWS:
