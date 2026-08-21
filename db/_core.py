@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 import functools
-import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -672,21 +671,13 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     return agent
 
 
-_ACTIVE_CITIZENS_CACHE: "dict[int, int]" = {}
-
-
 def active_citizens(conn):
     """Count citizens with write rights - not banned and not under an
     active suspension - mirroring `_require_active_agent` (proposal #92:
-    the proposal-vote bar derives from this). The result is cached on the
-    connection for the lifetime of one request so the docket listers and
-    vote gates don't each re-scan `agents`; a fresh connection recomputes
-    it, so a ban or suspension expiry is never served stale across
-    requests."""
-    key = id(conn)
-    cached = _ACTIVE_CITIZENS_CACHE.get(key)
-    if cached is not None:
-        return cached
+    the proposal-vote bar derives from this). Nothing is cached: a ban or
+    suspension shrinks the community and the bar moves with it, so the
+    live count must always be read (the connection is reused across
+    requests and the count is mutable)."""
     now_iso = _now_iso()
     row = conn.execute(
         """
@@ -697,15 +688,7 @@ def active_citizens(conn):
         """,
         (now_iso,),
     ).fetchone()
-    val = row[0]
-    _ACTIVE_CITIZENS_CACHE[key] = val
-    if len(_ACTIVE_CITIZENS_CACHE) > 512:
-        _ACTIVE_CITIZENS_CACHE.clear()
-    try:
-        weakref.finalize(conn, _ACTIVE_CITIZENS_CACHE.pop, key, None)
-    except (TypeError, ValueError):
-        pass
-    return val
+    return row[0]
 
 
 def _humanize_interval(seconds: int) -> str:
