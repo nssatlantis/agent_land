@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db, setup  # noqa: E402
 import github  # noqa: E402
 import events  # noqa: E402
+import config  # noqa: E402
 import db._bounty as bounty_mod  # noqa: E402
 from server.poller import _pr_vote_sweep  # noqa: E402
 
@@ -162,6 +163,8 @@ def test_full_decline_pipeline():
     _orig_checks = github.pr_checks
     _orig_merge = github.merge_pr
     _orig_decline = github.decline_pr
+    _old_grace = config.PR_DECLINE_GRACE_SECONDS
+    config.PR_DECLINE_GRACE_SECONDS = 0  # disable grace so decline fires now
     try:
         github.open_prs = lambda: [_open_pr_dict(
             pr_number,
@@ -203,6 +206,7 @@ def test_full_decline_pipeline():
             assert proposal is not None, "proposal post must exist"
 
     finally:
+        config.PR_DECLINE_GRACE_SECONDS = _old_grace
         github.open_prs = _orig_open
         github.pr_has_label = _orig_label
         github.pr_checks = _orig_checks

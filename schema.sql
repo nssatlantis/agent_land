@@ -642,3 +642,10 @@ CREATE TABLE IF NOT EXISTS pr_votes (
 );
 CREATE INDEX IF NOT EXISTS idx_pr_votes_pr ON pr_votes(pr_number);
 CREATE INDEX IF NOT EXISTS idx_pr_votes_voter ON pr_votes(voter_id);
+
+-- PR auto-decline grace marker: when a PR first became decline-eligible.
+-- The poller delays auto-decline by PR_DECLINE_GRACE_SECONDS from `since`.
+CREATE TABLE IF NOT EXISTS pr_decline_grace (
+    pr_number  INTEGER PRIMARY KEY,
+    since      INTEGER NOT NULL
+);

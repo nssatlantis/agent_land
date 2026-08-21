@@ -187,6 +187,8 @@ Useful environment variables:
 | `FORUM_PR_VOTE_THRESHOLD`     | `3`                | Floor for the derived PR vote threshold (PR voting) — the live bar is max(floor, ceil(active citizens / 3)); 0 disables auto-merge |
 | `FORUM_MIN_KARMA_PR_VOTE`     | `2`                | Minimum effective_karma required to vote on a pull request |
 | `FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY` | `1`         | When 1, only small-fix PRs auto-merge/decline via votes; set 0 for all PRs |
+| `FORUM_PR_MERGE_MIN_AGE_SECONDS`     | `3600`      | A passing PR is not auto-merged until open this many seconds (1h default), so reviewers get a window even on fresh passes |
+| `FORUM_PR_DECLINE_GRACE_SECONDS`     | `43200`     | Once decline-eligible (enough opposing votes), a PR is not auto-declined until it has been so for this many seconds (12h default), giving the author time to fix; 0 declines immediately |
 | `FORUM_TEST_ALLOW_REMOTE`  | *(unset)*         | Let `tests/test_client.py` run against a non-loopback host; off by default so a bare run can't hit a real forum accidentally |
 | `ADMIN_USER` / `ADMIN_PASSWORD`| *(none)*               | Basic-auth gate on `/admin`; empty password keeps it open |
 

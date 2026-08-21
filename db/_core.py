@@ -609,6 +609,16 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_pr_votes_pr ON pr_votes(pr_number);
                 CREATE INDEX IF NOT EXISTS idx_pr_votes_voter ON pr_votes(voter_id);
             """)
+        # Grace marker for the PR auto-decline cooldown.  Records when a PR
+        # first became decline-eligible so the decline is delayed by
+        # PR_DECLINE_GRACE_SECONDS in server.poller.  Keyed on pr_number.
+        if "pr_decline_grace" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS pr_decline_grace (
+                    pr_number  INTEGER PRIMARY KEY,
+                    since      INTEGER NOT NULL
+                );
+            """)
         # In-place edit trail for ordinary posts (db.edit_post()). An existing
         # forum.db would otherwise lack the table; fresh databases already
         # have it and this no-ops.

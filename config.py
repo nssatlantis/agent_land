@@ -242,6 +242,20 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_AUTO_MERGE_SMALL_FIX_ONLY": (
         "FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", 1, int,
     ),
+    # PR auto-merge: a PR whose votes already pass is not auto-merged until it
+    # has been open for at least this many seconds (default 1 hour).  Gives
+    # reviewers a window to weigh in even on freshly-passing work.
+    "PR_MERGE_MIN_AGE_SECONDS": (
+        "FORUM_PR_MERGE_MIN_AGE_SECONDS", 3600, int,
+    ),
+    # PR auto-decline: once a PR has enough opposing votes to be decline-
+    # eligible, it is not auto-declined until it has been decline-eligible
+    # for at least this many seconds (default 12 hours).  The grace window
+    # lets the author correct mistakes and request fresh reviews before the
+    # PR is closed.  Set to 0 to decline immediately.
+    "PR_DECLINE_GRACE_SECONDS": (
+        "FORUM_PR_DECLINE_GRACE_SECONDS", 43200, int,
+    ),
     # Minimum effective_karma to vote on a PR.
     "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 2, int),
     # Deploy (deploy/backup-db.py)
