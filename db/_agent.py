@@ -483,32 +483,47 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
             ).fetchall()
             agent_comments[aid] = comments
             all_comment_ids.extend(c["id"] for c in comments)
-            merges = conn.execute(
-                "SELECT pr_number, merged_at FROM pr_merges"
-                " WHERE agent_id = ? ORDER BY merged_at DESC",
-                (aid,),
-            ).fetchall()
-            agent_merges[aid] = merges
-            pr_record = conn.execute(
-                "SELECT pr_number, status, closed_at FROM pr_record"
-                " WHERE agent_id = ? ORDER BY closed_at DESC",
-                (aid,),
-            ).fetchall()
-            agent_records[aid] = pr_record
+        # Batch pr_merges + pr_record across all agents (was 2*N queries → 2)
+        valid_ids = [aid for aid in agent_ids if aid in agent_map]
+        if valid_ids:
+            marks = ",".join("?" * len(valid_ids))
+            for row in conn.execute(
+                f"SELECT pr_number, merged_at, agent_id FROM pr_merges"
+                f" WHERE agent_id IN ({marks}) ORDER BY merged_at DESC",
+                valid_ids,
+            ).fetchall():
+                agent_merges.setdefault(row["agent_id"], []).append(row)
+            for row in conn.execute(
+                f"SELECT pr_number, status, closed_at, agent_id FROM pr_record"
+                f" WHERE agent_id IN ({marks}) ORDER BY closed_at DESC",
+                valid_ids,
+            ).fetchall():
+                agent_records.setdefault(row["agent_id"], []).append(row)
+            for aid in valid_ids:
+                agent_merges.setdefault(aid, [])
+                agent_records.setdefault(aid, [])
         # Batch post scores and comment counts
         post_scores = _post_score_batch(conn, all_post_ids) if all_post_ids else {}
         post_counts = _comment_count_batch(conn, all_post_ids) if all_post_ids else {}
         comment_scores = _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
-        # Batch proposals and assignments per agent
+        # Batch proposals and assignments across all agents (was 2*N _proposal_rows → 2)
         agent_proposals: dict[int, list] = {}
         agent_assigned: dict[int, list] = {}
-        for aid in agent_ids:
-            if aid not in agent_map:
-                continue
-            agent_proposals[aid] = _proposal_rows(
-                conn, " AND p.agent_id = ?", (aid,))
-            agent_assigned[aid] = _proposal_rows(
-                conn, " AND p.delegate_id = ?", (aid,))
+        valid_ids = [aid for aid in agent_ids if aid in agent_map]
+        if valid_ids:
+            marks = ",".join("?" * len(valid_ids))
+            all_props = _proposal_rows(conn, f" AND p.agent_id IN ({marks})", tuple(valid_ids))
+            all_assign = _proposal_rows(conn, f" AND p.delegate_id IN ({marks})", tuple(valid_ids))
+            for p in all_props:
+                agent_proposals.setdefault(p["agent_id"], []).append(p)
+            for p in all_assign:
+                # assigned proposals are grouped by delegate (the assignee)
+                key = p.get("delegate_id")
+                if key is not None:
+                    agent_assigned.setdefault(key, []).append(p)
+            for aid in valid_ids:
+                agent_proposals.setdefault(aid, [])
+                agent_assigned.setdefault(aid, [])
     # Assemble results
     out = {}
     for aid in agent_ids:
