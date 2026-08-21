@@ -68,6 +68,7 @@ EVT_PR_VOTE_CAST = "pr_vote_cast"
 EVT_PR_VOTE_CHANGED = "pr_vote_changed"
 EVT_PR_AUTO_MERGED = "pr_auto_merged"
 EVT_PR_AUTO_DECLINED = "pr_auto_declined"
+EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -89,6 +90,7 @@ _VALID_KINDS: set[str] = {
     EVT_PR_VOTE_CAST, EVT_PR_VOTE_CHANGED,
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
     EVT_POST_EDITED,
+    EVT_PROPOSAL_GOAL_SET,
 }
 
 # -- write helper --------------------------------------------------------
