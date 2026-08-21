@@ -98,6 +98,16 @@ def vote_on_pr(
             "SELECT id, value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
             (pr_number, agent_id),
         ).fetchone()
+        # Cap: once the PR already has enough net votes to pass (reached the
+        # merge threshold), do not accept further NEW votes. An existing voter
+        # changing their vote is still allowed (it does not add a new voter
+        # past the decision point). This enforces "votes up to the required
+        # amount to pass" and stops the tally growing without bound.
+        if existing is None and pr_eligible_for_merge(c, pr_number):
+            raise ForumError(
+                f"PR #{pr_number} already has enough votes to pass; "
+                f"no further votes are accepted."
+            )
         if existing is not None:
             if existing["value"] == value:
                 raise ForumError("You already voted that way on this PR.")
