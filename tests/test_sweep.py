@@ -1,8 +1,8 @@
 """Tests for the PR vote sweep (server.poller._pr_vote_sweep).
 
 Covers every gate in the auto-merge/decline orchestrator: proposal kind,
-hold label, CI status, threshold eligibility, and error handling.
-No real GitHub calls — all github module functions are replaced with stubs.
+hold label, CI status, threshold eligibility, rebase flow, and error handling.
+No real GitHub calls â€” all github module functions are replaced with stubs.
 """
 import os
 import sys
@@ -34,6 +34,8 @@ _orig = {
     "pr_checks": github.pr_checks,
     "merge_pr": github.merge_pr,
     "decline_pr": github.decline_pr,
+    "rebase_pr_onto_main": github.rebase_pr_onto_main,
+    "wait_for_ci": github.wait_for_ci,
 }
 
 
@@ -80,8 +82,24 @@ def _stub_pr_checks(state="success"):
     return fake
 
 
+def _stub_rebase(status="ok", files=None):
+    """Return a function that replaces github.rebase_pr_onto_main."""
+    def fake(number, **kw):
+        if status == "ok":
+            return {"status": "ok", "new_sha": "rebased_sha"}
+        return {"status": status, "files": files or []}
+    return fake
+
+
+def _stub_wait_ci(result="success"):
+    """Return a function that replaces github.wait_for_ci."""
+    def fake(number, **kw):
+        return result
+    return fake
+
+
 class _CallLog:
-    """Records calls to merge_pr / decline_pr."""
+    """Records calls to merge_pr / decline_pr / rebase."""
     def __init__(self):
         self.calls = []
 
@@ -92,6 +110,14 @@ class _CallLog:
     def decline(self, number, **kw):
         self.calls.append(("decline", number))
         return {"pr_number": number}
+
+    def rebase(self, number, **kw):
+        self.calls.append(("rebase", number))
+        return {"status": "ok", "new_sha": "rebased_sha"}
+
+    def wait_ci(self, number, **kw):
+        self.calls.append(("wait_ci", number))
+        return "success"
 
 
 def _open_pr_dict(number, citizen=None, created_at=""):
@@ -124,7 +150,7 @@ def _patch(**attrs):
 # -- tests --
 
 def test_sweep_merges_eligible():
-    """Small-fix PR with net >= threshold, CI green, no hold -> merge_pr called."""
+    """Small-fix PR with net >= threshold, CI green, no hold -> rebase + CI + merge."""
     pid, pr_number = _make_small_fix()
     for name in ("beta", "gamma", "delta"):
         db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
@@ -137,9 +163,13 @@ def test_sweep_merges_eligible():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         actions = _pr_vote_sweep()
 
+    assert ("rebase", pr_number) in log.calls, f"rebase not called; actions={actions}"
+    assert ("wait_ci", pr_number) in log.calls, f"wait_for_ci not called; actions={actions}"
     assert ("merge", pr_number) in log.calls, f"merge_pr not called; actions={actions}"
     assert not any(a[0] == "decline" for a in log.calls), "decline_pr should not be called"
     evts = events.query_events(kind="pr_auto_merged", target_id=pr_number)
@@ -149,7 +179,6 @@ def test_sweep_merges_eligible():
 
 def test_sweep_skips_normal_proposal():
     """PR linked to a 'proposal' kind (not small_fix) -> merge NOT attempted."""
-    # Create a normal proposal (not small_fix)
     proposal = db.create_proposal(
         AGENTS["alpha"]["token"],
         f"Normal proposal {_counter[0]}",
@@ -171,10 +200,12 @@ def test_sweep_skips_normal_proposal():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         _pr_vote_sweep()
 
-    assert not log.calls, f"neither merge nor decline should be called for normal proposal: {log.calls}"
+    assert not log.calls, f"neither merge nor decline for normal proposal: {log.calls}"
     print("  sweep skips normal proposal: ok")
 
 
@@ -192,6 +223,8 @@ def test_sweep_skips_hold_label():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         _pr_vote_sweep()
 
@@ -213,6 +246,8 @@ def test_sweep_skips_red_ci():
         pr_checks=_stub_pr_checks("failure"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         _pr_vote_sweep()
 
@@ -229,7 +264,7 @@ def test_sweep_declines_opposed():
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
     old_grace = config.PR_DECLINE_GRACE_SECONDS
-    config.PR_DECLINE_GRACE_SECONDS = 0  # disable grace so decline fires now
+    config.PR_DECLINE_GRACE_SECONDS = 0
     try:
         with _patch(
             open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
@@ -237,6 +272,8 @@ def test_sweep_declines_opposed():
             pr_checks=_stub_pr_checks("success"),
             merge_pr=log.merge,
             decline_pr=log.decline,
+            rebase_pr_onto_main=log.rebase,
+            wait_for_ci=log.wait_ci,
         ):
             actions = _pr_vote_sweep()
     finally:
@@ -263,6 +300,8 @@ def test_sweep_no_action_below_threshold():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         _pr_vote_sweep()
 
@@ -286,11 +325,11 @@ def test_sweep_handles_merge_error():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=failing_merge,
         decline_pr=lambda *a, **kw: None,
+        rebase_pr_onto_main=_stub_rebase("ok"),
+        wait_for_ci=_stub_wait_ci("success"),
     ):
-        # Should not raise
         _pr_vote_sweep()
 
-    # The sweep caught the error and continued
     evts = events.query_events(kind="pr_auto_merged", target_id=pr_number)
     assert len(evts) == 0, "no auto_merge event should be logged on failure"
     print("  sweep handles merge error: ok")
@@ -312,13 +351,74 @@ def test_sweep_handles_decline_error():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=lambda *a, **kw: None,
         decline_pr=failing_decline,
+        rebase_pr_onto_main=_stub_rebase("ok"),
+        wait_for_ci=_stub_wait_ci("success"),
     ):
-        # Should not raise
         _pr_vote_sweep()
 
     evts = events.query_events(kind="pr_auto_declined", target_id=pr_number)
     assert len(evts) == 0, "no auto_declined event should be logged on failure"
     print("  sweep handles decline error: ok")
+
+
+def test_sweep_rebase_conflict_skips_merge():
+    """rebase_pr_onto_main returns conflict -> merge NOT attempted."""
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+
+    def conflict_rebase(number, **kw):
+        log.calls.append(("rebase", number))
+        return {"status": "conflict", "files": ["server.py", "db/_core.py"]}
+
+    with _patch(
+        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+        rebase_pr_onto_main=conflict_rebase,
+        wait_for_ci=log.wait_ci,
+    ):
+        actions = _pr_vote_sweep()
+
+    assert ("rebase", pr_number) in log.calls, f"rebase should be called: {actions}"
+    assert ("wait_ci", pr_number) not in log.calls, "wait_for_ci should not be called on conflict"
+    assert ("merge", pr_number) not in log.calls, "merge should not be called on conflict"
+    evts = events.query_events(kind="pr_auto_merged", target_id=pr_number)
+    assert len(evts) == 0, "no auto_merge event on rebase conflict"
+    print("  sweep rebase conflict skips merge: ok")
+
+
+def test_sweep_ci_fails_after_rebase():
+    """Rebase succeeds but CI fails after rebase -> merge NOT attempted."""
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+
+    with _patch(
+        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=_stub_wait_ci("failure"),
+    ):
+        actions = _pr_vote_sweep()
+
+    assert ("rebase", pr_number) in log.calls, f"rebase should be called: {actions}"
+    assert ("wait_ci", pr_number) in log.calls, "wait_for_ci should be called"
+    assert ("merge", pr_number) not in log.calls, "merge should not be called when CI fails"
+    evts = events.query_events(kind="pr_auto_merged", target_id=pr_number)
+    assert len(evts) == 0, "no auto_merge event when CI fails after rebase"
+    print("  sweep CI fails after rebase: ok")
 
 
 def test_sweep_normal_proposal_when_toggle_off():
@@ -350,6 +450,8 @@ def test_sweep_normal_proposal_when_toggle_off():
             pr_checks=_stub_pr_checks("success"),
             merge_pr=log.merge,
             decline_pr=log.decline,
+            rebase_pr_onto_main=log.rebase,
+            wait_for_ci=log.wait_ci,
         ):
             _pr_vote_sweep()
 
@@ -385,7 +487,7 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
         os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "0"
         import importlib, config as _cfg
         importlib.reload(_cfg)
-        config.PR_DECLINE_GRACE_SECONDS = 0  # no grace in this test
+        config.PR_DECLINE_GRACE_SECONDS = 0
 
         log = _CallLog()
         opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
@@ -395,6 +497,8 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
             pr_checks=_stub_pr_checks("success"),
             merge_pr=log.merge,
             decline_pr=log.decline,
+            rebase_pr_onto_main=log.rebase,
+            wait_for_ci=log.wait_ci,
         ):
             _pr_vote_sweep()
 
@@ -426,6 +530,8 @@ def test_sweep_merge_delayed_when_young():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         _pr_vote_sweep()
     assert not log.calls, f"young PR must not auto-merge yet: {log.calls}"
@@ -448,6 +554,8 @@ def test_sweep_merge_proceeds_when_old():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         actions = _pr_vote_sweep()
     assert ("merge", pr_number) in log.calls, f"old PR should auto-merge: {actions}"
@@ -460,7 +568,7 @@ def test_sweep_decline_grace_delays():
     for name in ("beta", "gamma", "delta"):
         db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
     old_grace = config.PR_DECLINE_GRACE_SECONDS
-    config.PR_DECLINE_GRACE_SECONDS = 43200  # default grace window applies
+    config.PR_DECLINE_GRACE_SECONDS = 43200
     try:
         log = _CallLog()
         opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
@@ -470,6 +578,8 @@ def test_sweep_decline_grace_delays():
             pr_checks=_stub_pr_checks("success"),
             merge_pr=log.merge,
             decline_pr=log.decline,
+            rebase_pr_onto_main=log.rebase,
+            wait_for_ci=log.wait_ci,
         ):
             _pr_vote_sweep()
         assert not log.calls, f"decline must wait out the grace window: {log.calls}"
@@ -501,6 +611,8 @@ def test_sweep_decline_after_grace():
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
         decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
     ):
         actions = _pr_vote_sweep()
     assert ("decline", pr_number) in log.calls, f"decline should fire after grace: {actions}"
@@ -517,6 +629,8 @@ if __name__ == "__main__":
     test_sweep_no_action_below_threshold()
     test_sweep_handles_merge_error()
     test_sweep_handles_decline_error()
+    test_sweep_rebase_conflict_skips_merge()
+    test_sweep_ci_fails_after_rebase()
     test_sweep_normal_proposal_when_toggle_off()
     test_sweep_declines_normal_proposal_when_toggle_off()
     test_sweep_merge_delayed_when_young()
