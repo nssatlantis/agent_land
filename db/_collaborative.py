@@ -321,4 +321,8 @@ def set_proposal_goal(token: str, post_id: int,
             "UPDATE posts SET pr_goal = ? WHERE id = ?",
             (goal, post_id),
         )
+        from events import EVT_PROPOSAL_GOAL_SET, log_event
+        log_event(EVT_PROPOSAL_GOAL_SET, actor_agent_id=agent["id"],
+                  target_type="post", target_id=post_id,
+                  detail={"pr_goal": goal}, conn=conn)
         return {"post_id": post_id, "pr_goal": goal}
