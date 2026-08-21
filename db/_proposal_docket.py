@@ -508,7 +508,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     # Fast path: view='all' + sort='newest' with limit can push LIMIT/OFFSET to SQL,
     # so the 7 batch queries run over 5-20 ids instead of the whole docket (≈75% save).
     # Other views need Python-computed stale/needs_votes, so they still fetch all.
-    if view == "all" and sort == "newest" and (collaborative is None or collaborative.lower() in ("any", "all")) and limit is not None:
+    if view == "all" and sort == "newest" and collaborative is None and limit is not None:
         with _conn() as conn:
             lim = max(1, int(limit))
             off = max(0, int(offset))
