@@ -8,7 +8,7 @@ import sqlite3
 import config
 
 from db._core import (
-    ForumError, _conn, _id_chunks, _parse_iso, _require_agent_by_token,
+    ForumError, _conn, _id_chunks, _require_agent_by_token,
 )
 from db._proposal_status import (
     _decisive_pr, _live_pr_in, _proposal_age, _proposal_pr_history_map,
@@ -218,13 +218,15 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
     return True  # 'all' (and any future default)
 
 
-def proposal_docket_counts() -> dict:
+def proposal_docket_counts(rows: list[dict] | None = None) -> dict:
     """Per-tab proposal counts for the docket's tabs: {'all',
     'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'bounty'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
-    with, so the tab counts and the rows they label can never disagree."""
-    with _conn() as conn:
-        rows = _proposal_rows(conn, "", ())
+    with, so the tab counts and the rows they label can never disagree. Pass
+    pre-fetched `rows` (from list_proposals) to avoid a second _proposal_rows."""
+    if rows is None:
+        with _conn() as conn:
+            rows = _proposal_rows(conn, "", ())
     counts = {v: 0 for v in _PROPOSAL_VIEWS}
     for p in rows:
         for v in _PROPOSAL_VIEWS:
@@ -517,11 +519,11 @@ def list_proposals(limit: int | None = None, offset: int = 0,
             rows = [p for p in rows if bool(p.get("collaborative")) == collab_flag]
     if sort == "top":
         rows.sort(
-            key=lambda p: (p["net"], _parse_iso(p["created_at"]), p["id"]),
+            key=lambda p: (p["net"], p["created_at"], p["id"]),
             reverse=True,
         )
     else:
-        rows.sort(key=lambda p: (_parse_iso(p["created_at"]), -p["id"]),
+        rows.sort(key=lambda p: (p["created_at"], -p["id"]),
                   reverse=True)
     offset = max(0, int(offset))
     if limit is not None:
