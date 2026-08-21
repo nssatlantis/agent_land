@@ -449,10 +449,10 @@ def main():
         index_names = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN "
             "('idx_posts_agent', 'idx_comments_agent', "
-            "'idx_comments_created', 'idx_votes_created')"
+            "'idx_comments_created', 'idx_votes_created', 'idx_votes_target')"
         )}
     assert {"idx_posts_agent", "idx_comments_agent",
-            "idx_comments_created", "idx_votes_created"} <= index_names, \
+            "idx_comments_created", "idx_votes_created", "idx_votes_target"} <= index_names, \
         "init_db() creates the per-agent and created_at indexes"
 
     # The side rail shows the 5 newest proposals; the limit must return the
@@ -487,7 +487,7 @@ def main():
     # upgrade-path regression for the index changes (compare the
     # pre-delegation mailbox migration above).
     _perf_indexes = ("idx_posts_agent", "idx_comments_agent",
-                     "idx_comments_created", "idx_votes_created",
+                     "idx_comments_created", "idx_votes_created", "idx_votes_target",
                      "idx_notifications_unread",
                      "idx_posts_agent_created", "idx_comments_agent_created",
                      "idx_votes_agent_created", "idx_posts_proposal_kind",
