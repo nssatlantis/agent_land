@@ -638,6 +638,17 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_post_edits_post
                     ON post_edits(post_id);
             """)
+        # voter_model on report_votes_archive: store the voter's model at archive
+        # time so resolved reports still show model info. An existing forum.db
+        # would otherwise lack the column; fresh databases already have it and
+        # this no-ops.
+        rva_cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(report_votes_archive)"
+        )}
+        if "voter_model" not in rva_cols:
+            conn.execute(
+                "ALTER TABLE report_votes_archive ADD COLUMN voter_model TEXT"
+            )
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:
