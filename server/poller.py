@@ -320,12 +320,24 @@ def _pr_vote_sweep() -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
     By default (PR_AUTO_MERGE_SMALL_FIX_ONLY=1) only small-fix PRs are
-    eligible; when set to 0, all linked PRs qualify.  A PR is auto-merged
-    when:
+    eligible; when set to 0, all linked PRs qualify.  The sweep runs in
+    two phases:
+
+    Phase 1 (scan): iterate all open PRs, process auto-declines, and
+    identify the single oldest eligible merge candidate.
+
+    Phase 2 (merge): for the candidate, rebase onto main, wait for CI
+    to pass on the rebased branch, then merge.  At most one merge per
+    sweep — next sweep picks the next PR.  This guarantees every PR is
+    tested against the latest main before merge.
+
+    A PR is auto-merged when:
       - net votes >= the derived PR vote threshold (max(floor,
         ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD)
-      - CI is green (or no CI required)
+      - CI is green (or no CI required) before rebase
       - the 'hold' label is NOT present
+      - rebase onto main succeeds (no conflicts)
+      - CI passes again after rebase
 
     A PR is auto-declined when net votes <= -threshold, but only after a
     grace window (PR_DECLINE_GRACE_SECONDS) from when it first became
@@ -340,6 +352,7 @@ def _pr_vote_sweep() -> list[dict]:
     open_prs = github.open_prs()
     openers = db.linked_pr_openers()
     proposals_map = db.linked_pr_proposals()
+    merge_candidate = None
     for pr in open_prs:
         number = pr["number"]
         opener = openers.get(number) or pr.get("citizen")
@@ -371,57 +384,17 @@ def _pr_vote_sweep() -> list[dict]:
                 ci_ok = checks.get("state") in ("success", "unknown")
             except Exception:
                 ci_ok = False
-            # Auto-merge check
-            if ci_ok and pr_eligible_for_merge(conn, number):
+            # Auto-merge eligibility check (identify candidate, merge in Phase 2)
+            if merge_candidate is None and ci_ok and pr_eligible_for_merge(conn, number):
                 # Don't auto-merge a brand-new PR: give reviewers a window
                 # (PR_MERGE_MIN_AGE_SECONDS) even on freshly-passing work.
                 _created = _pr_created_epoch(pr)
                 if _created is not None and (
                     time.time() - _created < config.PR_MERGE_MIN_AGE_SECONDS
                 ):
-                    continue  # too young to auto-merge; leave it open
-                try:
-                    github.merge_pr(number)
-                    actions.append({"action": "auto_merge", "pr_number": number})
-                    log_event(
-                        EVT_PR_AUTO_MERGED,
-                        actor_agent_id=opener["agent_id"],
-                        target_type="pr",
-                        target_id=number,
-                        detail={"pr_number": number},
-                        conn=conn,
-                    )
-                    # Notify opener + proposal author.
-                    notifications._notify(
-                        conn,
-                        opener["agent_id"],
-                        "pr",
-                        "pr",
-                        number,
-                        f"PR #{number} was auto-merged",
-                        actor_agent_id=opener["agent_id"],
-                    )
-                    if proposal_post_id:
-                        author_row = conn.execute(
-                            "SELECT agent_id FROM posts WHERE id = ?",
-                            (proposal_post_id,),
-                        ).fetchone()
-                        if author_row and author_row["agent_id"] != opener["agent_id"]:
-                            notifications._notify(
-                                conn,
-                                author_row["agent_id"],
-                                "pr",
-                                "pr",
-                                number,
-                                f"PR #{number} implementing your proposal was auto-merged",
-                                actor_agent_id=opener["agent_id"],
-                            )
-                except Exception as exc:
-                    logutil.log(
-                        "pr_vote_merge_failed",
-                        pr_number=number, error=str(exc),
-                    )
-                continue  # don't also decline
+                    pass  # too young; eligible in a future sweep
+                else:
+                    merge_candidate = (pr, opener, proposal_post_id)
             # Auto-decline check
             if pr_decline_ready(conn, number, config.PR_DECLINE_GRACE_SECONDS):
                 try:
@@ -465,6 +438,69 @@ def _pr_vote_sweep() -> list[dict]:
                         "pr_vote_decline_failed",
                         pr_number=number, error=str(exc),
                     )
+    # Phase 2: rebase -> CI -> merge (at most one PR per sweep).
+    if merge_candidate:
+        pr, opener, proposal_post_id = merge_candidate
+        number = pr["number"]
+        try:
+            rebase_result = github.rebase_pr_onto_main(number)
+            if rebase_result["status"] == "conflict":
+                logutil.log(
+                    "pr_vote_rebase_conflict",
+                    pr_number=number,
+                    files=rebase_result.get("files"),
+                )
+                return actions
+            ci_state = github.wait_for_ci(
+                number, sha=rebase_result["new_sha"],
+            )
+            if ci_state != "success":
+                logutil.log(
+                    "pr_vote_ci_after_rebase",
+                    pr_number=number, state=ci_state,
+                )
+                return actions
+            github.merge_pr(number)
+            actions.append({"action": "auto_merge", "pr_number": number})
+            with db._conn() as conn:
+                log_event(
+                    EVT_PR_AUTO_MERGED,
+                    actor_agent_id=opener["agent_id"],
+                    target_type="pr",
+                    target_id=number,
+                    detail={"pr_number": number},
+                    conn=conn,
+                )
+                notifications._notify(
+                    conn,
+                    opener["agent_id"],
+                    "pr",
+                    "pr",
+                    number,
+                    f"PR #{number} was auto-merged",
+                    actor_agent_id=opener["agent_id"],
+                )
+                if proposal_post_id:
+                    author_row = conn.execute(
+                        "SELECT agent_id FROM posts WHERE id = ?",
+                        (proposal_post_id,),
+                    ).fetchone()
+                    if (author_row
+                            and author_row["agent_id"] != opener["agent_id"]):
+                        notifications._notify(
+                            conn,
+                            author_row["agent_id"],
+                            "pr",
+                            "pr",
+                            number,
+                            f"PR #{number} implementing your proposal was auto-merged",
+                            actor_agent_id=opener["agent_id"],
+                        )
+        except Exception as exc:
+            logutil.log(
+                "pr_vote_merge_failed",
+                pr_number=number, error=str(exc),
+            )
     return actions
 
 
