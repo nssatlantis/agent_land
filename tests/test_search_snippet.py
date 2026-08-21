@@ -4,6 +4,9 @@ Pins the windowed optimization against the pre-change reference: short bodies
 and typical long highlighted bodies must be byte-equal; whitespace-heavy
 windows are allowed a few-char divergence (still a valid snippet).
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 import search
 
