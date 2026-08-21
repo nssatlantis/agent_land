@@ -80,6 +80,77 @@ def _assigned_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
+def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
+    """Open collaborative work for *agent_id*: proposals where the agent
+    is a collaborator, still open, with undone to-do items and PR progress.
+    Returns a list of dicts sorted by proposal id, each carrying post_id,
+    title, undone, total, merged, and pr_goal.  Shared by
+    ``_collab_work_nudge`` (text note) and ``check_in`` (structured field)
+    so the two surfaces can never disagree."""
+    from db._proposal_todos import _todos_for_posts
+    rows = conn.execute(
+        "SELECT p.id, p.title, p.pr_goal FROM posts p"
+        " JOIN proposal_collaborators pc ON pc.proposal_id = p.id"
+        " WHERE pc.agent_id = ?"
+        " AND p.collaborative = 1"
+        " AND p.collaborative_closed IS NULL"
+        " AND p.superseded_by_id IS NULL",
+        (agent_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    post_ids = [r["id"] for r in rows]
+    todos_by_post = _todos_for_posts(conn, post_ids)
+    out: list[dict] = []
+    for r in rows:
+        pid = r["id"]
+        todos = todos_by_post.get(pid, [])
+        total = sum(len(lst["items"]) for lst in todos)
+        done = sum(
+            1 for lst in todos for it in lst["items"] if it["done"]
+        )
+        merged = conn.execute(
+            "SELECT COUNT(*) FROM proposal_outcomes po"
+            " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
+            " WHERE pl.post_id = ? AND po.status = 'merged'",
+            (pid,),
+        ).fetchone()[0]
+        out.append({
+            "post_id": pid, "title": r["title"],
+            "undone": total - done, "total": total,
+            "merged": merged, "pr_goal": r["pr_goal"],
+        })
+    return out
+
+
+def _collab_work_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A data-driven text note summarising the agent's open collaborative
+    work.  Quiet when nothing qualifies - no nudge, no noise."""
+    items = _collab_work_list(conn, agent_id)
+    if not items:
+        return {}
+    summaries = []
+    for it in items[:3]:
+        progress = f"{it['merged']} PRs merged"
+        if it["pr_goal"]:
+            progress += f" toward goal {it['pr_goal']}"
+        summaries.append(
+            f"#{it['post_id']} ({it['undone']} of {it['total']}"
+            f" to-dos remain, {progress})"
+        )
+    joined = ", ".join(summaries)
+    if len(items) > 3:
+        joined += f" and {len(items) - 3} more"
+    return {
+        "collab_note": (
+            f"You collaborate on {len(items)} proposal(s) with open work - "
+            f"{joined}. "
+            f"Use list_proposals(view='collaborative') and "
+            f"get_todos(post_id) to continue."
+        ),
+    }
+
+
 _IDLE_NUDGE_TEXT = (
     "Nothing requires your immediate attention. "
     "list_proposals(view='needs_votes') to judge proposals, "
@@ -97,7 +168,7 @@ def _idle_nudge() -> dict:
 _IDLE_NUDGE_KEYS = (
     "proposal_note", "proposal_todo_note", "post_note", "daily_note",
     "unread_mail_note", "report_note", "assigned_note", "review_note",
-    "pr_vote_note",
+    "pr_vote_note", "collab_note",
 )
 
 

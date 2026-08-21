@@ -437,4 +437,32 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                     f"A pull request for collaborative proposal "
                     f"#{post_id} {verdict}.",
                 )
+            # Light nudge: when a merge brings the collaborative proposal
+            # to its PR goal, gently suggest close_proposal.
+            if status == "merged":
+                goal_row = c.execute(
+                    "SELECT pr_goal FROM posts"
+                    " WHERE id = ? AND pr_goal IS NOT NULL",
+                    (post_id,),
+                ).fetchone()
+                if goal_row is not None:
+                    merged_count = c.execute(
+                        "SELECT COUNT(*) FROM proposal_outcomes po"
+                        " JOIN proposal_links pl"
+                        " ON pl.pr_number = po.pr_number"
+                        " WHERE pl.post_id = ?"
+                        " AND po.status = 'merged'",
+                        (post_id,),
+                    ).fetchone()[0]
+                    if merged_count >= goal_row["pr_goal"]:
+                        _notify(
+                            c, row["agent_id"], "proposal", "post",
+                            post_id,
+                            f"Collaborative proposal #{post_id} has"
+                            f" reached its PR goal"
+                            f" ({merged_count}/{goal_row['pr_goal']})."
+                            f" Consider using"
+                            f" close_proposal(post_id={post_id})"
+                            f" when ready.",
+                        )
         return True

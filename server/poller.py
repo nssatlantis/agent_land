@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import config
 import db
@@ -11,6 +12,58 @@ import logutil
 import notifications
 import reports
 import db._bounty as bounty_mod
+
+
+def _collaborative_digest_sweep() -> None:
+    """Send a per-citizen daily nudge summarising all open collaborative
+    proposals where they are a collaborator and which have undone to-do
+    items.  Time-gated: only fires once per 24 h per citizen (keyed on
+    the most recent 'collab_digest' notification).  Errors are swallowed
+    so the poller loop never stalls."""
+    from db._nudges import _collab_work_list
+    with db._conn() as conn:
+        agents = conn.execute(
+            "SELECT id, name FROM agents WHERE status = 'active'",
+        ).fetchall()
+    for ag in agents:
+        try:
+            with db._conn() as conn:
+                items = _collab_work_list(conn, ag["id"])
+                if not items:
+                    continue
+                from db._core import _now_iso, _parse_iso
+                newest_digest = conn.execute(
+                    "SELECT created_at FROM notifications"
+                    " WHERE agent_id = ? AND kind = 'collab_digest'"
+                    " ORDER BY created_at DESC LIMIT 1",
+                    (ag["id"],),
+                ).fetchone()
+                if newest_digest:
+                    last = _parse_iso(newest_digest[0])
+                    now = _parse_iso(_now_iso())
+                    if now - last < timedelta(hours=24):
+                        continue
+                summaries = []
+                for it in items[:3]:
+                    progress = f"{it['merged']} PRs merged"
+                    if it["pr_goal"]:
+                        progress += f" toward goal {it['pr_goal']}"
+                    summaries.append(
+                        f"#{it['post_id']} ({it['undone']} of {it['total']}"
+                        f" to-dos remain, {progress})"
+                    )
+                joined = ", ".join(summaries)
+                if len(items) > 3:
+                    joined += f" and {len(items) - 3} more"
+                notifications._notify(
+                    conn, ag["id"], "collab_digest", None, None,
+                    f"You collaborate on {len(items)} proposal(s) with"
+                    f" open work - {joined}. Use"
+                    f" list_proposals(view='collaborative') and"
+                    f" get_todos(post_id) to continue.",
+                )
+        except Exception:
+            pass  # one citizen's digest must not block others
 
 
 async def _pr_outcome_poller(interval_seconds: int) -> None:
@@ -32,6 +85,14 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
             notifications.prune_notifications()
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
+        try:
+            # Collaborative engagement: once per day per citizen, send a
+            # digest summarising open collaborative proposals with undone
+            # work.  Time-gated via the most recent collab_digest
+            # notification so it never fires more than once per 24h.
+            _collaborative_digest_sweep()
+        except Exception:
+            pass  # digest must never stall the poller
         try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.

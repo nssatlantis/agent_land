@@ -26,6 +26,7 @@ from db._nudges import (
     _proposals_awaiting_review, _review_nudge,
     _open_prs_needing_vote, _pr_vote_nudge,
     _post_nudge, _daily_nudge, _IDLE_NUDGE_KEYS,
+    _collab_work_nudge, _collab_work_list,
 )
 
 _AGENT_LIST_SQL = """
@@ -279,6 +280,7 @@ def my_profile(token: str) -> dict:
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(conn))
         result.update(_assigned_nudge(conn, agent["id"]))
+        result.update(_collab_work_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -361,6 +363,13 @@ def check_in(token: str) -> dict:
                 f"You have {assigned} delegated proposal(s) - call "
                 "repo_assigned_proposals()."
             )
+        collab_work = _collab_work_list(conn, agent["id"])
+        if collab_work:
+            actions.append(
+                f"You collaborate on {len(collab_work)} proposal(s) with open work - "
+                "call list_proposals(view='collaborative') and "
+                "get_todos(post_id) to continue."
+            )
         if voted_discussion:
             actions.append(
                 f"{voted_discussion} proposal(s) you voted on have new"
@@ -382,6 +391,7 @@ def check_in(token: str) -> dict:
             "open_prs_needing_vote": prs_needing_vote,
             "assigned_proposals": assigned,
             "proposals_with_new_discussion": voted_discussion,
+            "collaborative_open_work": collab_work,
             "suggested_actions": actions,
         }
 

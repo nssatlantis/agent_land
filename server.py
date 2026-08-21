@@ -854,6 +854,21 @@ def repo_propose_change(
                     f"#{proposal_id}: {title}",
                     actor_agent_id=who["agent_id"],
                 )
+        # Also notify fellow collaborators that a new PR went up.
+        from db._collaborative import list_proposal_collaborators
+        from notifications import _notify
+        with db._conn() as conn:
+            collabs = list_proposal_collaborators(proposal_id, conn=conn)
+            for col in collabs:
+                if col["agent_id"] != who["agent_id"]:
+                    _notify(
+                        conn, col["agent_id"], "pr", "proposal",
+                        proposal_id,
+                        f"PR #{plan['pr_number']} opened for"
+                        f" collaborative proposal #{proposal_id}"
+                        f" by {who['name']}: {title}",
+                        actor_agent_id=who["agent_id"],
+                    )
         from db._bounty import lock_bounties_for_pr
         lock_bounties_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
         # Apply GitHub labels.  The 'review-required' label is always added
