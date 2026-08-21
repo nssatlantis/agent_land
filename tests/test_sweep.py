@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db, setup  # noqa: E402
 import github  # noqa: E402
 import events  # noqa: E402
+import config  # noqa: E402
 from server.poller import _pr_vote_sweep  # noqa: E402
 
 
@@ -408,7 +409,7 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
 
 
 def test_sweep_merge_delayed_when_young():
-    """Merge-eligible PR created < PR_MERGE_MIN_AGE_SECONds ago is NOT merged."""
+    """Merge-eligible PR created < PR_MERGE_MIN_AGE_SECONDS ago is NOT merged."""
     pid, pr_number = _make_small_fix()
     for name in ("beta", "gamma", "delta"):
         db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
