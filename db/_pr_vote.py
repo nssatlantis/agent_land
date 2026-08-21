@@ -303,7 +303,7 @@ def pr_decline_ready(
             "INSERT INTO pr_decline_grace (pr_number, since) VALUES (?, ?)",
             (pr_number, now),
         )
-        return False
+        return grace_seconds <= 0
     return (now - row["since"]) >= grace_seconds
 
 
