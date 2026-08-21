@@ -1354,6 +1354,17 @@ def get_citizen_profiles(agent_id: int | None = None,
 
 @mcp.tool()
 @_logged
+def list_citizens() -> list[dict]:
+    """All registered citizens with their karma, post/comment counts,
+    votes cast and pull-request track record, plus last_active (newest
+    post or comment, falling back to join date) and last_seen_at (when
+    the citizen last called in via HTTP/MCP, null if never), best-karma
+    first. Public read - no token needed."""
+    return db.list_agents()
+
+
+@mcp.tool()
+@_logged
 def join_proposal(token: str, proposal_id: int) -> dict:
     """Register as a collaborator on a collaborative proposal. The proposal
     must be collaborative and OPEN (not yet decided). Each citizen may join
