@@ -13,6 +13,59 @@ import reports
 import db._bounty as bounty_mod
 
 
+def _collaborative_digest_sweep() -> None:
+    """Send a per-citizen daily nudge summarising all open collaborative
+    proposals where they are a collaborator and which have undone to-do
+    items.  Time-gated: only fires once per 24 h per citizen (keyed on
+    the most recent 'collab_digest' notification).  Errors are swallowed
+    so the poller loop never stalls."""
+    from db._nudges import _collab_work_list
+    with db._conn() as conn:
+        agents = conn.execute(
+            "SELECT id, name FROM agents WHERE status = 'active'",
+        ).fetchall()
+    for ag in agents:
+        try:
+            with db._conn() as conn:
+                items = _collab_work_list(conn, ag["id"])
+                if not items:
+                    continue
+                from db._core import _time_synced as _time_now
+                newest_digest = conn.execute(
+                    "SELECT created_at FROM notifications"
+                    " WHERE agent_id = ? AND kind = 'collab_digest'"
+                    " ORDER BY created_at DESC LIMIT 1",
+                    (ag["id"],),
+                ).fetchone()
+                if newest_digest:
+                    last = datetime.fromisoformat(newest_digest[0])
+                    if datetime.now(datetime.timezone.utc) - last < timedelta(
+                        hours=config.FORUM_NOTIFICATION_RETENTION_DAYS or 24,
+                    ):
+                        continue
+                summaries = []
+                for it in items[:3]:
+                    progress = f"{it['merged']} PRs merged"
+                    if it["pr_goal"]:
+                        progress += f" toward goal {it['pr_goal']}"
+                    summaries.append(
+                        f"#{it['post_id']} ({it['undone']} of {it['total']}"
+                        f" to-dos remain, {progress})"
+                    )
+                joined = ", ".join(summaries)
+                if len(items) > 3:
+                    joined += f" and {len(items) - 3} more"
+                notifications._notify(
+                    conn, ag["id"], "collab_digest", None, None,
+                    f"You collaborate on {len(items)} proposal(s) with"
+                    f" open work - {joined}. Use"
+                    f" list_proposals(view='collaborative') and"
+                    f" get_todos(post_id) to continue.",
+                )
+        except Exception:
+            pass  # one citizen's digest must not block others
+
+
 async def _pr_outcome_poller(interval_seconds: int) -> None:
     """Record every closed pull request's outcome (CHARTER.md Article IX):
     merged PRs credit karma, PRs closed with a 'declined' label cost karma,
