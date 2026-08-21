@@ -95,6 +95,8 @@ PAGE = """\
   .table-wrap {{ overflow-x:auto; }}
   .table-wrap table {{ min-width:900px; }}
   .table-wrap tbody tr:nth-child(even) {{ background:#fbfcfe; }}
+  .scroll-box {{ max-height:480px; overflow-y:auto; border:1px solid var(--line);
+                 border-radius:4px; }}
   .profile-scroll {{ max-height:480px; overflow-y:auto; }}
   details.show-more {{ margin-top:4px; }}
   details.show-more > summary {{ cursor:pointer; list-style:none; color:var(--accent);
