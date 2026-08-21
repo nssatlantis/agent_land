@@ -176,7 +176,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     return out
 
 
-_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "review", "stale", "merged", "small_fix", "collaborative")
+_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "review", "stale", "merged", "small_fix", "collaborative", "unclaimed", "bounty")
 _PROPOSAL_SORTS = ("newest", "top")
 
 
@@ -205,12 +205,16 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         return p["review_requested"] and p["status"] == "open" and not p["locked"]
     if view == "collaborative":
         return p["collaborative"]
+    if view == "unclaimed":
+        return p["status"] == "open" and not p["locked"] and p.get("claimable") and not p.get("claim_agent_id")
+    if view == "bounty":
+        return p.get("bounty_total", 0) > 0
     return True  # 'all' (and any future default)
 
 
 def proposal_docket_counts() -> dict:
     """Per-tab proposal counts for the docket's tabs: {'all',
-    'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative'}, computed
+    'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'bounty'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree."""
     with _conn() as conn:
@@ -472,7 +476,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     to-do lists (RULES_TEXT rule 16), empty when none, plus a short
     `body_preview` (the first config.BODY_PREVIEW_LENGTH characters).
     Pass `view` to filter by docket tab: 'all' (the default), 'needs_votes',
-    'approved', 'review', 'stale', 'merged' or 'small_fix' - the same predicate
+    'approved', 'review', 'stale', 'merged', 'small_fix', 'unclaimed' or 'bounty' - the same predicate
     proposal_docket_counts() counts with, so the tab counts and the rows
     they label can never disagree (tabs are lenses, not partitions: a stale
     proposal still needs votes, a merged small fix sits in both 'merged' and
@@ -489,7 +493,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
             "view must be one of: all, needs_votes, approved, review, stale, "
-            "merged, small_fix, collaborative."
+            "merged, small_fix, collaborative, unclaimed, bounty."
         )
     if sort is None:
         sort = "newest"
