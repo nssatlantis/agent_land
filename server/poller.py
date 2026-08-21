@@ -33,6 +33,14 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
         except Exception:
             pass  # pruning must never stall the poller; retry next interval
         try:
+            # Collaborative engagement: once per day per citizen, send a
+            # digest summarising open collaborative proposals with undone
+            # work.  Time-gated via the most recent collab_digest
+            # notification so it never fires more than once per 24h.
+            _collaborative_digest_sweep()
+        except Exception:
+            pass  # digest must never stall the poller
+        try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
             reports.resolve_stale_reports()
