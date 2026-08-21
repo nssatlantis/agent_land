@@ -69,7 +69,7 @@ def main():
     reports.vote_on_report(agents['delta']['token'], rid1, 'suspend')
     reports.vote_on_report(agents['epsilon']['token'], rid1, 'suspend')
     reports.vote_on_report(agents['zeta']['token'], rid2, 'clear')
-    reports.vote_on_report(agents['alpha']['token'], rid3, 'suspend')
+    reports.vote_on_report(agents['eta']['token'], rid3, 'suspend')
 
     state = _capture_conn()
     rows = reports.list_reports('all')
