@@ -96,12 +96,14 @@ def main():
         'list_reports still uses correlated subqueries: ' + plan_text
     )
 
-    # The CTE's GROUP BY + action aggregation must be index-assisted, not a
-    # bare table scan. The covering index idx_report_votes_target_action was
-    # added for exactly this; on a small table the planner may instead pick
-    # the autoindex on report_votes, which is also index-assisted.
-    assert 'USING INDEX' in plan_text, (
-        'list_reports CTE does not use an index on report_votes: ' + plan_text
+    # The CTE's GROUP BY + action aggregation must be index-assisted. The
+    # covering index idx_report_votes_target_action we added is the expected
+    # plan ('... SCAN report_votes USING COVERING INDEX
+    # idx_report_votes_target_action'); accept that or any covering index the
+    # planner chooses.
+    assert ('idx_report_votes_target_action' in plan_text
+            or 'COVERING INDEX' in plan_text), (
+        'list_reports CTE is not index-assisted on report_votes: ' + plan_text
     )
 
     # And the covering index must actually exist in the schema (applied by
