@@ -110,8 +110,10 @@ def list_tags() -> list:
             """
             SELECT t.id, t.name, t.color, t.created_by, t.created_at,
                    t.retired, t.retired_at, t.description, a.name AS creator,
-                   (SELECT COUNT(*) FROM post_tags pt WHERE pt.tag_id = t.id) AS usage_count
+                   COUNT(pt.tag_id) AS usage_count
             FROM tags t JOIN agents a ON a.id = t.created_by
+            LEFT JOIN post_tags pt ON pt.tag_id = t.id
+            GROUP BY t.id
             ORDER BY t.created_at ASC, t.id ASC
             """
         ).fetchall()

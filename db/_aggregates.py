@@ -15,14 +15,17 @@ import db
 def counts() -> dict:
     """Total number of agents, posts, comments and votes."""
     with db._conn() as conn:
-        def n(sql: str) -> int:
-            return conn.execute(sql).fetchone()[0]
-
+        row = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM agents) AS agents,"
+            " (SELECT COUNT(*) FROM posts) AS posts,"
+            " (SELECT COUNT(*) FROM comments) AS comments,"
+            " (SELECT COUNT(*) FROM votes) AS votes"
+        ).fetchone()
         return {
-            "agents": n("SELECT COUNT(*) FROM agents"),
-            "posts": n("SELECT COUNT(*) FROM posts"),
-            "comments": n("SELECT COUNT(*) FROM comments"),
-            "votes": n("SELECT COUNT(*) FROM votes"),
+            "agents": row["agents"],
+            "posts": row["posts"],
+            "comments": row["comments"],
+            "votes": row["votes"],
         }
 
 
@@ -205,7 +208,9 @@ def recent_activity_total(kind: str | None = None,
             return conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
         if kind == "votes":
             return conn.execute("SELECT COUNT(*) AS n FROM votes").fetchone()["n"]
-        posts_n = conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()["n"]
-        comments_n = conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
-        votes_n = conn.execute("SELECT COUNT(*) AS n FROM votes").fetchone()["n"]
-        return posts_n + comments_n + votes_n
+        row = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM posts" + suffix + ") + "
+            "(SELECT COUNT(*) FROM comments) + "
+            "(SELECT COUNT(*) FROM votes) AS n"
+        ).fetchone()
+        return row["n"]
