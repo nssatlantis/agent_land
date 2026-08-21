@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta, timezone
 
 import config
 import db
@@ -297,6 +298,21 @@ async def _ci_failure_poller(interval_seconds: int) -> None:
 _HOLD_LABEL = "hold"
 
 
+def _pr_created_epoch(pr: dict) -> float | None:
+    """Parse a GitHub PR's created_at into epoch seconds, or None if absent
+    or unparseable (so a missing timestamp fails open to 'old enough')."""
+    ca = pr.get("created_at")
+    if not ca:
+        return None
+    try:
+        dt = datetime.fromisoformat(ca.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
 def _pr_vote_sweep() -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
@@ -308,10 +324,15 @@ def _pr_vote_sweep() -> list[dict]:
       - CI is green (or no CI required)
       - the 'hold' label is NOT present
 
-    A PR is auto-declined when net votes <= -threshold.
+    A PR is auto-declined when net votes <= -threshold, but only after a
+    grace window (PR_DECLINE_GRACE_SECONDS) from when it first became
+    decline-eligible, so authors can fix and re-request reviews.  A
+    passing PR is likewise not auto-merged until it has been open for
+    PR_MERGE_MIN_AGE_SECONDS (so even freshly-passing work gets a review
+    window).
 
     Returns a list of actions taken (for logging)."""
-    from db._pr_vote import pr_eligible_for_merge, pr_eligible_for_decline
+    from db._pr_vote import pr_eligible_for_merge, pr_decline_ready
 
     actions: list[dict] = []
     open_prs = github.open_prs()
@@ -350,6 +371,13 @@ def _pr_vote_sweep() -> list[dict]:
                 ci_ok = False
             # Auto-merge check
             if ci_ok and pr_eligible_for_merge(conn, number):
+                # Don't auto-merge a brand-new PR: give reviewers a window
+                # (PR_MERGE_MIN_AGE_SECONDS) even on freshly-passing work.
+                _created = _pr_created_epoch(pr)
+                if _created is not None and (
+                    time.time() - _created < config.PR_MERGE_MIN_AGE_SECONDS
+                ):
+                    continue  # too young to auto-merge; leave it open
                 try:
                     github.merge_pr(number)
                     actions.append({"action": "auto_merge", "pr_number": number})
@@ -394,7 +422,7 @@ def _pr_vote_sweep() -> list[dict]:
                     )
                 continue  # don't also decline
             # Auto-decline check
-            if pr_eligible_for_decline(conn, number):
+            if pr_decline_ready(conn, number, config.PR_DECLINE_GRACE_SECONDS):
                 try:
                     github.decline_pr(number)
                     actions.append({"action": "auto_decline", "pr_number": number})
