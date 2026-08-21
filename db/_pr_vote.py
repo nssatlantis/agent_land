@@ -272,6 +272,60 @@ def pr_eligible_for_decline(
     return t["net"] <= -threshold
 
 
+def pr_decline_ready_batch(
+    conn: sqlite3.Connection,
+    pr_numbers: list[int],
+    decline_eligible: set[int],
+    grace_seconds: int,
+) -> set[int]:
+    """Batch sibling of pr_decline_ready for the poller's vote sweep.
+
+    Given every candidate PR number and the subset currently
+    decline-eligible (precomputed from one grouped tally), manage the
+    persisted grace markers in a single pass and return the set of PRs
+    ready to auto-decline now:
+
+      - a newly decline-eligible PR gets its marker inserted and is ready
+        only when ``grace_seconds <= 0``
+      - an already-marked PR is ready once ``grace_seconds`` have elapsed
+        since the marker
+      - a marker on a PR that is no longer decline-eligible is cleared, so
+        a future re-eligibility restarts the grace
+
+    Semantics per number are identical to pr_decline_ready; this form just
+    replaces N marker reads plus per-PR eligibility queries with one
+    IN (...) read and writes only where eligibility actually changed."""
+    numbers = list(pr_numbers)
+    now = int(time.time())
+    markers: dict[int, int] = {}
+    if numbers:
+        marks = ",".join("?" * len(numbers))
+        rows = conn.execute(
+            f"SELECT pr_number, since FROM pr_decline_grace"
+            f" WHERE pr_number IN ({marks})",
+            numbers,
+        ).fetchall()
+        markers = {r["pr_number"]: r["since"] for r in rows}
+    ready: set[int] = set()
+    for n in numbers:
+        if n in decline_eligible:
+            if n not in markers:
+                conn.execute(
+                    "INSERT INTO pr_decline_grace (pr_number, since)"
+                    " VALUES (?, ?)",
+                    (n, now),
+                )
+                if grace_seconds <= 0:
+                    ready.add(n)
+            elif now - markers[n] >= grace_seconds:
+                ready.add(n)
+        elif n in markers:
+            conn.execute(
+                "DELETE FROM pr_decline_grace WHERE pr_number = ?", (n,)
+            )
+    return ready
+
+
 def pr_decline_ready(
     conn: sqlite3.Connection,
     pr_number: int,
@@ -287,24 +341,16 @@ def pr_decline_ready(
     A persisted marker (pr_decline_grace) records when the PR first became
     decline-eligible, so the clock survives poller restarts.  When the PR is
     no longer decline-eligible the marker is cleared, so a future
-    re-eligibility restarts the grace.
+    re-eligibility restarts the grace.  Delegates to the batch form so the
+    single-number and sweep paths can never drift apart.
     """
     if not pr_eligible_for_decline(conn, pr_number):
         conn.execute(
             "DELETE FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
         )
         return False
-    now = int(time.time())
-    row = conn.execute(
-        "SELECT since FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
-    ).fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO pr_decline_grace (pr_number, since) VALUES (?, ?)",
-            (pr_number, now),
-        )
-        return grace_seconds <= 0
-    return (now - row["since"]) >= grace_seconds
+    ready = pr_decline_ready_batch(conn, [pr_number], {pr_number}, grace_seconds)
+    return pr_number in ready
 
 
 def pr_vote_threshold() -> int:
@@ -324,14 +370,20 @@ def my_pr_vote(token: str, pr_number: int) -> int | None:
         return row["value"] if row else None
 
 
-def pr_vote_tallies(pr_numbers: list[int]) -> dict[int, dict]:
+def pr_vote_tallies(
+    pr_numbers: list[int],
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> dict[int, dict]:
     """Batch read: vote tallies for multiple PRs in one query.
     Returns {pr_number: {up, down, net}} for each PR (no voter lists
-    to keep it cheap).  Unknown PR numbers get zeroes."""
+    to keep it cheap).  Unknown PR numbers get zeroes.  Pass *conn*
+    (the vote sweep does) to run on the caller's connection instead
+    of opening one."""
     if not pr_numbers:
         return {}
     placeholders = ",".join("?" for _ in pr_numbers)
-    with _conn() as c:
+    with (_conn() if conn is None else nullcontext(conn)) as c:
         rows = c.execute(
             f"SELECT pr_number,"
             f" COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0) AS up,"

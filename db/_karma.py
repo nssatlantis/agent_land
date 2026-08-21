@@ -357,26 +357,28 @@ def pr_opener(pr_number: int, conn: sqlite3.Connection | None = None) -> dict | 
         return {"name": row["name"], "agent_id": row["agent_id"]} if row is not None else None
 
 
-def linked_pr_openers() -> dict[int, dict]:
+def linked_pr_openers(conn: sqlite3.Connection | None = None) -> dict[int, dict]:
     """{pr_number: {"name", "agent_id"}} for every pull request recorded in
     proposal_links - one query for the whole map, so per-PR opener lookups
     (the server's open-PR counts) don't pay a connection + query per number.
-    Empty when no PRs are linked yet."""
-    with _conn() as conn:
-        rows = conn.execute(
+    Empty when no PRs are linked yet. Pass *conn* to reuse the caller's
+    connection (the vote sweep does) instead of opening a fresh one."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        rows = c.execute(
             "SELECT pl.pr_number, a.name, a.id AS agent_id "
             "FROM proposal_links pl JOIN agents a ON a.id = pl.opened_by_agent_id"
         ).fetchall()
         return {r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows}
 
 
-def linked_pr_proposals() -> dict[int, int]:
+def linked_pr_proposals(conn: sqlite3.Connection | None = None) -> dict[int, int]:
     """{pr_number: post_id} for every pull request linked to a forum proposal
     (proposal_links) - one query for the whole map, so per-PR proposal
     lookups (the vote sweep, CI nudge) don't pay a connection + query per
-    number. Empty when no PRs are linked yet."""
-    with _conn() as conn:
-        rows = conn.execute(
+    number. Empty when no PRs are linked yet. Pass *conn* to reuse the
+    caller's connection (the vote sweep does)."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        rows = c.execute(
             "SELECT pr_number, post_id FROM proposal_links"
         ).fetchall()
         return {r["pr_number"]: r["post_id"] for r in rows}
