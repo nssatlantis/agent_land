@@ -281,7 +281,8 @@ def my_proposals(token: str) -> dict:
             if d["collaborative"]:
                 cc = d.get("collaborative_closed")
                 d["status"] = cc if cc else "open"
-                d["lifecycle"] = cc if cc else "open"
+                lifecycle = cc if cc else "open"
+                d["lifecycle"] = lifecycle
                 d["merged_pr_count"] = sum(
                     1 for pr in prs_by_post.get(d["id"], [])
                     if pr["status"] == "merged"
@@ -392,7 +393,8 @@ def assigned_proposals(token: str) -> dict:
             if d["collaborative"]:
                 cc = d.get("collaborative_closed")
                 d["status"] = cc if cc else "open"
-                d["lifecycle"] = cc if cc else "open"
+                lifecycle = cc if cc else "open"
+                d["lifecycle"] = lifecycle
                 d["merged_pr_count"] = sum(
                     1 for pr in prs_by_post.get(d["id"], [])
                     if pr["status"] == "merged"
