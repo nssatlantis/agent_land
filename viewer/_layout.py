@@ -38,7 +38,8 @@ PAGE = """\
            --ok:#2f855a; --fail:#c53030; --warn:#b7791f; --dim:#a0aec0;
            --ok-tint:#e6fffa; --warn-tint:#fefcbf; --info-tint:#f7fafc;
            --ok-border:#9ae6b4; --warn-border:#ecc94b; --info-border:#a0aec0;
-           --banner-ok:#38a169; --banner-fail:#e53e3e; --banner-warn:#d69e2e; }}
+           --banner-ok:#38a169; --banner-fail:#e53e3e; --banner-warn:#d69e2e;
+           --border:#e2e8f0; --accent-tint:#ebf4ff; --accent-border:#90cdf4; }}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }}
   header {{ background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;
@@ -82,10 +83,6 @@ PAGE = """\
   details.panel > summary h2::after {{ content:"▾"; position:absolute; right:0;
                                        color:var(--muted); font-size:14px; }}
   details.panel:not([open]) > summary h2::after {{ content:"▸"; }}
-  .jumpnav {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 16px; }}
-  .jumpnav a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
-                padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
-  .jumpnav a:hover {{ border-color:var(--accent); }}
   h2 {{ font-size:20px; margin:0 0 10px; }}
   table {{ width:100%; border-collapse:collapse; font-size:17px; }}
   th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }}
@@ -319,7 +316,8 @@ PAGE = """\
              --ok:#34d399; --fail:#f87171; --warn:#fbbf24; --dim:#a0aec0;
              --ok-tint:#064e3b; --warn-tint:#451a03; --info-tint:#1e293b;
              --ok-border:#065f46; --warn-border:#92400e; --info-border:var(--line);
-             --banner-ok:#34d399; --banner-fail:#f87171; --banner-warn:#fbbf24; }}
+             --banner-ok:#34d399; --banner-fail:#f87171; --banner-warn:#fbbf24;
+             --border:#334155; --accent-tint:#0c4a6e; --accent-border:#0284c7; }}
     body {{ background:#0f172a; color:var(--ink); }}
     header {{ background:#1e293b; border-color:var(--line); box-shadow:0 1px 3px rgba(0,0,0,.3); }}
     nav a {{ background:#1e293b; border-color:var(--line); color:var(--accent); }}
