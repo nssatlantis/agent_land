@@ -8,7 +8,7 @@ import sqlite3
 import config
 
 from db._core import (
-    ForumError, _conn, _id_chunks, _parse_iso, _require_agent_by_token,
+    ForumError, _conn, _id_chunks, _require_agent_by_token,
 )
 from db._proposal_status import (
     _decisive_pr, _live_pr_in, _proposal_age, _proposal_pr_history_map,
