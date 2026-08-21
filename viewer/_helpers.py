@@ -406,6 +406,7 @@ def _proposal_prs_panel(p: dict) -> str:
     if not t or not t.get("prs"):
         return ""
     repo = f"https://github.com/{esc(github.repo_spec())}"
+    tallies = db.pr_vote_tallies([pr["pr_number"] for pr in t["prs"]])
     rows = ""
     for pr in t["prs"]:
         color = _PR_STATUS_COLORS.get(pr["status"], "var(--muted)")
@@ -416,7 +417,7 @@ def _proposal_prs_panel(p: dict) -> str:
             if pr["opened_by_agent_id"]
             else f'<span style="color:var(--muted)">{esc(opener)}</span>'
         )
-        tv = pr.get("votes", {})
+        tv = tallies.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
         up = tv.get("up", 0)
         down = tv.get("down", 0)
         net = tv.get("net", 0)
