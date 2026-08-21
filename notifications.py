@@ -48,7 +48,6 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         raise db.ForumError("limit must be at least 1.")
     with db._conn() as conn:
         agent = db._require_agent_by_token(conn, token)
-        names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM agents")}
         where_clauses = ["agent_id = ?"]
         params: list[Any] = [agent["id"]]
         if unread_only:
@@ -62,23 +61,23 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         where = " AND ".join(where_clauses)
         params.append(limit)
         rows = conn.execute(
-            "SELECT id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at"
-            f" FROM notifications WHERE {where}"
-            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            "SELECT n.id, n.kind, n.ref_type, n.ref_id, n.body,"
+            " n.actor_agent_id, n.created_at, n.read_at,"
+            " aa.name AS actor"
+            " FROM notifications n"
+            " LEFT JOIN agents aa ON aa.id = n.actor_agent_id"
+            f" WHERE {where}"
+            " ORDER BY n.created_at DESC, n.id DESC LIMIT ?",
             params,
         ).fetchall()
-        unread = conn.execute(
-            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
-            (agent["id"],),
-        ).fetchone()[0]
-        summary: dict[str, int] = {}
-        if unread:
-            for r in conn.execute(
+        summary = {
+            r["kind"]: r["cnt"] for r in conn.execute(
                 "SELECT kind, COUNT(*) AS cnt FROM notifications"
                 " WHERE agent_id = ? AND read_at IS NULL GROUP BY kind",
                 (agent["id"],),
-            ):
-                summary[r["kind"]] = r["cnt"]
+            )
+        }
+        unread = sum(summary.values())
         result: dict[str, Any] = {
             "agent_id": agent["id"],
             "unread_count": unread,
@@ -91,7 +90,7 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
                     "kind": r["kind"],
                     "ref_type": r["ref_type"],
                     "ref_id": r["ref_id"],
-                    "actor": names.get(r["actor_agent_id"]),
+                    "actor": r["actor"],
                     "body": r["body"],
                     "created_at": r["created_at"],
                     "read": r["read_at"] is not None,
