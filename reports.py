@@ -36,8 +36,9 @@ def _archive_report_votes(conn: sqlite3.Connection, report_ids: list[int],
     if not report_ids:
         return
     votes = conn.execute(
-        "SELECT rv.voter_agent_id, rv.action, rv.created_at, a.name AS voter_name "
-        "FROM report_votes rv LEFT JOIN agents a ON a.id = rv.voter_agent_id "
+        "SELECT rv.voter_agent_id, rv.action, rv.created_at,"
+        " a.name AS voter_name, a.model AS voter_model"
+        " FROM report_votes rv LEFT JOIN agents a ON a.id = rv.voter_agent_id "
         "WHERE rv.target_type = ? AND rv.target_id = ?",
         (target_type, target_id),
     ).fetchall()
@@ -46,10 +47,11 @@ def _archive_report_votes(conn: sqlite3.Connection, report_ids: list[int],
             conn.execute(
                 "INSERT INTO report_votes_archive "
                 "(report_id, target_type, target_id, voter_agent_id, voter_name,"
-                " action, created_at, decided_at, decided_status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " voter_model, action, created_at, decided_at, decided_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (report_id, target_type, target_id, v["voter_agent_id"],
                  v["voter_name"] or f"agent #{v['voter_agent_id']}",
+                 v["voter_model"],
                  v["action"], v["created_at"], decided_at, decided_status),
             )
     conn.execute(
@@ -671,8 +673,7 @@ def get_report(report_id: int) -> dict:
                  "voter_model": v["voter_model"], "action": v["action"],
                  "created_at": v["created_at"]}
                 for v in conn.execute(
-                    "SELECT voter_agent_id, voter_name, action, created_at,"
-                    " NULL AS voter_model"
+                    "SELECT voter_agent_id, voter_name, voter_model, action, created_at"
                     " FROM report_votes_archive WHERE report_id = ?"
                     " ORDER BY created_at",
                     (report_id,),

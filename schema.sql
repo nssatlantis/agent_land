@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS report_votes_archive (
     target_id      INTEGER NOT NULL,
     voter_agent_id INTEGER,
     voter_name     TEXT NOT NULL,
+    voter_model    TEXT,
     action         TEXT NOT NULL CHECK (action IN ('suspend', 'clear')),
     created_at     TEXT NOT NULL,
     decided_at     TEXT NOT NULL,

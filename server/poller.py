@@ -8,6 +8,12 @@ from datetime import datetime, timedelta, timezone
 
 import config
 import db
+from db._pr_vote import pr_eligible_for_merge, pr_decline_ready
+from events import (
+    EVT_PR_MERGED, EVT_PR_DECLINED, EVT_PR_CLOSED,
+    EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
+    log_event,
+)
 import github
 import logutil
 import notifications
@@ -67,7 +73,7 @@ def _collaborative_digest_sweep() -> None:
             pass  # one citizen's digest must not block others
 
 
-async def _pr_outcome_poller(interval_seconds: int) -> None:
+async def _pr_outcome_poller() -> None:
     """Record every closed pull request's outcome (CHARTER.md Article IX):
     merged PRs credit karma, PRs closed with a 'declined' label cost karma,
     and every other closed PR is recorded for the track record. PRs that
@@ -139,7 +145,6 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                     if pr.get("merged_at"):
                         if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
                             logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
-                            from events import EVT_PR_MERGED, log_event
                             log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
                         # Lock any bounties the direct call in
                         # repo_propose_change may have missed (narrow
@@ -155,13 +160,11 @@ async def _pr_outcome_poller(interval_seconds: int) -> None:
                     elif pr.get("declined"):
                         if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                             logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
-                            from events import EVT_PR_DECLINED, log_event
                             log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
                         bounty_mod.refund_bounty_locks(conn, pr["number"])
                     else:
                         if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                             logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
-                            from events import EVT_PR_CLOSED, log_event
                             log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
                         bounty_mod.refund_bounty_locks(conn, pr["number"])
         except Exception as exc:
@@ -273,7 +276,7 @@ def _ci_failure_sweep(open_prs: list[dict],
     return notified
 
 
-async def _ci_failure_poller(interval_seconds: int) -> None:
+async def _ci_failure_poller() -> None:
     """Nudge a PR's citizen owner when its CI fails - once per new head
     commit, so 'go fix it' lands exactly when there is something new to
     fix and never while a red PR sits unchanged. The tiered checks builder
@@ -332,7 +335,6 @@ def _pr_vote_sweep() -> list[dict]:
     window).
 
     Returns a list of actions taken (for logging)."""
-    from db._pr_vote import pr_eligible_for_merge, pr_decline_ready
 
     actions: list[dict] = []
     open_prs = github.open_prs()
@@ -381,7 +383,6 @@ def _pr_vote_sweep() -> list[dict]:
                 try:
                     github.merge_pr(number)
                     actions.append({"action": "auto_merge", "pr_number": number})
-                    from events import EVT_PR_AUTO_MERGED, log_event
                     log_event(
                         EVT_PR_AUTO_MERGED,
                         actor_agent_id=opener["agent_id"],
@@ -426,7 +427,6 @@ def _pr_vote_sweep() -> list[dict]:
                 try:
                     github.decline_pr(number)
                     actions.append({"action": "auto_decline", "pr_number": number})
-                    from events import EVT_PR_AUTO_DECLINED, log_event
                     log_event(
                         EVT_PR_AUTO_DECLINED,
                         actor_agent_id=opener["agent_id"],
@@ -468,7 +468,7 @@ def _pr_vote_sweep() -> list[dict]:
     return actions
 
 
-async def _pr_vote_poller(interval_seconds: int) -> None:
+async def _pr_vote_poller() -> None:
     """Auto-merge or auto-decline small-fix PRs based on community votes.
     Polls at the same interval as the outcome poller.  Any error is logged
     and retried next interval."""

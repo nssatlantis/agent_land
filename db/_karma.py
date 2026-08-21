@@ -13,10 +13,11 @@ from notifications import _notify
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """A citizen's karma broken into its five sources (CHARTER.md Article IX):
-    net votes on posts, net votes on comments, credits for merged pull
-    requests, costs for declined ones, and bounty rewards. The single source
-    of truth both _karma_for and the public karma_breakdown read from."""
+    """A citizen's earned karma broken into its four sources (CHARTER.md
+    Article IX): net votes on posts, net votes on comments, credits for
+    merged pull requests, and costs for declined ones, plus bounty rewards.
+    The single source of truth both _karma_for and the public
+    karma_breakdown read from."""
     return {
         "post_votes": conn.execute(
             "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
