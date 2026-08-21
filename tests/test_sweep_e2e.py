@@ -94,6 +94,8 @@ def test_full_merge_pipeline():
     _orig_checks = github.pr_checks
     _orig_merge = github.merge_pr
     _orig_decline = github.decline_pr
+    _orig_rebase = github.rebase_pr_onto_main
+    _orig_wait = github.wait_for_ci
     try:
         github.open_prs = lambda: [_open_pr_dict(
             pr_number,
@@ -102,6 +104,8 @@ def test_full_merge_pipeline():
         github.pr_has_label = lambda *a, **kw: False
         github.pr_checks = lambda *a, **kw: {"state": "success"}
         github.merge_pr = lambda number, **kw: {"pr_number": number, "merged": True, "sha": ""}
+        github.rebase_pr_onto_main = lambda number, **kw: {"status": "ok", "new_sha": "rebased_sha"}
+        github.wait_for_ci = lambda number, **kw: "success"
 
         # Step 1: run the vote sweep
         actions = _pr_vote_sweep()
@@ -148,6 +152,8 @@ def test_full_merge_pipeline():
         github.pr_checks = _orig_checks
         github.merge_pr = _orig_merge
         github.decline_pr = _orig_decline
+        github.rebase_pr_onto_main = _orig_rebase
+        github.wait_for_ci = _orig_wait
 
     print("  full merge pipeline: ok")
 
@@ -287,6 +293,8 @@ def test_vote_blocked_after_sweep_merge():
     _orig_checks = github.pr_checks
     _orig_merge = github.merge_pr
     _orig_decline = github.decline_pr
+    _orig_rebase = github.rebase_pr_onto_main
+    _orig_wait = github.wait_for_ci
     try:
         github.open_prs = lambda: [_open_pr_dict(
             pr_number,
@@ -295,6 +303,8 @@ def test_vote_blocked_after_sweep_merge():
         github.pr_has_label = lambda *a, **kw: False
         github.pr_checks = lambda *a, **kw: {"state": "success"}
         github.merge_pr = lambda number, **kw: {"pr_number": number, "merged": True, "sha": ""}
+        github.rebase_pr_onto_main = lambda number, **kw: {"status": "ok", "new_sha": "rebased_sha"}
+        github.wait_for_ci = lambda number, **kw: "success"
 
         # Sweep merges the PR
         actions = _pr_vote_sweep()
@@ -315,6 +325,8 @@ def test_vote_blocked_after_sweep_merge():
         github.pr_checks = _orig_checks
         github.merge_pr = _orig_merge
         github.decline_pr = _orig_decline
+        github.rebase_pr_onto_main = _orig_rebase
+        github.wait_for_ci = _orig_wait
 
     print("  vote blocked after sweep merge: ok")
 
@@ -327,7 +339,7 @@ def test_opener_none_records_proposal_outcome():
     advances (CHARTER VI.5).  The fix moves proposal_outcome recording
     BEFORE the opener gate."""
     pid, pr_number = _make_small_fix()
-    # Simulate a closed PR with no opener — the external PR carries a
+    # Simulate a closed PR with no opener ï¿½ the external PR carries a
     # 'Proposal: #N' stamp but no Citizen trailer.
     _orig_closed = github.recently_closed_prs
     try:

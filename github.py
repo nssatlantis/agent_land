@@ -1358,6 +1358,86 @@ def merge_pr(number: int, *, method: str = "squash",
     }
 
 
+# Maximum seconds to wait for CI after a rebase before giving up.
+_REBASE_CI_TIMEOUT = 1800
+_REBASE_CI_POLL_INTERVAL = 30
+
+
+def rebase_pr_onto_main(
+    number: int, *, _pr: dict | None = None,
+) -> dict:
+    """Rebase a PR's head branch onto main via local git.
+
+    Clones the repo, fetches full history, checks out the PR branch,
+    rebases onto main, and force-pushes the result.  Returns:
+
+    - {"status": "ok", "new_sha": "<sha>"} on success
+    - {"status": "conflict", "files": [...]} when the rebase hits
+      conflicts (aborted; the author must resolve manually)
+
+    Raises RepoError for non-conflict failures (network, auth).
+    """
+    _ensure_token()
+    pr = _pr or _request("GET", f"pulls/{number}")
+    if pr.get("state") != "open":
+        raise RepoError(f"pull request #{number} is not open.")
+    head = pr["head"]["ref"]
+    repo_dir = _clone_repo()
+    try:
+        # Unshallow to get the full commit graph needed for rebase.
+        _git(repo_dir, "fetch", "--unshallow", "origin", check=False)
+        _git(repo_dir, "fetch", "origin", head, GITHUB_BASE_BRANCH)
+        _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
+        result = _git(
+            repo_dir, "rebase", f"origin/{GITHUB_BASE_BRANCH}",
+            check=False,
+        )
+        if result.returncode != 0:
+            conflicted = _detect_conflict_files(repo_dir)
+            _git(repo_dir, "rebase", "--abort", check=False)
+            if conflicted:
+                return {"status": "conflict", "files": conflicted}
+            stderr = result.stderr
+            if GITHUB_TOKEN:
+                stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
+            raise RepoError(f"rebase failed: {stderr.strip()}")
+        # Push rebased branch with authenticated remote.
+        _setup_push_auth(repo_dir)
+        _git(
+            repo_dir, "push", "--force-with-lease",
+            "origin", f"HEAD:{head}",
+        )
+        new_sha = _git(repo_dir, "rev-parse", "HEAD").stdout.strip()
+        _invalidate_pr(number)
+        return {"status": "ok", "new_sha": new_sha}
+    finally:
+        _cleanup(repo_dir)
+
+
+def wait_for_ci(
+    number: int,
+    *,
+    sha: str = "",
+    timeout_seconds: int = _REBASE_CI_TIMEOUT,
+    poll_interval: int = _REBASE_CI_POLL_INTERVAL,
+) -> str:
+    """Poll a PR's CI status until it reaches a terminal state.
+
+    Returns "success", "failure", or "timeout".  Used after
+    rebase_pr_onto_main to verify the rebased branch still passes
+    CI before auto-merge.
+    """
+    deadline = time.time() + timeout_seconds
+    while True:
+        checks = pr_checks(number, _head_sha=sha or None)
+        state = checks.get("state", "unknown")
+        if state in ("success", "failure"):
+            return state
+        if time.time() >= deadline:
+            return "timeout"
+        time.sleep(poll_interval)
+
+
 def decline_pr(number: int, *, _pr: dict | None = None) -> dict:
     """Apply the 'declined' label and close a PR — the automated equivalent
     of the maintainer declining via the GitHub UI.  Raises RepoError if the
