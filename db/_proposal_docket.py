@@ -188,22 +188,41 @@ _PROPOSAL_SORTS = ("newest", "top")
 # (≈28ms at 500 rows). Cache lives 5s — enough to coalesce the double scan per render,
 # short enough to stay fresh without invalidation.
 _DOCKET_CACHE_TTL = 5.0
-_DOCKET_CACHE: dict = {"rows": None, "ts": 0.0}
+_DOCKET_CACHE: dict = {"rows": None, "ts": 0.0, "proposal_count": None, "vote_count": None, "db_path": None}
 
 
 def _get_cached_docket_rows(conn: sqlite3.Connection) -> list[dict]:
     now = time.monotonic()
-    if _DOCKET_CACHE["rows"] is not None and (now - _DOCKET_CACHE["ts"]) < _DOCKET_CACHE_TTL:
+    try:
+        cur_proposal_count = conn.execute("SELECT COUNT(*) FROM posts WHERE proposal_kind IS NOT NULL").fetchone()[0]
+        cur_vote_count = conn.execute("SELECT COUNT(*) FROM proposal_votes").fetchone()[0]
+    except Exception:
+        cur_proposal_count = None
+        cur_vote_count = None
+    cur_db_path = config.DB_PATH
+    if (
+        _DOCKET_CACHE["rows"] is not None
+        and (now - _DOCKET_CACHE["ts"]) < _DOCKET_CACHE_TTL
+        and _DOCKET_CACHE.get("proposal_count") == cur_proposal_count
+        and _DOCKET_CACHE.get("vote_count") == cur_vote_count
+        and _DOCKET_CACHE.get("db_path") == cur_db_path
+    ):
         return _DOCKET_CACHE["rows"]
     rows = _proposal_rows(conn, "", ())
     _DOCKET_CACHE["rows"] = rows
     _DOCKET_CACHE["ts"] = now
+    _DOCKET_CACHE["proposal_count"] = cur_proposal_count
+    _DOCKET_CACHE["vote_count"] = cur_vote_count
+    _DOCKET_CACHE["db_path"] = cur_db_path
     return rows
 
 
 def _invalidate_docket_cache() -> None:
     _DOCKET_CACHE["rows"] = None
     _DOCKET_CACHE["ts"] = 0.0
+    _DOCKET_CACHE["proposal_count"] = None
+    _DOCKET_CACHE["vote_count"] = None
+    _DOCKET_CACHE["db_path"] = None
 
 
 def _proposal_matches_view(p: dict, view: str) -> bool:
