@@ -380,6 +380,7 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
         db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
 
     old = os.environ.get("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY")
+    old_grace = config.PR_DECLINE_GRACE_SECONDS
     try:
         os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "0"
         import importlib, config as _cfg
@@ -405,6 +406,7 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
         else:
             os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = old
         importlib.reload(_cfg)
+        config.PR_DECLINE_GRACE_SECONDS = old_grace
     print("  sweep declines normal proposal toggle off: ok")
 
 
@@ -457,22 +459,27 @@ def test_sweep_decline_grace_delays():
     pid, pr_number = _make_small_fix()
     for name in ("beta", "gamma", "delta"):
         db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
-    log = _CallLog()
-    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
-    with _patch(
-        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
-        pr_has_label=_stub_pr_has_label(hold=False),
-        pr_checks=_stub_pr_checks("success"),
-        merge_pr=log.merge,
-        decline_pr=log.decline,
-    ):
-        _pr_vote_sweep()
-    assert not log.calls, f"decline must wait out the grace window: {log.calls}"
-    with db._conn() as conn:
-        row = conn.execute(
-            "SELECT since FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
-        ).fetchone()
-    assert row is not None, "grace marker should be recorded"
+    old_grace = config.PR_DECLINE_GRACE_SECONDS
+    config.PR_DECLINE_GRACE_SECONDS = 43200  # default grace window applies
+    try:
+        log = _CallLog()
+        opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+        with _patch(
+            open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+            pr_has_label=_stub_pr_has_label(hold=False),
+            pr_checks=_stub_pr_checks("success"),
+            merge_pr=log.merge,
+            decline_pr=log.decline,
+        ):
+            _pr_vote_sweep()
+        assert not log.calls, f"decline must wait out the grace window: {log.calls}"
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT since FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
+            ).fetchone()
+        assert row is not None, "grace marker should be recorded"
+    finally:
+        config.PR_DECLINE_GRACE_SECONDS = old_grace
     print("  sweep decline grace delays: ok")
 
 
