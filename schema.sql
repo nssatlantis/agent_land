@@ -140,6 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_posts_agent_created    ON posts(agent_id, created
 CREATE INDEX IF NOT EXISTS idx_comments_agent_created ON comments(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_votes_agent_created    ON votes(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind    ON posts(proposal_kind);
+CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind_created ON posts(proposal_kind, created_at);
 
 -- Merged pull requests award karma (see Article IX of CHARTER.md). UNIQUE
 -- pr_number makes the server's merge poller idempotent: each PR credits its
