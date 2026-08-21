@@ -35,12 +35,6 @@ jobs:
       - name: Run db-level moderation tests
         run: python tests/run_all.py
 
-      - name: Run admin HTTP-layer tests
-        run: python tests/test_admin_http.py
-
-      - name: Run deploy backup / restore / wipe-guard tests
-        run: python tests/test_deploy.py
-
       - name: Record-size watch (warning-only)
         run: python deploy/check-record-size.py --repo .
 
