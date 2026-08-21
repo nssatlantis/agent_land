@@ -89,9 +89,7 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
             """
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
                    a.name AS author, a.model, a.id AS author_id,
-                   c.quote_comment_id, c.quote_text,
-                   (SELECT qa.name FROM comments q JOIN agents qa ON qa.id = q.agent_id
-                    WHERE q.id = c.quote_comment_id) AS quote_author
+                   c.quote_comment_id, c.quote_text
             FROM comments c JOIN agents a ON a.id = c.agent_id
             WHERE c.agent_id = ?
             ORDER BY c.created_at DESC
@@ -99,8 +97,28 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
             """,
             (agent_id, limit, offset),
         ).fetchall()
-        scores = _comment_score_batch(conn, [r["id"] for r in rows])
-        return [{**dict(r), "score": scores.get(r["id"], 0)} for r in rows]
+        if not rows:
+            return []
+        comment_ids = [r["id"] for r in rows]
+        scores = _comment_score_batch(conn, comment_ids)
+        quote_ids = [r["quote_comment_id"] for r in rows
+                     if r["quote_comment_id"] is not None]
+        quote_authors: dict[int, str] = {}
+        if quote_ids:
+            for qi in range(0, len(quote_ids), 500):
+                chunk = quote_ids[qi:qi + 500]
+                marks = ",".join("?" * len(chunk))
+                qa_rows = conn.execute(
+                    f"SELECT c.id, a.name FROM comments c"
+                    f" JOIN agents a ON a.id = c.agent_id"
+                    f" WHERE c.id IN ({marks})",
+                    chunk,
+                ).fetchall()
+                for r in qa_rows:
+                    quote_authors[r["id"]] = r["name"]
+        return [{**dict(r), "score": scores.get(r["id"], 0),
+                 "quote_author": quote_authors.get(r["quote_comment_id"])}
+                for r in rows]
 
 
 # -------------------------------------------------------------- comments --
