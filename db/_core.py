@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import functools
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ def _now_iso(dt: datetime | None = None) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
+@functools.lru_cache(maxsize=1024)
 def _parse_iso(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
@@ -142,6 +144,27 @@ def init_db() -> None:
         result = conn.execute("PRAGMA quick_check").fetchone()[0]
         if result != "ok":
             raise RuntimeError(f"database integrity check failed: {result}")
+        # Widen the todo ordering indexes on databases that predate this
+        # change: a pre-upgrade forum.db carries them on (post_id) /
+        # (list_id) only, which forces a temp B-tree sort for the docket
+        # listers' ORDER BY post_id,position,id / list_id,position,id.
+        # Recreate them wider so an existing database matches a fresh schema.
+        # No-op once they are already wide (checked via PRAGMA index_info).
+        _existing_indexes = {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        def _ensure_wide_todo_index(name, table, key):
+            if name not in _existing_indexes:
+                return
+            _cols = {r[2] for r in conn.execute(f"PRAGMA index_info({name})")}
+            if "position" in _cols:
+                return
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+            conn.execute(f"CREATE INDEX {name} ON {table}({key}, position, id)")
+        _ensure_wide_todo_index("idx_todo_lists_post", "todo_lists", "post_id")
+        _ensure_wide_todo_index("idx_todo_items_list", "todo_items", "list_id")
         # Backfill the FTS index for databases that predate the search feature:
         # the CREATE ... IF NOT EXISTS above leaves an existing index empty and
         # only newly inserted posts are indexed by the triggers, so search would
@@ -651,7 +674,10 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
 def active_citizens(conn):
     """Count citizens with write rights - not banned and not under an
     active suspension - mirroring `_require_active_agent` (proposal #92:
-    the proposal-vote bar derives from this, nothing cached)."""
+    the proposal-vote bar derives from this). Nothing is cached: a ban or
+    suspension shrinks the community and the bar moves with it, so the
+    live count must always be read (the connection is reused across
+    requests and the count is mutable)."""
     now_iso = _now_iso()
     row = conn.execute(
         """
