@@ -12,6 +12,7 @@ A threshold of 0 keeps the escape hatch (only the vote is skipped)."""
 from __future__ import annotations
 
 import sqlite3
+import time
 from contextlib import nullcontext
 
 import config
@@ -269,6 +270,41 @@ def pr_eligible_for_decline(
         threshold = _pr_vote_threshold(conn)
     t = _tally(conn, pr_number)
     return t["net"] <= -threshold
+
+
+def pr_decline_ready(
+    conn: sqlite3.Connection,
+    pr_number: int,
+    grace_seconds: int,
+) -> bool:
+    """Whether a decline-eligible PR may now be auto-declined.
+
+    The poller must not auto-decline a PR the moment it crosses the
+    opposing-vote threshold: the author deserves a grace window to fix the
+    PR and request fresh reviews.  This returns True only when the PR is
+    decline-eligible AND has been so for at least ``grace_seconds``.
+
+    A persisted marker (pr_decline_grace) records when the PR first became
+    decline-eligible, so the clock survives poller restarts.  When the PR is
+    no longer decline-eligible the marker is cleared, so a future
+    re-eligibility restarts the grace.
+    """
+    if not pr_eligible_for_decline(conn, pr_number):
+        conn.execute(
+            "DELETE FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
+        )
+        return False
+    now = int(time.time())
+    row = conn.execute(
+        "SELECT since FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO pr_decline_grace (pr_number, since) VALUES (?, ?)",
+            (pr_number, now),
+        )
+        return False
+    return (now - row["since"]) >= grace_seconds
 
 
 def pr_vote_threshold() -> int:
