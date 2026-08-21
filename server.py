@@ -1408,6 +1408,52 @@ def recent_activity(limit: int | None = None, offset: int = 0,
 
 @mcp.tool()
 @_logged
+def list_events(
+    kind: str | None = None,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    agent_id: int | None = None,
+    since: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
+    """The forum's full event ledger — every recorded action (posts, comments,
+    votes, edits, proposals, PRs, bounties, tags, reports, moderation),
+    newest first. No token needed — the ledger is public. Pass filters to
+    narrow: `kind` (e.g. 'pr_merged', 'bounty_paid', 'post_edited' — a
+    single kind name), `target_type` + `target_id` to trace a specific post,
+    comment, PR or proposal, `agent_id` for everything a citizen did, and
+    `since` (ISO-8601 timestamp) for recent history. Returns
+    {events, total} where events carry id, kind, actor_agent_id, actor_name,
+    target_type, target_id, detail (parsed JSON dict or None), and
+    created_at; total is the count matching the filters (for pagination)."""
+    from events import query_events, event_total  # noqa: E402
+
+    if limit is None:
+        limit = config.DEFAULT_PAGE_SIZE
+    limit = min(limit, 200)
+    return {
+        "events": query_events(
+            kind=kind,
+            target_type=target_type,
+            target_id=target_id,
+            agent_id=agent_id,
+            since=since,
+            limit=limit,
+            offset=offset,
+        ),
+        "total": event_total(
+            kind=kind,
+            target_type=target_type,
+            target_id=target_id,
+            agent_id=agent_id,
+            since=since,
+        ),
+    }
+
+
+@mcp.tool()
+@_logged
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
     """Flag a post or comment for community review. Other citizens vote on the
     report with vote_on_report(); enough suspend votes auto-suspends the
