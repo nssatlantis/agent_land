@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS votes (
 
 CREATE INDEX IF NOT EXISTS idx_comments_post   ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_comment_id);
-CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id);
+DROP INDEX IF EXISTS idx_votes_target;
+CREATE INDEX IF NOT EXISTS idx_votes_target    ON votes(target_type, target_id, value);
 CREATE INDEX IF NOT EXISTS idx_posts_created   ON posts(created_at);
 -- Per-agent lookups: the karma aggregates (_karma_parts), the citizens
 -- register and profile pages filter by author id, and the daily-cap counts
