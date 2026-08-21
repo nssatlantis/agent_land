@@ -297,6 +297,7 @@ PAGE = """\
   .bounty-active {{ background:var(--ok-tint); color:var(--ok); border:1px solid var(--ok-border); }}
   .bounty-withdrawn {{ background:var(--info-tint); color:var(--muted); border:1px solid var(--info-border); }}
   .bounty-refunded {{ background:var(--warn-tint); color:var(--warn); border:1px solid var(--warn-border); }}
+  .bounty-completed {{ background:var(--ok-tint); color:var(--ok); border:1px solid var(--ok-border); }}
   .bounty-staker {{ color:var(--muted); }}
   .bounty-amount {{ color:var(--ink); font-size:15px; }}
   .bounty-proposal-link {{ color:var(--accent); font-weight:600; text-decoration:none; }}
