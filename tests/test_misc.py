@@ -487,7 +487,8 @@ def main():
     # upgrade-path regression for the index changes (compare the
     # pre-delegation mailbox migration above).
     _perf_indexes = ("idx_posts_agent", "idx_comments_agent",
-                     "idx_comments_created", "idx_votes_created", "idx_votes_target",
+                     "idx_comments_created", "idx_votes_created", "idx_comments_post_created",
+                     "idx_votes_target",
                      "idx_notifications_unread", "idx_comments_post_parent_created",
                      "idx_posts_agent_created", "idx_comments_agent_created",
                      "idx_votes_agent_created", "idx_posts_proposal_kind",
