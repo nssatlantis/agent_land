@@ -13,6 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db, expect_error, setup  # noqa: E402
 import events  # noqa: E402
 
+# Voting now syncs a cosmetic GitHub label; stub it so the suite never hits
+# the GitHub API.  Individual tests may override these with recorders.
+import github as _github_mod  # noqa: E402
+_github_mod.add_pr_label = lambda *a, **k: None
+_github_mod.remove_pr_label = lambda *a, **k: None
+
 # -- shared setup: agents + base post --
 AGENTS, _ = setup()
 
@@ -403,6 +409,35 @@ def test_vote_change_renotifies():
     print("  vote_change_renotifies: ok")
 
 
+def test_votes_passed_label_syncs():
+    """The votes-passed label is added when the PR reaches the merge threshold
+    and removed again when a vote change drops the tally back below it."""
+    import github as _github
+    real_add, real_remove = _github.add_pr_label, _github.remove_pr_label
+    added, removed = [], []
+    _github.add_pr_label = lambda n, lab: added.append((n, lab))
+    _github.remove_pr_label = lambda n, lab: removed.append((n, lab))
+    try:
+        pid, pr_number = _make_small_fix()
+
+        # Below threshold: only idempotent removes, no add.
+        db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+        db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
+        assert added == [], "label must not appear before threshold"
+
+        # Third approve reaches the threshold -> add_pr_label called.
+        db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
+        assert (pr_number, "votes-passed") in added
+
+        # A voter flips +1 -> -1, dropping below threshold -> remove_pr_label called.
+        removed_before = len(removed)
+        db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
+        assert (pr_number, "votes-passed") in removed[removed_before:]
+    finally:
+        _github.add_pr_label, _github.remove_pr_label = real_add, real_remove
+    print("  votes-passed label sync: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_pr_vote_schema()
@@ -424,4 +459,5 @@ if __name__ == "__main__":
     test_proposal_author_notification()
     test_proposal_author_deduped_when_opener()
     test_vote_change_renotifies()
+    test_votes_passed_label_syncs()
     print("\n== test_pr_vote: all passed ==")
