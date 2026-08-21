@@ -856,14 +856,11 @@ def repo_propose_change(
                 )
         # Also notify fellow collaborators that a new PR went up.
         from db._collaborative import list_proposal_collaborators
+        from notifications import _notify
         with db._conn() as conn:
-            collabs = list_proposal_collaborators(
-                proposal_id, conn=conn,
-            )
-        for col in collabs:
-            if col["agent_id"] != who["agent_id"]:
-                from notifications import _notify
-                with db._conn() as conn:
+            collabs = list_proposal_collaborators(proposal_id, conn=conn)
+            for col in collabs:
+                if col["agent_id"] != who["agent_id"]:
                     _notify(
                         conn, col["agent_id"], "pr", "proposal",
                         proposal_id,
