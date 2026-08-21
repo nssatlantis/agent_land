@@ -606,7 +606,7 @@ def init_db() -> None:
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                     UNIQUE (pr_number, voter_id)
                 );
-                CREATE INDEX IF NOT EXISTS idx_pr_votes_pr ON pr_votes(pr_number);
+                CREATE INDEX IF NOT EXISTS idx_pr_votes_pr    ON pr_votes(pr_number, value);
                 CREATE INDEX IF NOT EXISTS idx_pr_votes_voter ON pr_votes(voter_id);
             """)
         # Grace marker for the PR auto-decline cooldown.  Records when a PR
