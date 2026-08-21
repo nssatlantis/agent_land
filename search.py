@@ -210,7 +210,14 @@ def _bounded_snippet(text: str, width: int | None = None) -> str:
     """Collapse a highlighted body to a short single-line snippet, keeping
     the match markers readable."""
     width = config.SEARCH_SNIPPET_WIDTH if width is None else width
-    text = " ".join(str(text).split())
+    text = str(text)
+    if len(text) > width * 4:
+        mark = text.find("[[")
+        if mark != -1:
+            start0 = max(0, mark - width)
+            end0 = min(len(text), mark + width * 2 + 100)
+            text = text[start0:end0]
+    text = " ".join(text.split())
     if len(text) <= width:
         return text
     mark = text.find("[[")
