@@ -16,6 +16,7 @@ from db import (
     _parse_iso,
     _require_active_agent,
     effective_karma,
+    effective_karma_many,
 )
 from notifications import _notify
 
@@ -164,9 +165,10 @@ def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
         "OR suspended_until <= ?)",
         (now_iso,),
     ).fetchall()
+    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
     eligible = {
         r["id"] for r in rows
-        if effective_karma(conn, r["id"]) >= config.MIN_KARMA_MOD
+        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
     }
     if target_type == "post":
         author = conn.execute(
