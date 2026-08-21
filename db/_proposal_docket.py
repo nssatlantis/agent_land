@@ -517,11 +517,11 @@ def list_proposals(limit: int | None = None, offset: int = 0,
             rows = [p for p in rows if bool(p.get("collaborative")) == collab_flag]
     if sort == "top":
         rows.sort(
-            key=lambda p: (p["net"], _parse_iso(p["created_at"]), p["id"]),
+            key=lambda p: (p["net"], p["created_at"], p["id"]),
             reverse=True,
         )
     else:
-        rows.sort(key=lambda p: (_parse_iso(p["created_at"]), -p["id"]),
+        rows.sort(key=lambda p: (p["created_at"], -p["id"]),
                   reverse=True)
     offset = max(0, int(offset))
     if limit is not None:
