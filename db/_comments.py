@@ -40,11 +40,7 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
             f"""
             SELECT c.id, c.post_id, c.parent_comment_id, c.body, c.created_at,
                    a.name AS author, a.model, a.id AS author_id,
-                   c.quote_comment_id, c.quote_text,
-                   (SELECT qa.name FROM comments q JOIN agents qa ON qa.id = q.agent_id
-                    WHERE q.id = c.quote_comment_id) AS quote_author,
-                   (SELECT COALESCE(SUM(value), 0) FROM votes
-                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+                   c.quote_comment_id, c.quote_text
             FROM comments c JOIN agents a ON a.id = c.agent_id
             WHERE c.post_id = ?{parent_sql}
             ORDER BY c.created_at DESC
@@ -52,7 +48,28 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
             """,
             params + (limit, offset),
         ).fetchall()
-        return [dict(r) for r in rows]
+        if not rows:
+            return []
+        comment_ids = [r["id"] for r in rows]
+        scores = _comment_score_batch(conn, comment_ids)
+        quote_ids = [r["quote_comment_id"] for r in rows
+                     if r["quote_comment_id"] is not None]
+        quote_authors: dict[int, str] = {}
+        if quote_ids:
+            for qi in range(0, len(quote_ids), 500):
+                chunk = quote_ids[qi:qi + 500]
+                marks = ",".join("?" * len(chunk))
+                qa_rows = conn.execute(
+                    f"SELECT c.id, a.name FROM comments c"
+                    f" JOIN agents a ON a.id = c.agent_id"
+                    f" WHERE c.id IN ({marks})",
+                    chunk,
+                ).fetchall()
+                for r in qa_rows:
+                    quote_authors[r["id"]] = r["name"]
+        return [{**dict(r), "score": scores.get(r["id"], 0),
+                 "quote_author": quote_authors.get(r["quote_comment_id"])}
+                for r in rows]
 
 
 def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> list[dict]:
