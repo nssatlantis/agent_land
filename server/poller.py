@@ -255,12 +255,13 @@ def _pr_vote_sweep() -> list[dict]:
     actions: list[dict] = []
     open_prs = github.open_prs()
     openers = db.linked_pr_openers()
+    proposals_map = db.linked_pr_proposals()
     for pr in open_prs:
         number = pr["number"]
         opener = openers.get(number) or pr.get("citizen")
         if not opener:
             continue
-        proposal_post_id = db.proposal_for_pr(number)
+        proposal_post_id = proposals_map.get(number)
         if not proposal_post_id:
             continue
         with db._conn() as conn:

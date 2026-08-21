@@ -231,7 +231,7 @@ def close_proposal(token: str, post_id: int) -> dict:
             "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
             (final_status, post_id),
         )
-        collabs = list_proposal_collaborators(post_id)
+        collabs = list_proposal_collaborators(post_id, conn=conn)
         for col in collabs:
             _notify(
                 conn, col["agent_id"], "proposal", "post", post_id,

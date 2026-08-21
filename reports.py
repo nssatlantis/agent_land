@@ -516,18 +516,22 @@ def list_reports(status: str = "all") -> list[dict]:
     with _conn() as conn:
         rows = conn.execute(
             f"""
+            WITH rv_tally AS (
+                SELECT target_type, target_id,
+                       COALESCE(SUM(CASE WHEN action = 'suspend' THEN 1 ELSE 0 END), 0) AS suspend_votes,
+                       COALESCE(SUM(CASE WHEN action = 'clear' THEN 1 ELSE 0 END), 0) AS clear_votes
+                FROM report_votes
+                GROUP BY target_type, target_id
+            )
             SELECT r.id, r.target_type, r.target_id, r.reason, r.status,
                    r.created_at, r.decided_at, r.target_author_id,
                    rp.name AS reporter, ta.name AS target_author,
                    r.target_snapshot AS target_snapshot,
-                   (SELECT COUNT(*) FROM report_votes rv
-                     WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
-                       AND rv.action = 'suspend') AS suspend_votes,
-                   (SELECT COUNT(*) FROM report_votes rv
-                     WHERE rv.target_type = r.target_type AND rv.target_id = r.target_id
-                       AND rv.action = 'clear') AS clear_votes
+                   COALESCE(rv.suspend_votes, 0) AS suspend_votes,
+                   COALESCE(rv.clear_votes, 0) AS clear_votes
             FROM reports r JOIN agents rp ON rp.id = r.reporter_agent_id
             LEFT JOIN agents ta ON ta.id = r.target_author_id
+            LEFT JOIN rv_tally rv ON rv.target_type = r.target_type AND rv.target_id = r.target_id
             {where}
             ORDER BY r.created_at DESC
             """
