@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+import functools
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 
 import config
@@ -52,7 +52,7 @@ def _now_iso(dt: datetime | None = None) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 
-@lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=1024)
 def _parse_iso(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
