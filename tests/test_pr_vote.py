@@ -171,15 +171,52 @@ def test_eligible_for_decline():
 
 
 def test_multi_voter():
-    """Multiple agents can vote on the same PR."""
+    """Multiple agents may vote, but votes stop once the PR has enough to
+    pass; an existing voter may still change their vote."""
     pid, pr_number = _make_small_fix()
 
-    for name in ("beta", "gamma", "delta", "epsilon", "zeta"):
+    # Three approve votes reach the derived threshold (net == threshold).
+    for name in ("beta", "gamma", "delta"):
         db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
     tally = db.pr_vote_tally(pr_number)
-    assert tally["up"] == 5
-    assert tally["net"] == 5
-    print("  multi-voter: ok")
+    assert tally["up"] == 3
+    assert tally["net"] == 3
+
+    # A further NEW voter is rejected -- the PR already has enough to pass.
+    err = expect_error(db.vote_on_pr, AGENTS["epsilon"]["token"], pr_number, 1)
+    assert "enough votes" in err.lower(), f"expected cap error, got: {err}"
+
+    # An existing voter may still change their vote (does not add a new voter).
+    result = db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
+    assert result["action"] == "changed"
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["up"] == 2
+    assert tally["down"] == 1
+    assert tally["net"] == 1
+    print("  multi-voter (capped): ok")
+
+
+def test_vote_capped_once_passing():
+    """New votes are rejected once the PR reaches the pass threshold; the vote
+    that reaches the threshold is still accepted."""
+    pid, pr_number = _make_small_fix()
+
+    # beta, gamma approve -> net 2, below the threshold (3 in this fixture).
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
+    # delta's approve reaches net 3 == threshold -> still accepted.
+    db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["net"] == 3
+
+    # epsilon would push past the required amount -> rejected.
+    err = expect_error(db.vote_on_pr, AGENTS["epsilon"]["token"], pr_number, 1)
+    assert "enough votes" in err.lower(), f"expected cap error, got: {err}"
+
+    # A -1 from a new voter is likewise rejected once passing.
+    err = expect_error(db.vote_on_pr, AGENTS["zeta"]["token"], pr_number, -1)
+    assert "enough votes" in err.lower(), f"expected cap error, got: {err}"
+    print("  vote capped once passing: ok")
 
 
 def test_vote_tally_empty():
@@ -377,6 +414,7 @@ if __name__ == "__main__":
     test_eligible_for_merge()
     test_eligible_for_decline()
     test_multi_voter()
+    test_vote_capped_once_passing()
     test_vote_tally_empty()
     test_pr_vote_events()
     test_custom_threshold()
