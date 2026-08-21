@@ -176,7 +176,10 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     return out
 
 
-_PROPOSAL_VIEWS = ("all", "needs_votes", "approved", "review", "stale", "merged", "small_fix", "collaborative", "unclaimed", "bounty")
+_PROPOSAL_VIEWS = (
+    "all", "needs_votes", "approved", "review", "stale",
+    "merged", "small_fix", "collaborative", "unclaimed", "bounty",
+)
 _PROPOSAL_SORTS = ("newest", "top")
 
 
