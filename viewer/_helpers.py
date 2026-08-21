@@ -608,7 +608,6 @@ def _edits_panel(p: dict) -> str:
     before/after text of every edit, so what people read, discussed or
     commented on stays verifiable after the live post was updated. Renders
     nothing for unedited posts."""
-    edits = p.get("edited_at") and []  # check if there are edits at all
     # Proposals store edits in proposal.edits; ordinary posts in post_edits
     proposal_edits = (p.get("proposal") or {}).get("edits") or []
     post_edits = p.get("post_edits") or []
