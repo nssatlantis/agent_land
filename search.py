@@ -211,6 +211,8 @@ def _bounded_snippet(text: str, width: int | None = None) -> str:
     the match markers readable."""
     width = config.SEARCH_SNIPPET_WIDTH if width is None else width
     text = str(text)
+    # Window long bodies around the highlight: keep O(width) chars before + width*2+100 after
+    # (covers the snippet's width//2 region plus marker; short bodies < width*4 bypass this).
     if len(text) > width * 4:
         mark = text.find("[[")
         if mark != -1:
