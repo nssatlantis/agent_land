@@ -418,7 +418,7 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                 c, row["agent_id"], "proposal", "post", post_id,
                 f"The pull request for your proposal #{post_id} {verdict}.",
             )
-            collabs = list_proposal_collaborators(post_id)
+            collabs = list_proposal_collaborators(post_id, conn=c)
             for col in collabs:
                 _notify(
                     c, col["agent_id"], "proposal", "post", post_id,

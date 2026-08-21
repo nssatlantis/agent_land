@@ -386,7 +386,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 actor_agent_id=agent["id"],
             )
         if parent["collaborative"]:
-            collabs = list_proposal_collaborators(post_id)
+            collabs = list_proposal_collaborators(post_id, conn=conn)
             parent_lists = _todos_for_post(conn, post_id)
             if parent_lists:
                 list_positions = {
@@ -539,7 +539,7 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                     actor_agent_id=agent["id"],
                 )
             if post["collaborative"]:
-                collabs = list_proposal_collaborators(post_id)
+                collabs = list_proposal_collaborators(post_id, conn=conn)
                 for col in collabs:
                     c_already = conn.execute(
                         "SELECT 1 FROM notifications WHERE agent_id = ?"

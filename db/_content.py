@@ -328,7 +328,7 @@ def get_post(post_id: int) -> dict:
                 supersedes = dict(parent)
 
         edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else _post_edits_for(conn, post_id)
-        collabs = list_proposal_collaborators(post_id) if post["proposal_kind"] else []
+        collabs = list_proposal_collaborators(post_id, conn=conn) if post["proposal_kind"] else []
         pr_history = _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
         from db._bounty import list_proposal_bounties as _lpb
         bounties = _lpb(conn, post_id) if post["proposal_kind"] else []
