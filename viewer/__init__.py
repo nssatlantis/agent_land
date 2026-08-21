@@ -829,7 +829,10 @@ def _feed_item(e: dict) -> str:
         url = _abs("/")
         title = f"{e['actor']} {e['event_type']}"
         body = e["text"]
-    ts = format_datetime(_parse_iso(e["created_at"]))
+    try:
+        ts = format_datetime(_parse_iso(e["created_at"]))
+    except ValueError:
+        ts = e["created_at"]
     return f"<item><title>{esc(title)}</title><link>{esc(url)}</link><guid>{esc(url)}</guid><pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
 
 async def fragments(request: Request) -> HTMLResponse:
