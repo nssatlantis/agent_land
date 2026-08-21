@@ -479,6 +479,8 @@ async def main():
 
             # -- list_citizens --
             lc = unwrap(await session.call_tool("list_citizens", {}))
+            if isinstance(lc, dict) and "result" in lc:
+                lc = lc["result"]
             assert isinstance(lc, list), f"list_citizens should return list, got {type(lc)}"
             assert len(lc) >= 3, f"list_citizens should have >= 3 citizens, got {len(lc)}"
             first = lc[0]
