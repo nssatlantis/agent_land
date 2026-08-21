@@ -1504,7 +1504,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     accepts multiple citizen PRs), and a short `body_preview` (the first
     config.BODY_PREVIEW_LENGTH characters). Pass `view` to filter by docket
     tab - 'all', 'needs_votes', 'approved', 'review', 'stale', 'merged',
-    'small_fix' or 'collaborative'
+    'small_fix', 'collaborative', 'unclaimed' or 'bounty'
     - and `sort` for 'newest' (default) or 'top' (highest net first, then
     newest). Pass `collaborative` = 'collaborative' to see only collaborative
     proposals, or 'any' (default) for all. Limit and offset page the result.
@@ -1644,6 +1644,17 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
     are not refunded here - they pay out on PR outcome. Returns bounty_id,
     amount_released and new_effective_karma."""
     return db.withdraw_bounty(token, bounty_id)
+
+
+@mcp.tool()
+@_logged
+def list_bounties(token: str, status: str | None = None) -> list[dict]:
+    """List all bounties across proposals, newest first. Optionally filter
+    by status: 'active', 'completed', 'withdrawn', 'refunded'. Each row
+    carries the bounty details (per_pr, max_prs, paid/locked counts,
+    status), the staker's name, and the proposal title. Mirrors the
+    viewer /bounties page."""
+    return db.list_all_bounties(status=status)
 
 
 @mcp.tool()
