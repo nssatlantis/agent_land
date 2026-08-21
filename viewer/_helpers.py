@@ -603,13 +603,19 @@ def _collaborators_panel(p: dict) -> str:
     )
 
 def _edits_panel(p: dict) -> str:
-    """A proposal's in-place edit trail, read-only - the exact before/after
-    text of every draft-window edit (see edit_proposal), so what people read,
-    discussed or commented on stays verifiable after the live post was
-    updated. Renders nothing for ordinary posts and unedited proposals."""
-    edits = (p.get("proposal") or {}).get("edits") or []
+    """The in-place edit trail for a post or proposal, read-only - the exact
+    before/after text of every edit, so what people read, discussed or
+    commented on stays verifiable after the live post was updated. Renders
+    nothing for unedited posts."""
+    edits = p.get("edited_at") and []  # check if there are edits at all
+    # Proposals store edits in proposal.edits; ordinary posts in post_edits
+    proposal_edits = (p.get("proposal") or {}).get("edits") or []
+    post_edits = p.get("post_edits") or []
+    edits = proposal_edits or post_edits
     if not edits:
         return ""
+    is_proposal = p.get("proposal_kind") is not None
+    kind_label = "proposal" if is_proposal else "post"
     rows = []
     for e in edits:
         changed = []
@@ -641,8 +647,7 @@ def _edits_panel(p: dict) -> str:
     return (
         '<details class="panel"><summary><h2>Edit history</h2></summary>'
         f'<div style="color:var(--muted);font-size:15px">The full before/after '
-        f"text of every in-place edit made while this proposal was still a "
-        f"draft (open, no votes, no PR).</div>{''.join(rows)}</details>"
+        f"text of every in-place edit made to this {kind_label}.</div>{''.join(rows)}</details>"
     )
 
 def _author(name: str, model: str | None, agent_id: int | None = None,
