@@ -623,6 +623,139 @@ def test_sweep_decline_after_grace():
     print("  sweep decline after grace: ok")
 
 
+def test_sweep_batches_multiple_prs():
+    """Three candidates in one sweep with mixed verdicts: the old eligible
+    PR merges, the opposed PR declines after its grace marker expires, and
+    the neutral PR is left untouched - exercising the batched pre-pass end
+    to end (IN-clause kinds, grouped tallies, batched grace markers)."""
+    pid_m, pr_merge = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_merge, 1)
+    pid_d, pr_decline = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_decline, -1)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO pr_decline_grace (pr_number, since) VALUES (?, ?)",
+            (pr_decline, int(time.time()) - 99999),
+        )
+    pid_n, pr_neutral = _make_small_fix()
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_neutral, 1)
+
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+    with _patch(
+        open_prs=_stub_open_prs(*[
+            _open_pr_dict(n, citizen=opener, created_at=old)
+            for n in (pr_merge, pr_decline, pr_neutral)
+        ]),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
+    ):
+        _pr_vote_sweep()
+
+    assert ("merge", pr_merge) in log.calls, f"eligible PR must merge: {log.calls}"
+    assert ("decline", pr_decline) in log.calls, f"opposed PR must decline: {log.calls}"
+    assert not any(a[1] == pr_neutral for a in log.calls), \
+        f"neutral PR must be untouched: {log.calls}"
+    print("  sweep batches multiple prs: ok")
+
+
+def test_sweep_db_reads_are_batched():
+    """Regression guard for the vote-sweep N+1 fix (#111 item): no matter
+    how many open PRs are scanned, DB-side work stays O(1) - exactly one
+    derived threshold (one agents COUNT), one grouped tally over pr_votes,
+    one batched small-fix kind fetch, zero per-PR tallies."""
+    import contextlib
+
+    import server.poller as poller_mod
+
+    numbers = []
+    for _ in range(3):
+        pid, pr_number = _make_small_fix()
+        for name in ("beta", "gamma", "delta"):
+            db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+        numbers.append(pr_number)
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+    with _patch(
+        open_prs=_stub_open_prs(*[
+            _open_pr_dict(n, citizen=opener, created_at=old) for n in numbers
+        ]),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+        rebase_pr_onto_main=log.rebase,
+        wait_for_ci=log.wait_ci,
+    ):
+        sql_log: list[str] = []
+
+        class _SpyConn:
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, params=()):
+                sql_log.append(" ".join(sql.split()))
+                return self._conn.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(self._conn, name)
+
+            def __enter__(self):
+                self._conn.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._conn.__exit__(*exc)
+
+        real_conn = poller_mod.db._conn
+
+        @contextlib.contextmanager
+        def spy_conn(*a, **kw):
+            with real_conn(*a, **kw) as c:
+                yield _SpyConn(c)
+
+        poller_mod.db._conn = spy_conn
+        try:
+            _pr_vote_sweep()
+        finally:
+            poller_mod.db._conn = real_conn
+
+    agent_counts = sum(1 for s in sql_log if "FROM agents" in s)
+    assert agent_counts == 1, (
+        f"threshold must be derived once per sweep, got {agent_counts}"
+        " active-citizen reads"
+    )
+    tally_batches = [s for s in sql_log if "FROM pr_votes WHERE pr_number IN" in s]
+    assert len(tally_batches) == 1, (
+        f"exactly one grouped tally expected, got {len(tally_batches)}"
+    )
+    per_pr_tallies = [
+        s for s in sql_log if "FROM pr_votes WHERE pr_number = ?" in s
+    ]
+    assert not per_pr_tallies, f"per-PR tallies must be gone: {per_pr_tallies}"
+    kind_fetches = [s for s in sql_log if "proposal_kind = 'small_fix'" in s]
+    assert len(kind_fetches) == 1, (
+        f"one batched small-fix kind fetch expected, got {len(kind_fetches)}"
+    )
+    merges = [c for c in log.calls if c[0] == "merge"]
+    assert len(merges) == 1, (
+        f"Phase 2 still merges at most one PR per sweep: {log.calls}"
+    )
+    print("  sweep db reads are batched: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_sweep_merges_eligible()
@@ -641,4 +774,6 @@ if __name__ == "__main__":
     test_sweep_merge_proceeds_when_old()
     test_sweep_decline_grace_delays()
     test_sweep_decline_after_grace()
+    test_sweep_batches_multiple_prs()
+    test_sweep_db_reads_are_batched()
     print("\n== test_sweep: all passed ==")
