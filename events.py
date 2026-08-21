@@ -31,6 +31,7 @@ EVT_VOTE_CHANGED = "vote_changed"
 EVT_PROPOSAL_SUPERSEDED = "proposal_superseded"
 EVT_PROPOSAL_DELEGATED = "proposal_delegated"
 EVT_PROPOSAL_EDITED = "proposal_edited"
+EVT_POST_EDITED = "post_edited"
 EVT_PROPOSAL_VOTE_CAST = "proposal_vote_cast"
 EVT_PROPOSAL_DISCUSSION_NOTIFIED = "proposal_discussion_notified"
 EVT_REPORT_FILED = "report_filed"
@@ -87,6 +88,7 @@ _VALID_KINDS: set[str] = {
     EVT_BOUNTY_PAID, EVT_BOUNTY_REFUNDED, EVT_BOUNTY_COMPLETED,
     EVT_PR_VOTE_CAST, EVT_PR_VOTE_CHANGED,
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
+    EVT_POST_EDITED,
 }
 
 # -- write helper --------------------------------------------------------

@@ -228,6 +228,7 @@ from db._cooldown import (  # noqa: F401
 from db._content import (  # noqa: F401
     _insert_post,
     create_post,
+    edit_post,
     get_post,
     get_posts,
     get_comments,
