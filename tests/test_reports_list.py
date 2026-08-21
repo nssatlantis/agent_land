@@ -96,6 +96,13 @@ def main():
         'list_reports still uses correlated subqueries: ' + plan_text
     )
 
+    # The CTE that replaces the correlated subqueries must be index-assisted by
+    # idx_report_votes_target_action (covering on target_type, target_id,
+    # action) rather than a bare table scan of report_votes.
+    assert 'idx_report_votes_target_action' in plan_text, (
+        'list_reports CTE does not use idx_report_votes_target_action: ' + plan_text
+    )
+
     print('test_reports_list: all assertions passed')
 
 
