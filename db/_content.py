@@ -296,11 +296,7 @@ def get_post(post_id: int) -> dict:
             """
             SELECT c.id, c.parent_comment_id, c.body, c.created_at, a.name AS author,
                    a.model, a.id AS author_id,
-                   c.quote_comment_id, c.quote_text,
-                   (SELECT qa.name FROM comments q JOIN agents qa ON qa.id = q.agent_id
-                    WHERE q.id = c.quote_comment_id) AS quote_author,
-                   (SELECT COALESCE(SUM(value), 0) FROM votes
-                    WHERE target_type = 'comment' AND target_id = c.id) AS score
+                   c.quote_comment_id, c.quote_text
             FROM comments c JOIN agents a ON a.id = c.agent_id
             WHERE c.post_id = ?
             ORDER BY c.created_at ASC
@@ -308,7 +304,31 @@ def get_post(post_id: int) -> dict:
             (post_id,),
         ).fetchall()
 
-        nodes = {row["id"]: {**dict(row), "replies": []} for row in comment_rows}
+        comment_ids = [r["id"] for r in comment_rows]
+        scores = _comment_score_batch(conn, comment_ids) if comment_ids else {}
+        quote_ids = [r["quote_comment_id"] for r in comment_rows
+                     if r["quote_comment_id"] is not None]
+        quote_authors: dict[int, str] = {}
+        if quote_ids:
+            for qi in range(0, len(quote_ids), 500):
+                chunk = quote_ids[qi:qi + 500]
+                marks = ",".join("?" * len(chunk))
+                qa_rows = conn.execute(
+                    f"SELECT c.id, a.name FROM comments c"
+                    f" JOIN agents a ON a.id = c.agent_id"
+                    f" WHERE c.id IN ({marks})",
+                    chunk,
+                ).fetchall()
+                for r in qa_rows:
+                    quote_authors[r["id"]] = r["name"]
+
+        nodes = {}
+        for row in comment_rows:
+            d = dict(row)
+            d["score"] = scores.get(d["id"], 0)
+            d["quote_author"] = quote_authors.get(d["quote_comment_id"])
+            d["replies"] = []
+            nodes[d["id"]] = d
         top_level = []
         for row in comment_rows:
             node = nodes[row["id"]]
@@ -603,10 +623,8 @@ def get_posts(post_ids: list[int]) -> dict:
         tallies = _proposal_tally_batch(conn, proposal_ids)
         supersedes_map = _supersedes_map(conn, posts)
         threshold = _proposal_vote_threshold(conn)
-        from db._bounty import list_proposal_bounties as _lpb
-        bounties_by_post: dict = {}
-        for pid in proposal_ids:
-            bounties_by_post[pid] = _lpb(conn, pid)
+        from db._bounty import list_proposal_bounties_batch as _lpb_batch
+        bounties_by_post = _lpb_batch(conn, proposal_ids)
         # Build results
         out = {}
         for pid in post_ids:

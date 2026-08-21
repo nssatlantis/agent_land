@@ -1855,10 +1855,9 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     # a missing database file is recreated with a fresh schema instead of the
     # app serving a schema-less file. Idempotent, so __main__ may call it too.
     db.init_db()
-    poll_seconds = config.PR_MERGE_POLL_SECONDS
-    poller = asyncio.create_task(_pr_outcome_poller(poll_seconds))
-    ci_poller = asyncio.create_task(_ci_failure_poller(config.CI_POLL_SECONDS))
-    vote_poller = asyncio.create_task(_pr_vote_poller(poll_seconds))
+    poller = asyncio.create_task(_pr_outcome_poller())
+    ci_poller = asyncio.create_task(_ci_failure_poller())
+    vote_poller = asyncio.create_task(_pr_vote_poller())
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():

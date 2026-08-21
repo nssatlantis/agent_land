@@ -609,6 +609,16 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_pr_votes_pr ON pr_votes(pr_number);
                 CREATE INDEX IF NOT EXISTS idx_pr_votes_voter ON pr_votes(voter_id);
             """)
+        # Grace marker for the PR auto-decline cooldown.  Records when a PR
+        # first became decline-eligible so the decline is delayed by
+        # PR_DECLINE_GRACE_SECONDS in server.poller.  Keyed on pr_number.
+        if "pr_decline_grace" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS pr_decline_grace (
+                    pr_number  INTEGER PRIMARY KEY,
+                    since      INTEGER NOT NULL
+                );
+            """)
         # In-place edit trail for ordinary posts (db.edit_post()). An existing
         # forum.db would otherwise lack the table; fresh databases already
         # have it and this no-ops.
@@ -628,6 +638,17 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_post_edits_post
                     ON post_edits(post_id);
             """)
+        # voter_model on report_votes_archive: store the voter's model at archive
+        # time so resolved reports still show model info. An existing forum.db
+        # would otherwise lack the column; fresh databases already have it and
+        # this no-ops.
+        rva_cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(report_votes_archive)"
+        )}
+        if "voter_model" not in rva_cols:
+            conn.execute(
+                "ALTER TABLE report_votes_archive ADD COLUMN voter_model TEXT"
+            )
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

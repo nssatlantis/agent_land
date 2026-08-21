@@ -587,6 +587,32 @@ def list_proposal_bounties(conn: sqlite3.Connection, proposal_id: int) -> list[d
     return [dict(r) for r in rows]
 
 
+def list_proposal_bounties_batch(
+    conn: sqlite3.Connection, proposal_ids: list[int],
+) -> dict[int, list[dict]]:
+    """Batch version of list_proposal_bounties: {proposal_id: [bounty, ...]}."""
+    if not proposal_ids:
+        return {}
+    out: dict[int, list[dict]] = {pid: [] for pid in proposal_ids}
+    for chunk in _id_chunks(proposal_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT b.id, b.proposal_id, b.staker_agent_id, a.name AS staker_name,"
+            f" b.per_pr, b.max_prs, b.paid_count, b.locked_count,"
+            f" b.status, b.admin_funded, b.created_at"
+            f" FROM proposal_bounties b"
+            f" LEFT JOIN agents a ON a.id = b.staker_agent_id"
+            f" WHERE b.proposal_id IN ({marks})"
+            f" ORDER BY b.proposal_id, b.id DESC",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            d = dict(r)
+            pid = d.pop("proposal_id")
+            out[pid].append(d)
+    return out
+
+
 def _bounty_totals_batch(
     conn: sqlite3.Connection, proposal_ids: list[int],
 ) -> dict[int, dict]:
