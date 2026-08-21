@@ -402,6 +402,10 @@ def test_sweep_ci_fails_after_rebase():
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
 
+    def failing_wait_ci(number, **kw):
+        log.calls.append(("wait_ci", number))
+        return "failure"
+
     with _patch(
         open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
         pr_has_label=_stub_pr_has_label(hold=False),
@@ -409,7 +413,7 @@ def test_sweep_ci_fails_after_rebase():
         merge_pr=log.merge,
         decline_pr=log.decline,
         rebase_pr_onto_main=log.rebase,
-        wait_for_ci=_stub_wait_ci("failure"),
+        wait_for_ci=failing_wait_ci,
     ):
         actions = _pr_vote_sweep()
 
