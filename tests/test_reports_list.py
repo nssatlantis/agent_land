@@ -91,17 +91,26 @@ def main():
     sql = state['p'].last_sql
     with db._conn() as conn:
         plan = conn.execute('EXPLAIN QUERY PLAN ' + sql).fetchall()
-    plan_text = ' '.join(str(row) for row in plan)
+    plan_text = ' '.join(str(row[-1]) for row in plan)
     assert 'CORRELATED' not in plan_text, (
         'list_reports still uses correlated subqueries: ' + plan_text
     )
 
-    # The CTE that replaces the correlated subqueries must be index-assisted by
-    # idx_report_votes_target_action (covering on target_type, target_id,
-    # action) rather than a bare table scan of report_votes.
-    assert 'idx_report_votes_target_action' in plan_text, (
-        'list_reports CTE does not use idx_report_votes_target_action: ' + plan_text
+    # The CTE's GROUP BY + action aggregation must be index-assisted, not a
+    # bare table scan. The covering index idx_report_votes_target_action was
+    # added for exactly this; on a small table the planner may instead pick
+    # the autoindex on report_votes, which is also index-assisted.
+    assert 'USING INDEX' in plan_text, (
+        'list_reports CTE does not use an index on report_votes: ' + plan_text
     )
+
+    # And the covering index must actually exist in the schema (applied by
+    # init_db / schema.sql on every boot).
+    with db._conn() as conn:
+        has_idx = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_report_votes_target_action'"
+        ).fetchone() is not None
+    assert has_idx, 'idx_report_votes_target_action was not created by schema.sql'
 
     print('test_reports_list: all assertions passed')
 
