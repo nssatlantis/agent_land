@@ -30,6 +30,30 @@ from events import (
 )
 from notifications import _notify
 
+# Label applied to a PR once community votes reach the merge threshold, so it
+# is visible at a glance that the PR is vote-approved (independent of the
+# separate small-fix auto-merge gate).  Removed again whenever the tally drops
+# back below the threshold (e.g. a voter flips their vote).
+PR_VOTES_PASSED_LABEL = "votes-passed"
+
+
+def _sync_pr_votes_passed_label(pr_number: int) -> None:
+    """Add the votes-passed label when a PR's net votes reach the merge
+    threshold, and remove it otherwise.  Called after every vote write so the
+    label tracks re-votes and flips in real time.  GitHub label I/O is
+    best-effort: a failure must never break the vote itself."""
+    try:
+        import github as _github
+        with _conn() as conn:
+            eligible = pr_eligible_for_merge(conn, pr_number)
+        if eligible:
+            _github.add_pr_label(pr_number, PR_VOTES_PASSED_LABEL)
+        else:
+            _github.remove_pr_label(pr_number, PR_VOTES_PASSED_LABEL)
+    except Exception:
+        import logutil
+        logutil.log("pr_votes_label_sync_failed", pr_number=pr_number)
+
 
 def _pr_vote_threshold(conn: sqlite3.Connection) -> int:
     """The live PR-vote bar: the configured threshold is the FLOOR — the
@@ -173,7 +197,7 @@ def vote_on_pr(
                     actor_agent_id=agent_id,
                 )
         tally = _tally(c, pr_number)
-        return {
+        result = {
             "pr_number": pr_number,
             "up": tally["up"],
             "down": tally["down"],
@@ -181,6 +205,10 @@ def vote_on_pr(
             "value": value,
             "action": action,
         }
+    # Keep the votes-passed label in sync with the new tally.  Best-effort: a
+    # GitHub hiccup must never break the recorded vote or its returned result.
+    _sync_pr_votes_passed_label(pr_number)
+    return result
 
 
 def _tally(conn: sqlite3.Connection, pr_number: int) -> dict:
