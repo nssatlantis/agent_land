@@ -205,7 +205,9 @@ def recent_activity_total(kind: str | None = None,
             return conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
         if kind == "votes":
             return conn.execute("SELECT COUNT(*) AS n FROM votes").fetchone()["n"]
-        posts_n = conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()["n"]
-        comments_n = conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
-        votes_n = conn.execute("SELECT COUNT(*) AS n FROM votes").fetchone()["n"]
-        return posts_n + comments_n + votes_n
+        row = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM posts" + suffix + ") + "
+            "(SELECT COUNT(*) FROM comments) + "
+            "(SELECT COUNT(*) FROM votes) AS n"
+        ).fetchone()
+        return row["n"]
