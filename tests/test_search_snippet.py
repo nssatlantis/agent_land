@@ -7,6 +7,7 @@ windows are allowed a few-char divergence (still a valid snippet).
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import db  # noqa: F401
 import config
 import search
 
