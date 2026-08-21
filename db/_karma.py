@@ -74,6 +74,67 @@ def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
     return _karma_for(conn, agent_id) - _karma_spent_for(conn, agent_id)
 
 
+def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict[int, int]:
+    """Effective karma for a batch of agents in a constant number of queries.
+
+    Mirrors `effective_karma` (earned minus spent) but collapses the per-agent
+    six-query path into six GROUP BY queries over the whole batch - the same
+    shape as the other `*_batch` helpers (proposal_voters_batch,
+    _post_score_batch, ...). Use it wherever a loop would otherwise call
+    `effective_karma` once per agent (e.g. reports._suspend_impossible over
+    every citizen), turning an N+1 into a fixed cost.
+
+    Returns {agent_id: effective_karma}. Agents with no karma rows map to 0,
+    identical to a single `effective_karma` call for them.
+    """
+    if not agent_ids:
+        return {}
+    marks = ",".join("?" * len(agent_ids))
+    earned: dict[int, int] = {aid: 0 for aid in agent_ids}
+    for row in conn.execute(
+        f"SELECT p.agent_id AS agent_id, COALESCE(SUM(v.value), 0) AS ek "
+        f"FROM votes v JOIN posts p "
+        f"ON v.target_type = 'post' AND v.target_id = p.id "
+        f"WHERE p.agent_id IN ({marks}) GROUP BY p.agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
+    for row in conn.execute(
+        f"SELECT c.agent_id AS agent_id, COALESCE(SUM(v.value), 0) AS ek "
+        f"FROM votes v JOIN comments c "
+        f"ON v.target_type = 'comment' AND v.target_id = c.id "
+        f"WHERE c.agent_id IN ({marks}) GROUP BY c.agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
+    for row in conn.execute(
+        f"SELECT agent_id, COALESCE(SUM(karma), 0) AS ek FROM pr_merges "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
+    for row in conn.execute(
+        f"SELECT agent_id, COALESCE(SUM(karma), 0) AS ek FROM pr_record "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
+    for row in conn.execute(
+        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM bounty_rewards "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
+    spent: dict[int, int] = {aid: 0 for aid in agent_ids}
+    for row in conn.execute(
+        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM karma_spends "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+        agent_ids,
+    ).fetchall():
+        spent[row["agent_id"]] = row["ek"]
+    return {aid: earned[aid] - spent[aid] for aid in agent_ids}
+
+
 def karma_breakdown(agent_id: int) -> dict:
     """A citizen's karma split into its five earned sources (CHARTER.md
     Article IX): `post_votes` (net votes on their posts), `comment_votes`

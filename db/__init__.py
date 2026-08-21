@@ -86,6 +86,7 @@ from db._karma import (  # noqa: F401
     _score_for,
     award_pr_merge_karma,
     effective_karma,
+    effective_karma_many,
     karma_breakdown,
     link_pr_to_proposal,
     pr_opener,
