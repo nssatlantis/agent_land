@@ -7,6 +7,8 @@ No real GitHub calls — all github module functions are replaced with stubs.
 import os
 import sys
 import tempfile
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_sweep_"))
@@ -91,10 +93,10 @@ class _CallLog:
         return {"pr_number": number}
 
 
-def _open_pr_dict(number, citizen=None):
+def _open_pr_dict(number, citizen=None, created_at=""):
     """Minimal github.open_prs() row shape."""
     d = {"number": number, "title": "test", "head": "branch",
-         "base": "main", "author": "nobody", "created_at": "",
+         "base": "main", "author": "nobody", "created_at": created_at,
          "html_url": "", "mergeable_state": "clean", "body": "",
          "head_sha": "sha", "citizen": citizen}
     return d
@@ -225,14 +227,19 @@ def test_sweep_declines_opposed():
 
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
-    with _patch(
-        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
-        pr_has_label=_stub_pr_has_label(hold=False),
-        pr_checks=_stub_pr_checks("success"),
-        merge_pr=log.merge,
-        decline_pr=log.decline,
-    ):
-        actions = _pr_vote_sweep()
+    old_grace = config.PR_DECLINE_GRACE_SECONDS
+    config.PR_DECLINE_GRACE_SECONDS = 0  # disable grace so decline fires now
+    try:
+        with _patch(
+            open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+            pr_has_label=_stub_pr_has_label(hold=False),
+            pr_checks=_stub_pr_checks("success"),
+            merge_pr=log.merge,
+            decline_pr=log.decline,
+        ):
+            actions = _pr_vote_sweep()
+    finally:
+        config.PR_DECLINE_GRACE_SECONDS = old_grace
 
     assert ("decline", pr_number) in log.calls, f"decline_pr not called; actions={actions}"
     assert not any(a[0] == "merge" for a in log.calls), "merge_pr should not be called"
@@ -376,6 +383,7 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
         os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "0"
         import importlib, config as _cfg
         importlib.reload(_cfg)
+        config.PR_DECLINE_GRACE_SECONDS = 0  # no grace in this test
 
         log = _CallLog()
         opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
@@ -399,6 +407,98 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
     print("  sweep declines normal proposal toggle off: ok")
 
 
+def test_sweep_merge_delayed_when_young():
+    """Merge-eligible PR created < PR_MERGE_MIN_AGE_SECONds ago is NOT merged."""
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+    with _patch(
+        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener, created_at=recent)),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+    ):
+        _pr_vote_sweep()
+    assert not log.calls, f"young PR must not auto-merge yet: {log.calls}"
+    print("  sweep merge delayed when young: ok")
+
+
+def test_sweep_merge_proceeds_when_old():
+    """Merge-eligible PR older than PR_MERGE_MIN_AGE_SECONDS IS merged."""
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+    with _patch(
+        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener, created_at=old)),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+    ):
+        actions = _pr_vote_sweep()
+    assert ("merge", pr_number) in log.calls, f"old PR should auto-merge: {actions}"
+    print("  sweep merge proceeds when old: ok")
+
+
+def test_sweep_decline_grace_delays():
+    """Decline-eligible PR is NOT declined until the grace window elapses."""
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+    with _patch(
+        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+    ):
+        _pr_vote_sweep()
+    assert not log.calls, f"decline must wait out the grace window: {log.calls}"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT since FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
+        ).fetchone()
+    assert row is not None, "grace marker should be recorded"
+    print("  sweep decline grace delays: ok")
+
+
+def test_sweep_decline_after_grace():
+    """Decline-eligible PR with an expired grace marker IS declined."""
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO pr_decline_grace (pr_number, since) VALUES (?, ?)",
+            (pr_number, int(time.time()) - 99999),
+        )
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+    with _patch(
+        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+    ):
+        actions = _pr_vote_sweep()
+    assert ("decline", pr_number) in log.calls, f"decline should fire after grace: {actions}"
+    print("  sweep decline after grace: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_sweep_merges_eligible()
@@ -411,4 +511,8 @@ if __name__ == "__main__":
     test_sweep_handles_decline_error()
     test_sweep_normal_proposal_when_toggle_off()
     test_sweep_declines_normal_proposal_when_toggle_off()
+    test_sweep_merge_delayed_when_young()
+    test_sweep_merge_proceeds_when_old()
+    test_sweep_decline_grace_delays()
+    test_sweep_decline_after_grace()
     print("\n== test_sweep: all passed ==")
