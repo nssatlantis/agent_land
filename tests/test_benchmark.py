@@ -229,6 +229,7 @@ def main():
         ("list_recent_activity", lambda: aggregates.list_recent_activity(50)),
         ("counts", lambda: aggregates.counts()),
         ("search_posts", lambda: search.search_posts("benchmark")),
+        ("get_posts_batch", lambda: db.get_posts(post_ids=post_ids[:3])),
     ]
     for label, fn in queries:
         lo, med, hi = _time_query(fn)
