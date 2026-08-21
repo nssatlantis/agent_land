@@ -278,15 +278,18 @@ def my_proposals(token: str) -> dict:
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
             d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
-            lifecycle = decisive["status"] if decisive else "open"
-            d["lifecycle"] = lifecycle
             if d["collaborative"]:
                 cc = d.get("collaborative_closed")
                 d["status"] = cc if cc else "open"
+                lifecycle = cc if cc else "open"
+                d["lifecycle"] = lifecycle
                 d["merged_pr_count"] = sum(
                     1 for pr in prs_by_post.get(d["id"], [])
                     if pr["status"] == "merged"
                 )
+            else:
+                lifecycle = decisive["status"] if decisive else "open"
+                d["lifecycle"] = lifecycle
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
             d["is_current"] = not locked
@@ -387,15 +390,18 @@ def assigned_proposals(token: str) -> dict:
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
             d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
-            lifecycle = decisive["status"] if decisive else "open"
-            d["lifecycle"] = lifecycle
             if d["collaborative"]:
                 cc = d.get("collaborative_closed")
                 d["status"] = cc if cc else "open"
+                lifecycle = cc if cc else "open"
+                d["lifecycle"] = lifecycle
                 d["merged_pr_count"] = sum(
                     1 for pr in prs_by_post.get(d["id"], [])
                     if pr["status"] == "merged"
                 )
+            else:
+                lifecycle = decisive["status"] if decisive else "open"
+                d["lifecycle"] = lifecycle
             locked = d["superseded_by_id"] is not None
             d["locked"] = locked
             d["is_current"] = not locked

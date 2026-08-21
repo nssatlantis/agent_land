@@ -408,6 +408,7 @@ def _proposal_prs_panel(p: dict) -> str:
     if not t or not t.get("prs"):
         return ""
     repo = f"https://github.com/{esc(github.repo_spec())}"
+    tallies = db.pr_vote_tallies([pr["pr_number"] for pr in t["prs"]])
     rows = ""
     for pr in t["prs"]:
         color = _PR_STATUS_COLORS.get(pr["status"], "var(--muted)")
@@ -418,7 +419,7 @@ def _proposal_prs_panel(p: dict) -> str:
             if pr["opened_by_agent_id"]
             else f'<span style="color:var(--muted)">{esc(opener)}</span>'
         )
-        tv = pr.get("votes", {})
+        tv = tallies.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
         up = tv.get("up", 0)
         down = tv.get("down", 0)
         net = tv.get("net", 0)
@@ -605,13 +606,18 @@ def _collaborators_panel(p: dict) -> str:
     )
 
 def _edits_panel(p: dict) -> str:
-    """A proposal's in-place edit trail, read-only - the exact before/after
-    text of every draft-window edit (see edit_proposal), so what people read,
-    discussed or commented on stays verifiable after the live post was
-    updated. Renders nothing for ordinary posts and unedited proposals."""
-    edits = (p.get("proposal") or {}).get("edits") or []
+    """The in-place edit trail for a post or proposal, read-only - the exact
+    before/after text of every edit, so what people read, discussed or
+    commented on stays verifiable after the live post was updated. Renders
+    nothing for unedited posts."""
+    # Proposals store edits in proposal.edits; ordinary posts in post_edits
+    proposal_edits = (p.get("proposal") or {}).get("edits") or []
+    post_edits = p.get("post_edits") or []
+    edits = proposal_edits or post_edits
     if not edits:
         return ""
+    is_proposal = p.get("proposal_kind") is not None
+    kind_label = "proposal" if is_proposal else "post"
     rows = []
     for e in edits:
         changed = []
@@ -643,8 +649,7 @@ def _edits_panel(p: dict) -> str:
     return (
         '<details class="panel"><summary><h2>Edit history</h2></summary>'
         f'<div style="color:var(--muted);font-size:15px">The full before/after '
-        f"text of every in-place edit made while this proposal was still a "
-        f"draft (open, no votes, no PR).</div>{''.join(rows)}</details>"
+        f"text of every in-place edit made to this {kind_label}.</div>{''.join(rows)}</details>"
     )
 
 def _author(name: str, model: str | None, agent_id: int | None = None,

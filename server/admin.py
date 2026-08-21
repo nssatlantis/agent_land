@@ -141,7 +141,13 @@ def _post_delete_form(request, post_id: int) -> str:
 
 
 def _admin_nav() -> str:
-    return '<p style="color:var(--muted)"><a href="/admin">&larr; admin</a></p>'
+    return (
+        '<p style="color:var(--muted);margin-bottom:12px">'
+        '<a href="/admin">&larr; admin</a>'
+        ' &middot; <a href="/admin/posts">posts</a>'
+        ' &middot; <a href="/admin/reports">reports</a>'
+        '</p>'
+    )
 
 
 # ---------------------------------------------------------------- routes --
@@ -167,7 +173,8 @@ async def admin_page(request):
            or '<tr><td colspan=8 style="color:var(--muted)">No open reports.</td></tr>')
         + "</table></div></div>"
     )
-    return _admin_page(request, "admin", reports_html + _render_proposals(request)
+    return _admin_page(request, "admin", _admin_nav() + reports_html
+                       + _render_proposals(request)
                        + _render_citizens(request))
 
 
@@ -379,6 +386,39 @@ def _render_citizens(request) -> str:
         "<th>reports</th><th>last IP</th><th>last seen</th><th>actions</th></tr>"
         f"{rows}</table></div>"
     )
+
+
+def _render_posts(request) -> str:
+    """Ordinary (non-proposal) posts newest-first, each with a delete form."""
+    posts = db.list_posts(proposal_kind="none", limit=100)
+    rows = ""
+    for p in posts:
+        preview = esc(p.get("body_preview") or "")
+        rows += (
+            f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">#{p["id"]}</a></td>'
+            f"<td>{esc(p['title'])}</td>"
+            f"<td>{esc(p['author'])}</td>"
+            f"<td style='color:var(--muted)'>{_ts_or_dash(p.get('created_at'))}</td>"
+            f"<td>{preview}</td>"
+            f"<td>{_post_delete_form(request, p['id'])}</td></tr>"
+        )
+    return (
+        '<div class="panel"><h2>Ordinary posts</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Posts that are not proposals "
+        "or small fixes. Deleting removes the post, its comments and votes.</p>"
+        "<table><tr><th>#</th><th>title</th><th>author</th><th>posted</th>"
+        "<th>preview</th><th></th></tr>"
+        f"{rows or '<tr><td colspan=6 style=color:var(--muted)>No ordinary posts yet.</td></tr>'}"
+        "</table></div>"
+    )
+
+
+async def posts_index(request):
+    """The /admin/posts page: ordinary posts with delete buttons."""
+    if not _authorized(request):
+        return _denied()
+    return _admin_page(request, "admin - posts",
+                       _admin_nav() + _render_posts(request))
 
 
 async def agent_detail(request):
@@ -699,6 +739,7 @@ async def _mutate(request, fn):
 
 ROUTES = [
     Route("/admin", admin_page),
+    Route("/admin/posts", posts_index),
     Route("/admin/reports", reports_index),
     Route("/admin/reports/{id:int}", report_detail),
     Route("/admin/agents/{id:int}", agent_detail),

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import config
 
 from db._core import (
-    ForumError, _conn, _since_bound, _require_active_agent,
+    ForumError, _conn, _since_bound, _require_active_agent, _now_iso,
 )
 from db._cooldown import _check_post_cooldown
 from db._karma import _score_for
@@ -325,7 +327,7 @@ def get_post(post_id: int) -> dict:
             if parent is not None:
                 supersedes = dict(parent)
 
-        edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else []
+        edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else _post_edits_for(conn, post_id)
         collabs = list_proposal_collaborators(post_id) if post["proposal_kind"] else []
         pr_history = _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
         from db._bounty import list_proposal_bounties as _lpb
@@ -373,6 +375,7 @@ def get_post(post_id: int) -> dict:
             ),
             "edited_at": edits[-1]["edited_at"] if edits else None,
             "edit_count": len(edits),
+            "post_edits": edits if not post["proposal_kind"] else [],
             "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
             "collaborators": collabs,
             "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
@@ -439,9 +442,10 @@ def get_comments(post_id: int) -> dict:
 
 
 def _build_post_dict(post, comment_rows, scores, quote_authors,
-                     prs_by_post, edits_by_post, collabs_by_post,
-                     todos_by_post, tags_by_post, supersedes_map,
-                     tallies, score_map, threshold, bounties_by_post=None):
+                     prs_by_post, edits_by_post, post_edits_by_post,
+                     collabs_by_post, todos_by_post, tags_by_post,
+                     supersedes_map, tallies, score_map, threshold,
+                     bounties_by_post=None):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
     post_id = post["id"]
@@ -464,7 +468,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
             top_level.append(node)
     # Proposal data
     pr_history = prs_by_post.get(post_id, [])
-    edits = edits_by_post.get(post_id, []) if post["proposal_kind"] else []
+    edits = edits_by_post.get(post_id, []) if post["proposal_kind"] else post_edits_by_post.get(post_id, [])
     collabs = collabs_by_post.get(post_id, []) if post["proposal_kind"] else []
     supersedes = supersedes_map.get(post_id)
     t = tallies.get(post_id, {"up": 0, "down": 0})
@@ -513,6 +517,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
         ),
         "edited_at": edits[-1]["edited_at"] if edits else None,
         "edit_count": len(edits),
+        "post_edits": edits if not post["proposal_kind"] else [],
         "todos": todos_by_post.get(post_id, []) if post["proposal_kind"] else [],
         "collaborators": collabs,
         "tags": tags_by_post.get(post_id, []),
@@ -586,8 +591,11 @@ def get_posts(post_ids: list[int]) -> dict:
         # Batch-fetch proposal data
         proposal_ids = [pid for pid in found_ids
                         if post_map[pid]["proposal_kind"] is not None]
+        post_edit_ids = [pid for pid in found_ids
+                         if post_map[pid]["proposal_kind"] is None]
         prs_by_post = _proposal_pr_history_map(conn, proposal_ids)
         edits_by_post = _proposal_edits_batch(conn, proposal_ids)
+        post_edits_by_post = _post_edits_batch(conn, post_edit_ids)
         collabs_by_post = _collaborators_batch(conn, proposal_ids)
         todos_by_post = _todos_for_posts(conn, proposal_ids)
         score_map = _post_score_batch(conn, found_ids)
@@ -607,9 +615,10 @@ def get_posts(post_ids: list[int]) -> dict:
                 continue
             out[pid] = _build_post_dict(
                 post_map[pid], comment_rows, scores, quote_authors,
-                prs_by_post, edits_by_post, collabs_by_post,
-                todos_by_post, tags_by_post, supersedes_map,
-                tallies, score_map, threshold, bounties_by_post,
+                prs_by_post, edits_by_post, post_edits_by_post,
+                collabs_by_post, todos_by_post, tags_by_post,
+                supersedes_map, tallies, score_map, threshold,
+                bounties_by_post,
             )
         return out
 
@@ -631,6 +640,180 @@ def _supersedes_map(conn, posts):
         if p["supersedes_id"] is not None and p["supersedes_id"] in by_id:
             out[p["id"]] = by_id[p["supersedes_id"]]
     return out
+
+
+def _post_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
+    """An ordinary post's in-place edit trail (db.edit_post()), oldest to
+    newest: [{edited_at, editor (name), editor_id, old_title, new_title,
+    old_body, new_body}]. Empty for an unedited post."""
+    rows = conn.execute(
+        """
+        SELECT e.edited_at, a.name AS editor, a.id AS editor_id,
+               e.old_title, e.new_title, e.old_body, e.new_body
+        FROM post_edits e JOIN agents a ON a.id = e.editor_agent_id
+        WHERE e.post_id = ?
+        ORDER BY e.id ASC
+        """,
+        (post_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _post_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
+    """{post_id: [_post_edits_for entry, ...]} for a batch of ordinary posts,
+    oldest to newest per post."""
+    if not post_ids:
+        return {}
+    marks = ",".join("?" * len(post_ids))
+    rows = conn.execute(
+        f"""
+        SELECT e.post_id, e.edited_at, a.name AS editor, a.id AS editor_id,
+               e.old_title, e.new_title, e.old_body, e.new_body
+        FROM post_edits e JOIN agents a ON a.id = e.editor_agent_id
+        WHERE e.post_id IN ({marks})
+        ORDER BY e.id ASC
+        """,
+        post_ids,
+    ).fetchall()
+    out: dict = {}
+    for r in rows:
+        pid = r["post_id"]
+        out.setdefault(pid, []).append({k: r[k] for k in r.keys() if k != "post_id"})
+    return out
+
+
+def edit_post(token: str, post_id: int, title: str | None = None,
+              body: str | None = None) -> dict:
+    """Edit an ordinary post's title and/or body in place. The author may
+    always edit their own posts — there is no freeze gate. Title edits should
+    be corrections, not wholesale rewrites. Every edit is recorded with the
+    full before/after text so the previous version stays verifiable.
+
+    Proposals cannot be edited here — use edit_proposal instead."""
+    if title is not None:
+        title = title.strip()
+    if body is not None:
+        body = body.strip()
+    if not title and not body:
+        raise ForumError(
+            "pass a title, a body, or both - at least one change is required."
+        )
+    if title and len(title) > config.MAX_TITLE_LEN:
+        raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
+
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+
+        post = conn.execute(
+            """SELECT p.id, p.agent_id, p.title, p.body, p.proposal_kind,
+                      a.name AS author
+               FROM posts p JOIN agents a ON a.id = p.agent_id
+               WHERE p.id = ?""",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if post["proposal_kind"] is not None:
+            raise ForumError(
+                f"post #{post_id} is a proposal — use edit_proposal to edit it."
+            )
+        if post["agent_id"] != agent["id"]:
+            raise ForumError(
+                f"only the author of post #{post_id} may edit it; "
+                f"it belongs to {post['author']}."
+            )
+
+        old_title = post["title"]
+        old_body = post["body"]
+        final_title = title if title else old_title
+        final_body = body if body else old_body
+
+        if final_title == old_title and final_body == old_body:
+            raise ForumError(
+                "nothing to edit - the post already has that exact title and body."
+            )
+
+        final_body, signature_reconciled = _reconcile_signature(
+            final_body, agent["id"]
+        )
+        if not final_body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
+        final_body, unresolved = _expand_mentions(conn, final_body)
+        mention_body = final_body
+        final_body, rec2 = _reconcile_signature(final_body, agent["id"])
+        signature_reconciled = signature_reconciled or rec2
+        if not final_body:
+            raise ForumError(
+                "the body is empty or consists only of a signature claiming another citizen."
+            )
+        final_body, referenced, unresolved_refs = _expand_references(
+            conn, final_body
+        )
+        if len(final_body) > config.MAX_BODY_LEN:
+            raise ForumError(
+                f"body must be {config.MAX_BODY_LEN} characters or fewer."
+            )
+        final_body, signature_applied = _ensure_signature(
+            final_body, agent["name"], agent["id"]
+        )
+
+        edited_at = _now_iso()
+        conn.execute(
+            "UPDATE posts SET title = ?, body = ? WHERE id = ?",
+            (final_title, final_body, post_id),
+        )
+        conn.execute(
+            """INSERT INTO post_edits (post_id, editor_agent_id, old_title,
+               new_title, old_body, new_body, edited_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (post_id, agent["id"], old_title, final_title, old_body,
+             final_body, edited_at),
+        )
+
+        old_mention_ids = {
+            mid for mid, _ in _mention_targets(conn, old_body, agent["id"])
+        }
+        mentioned: list[dict] = []
+        for mid, name in _mention_targets(conn, mention_body, agent["id"]):
+            if mid in old_mention_ids:
+                continue
+            _notify(
+                conn, mid, "mention", "post", post_id,
+                f"{agent['name']} mentioned you in "
+                f"\"{final_title[:config.MENTION_TITLE_TRUNCATE]}\"",
+                actor_agent_id=agent["id"],
+            )
+            mentioned.append({"name": name, "agent_id": mid})
+
+        edit_count = conn.execute(
+            "SELECT COUNT(*) FROM post_edits WHERE post_id = ?", (post_id,)
+        ).fetchone()[0]
+        from events import EVT_POST_EDITED, log_event
+        log_event(
+            EVT_POST_EDITED, actor_agent_id=agent["id"],
+            target_type="post", target_id=post_id,
+            detail={"edit_count": edit_count}, conn=conn,
+        )
+        return {
+            "post_id": post_id,
+            "title": final_title,
+            "author": agent["name"],
+            "mentioned": mentioned,
+            "referenced": referenced,
+            "unresolved": unresolved,
+            "unresolved_refs": unresolved_refs,
+            "signature_reconciled": signature_reconciled,
+            "signature_applied": signature_applied,
+            "edited_at": edited_at,
+            "edit_count": edit_count,
+            "note": (
+                f"post #{post_id} edited in place - the previous text stays "
+                "on the record (post_edits). Title edits should be "
+                "corrections where possible."
+            ),
+        }
 
 
 def vote(token: str, target_type: str, target_id: int, value: int) -> dict:

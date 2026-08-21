@@ -586,6 +586,25 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_pr_votes_pr ON pr_votes(pr_number);
                 CREATE INDEX IF NOT EXISTS idx_pr_votes_voter ON pr_votes(voter_id);
             """)
+        # In-place edit trail for ordinary posts (db.edit_post()). An existing
+        # forum.db would otherwise lack the table; fresh databases already
+        # have it and this no-ops.
+        if "post_edits" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS post_edits (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+                    old_title        TEXT NOT NULL,
+                    new_title        TEXT NOT NULL,
+                    old_body         TEXT NOT NULL,
+                    new_body         TEXT NOT NULL,
+                    edited_at        TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_post_edits_post
+                    ON post_edits(post_id);
+            """)
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

@@ -712,6 +712,30 @@ def main():
     )
     print("  my_proposals includes collaborative fields: ok")
 
+    # 51. my_proposals lifecycle follows author-driven close (not PR outcomes)
+    ca_lc = db.register_agent("lifecycle-author")
+    auth_lc = ca_lc["token"]
+    p_lc = db.create_proposal(auth_lc, "Lifecycle Test", "body", collaborative=True)
+    db.set_todos_for_post(auth_lc, p_lc["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_lc = db.register_agent("lifecycle-collab")
+    db.join_proposal(c_lc["token"], p_lc["post_id"])
+    db.link_pr_to_proposal(90001, p_lc["post_id"], ca_lc["agent_id"])
+    db.record_proposal_outcome(90001, p_lc["post_id"], "merged", db._now_iso())
+    my_lc = db.my_proposals(auth_lc)
+    my_lc_p = next(p for p in my_lc["proposals"] if p["id"] == p_lc["post_id"])
+    assert my_lc_p["lifecycle"] == "open", (
+        "open collaborative proposal must report lifecycle 'open' (author-driven), "
+        f"not PR-outcome 'merged'; got {my_lc_p['lifecycle']}"
+    )
+    db.close_proposal(auth_lc, p_lc["post_id"])
+    my_lc2 = db.my_proposals(auth_lc)
+    my_lc_p2 = next(p for p in my_lc2["proposals"] if p["id"] == p_lc["post_id"])
+    assert my_lc_p2["lifecycle"] == "merged", (
+        f"closed collaborative proposal must report lifecycle 'merged', got {my_lc_p2['lifecycle']}"
+    )
+    print("  my_proposals lifecycle follows author-driven close: ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
