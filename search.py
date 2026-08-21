@@ -302,9 +302,9 @@ def search(query: str, target: str = "all", limit: int | None = None,
     post_results: list[dict] = []
     comment_results: list[dict] = []
     if target in ("all", "posts"):
-        post_results = search_posts(query, limit=limit + offset + 100)
+        post_results = search_posts(query, limit=limit + offset)
     if target in ("all", "comments"):
-        comment_results = search_comments(query, limit=limit + offset + 100)
+        comment_results = search_comments(query, limit=limit + offset)
     if target == "all":
         for r in post_results:
             r["target_type"] = "post"

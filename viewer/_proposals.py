@@ -35,7 +35,7 @@ _DOCKET_EMPTIES = {
     "collaborative": "No collaborative proposals on the docket yet.",
 }
 
-def _docket_card(p: dict) -> str:
+def _docket_card(p: dict, tallies: dict | None = None) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
     the locked tag, the title with its lineage badge, the meta line
     (author, time, implementer or delegation state), the body preview, the
@@ -106,7 +106,8 @@ def _docket_card(p: dict) -> str:
     if prs_raw:
         repo_url = f"https://github.com/{esc(github.repo_spec())}"
         pr_numbers = [pr["pr_number"] for pr in prs_raw]
-        tallies = db.pr_vote_tallies(pr_numbers)
+        if tallies is None:
+            tallies = db.pr_vote_tallies(pr_numbers)
         bits = []
         for pr in prs_raw:
             pr_cls = {"merged": "pr-merged", "open": "pr-open",
@@ -183,7 +184,13 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     )
     if not rows:
         return f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
-    return "".join(_docket_card(p) for p in rows)
+    all_pr_numbers = [
+        pr["pr_number"]
+        for p in rows
+        for pr in (p.get("prs") or [])
+    ]
+    tallies = db.pr_vote_tallies(all_pr_numbers) if all_pr_numbers else {}
+    return "".join(_docket_card(p, tallies=tallies) for p in rows)
 
 _DOCKET_TITLES = {
     "all": "Proposals docket",
