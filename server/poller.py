@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import config
 import db
-from db._pr_vote import pr_eligible_for_merge, pr_decline_ready
+from db._pr_vote import pr_decline_ready_batch, _pr_vote_threshold
 from events import (
     EVT_PR_MERGED, EVT_PR_DECLINED, EVT_PR_CLOSED,
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
@@ -350,53 +350,82 @@ def _pr_vote_sweep() -> list[dict]:
 
     actions: list[dict] = []
     open_prs = github.open_prs()
-    openers = db.linked_pr_openers()
-    proposals_map = db.linked_pr_proposals()
-    merge_candidate = None
+    # Batched pre-pass (proposal #111 audit item: N+1 in the vote sweep):
+    # one connection resolves everything the per-PR gates used to re-derive
+    # per number - the linked opener/proposal maps, the small-fix kind
+    # gate (one IN fetch), the PR-vote threshold (derived once instead of
+    # twice per PR via pr_eligible_for_merge / pr_eligible_for_decline),
+    # every candidate's tally (one GROUP BY), and the decline-grace
+    # markers.  GitHub I/O below stays per-PR by necessity.
+    with db._conn() as conn:
+        openers = db.linked_pr_openers(conn=conn)
+        proposals_map = db.linked_pr_proposals(conn=conn)
+    candidates = []
     for pr in open_prs:
-        number = pr["number"]
-        opener = openers.get(number) or pr.get("citizen")
-        if not opener:
-            continue
-        proposal_post_id = proposals_map.get(number)
-        if not proposal_post_id:
-            continue
-        with db._conn() as conn:
-            # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
+        opener = openers.get(pr["number"]) or pr.get("citizen")
+        if opener and proposals_map.get(pr["number"]):
+            candidates.append((pr, opener, proposals_map[pr["number"]]))
+    if not candidates:
+        return actions
+    numbers = [pr["number"] for (pr, _o, _p) in candidates]
+    with db._conn() as conn:
+        # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
             # small-fix PRs are auto-merge eligible.  Set to 0 to extend
-            # to all PRs with linked proposals.
-            if config.PR_AUTO_MERGE_SMALL_FIX_ONLY:
-                prow = conn.execute(
-                    "SELECT proposal_kind FROM posts WHERE id = ?",
-                    (proposal_post_id,),
-                ).fetchone()
-                if prow is None or prow["proposal_kind"] != "small_fix":
-                    continue
-            # Check for hold label
-            try:
-                if github.pr_has_label(number, _HOLD_LABEL):
-                    continue
-            except Exception:
-                continue  # if we can't check labels, skip
-            # Check CI status
-            try:
-                checks = github.pr_checks(number)
-                ci_ok = checks.get("state") in ("success", "unknown")
-            except Exception:
-                ci_ok = False
-            # Auto-merge eligibility check (identify candidate, merge in Phase 2)
-            if merge_candidate is None and ci_ok and pr_eligible_for_merge(conn, number):
-                # Don't auto-merge a brand-new PR: give reviewers a window
-                # (PR_MERGE_MIN_AGE_SECONDS) even on freshly-passing work.
-                _created = _pr_created_epoch(pr)
-                if _created is not None and (
-                    time.time() - _created < config.PR_MERGE_MIN_AGE_SECONDS
-                ):
-                    pass  # too young; eligible in a future sweep
-                else:
-                    merge_candidate = (pr, opener, proposal_post_id)
-            # Auto-decline check
-            if pr_decline_ready(conn, number, config.PR_DECLINE_GRACE_SECONDS):
+            # to all PRs with linked proposals.  One IN (...) fetch replaces
+            # the per-PR posts lookup; non-small-fix candidates drop out
+            # exactly as the old early `continue` did (skipping decline too).
+        if config.PR_AUTO_MERGE_SMALL_FIX_ONLY:
+            pids = [pid for (_pr, _op, pid) in candidates]
+            marks = ",".join("?" * len(pids))
+            kind_rows = conn.execute(
+                f"SELECT id FROM posts WHERE id IN ({marks})"
+                " AND proposal_kind = 'small_fix'",
+                pids,
+            ).fetchall()
+            small_fix_ids = {r["id"] for r in kind_rows}
+            candidates = [c for c in candidates if c[2] in small_fix_ids]
+            if not candidates:
+                return actions
+            numbers = [pr["number"] for (pr, _o, _p) in candidates]
+        threshold = _pr_vote_threshold(conn)
+        tallies = db.pr_vote_tallies(numbers, conn=conn)
+        eligible_merge = {n for n in numbers if tallies[n]["net"] >= threshold}
+        eligible_decline = {
+            n for n in numbers if tallies[n]["net"] <= -threshold
+        }
+        decline_ready = pr_decline_ready_batch(
+            conn, numbers, eligible_decline,
+            config.PR_DECLINE_GRACE_SECONDS,
+        )
+    merge_candidate = None
+    for pr, opener, proposal_post_id in candidates:
+        number = pr["number"]
+        # Check for hold label
+        try:
+            if github.pr_has_label(number, _HOLD_LABEL):
+                continue
+        except Exception:
+            continue  # if we can't check labels, skip
+        # Check CI status
+        try:
+            checks = github.pr_checks(number)
+            ci_ok = checks.get("state") in ("success", "unknown")
+        except Exception:
+            ci_ok = False
+        # Auto-merge eligibility check (identify candidate, merge in Phase 2)
+        if merge_candidate is None and ci_ok and number in eligible_merge:
+            # Don't auto-merge a brand-new PR: give reviewers a window
+            # (PR_MERGE_MIN_AGE_SECONDS) even on freshly-passing work.
+            _created = _pr_created_epoch(pr)
+            if _created is not None and (
+                time.time() - _created < config.PR_MERGE_MIN_AGE_SECONDS
+            ):
+                pass  # too young; eligible in a future sweep
+            else:
+                merge_candidate = (pr, opener, proposal_post_id)
+        # Auto-decline check
+        if number in decline_ready:
+            with db._conn() as conn:
                 try:
                     github.decline_pr(number)
                     actions.append({"action": "auto_decline", "pr_number": number})
