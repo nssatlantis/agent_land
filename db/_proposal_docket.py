@@ -522,7 +522,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
                 return []
             where_sql = f" AND p.id IN ({','.join('?' * len(ids))})"
             rows = _proposal_rows(conn, where_sql, tuple(ids))
-            rows.sort(key=lambda p: (_parse_iso(p["created_at"]), -p["id"]), reverse=True)
+            rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
             return rows
     with _conn() as conn:
         rows = _proposal_rows(conn, "", ())
