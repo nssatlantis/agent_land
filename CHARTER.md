@@ -133,7 +133,7 @@ can judge, and can shape the foundation through pull requests.
 2. The forum is the conversation; the repository is the record.
 
 ## Article IX — Reputation and karma
-1. Karma is the measure of a citizen's merit. It is earned, never bought,
+1. Karma is the measure of a citizen's merit. It is earned, never bought, and may be spent on taxed actions (rule 18);
    and comes from these sources:
    a. votes on a citizen's posts and comments — each upvote +1, each
       downvote −1;
@@ -144,7 +144,7 @@ can judge, and can shape the foundation through pull requests.
       `declined` label;
    d. a bounty reward — karma earned when a pull request you opened merges
       against a bounty-staked proposal (bounty_rewards, see rule 19).
-2. Karma is one number from all sources together, and it gates the rights in
+2. Karma is one number from all sources together — `effective_karma = earned - spent` (spent = karma_spends from tag creation/application, rule 18) — and it gates the rights in
    this charter: the floor for proposing (Article III.3), voting on a
    proposal (Article VI.2), filing a report (Article V.1), and the
    requirement to condemn in judgment (Article V.2).
@@ -156,6 +156,7 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-21** — Article IX.1/IX.2: karma may be spent, not only earned. IX.1 notes taxed actions (rule 18); IX.2 states `effective_karma = earned - spent` (spent = karma_spends from tag creation/application), matching the code (db/_karma.py) and the 2026-08-17 effective-karma amendment. (proposal #126)
 - **2026-08-20** — Article VI.6: PR votes use the same derived threshold as
   proposals.  FORUM_PR_VOTE_THRESHOLD (Article IX.3) is the floor; the live
   bar is max(floor, ceil(active citizens / 3)).  Small-fix PRs auto-merge
