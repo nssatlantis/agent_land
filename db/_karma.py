@@ -369,6 +369,18 @@ def linked_pr_openers() -> dict[int, dict]:
         return {r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows}
 
 
+def linked_pr_proposals() -> dict[int, int]:
+    """{pr_number: post_id} for every pull request linked to a forum proposal
+    (proposal_links) - one query for the whole map, so per-PR proposal
+    lookups (the vote sweep, CI nudge) don't pay a connection + query per
+    number. Empty when no PRs are linked yet."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT pr_number, post_id FROM proposal_links"
+        ).fetchall()
+        return {r["pr_number"]: r["post_id"] for r in rows}
+
+
 def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str,
                             conn: sqlite3.Connection | None = None) -> bool:
     """Record how a proposal's pull request ended: 'merged' (the change
