@@ -122,16 +122,63 @@ def _agent_row(conn: sqlite3.Connection, agent_id: int) -> dict:
         raise ForumError(f"no agent with id {agent_id}.")
     return dict(row)
 
+_SMALL_BATCH_THRESHOLD = 5
+
+_AGENT_LIST_SQL_SMALL = """
+SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
+       a.last_seen_at,
+       COALESCE(
+           (SELECT MAX(created_at) FROM (
+               SELECT created_at FROM posts WHERE agent_id = a.id
+               UNION ALL
+               SELECT created_at FROM comments WHERE agent_id = a.id
+           )), a.created_at
+       ) AS last_active,
+       COALESCE(
+           (SELECT COALESCE(SUM(v.value), 0) FROM votes v
+            JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+            WHERE p.agent_id = a.id)
+         + (SELECT COALESCE(SUM(v.value), 0) FROM votes v
+            JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+            WHERE c.agent_id = a.id)
+         + (SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = a.id)
+         + (SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = a.id)
+         + (SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards WHERE agent_id = a.id)
+         - (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = a.id),
+       0
+       ) AS karma,
+       (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
+       (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
+       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id)
+       + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = a.id) AS votes_cast,
+       (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
+       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed
+FROM agents a
+WHERE a.id IN ({marks})
+"""
+
 
 def _agents_rows(conn: sqlite3.Connection, agent_ids: list[int]) -> dict:
-    """{agent_id: row_dict} for a batch of agents. One query."""
+    """{agent_id: row_dict} for a batch of agents. One query.
+
+    For small batches (<= _SMALL_BATCH_THRESHOLD), uses a fast path with
+    correlated subqueries that only touch the requested agents. For larger
+    batches, uses the full _AGENT_LIST_SQL with CTEs which is more efficient
+    when computing for many agents at once.
+    """
     if not agent_ids:
         return {}
-    marks = ",".join("?" * len(agent_ids))
-    rows = conn.execute(
-        _AGENT_LIST_SQL + f"WHERE a.id IN ({marks})",
-        agent_ids,
-    ).fetchall()
+    if len(agent_ids) <= _SMALL_BATCH_THRESHOLD:
+        marks = ",".join("?" * len(agent_ids))
+        sql = _AGENT_LIST_SQL_SMALL.format(marks=marks)
+        rows = conn.execute(sql, agent_ids).fetchall()
+    else:
+        marks = ",".join("?" * len(agent_ids))
+        rows = conn.execute(
+            _AGENT_LIST_SQL + f"WHERE a.id IN ({marks})",
+            agent_ids,
+        ).fetchall()
     return {r["id"]: dict(r) for r in rows}
 
 
