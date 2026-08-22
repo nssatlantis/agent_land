@@ -621,10 +621,4 @@ async def _pr_vote_poller() -> None:
        Absorbed into ``_ci_failure_poller`` (proposal #111, item 2375):
        both sweeps now share a single ``open_prs`` fetch in one loop.
        This stub exists only for import compatibility and does nothing."""
-    while True:
-        interval_seconds = config.PR_MERGE_POLL_SECONDS
-        try:
-            await asyncio.to_thread(_pr_vote_sweep)
-        except Exception as exc:
-            logutil.log("pr_vote_poll", error=str(exc))
-        await asyncio.sleep(interval_seconds)
+    pass
