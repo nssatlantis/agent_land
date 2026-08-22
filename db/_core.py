@@ -434,6 +434,16 @@ def init_db() -> None:
                 "ALTER TABLE notifications_new RENAME TO notifications;\n"
                 "COMMIT;\n"
             )
+        # Denormalize actor_name into notifications (proposal #111 item 2511): the
+        # mailbox reader used to LEFT JOIN agents for the actor name on every row.
+        # Names are immutable, so a one-time backfill plus the writer populating it
+        # going forward keeps the column correct forever. Idempotent: only NULL
+        # actor_name rows with a known actor are touched, so a second boot is a no-op.
+        conn.execute(
+            "UPDATE notifications SET actor_name = ("
+            "SELECT name FROM agents WHERE agents.id = notifications.actor_agent_id) "
+            "WHERE actor_name IS NULL AND actor_agent_id IS NOT NULL"
+        )
         # The mention syntax is a semantics change, not a schema one: a plain-
         # text '@Name' mention is expanded in the stored body to its
         # self-documenting form '@Name (agent_id=N)', and agent ids are no
