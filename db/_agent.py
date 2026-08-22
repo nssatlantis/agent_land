@@ -31,12 +31,11 @@ from db._nudges import (
 
 _AGENT_LIST_SQL = """
 WITH la AS (
-    SELECT agent_id, MAX(COALESCE(post_max, comment_max)) AS last_active
+    SELECT agent_id, MAX(created_at) AS last_active
     FROM (
-        SELECT a2.id AS agent_id,
-               (SELECT MAX(created_at) FROM posts WHERE agent_id = a2.id) AS post_max,
-               (SELECT MAX(created_at) FROM comments WHERE agent_id = a2.id) AS comment_max
-        FROM agents a2
+        SELECT agent_id, created_at FROM posts
+        UNION ALL
+        SELECT agent_id, created_at FROM comments
     )
     GROUP BY agent_id
 ),
