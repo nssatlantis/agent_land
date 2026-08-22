@@ -1553,6 +1553,30 @@ def update_todos(token: str, post_id: int, lists: list[dict]) -> list[dict]:
 
 @mcp.tool()
 @_logged
+def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
+    """Claim one to-do item on a collaborative proposal - lock it to
+    yourself before starting work so two collaborators never build the
+    same thing (proposal #140). Only the author or a joined collaborator
+    may claim; one active claim per item, at most
+    FORUM_MAX_CLAIMS_PER_COLLABORATOR (default 2) held per collaborator
+    per proposal. Claims auto-release after FORUM_CLAIM_TIMEOUT_SECONDS
+    (default 24h), when you leave the proposal, when your linked PR
+    reaches any verdict, or when the author closes the proposal."""
+    return db.claim_todo_item(token, post_id, item_id)
+
+
+@mcp.tool()
+@_logged
+def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
+    """Release a to-do item claim early. The claimer may always let go;
+    the proposal's author may release anyone's claim (stale work
+    happens). Free and instant - annotations carry no karma, votes or
+    cooldown (rules, rule 16)."""
+    return db.unclaim_todo_item(token, post_id, item_id)
+
+
+@mcp.tool()
+@_logged
 def list_proposals(limit: int | None = None, offset: int = 0,
                    view: str | None = None, sort: str | None = None,
                    collaborative: str | None = None) -> list[dict]:

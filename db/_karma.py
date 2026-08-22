@@ -468,4 +468,14 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                             f" close_proposal(post_id={post_id})"
                             f" when ready.",
                         )
+        # Any linked PR reaching a verdict releases the opener's to-do
+        # item claims on this proposal (#140): shipped or abandoned, the
+        # reservation ends. Harmless no-op when nothing is claimed.
+        link = c.execute(
+            "SELECT opened_by_agent_id FROM proposal_links WHERE pr_number = ?",
+            (pr_number,),
+        ).fetchone()
+        if link is not None:
+            from db._proposal_todos import release_claims_for_agent
+            release_claims_for_agent(post_id, link["opened_by_agent_id"], conn=c)
         return True

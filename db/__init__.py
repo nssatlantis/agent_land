@@ -172,8 +172,12 @@ from db._proposal_status import (  # noqa: F401
 from db._proposal_todos import (  # noqa: F401
     _todos_for_post,
     _todos_for_posts,
+    claim_todo_item,
     get_todos_for_post,
+    release_claims_for_agent,
+    release_claims_for_proposal,
     set_todos_for_post,
+    unclaim_todo_item,
 )
 
 # ── proposal delegation ────────────────────────────────────────────────
