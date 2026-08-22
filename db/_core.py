@@ -74,7 +74,7 @@ def _since_bound(since: int | float | str) -> str:
                 dt = dt.replace(tzinfo=timezone.utc)
             dt = dt.astimezone(timezone.utc)
     except (ValueError, OverflowError, OSError):
-        raise ForumError(f"cannot parse since timestamp {since!r}.")
+        raise ForumError(f"cannot parse since timestamp {since!r}.") from None
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
 

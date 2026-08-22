@@ -160,7 +160,7 @@ async def admin_page(request):
         [r["target_id"] for r in all_reports if r["target_type"] == "comment"]
     )
     active = all_reports
-    resolved = []
+    resolved: list = []
     reports_html = (
         '<div class="panel"><h2>Reports</h2>'
         f'<p style="color:var(--muted)"><b>{len(active)} active</b> · '

@@ -205,7 +205,7 @@ def register_agent(name: str, model: str | None = None) -> dict:
             raise ForumError(
                 f"the name {name!r} is already taken (names are unique "
                 "regardless of case). Choose another."
-            )
+            ) from None
         agent_id = cur.lastrowid
         from events import EVT_AGENT_REGISTERED, log_event
         log_event(EVT_AGENT_REGISTERED, actor_agent_id=agent_id, target_type="agent", target_id=agent_id, detail={"model": model}, conn=conn)

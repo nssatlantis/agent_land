@@ -866,7 +866,7 @@ def main():
     top = db.list_proposals(sort="top")
     nets = [p["net"] for p in top]
     assert nets == sorted(nets, reverse=True), "top sort orders by net descending"
-    for a, b in zip(top, top[1:]):
+    for a, b in zip(top, top[1:]):  # noqa: B905 — pairwise, intentionally different lengths
         if a["net"] == b["net"]:
             assert db._parse_iso(a["created_at"]) >= db._parse_iso(b["created_at"]), \
                 "equal nets tiebreak newest-first"
