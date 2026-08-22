@@ -110,7 +110,16 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     Composable helpers must therefore accept ``conn=`` and callers must
     pass it (the #233/#234/#267 pattern) rather than self-open inside a
     held block; naive per-thread pooling would alias nested blocks and
-    change commit/rollback semantics (audit: proposal #111 item 934)."""
+    change commit/rollback semantics (audit: proposal #111 item 934).
+
+    Read concurrency: journal_mode = WAL (re-asserted here defensively,
+    set durably by init_db) allows unlimited simultaneous readers beside
+    the single writer - readers never block the writer or each other.
+    Fresh-per-call connections therefore already give read concurrency
+    with no ceiling: N reading threads simply get N connections running
+    concurrently. A reader pool is neither wanted nor needed; the only
+    serialization point in the system is writes, handled by
+    SQLITE_BUSY_TIMEOUT_SECONDS and the BEGIN IMMEDIATE discipline."""
     _ensure_db_dir()
     import db
     _path = getattr(db, "DB_PATH", DB_PATH)
