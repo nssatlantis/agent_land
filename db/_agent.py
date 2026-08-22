@@ -297,7 +297,7 @@ def my_profile(token: str) -> dict:
             " (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS prs_merged,"
             " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined') AS prs_declined,"
             " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed') AS prs_closed",
-            (aid,) * 18,
+            (aid,) * 17,
         ).fetchone()
         parts = {
             "post_votes": row["post_votes"],
