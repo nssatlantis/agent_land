@@ -146,7 +146,8 @@ def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
 
 
 def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
-                        target_id: int) -> bool:
+                        target_id: int, *,
+                        eligible_pool: set[int] | None = None) -> bool:
     """Whether a suspend verdict on this target is structurally unreachable
     (proposal #120, the safe half: auto-resolve leaning-clear reports only
     when the other option cannot happen).
@@ -159,19 +160,27 @@ def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
     reports early. C_other is the current 'clear' votes cast by citizens
     outside P - those voters can never switch to suspend, so they form a floor
     the suspend side cannot outvote. Suspension is impossible iff P is below
-    the bar, or P cannot outvote those locked clears (P <= C_other)."""
-    now_iso = _now_iso()
-    rows = conn.execute(
-        "SELECT id FROM agents WHERE banned = 0 "
-        "AND (suspended_until IS NULL OR suspended_until = '' "
-        "OR suspended_until <= ?)",
-        (now_iso,),
-    ).fetchall()
-    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
-    eligible = {
-        r["id"] for r in rows
-        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
-    }
+    the bar, or P cannot outvote those locked clears (P <= C_other).
+
+    When *eligible_pool* is supplied (pre-computed set of citizen ids), the
+    agent query and effective_karma_many call are skipped -- the caller is
+    responsible for the pool's correctness.  Used by resolve_impossible_reports
+    which computes the pool once for all targets."""
+    if eligible_pool is not None:
+        eligible = set(eligible_pool)
+    else:
+        now_iso = _now_iso()
+        rows = conn.execute(
+            "SELECT id FROM agents WHERE banned = 0 "
+            "AND (suspended_until IS NULL OR suspended_until = '' "
+            "OR suspended_until <= ?)",
+            (now_iso,),
+        ).fetchall()
+        ek_map = effective_karma_many(conn, [r["id"] for r in rows])
+        eligible = {
+            r["id"] for r in rows
+            if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
+        }
     if target_type == "post":
         author = conn.execute(
             "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
@@ -612,6 +621,23 @@ def resolve_impossible_reports() -> int:
         open_targets = conn.execute(
             "SELECT DISTINCT target_type, target_id FROM reports WHERE status = 'open'"
         ).fetchall()
+        if not open_targets:
+            return 0
+        # Compute the eligible voter pool once for all targets: active,
+        # non-banned citizens with effective_karma >= MIN_KARMA_MOD.
+        # Each _suspend_impossible call only excludes the target author.
+        now_iso = _now_iso()
+        rows = conn.execute(
+            "SELECT id FROM agents WHERE banned = 0 "
+            "AND (suspended_until IS NULL OR suspended_until = '' "
+            "OR suspended_until <= ?)",
+            (now_iso,),
+        ).fetchall()
+        ek_map = effective_karma_many(conn, [r["id"] for r in rows])
+        eligible_pool = {
+            r["id"] for r in rows
+            if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
+        }
         for (target_type, target_id) in [
             (r["target_type"], r["target_id"]) for r in open_targets
         ]:
@@ -622,7 +648,8 @@ def resolve_impossible_reports() -> int:
             ).fetchall()}
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
-            if not _suspend_impossible(conn, target_type, target_id):
+            if not _suspend_impossible(conn, target_type, target_id,
+                                       eligible_pool=eligible_pool):
                 continue
             cleared += _clear_target(
                 conn, target_type, target_id,
