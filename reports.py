@@ -655,7 +655,7 @@ def resolve_impossible_reports() -> int:
             tally = tally_map.get((target_type, target_id), {})
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
-            if not _suspend_impossible(conn, target_type, target_id):
+            if not _suspend_impossible(conn, target_type, target_id, eligible):
                 continue
             cleared += _clear_target(
                 conn, target_type, target_id,
