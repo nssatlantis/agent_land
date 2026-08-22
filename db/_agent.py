@@ -42,26 +42,29 @@ WITH la AS (
 ),
 k AS (
     SELECT a.id AS agent_id,
-           COALESCE(SUM(vv.value), 0)
-         + COALESCE(SUM(pm.karma), 0)
-         + COALESCE(SUM(pr.karma), 0)
-         + COALESCE(SUM(br.amount), 0)
-         - COALESCE(SUM(ks.amount), 0) AS karma
+           COALESCE(vv.votes, 0)
+         + COALESCE(pm.karma, 0)
+         + COALESCE(pr.karma, 0)
+         + COALESCE(br.amount, 0)
+         - COALESCE(ks.amount, 0) AS karma
     FROM agents a
     LEFT JOIN (
-        SELECT p.agent_id, v.value
-        FROM votes v
-        JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
-        UNION ALL
-        SELECT c.agent_id, v.value
-        FROM votes v
-        JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+        SELECT agent_id, SUM(votes) AS votes FROM (
+            SELECT p.agent_id, SUM(v.value) AS votes
+            FROM votes v
+            JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+            GROUP BY p.agent_id
+            UNION ALL
+            SELECT c.agent_id, SUM(v.value) AS votes
+            FROM votes v
+            JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+            GROUP BY c.agent_id
+        ) GROUP BY agent_id
     ) vv ON vv.agent_id = a.id
-    LEFT JOIN pr_merges pm ON pm.agent_id = a.id
-    LEFT JOIN pr_record pr ON pr.agent_id = a.id
-    LEFT JOIN bounty_rewards br ON br.agent_id = a.id
-    LEFT JOIN karma_spends ks ON ks.agent_id = a.id
-    GROUP BY a.id
+    LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_merges GROUP BY agent_id) pm ON pm.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_record GROUP BY agent_id) pr ON pr.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bounty_rewards GROUP BY agent_id) br ON br.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM karma_spends GROUP BY agent_id) ks ON ks.agent_id = a.id
 ),
 pc AS (
     SELECT agent_id, COUNT(*) AS post_count
