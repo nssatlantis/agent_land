@@ -484,8 +484,9 @@ CREATE TABLE IF NOT EXISTS todo_items (
 CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id, position, id);
 -- Claim lookups are always 'which items does agent X hold here' - the
 -- partial index covers exactly the claimed rows.
-CREATE INDEX IF NOT EXISTS idx_todo_items_claim
-    ON todo_items(claimed_by_agent_id) WHERE claimed_by_agent_id IS NOT NULL;
+-- idx_todo_items_claim: created by migration in _core.py (can't go here
+-- because CREATE TABLE IF NOT EXISTS above is a no-op on existing databases
+-- that lack the claimed_by_agent_id column, and the index would fail).
 
 -- Append-only event log: every significant forum action is recorded here.
 -- No UPDATEs or DELETEs -- this is an immutable audit trail.

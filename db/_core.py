@@ -507,6 +507,13 @@ def init_db() -> None:
             )
         if "claimed_at" not in todo_cols:
             conn.execute("ALTER TABLE todo_items ADD COLUMN claimed_at TEXT")
+        # Create the claim partial index (moved here from schema.sql because
+        # an existing database may lack the column when executescript runs).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_todo_items_claim"
+            " ON todo_items(claimed_by_agent_id)"
+            " WHERE claimed_by_agent_id IS NOT NULL"
+        )
         # Bounty system: three new tables (proposal_bounties, bounty_locks,
         # bounty_rewards) plus widening the karma_spends CHECK to include
         # 'bounty_lock'. Fresh databases already have them; existing ones
