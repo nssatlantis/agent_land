@@ -219,9 +219,13 @@ def test_vote_capped_once_passing():
     err = expect_error(db.vote_on_pr, AGENTS["epsilon"]["token"], pr_number, 1)
     assert "enough votes" in err.lower(), f"expected cap error, got: {err}"
 
-    # A -1 from a new voter is likewise rejected once passing.
-    err = expect_error(db.vote_on_pr, AGENTS["zeta"]["token"], pr_number, -1)
-    assert "enough votes" in err.lower(), f"expected cap error, got: {err}"
+    # A -1 from a new voter IS still allowed (oppose votes past threshold).
+    result = db.vote_on_pr(AGENTS["zeta"]["token"], pr_number, -1)
+    assert result["action"] == "cast"
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["up"] == 3
+    assert tally["down"] == 1
+    assert tally["net"] == 2
     print("  vote capped once passing: ok")
 
 
