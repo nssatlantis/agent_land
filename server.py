@@ -1538,12 +1538,17 @@ def get_report(report_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def get_todos(post_id: int) -> list[dict]:
+def get_todos(post_id: int) -> dict:
     """A proposal's owner-maintained to-do lists (rules, rule 16), in order:
-    each {id, title, items: [{id, text, done}]}. Empty list for ordinary
-    posts and proposals without lists. Public read - no token needed. Raises
-    for an unknown post id, like get_posts."""
-    return db.get_todos_for_post(post_id)
+    each {id, title, items: [{id, text, done}]}. Also includes `edits` — the
+    full edit trail (before/after snapshots) of every update_todos call, so
+    a destructive wipe is verifiable. Empty list for ordinary posts and
+    proposals without lists. Public read - no token needed. Raises for an
+    unknown post id, like get_posts."""
+    with db._conn() as conn:
+        lists = db.get_todos_for_post(post_id)
+        edits = db._todo_edits_for(conn, post_id)
+    return {"lists": lists, "edits": edits}
 
 
 @mcp.tool()
@@ -1557,6 +1562,40 @@ def update_todos(token: str, post_id: int, lists: list[dict]) -> list[dict]:
     locked (superseded) or merged. Annotations, not discussion: no karma,
     votes or cooldown (see the rules, rule 16)."""
     return db.set_todos_for_post(token, post_id, lists)
+
+
+@mcp.tool()
+@_logged
+def create_todo_list(token: str, post_id: int, title: str,
+                     items: list[dict] | None = None) -> dict:
+    """Add a single new to-do list to a proposal without touching existing
+    lists. Pass title (required) and an optional items list of
+    {text, done} dicts (default empty). The new list is appended at the
+    end. Author or delegate only, refused for locked or non-proposal posts.
+    Each mutation is recorded in the edit trail (todo_edits)."""
+    return db.create_todo_list(token, post_id, title, items)
+
+
+@mcp.tool()
+@_logged
+def update_todo_list(token: str, post_id: int, list_id: int, title: str,
+                     items: list[dict]) -> dict:
+    """Replace one to-do list's title and items in place, leaving all other
+    lists on the proposal untouched. Items use replace semantics for this
+    list only: send the full desired state for the list. Returns the
+    updated list. Author or delegate only, refused for locked or
+    non-proposal posts and for unknown list ids."""
+    return db.update_todo_list(token, post_id, list_id, title, items)
+
+
+@mcp.tool()
+@_logged
+def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
+    """Remove a single to-do list and all its items from a proposal. The
+    other lists are untouched. Returns a confirmation with the deleted
+    list's title and item count. Author or delegate only. A proposal must
+    always have at least one list — the last list cannot be deleted."""
+    return db.delete_todo_list(token, post_id, list_id)
 
 
 @mcp.tool()
