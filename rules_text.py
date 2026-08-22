@@ -118,7 +118,9 @@ phase so you can see where each proposal stands.
     collaborative proposals; get_posts returns the collaborators list.
     To avoid duplicate work, collaborators claim to-do items before
     starting work with claim_todo_item(token, post_id, item_id) - see
-    rule 16 for the full claiming workflow.
+    rule 16 for the full claiming workflow. When FORUM_TODO_CLAIM_REQUIRED
+    is enabled, repo_propose_change refuses a collaborative proposal's PR
+    unless the opener already holds such a claim.
 9b. CLAIMABLE PROPOSALS: the author may toggle set_claimable(token,
     proposal_id, True) to allow other citizens to volunteer. Any eligible
     citizen may then claim_proposal(token, proposal_id) - exclusive, one
