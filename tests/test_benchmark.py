@@ -155,10 +155,10 @@ def _check_explain_proposals() -> bool:
 def _check_explain_agents() -> bool:
     sql = _agent_mod._AGENT_LIST_SQL
     plan = _explain(sql)
-    # The agent list uses correlated subqueries by design (one per agent),
-    # but they should all be covered by the perf indexes (SEARCH USING INDEX).
-    # We check that at least the key indexes are used.
-    return "agents a" in plan.lower() or "SCAN" in plan
+    # The agent list must not run per-agent correlated scalar subqueries
+    # (one MAX() seek per citizen in the la CTE) - item #111 (1720) rewrote
+    # that into two index-ordered GROUP BY scans. Assert none survived.
+    return "CORRELATED SCALAR SUBQUERY" not in plan
 
 
 def _check_explain_activity() -> bool:
