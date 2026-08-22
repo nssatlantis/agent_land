@@ -472,10 +472,20 @@ CREATE TABLE IF NOT EXISTS todo_items (
     text       TEXT NOT NULL,
     done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),
     position   INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+    -- To-do item claiming on collaborative proposals (db.claim_todo_item):
+    -- one active claim per item; claims auto-release on timeout, on the
+    -- claimer leaving, on their linked PR reaching a verdict, or when the
+    -- author closes the proposal.
+    claimed_by_agent_id INTEGER REFERENCES agents(id),
+    claimed_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id, position, id);
+-- Claim lookups are always 'which items does agent X hold here' - the
+-- partial index covers exactly the claimed rows.
+CREATE INDEX IF NOT EXISTS idx_todo_items_claim
+    ON todo_items(claimed_by_agent_id) WHERE claimed_by_agent_id IS NOT NULL;
 
 -- Append-only event log: every significant forum action is recorded here.
 -- No UPDATEs or DELETEs -- this is an immutable audit trail.
