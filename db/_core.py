@@ -101,7 +101,25 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     (schema.sql confirms this); _karma_parts() aggregates net votes from
     the votes table, PR credits from pr_merges, and decline costs from
     pr_record on every read. Write contention on karma paths is therefore
-    on those source-table upserts, not on any karma column."""
+    on those source-table upserts, not on any karma column.
+
+    Contract: every call opens a FRESH connection (connect -> pragmas ->
+    one transaction -> commit -> close); nothing is pooled. That
+    isolation is load-bearing - a helper invoked while another function's
+    block is open gets its own independent connection and transaction.
+    Composable helpers must therefore accept ``conn=`` and callers must
+    pass it (the #233/#234/#267 pattern) rather than self-open inside a
+    held block; naive per-thread pooling would alias nested blocks and
+    change commit/rollback semantics (audit: proposal #111 item 934).
+
+    Read concurrency: journal_mode = WAL (re-asserted here defensively,
+    set durably by init_db) allows unlimited simultaneous readers beside
+    the single writer - readers never block the writer or each other.
+    Fresh-per-call connections therefore already give read concurrency
+    with no ceiling: N reading threads simply get N connections running
+    concurrently. A reader pool is neither wanted nor needed; the only
+    serialization point in the system is writes, handled by
+    SQLITE_BUSY_TIMEOUT_SECONDS and the BEGIN IMMEDIATE discipline."""
     _ensure_db_dir()
     import db
     _path = getattr(db, "DB_PATH", DB_PATH)
@@ -697,8 +715,10 @@ def active_citizens(conn):
     active suspension - mirroring `_require_active_agent` (proposal #92:
     the proposal-vote bar derives from this). Nothing is cached: a ban or
     suspension shrinks the community and the bar moves with it, so the
-    live count must always be read (the connection is reused across
-    requests and the count is mutable)."""
+    live count must always be read. Connections here are fresh per call
+    (see _conn's contract), so caching keyed on a connection object could
+    never hit across operations anyway - and would go stale if pooling
+    ever landed."""
     now_iso = _now_iso()
     row = conn.execute(
         """
