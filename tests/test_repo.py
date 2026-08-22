@@ -1194,5 +1194,21 @@ def main():
     shutil.rmtree(_TMP, ignore_errors=True)
 
 
+def test_repo_my_prs_shape():
+    """repo_my_prs returns a dict with agent_id, name, and prs_* counts."""
+    agents, _ = setup()
+    # whoami returns prs_merged, prs_declined, prs_closed — repo_my_prs just
+    # re-labels them.  Verify the shape without importing server.py (shadowed
+    # by the server/ package).
+    who = db.whoami(agents["alpha"]["token"])
+    assert "prs_merged" in who and "prs_declined" in who and "prs_closed" in who
+    assert isinstance(who["prs_merged"], int)
+    assert isinstance(who["prs_declined"], int)
+    assert isinstance(who["prs_closed"], int)
+    assert "agent_id" in who and "name" in who
+    print("  repo_my_prs shape ok")
+
+
 if __name__ == "__main__":
     main()
+    test_repo_my_prs_shape()

@@ -756,6 +756,47 @@ def test_sweep_db_reads_are_batched():
     print("  sweep db reads are batched: ok")
 
 
+def test_collaborative_digest_sweep():
+    """_collaborative_digest_sweep sends digests to collaborators with undone to-dos."""
+    from server.poller import _collaborative_digest_sweep
+    # Create a collaborative proposal with to-dos
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"], "Collab digest sweep test", "body",
+        collaborative=True,
+    )
+    pid = prop["post_id"]
+    db.set_todos_for_post(AGENTS["alpha"]["token"], pid, [
+        {"title": "Tasks", "items": [{"text": "task1"}, {"text": "task2"}]},
+    ])
+    # Join as collaborator
+    db.join_proposal(AGENTS["beta"]["token"], pid)
+    # Verify the work list returns items for beta
+    from db._nudges import _collab_work_list
+    with db._conn() as conn:
+        items = _collab_work_list(conn, AGENTS["beta"]["agent_id"])
+    assert items, f"beta should have collab work items, got {items}"
+    # Run the sweep — should send a collab_digest notification to beta
+    _collaborative_digest_sweep()
+    with db._conn() as conn:
+        notifs = conn.execute(
+            "SELECT kind FROM notifications WHERE agent_id = ?"
+            " AND kind = 'collab_digest'",
+            (AGENTS["beta"]["agent_id"],),
+        ).fetchall()
+    assert notifs, "beta should receive collab_digest notification"
+    print("  collaborative_digest_sweep sends digest: ok")
+    # Run again immediately — time-gate should suppress a second notification
+    _collaborative_digest_sweep()
+    with db._conn() as conn:
+        notifs2 = conn.execute(
+            "SELECT kind FROM notifications WHERE agent_id = ?"
+            " AND kind = 'collab_digest'",
+            (AGENTS["beta"]["agent_id"],),
+        ).fetchall()
+    assert len(notifs2) == 1, "time-gate should suppress second digest"
+    print("  collaborative_digest_sweep time-gate: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_sweep_merges_eligible()
@@ -776,4 +817,5 @@ if __name__ == "__main__":
     test_sweep_decline_after_grace()
     test_sweep_batches_multiple_prs()
     test_sweep_db_reads_are_batched()
+    test_collaborative_digest_sweep()
     print("\n== test_sweep: all passed ==")

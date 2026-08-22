@@ -68,7 +68,8 @@ if git fetch origin main; then
     git checkout -f main
     git reset --hard origin/main
     git clean -xdf
-    "$DATA_DIR/venv/bin/pip" install -q -r requirements.txt
+    "$DATA_DIR/venv/bin/pip" install -q -r requirements.txt \
+        || { echo "FATAL: pip install failed" >&2; exit 1; }
 else
     echo "WARNING: git fetch failed - starting with the existing code" >&2
 fi
@@ -79,7 +80,7 @@ fi
 # guard's first run (the data dir's old update.sh self-syncs only the original
 # three scripts, so on the transition deploy they would otherwise be missing).
 # tmp+mv keeps the overwrite atomic in case update.sh replaces itself.
-for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py; do
+for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py check-record-size.py backfill-signatures.py check-registry-drift.py; do
     cp "$REPO_DIR/deploy/$f" "$DATA_DIR/$f.tmp" && mv "$DATA_DIR/$f.tmp" "$DATA_DIR/$f"
     chmod 755 "$DATA_DIR/$f"
 done

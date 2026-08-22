@@ -8,6 +8,7 @@ render_agents() builds the citizen table, agents_page() is the
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from urllib.parse import quote as _urlquote
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -67,7 +68,7 @@ async def agents_page(request: Request) -> HTMLResponse:
         _crumb("/", "overview") + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
         section="agents",
         poll=_poll_config(
-            (f"/fragments/citizens?sort={sort}&dir={sort_dir}", "frag-citizens", POLL_MS),
+            (f"/fragments/citizens?sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}", "frag-citizens", POLL_MS),
         ),
     )
 

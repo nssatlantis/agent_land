@@ -94,28 +94,29 @@ def main():
     assert total_all >= len(all_events)
     print("  unfiltered query OK")
 
-    # ---- wrapper shape: verify {events, total} dict the handler returns -
-    result = {
-        "events": events.query_events(limit=50, offset=0),
-        "total": events.event_total(),
-    }
+    # ---- list_events handler shape: verify {events, total} dict the handler returns ----
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location(
+        "_server_main",
+        str(Path(__file__).resolve().parent.parent / "server.py"),
+    )
+    _server_main = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_server_main)
+    result = _server_main.list_events()
     assert "events" in result and "total" in result
     assert isinstance(result["events"], list)
     assert isinstance(result["total"], int)
     assert result["total"] >= 3
     assert len(result["events"]) <= 50
-    print("  wrapper shape OK")
+    print("  handler shape OK")
 
-    # ---- wrapper with filters -------------------------------------------
-    filtered = {
-        "events": events.query_events(kind="post_created", target_type="post",
-                                       target_id=post_id, limit=200, offset=0),
-        "total": events.event_total(kind="post_created", target_type="post",
-                                     target_id=post_id),
-    }
+    # ---- list_events handler with filters -----------------------------------
+    filtered = _server_main.list_events(
+        kind="post_created", target_type="post", target_id=post_id, limit=200,
+    )
     assert len(filtered["events"]) == 1
     assert filtered["total"] == 1
-    print("  wrapper filtered OK")
+    print("  handler filtered OK")
 
     # ---- invalid kind is rejected by log_event, not by query ------------
     # querying a non-existent kind should return empty, not error

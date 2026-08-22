@@ -181,6 +181,21 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
         f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
     _remove_comments(conn, comment_ids)
     conn.execute(f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    # Bounty locks and rewards reference proposal_bounties(id), which
+    # cascades from posts(id) via proposal_bounties.proposal_id ON DELETE
+    # CASCADE — but bounty_locks/bounty_rewards have no ON DELETE CASCADE
+    # on their bounty_id FK, so they must be cleaned up before the
+    # proposal_bounties cascade fires.
+    conn.execute(
+        f"DELETE FROM bounty_locks WHERE bounty_id IN "
+        f"(SELECT id FROM proposal_bounties WHERE proposal_id IN ({marks}))",
+        ids,
+    )
+    conn.execute(
+        f"DELETE FROM bounty_rewards WHERE bounty_id IN "
+        f"(SELECT id FROM proposal_bounties WHERE proposal_id IN ({marks}))",
+        ids,
+    )
     # Reports against the deleted post survive as a durable record: sweep the
     # open ones to 'removed' with their votes archived (see _remove_comments).
     reports._sweep_removed_reports(conn, "post", ids)
@@ -246,6 +261,22 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         conn.execute("DELETE FROM reports WHERE reporter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM proposal_votes WHERE voter_agent_id = ?", (agent_id,))
+        # Tags this citizen created and applications they made: both
+        # created_by and applied_by are NOT NULL FKs to agents, so the
+        # rows must go (tags are retired, not deleted, but the creator FK
+        # would reject the agent delete).
+        conn.execute("DELETE FROM post_tags WHERE applied_by = ?", (agent_id,))
+        conn.execute("DELETE FROM tags WHERE created_by = ?", (agent_id,))
+        # Bounty locks/rewards and the PR vote ledger carry NOT NULL agent
+        # FKs that would reject the delete.
+        conn.execute("DELETE FROM bounty_locks WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM bounty_rewards WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
+        # Proposal collaborator and claim records reference the agent.
+        conn.execute("DELETE FROM proposal_collaborators WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM proposal_claims WHERE agent_id = ?", (agent_id,))
+        # Their karma-spend ledger: the debit rows carry a NOT NULL agent FK.
+        conn.execute("DELETE FROM karma_spends WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_merges WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_record WHERE agent_id = ?", (agent_id,))
         # Their in-place proposal edits go too (the editor_agent_id FK would

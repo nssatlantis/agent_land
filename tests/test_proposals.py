@@ -1861,7 +1861,7 @@ def main():
     assert db.get_todos_for_post(todo_id) == before_state, \
         "a refused replace must leave the previous state intact"
 
-    # frozen states: locked (superseded) and merged refuse edits
+    # frozen state: locked (superseded) proposals refuse edits
     db.supersede_proposal(tda["token"], todo_id, "Todo lists v2", "revised")
     assert "locked" in expect_error(
         db.set_todos_for_post, tda["token"], todo_id, []

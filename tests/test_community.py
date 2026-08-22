@@ -584,6 +584,8 @@ def main():
         agent_evts = query_events(agent_id=any_actor)
         assert all(e["actor_agent_id"] == any_actor for e in agent_evts), \
             "agent_id filter narrows to one actor"
+    else:
+        assert False, "no actor_agent_id found in post events"
     # event_total with kind filter.
     assert event_total(kind=EVT_POST_CREATED) <= event_total(), \
         "kind-filtered total is at most the grand total"

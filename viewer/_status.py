@@ -350,7 +350,7 @@ def _explain_panel_html() -> str:
             " v.target_type || ' #' || v.target_id AS text,"
             " v.target_type AS target_type,"
             " CASE WHEN v.target_type = 'post' THEN vp.title"
-            " WHEN v.target_type = 'comment' THEN substr(vc.body, 1, {preview})"
+            f" WHEN v.target_type = 'comment' THEN substr(vc.body, 1, {preview})"
             " ELSE NULL END AS preview,"
             " NULL AS proposal_kind, v.created_at AS created_at,"
             " COALESCE(vp.id, vc.post_id) AS post_id, vc.id AS comment_id"
