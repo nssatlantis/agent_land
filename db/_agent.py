@@ -21,10 +21,9 @@ from db._proposal_status import (
 from db._proposal_docket import _proposal_rows
 from db._nudges import (
     _model_nudge, _unread_mail_nudge, _report_nudge,
-    _count_active_assigned, _assigned_nudge, _idle_nudge,
+    _assigned_nudge, _idle_nudge,
     _proposal_docket, _proposal_nudge, _proposal_todo_nudge,
-    _proposals_awaiting_review, _review_nudge,
-    _open_prs_needing_vote, _pr_vote_nudge,
+    _review_nudge, _pr_vote_nudge,
     _post_nudge, _daily_nudge, _IDLE_NUDGE_KEYS,
     _collab_work_nudge, _collab_work_list,
 )
