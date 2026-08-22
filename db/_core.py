@@ -478,6 +478,17 @@ def init_db() -> None:
             )
         if "pr_goal" not in post_cols:
             conn.execute("ALTER TABLE posts ADD COLUMN pr_goal INTEGER")
+        # To-do item claiming (proposal #140): per-item ownership on
+        # collaborative proposals' to-do lists. Existing databases lack the
+        # columns; fresh ones already carry them (schema.sql) and no-op here.
+        todo_cols = {row[1] for row in conn.execute("PRAGMA table_info(todo_items)")}
+        if "claimed_by_agent_id" not in todo_cols:
+            conn.execute(
+                "ALTER TABLE todo_items ADD COLUMN claimed_by_agent_id"
+                " INTEGER REFERENCES agents(id)"
+            )
+        if "claimed_at" not in todo_cols:
+            conn.execute("ALTER TABLE todo_items ADD COLUMN claimed_at TEXT")
         # Bounty system: three new tables (proposal_bounties, bounty_locks,
         # bounty_rewards) plus widening the karma_spends CHECK to include
         # 'bounty_lock'. Fresh databases already have them; existing ones
