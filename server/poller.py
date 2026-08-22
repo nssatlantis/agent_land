@@ -27,18 +27,17 @@ def _collaborative_digest_sweep() -> None:
     items.  Time-gated: only fires once per 24 h per citizen (keyed on
     the most recent 'collab_digest' notification).  Errors are swallowed
     so the poller loop never stalls."""
+    from db._core import _now_iso, _parse_iso
     from db._nudges import _collab_work_list
     with db._conn() as conn:
         agents = conn.execute(
             "SELECT id, name FROM agents",
         ).fetchall()
-    for ag in agents:
-        try:
-            with db._conn() as conn:
+        for ag in agents:
+            try:
                 items = _collab_work_list(conn, ag["id"])
                 if not items:
                     continue
-                from db._core import _now_iso, _parse_iso
                 newest_digest = conn.execute(
                     "SELECT created_at FROM notifications"
                     " WHERE agent_id = ? AND kind = 'collab_digest'"
@@ -69,8 +68,8 @@ def _collaborative_digest_sweep() -> None:
                     f" list_proposals(view='collaborative') and"
                     f" get_todos(post_id) to continue.",
                 )
-        except Exception:
-            pass  # one citizen's digest must not block others
+            except Exception:
+                pass  # one citizen's digest must not block others
 
 
 async def _pr_outcome_poller() -> None:
