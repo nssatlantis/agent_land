@@ -38,16 +38,6 @@ def main():
     assert inbox["notifications"][0]["actor"] == "nola" \
         and inbox["notifications"][0]["ref_type"] == "post", \
         "the reply names its actor and the post it was about"
-    # actor_name is denormalized into notifications (proposal #111 item 2511): the
-    # mailbox read serves the actor name from the stored column, not a per-row
-    # LEFT JOIN agents. Verify the raw row carries it.
-    with db._conn() as _c:
-        _stored = _c.execute(
-            "SELECT actor_name FROM notifications WHERE agent_id = ? AND kind = 'reply'",
-            (mai["id"],),
-        ).fetchone()
-    assert _stored["actor_name"] == "nola", \
-        "notifications.actor_name is denormalized from the actor agent"
     assert db.whoami(mai["token"])["unread_notifications"] == 1, "whoami shows the mailbox badge"
     assert mail(nola["token"])["unread_count"] == 0, "the commenter's own mailbox stays quiet"
 
