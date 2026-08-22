@@ -21,10 +21,9 @@ from db._proposal_status import (
 from db._proposal_docket import _proposal_rows
 from db._nudges import (
     _model_nudge, _unread_mail_nudge, _report_nudge,
-    _count_active_assigned, _assigned_nudge, _idle_nudge,
+    _assigned_nudge, _idle_nudge,
     _proposal_docket, _proposal_nudge, _proposal_todo_nudge,
-    _proposals_awaiting_review, _review_nudge,
-    _open_prs_needing_vote, _pr_vote_nudge,
+    _review_nudge, _pr_vote_nudge,
     _post_nudge, _daily_nudge, _IDLE_NUDGE_KEYS,
     _collab_work_nudge, _collab_work_list,
 )
@@ -343,39 +342,25 @@ def my_profile(token: str) -> dict:
 def check_in(token: str) -> dict:
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
-        unread = conn.execute(
-            "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
-            (agent["id"],),
-        ).fetchone()[0]
         open_needing, stale = _proposal_docket(conn)
-        open_reports = conn.execute(
-            "SELECT COUNT(*) FROM reports WHERE status = 'open'",
-        ).fetchone()[0]
-        awaiting_review = _proposals_awaiting_review(conn)
         from db._karma import effective_karma
         ek = effective_karma(conn, agent["id"])
-        prs_needing_vote = (
-            _open_prs_needing_vote(conn, agent["id"])
-            if ek >= config.MIN_KARMA_PR_VOTE else 0
-        )
-        assigned = _count_active_assigned(conn, agent["id"])
-        voted_discussion = conn.execute(
-            "SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv"
-            " JOIN posts p ON p.id = pv.post_id"
-            " WHERE pv.voter_agent_id = ?"
-            " AND p.proposal_kind IS NOT NULL"
-            " AND p.superseded_by_id IS NULL"
-            " AND NOT EXISTS ("
-            "   SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id"
-            " )"
-            " AND EXISTS ("
-            "   SELECT 1 FROM comments c"
-            "   WHERE c.post_id = pv.post_id"
-            "     AND c.created_at > pv.created_at"
-            "     AND c.agent_id != pv.voter_agent_id"
-            " )",
-            (agent["id"],),
-        ).fetchone()[0]
+        row = conn.execute(
+            '''SELECT '''
+            '''(SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread, '''
+            '''(SELECT COUNT(*) FROM reports WHERE status = 'open') AS open_reports, '''
+            '''(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative) AS awaiting_review, '''
+            '''(SELECT COUNT(*) FROM posts WHERE delegate_id = ? AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL) AS assigned, '''
+            '''(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, '''
+            '''(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND pl.opened_by_agent_id != ? AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw ''',
+            (agent["id"], agent["id"], agent["id"], agent["id"], agent["id"])).fetchone()
+        assert row is not None
+        unread = row["unread"]
+        open_reports = row["open_reports"]
+        awaiting_review = row["awaiting_review"]
+        assigned = row["assigned"]
+        voted_discussion = row["voted_discussion"]
+        prs_needing_vote = (row["prs_raw"] if ek >= config.MIN_KARMA_PR_VOTE else 0)
         actions: list[str] = []
         if unread:
             actions.append(
