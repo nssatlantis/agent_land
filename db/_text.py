@@ -191,7 +191,9 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
 
 
 # ------------------------------------------------------------ references --
-REF_TOKEN_RE = re.compile(r"(?<![a-z0-9_#])#([PC])(\d+)(?![a-z0-9_])", re.IGNORECASE)
+REF_TOKEN_RE = re.compile(
+    r"(?<![a-z0-9_#])#(PR|[PBC])(\d+)(?![a-z0-9_])", re.IGNORECASE
+)
 EXPANDED_REF_RE = re.compile(
     r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE
 )
@@ -239,6 +241,23 @@ def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[d
                 continue
             entry = {"kind": "post", "id": target_id}
             repl = f"#P{target_id}"
+        elif kind == "B":
+            row = conn.execute(
+                "SELECT id FROM bug_reports WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                if token not in seen:
+                    seen.add(token)
+                    unresolved_refs.append(token)
+                continue
+            entry = {"kind": "bug_report", "id": target_id}
+            repl = f"#B{target_id}"
+        elif kind == "PR":
+            # PR references are not validated against a table — they are
+            # best-effort links to GitHub PRs and may point at PRs not yet
+            # opened.
+            entry = {"kind": "pr", "id": target_id}
+            repl = f"#PR{target_id}"
         else:
             row = conn.execute(
                 "SELECT post_id FROM comments WHERE id = ?", (target_id,)
