@@ -29,7 +29,6 @@ from tests._setup import (  # noqa: E402
 import db._agent as _agent_mod  # noqa: E402
 from db._proposal_docket import _proposal_list_sql as _plsql  # noqa: E402
 import db._aggregates as _agg_mod  # noqa: E402
-import db._proposal as _prop_mod  # noqa: E402
 
 # -- tunables ----------------------------------------------------------------
 
