@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -236,12 +237,27 @@ def _ci_failure_sweep(open_prs: list[dict],
                 list(owners),
             ).fetchall()
             state = {r["pr_number"]: (r["head_sha"], r["red_notified"]) for r in rows}
+    checks_results: dict[int, dict] = {}
+    owned_prs = [pr for pr in open_prs if owners.get(pr["number"])]
+    if owned_prs:
+        with ThreadPoolExecutor(max_workers=min(8, len(owned_prs))) as pool:
+            futures = {
+                pool.submit(checks_fn, pr["number"],
+                            _head_sha=pr.get("head_sha") or None): pr["number"]
+                for pr in owned_prs
+            }
+            for future in as_completed(futures):
+                pr_num = futures[future]
+                try:
+                    checks_results[pr_num] = future.result()
+                except Exception:
+                    pass  # per-PR GitHub failure must not block others
     notified: list[int] = []
     for pr in open_prs:
         opener = owners.get(pr["number"])
         if not opener:
             continue
-        checks = checks_fn(pr["number"], _head_sha=pr.get("head_sha") or None)
+        checks = checks_results.get(pr["number"], {})
         head_sha = checks.get("head_sha") or pr.get("head_sha") or ""
         red = checks.get("state") == "failure"
         row = state.get(pr["number"])
