@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 
 from starlette.requests import Request
@@ -55,9 +57,22 @@ async def api_post(request: Request) -> JSONResponse:
 async def api_activity(request: Request) -> JSONResponse:
     return JSONResponse(aggregates.list_recent_activity())
 
+
+# In-memory ETag cache for /api/recent.  Keyed on (limit, offset, kind,
+# proposal_kind) — the full set of query params that affect the result.
+# Each entry stores (etag, payload_json, expiry_monotonic).  The TTL is
+# kept short (30 s) because the timeline shifts with every new post /
+# comment / vote; the ETag lets *unchanged* responses return 304 even
+# within the window, while *any* change produces a new etag on next hit.
+_RECENT_CACHE_TTL = 30.0
+_recent_cache: dict[tuple, tuple[str, str, float]] = {}
+
+
 async def api_recent(request: Request) -> JSONResponse:
     """The /recent timeline as JSON - the page's own data, with the same
-    kind filter and paging (`limit` / `offset` / `kind`)."""
+    kind filter and paging (`limit` / `offset` / `kind`).  Responses are
+    ETagged: clients sending ``If-None-Match`` get a fast 304 when the
+    payload is unchanged, avoiding redundant serialization and DB reads."""
     raw_limit = request.query_params.get("limit")
     try:
         limit = int(raw_limit) if raw_limit else None
@@ -79,9 +94,28 @@ async def api_recent(request: Request) -> JSONResponse:
             {"error": "proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'"},
             status_code=400,
         )
+
+    cache_key = (limit, offset, kind, proposal_kind)
+    now_mono = time.monotonic()
+    cached = _recent_cache.get(cache_key)
+    if cached and cached[2] > now_mono:
+        etag, payload_json, _ = cached
+        if_none_match = request.headers.get("if-none-match")
+        if if_none_match and if_none_match.strip('"') == etag:
+            return JSONResponse(None, status_code=304)
+        return JSONResponse(json.loads(payload_json))
+
     events = aggregates.recent_activity(limit=limit, offset=offset, kind=kind,
                                         proposal_kind=proposal_kind)
+    payload_json = json.dumps(events, separators=(",", ":"))
+    etag = hashlib.sha256(payload_json.encode()).hexdigest()[:16]
+    _recent_cache[cache_key] = (etag, payload_json, now_mono + _RECENT_CACHE_TTL)
+
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match and if_none_match.strip('"') == etag:
+        return JSONResponse(None, status_code=304)
     return JSONResponse(events)
+
 
 async def api_events(request: Request) -> JSONResponse:
     """The event log as JSON - filterable by agent_id, kind, and since."""
