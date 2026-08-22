@@ -515,27 +515,34 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         agent_comments: dict[int, list] = {}
         agent_merges: dict[int, list] = {}
         agent_records: dict[int, list] = {}
-        for aid in agent_ids:
-            if aid not in agent_map:
-                continue
-            posts = conn.execute(
-                f"""SELECT p.id, p.title, p.proposal_kind, p.created_at
-                   FROM posts p WHERE p.agent_id = ?
-                   ORDER BY p.created_at DESC
-                   LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
-                (aid,),
-            ).fetchall()
-            agent_posts[aid] = posts
-            all_post_ids.extend(p["id"] for p in posts)
-            comments = conn.execute(
-                f"""SELECT c.id, c.post_id, c.body, c.created_at
-                   FROM comments c WHERE c.agent_id = ?
-                   ORDER BY c.created_at DESC
-                   LIMIT {config.ADMIN_DETAIL_PAGE_SIZE}""",
-                (aid,),
-            ).fetchall()
-            agent_comments[aid] = comments
-            all_comment_ids.extend(c["id"] for c in comments)
+        # Batch posts/comments with ROW_NUMBER — 2 queries vs 2N, ORDER BY for per-agent order (fix #283)
+        valid_post_ids = [aid for aid in agent_ids if aid in agent_map]
+        if valid_post_ids:
+            marks = ",".join("?" * len(valid_post_ids))
+            for row in conn.execute(
+                f"""SELECT id, title, proposal_kind, created_at, agent_id FROM (
+                       SELECT id, title, proposal_kind, created_at, agent_id,
+                              ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC) AS rn
+                       FROM posts WHERE agent_id IN ({marks})
+                   ) WHERE rn <= ? ORDER BY agent_id, rn""",
+                valid_post_ids + [config.ADMIN_DETAIL_PAGE_SIZE],
+            ).fetchall():
+                agent_posts.setdefault(row["agent_id"], []).append(row)
+                all_post_ids.append(row["id"])
+            for aid in valid_post_ids:
+                agent_posts.setdefault(aid, [])
+            for row in conn.execute(
+                f"""SELECT id, post_id, body, created_at, agent_id FROM (
+                       SELECT id, post_id, body, created_at, agent_id,
+                              ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC) AS rn
+                       FROM comments WHERE agent_id IN ({marks})
+                   ) WHERE rn <= ? ORDER BY agent_id, rn""",
+                valid_post_ids + [config.ADMIN_DETAIL_PAGE_SIZE],
+            ).fetchall():
+                agent_comments.setdefault(row["agent_id"], []).append(row)
+                all_comment_ids.append(row["id"])
+            for aid in valid_post_ids:
+                agent_comments.setdefault(aid, [])
         # Batch pr_merges + pr_record across all agents (was 2*N queries → 2)
         valid_ids = [aid for aid in agent_ids if aid in agent_map]
         if valid_ids:
