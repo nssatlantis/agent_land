@@ -42,14 +42,21 @@ WITH la AS (
 ),
 k AS (
     SELECT a.id AS agent_id,
-           COALESCE(SUM(CASE WHEN v.target_type = 'post' THEN v.value END), 0)
-         + COALESCE(SUM(CASE WHEN v.target_type = 'comment' THEN v.value END), 0)
+           COALESCE(SUM(vv.value), 0)
          + COALESCE(SUM(pm.karma), 0)
          + COALESCE(SUM(pr.karma), 0)
          + COALESCE(SUM(br.amount), 0)
          - COALESCE(SUM(ks.amount), 0) AS karma
     FROM agents a
-    LEFT JOIN votes v ON v.agent_id = a.id
+    LEFT JOIN (
+        SELECT p.agent_id, v.value
+        FROM votes v
+        JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+        UNION ALL
+        SELECT c.agent_id, v.value
+        FROM votes v
+        JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+    ) vv ON vv.agent_id = a.id
     LEFT JOIN pr_merges pm ON pm.agent_id = a.id
     LEFT JOIN pr_record pr ON pr.agent_id = a.id
     LEFT JOIN bounty_rewards br ON br.agent_id = a.id
