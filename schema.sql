@@ -390,6 +390,9 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifications_agent
     ON notifications(agent_id, read_at);
 
+CREATE INDEX IF NOT EXISTS idx_notifications_agent_read_created
+    ON notifications(agent_id, read_at, created_at);
+
 -- The mailbox read is usually `agent_id = ? AND read_at IS NULL ORDER BY
 -- created_at DESC` (whoami's badge, get_notifications) - a partial index
 -- covers that shape directly: the row filter is baked into the index, so

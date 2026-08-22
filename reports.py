@@ -145,8 +145,28 @@ def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
     return len(open_on_target)
 
 
+def _eligible_voters(conn: sqlite3.Connection) -> set[int]:
+    """Active citizens eligible to cast a suspend vote (for _suspend_impossible).
+    One batch fetch: active agents + effective_karma_many, filtered by MIN_KARMA_MOD.
+    Extracted so resolve_impossible_reports can compute the pool once for N targets."""
+    now_iso = _now_iso()
+    rows = conn.execute(
+        "SELECT id FROM agents WHERE banned = 0 "
+        "AND (suspended_until IS NULL OR suspended_until = '' "
+        "OR suspended_until <= ?)",
+        (now_iso,),
+    ).fetchall()
+    if not rows:
+        return set()
+    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
+    return {
+        r["id"] for r in rows
+        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
+    }
+
+
 def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
-                        target_id: int) -> bool:
+                        target_id: int, eligible: set[int] | None = None) -> bool:
     """Whether a suspend verdict on this target is structurally unreachable
     (proposal #120, the safe half: auto-resolve leaning-clear reports only
     when the other option cannot happen).
@@ -160,18 +180,10 @@ def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
     outside P - those voters can never switch to suspend, so they form a floor
     the suspend side cannot outvote. Suspension is impossible iff P is below
     the bar, or P cannot outvote those locked clears (P <= C_other)."""
-    now_iso = _now_iso()
-    rows = conn.execute(
-        "SELECT id FROM agents WHERE banned = 0 "
-        "AND (suspended_until IS NULL OR suspended_until = '' "
-        "OR suspended_until <= ?)",
-        (now_iso,),
-    ).fetchall()
-    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
-    eligible = {
-        r["id"] for r in rows
-        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
-    }
+    if eligible is None:
+        eligible = _eligible_voters(conn)
+    else:
+        eligible = set(eligible)  # copy so discard doesn't mutate caller's set
     if target_type == "post":
         author = conn.execute(
             "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
@@ -612,6 +624,9 @@ def resolve_impossible_reports() -> int:
         open_targets = conn.execute(
             "SELECT DISTINCT target_type, target_id FROM reports WHERE status = 'open'"
         ).fetchall()
+        if not open_targets:
+            return 0
+        eligible_pool = _eligible_voters(conn)
         for (target_type, target_id) in [
             (r["target_type"], r["target_id"]) for r in open_targets
         ]:
@@ -622,7 +637,7 @@ def resolve_impossible_reports() -> int:
             ).fetchall()}
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
-            if not _suspend_impossible(conn, target_type, target_id):
+            if not _suspend_impossible(conn, target_type, target_id, eligible_pool):
                 continue
             cleared += _clear_target(
                 conn, target_type, target_id,
