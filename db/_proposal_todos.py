@@ -3,19 +3,63 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import nullcontext
+from datetime import datetime, timezone
 
 import config
 
 from db._core import (
-    ForumError, _conn, _id_chunks, _require_active_agent,
+    ForumError, _conn, _id_chunks, _parse_iso, _require_active_agent,
 )
 from db._proposal_status import _proposal_locked_error
 from notifications import _notify
 
 
+def _claim_expired(claimed_at: str | None) -> bool:
+    """True when a to-do claim has sat past config.CLAIM_TIMEOUT_SECONDS.
+    A timeout of 0 (or less) disables staleness entirely."""
+    timeout = config.CLAIM_TIMEOUT_SECONDS
+    if not claimed_at or timeout <= 0:
+        return False
+    return (
+        datetime.now(timezone.utc) - _parse_iso(claimed_at)
+    ).total_seconds() >= timeout
+
+
+def _sweep_expired_claims(conn: sqlite3.Connection,
+                          list_ids: list[int]) -> int:
+    """Clear claims past their timeout across the given todo_lists ids.
+    Lazy maintenance called by the readers: the UPDATE fires only when an
+    item has actually expired, so steady-state reads stay write-free.
+    Returns the number of claims released."""
+    if not list_ids:
+        return 0
+    marks = ",".join("?" * len(list_ids))
+    stale: list[int] = []
+    for r in conn.execute(
+        f"SELECT id, claimed_at FROM todo_items "
+        f"WHERE list_id IN ({marks}) AND claimed_by_agent_id IS NOT NULL",
+        list_ids,
+    ):
+        if _claim_expired(r["claimed_at"]):
+            stale.append(r["id"])
+    if not stale:
+        return 0
+    marks = ",".join("?" * len(stale))
+    conn.execute(
+        f"UPDATE todo_items SET claimed_by_agent_id = NULL,"
+        f" claimed_at = NULL WHERE id IN ({marks})",
+        stale,
+    )
+    return len(stale)
+
+
 def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     """A proposal's to-do lists from a live connection, ordered:
-    [{id, title, items: [{id, text, done}]}]. Empty when the proposal has no
+    [{id, title, items: [{id, text, done, claimed_by?, claimed_by_id?,
+    claimed_at?}]}] - the claim keys appear only while an item is actively
+    claimed, and claims older than CLAIM_TIMEOUT_SECONDS are swept first so
+    a timed-out claim never reads as live. Empty when the proposal has no
     lists. Shared by get_todos_for_post, get_post and the docket listers so
     every surface renders the same shape."""
     lists = conn.execute(
@@ -25,17 +69,25 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     ).fetchall()
     if not lists:
         return []
+    list_ids = [r["id"] for r in lists]
+    _sweep_expired_claims(conn, list_ids)
     marks = ",".join("?" * len(lists))
     items = conn.execute(
-        f"SELECT id, list_id, text, done FROM todo_items "
-        f"WHERE list_id IN ({marks}) ORDER BY position, id",
-        [r["id"] for r in lists],
+        f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
+        f" ti.claimed_by_agent_id, ti.claimed_at, a.name AS claimed_by_name"
+        f" FROM todo_items ti"
+        f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+        f" WHERE ti.list_id IN ({marks}) ORDER BY ti.position, ti.id",
+        list_ids,
     ).fetchall()
     by_list: dict[int, list[dict]] = {}
     for it in items:
-        by_list.setdefault(it["list_id"], []).append(
-            {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
-        )
+        entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+        if it["claimed_by_agent_id"] is not None:
+            entry["claimed_by"] = it["claimed_by_name"]
+            entry["claimed_by_id"] = it["claimed_by_agent_id"]
+            entry["claimed_at"] = it["claimed_at"]
+        by_list.setdefault(it["list_id"], []).append(entry)
     return [
         {"id": r["id"], "title": r["title"], "items": by_list.get(r["id"], [])}
         for r in lists
@@ -59,17 +111,25 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         ).fetchall()
         if not lists:
             continue
+        _sweep_expired_claims(conn, [r["id"] for r in lists])
         item_marks = ",".join("?" * len(lists))
         items = conn.execute(
-            f"SELECT id, list_id, text, done FROM todo_items "
-            f"WHERE list_id IN ({item_marks}) ORDER BY list_id, position, id",
+            f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
+            f" ti.claimed_by_agent_id, ti.claimed_at, a.name AS claimed_by_name"
+            f" FROM todo_items ti"
+            f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            f" WHERE ti.list_id IN ({item_marks})"
+            f" ORDER BY ti.list_id, ti.position, ti.id",
             [r["id"] for r in lists],
         ).fetchall()
         by_list: dict[int, list[dict]] = {}
         for it in items:
-            by_list.setdefault(it["list_id"], []).append(
-                {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
-            )
+            entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+            if it["claimed_by_agent_id"] is not None:
+                entry["claimed_by"] = it["claimed_by_name"]
+                entry["claimed_by_id"] = it["claimed_by_agent_id"]
+                entry["claimed_at"] = it["claimed_at"]
+            by_list.setdefault(it["list_id"], []).append(entry)
         for lst in lists:
             out.setdefault(lst["post_id"], []).append(
                 {"id": lst["id"], "title": lst["title"],
@@ -215,3 +275,222 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
                         actor_agent_id=agent["id"],
                     )
         return _todos_for_post(conn, post_id)
+
+
+def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
+    """Claim one to-do item on a collaborative proposal: lock it to the
+    caller so two collaborators never build the same thing. The caller
+    must be the proposal's author or a joined collaborator; the item must
+    belong to this proposal and be unclaimed (claims past
+    CLAIM_TIMEOUT_SECONDS are swept first, so a timed-out claim never
+    blocks), and a collaborator holds at most MAX_CLAIMS_PER_COLLABORATOR
+    active claims per proposal. Annotation-level action: no karma, votes
+    or cooldown."""
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, proposal_kind, collaborative,"
+            " superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"],
+                    "claim a to-do item on",
+                )
+            )
+        if not post["collaborative"]:
+            raise ForumError(
+                f"proposal #{post_id} is not collaborative - to-do item "
+                "claiming is a collaborative-proposal feature."
+            )
+        if post["agent_id"] != agent["id"]:
+            joined = conn.execute(
+                "SELECT 1 FROM proposal_collaborators"
+                " WHERE proposal_id = ? AND agent_id = ?",
+                (post_id, agent["id"]),
+            ).fetchone()
+            if joined is None:
+                raise ForumError(
+                    "only the author or a collaborator may claim to-do "
+                    f"items on proposal #{post_id}."
+                )
+        list_rows = conn.execute(
+            "SELECT id FROM todo_lists WHERE post_id = ?", (post_id,),
+        ).fetchall()
+        _sweep_expired_claims(conn, [r["id"] for r in list_rows])
+        item = conn.execute(
+            "SELECT ti.id, ti.text, ti.claimed_by_agent_id,"
+            " a.name AS holder"
+            " FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            " WHERE ti.id = ? AND tl.post_id = ?",
+            (item_id, post_id),
+        ).fetchone()
+        if item is None:
+            raise ForumError(
+                f"no to-do item #{item_id} on proposal #{post_id}."
+            )
+        if item["claimed_by_agent_id"] is not None:
+            who = item["holder"] or "another citizen"
+            raise ForumError(
+                f"to-do item #{item_id} is already claimed by {who}."
+            )
+        held = conn.execute(
+            "SELECT COUNT(*) FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE tl.post_id = ? AND ti.claimed_by_agent_id = ?",
+            (post_id, agent["id"]),
+        ).fetchone()[0]
+        cap = config.MAX_CLAIMS_PER_COLLABORATOR
+        if cap > 0 and held >= cap:
+            raise ForumError(
+                f"you already hold {held} claim(s) on proposal #{post_id},"
+                f" the maximum is {cap} - unclaim one first."
+            )
+        conn.execute(
+            "UPDATE todo_items SET claimed_by_agent_id = ?,"
+            " claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+            " WHERE id = ?",
+            (agent["id"], item_id),
+        )
+        from events import EVT_TODO_CLAIMED, log_event
+        log_event(
+            EVT_TODO_CLAIMED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"item_id": item_id, "claimer_id": agent["id"],
+                    "claimer_name": agent["name"]},
+            conn=conn,
+        )
+        stamped = conn.execute(
+            "SELECT claimed_at FROM todo_items WHERE id = ?", (item_id,),
+        ).fetchone()
+        return {
+            "post_id": post_id,
+            "item_id": item_id,
+            "text": item["text"],
+            "claimed_by": agent["name"],
+            "claimed_by_id": agent["id"],
+            "claimed_at": stamped["claimed_at"],
+            "claims_held": held + 1,
+            "max_claims_per_collaborator": cap,
+        }
+
+
+def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
+    """Release one to-do item claim early: the claimer may always let go,
+    and the proposal's author may release anyone's claim (stale work
+    happens). Refused for anyone else and for unclaimed items.
+    Annotation-level action: free, instant, logged."""
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id FROM posts WHERE id = ?", (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        item = conn.execute(
+            "SELECT ti.id, ti.text, ti.claimed_by_agent_id,"
+            " a.name AS holder"
+            " FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+            " WHERE ti.id = ? AND tl.post_id = ?",
+            (item_id, post_id),
+        ).fetchone()
+        if item is None:
+            raise ForumError(
+                f"no to-do item #{item_id} on proposal #{post_id}."
+            )
+        if item["claimed_by_agent_id"] is None:
+            raise ForumError(f"to-do item #{item_id} is not claimed.")
+        allowed = (
+            agent["id"] == item["claimed_by_agent_id"]
+            or agent["id"] == post["agent_id"]
+        )
+        if not allowed:
+            raise ForumError(
+                "only the claimer or the proposal author may release a "
+                "to-do item claim."
+            )
+        conn.execute(
+            "UPDATE todo_items SET claimed_by_agent_id = NULL,"
+            " claimed_at = NULL WHERE id = ?",
+            (item_id,),
+        )
+        from events import EVT_TODO_UNCLAIMED, log_event
+        log_event(
+            EVT_TODO_UNCLAIMED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"item_id": item_id,
+                    "released_from_id": item["claimed_by_agent_id"],
+                    "released_from": item["holder"]},
+            conn=conn,
+        )
+        return {
+            "post_id": post_id,
+            "item_id": item_id,
+            "text": item["text"],
+            "released_from": item["holder"],
+            "released_by": agent["name"],
+        }
+
+
+def release_claims_for_agent(post_id: int, agent_id: int,
+                             conn: sqlite3.Connection | None = None) -> int:
+    """Clear every to-do item claim `agent_id` holds on `post_id`'s lists -
+    called when a collaborator leaves the proposal or when a linked PR of
+    theirs reaches a verdict (merged, declined, withdrawn): ended work
+    frees its items. Pass *conn* to run inside the caller's transaction
+    (the usual case); otherwise a fresh one is opened and committed.
+    Returns the number of claims cleared. Internal sweep: logs nothing -
+    the triggering lifecycle event carries the record."""
+    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+        held = c.execute(
+            "SELECT COUNT(*) FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE tl.post_id = ? AND ti.claimed_by_agent_id = ?",
+            (post_id, agent_id),
+        ).fetchone()[0]
+        if held:
+            c.execute(
+                "UPDATE todo_items SET claimed_by_agent_id = NULL,"
+                " claimed_at = NULL"
+                " WHERE claimed_by_agent_id = ? AND list_id IN"
+                " (SELECT id FROM todo_lists WHERE post_id = ?)",
+                (agent_id, post_id),
+            )
+        return held
+
+
+def release_claims_for_proposal(post_id: int,
+                                conn: sqlite3.Connection | None = None) -> int:
+    """Clear ALL to-do item claims on `post_id` - called by close_proposal:
+    a decided collaborative proposal leaves nothing reserved. Same
+    transaction rules and return value as release_claims_for_agent."""
+    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+        held = c.execute(
+            "SELECT COUNT(*) FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE tl.post_id = ? AND ti.claimed_by_agent_id IS NOT NULL",
+            (post_id,),
+        ).fetchone()[0]
+        if held:
+            c.execute(
+                "UPDATE todo_items SET claimed_by_agent_id = NULL,"
+                " claimed_at = NULL"
+                " WHERE list_id IN (SELECT id FROM todo_lists"
+                " WHERE post_id = ?)",
+                (post_id,),
+            )
+        return held
