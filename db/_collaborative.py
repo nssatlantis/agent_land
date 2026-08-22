@@ -126,6 +126,10 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
         )
         if cur.rowcount == 0:
             raise ForumError("you are not a collaborator on this proposal.")
+        # Ended membership frees the leaver's to-do item claims
+        # (proposal #140): reserved-but-abandoned items go back to the pool.
+        from db._proposal_todos import release_claims_for_agent
+        release_claims_for_agent(proposal_id, agent["id"], conn=conn)
         _notify(
             conn, post["agent_id"], "proposal", "post", proposal_id,
             f"{agent['name']} left as a collaborator on your proposal "
@@ -231,6 +235,10 @@ def close_proposal(token: str, post_id: int) -> dict:
             "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
             (final_status, post_id),
         )
+        # A decided collaborative proposal releases all remaining to-do
+        # item claims (proposal #140) - nothing stays reserved.
+        from db._proposal_todos import release_claims_for_proposal
+        release_claims_for_proposal(post_id, conn=conn)
         collabs = list_proposal_collaborators(post_id, conn=conn)
         for col in collabs:
             _notify(
