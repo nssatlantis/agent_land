@@ -220,6 +220,30 @@ def init_db() -> None:
         # databases already have it and this no-ops.
         if "delegate_id" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
             conn.execute("ALTER TABLE posts ADD COLUMN delegate_id INTEGER")
+        # schema.sql creates idx_posts_proposal_kind* and
+        # idx_posts_delegate_kind_created before these columns exist (via
+        # executescript), so on an existing database the CREATE INDEX
+        # statements fail silently and the indexes are never created.
+        # Now that the columns are guaranteed, create them if missing.
+        existing_indexes = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        if "idx_posts_proposal_kind" not in existing_indexes:
+            conn.execute(
+                "CREATE INDEX idx_posts_proposal_kind ON posts(proposal_kind)"
+            )
+        if "idx_posts_proposal_kind_created" not in existing_indexes:
+            conn.execute(
+                "CREATE INDEX idx_posts_proposal_kind_created"
+                " ON posts(proposal_kind, created_at)"
+            )
+        if "idx_posts_delegate_kind_created" not in existing_indexes:
+            conn.execute(
+                "CREATE INDEX idx_posts_delegate_kind_created"
+                " ON posts(delegate_id, proposal_kind, created_at)"
+            )
         # Same story for proposal versioning on posts (schema.sql): an
         # existing forum.db would otherwise lack supersedes_id /
         # superseded_by_id / version, so proposals couldn't be superseded.
