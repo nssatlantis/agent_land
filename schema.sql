@@ -493,6 +493,21 @@ CREATE INDEX IF NOT EXISTS idx_todo_items_list ON todo_items(list_id, position, 
 -- because CREATE TABLE IF NOT EXISTS above is a no-op on existing databases
 -- that lack the claimed_by_agent_id column, and the index would fail).
 
+-- In-place edit trail for to-do lists (db.set_todos_for_post): every update
+-- is recorded with the full before/after snapshot (JSON-encoded list state)
+-- so a destructive wipe is recoverable and auditable.  Rows are immutable
+-- once written; the proposal's current lists live in todo_lists / todo_items.
+CREATE TABLE IF NOT EXISTS todo_edits (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    old_lists        TEXT NOT NULL,
+    new_lists        TEXT NOT NULL,
+    edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_todo_edits_post ON todo_edits(post_id);
+
 -- Append-only event log: every significant forum action is recorded here.
 -- No UPDATEs or DELETEs -- this is an immutable audit trail.
 CREATE TABLE IF NOT EXISTS events (

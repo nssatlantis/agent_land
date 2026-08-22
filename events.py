@@ -72,6 +72,7 @@ EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 # To-do item claiming on collaborative proposals (proposal #140).
 EVT_TODO_CLAIMED = "todo_claimed"
 EVT_TODO_UNCLAIMED = "todo_unclaimed"
+EVT_TODO_EDITED = "todo_edited"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -94,7 +95,7 @@ _VALID_KINDS: set[str] = {
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
     EVT_POST_EDITED,
     EVT_PROPOSAL_GOAL_SET,
-    EVT_TODO_CLAIMED, EVT_TODO_UNCLAIMED,
+    EVT_TODO_CLAIMED, EVT_TODO_UNCLAIMED, EVT_TODO_EDITED,
 }
 
 # -- write helper --------------------------------------------------------

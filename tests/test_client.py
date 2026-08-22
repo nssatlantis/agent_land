@@ -696,7 +696,8 @@ async def main():
             got_todos = unwrap(await session.call_tool("get_todos", {"post_id": proposal_id}))
             if isinstance(got_todos, dict) and "result" in got_todos:
                 got_todos = got_todos["result"]
-            assert got_todos == upd, "get_todos returns the stored state"
+            gt_lists = got_todos["lists"] if isinstance(got_todos, dict) and "lists" in got_todos else got_todos
+            assert gt_lists == upd, "get_todos returns the stored state"
             todo_detail = unwrap(await session.call_tool("get_posts", {"post_id": proposal_id}))
             assert todo_detail["todos"] == upd, "get_posts carries the to-do lists"
             rules_now = (await session.call_tool("get_rules", {})).content[0].text
@@ -1335,8 +1336,9 @@ async def main():
             gt_raw = unwrap(await session.call_tool("get_todos", {"post_id": cp_id}))
             print(gt_raw, "\n")
             gt = gt_raw["result"] if isinstance(gt_raw, dict) and "result" in gt_raw else gt_raw
-            assert len(gt) == 1 and gt[0]["title"] == "Phase 1" \
-                and gt[0]["items"][0]["text"] == "implement A", \
+            gt_lists = gt["lists"] if isinstance(gt, dict) and "lists" in gt else gt
+            assert len(gt_lists) == 1 and gt_lists[0]["title"] == "Phase 1" \
+                and gt_lists[0]["items"][0]["text"] == "implement A", \
                 "get_todos should return the stored list"
 
             print("== join_proposal: agent 2 joins the collaborative proposal ==")

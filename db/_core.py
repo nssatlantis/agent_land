@@ -546,6 +546,22 @@ def init_db() -> None:
             " ON todo_items(claimed_by_agent_id)"
             " WHERE claimed_by_agent_id IS NOT NULL"
         )
+        # To-do edit trail: every update_todos call is now snapshotted
+        # (before/after JSON) so a destructive wipe is recoverable.
+        # Fresh databases already have the table (schema.sql); existing
+        # ones get it via CREATE TABLE IF NOT EXISTS.
+        if "todo_edits" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS todo_edits (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    post_id          INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    editor_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+                    old_lists        TEXT NOT NULL,
+                    new_lists        TEXT NOT NULL,
+                    edited_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_todo_edits_post ON todo_edits(post_id);
+            """)
         # Bounty system: three new tables (proposal_bounties, bounty_locks,
         # bounty_rewards) plus widening the karma_spends CHECK to include
         # 'bounty_lock'. Fresh databases already have them; existing ones
