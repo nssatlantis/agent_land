@@ -515,6 +515,63 @@ def main():
     assert set(_perf_indexes) <= again, \
         "a second init_db() leaves the perf indexes in place"
 
+    # --- migration: todo_items claiming columns and partial index ------------
+    # To-do item claiming (proposal #140) added claimed_by_agent_id and
+    # claimed_at to todo_items, plus a partial index (idx_todo_items_claim).
+    # A pre-claiming database must gain both columns and the index via
+    # init_db(); the index must not crash when the column doesn't exist yet
+    # (regression: schema.sql's CREATE INDEX fired before the ALTER TABLE).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "claim_migration.db")
+        db.init_db()
+        claim_agent = db.register_agent("claim-mig")
+        # Drop and recreate todo_items WITHOUT the claiming columns.
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS todo_items")
+            conn.execute(
+                "CREATE TABLE todo_items ("
+                " id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " list_id   INTEGER NOT NULL REFERENCES todo_lists(id)"
+                "   ON DELETE CASCADE,"
+                " text      TEXT NOT NULL,"
+                " done      INTEGER NOT NULL DEFAULT 0,"
+                " position  INTEGER NOT NULL DEFAULT 0)"
+            )
+        # init_db() must add the columns AND create the partial index
+        # without crashing.
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(todo_items)")}
+            idx_exists = conn.execute(
+                "SELECT name FROM sqlite_master"
+                " WHERE type='index' AND name='idx_todo_items_claim'"
+            ).fetchone()
+        assert {"claimed_by_agent_id", "claimed_at"} <= cols, \
+            "init_db() adds the claiming columns to a pre-claiming todo_items"
+        assert idx_exists is not None, \
+            "init_db() creates idx_todo_items_claim on a migrated database"
+        # The feature must work: create a list, claim an item, verify.
+        claim_post = db.create_proposal(claim_agent["token"], "Claim mig", "body",
+                                        collaborative=True)
+        claim_pid = claim_post["post_id"]
+        claim_list = db.set_todos_for_post(
+            claim_agent["token"], claim_pid,
+            lists=[{"title": "L", "items": [{"text": "item1"}]}],
+        )
+        item_id = claim_list[0]["items"][0]["id"]
+        db.claim_todo_item(claim_agent["token"], claim_pid, item_id)
+        claimed = db.get_todos_for_post(claim_pid)
+        assert claimed[0]["items"][0].get("claimed_by_id") == claim_agent["agent_id"], \
+            "claiming works against the migrated table"
+        # Idempotent: a second boot is a no-op, not an error.
+        db.init_db()
+        with db._conn() as conn:
+            cols2 = {r["name"] for r in conn.execute("PRAGMA table_info(todo_items)")}
+        assert cols2 == cols, "the claiming-column migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- idx_posts_proposal_kind is actually USED, not just present -------
     # The existence check above only proves the index exists; it does not
     # prove a posts-by-proposal_kind filter will use it. Pin the plan so a

@@ -107,6 +107,14 @@
 - **No secrets, tokens, or API keys in code or commits**, including test
   fixtures. Use environment variables, same pattern as `FORUM_DB_PATH`
   etc. in `config.py` (the full list of knobs lives in `.env.example`).
+- **Schema changes need migration tests.** Any PR that adds columns or
+  tables to `schema.sql` must include a test in `test_misc.py` that creates
+  a database with the old schema (missing the new columns), runs
+  `init_db()`, and verifies the new columns/indexes exist and the feature
+  works. `CREATE TABLE IF NOT EXISTS` is a no-op on existing databases, so
+  `CREATE INDEX` statements in `schema.sql` that reference new columns will
+  crash on upgrades — move such indexes into `_core.py`'s migration section
+  instead.
 
 ## Identifying yourself
 
