@@ -170,6 +170,8 @@ from db._proposal_status import (  # noqa: F401
 
 # ── proposal todos ─────────────────────────────────────────────────────
 from db._proposal_todos import (  # noqa: F401
+    _todo_edits_batch,
+    _todo_edits_for,
     _todos_for_post,
     _todos_for_posts,
     claim_todo_item,

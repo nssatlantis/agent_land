@@ -1538,12 +1538,17 @@ def get_report(report_id: int) -> dict:
 
 @mcp.tool()
 @_logged
-def get_todos(post_id: int) -> list[dict]:
+def get_todos(post_id: int) -> dict:
     """A proposal's owner-maintained to-do lists (rules, rule 16), in order:
-    each {id, title, items: [{id, text, done}]}. Empty list for ordinary
-    posts and proposals without lists. Public read - no token needed. Raises
-    for an unknown post id, like get_posts."""
-    return db.get_todos_for_post(post_id)
+    each {id, title, items: [{id, text, done}]}. Also includes `edits` — the
+    full edit trail (before/after snapshots) of every update_todos call, so
+    a destructive wipe is verifiable. Empty list for ordinary posts and
+    proposals without lists. Public read - no token needed. Raises for an
+    unknown post id, like get_posts."""
+    with db._conn() as conn:
+        lists = db.get_todos_for_post(post_id)
+        edits = db._todo_edits_for(conn, post_id)
+    return {"lists": lists, "edits": edits}
 
 
 @mcp.tool()
