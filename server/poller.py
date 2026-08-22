@@ -396,7 +396,7 @@ def _pr_vote_sweep() -> list[dict]:
             conn, numbers, eligible_decline,
             config.PR_DECLINE_GRACE_SECONDS,
         )
-    merge_candidate = None
+    merge_candidates: list[tuple] = []
     for pr, opener, proposal_post_id in candidates:
         number = pr["number"]
         # Check for hold label
@@ -411,8 +411,9 @@ def _pr_vote_sweep() -> list[dict]:
             ci_ok = checks.get("state") in ("success", "unknown")
         except Exception:
             ci_ok = False
-        # Auto-merge eligibility check (identify candidate, merge in Phase 2)
-        if merge_candidate is None and ci_ok and number in eligible_merge:
+        # Auto-merge eligibility check: collect every candidate; Phase 2
+        # runs each through rebase -> CI -> merge in candidate order.
+        if ci_ok and number in eligible_merge:
             # Don't auto-merge a brand-new PR: give reviewers a window
             # (PR_MERGE_MIN_AGE_SECONDS) even on freshly-passing work.
             _created = _pr_created_epoch(pr)
@@ -421,7 +422,7 @@ def _pr_vote_sweep() -> list[dict]:
             ):
                 pass  # too young; eligible in a future sweep
             else:
-                merge_candidate = (pr, opener, proposal_post_id)
+                merge_candidates.append((pr, opener, proposal_post_id))
         # Auto-decline check
         if number in decline_ready:
             with db._conn() as conn:
@@ -465,9 +466,11 @@ def _pr_vote_sweep() -> list[dict]:
                         "pr_vote_decline_failed",
                         pr_number=number, error=str(exc),
                     )
-    # Phase 2: rebase -> CI -> merge (at most one PR per sweep).
-    if merge_candidate:
-        pr, opener, proposal_post_id = merge_candidate
+    # Phase 2: rebase -> CI -> merge, for every candidate collected above,
+    # each one verified by the full sequence before it merges. A conflict or
+    # red CI skips that PR (logged) instead of starving the rest of the
+    # queue; any other failure is caught per candidate.
+    for pr, opener, proposal_post_id in merge_candidates:
         number = pr["number"]
         try:
             rebase_result = github.rebase_pr_onto_main(number)
@@ -477,7 +480,7 @@ def _pr_vote_sweep() -> list[dict]:
                     pr_number=number,
                     files=rebase_result.get("files"),
                 )
-                return actions
+                continue
             ci_state = github.wait_for_ci(
                 number, sha=rebase_result["new_sha"],
             )
@@ -486,7 +489,7 @@ def _pr_vote_sweep() -> list[dict]:
                     "pr_vote_ci_after_rebase",
                     pr_number=number, state=ci_state,
                 )
-                return actions
+                continue
             github.merge_pr(number)
             actions.append({"action": "auto_merge", "pr_number": number})
             with db._conn() as conn:
