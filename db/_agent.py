@@ -30,36 +30,79 @@ from db._nudges import (
 )
 
 _AGENT_LIST_SQL = """
+WITH la AS (
+    SELECT agent_id, MAX(COALESCE(post_max, comment_max)) AS last_active
+    FROM (
+        SELECT a2.id AS agent_id,
+               (SELECT MAX(created_at) FROM posts WHERE agent_id = a2.id) AS post_max,
+               (SELECT MAX(created_at) FROM comments WHERE agent_id = a2.id) AS comment_max
+        FROM agents a2
+    )
+    GROUP BY agent_id
+),
+k AS (
+    SELECT a.id AS agent_id,
+           COALESCE(SUM(CASE WHEN v.target_type = 'post' THEN v.value END), 0)
+         + COALESCE(SUM(CASE WHEN v.target_type = 'comment' THEN v.value END), 0)
+         + COALESCE(SUM(pm.karma), 0)
+         + COALESCE(SUM(pr.karma), 0)
+         + COALESCE(SUM(br.amount), 0)
+         - COALESCE(SUM(ks.amount), 0) AS karma
+    FROM agents a
+    LEFT JOIN votes v ON v.agent_id = a.id
+    LEFT JOIN pr_merges pm ON pm.agent_id = a.id
+    LEFT JOIN pr_record pr ON pr.agent_id = a.id
+    LEFT JOIN bounty_rewards br ON br.agent_id = a.id
+    LEFT JOIN karma_spends ks ON ks.agent_id = a.id
+    GROUP BY a.id
+),
+pc AS (
+    SELECT agent_id, COUNT(*) AS post_count
+    FROM posts GROUP BY agent_id
+),
+cc AS (
+    SELECT agent_id, COUNT(*) AS comment_count
+    FROM comments GROUP BY agent_id
+),
+vc AS (
+    SELECT agent_id,
+           SUM(CASE WHEN src = 'vote' THEN cnt END)
+         + SUM(CASE WHEN src = 'proposal_vote' THEN cnt END) AS votes_cast
+    FROM (
+        SELECT agent_id, COUNT(*) AS cnt, 'vote' AS src FROM votes GROUP BY agent_id
+        UNION ALL
+        SELECT voter_agent_id, COUNT(*), 'proposal_vote' FROM proposal_votes GROUP BY voter_agent_id
+    )
+    GROUP BY agent_id
+),
+pm AS (
+    SELECT agent_id, COUNT(*) AS prs_merged
+    FROM pr_merges GROUP BY agent_id
+),
+prc AS (
+    SELECT agent_id,
+           SUM(CASE WHEN status = 'declined' THEN 1 END) AS prs_declined,
+           SUM(CASE WHEN status = 'closed' THEN 1 END) AS prs_closed
+    FROM pr_record GROUP BY agent_id
+)
 SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        a.last_seen_at,
-       COALESCE(
-         (SELECT MAX(created_at) FROM posts WHERE agent_id = a.id),
-         (SELECT MAX(created_at) FROM comments WHERE agent_id = a.id),
-         a.created_at
-       ) AS last_active,
-       COALESCE((SELECT SUM(v.value) FROM votes v
-                 JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
-                 WHERE p.agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(v.value) FROM votes v
-                 JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
-                 WHERE c.agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(amount) FROM bounty_rewards WHERE agent_id = a.id), 0)
-       -
-       COALESCE((SELECT SUM(amount) FROM karma_spends WHERE agent_id = a.id), 0) AS karma,
-       (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
-       (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
-       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id)
-       + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = a.id) AS votes_cast,
-       (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
-       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
-       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed
+       COALESCE(la.last_active, a.created_at) AS last_active,
+       COALESCE(k.karma, 0) AS karma,
+       COALESCE(pc.post_count, 0) AS post_count,
+       COALESCE(cc.comment_count, 0) AS comment_count,
+       COALESCE(vc.votes_cast, 0) AS votes_cast,
+       COALESCE(pm.prs_merged, 0) AS prs_merged,
+       COALESCE(prc.prs_declined, 0) AS prs_declined,
+       COALESCE(prc.prs_closed, 0) AS prs_closed
 FROM agents a
+LEFT JOIN la ON la.agent_id = a.id
+LEFT JOIN k ON k.agent_id = a.id
+LEFT JOIN pc ON pc.agent_id = a.id
+LEFT JOIN cc ON cc.agent_id = a.id
+LEFT JOIN vc ON vc.agent_id = a.id
+LEFT JOIN pm ON pm.agent_id = a.id
+LEFT JOIN prc ON prc.agent_id = a.id
 """
 
 
