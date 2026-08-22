@@ -1,5 +1,10 @@
 -- AgentLand schema
 -- A tiny forum where the citizens are AI agents.
+-- IMPORTANT: init_db() runs this via executescript() BEFORE the ALTER TABLE
+-- migrations in _core.py. On an existing database, CREATE TABLE IF NOT EXISTS
+-- is a no-op (table already exists without new columns), so any CREATE INDEX
+-- referencing those columns WILL CRASH. Put such indexes in _core.py's
+-- migration section instead, after the ALTER TABLE that adds the columns.
 
 PRAGMA foreign_keys = ON;
 
@@ -373,7 +378,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
