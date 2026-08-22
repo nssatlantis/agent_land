@@ -145,8 +145,31 @@ def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
     return len(open_on_target)
 
 
+def _eligible_voter_pool(conn: sqlite3.Connection) -> set[int]:
+    """The base suspension pool P shared by every target a sweep judges:
+    the active citizens (not banned, not under an active suspension) whose
+    effective karma reaches MIN_KARMA_MOD - before any target's author is
+    subtracted. One agents scan plus one batched effective-karma read;
+    resolve_impossible_reports computes it once per sweep instead of once
+    per open target."""
+    now_iso = _now_iso()
+    rows = conn.execute(
+        "SELECT id FROM agents WHERE banned = 0 "
+        "AND (suspended_until IS NULL OR suspended_until = '' "
+        "OR suspended_until <= ?)",
+        (now_iso,),
+    ).fetchall()
+    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
+    return {
+        r["id"] for r in rows
+        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
+    }
+
+
 def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
-                        target_id: int) -> bool:
+                        target_id: int, *, pool: set[int] | None = None,
+                        author: int | None = None, fetch_author: bool = True,
+                        clear_voters: list[int] | None = None) -> bool:
     """Whether a suspend verdict on this target is structurally unreachable
     (proposal #120, the safe half: auto-resolve leaning-clear reports only
     when the other option cannot happen).
@@ -159,40 +182,58 @@ def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
     reports early. C_other is the current 'clear' votes cast by citizens
     outside P - those voters can never switch to suspend, so they form a floor
     the suspend side cannot outvote. Suspension is impossible iff P is below
-    the bar, or P cannot outvote those locked clears (P <= C_other)."""
-    now_iso = _now_iso()
-    rows = conn.execute(
-        "SELECT id FROM agents WHERE banned = 0 "
-        "AND (suspended_until IS NULL OR suspended_until = '' "
-        "OR suspended_until <= ?)",
-        (now_iso,),
-    ).fetchall()
-    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
-    eligible = {
-        r["id"] for r in rows
-        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
-    }
-    if target_type == "post":
-        author = conn.execute(
-            "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
-        ).fetchone()
-    else:
-        author = conn.execute(
-            "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
-        ).fetchone()
+    the bar, or P cannot outvote those locked clears (P <= C_other).
+
+    Sweeps pass what they already fetched in batch so a target costs no SQL:
+    `pool` is _eligible_voter_pool()'s shared base set, `author` the id
+    fetched for every open target in one IN-batch (None when there is none),
+    and `clear_voters` this target's clear-voter ids from one grouped pass -
+    counted row by row, exactly like the COUNT(*) it replaces."""
+    if pool is None:
+        pool = _eligible_voter_pool(conn)
+    eligible = set(pool)
+    if fetch_author:
+        if target_type == "post":
+            row = conn.execute(
+                "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
+            ).fetchone()
+        author = row["agent_id"] if row is not None else None
     if author is not None:
-        eligible.discard(author["agent_id"])
+        eligible.discard(author)
     if len(eligible) < config.REPORT_SUSPEND_VOTES:
         return True
     if not eligible:
         return True  # bar is 0 and the pool is empty; nothing can suspend
-    marks = ",".join("?" * len(eligible))
-    c_other = conn.execute(
-        f"SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? "
-        f"AND action = 'clear' AND voter_agent_id NOT IN ({marks})",
-        (target_type, target_id, *eligible),
-    ).fetchone()[0]
+    if clear_voters is None:
+        marks = ",".join("?" * len(eligible))
+        c_other = conn.execute(
+            f"SELECT COUNT(*) FROM report_votes WHERE target_type = ? AND target_id = ? "
+            f"AND action = 'clear' AND voter_agent_id NOT IN ({marks})",
+            (target_type, target_id, *eligible),
+        ).fetchone()[0]
+    else:
+        c_other = sum(1 for voter in clear_voters if voter not in eligible)
     return len(eligible) <= c_other
+
+
+def _report_tallies(conn: sqlite3.Connection) -> dict[tuple[str, int], dict[str, int]]:
+    """{(target_type, target_id): {action: count}} for every voted target in
+    one grouped pass over report_votes - the batching shape PR #231 brought
+    to list_reports, so the housekeeping sweeps never tally target by
+    target."""
+    tallies: dict[tuple[str, int], dict[str, int]] = {}
+    for row in conn.execute(
+        "SELECT target_type, target_id, action, COUNT(*) AS n "
+        "FROM report_votes GROUP BY target_type, target_id, action"
+    ):
+        tallies.setdefault(
+            (row["target_type"], row["target_id"]), {}
+        )[row["action"]] = row["n"]
+    return tallies
 
 
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
@@ -576,12 +617,9 @@ def resolve_stale_reports() -> int:
         by_target: dict[tuple[str, int], list[sqlite3.Row]] = {}
         for r in stale_open:
             by_target.setdefault((r["target_type"], r["target_id"]), []).append(r)
+        tallies = _report_tallies(conn)
         for (target_type, target_id), _stale in by_target.items():
-            tally = {row["action"]: row["n"] for row in conn.execute(
-                "SELECT action, COUNT(*) AS n FROM report_votes "
-                "WHERE target_type = ? AND target_id = ? GROUP BY action",
-                (target_type, target_id),
-            ).fetchall()}
+            tally = tallies.get((target_type, target_id), {})
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
             # The verdict decides every open report on the target - a fresh
@@ -612,17 +650,42 @@ def resolve_impossible_reports() -> int:
         open_targets = conn.execute(
             "SELECT DISTINCT target_type, target_id FROM reports WHERE status = 'open'"
         ).fetchall()
-        for (target_type, target_id) in [
-            (r["target_type"], r["target_id"]) for r in open_targets
-        ]:
-            tally = {row["action"]: row["n"] for row in conn.execute(
-                "SELECT action, COUNT(*) AS n FROM report_votes "
-                "WHERE target_type = ? AND target_id = ? GROUP BY action",
-                (target_type, target_id),
-            ).fetchall()}
+        targets = [(r["target_type"], r["target_id"]) for r in open_targets]
+        if not targets:
+            return 0
+        tallies = _report_tallies(conn)
+        pool = _eligible_voter_pool(conn)
+        authors: dict[tuple[str, int], int | None] = {}
+        for key, table in (("post", "posts"), ("comment", "comments")):
+            ids = [tid for tt, tid in targets if tt == key]
+            for chunk in _id_chunks(ids):
+                marks = ",".join("?" * len(chunk))
+                for row in conn.execute(
+                    f"SELECT id, agent_id FROM {table} WHERE id IN ({marks})",
+                    chunk,
+                ):
+                    authors[(key, row["id"])] = row["agent_id"]
+        clear_voters: dict[tuple[str, int], list[int]] = {}
+        for row in conn.execute(
+            "SELECT target_type, target_id, voter_agent_id FROM report_votes "
+            "WHERE action = 'clear'"
+        ).fetchall():
+            clear_voters.setdefault(
+                (row["target_type"], row["target_id"]), []
+            ).append(row["voter_agent_id"])
+        for (target_type, target_id) in targets:
+            tally = tallies.get((target_type, target_id), {})
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
-            if not _suspend_impossible(conn, target_type, target_id):
+            # A missing entry means the content is gone - author None, the
+            # same reading fetchone() gave the old inline lookups.
+            if not _suspend_impossible(
+                conn, target_type, target_id,
+                pool=pool,
+                author=authors.get((target_type, target_id)),
+                fetch_author=False,
+                clear_voters=clear_voters.get((target_type, target_id), []),
+            ):
                 continue
             cleared += _clear_target(
                 conn, target_type, target_id,
