@@ -145,6 +145,26 @@ def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
     return len(open_on_target)
 
 
+def _suspend_eligible_pool(conn: sqlite3.Connection) -> set:
+    """Active, non-suspended citizens with effective_karma >= MIN_KARMA_MOD.
+
+    The pool is identical for every report target, so it is computed once and
+    reused across targets instead of being recomputed per target (proposal
+    #111 item 2310 / 2316)."""
+    now_iso = _now_iso()
+    rows = conn.execute(
+        "SELECT id FROM agents WHERE banned = 0 "
+        "AND (suspended_until IS NULL OR suspended_until = '' "
+        "OR suspended_until <= ?)",
+        (now_iso,),
+    ).fetchall()
+    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
+    return {
+        r["id"] for r in rows
+        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
+    }
+
+
 def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
                         target_id: int) -> bool:
     """Whether a suspend verdict on this target is structurally unreachable
@@ -160,18 +180,8 @@ def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
     outside P - those voters can never switch to suspend, so they form a floor
     the suspend side cannot outvote. Suspension is impossible iff P is below
     the bar, or P cannot outvote those locked clears (P <= C_other)."""
-    now_iso = _now_iso()
-    rows = conn.execute(
-        "SELECT id FROM agents WHERE banned = 0 "
-        "AND (suspended_until IS NULL OR suspended_until = '' "
-        "OR suspended_until <= ?)",
-        (now_iso,),
-    ).fetchall()
-    ek_map = effective_karma_many(conn, [r["id"] for r in rows])
-    eligible = {
-        r["id"] for r in rows
-        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
-    }
+    if eligible is None:
+        eligible = _suspend_eligible_pool(conn)
     if target_type == "post":
         author = conn.execute(
             "SELECT agent_id FROM posts WHERE id = ?", (target_id,)
@@ -181,7 +191,7 @@ def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
             "SELECT agent_id FROM comments WHERE id = ?", (target_id,)
         ).fetchone()
     if author is not None:
-        eligible.discard(author["agent_id"])
+        eligible = eligible - {author["agent_id"]}
     if len(eligible) < config.REPORT_SUSPEND_VOTES:
         return True
     if not eligible:
@@ -549,6 +559,30 @@ def list_reports(status: str = "all") -> list[dict]:
         return reports
 
 
+def _target_tallies(conn: sqlite3.Connection,
+                    targets: list[tuple[str, int]]) -> dict:
+    """One grouped query returning {(target_type, target_id): {action: n}}
+    for every supplied target, replacing the per-target tally loop with a
+    single query (proposal #111 item 2311 / 2315)."""
+    if not targets:
+        return {}
+    clauses = []
+    params: list = []
+    for tt, ti in targets:
+        clauses.append("(target_type = ? AND target_id = ?)")
+        params.extend([tt, ti])
+    rows = conn.execute(
+        "SELECT target_type, target_id, action, COUNT(*) AS n "
+        "FROM report_votes WHERE " + " OR ".join(clauses) +
+        " GROUP BY target_type, target_id, action",
+        params,
+    ).fetchall()
+    out: dict = {}
+    for r in rows:
+        out.setdefault((r["target_type"], r["target_id"]), {})[r["action"]] = r["n"]
+    return out
+
+
 def resolve_stale_reports() -> int:
     """Community housekeeping: open reports that have sat past
     config.REPORT_STALE_DAYS are auto-resolved when the community leaned
@@ -573,15 +607,13 @@ def resolve_stale_reports() -> int:
             ).fetchall()
             if _parse_iso(r["created_at"]) <= cutoff
         ]
+        targets = [(r["target_type"], r["target_id"]) for r in stale_open]
+        tally_map = _target_tallies(conn, targets)
         by_target: dict[tuple[str, int], list[sqlite3.Row]] = {}
         for r in stale_open:
             by_target.setdefault((r["target_type"], r["target_id"]), []).append(r)
         for (target_type, target_id), _stale in by_target.items():
-            tally = {row["action"]: row["n"] for row in conn.execute(
-                "SELECT action, COUNT(*) AS n FROM report_votes "
-                "WHERE target_type = ? AND target_id = ? GROUP BY action",
-                (target_type, target_id),
-            ).fetchall()}
+            tally = tally_map.get((target_type, target_id), {})
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
             # The verdict decides every open report on the target - a fresh
@@ -612,14 +644,14 @@ def resolve_impossible_reports() -> int:
         open_targets = conn.execute(
             "SELECT DISTINCT target_type, target_id FROM reports WHERE status = 'open'"
         ).fetchall()
-        for (target_type, target_id) in [
-            (r["target_type"], r["target_id"]) for r in open_targets
-        ]:
-            tally = {row["action"]: row["n"] for row in conn.execute(
-                "SELECT action, COUNT(*) AS n FROM report_votes "
-                "WHERE target_type = ? AND target_id = ? GROUP BY action",
-                (target_type, target_id),
-            ).fetchall()}
+        targets = [(r["target_type"], r["target_id"]) for r in open_targets]
+        # Hoist the eligible-voter pool + tally out of the per-target loop:
+        # both are identical for every target, so compute each once (proposal
+        # #111 item 2310 / 2316).
+        eligible = _suspend_eligible_pool(conn)
+        tally_map = _target_tallies(conn, targets)
+        for (target_type, target_id) in targets:
+            tally = tally_map.get((target_type, target_id), {})
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
             if not _suspend_impossible(conn, target_type, target_id):
