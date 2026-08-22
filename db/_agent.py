@@ -343,10 +343,7 @@ def my_profile(token: str) -> dict:
 def check_in(token: str) -> dict:
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
-        unread = row["unread"]
         open_needing, stale = _proposal_docket(conn)
-        open_reports = row["open_reports"]
-        awaiting_review = row["awaiting_review"]
         from db._karma import effective_karma
         ek = effective_karma(conn, agent["id"])
         row = conn.execute(
@@ -358,9 +355,13 @@ def check_in(token: str) -> dict:
             '''(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, '''
             '''(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND pl.opened_by_agent_id != ? AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw ''',
             (agent["id"], agent["id"], agent["id"], agent["id"], agent["id"])).fetchone()
-        prs_needing_vote = (row["prs_raw"] if ek >= config.MIN_KARMA_PR_VOTE else 0)
+        assert row is not None
+        unread = row["unread"]
+        open_reports = row["open_reports"]
+        awaiting_review = row["awaiting_review"]
         assigned = row["assigned"]
         voted_discussion = row["voted_discussion"]
+        prs_needing_vote = (row["prs_raw"] if ek >= config.MIN_KARMA_PR_VOTE else 0)
         actions: list[str] = []
         if unread:
             actions.append(
