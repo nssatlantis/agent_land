@@ -152,7 +152,7 @@ def _check_explain_proposals() -> bool:
     return "CORRELATED SCALAR SUBQUERY" not in plan
 
 
-def _check_explain_agents() -> bool:
+def _check_explain_agents() -> bool:  # parity test added below
     sql = _agent_mod._AGENT_LIST_SQL
     plan = _explain(sql)
     # The agent list uses correlated subqueries by design (one per agent),
