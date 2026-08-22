@@ -315,7 +315,9 @@ def _pr_created_epoch(pr: dict) -> float | None:
     return dt.timestamp()
 
 
-def _pr_vote_sweep() -> list[dict]:
+def _pr_vote_sweep(
+    open_prs: list[dict] | None = None,
+) -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
     By default (PR_AUTO_MERGE_SMALL_FIX_ONLY=1) only small-fix PRs are
@@ -348,7 +350,8 @@ def _pr_vote_sweep() -> list[dict]:
     Returns a list of actions taken (for logging)."""
 
     actions: list[dict] = []
-    open_prs = github.open_prs()
+    if open_prs is None:
+        open_prs = github.open_prs()
     # Batched pre-pass (proposal #111 audit item: N+1 in the vote sweep):
     # one connection resolves everything the per-PR gates used to re-derive
     # per number - the linked opener/proposal maps, the small-fix kind
