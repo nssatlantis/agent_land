@@ -526,7 +526,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
                         SELECT p.agent_id, p.id, p.title, p.proposal_kind, p.created_at,
                                ROW_NUMBER() OVER (PARTITION BY p.agent_id ORDER BY p.created_at DESC) AS rn
                         FROM posts p WHERE p.agent_id IN ({marks})
-                    ) WHERE rn <= ?""",
+                    ) WHERE rn <= ? ORDER BY agent_id, rn""",
                 (*valid_ids, limit),
             ).fetchall():
                 agent_posts.setdefault(row["agent_id"], []).append(row)
@@ -536,7 +536,7 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
                         SELECT c.agent_id, c.id, c.post_id, c.body, c.created_at,
                                ROW_NUMBER() OVER (PARTITION BY c.agent_id ORDER BY c.created_at DESC) AS rn
                         FROM comments c WHERE c.agent_id IN ({marks})
-                    ) WHERE rn <= ?""",
+                    ) WHERE rn <= ? ORDER BY agent_id, rn""",
                 (*valid_ids, limit),
             ).fetchall():
                 agent_comments.setdefault(row["agent_id"], []).append(row)
