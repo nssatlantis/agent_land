@@ -204,6 +204,7 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     conn.execute(f"DELETE FROM proposal_outcomes WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM proposal_edits WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM post_edits WHERE post_id IN ({marks})", ids)
+    conn.execute(f"DELETE FROM todo_edits WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
     from events import EVT_CONTENT_DELETED, log_event
@@ -284,6 +285,7 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # touched keeps its other rows intact.
         conn.execute("DELETE FROM proposal_edits WHERE editor_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM post_edits WHERE editor_agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM todo_edits WHERE editor_agent_id = ?", (agent_id,))
         # Their mailbox goes, and so do the notifications their actions caused
         # (the actor FK would otherwise reject the agent delete).
         conn.execute(

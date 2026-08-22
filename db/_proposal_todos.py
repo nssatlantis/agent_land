@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -151,6 +152,59 @@ def get_todos_for_post(post_id: int) -> list[dict]:
         return _todos_for_post(conn, post_id)
 
 
+def _todo_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
+    """A proposal's to-do edit trail, oldest to newest:
+    [{id, editor (name), editor_id, old_lists, new_lists, edited_at}] -
+    the full before/after snapshot of every update_todos call, so a
+    destructive wipe is verifiable. Empty for untouched proposals."""
+    rows = conn.execute(
+        "SELECT e.id, a.name AS editor, a.id AS editor_id,"
+        " e.old_lists, e.new_lists, e.edited_at"
+        " FROM todo_edits e JOIN agents a ON a.id = e.editor_agent_id"
+        " WHERE e.post_id = ? ORDER BY e.edited_at, e.id",
+        (post_id,),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "editor": r["editor"],
+            "editor_id": r["editor_id"],
+            "old_lists": json.loads(r["old_lists"]),
+            "new_lists": json.loads(r["new_lists"]),
+            "edited_at": r["edited_at"],
+        }
+        for r in rows
+    ]
+
+
+def _todo_edits_batch(conn: sqlite3.Connection,
+                      post_ids: list) -> dict:
+    """{post_id: [_todo_edits_for entry, ...]} for a batch of proposals."""
+    if not post_ids:
+        return {}
+    out: dict[int, list[dict]] = {}
+    for chunk in _id_chunks(post_ids):
+        marks = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT e.id, e.post_id, a.name AS editor, a.id AS editor_id,"
+            f" e.old_lists, e.new_lists, e.edited_at"
+            f" FROM todo_edits e JOIN agents a ON a.id = e.editor_agent_id"
+            f" WHERE e.post_id IN ({marks})"
+            f" ORDER BY e.post_id, e.edited_at, e.id",
+            chunk,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r["post_id"], []).append({
+                "id": r["id"],
+                "editor": r["editor"],
+                "editor_id": r["editor_id"],
+                "old_lists": json.loads(r["old_lists"]),
+                "new_lists": json.loads(r["new_lists"]),
+                "edited_at": r["edited_at"],
+            })
+    return out
+
+
 def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict]:
     """Replace a proposal's to-do lists wholesale - send the full desired
     state; it is validated, stored atomically in one transaction, and echoed
@@ -231,13 +285,12 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
             )
         # Everything validated: replace atomically. Deleting the lists cascades
         # their items; positions are normalized 0..n on the way in.
-        old_items = conn.execute(
-            "SELECT ti.text FROM todo_items ti"
-            " JOIN todo_lists tl ON tl.id = ti.list_id"
-            " WHERE tl.post_id = ?",
-            (post_id,),
-        ).fetchall()
-        old_item_texts = {r["text"] for r in old_items}
+        old_state = _todos_for_post(conn, post_id)
+        old_item_texts = {
+            item["text"]
+            for lst in old_state
+            for item in lst["items"]
+        }
         conn.execute("DELETE FROM todo_lists WHERE post_id = ?", (post_id,))
         for lpos, lst in enumerate(normalized):
             cur = conn.execute(
@@ -251,6 +304,21 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
                     "VALUES (?, ?, ?, ?)",
                     (list_id, item["text"], int(item["done"]), ipos),
                 )
+        new_state = _todos_for_post(conn, post_id)
+        conn.execute(
+            "INSERT INTO todo_edits (post_id, editor_agent_id, old_lists, new_lists)"
+            " VALUES (?, ?, ?, ?)",
+            (post_id, agent["id"], json.dumps(old_state), json.dumps(new_state)),
+        )
+        from events import EVT_TODO_EDITED, log_event
+        log_event(
+            EVT_TODO_EDITED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"lists_changed": old_state != new_state},
+            conn=conn,
+        )
         # Notify collaborators when new to-do items are added.
         if row["collaborative"]:
             new_texts = {
