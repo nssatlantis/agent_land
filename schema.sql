@@ -295,6 +295,7 @@ CREATE TABLE IF NOT EXISTS proposal_links (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_links_opener ON proposal_links(opened_by_agent_id);
 
 -- Outcome of a closed pull request that implemented a proposal: merged
 -- (the change shipped), declined (closed with the 'declined' label), or
