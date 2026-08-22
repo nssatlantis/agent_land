@@ -48,7 +48,7 @@ import rules_text
 import viewer
 from server import admin
 import server.repo_search as _repo_search_mod
-from server.poller import _ci_failure_poller, _pr_outcome_poller, _pr_vote_poller
+from server.poller import _ci_failure_poller, _pr_outcome_poller
 from server.repo_helpers import (
     _changes_for_repo_propose, _changes_for_repo_update,
     _require_pr_owner,
