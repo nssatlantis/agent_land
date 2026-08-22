@@ -118,14 +118,25 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
         agent = db._require_agent_by_token(conn, token)
         stamp = db._now_iso()
         if keep is not None:
-            cur = conn.execute(
-                "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
-                " WHERE agent_id = ? AND read_at IS NULL"
-                " AND id NOT IN (SELECT id FROM notifications"
-                " WHERE agent_id = ? AND read_at IS NULL"
-                " ORDER BY created_at DESC, id DESC LIMIT ?)",
-                (stamp, agent["id"], agent["id"], keep),
-            )
+            if keep == 0:
+                cur = conn.execute(
+                    "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                    " WHERE agent_id = ? AND read_at IS NULL",
+                    (stamp, agent["id"]),
+                )
+            else:
+                cur = conn.execute(
+                    "WITH kept AS ("
+                    "SELECT id FROM notifications"
+                    " WHERE agent_id = ? AND read_at IS NULL"
+                    " ORDER BY created_at DESC, id DESC"
+                    " LIMIT ?"
+                    ")"
+                    "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
+                    " WHERE agent_id = ? AND read_at IS NULL"
+                    " AND id NOT IN (SELECT id FROM kept)",
+                    (agent["id"], keep, stamp, agent["id"]),
+                )
         elif ids is not None:
             if ids:
                 ids = [int(i) for i in ids]
