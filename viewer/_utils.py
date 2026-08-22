@@ -268,7 +268,7 @@ def _markdown(source: str) -> str:
                     out.append(f"</{list_tag}>")
                 out.append("<ol>")
                 list_tag = "ol"
-            _text = re.split(r"\d+[.)] ", line, 1)[1]
+            _text = re.split(r"\d+[.)] ", line, maxsplit=1)[1]
             out.append(f"<li>{_inline_md(_text)}</li>")
             continue
         if list_tag:

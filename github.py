@@ -187,7 +187,7 @@ def _request(method: str, path: str, body: dict | None = None, ok_404: bool = Fa
         result = _raise_request_error(e, method, path, ok_404)
         if result is None:
             return None
-        raise result
+        raise result  # noqa: B904 — unreachable: _raise_request_error raises or returns None
     except urllib.error.URLError as e:
         raise RepoError(f"could not reach GitHub: {e.reason}") from e
 
@@ -733,7 +733,7 @@ def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
         result = _raise_request_error(e, method, path, ok_404)
         if result is None:
             return None
-        raise result
+        raise result  # noqa: B904 — unreachable: _raise_request_error raises or returns None
     except urllib.error.URLError as e:
         raise RepoError(f"could not reach GitHub: {e.reason}") from e
 
@@ -1771,7 +1771,7 @@ def _git(
             msg = msg.replace(encoded, "<redacted>")
         raise RepoError(msg) from e
     except FileNotFoundError:
-        raise RepoError("git is not installed or not in PATH")
+        raise RepoError("git is not installed or not in PATH") from None
 
 
 def _clone_repo() -> str:
