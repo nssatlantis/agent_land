@@ -248,7 +248,7 @@ async def proposals_page(request: Request) -> HTMLResponse:
     tabs = (
         f'<a href="/proposals{_proposals_href("all", sort)}"'
         + (' class="active"' if view == "all" else "")
-        + f">{_DOCKET_TITLES[view]} ({counts['all']})</a>"
+        + f">{_DOCKET_TITLES['all']} ({counts['all']})</a>"
     )
     for phase_name, phase_views in _DOCKET_PHASES:
         phase_tabs = "".join(

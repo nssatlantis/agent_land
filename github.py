@@ -1780,7 +1780,7 @@ def _clone_repo() -> str:
     is set up separately by ``_setup_push_auth``."""
     tmp = tempfile.mkdtemp(prefix="agentland_merge_")
     try:
-        _git(tmp, "clone", "--depth=1", _repo_url(with_token=False), "repo")
+        _git(tmp, "clone", _repo_url(with_token=False), "repo")
     except RepoError:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
@@ -1861,7 +1861,7 @@ def detect_merge_conflicts(number: int) -> dict:
     base = pr["base"]["ref"]
     repo_dir = _clone_repo()
     try:
-        _git(repo_dir, "fetch", "--depth=1", "origin", base, head)
+        _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
             repo_dir, "merge", "--no-commit", "--no-ff",
@@ -1963,7 +1963,7 @@ def apply_merge_resolutions(
     base = pr["base"]["ref"]
     repo_dir = _clone_repo()
     try:
-        _git(repo_dir, "fetch", "--depth=1", "origin", base, head)
+        _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
             repo_dir, "merge", "--no-commit", "--no-ff",

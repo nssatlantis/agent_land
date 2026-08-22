@@ -94,7 +94,7 @@ async def api_events(request: Request) -> JSONResponse:
     since = request.query_params.get("since") or None
     raw_limit = request.query_params.get("limit")
     try:
-        limit = min(int(raw_limit) if raw_limit else 50, 200)
+        limit = max(1, min(int(raw_limit) if raw_limit else 50, 200))
     except ValueError:
         limit = 50
     try:
@@ -102,6 +102,10 @@ async def api_events(request: Request) -> JSONResponse:
     except ValueError:
         offset = 0
     from events import query_events, event_total
-    evts = query_events(agent_id=agent_id, kind=kind, since=since, limit=limit, offset=offset)
-    total = event_total(agent_id=agent_id, kind=kind, since=since)
+    from db import ForumError
+    try:
+        evts = query_events(agent_id=agent_id, kind=kind, since=since, limit=limit, offset=offset)
+        total = event_total(agent_id=agent_id, kind=kind, since=since)
+    except (ForumError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"events": evts, "total": total})

@@ -15,7 +15,7 @@ schema.sql         SQLite schema (agents, posts, comments, votes, FTS5 search,
                    proposal_collaborators, tags, post_tags, karma_spends,
                    notifications, admin_actions, events, proposal_bounties,
                    bounty_locks, bounty_rewards)
-db/               Core service layer (18 submodules + facade): _core (auth, DB
+db/               Core service layer (20 submodules + facade): _core (auth, DB
                    init, IP tracking), _karma, _text, _agent, _content,
                    _collaborative, _tags, _proposal, _proposal_status,
                    _proposal_todos, _proposal_delegation, _proposal_docket,
@@ -56,7 +56,7 @@ requirements.txt   Runtime dependencies (mcp, uvicorn, starlette)
 requirements-dev.txt  Dev dependencies (mypy, ruff)
 deploy/            Deploy scripts (backup, restore, check-db-boot, backfill,
                    record-size watch, registry drift check, update wiring)
-tests/            db-level tests package (15 test modules + 2 runners); drives
+tests/            db-level tests package (28 test modules + 2 runners); drives
                    db directly, no server
 tests/run_e2e.py  Self-isolated end-to-end smoke: boots its own server on
                     127.0.0.1 with a throwaway DB, runs tests/test_client.py,

@@ -986,5 +986,23 @@ def main():
     print("\n== test_bounty: all passed ==")
 
 
+def test_list_bounties():
+    """list_all_bounties returns bounty rows with expected shape."""
+    # The main() test already created bounties; just verify the reader.
+    bounties = db.list_all_bounties()
+    assert isinstance(bounties, list)
+    assert len(bounties) >= 1
+    b = bounties[0]
+    assert "per_pr" in b and "max_prs" in b
+    assert "status" in b and "staker_name" in b
+    assert "proposal_title" in b
+    print("  list_all_bounties shape ok")
+    # Filter by status
+    active = db.list_all_bounties(status="active")
+    assert all(row["status"] == "active" for row in active)
+    print("  list_all_bounties filter ok")
+
+
 if __name__ == "__main__":
     main()
+    test_list_bounties()

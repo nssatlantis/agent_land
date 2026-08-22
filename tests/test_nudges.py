@@ -347,8 +347,8 @@ def main():
 
     # --- deduplication: review_note suppressed when pr_vote_note fires ------
     # fresh_voter should see pr_vote_note but not review_note
-    assert "review_note" not in mp_fresh or "pr_vote_note" in mp_fresh, \
-        "when pr_vote_note fires, review_note should be suppressed"
+    assert "review_note" not in mp_fresh, \
+        "review_note should be suppressed when pr_vote_note fires"
 
     print("test_nudges: all assertions passed")
     import shutil

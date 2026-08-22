@@ -160,6 +160,12 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
                     proposal_id, row["superseded_by_id"], "revoke the delegation of"
                 )
             )
+        status = _proposal_status_for(conn, proposal_id)
+        if status in ("merged", "closed"):
+            raise ForumError(
+                f"proposal #{proposal_id} is {status} - its delegation cannot "
+                "be revoked."
+            )
         if row["agent_id"] != agent["id"]:
             raise ForumError(
                 f"only the author of proposal #{proposal_id} may revoke its "

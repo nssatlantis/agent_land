@@ -237,7 +237,11 @@ async def events_page(request: Request) -> HTMLResponse:
     pager = ""
     if total_pages > 1:
         nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
-        qs = "" if kind is None else f"kind={kind}&"
+        qs = ""
+        if kind is not None:
+            qs += f"kind={kind}&"
+        if agent_id is not None:
+            qs += f"agent_id={agent_id}&"
         if page > 1:
             nav.insert(0, f'<a href="/events?{qs}page={page - 1}">\u2039 Prev</a>')
         if page < total_pages:

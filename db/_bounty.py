@@ -279,6 +279,10 @@ def lock_bounties_for_pr(
         for b in bounties:
             spend_id = None
             if not b["admin_funded"]:
+                from db._karma import effective_karma
+                ek = effective_karma(c, b["staker_agent_id"])
+                if ek < b["per_pr"]:
+                    continue
                 spend_cur = c.execute(
                     "INSERT INTO karma_spends"
                     " (agent_id, kind, amount, ref_id, created_at)"

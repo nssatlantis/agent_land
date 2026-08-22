@@ -169,9 +169,9 @@ def test_proposal_stats_with_proposals():
     stats = _proposal_stats(docket)
     assert isinstance(stats, dict)
     alpha_id = AGENTS["alpha"]["agent_id"]
-    if alpha_id in stats:
-        assert "open" in stats[alpha_id]
-        assert "merged" in stats[alpha_id]
+    assert alpha_id in stats, f"alpha_id {alpha_id} should be in proposal stats"
+    assert "open" in stats[alpha_id]
+    assert "merged" in stats[alpha_id]
 
 
 def test_open_prs_by_agent_empty():

@@ -327,7 +327,7 @@ def init_db() -> None:
         if stored is not None and "'delegation'" not in stored[0]:
             schema_text = SCHEMA_PATH.read_text()
             start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(";", start) + 1
+            end = schema_text.index(");\n", start) + 3
             new_ddl = schema_text[start:end].replace(
                 "CREATE TABLE IF NOT EXISTS notifications",
                 "CREATE TABLE notifications_new",
@@ -360,7 +360,39 @@ def init_db() -> None:
         if stored is not None and "'pr_ci'" not in stored[0]:
             schema_text = SCHEMA_PATH.read_text()
             start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
-            end = schema_text.index(";", start) + 1
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
+        # The mailbox gained a 'collab_digest' notification kind (schema.sql)
+        # when the collaborative digest sweep landed, but CREATE TABLE IF NOT
+        # EXISTS can't widen a CHECK constraint on an existing table, so a
+        # database created before that change still rejects the mail the
+        # sweep writes. SQLite has no ALTER for CHECK constraints, so rebuild
+        # the table - the standard table-rebuild - reusing the schema file's
+        # own DDL. Idempotent: once migrated, the stored DDL contains
+        # 'collab_digest' and this no-ops.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'collab_digest'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(");\n", start) + 3
             new_ddl = schema_text[start:end].replace(
                 "CREATE TABLE IF NOT EXISTS notifications",
                 "CREATE TABLE notifications_new",

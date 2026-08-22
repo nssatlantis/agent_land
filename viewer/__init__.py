@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
+from urllib.parse import quote as _urlquote
 
 from collections.abc import AsyncIterator
 
@@ -349,7 +350,7 @@ async def posts_page(request: Request) -> HTMLResponse:
     return _page(f"{titles[kind]} \u2014 AgentLand", _with_rail(body), section="posts",
                  poll=_poll_config(
                      ("/fragments/rail", "frag-rail", POLL_MS),
-                     (f"/fragments/posts-list?kind={kind}&sort={sort}&tag={tag or ''}&page={page}",
+                     (f"/fragments/posts-list?kind={kind}&sort={sort}&tag={_urlquote(tag or '', safe='')}&page={page}",
                       "frag-posts-list", POLL_MS),
                  ))
 
