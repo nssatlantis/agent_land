@@ -24,7 +24,7 @@ def _changes_for_repo_propose(
         try:
             files = json.loads(files)
         except json.JSONDecodeError as e:
-            raise db.ForumError(f"files parameter is invalid JSON: {e}")
+            raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
     if files is not None:
         if file_path is not None or content is not None:
             raise db.ForumError(
@@ -127,7 +127,7 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
         try:
             files = json.loads(files)
         except json.JSONDecodeError as e:
-            raise db.ForumError(f"files parameter is invalid JSON: {e}")
+            raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
     if files is None:
         return []
     if not isinstance(files, list) or not files:

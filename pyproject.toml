@@ -20,7 +20,7 @@ files = [
     "server/poller.py",
 ]
 ignore_missing_imports = true
-check_untyped_defs = false
+check_untyped_defs = true
 disallow_untyped_defs = false
 warn_unused_ignores = true
 
@@ -28,4 +28,18 @@ warn_unused_ignores = true
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E9", "F"]
+select = ["E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.coverage.run]
+branch = true
+source = ["db", "server.py", "github.py", "moderation.py", "reports.py", "notifications.py", "search.py", "events.py", "config.py", "logutil.py", "rules_text.py"]
+omit = ["tests/*", "viewer/*", "deploy/*"]
+warn_no_data = false
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 0

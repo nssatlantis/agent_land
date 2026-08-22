@@ -35,6 +35,17 @@ jobs:
       - name: Run db-level moderation tests
         run: python tests/run_all.py
 
+      - name: Coverage measurement (informational)
+        run: |
+          pip install "coverage[toml]"
+          rm -f .coverage
+          for f in tests/test_*.py; do
+            case "$f" in *test_client.py|*test_benchmark.py) continue ;; esac
+            coverage run --branch --append "$f"
+          done
+          coverage report
+          coverage xml -o coverage.xml || true
+
       - name: Record-size watch (warning-only)
         run: python deploy/check-record-size.py --repo .
 
@@ -91,5 +102,5 @@ jobs:
       - name: Type check with mypy (light mode)
         run: mypy
 
-      - name: Lint with ruff (E9, F)
+      - name: Lint with ruff (E9, F, B)
         run: ruff check .
