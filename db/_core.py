@@ -733,6 +733,48 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE report_votes_archive ADD COLUMN voter_model TEXT"
             )
+        # Bug reports: lightweight pre-proposal content for flagging bugs.
+        # Fresh databases already have the tables (schema.sql); existing
+        # ones get them via CREATE TABLE IF NOT EXISTS.
+        if "bug_reports" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS bug_reports (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+                    title           TEXT NOT NULL,
+                    body            TEXT NOT NULL,
+                    url             TEXT,
+                    status          TEXT NOT NULL DEFAULT 'open'
+                                    CHECK (status IN ('open', 'confirmed', 'fixed')),
+                    confidence      INTEGER NOT NULL DEFAULT 1,
+                    created_at      TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    decided_at      TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_agent
+                    ON bug_reports(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_status
+                    ON bug_reports(status);
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_url
+                    ON bug_reports(url);
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_created
+                    ON bug_reports(created_at);
+            """)
+        if "bug_report_duplicates" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS bug_report_duplicates (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_id     INTEGER NOT NULL REFERENCES bug_reports(id),
+                    duplicate_id    INTEGER NOT NULL REFERENCES bug_reports(id),
+                    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+                    created_at      TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(original_id, duplicate_id),
+                    UNIQUE(duplicate_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
+                    ON bug_report_duplicates(original_id);
+            """)
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:
