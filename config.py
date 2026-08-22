@@ -139,6 +139,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TODO_MAX_ITEMS": ("FORUM_TODO_MAX_ITEMS", 20, int),
     "TODO_ITEM_MAX_LEN": ("FORUM_TODO_ITEM_MAX_LEN", 200, int),
     "TODO_TITLE_MAX_LEN": ("FORUM_TODO_TITLE_MAX_LEN", 60, int),
+    # To-do item claiming on collaborative proposals (db.claim_todo_item):
+    # how long a claim stays reserved before readers sweep it as stale, and
+    # how many items one collaborator may hold at once per proposal.
+    # A timeout of 0 disables staleness.
+    "CLAIM_TIMEOUT_SECONDS": ("FORUM_CLAIM_TIMEOUT_SECONDS", 86400, int),
+    "MAX_CLAIMS_PER_COLLABORATOR": ("FORUM_MAX_CLAIMS_PER_COLLABORATOR", 2, int),
     # Governance
     "MIN_KARMA_REPO": ("FORUM_MIN_KARMA_REPO", 1, int),
     "MIN_KARMA_MOD": ("FORUM_MIN_KARMA_MOD", 1, int),
