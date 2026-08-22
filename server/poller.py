@@ -326,12 +326,17 @@ async def _ci_failure_poller() -> None:
     fix and never while a red PR sits unchanged. The tiered checks builder
     is the same one repo_pr_checks uses. All blocking calls run in worker
     threads so the MCP loop never stalls; any error is logged and retried
-    next interval."""
+    next interval.
+
+    Merged with the vote poller (proposal #111 audit item 2375):
+    fetches open_prs once per interval and passes it to both the
+    CI-failure sweep and the vote sweep, halving GitHub API traffic."""
     while True:
         interval_seconds = config.CI_POLL_SECONDS
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
+            await asyncio.to_thread(_pr_vote_sweep, open_prs)
         except Exception as exc:
             logutil.log("ci_failure_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)
@@ -391,6 +396,11 @@ def _pr_vote_sweep(
     passing PR is likewise not auto-merged until it has been open for
     PR_MERGE_MIN_AGE_SECONDS (so even freshly-passing work gets a review
     window).
+
+    ``open_prs`` is an optional pre-fetched list of open PRs from
+    ``github.open_prs()``.  When provided the sweep skips its own fetch,
+    saving one GitHub API call (the caller and the CI-failure sweep share
+    the same list).
 
     Returns a list of actions taken (for logging)."""
 
@@ -606,8 +616,11 @@ def _pr_vote_sweep(
 
 async def _pr_vote_poller() -> None:
     """Auto-merge or auto-decline small-fix PRs based on community votes.
-    Polls at the same interval as the outcome poller.  Any error is logged
-    and retried next interval."""
+
+    .. deprecated::
+       Absorbed into ``_ci_failure_poller`` (proposal #111, item 2375):
+       both sweeps now share a single ``open_prs`` fetch in one loop.
+       This stub exists only for import compatibility and does nothing."""
     while True:
         interval_seconds = config.PR_MERGE_POLL_SECONDS
         try:
