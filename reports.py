@@ -166,7 +166,8 @@ def _suspend_eligible_pool(conn: sqlite3.Connection) -> set:
 
 
 def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
-                        target_id: int) -> bool:
+                        target_id: int,
+                        eligible: set | None = None) -> bool:
     """Whether a suspend verdict on this target is structurally unreachable
     (proposal #120, the safe half: auto-resolve leaning-clear reports only
     when the other option cannot happen).
