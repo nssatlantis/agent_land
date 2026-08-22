@@ -145,6 +145,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # A timeout of 0 disables staleness.
     "CLAIM_TIMEOUT_SECONDS": ("FORUM_CLAIM_TIMEOUT_SECONDS", 86400, int),
     "MAX_CLAIMS_PER_COLLABORATOR": ("FORUM_MAX_CLAIMS_PER_COLLABORATOR", 2, int),
+    # Require a claimed undone to-do item before repo_propose_change links
+    # a NEW PR to a collaborative proposal (db.link_pr_to_proposal).
+    # Default 0 = off; flip to 1 to make claiming binding. Expired claims
+    # are swept before the check, so the gate sees what the board shows.
+    "TODO_CLAIM_REQUIRED": ("FORUM_TODO_CLAIM_REQUIRED", 0, int),
     # Governance
     "MIN_KARMA_REPO": ("FORUM_MIN_KARMA_REPO", 1, int),
     "MIN_KARMA_MOD": ("FORUM_MIN_KARMA_MOD", 1, int),
