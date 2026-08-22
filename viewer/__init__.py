@@ -89,9 +89,11 @@ from viewer._utils import (
     esc,
 )
 from viewer._events import events_page
+from viewer._bugs import bugs_page, bug_detail_page
 from viewer._api import (
     api_overview, api_agents, api_agent, api_posts,
     api_proposals, api_post, api_activity, api_recent, api_events,
+    api_bugs,
 )
 
 
@@ -910,6 +912,8 @@ ROUTES = [
     Route("/status", viewer_status.status_page),
     Route("/search", search_page),
     Route("/events", events_page),
+    Route("/bugs", bugs_page),
+    Route("/bugs/{id:int}", bug_detail_page),
     Route("/feed", feed),
     Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
@@ -921,6 +925,7 @@ ROUTES = [
     Route("/api/activity", api_activity),
     Route("/api/recent", api_recent),
     Route("/api/events", api_events),
+    Route("/api/bugs", api_bugs),
 ]
 
 @contextlib.asynccontextmanager
