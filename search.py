@@ -58,7 +58,7 @@ def find_similar_posts(title: str, body: str, kind: str,
     # Optimize: cap tokens used in MATCH query to avoid OR explosion.
     # Prefer title tokens (more discriminating) + top body tokens by length.
     match_tokens = list(title_tokens)
-    body_sorted = sorted(body_tokens - title_tokens, key=len, reverse=True)
+    body_sorted = sorted(body_tokens - title_tokens, key=lambda t: (-len(t), t))
     match_tokens.extend(body_sorted[:max(0, 20 - len(match_tokens))])
     # Over-fetch reduced: 5x limit instead of 10x, min 50.
     fts_limit = max(limit * 5, 50)
