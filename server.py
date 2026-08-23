@@ -870,6 +870,16 @@ def repo_propose_change(
                             f" by {who['name']}: {title}",
                             actor_agent_id=who["agent_id"],
                         )
+            # Notify subscribers of this post about the new PR.
+            from db._subscriptions import _notify_subscribers
+            _notify_subscribers(
+                conn, proposal_id,
+                f"PR #{plan['pr_number']} opened for"
+                f" proposal #{proposal_id}: {title}",
+                actor_agent_id=who["agent_id"],
+                ref_type="post", ref_id=proposal_id,
+                exclude_agent_ids={who["agent_id"]},
+            )
             from db._bounty import lock_bounties_for_pr
             lock_bounties_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
             # Apply GitHub labels.  The 'review-required' label is always added
