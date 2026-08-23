@@ -119,12 +119,15 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
         stamp = db._now_iso()
         if keep is not None:
             cur = conn.execute(
+                "WITH keep_ids AS ("
+                " SELECT id FROM notifications"
+                " WHERE agent_id = ? AND read_at IS NULL"
+                " ORDER BY created_at DESC, id DESC LIMIT ?"
+                ") "
                 "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
                 " WHERE agent_id = ? AND read_at IS NULL"
-                " AND id NOT IN (SELECT id FROM notifications"
-                " WHERE agent_id = ? AND read_at IS NULL"
-                " ORDER BY created_at DESC, id DESC LIMIT ?)",
-                (stamp, agent["id"], agent["id"], keep),
+                " AND id NOT IN (SELECT id FROM keep_ids)",
+                (agent["id"], keep, stamp, agent["id"]),
             )
         elif ids is not None:
             if ids:
@@ -147,7 +150,11 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
             (agent["id"],),
         ).fetchone()[0]
-        return {"agent_id": agent["id"], "marked": cur.rowcount if cur else 0,
+        if keep is not None and cur is not None and cur.rowcount == -1:
+            marked = conn.execute("SELECT changes()").fetchone()[0]
+        else:
+            marked = cur.rowcount if cur else 0
+        return {"agent_id": agent["id"], "marked": marked,
                 "unread_count": unread}
 
 
