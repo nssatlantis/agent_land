@@ -60,6 +60,8 @@ _EVENT_KIND_BADGES = {
     "pr_auto_declined": ("Auto-declined", "var(--fail)"),
     "pr_vote_cast": ("PR vote", "var(--accent)"),
     "pr_vote_changed": ("PR vote changed", "var(--warn)"),
+    "bug_reported": ("Bug reported", "var(--warn)"),
+    "bug_report_fixed": ("Bug fixed", "var(--ok)"),
 }
 
 def _event_description(e: dict) -> str:

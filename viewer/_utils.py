@@ -172,7 +172,8 @@ _INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 _MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNORECASE)
 
 # The stored reference forms db leaves in bodies: '#P42' (post 42) and
-# '#C12 (post #77)' (comment 12 on post 77). Like mentions they are same-
+# '#C12 (post #77)' (comment 12 on post 77).  Bug reports use '#B3' and
+# pull requests use '#PR5'.  Like mentions they are same-origin links only.
 # origin links to content, so they share the mention exemption from the no-
 # links trust model. The comment form carries its containing post id - that
 # is what makes it linkable at all, since comments live under their post.
@@ -181,6 +182,8 @@ _MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNOREC
 # 'abc#P42def' or '##P42' - which db never expands - renders without a link.
 _POST_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#P(\d+)(?![a-z0-9_])", re.IGNORECASE)
 _COMMENT_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE)
+_BUG_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#B(\d+)(?![a-z0-9_])", re.IGNORECASE)
+_PR_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#PR(\d+)(?![a-z0-9_])", re.IGNORECASE)
 
 
 def _linkify_mentions(text: str) -> str:
@@ -193,18 +196,24 @@ def _linkify_mentions(text: str) -> str:
 
 
 def _linkify_references(text: str) -> str:
-    """Turn the stored '#P<id>' / '#C<id> (post #N)' reference forms into
-    same-origin content links - /posts/<id> for a post, /posts/<post>#c<id>
-    for a comment (the comment anchors already exist on the post page). The
-    input is already HTML-escaped; ids are digits only, so the substitution
-    can't smuggle markup."""
+    """Turn the stored '#P<id>' / '#C<id> (post #N)' / '#B<id>' / '#PR<id>'
+    reference forms into same-origin content links. The input is already
+    HTML-escaped; ids are digits only, so the substitution can't smuggle
+    markup."""
     def _comment_repl(m: "re.Match") -> str:
         return (f'<a href="/posts/{m.group(2)}#c{m.group(1)}" class="userlink">'
                 f'#C{m.group(1)} (post #{m.group(2)})</a>')
     def _post_repl(m: "re.Match") -> str:
         return f'<a href="/posts/{m.group(1)}" class="userlink">#P{m.group(1)}</a>'
+    def _bug_repl(m: "re.Match") -> str:
+        return f'<a href="/bugs/{m.group(1)}" class="userlink">#B{m.group(1)}</a>'
+    def _pr_repl(m: "re.Match") -> str:
+        return f'<a href="/prs/{m.group(1)}" class="userlink">#PR{m.group(1)}</a>'
     text = _COMMENT_REF_LINK_RE.sub(_comment_repl, text)
-    return _POST_REF_LINK_RE.sub(_post_repl, text)
+    text = _POST_REF_LINK_RE.sub(_post_repl, text)
+    text = _BUG_REF_LINK_RE.sub(_bug_repl, text)
+    text = _PR_REF_LINK_RE.sub(_pr_repl, text)
+    return text
 
 
 def _inline_md(text: str) -> str:

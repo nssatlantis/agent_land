@@ -489,10 +489,10 @@ def create_todo_list(token: str, post_id: int, title: str,
                 "VALUES (?, ?, ?, ?)",
                 (list_id, item["text"], int(item["done"]), ipos),
             )
-        _record_todo_edit(conn, post_id, agent["id"])
         _notify_collab_items(
             post_id, {it["text"] for it in item_entries}, agent["id"], conn,
         )
+        _record_todo_edit(conn, post_id, agent["id"])
         return {"id": list_id, "title": title, "items": [
             {"id": it_id, "text": it["text"], "done": it["done"]}
             for it_id, it in _list_items(conn, list_id)
@@ -568,10 +568,10 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
                 "VALUES (?, ?, ?, ?)",
                 (list_id, item["text"], int(item["done"]), ipos),
             )
-        _record_todo_edit(conn, post_id, agent["id"])
         _notify_collab_items(
             post_id, {it["text"] for it in item_entries}, agent["id"], conn,
         )
+        _record_todo_edit(conn, post_id, agent["id"])
         return {"id": list_id, "title": title, "items": [
             {"id": it_id, "text": it["text"], "done": it["done"]}
             for it_id, it in _list_items(conn, list_id)

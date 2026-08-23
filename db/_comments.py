@@ -396,6 +396,21 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                             "notified": notified_voters},
                     conn=conn,
                 )
+        # Notify subscribers of this post about the new comment.
+        from db._subscriptions import _notify_subscribers
+        _sub_exclude = {agent["id"], post["agent_id"], parent_author_id or 0}
+        _sub_exclude |= {m["agent_id"] for m in mentioned}
+        try:
+            _sub_exclude |= {v["voter_agent_id"] for v in voters}
+        except NameError:
+            pass
+        _notify_subscribers(
+            conn, post_id,
+            f"{agent['name']} commented on post #{post_id}",
+            actor_agent_id=agent["id"],
+            ref_type="post", ref_id=post_id,
+            exclude_agent_ids=_sub_exclude,
+        )
         log_event(EVT_COMMENT_CREATED, actor_agent_id=agent["id"], target_type="comment", target_id=comment_id, detail={"post_id": post_id}, conn=conn)
         return {
             "comment_id": comment_id,

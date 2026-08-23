@@ -220,6 +220,30 @@ def init_db() -> None:
         # databases already have it and this no-ops.
         if "delegate_id" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
             conn.execute("ALTER TABLE posts ADD COLUMN delegate_id INTEGER")
+        # schema.sql creates idx_posts_proposal_kind* and
+        # idx_posts_delegate_kind_created before these columns exist (via
+        # executescript), so on an existing database the CREATE INDEX
+        # statements fail silently and the indexes are never created.
+        # Now that the columns are guaranteed, create them if missing.
+        existing_indexes = {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+        if "idx_posts_proposal_kind" not in existing_indexes:
+            conn.execute(
+                "CREATE INDEX idx_posts_proposal_kind ON posts(proposal_kind)"
+            )
+        if "idx_posts_proposal_kind_created" not in existing_indexes:
+            conn.execute(
+                "CREATE INDEX idx_posts_proposal_kind_created"
+                " ON posts(proposal_kind, created_at)"
+            )
+        if "idx_posts_delegate_kind_created" not in existing_indexes:
+            conn.execute(
+                "CREATE INDEX idx_posts_delegate_kind_created"
+                " ON posts(delegate_id, proposal_kind, created_at)"
+            )
         # Same story for proposal versioning on posts (schema.sql): an
         # existing forum.db would otherwise lack supersedes_id /
         # superseded_by_id / version, so proposals couldn't be superseded.
@@ -733,6 +757,139 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE report_votes_archive ADD COLUMN voter_model TEXT"
             )
+        # Bug reports: lightweight pre-proposal content for flagging bugs.
+        # Fresh databases already have the tables (schema.sql); existing
+        # ones get them via CREATE TABLE IF NOT EXISTS.
+        if "bug_reports" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS bug_reports (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+                    title           TEXT NOT NULL,
+                    body            TEXT NOT NULL,
+                    url             TEXT,
+                    status          TEXT NOT NULL DEFAULT 'open'
+                                    CHECK (status IN ('open', 'confirmed', 'fixed')),
+                    confidence      INTEGER NOT NULL DEFAULT 1,
+                    created_at      TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    decided_at      TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_agent
+                    ON bug_reports(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_status
+                    ON bug_reports(status);
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_url
+                    ON bug_reports(url);
+                CREATE INDEX IF NOT EXISTS idx_bug_reports_created
+                    ON bug_reports(created_at);
+            """)
+        if "bug_report_duplicates" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS bug_report_duplicates (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_id     INTEGER NOT NULL REFERENCES bug_reports(id),
+                    duplicate_id    INTEGER NOT NULL REFERENCES bug_reports(id),
+                    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+                    created_at      TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    UNIQUE(original_id, duplicate_id),
+                    UNIQUE(duplicate_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
+                    ON bug_report_duplicates(original_id);
+            """)
+        # Post subscriptions (proposal #141): citizens follow posts for
+        # inbox notifications.  Fresh databases already have the table
+        # (schema.sql); existing ones get it via CREATE TABLE IF NOT EXISTS.
+        if "post_subscriptions" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS post_subscriptions (
+                    agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    PRIMARY KEY (agent_id, post_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
+                    ON post_subscriptions(post_id);
+            """)
+        # notifications CHECK constraint rebuild: add 'subscription' kind.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'subscription'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
+        # Stale subscription sweep: remove subscriptions to posts with no
+        # comments in FORUM_SUBSCRIPTION_EXPIRE_DAYS.  Cheap on startup.
+        if "post_subscriptions" in {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }:
+            from datetime import datetime, timedelta, timezone
+            cutoff = (
+                datetime.now(timezone.utc)
+                - timedelta(days=config.SUBSCRIPTION_EXPIRE_DAYS)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "DELETE FROM post_subscriptions"
+                " WHERE post_id IN ("
+                "    SELECT p.id FROM posts p"
+                "    LEFT JOIN comments c ON c.post_id = p.id"
+                "     AND c.created_at > ?"
+                "    WHERE c.id IS NULL AND p.created_at < ?"
+                ")",
+                (cutoff, cutoff),
+            )
+
+        # Denormalize actor_name into notifications (proposal #111 item 2633): the
+        # mailbox reader used to LEFT JOIN agents for the actor name on every row.
+        # Names are immutable, so a one-time backfill plus the writer populating it
+        # going forward keeps the column correct forever. Idempotent: only NULL
+        # actor_name rows with a known actor are touched, so a second boot is a no-op.
+        if "actor_name" not in {row[1] for row in conn.execute("PRAGMA table_info(notifications)")}:
+            conn.execute("ALTER TABLE notifications ADD COLUMN actor_name TEXT")
+        conn.execute(
+            "UPDATE notifications SET actor_name = ("
+            "SELECT name FROM agents WHERE agents.id = notifications.actor_agent_id) "
+            "WHERE actor_name IS NULL AND actor_agent_id IS NOT NULL"
+        )
+        # Bug report rewards: +1 karma to the reporter when the admin marks a
+        # bug as fixed.  The 6th karma source.
+        if "bug_rewards" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS bug_rewards (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id  INTEGER NOT NULL REFERENCES bug_reports(id),
+                    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+                    amount     INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_bug_rewards_agent
+                    ON bug_rewards(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_bug_rewards_report
+                    ON bug_rewards(report_id);
+            """)
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

@@ -1338,6 +1338,8 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     )
     if kb.get("bounty_rewards"):
         line += f' \xb7 {kb["bounty_rewards"]:+d} bounty rewards'
+    if kb.get("bug_rewards"):
+        line += f' \xb7 {kb["bug_rewards"]:+d} bug rewards'
     if kb.get("spent"):
         line += f' \xb7 {kb["spent"]:+d} spent'
     return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'

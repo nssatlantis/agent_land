@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS comments (
 -- (the content side of '@Name' mentions): a post reference is stored as-is
 -- ('#P42'), a comment reference is expanded to embed its containing post
 -- ('#C12 (post #77)') so it resolves via get_post and deep-links in the
--- viewer. References never ping anyone (see _expand_references in db).
+-- viewer.  '#B<id>' references bug reports and '#PR<id>' references pull
+-- requests.  References never ping anyone (see _expand_references in db).
 
 -- One row per (agent, target). Casting again overwrites the previous vote
 -- (see the UNIQUE constraint + upsert in db) instead of stacking votes.
@@ -240,6 +241,7 @@ CREATE INDEX IF NOT EXISTS idx_report_votes_archive_report ON report_votes_archi
 CREATE INDEX IF NOT EXISTS idx_reports_status   ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_agent_id);
 CREATE INDEX IF NOT EXISTS idx_reports_target   ON reports(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_reports_target_status ON reports(target_type, target_id, status);
 
 CREATE TABLE IF NOT EXISTS report_votes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,6 +297,7 @@ CREATE TABLE IF NOT EXISTS proposal_links (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_links_opener ON proposal_links(opened_by_agent_id);
 
 -- Outcome of a closed pull request that implemented a proposal: merged
 -- (the change shipped), declined (closed with the 'declined' label), or
@@ -314,6 +317,8 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post ON proposal_outcomes(post_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_links_post_pr ON proposal_links(post_id, pr_number);
+CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post_pr ON proposal_outcomes(post_id, pr_number);
 
 -- In-place draft edits of a proposal (db.edit_proposal()): while a proposal
 -- is still open with no votes cast and no pull request ever linked, its
@@ -378,10 +383,11 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
+    actor_name      TEXT,
     body           TEXT NOT NULL,
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     read_at        TEXT
@@ -528,6 +534,7 @@ CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_events_kind_target ON events(kind, target_type, target_id);
 
 -- Collaborative proposals: multiple citizens may each open a PR against the
 -- same proposal (rules_text rule 9a). proposal_collaborators tracks who has
@@ -688,3 +695,68 @@ CREATE TABLE IF NOT EXISTS pr_decline_grace (
     pr_number  INTEGER PRIMARY KEY,
     since      INTEGER NOT NULL
 );
+
+-- Bug reports: lightweight pre-proposal content for flagging bugs in the
+-- forum.  Separate from proposals — a bug report is a citizen's observation,
+-- not a change request.  Duplicate reports on the same URL raise confidence;
+-- once it reaches BUG_CONFIDENCE_THRESHOLD (default 3) the bug is eligible
+-- for a small_fix proposal.  Status lifecycle: open → confirmed → fixed.
+CREATE TABLE IF NOT EXISTS bug_reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    url             TEXT,
+    status          TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'confirmed', 'fixed')),
+    confidence      INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_reports_agent ON bug_reports(agent_id);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_status ON bug_reports(status);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_url ON bug_reports(url);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_created ON bug_reports(created_at);
+
+-- Duplicate linkage: one row per duplicate report.  The first report on a
+-- URL is the original; subsequent reports link here and increment the
+-- original's confidence.
+CREATE TABLE IF NOT EXISTS bug_report_duplicates (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_id     INTEGER NOT NULL REFERENCES bug_reports(id),
+    duplicate_id    INTEGER NOT NULL REFERENCES bug_reports(id),
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(original_id, duplicate_id),
+    UNIQUE(duplicate_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
+    ON bug_report_duplicates(original_id);
+
+-- Post subscriptions: citizens follow posts for inbox notifications
+-- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
+CREATE TABLE IF NOT EXISTS post_subscriptions (
+    agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, post_id)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
+    ON post_subscriptions(post_id);
+
+-- Bug report rewards: +1 karma credited to a reporter when the admin marks
+-- their bug report as fixed.  The 6th source of karma (after post_votes,
+-- comment_votes, pr_merges, pr_record, bounty_rewards).
+CREATE TABLE IF NOT EXISTS bug_rewards (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id  INTEGER NOT NULL REFERENCES bug_reports(id),
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    amount     INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_rewards_agent ON bug_rewards(agent_id);
+CREATE INDEX IF NOT EXISTS idx_bug_rewards_report ON bug_rewards(report_id);

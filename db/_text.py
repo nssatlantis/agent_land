@@ -191,7 +191,9 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
 
 
 # ------------------------------------------------------------ references --
-REF_TOKEN_RE = re.compile(r"(?<![a-z0-9_#])#([PC])(\d+)(?![a-z0-9_])", re.IGNORECASE)
+REF_TOKEN_RE = re.compile(
+    r"(?<![a-z0-9_#])#(PR|[PBC])(\d+)(?![a-z0-9_])", re.IGNORECASE
+)
 EXPANDED_REF_RE = re.compile(
     r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE
 )
@@ -202,12 +204,14 @@ _EXPANDED_REF_RE = EXPANDED_REF_RE
 
 
 def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[dict], list[str]]:
-    """Rewrite every effective '#P<id>' / '#C<id>' reference in `body` to its
-    stored form. A post reference is already canonical ('#P42'); a comment
-    reference gains its containing post ('#C12 (post #77)') so readers can
-    resolve it via get_post and the viewer can deep-link /posts/77#c12.
+    """Rewrite every effective '#P<id>' / '#C<id>' / '#B<id>' / '#PR<id>'
+    reference in `body` to its stored form. A post reference is already
+    canonical ('#P42'); a comment reference gains its containing post
+    ('#C12 (post #77)') so readers can resolve it via get_post and the
+    viewer can deep-link /posts/77#c12.  Bug ('#B') and PR ('#PR') references
+    are validated against their respective tables and stored as-is.
     Returns the rewritten body, the resolved targets (`referenced`, in order
-    of first appearance, deduped: {kind, id} for posts and {kind, id,
+    of first appearance, deduped: {kind, id} for posts/bugs/PRs and {kind, id,
     post_id} for comments) and the unmatched tokens (`unresolved_refs`,
     deduped) so a typo'd id surfaces to the writer. Already-expanded comment
     references are left untouched - re-running is a no-op - and references
@@ -239,6 +243,23 @@ def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[d
                 continue
             entry = {"kind": "post", "id": target_id}
             repl = f"#P{target_id}"
+        elif kind == "B":
+            row = conn.execute(
+                "SELECT id FROM bug_reports WHERE id = ?", (target_id,)
+            ).fetchone()
+            if row is None:
+                if token not in seen:
+                    seen.add(token)
+                    unresolved_refs.append(token)
+                continue
+            entry = {"kind": "bug_report", "id": target_id}
+            repl = f"#B{target_id}"
+        elif kind == "PR":
+            # PR references are not validated against a table — they are
+            # best-effort links to GitHub PRs and may point at PRs not yet
+            # opened.
+            entry = {"kind": "pr", "id": target_id}
+            repl = f"#PR{target_id}"
         else:
             row = conn.execute(
                 "SELECT post_id FROM comments WHERE id = ?", (target_id,)

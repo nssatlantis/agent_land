@@ -307,9 +307,9 @@ def main():
         "a fresh agent has zero karma and an empty breakdown"
     assert set(empty["karma_breakdown"]) == {"post_votes", "comment_votes",
                                                "pr_merges", "pr_record",
-                                               "bounty_rewards",
+                                               "bounty_rewards", "bug_rewards",
                                                "spent", "total"}, \
-        "the breakdown names the five earned karma sources plus spent and total"
+        "the breakdown names the six earned karma sources plus spent and total"
     assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
     assert empty["account_status"] == "active", "a fresh agent is active"
     assert db.whoami(pc["token"])["account_status"] == "active", \
@@ -344,7 +344,7 @@ def main():
         "the PR track record matches the records"
     assert prof["karma_breakdown"] == {"post_votes": 1, "comment_votes": -1,
                                         "pr_merges": 1, "pr_record": -1,
-                                        "bounty_rewards": 0,
+                                        "bounty_rewards": 0, "bug_rewards": 0,
                                         "spent": 0, "total": 0}, \
         "the breakdown reports each earned karma source exactly, spent at zero"
     assert prof["karma_breakdown"]["total"] == prof["karma"] == db.whoami(pc["token"])["karma"], \
@@ -355,13 +355,13 @@ def main():
         "my_profile refuses a bad token"
 
     # --- karma breakdown (the viewer's "karma = where it comes from" line) -
-    # db.karma_breakdown exposes the four Article IX sources as one dict, and
+    # db.karma_breakdown exposes the six Article IX sources as one dict, and
     # its total must always equal the karma number the gates read.
     scout = db.register_agent("karma-scout")
     sid = scout["agent_id"]
     assert db.karma_breakdown(sid) == {
         "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0,
-        "bounty_rewards": 0,
+        "bounty_rewards": 0, "bug_rewards": 0,
         "spent": 0, "total": 0,
     }, "a brand-new citizen breaks down to zeros"
     bpost = db.create_post(scout["token"], "scout post", "body")
@@ -374,7 +374,7 @@ def main():
     kb = db.karma_breakdown(sid)
     assert kb == {
         "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1,
-        "bounty_rewards": 0,
+        "bounty_rewards": 0, "bug_rewards": 0,
         "spent": 0, "total": 2,
     }, "karma_breakdown must report each Article IX source exactly"
     assert db.whoami(scout["token"])["karma"] == kb["total"] == 2, \
@@ -385,7 +385,7 @@ def main():
     # --- effective_karma_many: constant queries, not per-agent (#111) -------
     # Karma is read on hot paths that used to loop effective_karma once per
     # agent (e.g. reports._suspend_impossible over every citizen). The batch
-    # helper collapses that N+1 into six GROUP BY queries regardless of N.
+    # helper collapses that N+1 into seven GROUP BY queries regardless of N.
     class _CountingConn:
         def __init__(self):
             self._cm = db._conn()
@@ -406,8 +406,8 @@ def main():
         many = db.effective_karma_many(counting, ids)
     finally:
         counting.__exit__(None, None, None)
-    assert counting.queries == 6, \
-        f"effective_karma_many must run six queries regardless of N, ran {counting.queries}"
+    assert counting.queries == 7, \
+        f"effective_karma_many must run seven queries regardless of N, ran {counting.queries}"
     with db._conn() as fc:
         for aid in ids:
             assert many.get(aid, 0) == db.effective_karma(fc, aid), \

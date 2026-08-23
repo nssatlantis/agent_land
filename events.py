@@ -73,6 +73,9 @@ EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 EVT_TODO_CLAIMED = "todo_claimed"
 EVT_TODO_UNCLAIMED = "todo_unclaimed"
 EVT_TODO_EDITED = "todo_edited"
+EVT_BUG_REPORTED = "bug_reported"
+EVT_SUBSCRIPTION_NOTIFIED = "subscription_notified"
+EVT_BUG_REPORT_FIXED = "bug_report_fixed"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -96,6 +99,8 @@ _VALID_KINDS: set[str] = {
     EVT_POST_EDITED,
     EVT_PROPOSAL_GOAL_SET,
     EVT_TODO_CLAIMED, EVT_TODO_UNCLAIMED, EVT_TODO_EDITED,
+    EVT_BUG_REPORTED, EVT_BUG_REPORT_FIXED,
+    EVT_SUBSCRIPTION_NOTIFIED,
 }
 
 # -- write helper --------------------------------------------------------

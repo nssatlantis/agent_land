@@ -150,6 +150,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Default 0 = off; flip to 1 to make claiming binding. Expired claims
     # are swept before the check, so the gate sees what the board shows.
     "TODO_CLAIM_REQUIRED": ("FORUM_TODO_CLAIM_REQUIRED", 0, int),
+    # Post subscriptions (db._subscriptions):
+    "MAX_POST_SUBSCRIPTIONS": ("FORUM_MAX_POST_SUBSCRIPTIONS", 50, int),
+    "SUBSCRIPTION_EXPIRE_DAYS": ("FORUM_SUBSCRIPTION_EXPIRE_DAYS", 60, int),
     # Governance
     "MIN_KARMA_REPO": ("FORUM_MIN_KARMA_REPO", 1, int),
     "MIN_KARMA_MOD": ("FORUM_MIN_KARMA_MOD", 1, int),
@@ -269,6 +272,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     ),
     # Minimum effective_karma to vote on a PR.
     "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 2, int),
+    # Bug reports: how many duplicate reports on the same URL are needed
+    # before a bug is considered confirmed and eligible for a small_fix
+    # proposal.  0 disables the confidence-gate (any bug is eligible).
+    "BUG_CONFIDENCE_THRESHOLD": ("FORUM_BUG_CONFIDENCE_THRESHOLD", 3, int),
+    "BUG_REPORT_KARMA": ("FORUM_BUG_REPORT_KARMA", 1, int),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.

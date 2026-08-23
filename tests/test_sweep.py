@@ -749,11 +749,129 @@ def test_sweep_db_reads_are_batched():
     assert len(kind_fetches) == 1, (
         f"one batched small-fix kind fetch expected, got {len(kind_fetches)}"
     )
-    merges = [c for c in log.calls if c[0] == "merge"]
-    assert len(merges) == 1, (
-        f"Phase 2 still merges at most one PR per sweep: {log.calls}"
+    merges = [c[1] for c in log.calls if c[0] == "merge"]
+    assert merges == numbers, (
+        f"every eligible PR must drain in candidate order per sweep: "
+        f"{log.calls}"
     )
     print("  sweep db reads are batched: ok")
+
+
+def test_sweep_drains_past_rebase_conflict():
+    """A first candidate whose post-rebase state is bad must not starve the
+    queue: Phase 2 skips the conflicted branch (logged) and still runs the
+    full rebase -> CI -> merge sequence on the next eligible PR."""
+    pid_bad, pr_bad = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_bad, 1)
+    pid_good, pr_good = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_good, 1)
+
+    old = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    log = _CallLog()
+    opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+
+    def _rebase_conflicts_first(number, **kw):
+        log.calls.append(("rebase", number))
+        if number == pr_bad:
+            return {"status": "conflict", "files": ["x.py"]}
+        return {"status": "ok", "new_sha": f"sha-{number}"}
+
+    with _patch(
+        open_prs=_stub_open_prs(*[
+            _open_pr_dict(n, citizen=opener, created_at=old)
+            for n in (pr_bad, pr_good)
+        ]),
+        pr_has_label=_stub_pr_has_label(hold=False),
+        pr_checks=_stub_pr_checks("success"),
+        merge_pr=log.merge,
+        decline_pr=log.decline,
+        rebase_pr_onto_main=_rebase_conflicts_first,
+        wait_for_ci=log.wait_ci,
+    ):
+        actions = _pr_vote_sweep()
+
+    merged = [c[1] for c in log.calls if c[0] == "merge"]
+    assert merged == [pr_good], (
+        f"conflicted candidate skipped, later one merged: {log.calls}"
+    )
+    rebased = [c[1] for c in log.calls if c[0] == "rebase"]
+    assert rebased == [pr_bad, pr_good], (
+        f"both candidates must be attempted in order: {log.calls}"
+    )
+    assert {"action": "auto_merge", "pr_number": pr_good} in actions
+    print("  sweep drains past rebase conflict: ok")
+
+
+
+def test_sweep_relinks_unlinked_open_prs():
+    """Proposal #153: an open PR stamped 'Proposal: #N' whose DB link never
+    landed (the claim gate refused at open time because an earlier verdict
+    had released the opener's claims) is retried by every vote sweep - it
+    stays unlinked while the opener holds no undone claim, and links on the
+    first sweep after they claim one (the remedy the refusal names)."""
+    import importlib
+
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"], f"Relink fixture {_counter[0]}", "Body",
+        collaborative=True,
+    )
+    _counter[0] += 1
+    pid = prop["post_id"]
+    db.set_todos_for_post(AGENTS["alpha"]["token"], pid,
+        [{"title": "W", "items": [{"text": "task"}]}])
+    items = [it["id"] for it in db.get_todos_for_post(pid)[0]["items"]]
+    late = db.register_agent(f"relink-late-{_counter[0]}")
+    _counter[0] += 1
+    db.join_proposal(late["token"], pid)
+
+    pr_number = 8500 + pid
+    row = _open_pr_dict(
+        pr_number,
+        citizen={"name": late["name"], "agent_id": late["agent_id"]},
+        created_at=(datetime.now(timezone.utc) - timedelta(hours=3))
+        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    row["body"] = (
+        "Implements the relink item.\n\n"
+        f"Proposal: #{pid}\n"
+        f"Citizen: {late['name']} (agent_id={late['agent_id']})"
+    )
+
+    saved_flag = os.environ.get("FORUM_TODO_CLAIM_REQUIRED")
+    os.environ["FORUM_TODO_CLAIM_REQUIRED"] = "1"
+    importlib.reload(config)
+    try:
+        with _patch(
+            open_prs=_stub_open_prs(row),
+            pr_has_label=_stub_pr_has_label(hold=False),
+            pr_checks=_stub_pr_checks("success"),
+            merge_pr=lambda *a, **k: None,
+            decline_pr=lambda *a, **k: None,
+            rebase_pr_onto_main=lambda *a, **k: {"status": "ok", "new_sha": "x"},
+            wait_for_ci=lambda *a, **k: "success",
+        ):
+            # No claim held: the gate still governs - nothing links yet.
+            _pr_vote_sweep()
+            assert db.proposal_for_pr(pr_number) is None, \
+                "gate must hold while the opener claims nothing"
+
+            # The remedy the refusal prescribes: claim an undone item.
+            db.claim_todo_item(late["token"], pid, items[0])
+
+            _pr_vote_sweep()
+            assert db.proposal_for_pr(pr_number) == pid, \
+                "the sweep must relink once the opener holds a claim"
+    finally:
+        if saved_flag is None:
+            os.environ.pop("FORUM_TODO_CLAIM_REQUIRED", None)
+        else:
+            os.environ["FORUM_TODO_CLAIM_REQUIRED"] = saved_flag
+        importlib.reload(config)
+    print("  sweep relinks unlinked open prs: ok")
 
 
 def test_collaborative_digest_sweep():
@@ -817,5 +935,7 @@ if __name__ == "__main__":
     test_sweep_decline_after_grace()
     test_sweep_batches_multiple_prs()
     test_sweep_db_reads_are_batched()
+    test_sweep_drains_past_rebase_conflict()
+    test_sweep_relinks_unlinked_open_prs()
     test_collaborative_digest_sweep()
     print("\n== test_sweep: all passed ==")

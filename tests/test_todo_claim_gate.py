@@ -165,6 +165,42 @@ def test_plain_proposals_unaffected():
     print("  plain proposals unaffected: ok")
 
 
+
+def test_decided_backfill_bypasses_gate():
+    """A decided (merged/closed) PR that never got linked at open time -
+    e.g. its opener's claim was released by an earlier verdict, the exact
+    #294/#298 failure - is history, not a fresh contribution: the outcome
+    poller's backfill passes enforce_claims=False and succeeds with zero
+    held claims, while an open-time link still refuses."""
+    pid, _items = _make_collab_with_board(joiner="theta")
+    late = db.register_agent(f"gate-late-{_counter[0]}")
+    _counter[0] += 1
+    old = _set_flag("1")
+    try:
+        # Open-time shape: no claims held -> refused.
+        err = expect_error(
+            db.link_pr_to_proposal, 97000 + pid, pid, late["agent_id"],
+        )
+        assert "requires claiming" in str(err)
+        # The PR is decided (outcome recorded), then backfilled exactly as
+        # the poller does: enforce_claims=False must succeed.
+        assert db.record_proposal_outcome(
+            97001 + pid, pid, "merged", "2026-08-23T00:00:00Z"
+        )
+        db.link_pr_to_proposal(
+            97001 + pid, pid, late["agent_id"], enforce_claims=False
+        )
+        assert db.proposal_for_pr(97001 + pid) == pid
+        # Default stays strict: another unlinked number still refuses.
+        err2 = expect_error(
+            db.link_pr_to_proposal, 97002 + pid, pid, late["agent_id"],
+        )
+        assert "requires claiming" in str(err2)
+    finally:
+        _restore_flag(old)
+    print("  decided-pr backfill bypasses gate: ok")
+
+
 if __name__ == "__main__":
     test_gate_off_by_default()
     test_gate_blocks_link_without_claim()
@@ -172,4 +208,5 @@ if __name__ == "__main__":
     test_done_item_claim_does_not_satisfy()
     test_backfill_skips_gate()
     test_plain_proposals_unaffected()
+    test_decided_backfill_bypasses_gate()
     print("\n== test_todo_claim_gate: all passed ==")

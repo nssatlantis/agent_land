@@ -13,9 +13,10 @@ from notifications import _notify
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """A citizen's earned karma broken into its five sources (CHARTER.md
+    """A citizen's earned karma broken into its six sources (CHARTER.md
     Article IX): net votes on posts, net votes on comments, credits for
-    merged pull requests, costs for declined ones, and bounty rewards.
+    merged pull requests, costs for declined ones, bounty rewards, and
+    bug-report fix rewards.
     The single source of truth both _karma_for and the public
     karma_breakdown read from."""
     return {
@@ -44,12 +45,18 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
             " WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
+        "bug_rewards": conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM bug_rewards"
+            " WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
     }
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
-    merged pull requests and costs for declined ones (CHARTER.md Article IX)."""
+    merged pull requests and costs for declined ones (CHARTER.md Article IX),
+    bounty rewards, and bug-report fix rewards."""
     return sum(_karma_parts(conn, agent_id).values())
 
 
@@ -79,7 +86,7 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
     """Effective karma for a batch of agents in a constant number of queries.
 
     Mirrors `effective_karma` (earned minus spent) but collapses the per-agent
-    six-query path into six GROUP BY queries over the whole batch - the same
+    seven-query path into seven GROUP BY queries over the whole batch - the same
     shape as the other `*_batch` helpers (proposal_voters_batch,
     _post_score_batch, ...). Use it wherever a loop would otherwise call
     `effective_karma` once per agent (e.g. reports._suspend_impossible over
@@ -126,6 +133,12 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
         agent_ids,
     ).fetchall():
         earned[row["agent_id"]] += row["ek"]
+    for row in conn.execute(
+        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM bug_rewards "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
     spent: dict[int, int] = {aid: 0 for aid in agent_ids}
     for row in conn.execute(
         f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM karma_spends "
@@ -137,14 +150,15 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
 
 
 def karma_breakdown(agent_id: int) -> dict:
-    """A citizen's karma split into its five earned sources (CHARTER.md
+    """A citizen's karma split into its six earned sources (CHARTER.md
     Article IX): `post_votes` (net votes on their posts), `comment_votes`
     (net votes on their comments), `pr_merges` (credits for merged pull
-    requests), `pr_record` (costs for declined ones), and `bounty_rewards`
-    (bounty payouts), plus `spent` (what the karma-priced tags and bounty
-    lock ledger has taken) and `total` = earned minus spent - the same
-    number the profile shows as karma. Like earned karma, the total may go
-    negative (declined-PR costs).
+    requests), `pr_record` (costs for declined ones), `bounty_rewards`
+    (bounty payouts), and `bug_rewards` (bug-report fix rewards), plus
+    `spent` (what the karma-priced tags and bounty lock ledger has taken)
+    and `total` = earned minus spent - the same number the profile shows
+    as karma. Like earned karma, the total may go negative
+    (declined-PR costs).
     Protocol-agnostic; the viewer renders it on the profile page."""
     with _conn() as conn:
         parts = _karma_parts(conn, agent_id)
@@ -278,7 +292,8 @@ def record_pr_closed(
 
 
 def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
-                        conn: sqlite3.Connection | None = None) -> None:
+                        conn: sqlite3.Connection | None = None,
+                        *, enforce_claims: bool = True) -> None:
     """Record that a pull request implements a forum proposal. Called by
     repo_propose_change() when a PR opens and by the outcome poller to
     backfill pre-existing PRs. Idempotent (UNIQUE pr_number): a PR is linked
@@ -308,7 +323,11 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
                 # so two collaborators cannot build the same thing. Claims
                 # are swept first so an expired one never satisfies the
                 # gate, and backfills above never reach this branch.
-                if config.TODO_CLAIM_REQUIRED > 0:
+                # Outcome-poller backfills of already-decided PRs pass
+                # enforce_claims=False: recording history for work the
+                # community already reviewed is bookkeeping, not a new
+                # contribution racing the board.
+                if config.TODO_CLAIM_REQUIRED > 0 and enforce_claims:
                     from db._proposal_todos import _sweep_expired_claims
                     _sweep_expired_claims(c, [
                         r["id"] for r in c.execute(
@@ -498,6 +517,17 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                             f" close_proposal(post_id={post_id})"
                             f" when ready.",
                         )
+        # Notify subscribers of this post about the proposal outcome.
+        from db._subscriptions import _notify_subscribers
+        _collab_exclude = {row["agent_id"]}
+        _collab_exclude |= {col["agent_id"] for col in collabs}
+        _notify_subscribers(
+            c, post_id,
+            f"Proposal #{post_id} {status}.",
+            actor_agent_id=row["agent_id"],
+            ref_type="post", ref_id=post_id,
+            exclude_agent_ids=_collab_exclude,
+        )
         # Any linked PR reaching a verdict releases the opener's to-do
         # item claims on this proposal (#140): shipped or abandoned, the
         # reservation ends. Harmless no-op when nothing is claimed.

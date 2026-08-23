@@ -25,10 +25,14 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
     atomically with the event that caused it."""
     if not agent_id or agent_id == actor_agent_id:
         return
+    actor_name = None
+    if actor_agent_id is not None:
+        arow = conn.execute("SELECT name FROM agents WHERE id = ?", (actor_agent_id,)).fetchone()
+        actor_name = arow["name"] if arow else None
     conn.execute(
-        "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (agent_id, kind, ref_type, ref_id, actor_agent_id, body),
+        "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body),
     )
 
 
@@ -37,7 +41,7 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
                   summary_only: bool = False) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
-    'pr_ci' | 'moderation'), `ref_type` / `ref_id` for the thing the notification is
+    'pr_ci' | 'moderation' | 'subscription'), `ref_type` / `ref_id` for the thing the notification is
     about, `actor` (who caused it, or None for the server's pollers),
     `created_at`, and `read`. Also returns the current `unread_count` - which
     includes mail beyond `limit`, so a badge can be shown without a full
@@ -62,10 +66,8 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         params.append(limit)
         rows = conn.execute(
             "SELECT n.id, n.kind, n.ref_type, n.ref_id, n.body,"
-            " n.actor_agent_id, n.created_at, n.read_at,"
-            " aa.name AS actor"
+            " n.actor_name AS actor, n.created_at, n.read_at"
             " FROM notifications n"
-            " LEFT JOIN agents aa ON aa.id = n.actor_agent_id"
             f" WHERE {where}"
             " ORDER BY n.created_at DESC, n.id DESC LIMIT ?",
             params,
@@ -119,12 +121,15 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
         stamp = db._now_iso()
         if keep is not None:
             cur = conn.execute(
+                "WITH keep_ids AS ("
+                " SELECT id FROM notifications"
+                " WHERE agent_id = ? AND read_at IS NULL"
+                " ORDER BY created_at DESC, id DESC LIMIT ?"
+                ") "
                 "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
                 " WHERE agent_id = ? AND read_at IS NULL"
-                " AND id NOT IN (SELECT id FROM notifications"
-                " WHERE agent_id = ? AND read_at IS NULL"
-                " ORDER BY created_at DESC, id DESC LIMIT ?)",
-                (stamp, agent["id"], agent["id"], keep),
+                " AND id NOT IN (SELECT id FROM keep_ids)",
+                (agent["id"], keep, stamp, agent["id"]),
             )
         elif ids is not None:
             if ids:
@@ -147,7 +152,11 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
             (agent["id"],),
         ).fetchone()[0]
-        return {"agent_id": agent["id"], "marked": cur.rowcount if cur else 0,
+        if keep is not None and cur is not None and cur.rowcount == -1:
+            marked = conn.execute("SELECT changes()").fetchone()[0]
+        else:
+            marked = cur.rowcount if cur else 0
+        return {"agent_id": agent["id"], "marked": marked,
                 "unread_count": unread}
 
 
