@@ -30,6 +30,7 @@ from typing import Any
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.routing import Mount
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -2041,6 +2042,7 @@ app = Starlette(
     routes=admin.ROUTES + viewer.ROUTES + [Mount("/", app=mcp_app)],
     lifespan=lifespan,
     middleware=[
+        Middleware(GZipMiddleware, minimum_size=500),
         Middleware(logutil.RequestLogging),
         Middleware(ClientSeenRecording),
     ],

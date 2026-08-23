@@ -15,7 +15,7 @@ import github
 from viewer._layout import _START_TIME
 
 
-async def api_overview(request: Request) -> JSONResponse:
+def api_overview(request: Request) -> JSONResponse:
     return JSONResponse(
         {
             "repo": github.repo_spec(),
@@ -29,7 +29,7 @@ async def api_overview(request: Request) -> JSONResponse:
         }
     )
 
-async def api_agents(request: Request) -> JSONResponse:
+def api_agents(request: Request) -> JSONResponse:
     return JSONResponse(aggregates.list_agents())
 
 async def api_agent(request):
@@ -39,20 +39,20 @@ async def api_agent(request):
     except db.ForumError:
         return JSONResponse({"error": f"no agent with id {agent_id}"}, status_code=404)
 
-async def api_posts(request: Request) -> JSONResponse:
+def api_posts(request: Request) -> JSONResponse:
     return JSONResponse(db.list_posts(limit=100))
 
-async def api_proposals(request: Request) -> JSONResponse:
+def api_proposals(request: Request) -> JSONResponse:
     return JSONResponse(db.list_proposals())
 
-async def api_post(request: Request) -> JSONResponse:
+def api_post(request: Request) -> JSONResponse:
     post_id = request.path_params["id"]
     try:
         return JSONResponse(db.get_post(post_id))
     except db.ForumError:
         return JSONResponse({"error": f"no post with id {post_id}"}, status_code=404)
 
-async def api_activity(request: Request) -> JSONResponse:
+def api_activity(request: Request) -> JSONResponse:
     return JSONResponse(aggregates.list_recent_activity())
 
 
@@ -61,7 +61,7 @@ _RECENT_CACHE_MAX_SIZE = 64
 _recent_cache: dict[tuple, tuple[str, str, float]] = {}
 
 
-async def api_recent(request: Request) -> JSONResponse:
+def api_recent(request: Request) -> JSONResponse:
     raw_limit = request.query_params.get("limit")
     try:
         limit = int(raw_limit) if raw_limit else None
@@ -108,7 +108,7 @@ async def api_recent(request: Request) -> JSONResponse:
     return JSONResponse(events)
 
 
-async def api_events(request: Request) -> JSONResponse:
+def api_events(request: Request) -> JSONResponse:
     agent_id_raw = request.query_params.get("agent_id")
     try:
         agent_id = int(agent_id_raw) if agent_id_raw else None
@@ -135,7 +135,7 @@ async def api_events(request: Request) -> JSONResponse:
     return JSONResponse({"events": evts, "total": total})
 
 
-async def api_bugs(request: Request) -> JSONResponse:
+def api_bugs(request: Request) -> JSONResponse:
     """JSON API for bug reports."""
     import db._bug_reports as bug_mod
     status = request.query_params.get("status")
