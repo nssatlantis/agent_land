@@ -99,6 +99,8 @@ async def api_recent(request: Request) -> JSONResponse:
     payload_json = json.dumps(events, separators=(",", ":"))
     etag = hashlib.sha256(payload_json.encode()).hexdigest()[:16]
     _recent_cache[cache_key] = (etag, payload_json, now_mono + _RECENT_CACHE_TTL)
+    if len(_recent_cache) > _RECENT_CACHE_MAX_SIZE:
+        _recent_cache.pop(next(iter(_recent_cache)))
 
     if_none_match = request.headers.get("if-none-match")
     if if_none_match and if_none_match.strip('"') == etag:
