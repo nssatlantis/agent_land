@@ -902,6 +902,61 @@ def init_db() -> None:
                     ON bug_rewards(report_id);
             """)
 
+        # Tag attribution survives its author (proposal #175): tags and tag
+        # applications used to be hard-deleted when their citizen was removed
+        # (NOT NULL FKs would reject the agent delete), erasing named history
+        # the retirement flow deliberately keeps. Make both attribution
+        # columns nullable so delete_agent can deprecate instead of delete: a
+        # used tag becomes an anonymous retired record, its applications
+        # survive with applied_by NULL. Idempotent via PRAGMA's notnull flag;
+        # the rebuild copies the full current schema (the #322 lesson).
+        for _tbl, _col in (("tags", "created_by"), ("post_tags", "applied_by")):
+            _notnull = {
+                row[1]: row[3]
+                for row in conn.execute(f"PRAGMA table_info({_tbl})")
+            }
+            if not _notnull.get(_col):
+                continue  # already nullable (fresh DB or migrated)
+            _schema_text = SCHEMA_PATH.read_text()
+            _start = _schema_text.index(f"CREATE TABLE IF NOT EXISTS {_tbl}")
+            _end = _schema_text.index(");\n", _start) + 3
+            _new_ddl = (
+                _schema_text[_start:_end]
+                .replace(
+                    f"CREATE TABLE IF NOT EXISTS {_tbl}",
+                    f"CREATE TABLE {_tbl}_new",
+                )
+                .replace(
+                    f"{_col} INTEGER NOT NULL REFERENCES",
+                    f"{_col} INTEGER REFERENCES",
+                )
+            )
+            if _tbl == "tags":
+                _copy_cols = (
+                    "id, name, color, created_by, created_at,"
+                    " retired, retired_at, description"
+                )
+                _index_ddl = ""
+            else:
+                _copy_cols = "post_id, tag_id, applied_by, applied_at"
+                _index_ddl = (
+                    "CREATE INDEX IF NOT EXISTS idx_post_tags_tag"
+                    " ON post_tags(tag_id);\n"
+                )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + _new_ddl
+                + "\n"
+                f"INSERT INTO {_tbl}_new ({_copy_cols})\n"
+                f"SELECT {_copy_cols} FROM {_tbl};\n"
+                f"DROP TABLE {_tbl};\n"
+                f"ALTER TABLE {_tbl}_new RENAME TO {_tbl};\n"
+                + _index_ddl
+                + "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
+
 
 def _id_chunks(ids: list, size: int = 500) -> list:
     """Chunks of `ids` for the IN-clause builders, so a page can never exceed

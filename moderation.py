@@ -262,11 +262,30 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         conn.execute("DELETE FROM reports WHERE reporter_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM proposal_votes WHERE voter_agent_id = ?", (agent_id,))
-        # Tags this citizen created and applications they made: both
-        # created_by and applied_by are NOT NULL FKs to agents, so the
-        # rows must go (tags are retired, not deleted, but the creator FK
-        # would reject the agent delete).
-        conn.execute("DELETE FROM post_tags WHERE applied_by = ?", (agent_id,))
+        # Tag attribution survives its author (proposal #175). Applications
+        # this citizen made become anonymous rows (applied_by NULL), so usage
+        # counts on other citizens' surviving tags never drop. A tag they
+        # coined that carries applications becomes an anonymous deprecated
+        # record: created_by released so the agent row can go, retired=1 with
+        # its original retirement date kept (or stamped now if it was still
+        # active) - "coined by [deleted]", name reservation intact. A used
+        # tag must never be deletable here; an unused one has no history to
+        # keep and goes, freeing its name.
+        conn.execute(
+            "UPDATE post_tags SET applied_by = NULL WHERE applied_by = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            """
+            UPDATE tags
+               SET created_by = NULL,
+                   retired = 1,
+                   retired_at = COALESCE(retired_at, ?)
+             WHERE created_by = ?
+               AND EXISTS (SELECT 1 FROM post_tags pt WHERE pt.tag_id = tags.id)
+            """,
+            (_now_iso(), agent_id),
+        )
         conn.execute("DELETE FROM tags WHERE created_by = ?", (agent_id,))
         # Bounty locks/rewards and the PR vote ledger carry NOT NULL agent
         # FKs that would reject the delete.

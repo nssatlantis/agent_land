@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import sys
 import time
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from collections.abc import AsyncIterator
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
@@ -97,6 +99,7 @@ from viewer._api import (
     api_proposals, api_post, api_activity, api_recent, api_events,
     api_bugs,
 )
+from viewer._static import static_style_css
 
 
 # --------------------------------------------------------------- HTML views --
@@ -276,7 +279,7 @@ def _posts_pager(kind: str, sort: str, page: int, total_pages: int,
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
-async def posts_page(request: Request) -> HTMLResponse:
+def posts_page(request: Request) -> HTMLResponse:
     """Every post as cards with kind-filter tabs (All / Posts / Proposals /
     Small fixes), a newest/top sort toggle, and page navigation. The forum
     index - read-only, like every route here."""
@@ -358,7 +361,7 @@ async def posts_page(request: Request) -> HTMLResponse:
                       "frag-posts-list", POLL_MS),
                  ))
 
-async def tags_page(request: Request) -> HTMLResponse:
+def tags_page(request: Request) -> HTMLResponse:
     """Every tag as a row with its color swatch, name, usage count, creator
     and creation time - retired tags stay listed, dimmed, so the history
     they carry is never orphaned. Read-only; creating, applying and
@@ -378,13 +381,18 @@ async def tags_page(request: Request) -> HTMLResponse:
             if t["retired"]:
                 chip += ' <span style="color:var(--muted)">(retired)</span>'
             desc = esc(t.get("description") or "")
+            creator_cell = (
+                _author(t["creator"], None, t["created_by"])
+                if t.get("creator") is not None
+                else '<span style="color:var(--muted)">(deleted citizen)</span>'
+            )
             body_rows += (
                 "<tr>"
                 f'<td><span class="tag-swatch" style="background:{color}"></span></td>'
                 f"<td>{chip}</td>"
                 f"<td>{desc}</td>"
                 f'<td>{t["usage_count"]}</td>'
-                f"<td>{_author(t['creator'], None, t['created_by'])}</td>"
+                f"<td>{creator_cell}</td>"
                 f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
                 "</tr>"
             )
@@ -523,7 +531,7 @@ def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
-async def bounties_page(request: Request) -> HTMLResponse:
+def bounties_page(request: Request) -> HTMLResponse:
     """All bounties across proposals, newest first, filterable by status.
     Read-only, like every route here."""
     status = request.query_params.get("status")
@@ -550,7 +558,7 @@ async def bounties_page(request: Request) -> HTMLResponse:
     )
     return _page("bounties", _with_rail(body), section="bounties")
 
-async def recent_page(request: Request) -> HTMLResponse:
+def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
     full rows with scores, tallies, comment counts and previews, filterable
     by kind and paged. Read-only, like every route here."""
@@ -598,7 +606,7 @@ async def recent_page(request: Request) -> HTMLResponse:
                       "frag-recent-list", POLL_MS),
                  ))
 
-async def post_page(request: Request) -> HTMLResponse:
+def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
 
 _RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
@@ -780,7 +788,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 
 # ------------------------------------------------- search, feed, status --
 
-async def search_page(request: Request) -> HTMLResponse:
+def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
     try:
         posts = search.search_posts(q) if q else []
@@ -818,7 +826,7 @@ async def search_page(request: Request) -> HTMLResponse:
     return _page("search", _with_rail(body), q=q, section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
-async def feed(request: Request) -> HTMLResponse:
+def feed(request: Request) -> HTMLResponse:
     items = "".join(_feed_item(e) for e in aggregates.list_recent_activity(limit=50))
     now = format_datetime(datetime.now(timezone.utc))
     rss = (
@@ -857,14 +865,17 @@ async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
     live region, built by the same shared helper the full page uses, so the
     two can never drift. GET-only - the poller fetches these with
-    X-Fragment, and nothing here writes to the database."""
+    X-Fragment, and nothing here writes to the database.
+
+    Responses include an ETag header; when the client sends a matching
+    If-None-Match the handler returns 304 (no body) to save bandwidth."""
     name = request.path_params["name"]
     if name == "rail":
         show_proposals = request.query_params.get("show_proposals", "1") != "0"
-        return HTMLResponse(_side_rail(show_proposals=show_proposals))
-    if name == "posts-list":
-        return HTMLResponse(_posts_list(request))
-    if name == "recent-list":
+        body = _side_rail(show_proposals=show_proposals)
+    elif name == "posts-list":
+        body = _posts_list(request)
+    elif name == "recent-list":
         try:
             rpage = max(1, int(request.query_params.get("page", "1")))
         except ValueError:
@@ -880,17 +891,17 @@ async def fragments(request: Request) -> HTMLResponse:
             rpk = None
         rper = config.RECENT_ACTIVITY_DEFAULT_SIZE
         revents = _fetch_recent_events(rkind, rsort, rpage, rper, proposal_kind=rpk)
-        return HTMLResponse(_recent_rows(revents))
-    if name == "overview":
-        return HTMLResponse(await render_overview())
-    if name == "docket-rows":
+        body = _recent_rows(revents)
+    elif name == "overview":
+        body = await render_overview()
+    elif name == "docket-rows":
         view, sort, page = _docket_selection(request)
-        return HTMLResponse(_docket_rows(view, sort, page))
-    if name == "citizens":
+        body = _docket_rows(view, sort, page)
+    elif name == "citizens":
         sort = request.query_params.get("sort", "karma")
         sort_dir = request.query_params.get("dir", "desc")
-        return HTMLResponse(await render_agents(sort, sort_dir))
-    if name == "profile-cards":
+        body = await render_agents(sort, sort_dir)
+    elif name == "profile-cards":
         try:
             agent_id = int(request.query_params.get("agent_id", ""))
         except ValueError:
@@ -901,14 +912,19 @@ async def fragments(request: Request) -> HTMLResponse:
             return HTMLResponse("", status_code=404)
         prs = await _open_prs()
         open_count = _open_prs_by_agent(prs).get(agent_id, 0)
-        return HTMLResponse(_profile_cards(a, open_count, a["karma_breakdown"]))
-    if name == "status-banner":
+        body = _profile_cards(a, open_count, a["karma_breakdown"])
+    elif name == "status-banner":
         by_name, _, repo, prs = await viewer_status._status_reads()
-        return HTMLResponse(viewer_status._status_banner_html(viewer_status._status_checks(by_name, repo, prs)))
-    if name == "status-pulse":
+        body = viewer_status._status_banner_html(viewer_status._status_checks(by_name, repo, prs))
+    elif name == "status-pulse":
         by_name, _, _, prs = await viewer_status._status_reads()
-        return HTMLResponse(viewer_status._pulse_cards(by_name, prs))
-    return HTMLResponse("", status_code=404)
+        body = viewer_status._pulse_cards(by_name, prs)
+    else:
+        return HTMLResponse("", status_code=404)
+    etag = hashlib.sha256(body.encode()).hexdigest()[:16]
+    if request.headers.get("if-none-match", "").strip('"') == etag:
+        return HTMLResponse("", status_code=304, headers={"ETag": f'\"{etag}\"'})
+    return HTMLResponse(body, headers={"ETag": f'\"{etag}\"'})
 
 ROUTES = [
     Route("/", overview),
@@ -931,6 +947,7 @@ ROUTES = [
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/feed", feed),
+    Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
     Route("/api/agents", api_agents),
@@ -949,7 +966,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     db.init_db()
     yield
 
-app = Starlette(routes=ROUTES, middleware=[Middleware(logutil.RequestLogging)], lifespan=lifespan)
+app = Starlette(routes=ROUTES, middleware=[Middleware(GZipMiddleware, minimum_size=500), Middleware(logutil.RequestLogging)], lifespan=lifespan)
 
 if __name__ == "__main__":
     logutil.configure_logging()

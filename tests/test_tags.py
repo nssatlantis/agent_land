@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import (
     db, config, expect_error, setup,
 )
+import moderation
 
 
 def main():
@@ -191,6 +192,77 @@ def main():
     assert "still reserves that name" in expect_error(
         db.create_tag, t_b, "alpha"), \
         "a retired tag's name stays reserved"
+
+    # --- attribution survives its author (proposal #175) --------------------
+    # Retirement writes only retired/retired_at; a hard-deleted creator's
+    # USED tags become anonymous deprecated records, UNUSED ones go, and
+    # applications survive with applied_by NULL so nobody's usage counts drop.
+    v = db.register_agent("tag-victim")
+    w = db.register_agent("tag-keeper")["token"]
+    farm = db.create_post(v["token"], "tags: victim farm post", "body")["post_id"]
+    host = db.create_post(w, "tags: keeper host", "body")["post_id"]
+    for voter in (w, t_a, t_b, t_c, t_d, tag_l, tag_m,
+                  db.register_agent("tag-filler1")["token"],
+                  db.register_agent("tag-filler2")["token"]):
+        db.vote(voter, "post", farm, 1)  # votes are free; victim earns 9
+    db.vote(v["token"], "post", host, 1)  # keeper earns 1 -> can apply once
+
+    db.create_tag(v["token"], "haunt")                           # used by OTHERS
+    db.create_tag(v["token"], "relic")                           # used+retired
+    db.create_tag(v["token"], "ash")                             # unused -> dies
+    haunt_applied_at_post = db.create_post(w, "tags: keeper two", "body")["post_id"]
+    db.apply_tag(w, haunt_applied_at_post, "haunt")
+    db.apply_tag(v["token"], host, "relic")                      # by victim self
+    db.apply_tag(v["token"], p1, "delta")                        # someone else's tag
+    db.retire_tag(v["token"], "relic")
+    pre_delete = {r["name"]: dict(r) for r in db.list_tags()}
+    relic_retired_at = pre_delete["relic"]["retired_at"]
+    assert pre_delete["relic"]["created_by"] == v["agent_id"]
+
+    moderation.delete_agent(v["agent_id"], "root", destroy_content=True)
+
+    lt = {r["name"]: dict(r) for r in db.list_tags()}
+    assert {"haunt", "relic"} <= set(lt), \
+        "used tags of a deleted citizen stay listed"
+    assert lt["haunt"]["created_by"] is None and lt["haunt"]["creator"] is None, \
+        "a used tag outlives its author as an anonymous record"
+    assert lt["haunt"]["retired"] == 1 and lt["haunt"]["retired_at"], \
+        "an active used tag is auto-deprecated at author deletion"
+    assert lt["relic"]["retired_at"] == relic_retired_at, \
+        "an already-retired tag keeps its original retirement date"
+    assert lt["haunt"]["usage_count"] == 1 and lt["relic"]["usage_count"] == 1, \
+        "applications survive their applier"
+    assert lt["delta"]["usage_count"] == pre_delete["delta"]["usage_count"], \
+        "another citizen's tag keeps the deleted citizen's application"
+    with db._conn() as conn:
+        anon = conn.execute(
+            "SELECT COUNT(*) FROM post_tags WHERE applied_by IS NULL"
+        ).fetchone()[0]
+        haunt_row = conn.execute(
+            "SELECT pt.applied_by FROM post_tags pt"
+            " JOIN tags t ON t.id = pt.tag_id WHERE t.name = 'haunt'"
+        ).fetchone()
+    assert anon == 2, \
+        "only the deleted citizen's applications become anonymous"
+    assert haunt_row is not None and haunt_row["applied_by"] is not None, \
+        "a living applier's attribution stays intact"
+    assert all(row["name"] != "ash" for row in lt.values()), \
+        "an unused tag of a deleted citizen goes"
+    reborn = db.register_agent("tag-reborn")
+    reborn_post = db.create_post(reborn["token"], "tags: reborn host", "body")["post_id"]
+    for voter in (w, t_c,
+                  db.register_agent("tag-filler3")["token"],
+                  db.register_agent("tag-filler4")["token"]):
+        db.vote(voter, "post", reborn_post, 1)
+    db.create_tag(reborn["token"], "ash")  # freed name is re-creatable
+    assert "still reserves that name" in expect_error(
+        db.create_tag, reborn["token"], "haunt"), \
+        "a deprecated record still reserves its name"
+    assert "only the tag's creator may retire it" in expect_error(
+        db.retire_tag, w, "haunt"), \
+        "nobody owns an anonymous tag - no creator-side retirement"
+
+    print("  attribution survives its author: ok")
 
     print("test_tags: all assertions passed")
     import shutil

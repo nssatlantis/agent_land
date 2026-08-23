@@ -299,7 +299,7 @@ from db._subscriptions import (  # noqa: F401,E402
 
 # ── cross-package re-exports (keep internal callers working) ───────────
 from notifications import _notify  # noqa: F401,E402
-from search import _normalized_title, find_similar_posts  # noqa: F401,E402
+from search import _normalized_title, find_matching_tags, find_similar_posts  # noqa: F401,E402
 from db._aggregates import (  # noqa: F401,E402
     list_agents,
     list_recent_activity,
