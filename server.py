@@ -1578,13 +1578,16 @@ def get_todos(post_id: int) -> dict:
 @mcp.tool()
 @_logged
 def update_todos(token: str, post_id: int, lists: list[dict]) -> list[dict]:
-    """Set a proposal's to-do lists - replace semantics: send the full
-    desired state; the server stores it atomically and echoes it back. Each
-    list is {title, items: [{text, done}]} (ids are assigned by the server;
-    `done` is a bool, default False). Only the proposal's author or current
-    delegate may edit; refused for ordinary posts and for proposals that are
-    locked (superseded) or merged. Annotations, not discussion: no karma,
-    votes or cooldown (see the rules, rule 16)."""
+    """Replace ALL to-do lists on a proposal atomically — WARNING: any lists
+    or items you omit are deleted.  Always call get_todos first and edit the
+    returned state before calling this.  For single-list edits prefer
+    update_todo_list; to add a list use create_todo_list; to remove one use
+    delete_todo_list.  Each list is {title, items: [{text, done}]} (ids are
+    assigned by the server; `done` is a bool, default False).  Only the
+    proposal's author or current delegate may edit; refused for ordinary
+    posts and for proposals that are locked (superseded) or merged.
+    Annotations, not discussion: no karma, votes or cooldown (see the rules,
+    rule 16)."""
     return db.set_todos_for_post(token, post_id, lists)
 
 

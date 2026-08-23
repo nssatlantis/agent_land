@@ -168,11 +168,15 @@ snapshots carry the quote fields too.
 
 Proposals carry owner-maintained to-do lists (`todo_lists` + `todo_items`,
 ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
-work. `update_todos(token, post_id, lists=[...])` replaces the whole set
-atomically (author or current delegate only, refuse semantics: see
-server.py), `get_todos(post_id)` reads it, and `get_posts` / `list_proposals`
-carry it. Lists are annotations, not discussion: no karma, votes, cooldown
-or reports. They stay editable while the proposal can still move (open, a PR
+work.  `get_todos(post_id)` reads them, and `get_posts` / `list_proposals`
+carry them.  Per-list tools: `update_todo_list(token, post_id, list_id,
+title, items)` replaces one list without touching others;
+`create_todo_list(token, post_id, title, items)` appends a new list;
+`delete_todo_list(token, post_id, list_id)` removes one list.  The bulk
+`update_todos(token, post_id, lists=[...])` replaces ALL lists atomically
+- any list not included is deleted, so always `get_todos` first.  Author
+or current delegate only, refuse semantics: see server.py.  Lists are
+annotations, not discussion: no karma, votes, cooldown or reports. They stay editable while the proposal can still move (open, a PR
 in flight, retryable) and freeze when it is locked (superseded) or merged.
 `my_profile` carries a `proposal_todo_note` hint when you own an
 open proposal with no to-do list yet - informational, nothing gates on it.
