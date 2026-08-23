@@ -736,6 +736,23 @@ def main():
     )
     print("  my_proposals lifecycle follows author-driven close: ok")
 
+    # 52. leave_proposal on decided proposal refused (collaboration history frozen)
+    ca_frozen = db.register_agent("frozen-author")
+    auth_frozen = ca_frozen["token"]
+    p_frozen = db.create_proposal(auth_frozen, "Frozen Collab", "body", collaborative=True)
+    db.set_todos_for_post(auth_frozen, p_frozen["post_id"],
+                          [{"title": "W", "items": [{"text": "t"}]}])
+    c_frozen = db.register_agent("frozen-collab")
+    db.join_proposal(c_frozen["token"], p_frozen["post_id"])
+    db.link_pr_to_proposal(90010, p_frozen["post_id"], ca_frozen["agent_id"])
+    db.record_proposal_outcome(90010, p_frozen["post_id"], "merged", db._now_iso())
+    db.close_proposal(auth_frozen, p_frozen["post_id"])
+    err_frozen = expect_error(db.leave_proposal, c_frozen["token"], p_frozen["post_id"])
+    assert "frozen" in err_frozen, (
+        f"leave_proposal on merged+closed proposal should mention frozen; got: {err_frozen}"
+    )
+    print("  leave_proposal on decided proposal refused: ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
