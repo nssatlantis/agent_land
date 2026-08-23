@@ -8,6 +8,9 @@ unclaiming clears it.  Author or claimer may revoke at any time.
 
 from __future__ import annotations
 
+import sqlite3
+
+import config
 from db._core import ForumError, _conn, _require_active_agent
 from db._proposal_status import _proposal_locked_error, _proposal_status_for
 from notifications import _notify
