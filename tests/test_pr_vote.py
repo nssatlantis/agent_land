@@ -442,15 +442,15 @@ def test_votes_passed_label_syncs():
     print("  votes-passed label sync: ok")
 
 
-def test_list_pr_votes():
-    """list_pr_votes returns a tally dict with up/down/net/voters."""
+def test_pr_vote_tally():
+    """pr_vote_tally returns a tally dict with up/down/net/voters."""
     from db._pr_vote import pr_vote_tally
     # Non-existent PR should return empty tally
     tally = pr_vote_tally(99999)
     assert tally["pr_number"] == 99999
     assert tally["up"] == 0 and tally["down"] == 0 and tally["net"] == 0
     assert tally["voters"] == []
-    print("  list_pr_votes empty ok")
+    print("  pr_vote_tally empty ok")
     # Create a proposal + link + vote, then check tally
     prop = db.create_proposal(
         AGENTS["alpha"]["token"], "Tally test", "body", small_fix=True
@@ -463,7 +463,7 @@ def test_list_pr_votes():
     assert tally["up"] == 1 and tally["net"] == 1
     assert len(tally["voters"]) == 1
     assert tally["voters"][0]["value"] == 1
-    print("  list_pr_votes with votes ok")
+    print("  pr_vote_tally with votes ok")
 
 
 # -- run all --
@@ -488,5 +488,5 @@ if __name__ == "__main__":
     test_proposal_author_deduped_when_opener()
     test_vote_change_renotifies()
     test_votes_passed_label_syncs()
-    test_list_pr_votes()
+    test_pr_vote_tally()
     print("\n== test_pr_vote: all passed ==")
