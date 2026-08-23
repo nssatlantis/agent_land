@@ -323,7 +323,6 @@ FROM tags t
 WHERE t.retired = 1
   AND t.retired_at IS NOT NULL
   AND t.created_by IS NOT NULL
-  AND t.created_by IS NOT NULL
 
 UNION ALL
 
