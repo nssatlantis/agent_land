@@ -77,7 +77,7 @@ def _sync_pr_vote_labels(pr_number: int) -> None:
         
         # Sync tally label showing [Pos / Neg]
         _remove_all_tally_labels(pr_number)
-        tally_label = f"{PR_VOTE_TALLY_LABEL_PREFIX} [{tally['up']} / {tally['down']}]"
+        tally_label = f"[{PR_VOTE_TALLY_LABEL_PREFIX} +{tally['up']} / -{tally['down']}]"
         if tally['up'] > 0 or tally['down'] > 0:
             _github.add_pr_label(pr_number, tally_label)
     except Exception:
