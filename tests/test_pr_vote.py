@@ -205,16 +205,18 @@ def test_multi_voter():
 
 def test_vote_capped_once_passing():
     """New votes are rejected once the PR reaches the pass threshold; the vote
-    that reaches the threshold is still accepted."""
+    that reaches the threshold is still accepted.  The response now carries
+    threshold and eligible_for_merge for agent visibility."""
     pid, pr_number = _make_small_fix()
 
     # beta, gamma approve -> net 2, below the threshold (3 in this fixture).
     db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
     db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
     # delta's approve reaches net 3 == threshold -> still accepted.
-    db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
-    tally = db.pr_vote_tally(pr_number)
-    assert tally["net"] == 3
+    result = db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
+    assert result["net"] == 3
+    assert result["threshold"] == 3
+    assert result["eligible_for_merge"] is True
 
     # epsilon would push past the required amount -> rejected.
     err = expect_error(db.vote_on_pr, AGENTS["epsilon"]["token"], pr_number, 1)
@@ -537,6 +539,81 @@ def test_pr_vote_tally():
     print("  pr_vote_tally with votes ok")
 
 
+def test_vote_response_includes_threshold():
+    """vote_on_pr response includes threshold and eligible_for_merge."""
+    pid, pr_number = _make_small_fix()
+
+    result = db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    assert "threshold" in result, "response must include threshold"
+    assert "eligible_for_merge" in result, "response must include eligible_for_merge"
+    assert result["threshold"] == 3
+    assert result["eligible_for_merge"] is False  # net=1 < threshold=3
+    print("  vote response threshold: ok")
+
+
+def test_post_insert_rollback_on_threshold_race():
+    """Post-insert guard rolls back a +1 vote that would push net above the
+    threshold, without affecting existing tally or event log."""
+    pid, pr_number = _make_small_fix()
+
+    # Reach the threshold with three votes.
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["net"] == 3
+
+    # A new voter's +1 is rejected and the tally is unchanged.
+    err = expect_error(db.vote_on_pr, AGENTS["epsilon"]["token"], pr_number, 1)
+    assert "enough votes" in err.lower()
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["net"] == 3
+    assert tally["up"] == 3
+
+    # No event was logged for the rolled-back vote.
+    evts = events.query_events(kind="pr_vote_cast", target_id=pr_number)
+    assert len(evts) == 3, f"expected 3 vote events, got {len(evts)}"
+    print("  post-insert rollback: ok")
+
+
+def test_existing_voter_change_past_threshold():
+    """An existing voter changing their vote from -1 to +1 past the threshold
+    is rolled back (the change would push net above the bar)."""
+    pid, pr_number = _make_small_fix()
+
+    # Reach threshold with three +1 votes.
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+    # zeta opposes, bringing net to 2.
+    db.vote_on_pr(AGENTS["zeta"]["token"], pr_number, -1)
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["net"] == 2
+
+    # zeta changes to +1 -> net would be 4 (above threshold 3) -> rolled back.
+    err = expect_error(db.vote_on_pr, AGENTS["zeta"]["token"], pr_number, 1)
+    assert "enough votes" in err.lower()
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["net"] == 2, "vote change past threshold should be rolled back"
+    print("  existing voter change rollback: ok")
+
+
+def test_existing_voter_change_within_threshold():
+    """An existing voter changing their vote within the threshold is allowed."""
+    pid, pr_number = _make_small_fix()
+
+    # beta +1, gamma +1 -> net=2 (below threshold 3).
+    db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+    db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
+    # beta changes to -1 -> net=0, still within threshold.
+    result = db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
+    assert result["action"] == "changed"
+    assert result["net"] == 0
+    # gamma changes to -1 -> net=-2, still within threshold.
+    result = db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, -1)
+    assert result["action"] == "changed"
+    assert result["net"] == -2
+    print("  existing voter change within threshold: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_pr_vote_schema()
@@ -560,4 +637,8 @@ if __name__ == "__main__":
     test_vote_change_renotifies()
     test_votes_passed_label_syncs()
     test_pr_vote_tally()
+    test_vote_response_includes_threshold()
+    test_post_insert_rollback_on_threshold_race()
+    test_existing_voter_change_past_threshold()
+    test_existing_voter_change_within_threshold()
     print("\n== test_pr_vote: all passed ==")
