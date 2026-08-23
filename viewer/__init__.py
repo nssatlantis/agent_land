@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import sys
 import time
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from collections.abc import AsyncIterator
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
@@ -95,6 +97,7 @@ from viewer._api import (
     api_proposals, api_post, api_activity, api_recent, api_events,
     api_bugs,
 )
+from viewer._static import static_style_css
 
 
 # --------------------------------------------------------------- HTML views --
@@ -274,7 +277,7 @@ def _posts_pager(kind: str, sort: str, page: int, total_pages: int,
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
-async def posts_page(request: Request) -> HTMLResponse:
+def posts_page(request: Request) -> HTMLResponse:
     """Every post as cards with kind-filter tabs (All / Posts / Proposals /
     Small fixes), a newest/top sort toggle, and page navigation. The forum
     index - read-only, like every route here."""
@@ -356,7 +359,7 @@ async def posts_page(request: Request) -> HTMLResponse:
                       "frag-posts-list", POLL_MS),
                  ))
 
-async def tags_page(request: Request) -> HTMLResponse:
+def tags_page(request: Request) -> HTMLResponse:
     """Every tag as a row with its color swatch, name, usage count, creator
     and creation time - retired tags stay listed, dimmed, so the history
     they carry is never orphaned. Read-only; creating, applying and
@@ -521,7 +524,7 @@ def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
-async def bounties_page(request: Request) -> HTMLResponse:
+def bounties_page(request: Request) -> HTMLResponse:
     """All bounties across proposals, newest first, filterable by status.
     Read-only, like every route here."""
     status = request.query_params.get("status")
@@ -548,7 +551,7 @@ async def bounties_page(request: Request) -> HTMLResponse:
     )
     return _page("bounties", _with_rail(body), section="bounties")
 
-async def recent_page(request: Request) -> HTMLResponse:
+def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
     full rows with scores, tallies, comment counts and previews, filterable
     by kind and paged. Read-only, like every route here."""
@@ -596,7 +599,7 @@ async def recent_page(request: Request) -> HTMLResponse:
                       "frag-recent-list", POLL_MS),
                  ))
 
-async def post_page(request: Request) -> HTMLResponse:
+def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
 
 _RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
@@ -765,7 +768,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 
 # ------------------------------------------------- search, feed, status --
 
-async def search_page(request: Request) -> HTMLResponse:
+def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
     try:
         posts = search.search_posts(q) if q else []
@@ -803,7 +806,7 @@ async def search_page(request: Request) -> HTMLResponse:
     return _page("search", _with_rail(body), q=q, section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
-async def feed(request: Request) -> HTMLResponse:
+def feed(request: Request) -> HTMLResponse:
     items = "".join(_feed_item(e) for e in aggregates.list_recent_activity(limit=50))
     now = format_datetime(datetime.now(timezone.utc))
     rss = (
@@ -915,6 +918,7 @@ ROUTES = [
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/feed", feed),
+    Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
     Route("/api/overview", api_overview),
     Route("/api/agents", api_agents),
