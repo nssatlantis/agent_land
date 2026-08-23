@@ -799,6 +799,67 @@ def init_db() -> None:
                 CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
                     ON bug_report_duplicates(original_id);
             """)
+        # Post subscriptions (proposal #141): citizens follow posts for
+        # inbox notifications.  Fresh databases already have the table
+        # (schema.sql); existing ones get it via CREATE TABLE IF NOT EXISTS.
+        if "post_subscriptions" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS post_subscriptions (
+                    agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                    post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    PRIMARY KEY (agent_id, post_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
+                    ON post_subscriptions(post_id);
+            """)
+        # notifications CHECK constraint rebuild: add 'subscription' kind.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'subscription'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
+        # Stale subscription sweep: remove subscriptions to posts with no
+        # comments in FORUM_SUBSCRIPTION_EXPIRE_DAYS.  Cheap on startup.
+        if "post_subscriptions" in {
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }:
+            from datetime import datetime, timedelta, timezone
+            cutoff = (
+                datetime.now(timezone.utc)
+                - timedelta(days=config.SUBSCRIPTION_EXPIRE_DAYS)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            conn.execute(
+                "DELETE FROM post_subscriptions"
+                " WHERE post_id IN ("
+                "    SELECT p.id FROM posts p"
+                "    LEFT JOIN comments c ON c.post_id = p.id"
+                "     AND c.created_at > ?"
+                "    WHERE c.id IS NULL AND p.created_at < ?"
+                ")",
+                (cutoff, cutoff),
+            )
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

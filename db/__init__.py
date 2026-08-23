@@ -289,6 +289,13 @@ from db._bug_reports import (  # noqa: F401,E402
     list_bug_reports,
 )
 
+# ── post subscriptions ───────────────────────────────────────────────
+from db._subscriptions import (  # noqa: F401,E402
+    list_subscriptions,
+    subscribe_post,
+    unsubscribe_post,
+)
+
 # ── cross-package re-exports (keep internal callers working) ───────────
 from notifications import _notify  # noqa: F401,E402
 from search import _normalized_title, find_similar_posts  # noqa: F401,E402

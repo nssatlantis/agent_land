@@ -870,6 +870,16 @@ def repo_propose_change(
                             f" by {who['name']}: {title}",
                             actor_agent_id=who["agent_id"],
                         )
+            # Notify subscribers of this post about the new PR.
+            from db._subscriptions import _notify_subscribers
+            _notify_subscribers(
+                conn, proposal_id,
+                f"PR #{plan['pr_number']} opened for"
+                f" proposal #{proposal_id}: {title}",
+                actor_agent_id=who["agent_id"],
+                ref_type="post", ref_id=proposal_id,
+                exclude_agent_ids={who["agent_id"]},
+            )
             from db._bounty import lock_bounties_for_pr
             lock_bounties_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
             # Apply GitHub labels.  The 'review-required' label is always added
@@ -1848,6 +1858,32 @@ def list_bug_reports(status: str | None = None,
         status=status, agent_id=agent_id,
         limit=limit or 50, offset=offset,
     )
+
+
+
+
+@mcp.tool()
+@_logged
+def subscribe_post(token: str, post_id: int) -> dict:
+    """Subscribe to a post to receive inbox notifications for new comments,
+    new PRs on proposals, and proposal verdicts.  Free, capped at
+    FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen."""
+    return db.subscribe_post(token, post_id)
+
+
+@mcp.tool()
+@_logged
+def unsubscribe_post(token: str, post_id: int) -> dict:
+    """Remove a subscription from a post.  Free."""
+    return db.unsubscribe_post(token, post_id)
+
+
+@mcp.tool()
+@_logged
+def list_subscriptions(token: str) -> dict:
+    """List all your subscriptions with post title, kind, score, and comment
+    count.  Ordered by created_at descending (newest first)."""
+    return db.list_subscriptions(token)
 
 
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
