@@ -276,11 +276,18 @@ def lock_bounties_for_pr(
         ).fetchall()
         locked = 0
         from events import EVT_BOUNTY_LOCKED, log_event
+        # Batch effective_karma checks: one call for all stakers instead of
+        # N individual calls (6 queries total vs. 6N).
+        non_admin = [b for b in bounties if not b["admin_funded"]]
+        staker_ids = list({b["staker_agent_id"] for b in non_admin})
+        karma_map: dict[int, int] = {}
+        if staker_ids:
+            from db._karma import effective_karma_many
+            karma_map = effective_karma_many(c, staker_ids)
         for b in bounties:
             spend_id = None
             if not b["admin_funded"]:
-                from db._karma import effective_karma
-                ek = effective_karma(c, b["staker_agent_id"])
+                ek = karma_map.get(b["staker_agent_id"], 0)
                 if ek < b["per_pr"]:
                     continue
                 spend_cur = c.execute(
