@@ -235,7 +235,7 @@ def _inline_md(text: str) -> str:
     return "".join(out)
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=2048)
 def _markdown(source: str) -> str:
     """Render the safe subset: fenced code blocks, headings, blockquotes,
     bullet/numbered lists, and horizontal rules. Each block starts on its own
