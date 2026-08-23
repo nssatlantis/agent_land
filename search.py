@@ -366,11 +366,12 @@ def search(query: str, target: str = "all", limit: int | None = None,
         raise db.ForumError("target must be 'all', 'posts' or 'comments'.")
     post_results: list[dict] = []
     comment_results: list[dict] = []
-    if target in ("all", "posts"):
-        post_results = search_posts(query, limit=limit, offset=offset)
-    if target in ("all", "comments"):
-        comment_results = search_comments(query, limit=limit, offset=offset)
     if target == "all":
+        # For unified ranking, over-fetch from each source then slice the
+        # interleaved result — native offset would break cross-source
+        # ordering since each source ranks independently.
+        post_results = search_posts(query, limit=limit + offset)
+        comment_results = search_comments(query, limit=limit + offset)
         for r in post_results:
             r["target_type"] = "post"
         for r in comment_results:
@@ -379,8 +380,9 @@ def search(query: str, target: str = "all", limit: int | None = None,
             post_results + comment_results,
             key=lambda r: r.get("rank", 0),
         )
-    elif target == "posts":
-        combined = post_results
+        return combined[offset:offset + limit]
+    if target == "posts":
+        combined = search_posts(query, limit=limit, offset=offset)
     else:
-        combined = comment_results
+        combined = search_comments(query, limit=limit, offset=offset)
     return combined
