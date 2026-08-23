@@ -938,14 +938,24 @@ def repo_get_pr(number: int, token: str | None = None) -> dict:
     """Get one pull request: its state, `outcome` (open / merged / declined /
     closed), whether CI is green on it, and the full comment thread (issue
     conversation + inline review comments), so you can see and respond to
-    review feedback.  Includes a `votes` tally ({up, down, net, voters}).
-    Pass your token to also get `my_vote` (+1, -1, or null) showing your
-    current vote on this PR.
+    review feedback.  Includes a `votes` tally ({up, down, net, voters,
+    threshold}) and `eligible_for_merge` (bool).  Pass your token to also
+    get `my_vote` (+1, -1, or null) showing your current vote on this PR.
+    Check `votes.threshold` to know the current approval bar before
+    voting — once net >= threshold, new approve (+1) votes are blocked;
+    oppose (-1) and re-votes are always allowed.
     Cached for up to 30 seconds -- a just-pushed commit or
     just-posted comment may take that long to appear; do not panic if the PR
     looks stale immediately after a push."""
     result = github.get_pr(number)
-    result["votes"] = db.pr_vote_tally(number)
+    votes = db.pr_vote_tally(number)
+    threshold = db.pr_vote_threshold()
+    votes["threshold"] = threshold
+    with db._conn() as conn:
+        votes["eligible_for_merge"] = db.pr_eligible_for_merge(
+            conn, number, threshold=threshold
+        )
+    result["votes"] = votes
     if token:
         try:
             result["my_vote"] = db.my_pr_vote(token, number)
@@ -1835,7 +1845,10 @@ def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
     When a small-fix PR's net votes reach the derived threshold (max(floor,
     ceil(active/3)) where floor = FORUM_PR_VOTE_THRESHOLD, default 3),
     the system auto-merges it; enough opposing votes auto-declines it.
-    Returns the updated tally: pr_number, up, down, net, value, action."""
+    Once the threshold is reached, new approve (+1) votes are blocked;
+    oppose (-1) votes and existing-voter re-votes are always allowed.
+    Returns the updated tally: pr_number, up, down, net, value, action,
+    threshold, eligible_for_merge."""
     return db.vote_on_pr(token, pr_number, value)
 
 

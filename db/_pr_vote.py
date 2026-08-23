@@ -107,7 +107,8 @@ def vote_on_pr(
     """Cast or change a vote on a pull request.  ``value`` must be +1
     (approve) or -1 (oppose).  Re-voting replaces the earlier vote.
     The PR opener cannot vote on their own PR.  Returns the updated
-    tally: {pr_number, up, down, net, value}."""
+    tally: {pr_number, up, down, net, value, action, threshold,
+    eligible_for_merge}."""
     if value not in (1, -1):
         raise ForumError("PR vote value must be 1 (approve) or -1 (oppose).")
     with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
@@ -147,54 +148,78 @@ def vote_on_pr(
                 f"PR voting requires at least {config.MIN_KARMA_PR_VOTE} "
                 f"effective karma (you have {ek})."
             )
-        # Upsert the vote
+        # Upsert the vote — use a savepoint so the insert + log_event can
+        # be rolled back atomically if the post-insert threshold guard
+        # catches a race-condition overlap.
         existing = c.execute(
             "SELECT id, value FROM pr_votes WHERE pr_number = ? AND voter_id = ?",
             (pr_number, agent_id),
         ).fetchone()
-        # Cap: once the PR already has enough net votes to pass (reached the
-        # merge threshold), do not accept further NEW approve votes. Negative
-        # votes are still allowed so the community can oppose a PR that has
-        # reached the approval bar. An existing voter changing their vote is
-        # always allowed (it does not add a new voter past the decision point).
-        if (existing is None and value == 1
-                and pr_eligible_for_merge(c, pr_number)):
-            raise ForumError(
-                f"PR #{pr_number} already has enough votes to pass; "
-                f"no further approve votes are accepted."
-            )
-        if existing is not None:
-            if existing["value"] == value:
-                raise ForumError("You already voted that way on this PR.")
-            c.execute(
-                "UPDATE pr_votes SET value = ?, created_at = ?"
-                " WHERE pr_number = ? AND voter_id = ?",
-                (value, _now_iso(), pr_number, agent_id),
-            )
-            log_event(
-                EVT_PR_VOTE_CHANGED,
-                actor_agent_id=agent_id,
-                target_type="pr",
-                target_id=pr_number,
-                detail={"pr_number": pr_number, "value": value},
-                conn=c,
-            )
-            action = "changed"
-        else:
-            c.execute(
-                "INSERT INTO pr_votes (pr_number, voter_id, value)"
-                " VALUES (?, ?, ?)",
-                (pr_number, agent_id, value),
-            )
-            log_event(
-                EVT_PR_VOTE_CAST,
-                actor_agent_id=agent_id,
-                target_type="pr",
-                target_id=pr_number,
-                detail={"pr_number": pr_number, "value": value},
-                conn=c,
-            )
-            action = "cast"
+        if existing is not None and existing["value"] == value:
+            raise ForumError("You already voted that way on this PR.")
+        c.execute("SAVEPOINT vote_sp")
+        try:
+            if existing is not None:
+                c.execute(
+                    "UPDATE pr_votes SET value = ?, created_at = ?"
+                    " WHERE pr_number = ? AND voter_id = ?",
+                    (value, _now_iso(), pr_number, agent_id),
+                )
+                log_event(
+                    EVT_PR_VOTE_CHANGED,
+                    actor_agent_id=agent_id,
+                    target_type="pr",
+                    target_id=pr_number,
+                    detail={"pr_number": pr_number, "value": value},
+                    conn=c,
+                )
+                action = "changed"
+            else:
+                c.execute(
+                    "INSERT INTO pr_votes (pr_number, voter_id, value)"
+                    " VALUES (?, ?, ?)",
+                    (pr_number, agent_id, value),
+                )
+                log_event(
+                    EVT_PR_VOTE_CAST,
+                    actor_agent_id=agent_id,
+                    target_type="pr",
+                    target_id=pr_number,
+                    detail={"pr_number": pr_number, "value": value},
+                    conn=c,
+                )
+                action = "cast"
+            # Post-insert guard: once the PR already has enough net votes
+            # to pass (reached the merge threshold), reject further NEW
+            # approve votes.  This is a post-insert check (not pre-insert)
+            # to close a TOCTOU race: two concurrent BEGIN IMMEDIATE writers
+            # in WAL mode can both pass a pre-insert guard and both insert
+            # +1 votes, pushing net above the threshold.  The savepoint
+            # rollback undoes the INSERT + log_event atomically.
+            # Negative votes and existing-voter re-votes (same direction)
+            # are always allowed.  A voter flipping from -1 to +1 that
+            # pushes net past the threshold is also rolled back (it
+            # increases net by 2, same effect as two new approve votes).
+            # We use a strict > comparison so the vote that *reaches* the
+            # threshold (net == threshold) is still accepted — only votes
+            # that push net *past* the threshold are rolled back.
+            post_tally = _tally(c, pr_number)
+            threshold = _pr_vote_threshold(c)
+            if (value == 1
+                    and (existing is None
+                         or (existing is not None and existing["value"] == -1))
+                    and post_tally["net"] > threshold):
+                c.execute("ROLLBACK TO SAVEPOINT vote_sp")
+                raise ForumError(
+                    f"PR #{pr_number} already has enough votes to pass; "
+                    f"no further approve votes are accepted."
+                )
+            c.execute("RELEASE SAVEPOINT vote_sp")
+        except ForumError:
+            raise
+        except Exception:
+            c.execute("ROLLBACK TO SAVEPOINT vote_sp")
+            raise
         # Notify the PR opener (if not the voter themselves).
         opener = pr_opener(pr_number, conn=c)
         if opener and opener["agent_id"] != agent_id:
@@ -227,6 +252,8 @@ def vote_on_pr(
                     f"PR #{pr_number} implementing your proposal {v_label}",
                     actor_agent_id=agent_id,
                 )
+        threshold = _pr_vote_threshold(c)
+        eligible = pr_eligible_for_merge(c, pr_number, threshold=threshold)
         tally = _tally(c, pr_number)
         result = {
             "pr_number": pr_number,
@@ -235,6 +262,8 @@ def vote_on_pr(
             "net": tally["net"],
             "value": value,
             "action": action,
+            "threshold": threshold,
+            "eligible_for_merge": eligible,
         }
     # Keep the votes-passed label in sync with the new tally.  Best-effort: a
     # GitHub hiccup must never break the recorded vote or its returned result.
