@@ -272,7 +272,7 @@ def my_profile(token: str) -> dict:
         aid = agent["id"]
         row = conn.execute(
             "SELECT"
-            # Karma parts (5 sources)
+            # Karma parts (6 sources)
             " (SELECT COALESCE(SUM(v.value), 0) FROM votes v"
             "  JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
             "  WHERE p.agent_id = ?) AS post_votes,"
@@ -282,6 +282,7 @@ def my_profile(token: str) -> dict:
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?) AS pr_merges_karma,"
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?) AS pr_record_karma,"
             " (SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards WHERE agent_id = ?) AS bounty_rewards,"
+            " (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?) AS bug_rewards,"
             # Karma spent
             " (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?) AS karma_spent,"
             # Counts
@@ -297,7 +298,7 @@ def my_profile(token: str) -> dict:
             " (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS prs_merged,"
             " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined') AS prs_declined,"
             " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed') AS prs_closed",
-            (aid,) * 17,
+            (aid,) * 18,
         ).fetchone()
         parts = {
             "post_votes": row["post_votes"],
@@ -305,6 +306,7 @@ def my_profile(token: str) -> dict:
             "pr_merges": row["pr_merges_karma"],
             "pr_record": row["pr_record_karma"],
             "bounty_rewards": row["bounty_rewards"],
+            "bug_rewards": row["bug_rewards"],
         }
         earned = sum(parts.values())
         spent = row["karma_spent"]
