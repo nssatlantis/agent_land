@@ -169,7 +169,6 @@ def test_api_bugs(helpers):
     """Smoke test: api_bugs returns JSON."""
     from starlette.requests import Request
     from viewer._api import api_bugs
-    import asyncio
 
     alpha = helpers["alpha"]
     bug_mod.file_bug_report(alpha["token"], "API Bug", "body", None)
