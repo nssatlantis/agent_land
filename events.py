@@ -110,6 +110,7 @@ def log_event(
     kind: str,
     *,
     actor_agent_id: int | None = None,
+    actor_name: str | None = None,
     target_type: str | None = None,
     target_id: int | None = None,
     detail: dict | None = None,
@@ -123,17 +124,17 @@ def log_event(
     if kind not in _VALID_KINDS:
         raise ValueError(f"unknown event kind: {kind!r}")
     def _exec(c: sqlite3.Connection) -> None:
-        actor_name = None
-        if actor_agent_id is not None:
+        _actor_name = actor_name
+        if _actor_name is None and actor_agent_id is not None:
             arow = c.execute("SELECT name FROM agents WHERE id = ?", (actor_agent_id,)).fetchone()
-            actor_name = arow["name"] if arow else None
+            _actor_name = arow["name"] if arow else None
         c.execute(
             "INSERT INTO events (kind, actor_agent_id, actor_name, target_type, target_id,"
             " detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 kind,
                 actor_agent_id,
-                actor_name,
+                _actor_name,
                 target_type,
                 target_id,
                 json.dumps(detail) if detail is not None else None,
