@@ -505,12 +505,14 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                         )
         # Notify subscribers of this post about the proposal outcome.
         from db._subscriptions import _notify_subscribers
+        _collab_exclude = {row["agent_id"]}
+        _collab_exclude |= {col["agent_id"] for col in collabs}
         _notify_subscribers(
             c, post_id,
             f"Proposal #{post_id} {status}.",
             actor_agent_id=row["agent_id"],
             ref_type="post", ref_id=post_id,
-            exclude_agent_ids=collab_ids,
+            exclude_agent_ids=_collab_exclude,
         )
         # Any linked PR reaching a verdict releases the opener's to-do
         # item claims on this proposal (#140): shipped or abandoned, the
