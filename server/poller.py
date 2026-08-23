@@ -498,6 +498,7 @@ def _pr_vote_sweep() -> list[dict]:
                     log_event(
                         EVT_PR_AUTO_DECLINED,
                         actor_agent_id=opener["agent_id"],
+                        actor_name=opener.get("name"),
                         target_type="pr",
                         target_id=number,
                         detail={"pr_number": number},
@@ -562,6 +563,7 @@ def _pr_vote_sweep() -> list[dict]:
                 log_event(
                     EVT_PR_AUTO_MERGED,
                     actor_agent_id=opener["agent_id"],
+                    actor_name=opener.get("name"),
                     target_type="pr",
                     target_id=number,
                     detail={"pr_number": number},
