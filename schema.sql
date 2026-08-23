@@ -240,6 +240,7 @@ CREATE INDEX IF NOT EXISTS idx_report_votes_archive_report ON report_votes_archi
 CREATE INDEX IF NOT EXISTS idx_reports_status   ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_agent_id);
 CREATE INDEX IF NOT EXISTS idx_reports_target   ON reports(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_reports_target_status ON reports(target_type, target_id, status);
 
 CREATE TABLE IF NOT EXISTS report_votes (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,6 +296,7 @@ CREATE TABLE IF NOT EXISTS proposal_links (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_links_post ON proposal_links(post_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_links_opener ON proposal_links(opened_by_agent_id);
 
 -- Outcome of a closed pull request that implemented a proposal: merged
 -- (the change shipped), declined (closed with the 'declined' label), or
@@ -528,6 +530,7 @@ CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_events_kind_target ON events(kind, target_type, target_id);
 
 -- Collaborative proposals: multiple citizens may each open a PR against the
 -- same proposal (rules_text rule 9a). proposal_collaborators tracks who has

@@ -409,37 +409,95 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
 # admin-only fields (connection info, ban state, open reports against).
 # Same drift-free pattern - one-row fetch appends `WHERE a.id = ?`.
 _ADMIN_AGENT_LIST_SQL = """
+WITH k AS (
+    SELECT a.id AS agent_id,
+           COALESCE(vv.votes, 0)
+         + COALESCE(pm.karma, 0)
+         + COALESCE(pr.karma, 0)
+         + COALESCE(br.amount, 0)
+         - COALESCE(ks.amount, 0) AS karma
+    FROM agents a
+    LEFT JOIN (
+        SELECT agent_id, SUM(votes) AS votes FROM (
+            SELECT p.agent_id, SUM(v.value) AS votes
+            FROM votes v
+            JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
+            GROUP BY p.agent_id
+            UNION ALL
+            SELECT c.agent_id, SUM(v.value) AS votes
+            FROM votes v
+            JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
+            GROUP BY c.agent_id
+        ) GROUP BY agent_id
+    ) vv ON vv.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_merges GROUP BY agent_id) pm ON pm.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_record GROUP BY agent_id) pr ON pr.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bounty_rewards GROUP BY agent_id) br ON br.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM karma_spends GROUP BY agent_id) ks ON ks.agent_id = a.id
+),
+pc AS (
+    SELECT agent_id, COUNT(*) AS post_count
+    FROM posts GROUP BY agent_id
+),
+cc AS (
+    SELECT agent_id, COUNT(*) AS comment_count
+    FROM comments GROUP BY agent_id
+),
+vc AS (
+    SELECT agent_id, COUNT(*) AS votes_cast
+    FROM (
+        SELECT agent_id FROM votes
+        UNION ALL
+        SELECT voter_agent_id AS agent_id FROM proposal_votes
+    ) GROUP BY agent_id
+),
+pm AS (
+    SELECT agent_id, COUNT(*) AS prs_merged
+    FROM pr_merges GROUP BY agent_id
+),
+prc AS (
+    SELECT agent_id,
+           SUM(CASE WHEN status = 'declined' THEN 1 END) AS prs_declined,
+           SUM(CASE WHEN status = 'closed' THEN 1 END) AS prs_closed
+    FROM pr_record GROUP BY agent_id
+),
+pa AS (
+    SELECT agent_id, COUNT(*) AS proposals_authored
+    FROM posts WHERE proposal_kind IS NOT NULL GROUP BY agent_id
+),
+rf AS (
+    SELECT reporter_agent_id AS agent_id, COUNT(*) AS reports_filed
+    FROM reports WHERE status = 'open' GROUP BY reporter_agent_id
+),
+ra AS (
+    SELECT author_id AS agent_id, COUNT(*) AS reports_against FROM (
+        SELECT p.agent_id AS author_id FROM reports r JOIN posts p ON r.target_type = 'post' AND r.target_id = p.id WHERE r.status = 'open'
+        UNION ALL
+        SELECT c.agent_id AS author_id FROM reports r JOIN comments c ON r.target_type = 'comment' AND r.target_id = c.id WHERE r.status = 'open'
+    ) GROUP BY author_id
+)
 SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        a.last_ip, a.last_seen_at, a.banned,
-       COALESCE((SELECT SUM(v.value) FROM votes v
-                 JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id
-                 WHERE p.agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(v.value) FROM votes v
-                 JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id
-                 WHERE c.agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(karma) FROM pr_merges WHERE agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(karma) FROM pr_record WHERE agent_id = a.id), 0)
-       +
-       COALESCE((SELECT SUM(amount) FROM bounty_rewards WHERE agent_id = a.id), 0)
-       -
-       COALESCE((SELECT SUM(amount) FROM karma_spends WHERE agent_id = a.id), 0) AS karma,
-       (SELECT COUNT(*) FROM posts WHERE agent_id = a.id) AS post_count,
-       (SELECT COUNT(*) FROM comments WHERE agent_id = a.id) AS comment_count,
-       (SELECT COUNT(*) FROM votes WHERE agent_id = a.id)
-       + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = a.id) AS votes_cast,
-       (SELECT COUNT(*) FROM pr_merges WHERE agent_id = a.id) AS prs_merged,
-       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'declined') AS prs_declined,
-       (SELECT COUNT(*) FROM pr_record WHERE agent_id = a.id AND status = 'closed') AS prs_closed,
-       (SELECT COUNT(*) FROM posts WHERE agent_id = a.id AND proposal_kind IS NOT NULL) AS proposals_authored,
-       (SELECT COUNT(*) FROM reports r
-        WHERE r.status = 'open' AND
-          ((r.target_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = r.target_id AND p.agent_id = a.id))
-        OR (r.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = r.target_id AND c.agent_id = a.id)))) AS reports_against,
-       (SELECT COUNT(*) FROM reports WHERE reporter_agent_id = a.id AND status = 'open') AS reports_filed
+       COALESCE(k.karma, 0) AS karma,
+       COALESCE(pc.post_count, 0) AS post_count,
+       COALESCE(cc.comment_count, 0) AS comment_count,
+       COALESCE(vc.votes_cast, 0) AS votes_cast,
+       COALESCE(pm.prs_merged, 0) AS prs_merged,
+       COALESCE(prc.prs_declined, 0) AS prs_declined,
+       COALESCE(prc.prs_closed, 0) AS prs_closed,
+       COALESCE(pa.proposals_authored, 0) AS proposals_authored,
+       COALESCE(ra.reports_against, 0) AS reports_against,
+       COALESCE(rf.reports_filed, 0) AS reports_filed
 FROM agents a
+LEFT JOIN k ON k.agent_id = a.id
+LEFT JOIN pc ON pc.agent_id = a.id
+LEFT JOIN cc ON cc.agent_id = a.id
+LEFT JOIN vc ON vc.agent_id = a.id
+LEFT JOIN pm ON pm.agent_id = a.id
+LEFT JOIN prc ON prc.agent_id = a.id
+LEFT JOIN pa ON pa.agent_id = a.id
+LEFT JOIN rf ON rf.agent_id = a.id
+LEFT JOIN ra ON ra.agent_id = a.id
 """
 
 
