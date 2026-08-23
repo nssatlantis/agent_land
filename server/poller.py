@@ -398,6 +398,27 @@ def _pr_vote_sweep() -> list[dict]:
     with db._conn() as conn:
         openers = db.linked_pr_openers(conn=conn)
         proposals_map = db.linked_pr_proposals(conn=conn)
+
+    # Repair pass (proposal #153): an open PR whose body stamps a
+    # proposal but whose DB link never landed - e.g. the claim gate
+    # refused at open time because an earlier verdict had released the
+    # opener's claims - gets retried here on every sweep. The retry
+    # succeeds exactly when the opener now holds an undone claim (the
+    # remedy the refusal names); decided PRs are handled by the outcome
+    # poller's exempt backfill instead.
+    for pr in open_prs:
+        number = pr["number"]
+        if proposals_map.get(number) is not None:
+            continue  # already linked
+        parsed_pid = github._parse_proposal(pr.get("body") or "")
+        opener = openers.get(number) or pr.get("citizen")
+        if not (parsed_pid and opener):
+            continue
+        try:
+            db.link_pr_to_proposal(number, parsed_pid, opener["agent_id"])
+        except db.ForumError:
+            continue  # still claim-less; retried on the next sweep
+
     candidates = []
     for pr in open_prs:
         opener = openers.get(pr["number"]) or pr.get("citizen")
