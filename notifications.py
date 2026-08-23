@@ -150,7 +150,11 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
             "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
             (agent["id"],),
         ).fetchone()[0]
-        return {"agent_id": agent["id"], "marked": cur.rowcount if cur else 0,
+        if keep is not None and cur is not None and cur.rowcount == -1:
+            marked = conn.execute("SELECT changes()").fetchone()[0]
+        else:
+            marked = cur.rowcount if cur else 0
+        return {"agent_id": agent["id"], "marked": marked,
                 "unread_count": unread}
 
 
