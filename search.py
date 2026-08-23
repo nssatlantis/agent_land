@@ -325,6 +325,8 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
                     proposal_post_ids,
                 ).fetchall():
                     proposal_tallies[r["post_id"]] = (r["up"], r["down"])
+        # Hoist threshold lookup outside the loop (N+1 fix)
+        threshold = db._proposal_vote_threshold(conn)
         results = []
         for r in rows:
             r = dict(r)
@@ -337,10 +339,9 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
                 r["proposal"] = db._proposal_tally(
                     up, down,
                     small_fix=(proposal_kinds.get(post_id) == "small_fix"),
-                    threshold=db._proposal_vote_threshold(conn),
+                    threshold=threshold,
                 )
-            else:
-                r["proposal"] = None
+            # Omit proposal key for non-proposal posts (match search_posts semantics)
             r["snippet"] = _bounded_snippet(r.pop("highlighted"))
             results.append(r)
         return results
