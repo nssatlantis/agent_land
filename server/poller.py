@@ -123,16 +123,22 @@ def _process_closed_pr(pr: dict) -> None:
                     pr["number"], agent_id,
                 )
             bounty_mod.pay_bounty_rewards(conn, pr["number"])
+            github._invalidate_pr(pr["number"])
+            github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):
             if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
             bounty_mod.refund_bounty_locks(conn, pr["number"])
+            github._invalidate_pr(pr["number"])
+            github._open_prs_cache._store.pop("open_prs", None)
         else:
             if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
             bounty_mod.refund_bounty_locks(conn, pr["number"])
+            github._invalidate_pr(pr["number"])
+            github._open_prs_cache._store.pop("open_prs", None)
 
 
 def _drain_closed(closed: list[dict]) -> None:
@@ -320,12 +326,17 @@ async def _ci_failure_poller() -> None:
     fix and never while a red PR sits unchanged. The tiered checks builder
     is the same one repo_pr_checks uses. All blocking calls run in worker
     threads so the MCP loop never stalls; any error is logged and retried
-    next interval."""
+    next interval.
+
+    Merged with the vote poller (proposal #111 audit item 2375):
+    fetches open_prs once per interval and passes it to both the
+    CI-failure sweep and the vote sweep, halving GitHub API traffic."""
     while True:
         interval_seconds = config.CI_POLL_SECONDS
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
+            await asyncio.to_thread(_pr_vote_sweep, open_prs)
         except Exception as exc:
             logutil.log("ci_failure_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)
@@ -354,7 +365,9 @@ def _pr_created_epoch(pr: dict) -> float | None:
     return dt.timestamp()
 
 
-def _pr_vote_sweep() -> list[dict]:
+def _pr_vote_sweep(
+    open_prs: list[dict] | None = None,
+) -> list[dict]:
     """Check open PRs for vote-based auto-merge or auto-decline.
 
     By default (PR_AUTO_MERGE_SMALL_FIX_ONLY=1) only small-fix PRs are
@@ -384,10 +397,16 @@ def _pr_vote_sweep() -> list[dict]:
     PR_MERGE_MIN_AGE_SECONDS (so even freshly-passing work gets a review
     window).
 
+    ``open_prs`` is an optional pre-fetched list of open PRs from
+    ``github.open_prs()``.  When provided the sweep skips its own fetch,
+    saving one GitHub API call (the caller and the CI-failure sweep share
+    the same list).
+
     Returns a list of actions taken (for logging)."""
 
     actions: list[dict] = []
-    open_prs = github.open_prs()
+    if open_prs is None:
+        open_prs = github.open_prs()
     # Batched pre-pass (proposal #111 audit item: N+1 in the vote sweep):
     # one connection resolves everything the per-PR gates used to re-derive
     # per number - the linked opener/proposal maps, the small-fix kind
@@ -492,6 +511,7 @@ def _pr_vote_sweep() -> list[dict]:
                     log_event(
                         EVT_PR_AUTO_DECLINED,
                         actor_agent_id=opener["agent_id"],
+                        actor_name=opener.get("name"),
                         target_type="pr",
                         target_id=number,
                         detail={"pr_number": number},
@@ -556,6 +576,7 @@ def _pr_vote_sweep() -> list[dict]:
                 log_event(
                     EVT_PR_AUTO_MERGED,
                     actor_agent_id=opener["agent_id"],
+                    actor_name=opener.get("name"),
                     target_type="pr",
                     target_id=number,
                     detail={"pr_number": number},
@@ -595,12 +616,9 @@ def _pr_vote_sweep() -> list[dict]:
 
 async def _pr_vote_poller() -> None:
     """Auto-merge or auto-decline small-fix PRs based on community votes.
-    Polls at the same interval as the outcome poller.  Any error is logged
-    and retried next interval."""
-    while True:
-        interval_seconds = config.PR_MERGE_POLL_SECONDS
-        try:
-            await asyncio.to_thread(_pr_vote_sweep)
-        except Exception as exc:
-            logutil.log("pr_vote_poll", error=str(exc))
-        await asyncio.sleep(interval_seconds)
+
+    .. deprecated::
+       Absorbed into ``_ci_failure_poller`` (proposal #111, item 2375):
+       both sweeps now share a single ``open_prs`` fetch in one loop.
+       This stub exists only for import compatibility and does nothing."""
+    pass

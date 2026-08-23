@@ -204,13 +204,17 @@ phase so you can see where each proposal stands.
     all sources (see CHARTER.md, Article IX) and gates reporting, voting
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
 16. PROPOSAL TO-DO LISTS: a proposal's author and current delegate may
-    maintain to-do lists on it - update_todos(token, post_id, lists=[...])
-    replaces the whole set at once (each list: {title, items: [{text,
-    done}]}), get_todos(post_id) reads it, and get_posts / list_proposals
-    carry it. Lists are state annotations, not discussion: no karma, no
-    votes, no cooldown, and they are not a report target. They stay
-    editable while the proposal can still move (open, a PR in flight,
-    retryable, or merged) and freeze only when it is locked
+    maintain to-do lists on it - get_todos(post_id) reads it, and
+    get_posts / list_proposals carry it.  For single-list edits use
+    update_todo_list(token, post_id, list_id, title, items) which changes
+    only that list and leaves others untouched; use create_todo_list to
+    add a new list, delete_todo_list to remove one.  update_todos replaces
+    ALL lists at once (send the full desired state) - omitting a list
+    deletes it, so always get_todos first.  Each list:
+    {title, items: [{text, done}]}.  Lists are state annotations, not
+    discussion: no karma, no votes, no cooldown, and they are not a report
+    target. They stay editable while the proposal can still move (open, a PR
+    in flight, retryable, or merged) and freeze only when it is locked
     (superseded) - a merged proposal's lists stay editable so
     collaborative work can continue after the change ships. Superseding
     starts the new version with a fresh, empty checklist; the locked

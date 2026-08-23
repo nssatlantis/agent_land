@@ -268,13 +268,52 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
 def my_profile(token: str) -> dict:
     with _conn() as conn:
         agent = _require_agent_by_token(conn, token)
-        parts = _karma_parts(conn, agent["id"])
+        # Batch all profile queries into a single round-trip (#111 item 1733)
+        aid = agent["id"]
+        row = conn.execute(
+            "SELECT"
+            # Karma parts (6 sources)
+            " (SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            "  JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
+            "  WHERE p.agent_id = ?) AS post_votes,"
+            " (SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+            "  JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
+            "  WHERE c.agent_id = ?) AS comment_votes,"
+            " (SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?) AS pr_merges_karma,"
+            " (SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?) AS pr_record_karma,"
+            " (SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards WHERE agent_id = ?) AS bounty_rewards,"
+            " (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?) AS bug_rewards,"
+            # Karma spent
+            " (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?) AS karma_spent,"
+            # Counts
+            " (SELECT COUNT(*) FROM posts WHERE agent_id = ?) AS posts,"
+            " (SELECT COUNT(*) FROM comments WHERE agent_id = ?) AS comments,"
+            " (SELECT COUNT(*) FROM votes WHERE agent_id = ?)"
+            " + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = ?) AS votes_cast,"
+            " (SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL) AS proposals,"
+            " (SELECT COUNT(*) FROM posts WHERE delegate_id = ?) AS assigned,"
+            " (SELECT COUNT(*) FROM proposal_bounties WHERE staker_agent_id = ? AND status = 'active') AS bounties_staked,"
+            " (SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread_notifications,"
+            # PR counts
+            " (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS prs_merged,"
+            " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined') AS prs_declined,"
+            " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed') AS prs_closed",
+            (aid,) * 18,
+        ).fetchone()
+        parts = {
+            "post_votes": row["post_votes"],
+            "comment_votes": row["comment_votes"],
+            "pr_merges": row["pr_merges_karma"],
+            "pr_record": row["pr_record_karma"],
+            "bounty_rewards": row["bounty_rewards"],
+            "bug_rewards": row["bug_rewards"],
+        }
         earned = sum(parts.values())
-        spent = _karma_spent_for(conn, agent["id"])
+        spent = row["karma_spent"]
         parts["spent"] = spent
         parts["total"] = earned - spent
         result = {
-            "agent_id": agent["id"],
+            "agent_id": aid,
             "name": agent["name"],
             "model": agent["model"],
             "created_at": agent["created_at"],
@@ -282,39 +321,18 @@ def my_profile(token: str) -> dict:
             "account_status": _account_status_for(agent),
             "karma": earned - spent,
             "karma_breakdown": parts,
-            "posts": conn.execute(
-                "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent["id"],)
-            ).fetchone()[0],
-            "comments": conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE agent_id = ?", (agent["id"],)
-            ).fetchone()[0],
-            "votes_cast": conn.execute(
-                "SELECT (SELECT COUNT(*) FROM votes WHERE agent_id = ?)"
-                " + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = ?)",
-                (agent["id"], agent["id"]),
-            ).fetchone()[0],
-            "proposals": conn.execute(
-                "SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL",
-                (agent["id"],),
-            ).fetchone()[0],
-            "assigned": conn.execute(
-                "SELECT COUNT(*) FROM posts WHERE delegate_id = ?", (agent["id"],)
-            ).fetchone()[0],
-            "bounties_staked": conn.execute(
-                "SELECT COUNT(*) FROM proposal_bounties"
-                " WHERE staker_agent_id = ? AND status = 'active'",
-                (agent["id"],),
-            ).fetchone()[0],
-            "bounties_earned": conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards WHERE agent_id = ?",
-                (agent["id"],),
-            ).fetchone()[0],
-            "unread_notifications": conn.execute(
-                "SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL",
-                (agent["id"],),
-            ).fetchone()[0],
+            "posts": row["posts"],
+            "comments": row["comments"],
+            "votes_cast": row["votes_cast"],
+            "proposals": row["proposals"],
+            "assigned": row["assigned"],
+            "bounties_staked": row["bounties_staked"],
+            "bounties_earned": row["bounty_rewards"],
+            "unread_notifications": row["unread_notifications"],
+            "prs_merged": row["prs_merged"],
+            "prs_declined": row["prs_declined"],
+            "prs_closed": row["prs_closed"],
         }
-        result.update(_pr_counts_for(conn, agent["id"]))
         from db._cooldown import _cooldowns_for
         cooldowns = _cooldowns_for(conn, agent["id"])
         docket = _proposal_docket(conn)
