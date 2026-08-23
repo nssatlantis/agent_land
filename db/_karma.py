@@ -278,7 +278,8 @@ def record_pr_closed(
 
 
 def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
-                        conn: sqlite3.Connection | None = None) -> None:
+                        conn: sqlite3.Connection | None = None,
+                        *, enforce_claims: bool = True) -> None:
     """Record that a pull request implements a forum proposal. Called by
     repo_propose_change() when a PR opens and by the outcome poller to
     backfill pre-existing PRs. Idempotent (UNIQUE pr_number): a PR is linked
@@ -308,7 +309,11 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
                 # so two collaborators cannot build the same thing. Claims
                 # are swept first so an expired one never satisfies the
                 # gate, and backfills above never reach this branch.
-                if config.TODO_CLAIM_REQUIRED > 0:
+                # Outcome-poller backfills of already-decided PRs pass
+                # enforce_claims=False: recording history for work the
+                # community already reviewed is bookkeeping, not a new
+                # contribution racing the board.
+                if config.TODO_CLAIM_REQUIRED > 0 and enforce_claims:
                     from db._proposal_todos import _sweep_expired_claims
                     _sweep_expired_claims(c, [
                         r["id"] for r in c.execute(
