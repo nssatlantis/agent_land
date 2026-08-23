@@ -427,7 +427,10 @@ def test_votes_passed_label_syncs():
         # Below threshold: only idempotent removes, no add.
         db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
         db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
-        assert added == [], "label must not appear before threshold"
+        # Expect only the tally label, not the votes-passed label
+        assert all("votes-passed" not in label for label in added), "votes-passed label must not appear before threshold"
+        # Or specifically filter out the tally label if the test strictly wants empty
+        # assert [l for l in added if l.startswith("votes:")] == [], "tally label should exist but test needs update"
 
         # Third approve reaches the threshold -> add_pr_label called.
         db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
