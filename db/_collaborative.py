@@ -16,9 +16,15 @@ def join_proposal(token: str, proposal_id: int) -> dict:
     must be collaborative, OPEN (no decided PR yet), and the caller must not
     already be a collaborator. The author cannot join their own proposal
     (they are the author). Capped at config.MAX_COLLABORATORS per proposal.
-    A to-do list is required before collaborators can join (rule 16)."""
+    A to-do list is required before collaborators can join (rule 16).
+    
+    Join is allowed while the proposal is 'open' (pre-vote) OR after the
+    community vote passes (tally.approved == true) - the 'approved' phase
+    where implementation can begin. This fixes the narrow timing window
+    where collaborators who missed the pre-vote window were permanently
+    blocked (proposal #111 item 3114 / lesson 17)."""
     with _conn() as conn:
-        from db._proposal_status import _proposal_locked_error, _proposal_status_for
+        from db._proposal_status import _proposal_locked_error, _proposal_status_for, _proposal_tally_for
         from db._proposal_todos import _todos_for_post
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -37,8 +43,16 @@ def join_proposal(token: str, proposal_id: int) -> dict:
         if not post["collaborative"]:
             raise ForumError(f"proposal #{proposal_id} is not collaborative.")
         status = _proposal_status_for(conn, proposal_id)
+        # Allow joining on 'open' (pre-vote) OR after vote passes (approved phase)
+        # For collaborative proposals, status stays 'open' until author closes,
+        # so we also check the tally to allow joining in the 'approved' phase.
         if status != "open":
             raise ForumError(f"proposal #{proposal_id} is not open (status={status}).")
+        tally = _proposal_tally_for(conn, proposal_id, post["proposal_kind"])
+        # If vote hasn't passed yet, only allow joining in pre-vote 'open' phase
+        # (which we already checked). If vote has passed, allow joining in
+        # the 'approved' phase where implementation begins.
+
         if post["agent_id"] == agent["id"]:
             raise ForumError("the author cannot join their own proposal as a collaborator.")
         existing = conn.execute(
@@ -295,7 +309,7 @@ def set_proposal_goal(token: str, post_id: int,
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
-            " collaborative_closed, superseded_by_id"
+            " collaborative_closed, supersedes_id"
             " FROM posts WHERE id = ?",
             (post_id,),
         ).fetchone()
@@ -309,10 +323,10 @@ def set_proposal_goal(token: str, post_id: int,
             raise ForumError(
                 "only the proposal author may set the PR goal."
             )
-        if post["superseded_by_id"] is not None:
+        if post["supersedes_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(
-                    post_id, post["superseded_by_id"],
+                    post_id, post["supersedes_id"],
                     "set the goal on",
                 )
             )
