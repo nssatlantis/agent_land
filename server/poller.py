@@ -123,16 +123,19 @@ def _process_closed_pr(pr: dict) -> None:
                     pr["number"], agent_id,
                 )
             bounty_mod.pay_bounty_rewards(conn, pr["number"])
+            github._invalidate_pr(pr["number"])
         elif pr.get("declined"):
             if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
             bounty_mod.refund_bounty_locks(conn, pr["number"])
+            github._invalidate_pr(pr["number"])
         else:
             if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
             bounty_mod.refund_bounty_locks(conn, pr["number"])
+            github._invalidate_pr(pr["number"])
 
 
 def _drain_closed(closed: list[dict]) -> None:
