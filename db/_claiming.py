@@ -8,7 +8,65 @@ unclaiming clears it.  Author or claimer may revoke at any time.
 
 from __future__ import annotations
 
+from __future__ import annotations
+
+import sqlite3
+
+import config
 from db._core import ForumError, _conn, _require_active_agent
+
+
+def require_claim_for_todo(
+    conn: sqlite3.Connection, post_id: int, agent_id: int
+) -> None:
+    """Pre-open gate: verify the agent holds an active claim on an undone
+    to-do item before any GitHub side effect.
+
+    Called by repo_propose_change() *before* github.propose_change() so a
+    missing claim fails with a clean ForumError instead of opening a branch
+    and then failing at link time.  Mirrors the claim gate in
+    link_pr_to_proposal (db/_karma.py) but runs early — the extracted
+    contract so two call-sites can't drift.
+
+    No-op when TODO_CLAIM_REQUIRED is off or the proposal is not
+    collaborative.  Sweeps expired claims first so a stale claim never
+    satisfies the gate.
+    """
+    if config.TODO_CLAIM_REQUIRED <= 0:
+        return
+
+    row = conn.execute(
+        "SELECT collaborative FROM posts WHERE id = ?", (post_id,)
+    ).fetchone()
+    if row is None or not row["collaborative"]:
+        return
+
+    from db._proposal_todos import _sweep_expired_claims
+
+    list_ids = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM todo_lists WHERE post_id = ?", (post_id,)
+        ).fetchall()
+    ]
+    _sweep_expired_claims(conn, list_ids)
+
+    held = conn.execute(
+        "SELECT COUNT(*) FROM todo_items ti"
+        " JOIN todo_lists tl ON tl.id = ti.list_id"
+        " WHERE tl.post_id = ?"
+        " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
+        (post_id, agent_id),
+    ).fetchone()[0]
+    if held == 0:
+        raise ForumError(
+            f"proposal #{post_id} requires claiming a to-do"
+            " item before contributing: get_todos("
+            f"{post_id}) to see the board, then"
+            " claim_todo_item(token, "
+            f"{post_id}, item_id) on an unclaimed item you"
+            " will implement."
+        )
 from db._proposal_status import _proposal_locked_error, _proposal_status_for
 from notifications import _notify
 
