@@ -197,6 +197,7 @@ from db._proposal_delegation import (  # noqa: F401
 # ── proposal claiming ──────────────────────────────────────────────────
 from db._claiming import (  # noqa: F401
     claim_proposal,
+    require_claim_for_todo,
     set_claimable,
     unclaim_proposal,
 )

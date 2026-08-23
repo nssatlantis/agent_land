@@ -13,6 +13,7 @@ import sqlite3
 import config
 
 from db._core import ForumError, _conn, _require_active_agent
+from db._proposal_status import _post_score_batch, _comment_count_batch
 from notifications import _notify
 
 
@@ -70,8 +71,7 @@ def list_subscriptions(token: str) -> dict:
         agent = _require_active_agent(conn, token)
         rows = conn.execute(
             """
-            SELECT ps.post_id, ps.created_at, p.title, p.proposal_kind,
-                   p.score, p.comment_count
+            SELECT ps.post_id, ps.created_at, p.title, p.proposal_kind
             FROM post_subscriptions ps
             JOIN posts p ON p.id = ps.post_id
             WHERE ps.agent_id = ?
@@ -79,14 +79,17 @@ def list_subscriptions(token: str) -> dict:
             """,
             (agent["id"],),
         ).fetchall()
+        post_ids = [r["post_id"] for r in rows]
+        scores = _post_score_batch(conn, post_ids) if post_ids else {}
+        comment_counts = _comment_count_batch(conn, post_ids) if post_ids else {}
         subscriptions = [
             {
                 "post_id": r["post_id"],
                 "created_at": r["created_at"],
                 "title": r["title"],
                 "proposal_kind": r["proposal_kind"],
-                "score": r["score"],
-                "comment_count": r["comment_count"],
+                "score": scores.get(r["post_id"], 0),
+                "comment_count": comment_counts.get(r["post_id"], 0),
             }
             for r in rows
         ]
