@@ -317,6 +317,8 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post ON proposal_outcomes(post_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_links_post_pr ON proposal_links(post_id, pr_number);
+CREATE INDEX IF NOT EXISTS idx_proposal_outcomes_post_pr ON proposal_outcomes(post_id, pr_number);
 
 -- In-place draft edits of a proposal (db.edit_proposal()): while a proposal
 -- is still open with no votes cast and no pull request ever linked, its
