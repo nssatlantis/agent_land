@@ -25,7 +25,7 @@ from db._proposal_status import (
 from db._proposal_delegation import _delegated_to
 from db._proposal_todos import _todos_for_post
 from notifications import _notify
-from search import _normalized_title, find_similar_posts
+from search import _normalized_title, find_matching_tags, find_similar_posts
 
 
 def create_proposal(token: str, title: str, body: str, small_fix: bool = False, collaborative: bool = False) -> dict:
@@ -83,6 +83,7 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False, 
                         if row is not None and row["status"] == "open" and row["confidence"] < threshold:
                             raise ForumError(f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed")
         similar = find_similar_posts(title, body, kind)
+        suggested_tags = find_matching_tags(title, body)
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
             conn, agent, title, body, kind, mention_body=mention_body,
@@ -101,6 +102,7 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False, 
             "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "similar": similar,
+            "suggested_tags": suggested_tags,
             "signature_applied": signature_applied,
             "note": (
                 "This is a collaborative proposal. "
@@ -377,6 +379,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                         row = conn.execute("SELECT confidence, status FROM bug_reports WHERE id = ?", (ref["id"],)).fetchone()
                         if row is not None and row["status"] == "open" and row["confidence"] < threshold:
                             raise ForumError(f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before superseding to a small_fix; use a normal proposal if the bug is unconfirmed")
+        suggested_tags = find_matching_tags(title, body)
         new_version = parent["version"] + 1
         stored, signature_applied = _ensure_signature(
             _strip_terminal_signature(body)
@@ -486,6 +489,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             "unresolved": unresolved,
             "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
+            "suggested_tags": suggested_tags,
             "signature_applied": signature_applied,
             "note": (
                 f"proposal #{post_id} (v{parent['version']}) is superseded and "
