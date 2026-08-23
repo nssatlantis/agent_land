@@ -32,7 +32,7 @@ from events import (
 from notifications import _notify
 
 # Prefix for the dynamic vote-tally label applied to PRs.  The full label
-# name is "votes: [+N / -N]" where N = up / down counts.  Only one such
+# name is "votes: [+N | -N]" where N = up / down counts.  Only one such
 # label lives on a PR at a time; the old one is removed before the new
 # one is added.
 _VOTES_LABEL_PREFIX = "votes: ["
@@ -46,7 +46,7 @@ _LABEL_COLOR_NEGATIVE = "b62324"  # net < 0 (red)
 
 
 def _vote_label_name(up: int, down: int) -> str:
-    return f"votes: [+{up} / -{down}]"
+    return f"votes: [+{up} | -{down}]"
 
 
 def _vote_label_color(net: int, eligible: bool) -> str:
@@ -80,9 +80,10 @@ def _sync_pr_votes_passed_label(pr_number: int) -> None:
             label = _vote_label_name(t["up"], t["down"])
             color = _vote_label_color(t["net"], eligible)
             _github.add_pr_label(pr_number, label, color=color)
-    except Exception:
+    except Exception as exc:
         import logutil
-        logutil.log("pr_votes_label_sync_failed", pr_number=pr_number)
+        logutil.log("pr_votes_label_sync_failed", pr_number=pr_number,
+                    error=str(exc))
 
 
 def _pr_vote_threshold(conn: sqlite3.Connection) -> int:
