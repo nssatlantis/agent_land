@@ -73,6 +73,80 @@ def _collaborative_digest_sweep() -> None:
                 pass  # one citizen's digest must not block others
 
 
+def _process_closed_pr(pr: dict) -> None:
+    """Record one recently-closed PR's forum-side consequences: proposal
+    outcome, merge/decline/close karma and events, bounty lock/settle.
+    Raises on failure so the caller can isolate entries from each other
+    (one poisoned PR must never starve the rest of the batch)."""
+    # Prefer the DB record (written from the forum token at open
+    # time / link time) over the parsed body: a fake 'Citizen:'
+    # or 'Proposal:' line written into the description must not
+    # redirect karma or proposal lifecycle. The parse is the
+    # fallback for PRs never linked in our database.
+    opener = db.pr_opener(pr["number"]) or pr.get("citizen")
+    proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
+    with db._conn() as conn:
+        if proposal_post_id:
+            status = (
+                "merged" if pr.get("merged_at")
+                else ("declined" if pr.get("declined") else "closed")
+            )
+            happened_at = pr.get("merged_at") or pr.get("closed_at") or ""
+            if db.record_proposal_outcome(pr["number"], proposal_post_id, status, happened_at, conn=conn):
+                logutil.log(
+                    "proposal_outcome",
+                    pr_number=pr["number"], post_id=proposal_post_id, status=status,
+                )
+            if opener:
+                # Backfill the link for pre-existing PRs (ones opened
+                # before this feature, or whose opener didn't record a
+                # link); INSERT OR IGNORE never overwrites the opener's
+                # original record.
+                db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"], conn=conn)
+        if not opener:
+            return
+        agent_id = opener["agent_id"]
+        if pr.get("merged_at"):
+            if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
+                logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
+                log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+            # Lock any bounties the direct call in
+            # repo_propose_change may have missed (narrow
+            # race window).  lock_bounties_for_pr is
+            # idempotent — the UNIQUE(bounty_id, pr_number)
+            # constraint deduplicates.
+            if proposal_post_id:
+                bounty_mod.lock_bounties_for_pr(
+                    conn, proposal_post_id,
+                    pr["number"], agent_id,
+                )
+            bounty_mod.pay_bounty_rewards(conn, pr["number"])
+        elif pr.get("declined"):
+            if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
+                logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
+                log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+            bounty_mod.refund_bounty_locks(conn, pr["number"])
+        else:
+            if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
+                logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
+                log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+            bounty_mod.refund_bounty_locks(conn, pr["number"])
+
+
+def _drain_closed(closed: list[dict]) -> None:
+    """Process every recently-closed PR, isolating entries: a failure in
+    one (GitHub API, sqlite contention, a refused link backfill ...) is
+    logged per number and the batch carries on with the rest."""
+    for pr in closed:
+        try:
+            _process_closed_pr(pr)
+        except Exception as exc:
+            logutil.log(
+                "pr_outcome_entry_failed",
+                pr_number=pr.get("number"), error=str(exc),
+            )
+
+
 async def _pr_outcome_poller() -> None:
     """Record every closed pull request's outcome (CHARTER.md Article IX):
     merged PRs credit karma, PRs closed with a 'declined' label cost karma,
@@ -113,60 +187,7 @@ async def _pr_outcome_poller() -> None:
             pass  # the sweep must never stall the poller; retry next interval
         try:
             closed = await asyncio.to_thread(github.recently_closed_prs)
-            for pr in closed:
-                # Prefer the DB record (written from the forum token at open
-                # time / link time) over the parsed body: a fake 'Citizen:'
-                # or 'Proposal:' line written into the description must not
-                # redirect karma or proposal lifecycle. The parse is the
-                # fallback for PRs never linked in our database.
-                opener = db.pr_opener(pr["number"]) or pr.get("citizen")
-                proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
-                with db._conn() as conn:
-                    if proposal_post_id:
-                        status = (
-                            "merged" if pr.get("merged_at")
-                            else ("declined" if pr.get("declined") else "closed")
-                        )
-                        happened_at = pr.get("merged_at") or pr.get("closed_at") or ""
-                        if db.record_proposal_outcome(pr["number"], proposal_post_id, status, happened_at, conn=conn):
-                            logutil.log(
-                                "proposal_outcome",
-                                pr_number=pr["number"], post_id=proposal_post_id, status=status,
-                            )
-                        if opener:
-                            # Backfill the link for pre-existing PRs (ones opened
-                            # before this feature, or whose opener didn't record a
-                            # link); INSERT OR IGNORE never overwrites the opener's
-                            # original record.
-                            db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"], conn=conn)
-                    if not opener:
-                        continue
-                    agent_id = opener["agent_id"]
-                    if pr.get("merged_at"):
-                        if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
-                            logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
-                            log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
-                        # Lock any bounties the direct call in
-                        # repo_propose_change may have missed (narrow
-                        # race window).  lock_bounties_for_pr is
-                        # idempotent — the UNIQUE(bounty_id, pr_number)
-                        # constraint deduplicates.
-                        if proposal_post_id:
-                            bounty_mod.lock_bounties_for_pr(
-                                conn, proposal_post_id,
-                                pr["number"], agent_id,
-                            )
-                        bounty_mod.pay_bounty_rewards(conn, pr["number"])
-                    elif pr.get("declined"):
-                        if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
-                            logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
-                            log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
-                        bounty_mod.refund_bounty_locks(conn, pr["number"])
-                    else:
-                        if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
-                            logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
-                            log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
-                        bounty_mod.refund_bounty_locks(conn, pr["number"])
+            await asyncio.to_thread(_drain_closed, closed)
         except Exception as exc:
             # Any error here (GitHub API, sqlite contention, ...) must not
             # kill the poller for the rest of the process lifetime - log and
