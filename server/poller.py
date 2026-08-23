@@ -111,7 +111,7 @@ def _process_closed_pr(pr: dict) -> None:
         if pr.get("merged_at"):
             if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
                 logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
-                log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                log_event(EVT_PR_MERGED, actor_agent_id=agent_id, actor_name=opener["name"], target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
             # Lock any bounties the direct call in
             # repo_propose_change may have missed (narrow
             # race window).  lock_bounties_for_pr is
@@ -128,14 +128,14 @@ def _process_closed_pr(pr: dict) -> None:
         elif pr.get("declined"):
             if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
-                log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, actor_name=opener["name"], target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
             bounty_mod.refund_bounty_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         else:
             if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
-                log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, actor_name=opener["name"], target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
             bounty_mod.refund_bounty_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
@@ -498,6 +498,7 @@ def _pr_vote_sweep() -> list[dict]:
                     log_event(
                         EVT_PR_AUTO_DECLINED,
                         actor_agent_id=opener["agent_id"],
+                        actor_name=opener["name"],
                         target_type="pr",
                         target_id=number,
                         detail={"pr_number": number},
@@ -562,6 +563,7 @@ def _pr_vote_sweep() -> list[dict]:
                 log_event(
                     EVT_PR_AUTO_MERGED,
                     actor_agent_id=opener["agent_id"],
+                    actor_name=opener["name"],
                     target_type="pr",
                     target_id=number,
                     detail={"pr_number": number},
