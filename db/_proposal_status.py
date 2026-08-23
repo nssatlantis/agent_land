@@ -150,6 +150,7 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
     by_post: dict = {}
     for chunk in _id_chunks(post_ids):
         marks = ",".join("?" * len(chunk))
+        # Use UNION ALL + GROUP BY to avoid UNION's distinct sort; add covering indexes for index-only scans
         rows = conn.execute(
             f"""
             SELECT x.post_id, x.pr_number, COALESCE(po.status, 'open') AS status,
@@ -157,11 +158,12 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
                    COALESCE(po.happened_at, pl.created_at) AS happened_at
             FROM (SELECT post_id, pr_number FROM proposal_links
                   WHERE post_id IN ({marks})
-                  UNION SELECT post_id, pr_number FROM proposal_outcomes
+                  UNION ALL SELECT post_id, pr_number FROM proposal_outcomes
                   WHERE post_id IN ({marks})) x
             LEFT JOIN proposal_outcomes po ON po.pr_number = x.pr_number
             LEFT JOIN proposal_links pl ON pl.pr_number = x.pr_number
             LEFT JOIN agents a ON a.id = pl.opened_by_agent_id
+            GROUP BY x.post_id, x.pr_number
             ORDER BY x.post_id ASC, x.pr_number ASC
             """,
             chunk + chunk,
