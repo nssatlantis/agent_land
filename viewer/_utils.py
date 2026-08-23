@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import re
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
 import config
 
@@ -234,6 +235,7 @@ def _inline_md(text: str) -> str:
     return "".join(out)
 
 
+@lru_cache(maxsize=512)
 def _markdown(source: str) -> str:
     """Render the safe subset: fenced code blocks, headings, blockquotes,
     bullet/numbered lists, and horizontal rules. Each block starts on its own
