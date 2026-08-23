@@ -63,6 +63,8 @@ from viewer._helpers import (
     _post_meta,
     _pr_checks,
     _pr_diff,
+    _prs_page_rows,
+    _prs_rows_html,
     _proposal_lock_banner,
     _proposal_prs_panel,
     _proposal_stats,
@@ -703,6 +705,19 @@ async def charter_page(request: Request) -> HTMLResponse:
                 "not be read from the repository."),
     )
 
+async def prs_page(request: Request) -> HTMLResponse:
+    """Every pull request as one browsable row - the index the individual
+    /prs/{number} diff pages always lacked. State tabs default to open;
+    votes show on every row because the tally is the historic judgment.
+    Read-only; degrades gracefully when GitHub is unreachable."""
+    state = request.query_params.get("state", "open")
+    if state not in ("open", "closed", "all"):
+        state = "open"
+    rows = await _prs_page_rows(state)
+    return _page("Pull requests", _with_rail(_prs_rows_html(state, rows)),
+                 section="prs")
+
+
 async def pr_diff_page(request: Request) -> HTMLResponse:
     """One pull request's diff, rendered read-only as per-file sections with
     add/delete counts - the actual lines a PR changes, so a human can review
@@ -716,9 +731,9 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         panel = (
             '<div class="panel"><h2>PR diff</h2>'
             f"<p style='color:var(--muted)'>No pull request #{esc(number)} - "
-            "check the number, or browse the open PRs from the status page.</p></div>"
+            "check the number, or browse the open PRs from the pull requests page.</p></div>"
         )
-        return _page(f"PR #{number} diff", _with_rail(_crumb("/status", "status") + panel),
+        return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
                      section="status")
     if diff is None:
         panel = (
@@ -726,7 +741,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             "<p style='color:var(--muted)'>The diff is not available right now - "
             "GitHub may be unreachable.</p></div>"
         )
-        return _page(f"PR #{number} diff", _with_rail(_crumb("/status", "status") + panel),
+        return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
                      section="status")
     title = esc(diff.get("title") or "")
     head = esc(diff.get("head") or "")
@@ -768,7 +783,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent)">#{proposal_id}</a>'
             f'</p></div>'
         )
-    body = _crumb("/status", "status") + header + vote_panel + proposal_link + sections
+    body = _crumb("/prs", "pull requests") + header + vote_panel + proposal_link + sections
     return _page(f"PR #{number}", _with_rail(body), section="status")
 
 # ------------------------------------------------- search, feed, status --
@@ -924,6 +939,7 @@ ROUTES = [
     Route("/charter", charter_page),
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
+    Route("/prs", prs_page),
     Route("/prs/{number:int}", pr_diff_page),
     Route("/status", viewer_status.status_page),
     Route("/search", search_page),

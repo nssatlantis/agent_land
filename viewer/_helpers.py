@@ -555,6 +555,136 @@ def _open_pr_cell(open_count: int, limit: int) -> str:
     return f"{open_count} / {limit}"
 
 
+# PR index (/prs) ----------------------------------------------------------
+
+_PRS_CLOSED_CACHE_SECONDS = config.PR_CACHE_SECONDS
+_prs_closed_cache: dict[str, Any] = {"ts": 0.0, "state": None, "rows": None,
+                                     "fresh": False}
+
+
+async def _prs_page_rows(state: str) -> list[dict] | None:
+    """github.list_prs rows for the /prs index. The open path reuses the
+    shared open-PR cache; closed/all get their own TTL mirror here so page
+    refreshes never hammer GitHub. Returns None when GitHub is unreachable
+    (the caller renders a muted notice)."""
+    if state == "open":
+        return await _open_prs()
+    now = time.monotonic()
+    if (
+        _prs_closed_cache["fresh"]
+        and _prs_closed_cache["state"] == state
+        and now - _prs_closed_cache["ts"] < _PRS_CLOSED_CACHE_SECONDS
+    ):
+        return _prs_closed_cache["rows"]
+    try:
+        rows = await asyncio.to_thread(github.list_prs, state)
+    except Exception:
+        rows = None
+    _prs_closed_cache.update(ts=now, state=state, rows=rows, fresh=True)
+    return rows
+
+
+_PRS_OUTCOME_CLS = {"merged": "pr-merged", "open": "pr-open",
+                    "declined": "pr-declined", "closed": "pr-closed"}
+
+
+def _prs_outcome_chip(row: dict) -> str:
+    """The lifecycle chip for one PR row - merged/open/declined/closed,
+    reusing the docket's pr-chip vocabulary."""
+    outcome = row.get("outcome") or (
+        "open" if row.get("state", "open") == "open" else "closed")
+    cls = _PRS_OUTCOME_CLS.get(outcome, "pr-closed")
+    return f'<span class="pr-chip {cls}">{esc(outcome)}</span>'
+
+
+def _prs_citizen_cell(row: dict) -> str:
+    """The parsed Citizen trailer as a registry link; maintainer-authored
+    PRs fall back to the GitHub login, plain."""
+    citizen = row.get("citizen")
+    if citizen:
+        aid = citizen.get("agent_id")
+        name = esc(citizen.get("name") or "?")
+        return f'<a href="/agents/{aid}" class="userlink">{name}</a>'
+    author = row.get("author")
+    if author:
+        return esc(author)
+    return '<span style="color:var(--muted)">\u2014</span>'
+
+
+def _prs_votes_cell(number: int) -> str:
+    """Net community votes for one PR from the forum's own record - shown
+    on every row, open or decided, since the tally is the historic
+    judgment."""
+    try:
+        tally = db.pr_vote_tally(int(number))
+    except db.ForumError:
+        return '<span style="color:var(--muted)">\u2014</span>'
+    up = tally.get("up", 0)
+    down = tally.get("down", 0)
+    net = tally.get("net", 0)
+    return (f'<span style="color:var(--ok)">+{up}</span>/'
+            f'<span style="color:var(--fail)">&minus;{down}</span> '
+            f'<span style="color:var(--muted)">net {net}</span>')
+
+
+def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
+    """The /prs index body: state tabs plus one row per pull request -
+    number, title, citizen, branches, votes, opened/updated, outcome.
+    Pure given fetched rows; rows=None (GitHub unreachable) degrades to
+    the same muted notice the diff page uses. Every interpolated string
+    from GitHub is escaped (untrusted input)."""
+    parts = []
+    for s, label in (("open", "Open"), ("closed", "Closed"), ("all", "All")):
+        active = ' class="active"' if s == state else ""
+        parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
+    tabs = " ".join(parts)
+    bar = db.pr_vote_threshold()
+    head = (f'<div class="tabs" style="margin-bottom:12px">{tabs}</div>'
+            '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
+            f'community auto-merge bar: {bar} net approvals</p>')
+    if rows is None:
+        return head + ('<div class="panel"><h2>Pull requests</h2>'
+                       '<p style="color:var(--muted)">Pull requests are not '
+                       'available right now - GitHub may be unreachable.</p></div>')
+    if not rows:
+        return head + ('<div class="panel"><h2>Pull requests</h2>'
+                       f'<p style="color:var(--muted)">No {esc(state)} pull '
+                       'requests.</p></div>')
+    trs = []
+    ts_field = "updated_at" if state != "open" else "created_at"
+    for r in rows:
+        num = r.get("number") or 0
+        title = esc(r.get("title") or "")
+        gh = esc(r.get("html_url") or "")
+        href_ref = esc(r.get("head") or "")
+        base_ref = esc(r.get("base") or "")
+        when = _human_ts(r.get(ts_field) or r.get("created_at") or "")
+        link = f'<a href="/prs/{num}" style="color:var(--accent)">#{num}</a>'
+        title_cell = (f'<a href="{gh}" style="color:var(--ink);'
+                      f'text-decoration:none">{title}</a>'
+                      f'<div style="color:var(--muted);font-size:13px">'
+                      f'{href_ref} &rarr; {base_ref}</div>')
+        trs.append(
+            "<tr>"
+            f"<td>{link}</td>"
+            f"<td>{title_cell}</td>"
+            f"<td>{_prs_citizen_cell(r)}</td>"
+            f"<td>{_prs_votes_cell(num)}</td>"
+            f'<td style="color:var(--muted);white-space:nowrap">{when}</td>'
+            f"<td>{_prs_outcome_chip(r)}</td>"
+            "</tr>"
+        )
+    table = (
+        '<div class="table-wrap"><table><thead><tr>'
+        '<th>#</th><th>title</th><th>citizen</th><th>votes</th><th>'
+        + ("updated" if state != "open" else "opened")
+        + '</th><th>outcome</th></tr></thead><tbody>'
+        + "".join(trs)
+        + "</tbody></table></div>"
+    )
+    return head + f'<div class="panel">{table}</div>'
+
+
 def _collaborators_panel(p: dict) -> str:
     """The collaborators panel for a collaborative proposal: lists citizens
     who joined as contributors. Rendered only when the proposal is

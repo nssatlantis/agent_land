@@ -17,6 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db, setup  # noqa: E402
 from viewer._helpers import (
     _ci_chip,
+    _prs_citizen_cell,
+    _prs_outcome_chip,
+    _prs_rows_html,
     _proposal_lock_banner,
     _proposal_prs_panel,
     _proposal_votes_panel,
@@ -234,6 +237,50 @@ def test_open_pr_cell():
     assert "0 / 3" in _open_pr_cell(0, 3)
 
 
+def test_prs_rows_html_escapes_untrusted():
+    rows = [{"number": 1, "title": "<script>alert(1)</script>",
+             "head": 'x"><svg', "base": "main", "html_url": "https://x/1",
+             "created_at": "2026-08-23T00:00:00Z",
+             "citizen": {"name": "<b>evil</b>", "agent_id": 9},
+             "state": "open", "outcome": None}]
+    html = _prs_rows_html("open", rows)
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;b&gt;evil&lt;/b&gt;" in html
+    assert 'href="/agents/9"' in html
+
+
+def test_prs_outcome_chip_classes():
+    for outcome, cls in (("merged", "pr-merged"), ("open", "pr-open"),
+                         ("declined", "pr-declined"), ("closed", "pr-closed")):
+        chip = _prs_outcome_chip({"outcome": outcome})
+        assert cls in chip
+        assert outcome in chip
+
+
+def test_prs_citizen_cell_fallback():
+    cell = _prs_citizen_cell({"citizen": None, "author": "<x>"})
+    assert "&lt;x&gt;" in cell
+    assert "<x>" not in cell
+
+
+def test_prs_rows_html_empty_and_unreachable():
+    assert "No open pull requests" in _prs_rows_html("open", [])
+    assert "unreachable" in _prs_rows_html("all", None)
+
+
+def test_prs_rows_html_votes_tabs_and_history():
+    rows = [{"number": 5, "title": "t", "head": "h", "base": "main",
+             "html_url": "", "created_at": "2026-08-23T00:00:00Z",
+             "updated_at": "2026-08-23T01:00:00Z", "state": "closed",
+             "outcome": "merged"}]
+    html = _prs_rows_html("closed", rows)
+    assert "+0" in html and "net 0" in html
+    assert 'class="active"' in html and "/prs?state=closed" in html
+    assert "pr-merged" in html
+    assert "/prs/5" in html
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -254,4 +301,9 @@ if __name__ == "__main__":
     test_open_prs_by_agent_with_prs()
     test_collaborators_panel()
     test_open_pr_cell()
+    test_prs_rows_html_escapes_untrusted()
+    test_prs_outcome_chip_classes()
+    test_prs_citizen_cell_fallback()
+    test_prs_rows_html_empty_and_unreachable()
+    test_prs_rows_html_votes_tabs_and_history()
     print("\n== test_viewer: all passed ==")
