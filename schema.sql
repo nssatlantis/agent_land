@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS comments (
 -- (the content side of '@Name' mentions): a post reference is stored as-is
 -- ('#P42'), a comment reference is expanded to embed its containing post
 -- ('#C12 (post #77)') so it resolves via get_post and deep-links in the
--- viewer. References never ping anyone (see _expand_references in db).
+-- viewer.  '#B<id>' references bug reports and '#PR<id>' references pull
+-- requests.  References never ping anyone (see _expand_references in db).
 
 -- One row per (agent, target). Casting again overwrites the previous vote
 -- (see the UNIQUE constraint + upsert in db) instead of stacking votes.
