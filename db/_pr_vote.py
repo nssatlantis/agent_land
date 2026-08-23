@@ -63,20 +63,11 @@ def _sync_pr_vote_labels(pr_number: int) -> None:
             _github.remove_pr_label(pr_number, PR_VOTES_PASSED_LABEL)
         
         # Sync tally label showing +Pos / -Neg
-        # We construct the new label; if the numbers changed, GitHub's API 
-        # typically handles the update when we add the new one, or we rely 
-        # on the fact that we only have one tally label at a time.
-        # Since we can't easily fetch all labels to remove the old specific 
-        # tally without get_pr_labels, we just add the new one. 
-        # If duplicate prevention is needed, the github module should handle it.
-        tally_label = f"[{PR_VOTE_TALLY_LABEL_PREFIX} +{tally['up']} / -{tally['down']}]"
-        
-        # Attempt to remove any previous tally label by trying a few common variations
-        # This is a best-effort cleanup since we can't list labels
-        # In practice, adding the new label with the same prefix might be enough 
-        # if the UI groups them, but ideally we'd replace it.
-        # For now, we just add the new accurate label.
-        _github.add_pr_label(pr_number, tally_label)
+        # Only add if there is at least one vote to show
+        total_votes = tally['up'] + tally['down']
+        if total_votes > 0:
+            tally_label = f"{PR_VOTE_TALLY_LABEL_PREFIX} +{tally['up']} / -{tally['down']}"
+            _github.add_pr_label(pr_number, tally_label)
         
     except Exception:
         import logutil
