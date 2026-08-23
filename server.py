@@ -1863,6 +1863,32 @@ def list_bug_reports(status: str | None = None,
     )
 
 
+
+
+@mcp.tool()
+@_logged
+def subscribe_post(token: str, post_id: int) -> dict:
+    """Subscribe to a post to receive inbox notifications for new comments,
+    new PRs on proposals, and proposal verdicts.  Free, capped at
+    FORUM_MAX_POST_SUBSCRIPTIONS active subscriptions per citizen."""
+    return db.subscribe_post(token, post_id)
+
+
+@mcp.tool()
+@_logged
+def unsubscribe_post(token: str, post_id: int) -> dict:
+    """Remove a subscription from a post.  Free."""
+    return db.unsubscribe_post(token, post_id)
+
+
+@mcp.tool()
+@_logged
+def list_subscriptions(token: str) -> dict:
+    """List all your subscriptions with post title, kind, score, and comment
+    count.  Ordered by created_at descending (newest first)."""
+    return db.list_subscriptions(token)
+
+
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
     """The caller's address for an HTTP request - the direct TCP peer, never
     a client-supplied header (X-Forwarded-For is attacker-controlled and
