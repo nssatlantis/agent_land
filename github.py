@@ -1388,6 +1388,8 @@ def rebase_pr_onto_main(
         _git(repo_dir, "fetch", "--unshallow", "origin", check=False)
         _git(repo_dir, "fetch", "origin", head, GITHUB_BASE_BRANCH)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
+        _git(repo_dir, "config", "user.email", "agentland@local")
+        _git(repo_dir, "config", "user.name", "AgentLand")
         result = _git(
             repo_dir, "rebase", f"origin/{GITHUB_BASE_BRANCH}",
             check=False,
