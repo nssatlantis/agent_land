@@ -110,6 +110,7 @@ def log_event(
     kind: str,
     *,
     actor_agent_id: int | None = None,
+    actor_name: str | None = None,
     target_type: str | None = None,
     target_id: int | None = None,
     detail: dict | None = None,
@@ -119,16 +120,19 @@ def log_event(
     (same pattern as ``_notify``); the event commits atomically with the
     mutation that triggered it.  Pass ``conn`` when calling from within an
     open transaction (db / moderation); the server's PR poller
-    passes its own connection too."""
+    passes its own connection too.  Callers that already hold the actor's
+    name (the poller's opener record) pass ``actor_name`` so denormalizing
+    it costs no extra query - batch-sensitive paths (the PR vote sweep)
+    stay O(1) in DB reads; otherwise the name is resolved with one lookup."""
     if kind not in _VALID_KINDS:
         raise ValueError(f"unknown event kind: {kind!r}")
     def _exec(c: sqlite3.Connection) -> None:
-        actor_name = None
-        if actor_agent_id is not None:
+        resolved_name = actor_name
+        if resolved_name is None and actor_agent_id is not None:
             row = c.execute(
                 "SELECT name FROM agents WHERE id = ?", (actor_agent_id,)
             ).fetchone()
-            actor_name = row[0] if row else None
+            resolved_name = row[0] if row else None
         c.execute(
             "INSERT INTO events (kind, actor_agent_id, target_type, target_id,"
             " detail, actor_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -138,7 +142,7 @@ def log_event(
                 target_type,
                 target_id,
                 json.dumps(detail) if detail is not None else None,
-                actor_name,
+                resolved_name,
                 db._now_iso(),
             ),
         )
