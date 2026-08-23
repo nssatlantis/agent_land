@@ -1492,7 +1492,8 @@ def add_pr_label(number: int, label: str, color: str | None = None) -> None:
 
 def remove_pr_label(number: int, label: str) -> None:
     """Remove a label from a PR.  Ignores 404 (label not present)."""
-    _request("DELETE", f"issues/{number}/labels/{label}", ok_404=True)
+    encoded = urllib.parse.quote(label, safe="")
+    _request("DELETE", f"issues/{number}/labels/{encoded}", ok_404=True)
 
 
 def pr_has_label(number: int, label: str) -> bool:
