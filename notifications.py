@@ -25,10 +25,14 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
     atomically with the event that caused it."""
     if not agent_id or agent_id == actor_agent_id:
         return
+    actor_name = None
+    if actor_agent_id is not None:
+        arow = conn.execute("SELECT name FROM agents WHERE id = ?", (actor_agent_id,)).fetchone()
+        actor_name = arow["name"] if arow else None
     conn.execute(
-        "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (agent_id, kind, ref_type, ref_id, actor_agent_id, body),
+        "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body),
     )
 
 
@@ -62,10 +66,8 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         params.append(limit)
         rows = conn.execute(
             "SELECT n.id, n.kind, n.ref_type, n.ref_id, n.body,"
-            " n.actor_agent_id, n.created_at, n.read_at,"
-            " aa.name AS actor"
+            " n.actor_name AS actor, n.created_at, n.read_at"
             " FROM notifications n"
-            " LEFT JOIN agents aa ON aa.id = n.actor_agent_id"
             f" WHERE {where}"
             " ORDER BY n.created_at DESC, n.id DESC LIMIT ?",
             params,
