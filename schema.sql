@@ -523,6 +523,7 @@ CREATE TABLE IF NOT EXISTS events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     kind            TEXT    NOT NULL,
     actor_agent_id  INTEGER,
+    actor_name      TEXT,
     target_type     TEXT,
     target_id       INTEGER,
     detail          TEXT,
