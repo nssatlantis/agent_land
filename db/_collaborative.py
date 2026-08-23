@@ -49,9 +49,15 @@ def join_proposal(token: str, proposal_id: int) -> dict:
         if status != "open":
             raise ForumError(f"proposal #{proposal_id} is not open (status={status}).")
         tally = _proposal_tally_for(conn, proposal_id, post["proposal_kind"])
-        # If vote hasn't passed yet, only allow joining in pre-vote 'open' phase
-        # (which we already checked). If vote has passed, allow joining in
-        # the 'approved' phase where implementation begins.
+        # Allow joining in pre-vote 'open' phase OR post-vote 'approved' phase.
+        # For collaborative proposals, status stays 'open' in both phases.
+        # The tally check makes the approved-phase allowance explicit.
+        if not tally["approved"]:
+            # Pre-vote phase: joining allowed (already passed status check)
+            pass
+        else:
+            # Approved phase: joining explicitly allowed
+            pass
 
         if post["agent_id"] == agent["id"]:
             raise ForumError("the author cannot join their own proposal as a collaborator.")
