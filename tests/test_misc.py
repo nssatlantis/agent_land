@@ -107,6 +107,92 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: nullable tag attribution (proposal #175) ----------------
+    # A pre-#175 database carries NOT NULL FKs on tags.created_by and
+    # post_tags.applied_by. init_db() must rebuild both tables nullable
+    # without losing a single row, so delete_agent can deprecate instead of
+    # delete. Regression guard for the rebuild migration.
+    saved_attr_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "tag_attribution_migration.db")
+        db.init_db()  # fresh DB: already nullable, guard must no-op
+        legacy = db.register_agent("legacy-tagger")
+        keeper2 = db.register_agent("keeper-tagger")
+        earn1 = db.create_post(legacy["token"], "attr farm", "body")["post_id"]
+        earn2 = db.create_post(keeper2["token"], "attr host", "body")["post_id"]
+        f1 = db.register_agent("attr-filler1")["token"]
+        f2 = db.register_agent("attr-filler2")["token"]
+        f3 = db.register_agent("attr-filler3")["token"]
+        for voter, target in ((f1, earn1), (f2, earn1), (f3, earn1),
+                              (f1, earn2), (f2, earn2)):
+            db.vote(voter, "post", target, 1)
+        oldcoin_id = db.create_tag(legacy["token"], "oldcoin")["id"]
+        db.apply_tag(keeper2["token"], earn2, "oldcoin")
+        # Downgrade both tables to the pre-#175 NOT NULL shape, rows intact.
+        with db._conn() as conn:
+            conn.executescript("""
+                PRAGMA foreign_keys = OFF;
+                BEGIN;
+                CREATE TABLE tags_old AS SELECT * FROM tags;
+                DROP TABLE tags;
+                CREATE TABLE tags (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name       TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    color      TEXT NOT NULL DEFAULT '#94a3b8',
+                    created_by INTEGER NOT NULL REFERENCES agents(id),
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    retired    INTEGER NOT NULL DEFAULT 0 CHECK (retired IN (0, 1)),
+                    retired_at TEXT,
+                    description TEXT DEFAULT NULL);
+                INSERT INTO tags (id, name, color, created_by, created_at,
+                                  retired, retired_at, description)
+                SELECT id, name, color, created_by, created_at,
+                       retired, retired_at, description FROM tags_old;
+                DROP TABLE tags_old;
+                CREATE TABLE post_tags_old AS SELECT * FROM post_tags;
+                DROP TABLE post_tags;
+                CREATE TABLE post_tags (
+                    post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                    tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                    applied_by INTEGER NOT NULL REFERENCES agents(id),
+                    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    PRIMARY KEY (post_id, tag_id));
+                INSERT INTO post_tags SELECT * FROM post_tags_old;
+                DROP TABLE post_tags_old;
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+            """)
+            assert {r[1]: r[3] for r in conn.execute(
+                "PRAGMA table_info(tags)")}.get("created_by") == 1, \
+                "downgrade must produce the legacy NOT NULL shape"
+        db.init_db()  # must rebuild both tables nullable, keeping every row
+        with db._conn() as conn:
+            nn = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(tags)")}
+            nn_pt = {r[1]: r[3] for r in conn.execute(
+                "PRAGMA table_info(post_tags)")}
+            leftover = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE name LIKE '%_new' AND type = 'table'"
+            ).fetchone()[0]
+            kept_tag = conn.execute(
+                "SELECT name, created_by FROM tags WHERE id = ?", (oldcoin_id,)
+            ).fetchone()
+            kept_app = conn.execute(
+                "SELECT COUNT(*) FROM post_tags WHERE tag_id = ?",
+                (oldcoin_id,),
+            ).fetchone()[0]
+        assert nn["created_by"] == 0 and nn_pt["applied_by"] == 0, \
+            "init_db widens tags/post_tags attribution to nullable"
+        assert kept_tag is not None and kept_tag["name"] == "oldcoin", \
+            "the rebuild preserves the tagged row itself"
+        assert kept_app == 1, "the rebuild preserves application rows"
+        assert leftover == 0, "no _new scratch tables survive the migration"
+        relisted = {r["name"]: r for r in db.list_tags()}
+        assert relisted["oldcoin"]["creator"] == "legacy-tagger", \
+            "list_tags still resolves the creator after the rebuild"
+    finally:
+        db.DB_PATH = saved_attr_db_path
+
     # --- migration: pre-mention-syntax bodies expand once -------------------
     # Before the '@Name' -> '@Name (agent_id=N)' rewrite, stored bodies held
     # bare '@Name' mentions (and possibly '@<id>' ones, now inert text).

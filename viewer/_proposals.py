@@ -234,7 +234,7 @@ def _docket_selection(request: Request) -> tuple[str, str, int]:
         page = 1
     return view, sort, page
 
-async def proposals_page(request: Request) -> HTMLResponse:
+def proposals_page(request: Request) -> HTMLResponse:
     """The proposals docket: every proposal as a card with its kind badge,
     verdict chip, lineage, body preview, pull-request trail and tally,
     filterable by tab and sortable by newest or top, paged. Read-only, like

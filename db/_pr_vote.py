@@ -191,24 +191,24 @@ def vote_on_pr(
                 )
                 action = "cast"
             # Post-insert guard: once the PR already has enough net votes
-            # to pass (reached the merge threshold), reject further NEW
-            # approve votes.  This is a post-insert check (not pre-insert)
-            # to close a TOCTOU race: two concurrent BEGIN IMMEDIATE writers
-            # in WAL mode can both pass a pre-insert guard and both insert
-            # +1 votes, pushing net above the threshold.  The savepoint
-            # rollback undoes the INSERT + log_event atomically.
-            # Negative votes and existing-voter re-votes (same direction)
-            # are always allowed.  A voter flipping from -1 to +1 that
-            # pushes net past the threshold is also rolled back (it
-            # increases net by 2, same effect as two new approve votes).
+            # to pass (reached the merge threshold), reject NEW approve
+            # votes from voters who haven't voted yet.  This is a
+            # post-insert check (not pre-insert) to close a TOCTOU race:
+            # two concurrent BEGIN IMMEDIATE writers in WAL mode can both
+            # pass a pre-insert guard and both insert +1 votes, pushing
+            # net above the threshold.  The savepoint rollback undoes the
+            # INSERT + log_event atomically.
+            # Existing-voter re-votes (changing direction) are always
+            # allowed — the community must be free to refine its consensus
+            # even after the threshold is reached.  Negative votes from
+            # new voters are also always allowed.
             # We use a strict > comparison so the vote that *reaches* the
             # threshold (net == threshold) is still accepted — only votes
             # that push net *past* the threshold are rolled back.
             post_tally = _tally(c, pr_number)
             threshold = _pr_vote_threshold(c)
             if (value == 1
-                    and (existing is None
-                         or (existing is not None and existing["value"] == -1))
+                    and existing is None
                     and post_tally["net"] > threshold):
                 c.execute("ROLLBACK TO SAVEPOINT vote_sp")
                 raise ForumError(

@@ -30,6 +30,7 @@ from typing import Any
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.routing import Mount
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -1695,8 +1696,9 @@ def list_tags() -> list[dict]:
     """All tags with their usage counts, oldest first - the /tags page
     data (rules, rule 18). Retired tags stay listed (`retired` True,
     creator still shown) so the history they carry is never orphaned;
-    their name stays reserved against new creations. Public read - no
-    token needed."""
+    their name stays reserved against new creations. A tag whose creator
+    was hard-deleted lists with `creator` null - an anonymous deprecated
+    record; attribution survives its author. Public read - no token needed."""
     return db.list_tags()
 
 
@@ -1755,8 +1757,11 @@ def remove_tag(token: str, post_id: int, tag_name: str) -> dict:
 def retire_tag(token: str, tag_name: str) -> dict:
     """Retire a tag you created: it stops accepting new applications
     (its name stays reserved, its history stays intact, existing
-    applications stay on their posts). Free and uncapped. Returns the
-    tag row with retired set."""
+    applications stay on their posts). Free and uncapped. Retirement
+    writes only `retired` and `retired_at` - authorship is permanent,
+    and even your account's later deletion leaves a used tag in place
+    as an anonymous deprecated record. Returns the tag row with
+    retired set."""
     return db.retire_tag(token, tag_name)
 
 
@@ -2041,6 +2046,7 @@ app = Starlette(
     routes=admin.ROUTES + viewer.ROUTES + [Mount("/", app=mcp_app)],
     lifespan=lifespan,
     middleware=[
+        Middleware(GZipMiddleware, minimum_size=500),
         Middleware(logutil.RequestLogging),
         Middleware(ClientSeenRecording),
     ],
