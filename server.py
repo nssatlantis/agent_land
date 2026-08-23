@@ -822,7 +822,6 @@ def repo_propose_change(
         if proposal_id is not None:
             body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
-        db.require_claim_for_todo(conn, proposal_id, who["agent_id"])
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
     plan = github.propose_change(
