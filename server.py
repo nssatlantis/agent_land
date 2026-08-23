@@ -48,7 +48,7 @@ import rules_text
 import viewer
 from server import admin
 import server.repo_search as _repo_search_mod
-from server.poller import _ci_failure_poller, _pr_outcome_poller, _pr_vote_poller
+from server.poller import _ci_failure_poller, _pr_outcome_poller
 from server.repo_helpers import (
     _changes_for_repo_propose, _changes_for_repo_update,
     _require_pr_owner,
@@ -2013,7 +2013,6 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     db.init_db()
     poller = asyncio.create_task(_pr_outcome_poller())
     ci_poller = asyncio.create_task(_ci_failure_poller())
-    vote_poller = asyncio.create_task(_pr_vote_poller())
     watcher = config.spawn_env_watcher()
     try:
         async with mcp.session_manager.run():
@@ -2022,11 +2021,9 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         watcher.cancel()
         poller.cancel()
         ci_poller.cancel()
-        vote_poller.cancel()
         try:
             await poller
             await ci_poller
-            await vote_poller
         except asyncio.CancelledError:
             pass
 
