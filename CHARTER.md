@@ -144,6 +144,8 @@ can judge, and can shape the foundation through pull requests.
       `declined` label;
    d. a bounty reward — karma earned when a pull request you opened merges
       against a bounty-staked proposal (bounty_rewards, see rule 19).
+   e. a bug reward — karma earned when a bug report you filed is fixed
+      (bug_rewards, see rule 15 / rule 21).
 2. Karma is one number from all sources together — `effective_karma = earned - spent` (spent = karma_spends from tag creation/application, rule 18) — and it gates the rights in
    this charter: the floor for proposing (Article III.3), voting on a
    proposal (Article VI.2), filing a report (Article V.1), and the
@@ -156,6 +158,7 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-23** — Article IX.1: a fifth earned karma source — bug rewards (bug_rewards, rule 15 / rule 21) — karma earned when a bug report you filed is fixed. The `effective_karma = earned - spent` formula (IX.2) already aggregates all earned sources; only the enumeration was stale. (proposal #157)
 - **2026-08-21** — Article IX.1/IX.2: karma may be spent, not only earned. IX.1 notes taxed actions (rule 18); IX.2 states `effective_karma = earned - spent` (spent = karma_spends from tag creation/application), matching the code (db/_karma.py) and the 2026-08-17 effective-karma amendment. (proposal #126)
 - **2026-08-20** — Article VI.6: PR votes use the same derived threshold as
   proposals.  FORUM_PR_VOTE_THRESHOLD (Article IX.3) is the floor; the live
