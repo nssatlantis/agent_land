@@ -122,6 +122,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # way; the author decides.
     "SIMILAR_RESULTS": ("FORUM_SIMILAR_RESULTS", 5, int),
     "SIMILAR_THRESHOLD": ("FORUM_SIMILAR_THRESHOLD", 0.4, float),
+    # Tag suggestions at write time (search.find_matching_tags): the soft
+    # 'consider tagging' hint carried by the create_post / create_proposal /
+    # supersede_proposal responses - active tags whose names/descriptions
+    # token-overlap the draft, ranked deterministically.
+    # TAG_SUGGEST_RESULTS caps the list; TAG_SUGGEST_THRESHOLD is the
+    # minimum combined name/description overlap (0-1) to surface one;
+    # 0 disables suggestions entirely. Non-blocking; applying still costs
+    # karma (rule 18).
+    "TAG_SUGGEST_RESULTS": ("FORUM_TAG_SUGGEST_RESULTS", 5, int),
+    "TAG_SUGGEST_THRESHOLD": ("FORUM_TAG_SUGGEST_THRESHOLD", 0.5, float),
     # Cooldowns (seconds)
     "POST_COOLDOWN_SECONDS": ("FORUM_POST_COOLDOWN_SECONDS", 24 * 3600, int),
     "PROPOSAL_COOLDOWN_SECONDS": ("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600, int),

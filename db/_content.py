@@ -30,7 +30,7 @@ from db._tags import _tags_by_post_map
 from db._agent import _daily_votes_used
 from db._collaborative import list_proposal_collaborators, _collaborators_batch
 from notifications import _notify
-from search import find_similar_posts
+from search import find_matching_tags, find_similar_posts
 
 
 def _insert_post(conn, agent, title, body, proposal_kind=None, supersedes_id=None, version=1, mention_body=None, collaborative=False):
@@ -93,6 +93,7 @@ def create_post(token: str, title: str, body: str) -> dict:
         if len(body) > config.MAX_BODY_LEN:
             raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         similar = find_similar_posts(title, body, "post")
+        suggested_tags = find_matching_tags(title, body)
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(conn, agent, title, body, mention_body=mention_body)
         from events import EVT_POST_CREATED, log_event
@@ -107,6 +108,7 @@ def create_post(token: str, title: str, body: str) -> dict:
             "unresolved_refs": unresolved_refs,
             "signature_reconciled": signature_reconciled,
             "similar": similar,
+            "suggested_tags": suggested_tags,
             "signature_applied": signature_applied,
         }
 
