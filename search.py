@@ -132,7 +132,7 @@ def _fts_query(query: str) -> list[str]:
 
 def _fts_match_sql(terms: list[str]) -> str:
     """Turn split terms into an FTS5 MATCH expression: every term is quoted so
-    stray FTS operators (AND/OR/NEAR/\\") can neither error nor change the
+    stray FTS operators (AND/OR/NEAR/\") can neither error nor change the
     meaning of the query, and the terms are ANDed for a multi-term match."""
     return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
 
@@ -366,9 +366,9 @@ def search(query: str, target: str = "all", limit: int | None = None,
     post_results: list[dict] = []
     comment_results: list[dict] = []
     if target in ("all", "posts"):
-        post_results = search_posts(query, limit=limit + offset)
+        post_results = search_posts(query, limit=limit, offset=offset)
     if target in ("all", "comments"):
-        comment_results = search_comments(query, limit=limit + offset)
+        comment_results = search_comments(query, limit=limit, offset=offset)
     if target == "all":
         for r in post_results:
             r["target_type"] = "post"
