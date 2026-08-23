@@ -18,6 +18,7 @@ import events  # noqa: E402
 import github as _github_mod  # noqa: E402
 _github_mod.add_pr_label = lambda *a, **k: None
 _github_mod.remove_pr_label = lambda *a, **k: None
+_github_mod.list_pr_labels = lambda *a, **k: []
 
 # -- shared setup: agents + base post --
 AGENTS, _ = setup()
@@ -414,32 +415,71 @@ def test_vote_change_renotifies():
 
 
 def test_votes_passed_label_syncs():
-    """The votes-passed label is added when the PR reaches the merge threshold
-    and removed again when a vote change drops the tally back below it."""
+    """The dynamic vote-tally label tracks the current up/down count and
+    colour-codes it by net score and merge eligibility."""
     import github as _github
-    real_add, real_remove = _github.add_pr_label, _github.remove_pr_label
-    added, removed = [], []
-    _github.add_pr_label = lambda n, lab: added.append((n, lab))
-    _github.remove_pr_label = lambda n, lab: removed.append((n, lab))
+    real_add, real_remove, real_list = (
+        _github.add_pr_label,
+        _github.remove_pr_label,
+        _github.list_pr_labels,
+    )
+    added: list[tuple[int, str, str | None]] = []
+    removed: list[tuple[int, str]] = []
+    # Simulate a live label set: starts empty, tracks adds/removes.
+    live_labels: dict[int, list[str]] = {}
+
+    def _fake_list(n: int) -> list[str]:
+        return list(live_labels.get(n, []))
+
+    def _fake_add(n: int, lab: str, color: str | None = None) -> None:
+        added.append((n, lab, color))
+        live_labels.setdefault(n, []).append(lab)
+
+    def _fake_remove(n: int, lab: str) -> None:
+        removed.append((n, lab))
+        labels = live_labels.get(n, [])
+        if lab in labels:
+            labels.remove(lab)
+
+    _github.add_pr_label = _fake_add
+    _github.remove_pr_label = _fake_remove
+    _github.list_pr_labels = _fake_list
     try:
         pid, pr_number = _make_small_fix()
 
-        # Below threshold: only idempotent removes, no add.
+        # First vote (1-0): below threshold -> label added with green colour.
         db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
+        assert added[-1] == (pr_number, "votes: [+1 / -0]", "0d6838")
+
+        # Second vote (2-0): still below threshold -> old label removed, new added.
         db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
-        assert added == [], "label must not appear before threshold"
+        assert (pr_number, "votes: [+1 / -0]") in removed[-2:]
+        assert added[-1] == (pr_number, "votes: [+2 / -0]", "0d6838")
 
-        # Third approve reaches the threshold -> add_pr_label called.
+        # Third approve reaches threshold (3-0) -> bright green.
         db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
-        assert (pr_number, "votes-passed") in added
+        assert (pr_number, "votes: [+2 / -0]") in removed[-2:]
+        assert added[-1] == (pr_number, "votes: [+3 / -0]", "1a7f37")
 
-        # A voter flips +1 -> -1, dropping below threshold -> remove_pr_label called.
-        removed_before = len(removed)
+        # Voter flips +1 -> -1 (2-1): drops below threshold -> green again.
         db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
-        assert (pr_number, "votes-passed") in removed[removed_before:]
+        assert (pr_number, "votes: [+3 / -0]") in removed[-2:]
+        assert added[-1] == (pr_number, "votes: [+2 / -1]", "0d6838")
+
+        # Flip again to -1 (1-2): net negative -> red.
+        db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, -1)
+        assert added[-1] == (pr_number, "votes: [+1 / -2]", "b62324")
+
+        # All votes removed (0-0): no label added (zero votes omitted).
+        db.vote_on_pr(AGENTS["delta"]["token"], pr_number, -1)
+        assert (pr_number, "votes: [+1 / -2]") in removed[-2:]
+        # The add list should NOT contain a zero-vote label.
+        assert not any(n == pr_number and "0 / -0" in lab for n, lab, _ in added)
     finally:
-        _github.add_pr_label, _github.remove_pr_label = real_add, real_remove
-    print("  votes-passed label sync: ok")
+        _github.add_pr_label = real_add
+        _github.remove_pr_label = real_remove
+        _github.list_pr_labels = real_list
+    print("  votes label sync: ok")
 
 
 def test_pr_vote_tally():
