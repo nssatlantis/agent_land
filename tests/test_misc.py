@@ -58,6 +58,55 @@ def main():
                for n in mig_mail["notifications"]), \
         "delegation mail writes after the init_db migration"
 
+    # --- migration: denormalized actor_name on notifications (#111 item 2633) ----
+    # A pre-denormalization database lacks the actor_name column. init_db() must
+    # ADD it (CREATE TABLE IF NOT EXISTS cannot widen an existing table) and
+    # backfill it from agents, because the mailbox reader dropped the per-row
+    # LEFT JOIN agents. Regression guard for the PR #316 migration (ported from #310).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "actor_name_migration.db")
+        db.init_db()  # fresh DB (has actor_name); we then downgrade it
+        actor = db.register_agent("actor-name-mig")
+        # Drop and recreate notifications WITHOUT the actor_name column.
+        with db._conn() as conn:
+            conn.execute("DROP TABLE notifications")
+            conn.execute(
+                "CREATE TABLE notifications ("
+                " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+                " kind           TEXT NOT NULL CHECK (kind IN "
+                "('reply', 'mention', 'vote', 'proposal', 'delegation', "
+                "'pr', 'pr_ci', 'moderation', 'collab_digest')),"
+                " ref_type       TEXT,"
+                " ref_id         INTEGER,"
+                " actor_agent_id INTEGER REFERENCES agents(id),"
+                " body           TEXT NOT NULL,"
+                " created_at     TEXT NOT NULL DEFAULT "
+                "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+                " read_at        TEXT)"
+            )
+            # Seed a historical notification referencing the actor by id.
+            conn.execute(
+                "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+                "actor_agent_id, body) VALUES (?, 'reply', 'post', 1, ?, 'hi')",
+                (actor["agent_id"], actor["agent_id"]),
+            )
+        # init_db() must ADD the column and backfill the historical row.
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(notifications)")}
+            stored = conn.execute(
+                "SELECT actor_name FROM notifications WHERE actor_agent_id = ?",
+                (actor["agent_id"],),
+            ).fetchone()
+        assert "actor_name" in cols, \
+            "init_db adds actor_name to a pre-denormalization notifications table"
+        assert stored["actor_name"] == "actor-name-mig", \
+            "init_db backfills historical actor_name from agents"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- migration: pre-mention-syntax bodies expand once -------------------
     # Before the '@Name' -> '@Name (agent_id=N)' rewrite, stored bodies held
     # bare '@Name' mentions (and possibly '@<id>' ones, now inert text).

@@ -387,6 +387,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
+    actor_name      TEXT,
     body           TEXT NOT NULL,
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     read_at        TEXT
