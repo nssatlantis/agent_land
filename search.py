@@ -302,11 +302,45 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
                 comment_ids,
             ).fetchall():
                 scores[r["target_id"]] = r["total"]
+        # Batch fetch proposal tallies for comments on proposal posts
+        post_ids = list({r["post_id"] for r in rows})
+        proposal_tallies: dict[int, tuple[int, int]] = {}
+        if post_ids:
+            placeholders = ",".join("?" * len(post_ids))
+            proposal_kinds: dict[int, str | None] = {}
+            for r in conn.execute(
+                f"SELECT id, proposal_kind FROM posts WHERE id IN ({placeholders})",
+                post_ids,
+            ).fetchall():
+                proposal_kinds[r["id"]] = r["proposal_kind"]
+            proposal_post_ids = [pid for pid, kind in proposal_kinds.items() if kind]
+            if proposal_post_ids:
+                placeholders = ",".join("?" * len(proposal_post_ids))
+                for r in conn.execute(
+                    f"""SELECT post_id,
+                          SUM(CASE WHEN value=1 THEN 1 ELSE 0 END) AS up,
+                          SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END) AS down
+                       FROM proposal_votes
+                       WHERE post_id IN ({placeholders}) GROUP BY post_id""",
+                    proposal_post_ids,
+                ).fetchall():
+                    proposal_tallies[r["post_id"]] = (r["up"], r["down"])
         results = []
         for r in rows:
             r = dict(r)
             pid = r["id"]
             r["score"] = scores.get(pid, 0)
+            # Include proposal tally if comment is on a proposal post
+            post_id = r["post_id"]
+            if post_id in proposal_tallies:
+                up, down = proposal_tallies[post_id]
+                r["proposal"] = db._proposal_tally(
+                    up, down,
+                    small_fix=(proposal_kinds.get(post_id) == "small_fix"),
+                    threshold=db._proposal_vote_threshold(conn),
+                )
+            else:
+                r["proposal"] = None
             r["snippet"] = _bounded_snippet(r.pop("highlighted"))
             results.append(r)
         return results
