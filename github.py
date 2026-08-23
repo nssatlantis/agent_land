@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -142,6 +145,39 @@ def _headers() -> dict:
     return headers
 
 
+# --- thread-local connection pool (keep-alive to api.github.com) ----------
+
+_GITHUB_HOST = "api.github.com"
+_CONN_IDLE_TIMEOUT = 60  # seconds before an idle connection is closed
+_conn = threading.local()
+
+
+def _get_connection() -> http.client.HTTPSConnection:
+    """Return a reusable HTTPSConnection to api.github.com.  Idle connections
+    older than _CONN_IDLE_TIMEOUT are closed and replaced.  Socket health
+    is checked via ``.sock`` — if the server closed the keep-alive, we
+    reconnect transparently."""
+    conn: http.client.HTTPSConnection | None = getattr(_conn, "handle", None)
+    if conn is not None:
+        idle = time.monotonic() - getattr(_conn, "last_used", 0.0)
+        if idle < _CONN_IDLE_TIMEOUT and conn.sock is not None:
+            return conn
+        # Idle too long or socket gone — close and fall through to reconnect.
+        try:
+            conn.close()
+        except Exception:
+            pass
+    ctx = ssl.create_default_context()
+    conn = http.client.HTTPSConnection(
+        _GITHUB_HOST,
+        context=ctx,
+        timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
+    )
+    _conn.handle = conn
+    _conn.last_used = time.monotonic()
+    return conn
+
+
 def _ensure_token() -> None:
     """Raise RepoError when no GITHUB_TOKEN is configured."""
     if not GITHUB_TOKEN:
@@ -172,24 +208,45 @@ def _request(method: str, path: str, body: dict | None = None, ok_404: bool = Fa
     """Hit the GitHub REST API. Raises RepoError on failure. Returns parsed
     JSON (or None for 204/404-ok)."""
     _ensure_token()
-    url = f"{API_ROOT}/repos/{GITHUB_REPO}/{path}"
+    url_path = f"/repos/{GITHUB_REPO}/{path}"
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method=method, headers=_headers())
+    hdrs = _headers()
+    if data is not None:
+        hdrs["Content-Type"] = "application/json"
+
+    def _do_request(conn: http.client.HTTPSConnection) -> http.client.HTTPResponse:
+        conn.request(method, url_path, body=data, headers=hdrs)
+        _conn.last_used = time.monotonic()
+        return conn.getresponse()
+
+    conn = _get_connection()
     try:
-        with urllib.request.urlopen(req, timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS) as resp:
-            raw = resp.read()
-            if not raw:
-                return None
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        result = _raise_request_error(e, method, path, ok_404)
-        if result is None:
+        resp = _do_request(conn)
+    except (ConnectionError, http.client.RemoteDisconnected, OSError):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _conn.handle = None
+        conn = _get_connection()
+        resp = _do_request(conn)
+
+    if 200 <= resp.status < 300:
+        raw = resp.read()
+        if not raw:
             return None
-        raise result  # noqa: B904 — unreachable: _raise_request_error raises or returns None
-    except urllib.error.URLError as e:
-        raise RepoError(f"could not reach GitHub: {e.reason}") from e
+        return json.loads(raw)
+    if resp.status == 404 and ok_404:
+        return None
+    msg = ""
+    try:
+        msg = json.loads(resp.read()).get("message", "")
+    except Exception:
+        pass
+    detail = f" ({msg})" if msg else ""
+    raise RepoError(f"GitHub API {resp.status}{detail} on {method} {path}")
 
 
 # ------------------------------------------------------------------ reads --
@@ -721,21 +778,40 @@ def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
     text ('' for an empty body) or None on an ok_404 miss; raises RepoError
     exactly like _request otherwise."""
     _ensure_token()
-    url = f"{API_ROOT}/repos/{GITHUB_REPO}/{path}"
-    req = urllib.request.Request(url, method=method, headers=_headers())
+    url_path = f"/repos/{GITHUB_REPO}/{path}"
+    hdrs = _headers()
+
+    def _do_request(conn: http.client.HTTPSConnection) -> http.client.HTTPResponse:
+        conn.request(method, url_path, headers=hdrs)
+        _conn.last_used = time.monotonic()
+        return conn.getresponse()
+
+    conn = _get_connection()
     try:
-        with urllib.request.urlopen(req, timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS) as resp:
-            raw = resp.read()
-            if not raw:
-                return ""
-            return raw.decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        result = _raise_request_error(e, method, path, ok_404)
-        if result is None:
-            return None
-        raise result  # noqa: B904 — unreachable: _raise_request_error raises or returns None
-    except urllib.error.URLError as e:
-        raise RepoError(f"could not reach GitHub: {e.reason}") from e
+        resp = _do_request(conn)
+    except (ConnectionError, http.client.RemoteDisconnected, OSError):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _conn.handle = None
+        conn = _get_connection()
+        resp = _do_request(conn)
+
+    if 200 <= resp.status < 300:
+        raw = resp.read()
+        if not raw:
+            return ""
+        return raw.decode("utf-8", errors="replace")
+    if resp.status == 404 and ok_404:
+        return None
+    msg = ""
+    try:
+        msg = json.loads(resp.read()).get("message", "")
+    except Exception:
+        pass
+    detail = f" ({msg})" if msg else ""
+    raise RepoError(f"GitHub API {resp.status}{detail} on {method} {path}")
 
 
 _FAILURE_MARKERS = (
