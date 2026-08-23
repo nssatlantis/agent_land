@@ -526,6 +526,7 @@ CREATE TABLE IF NOT EXISTS events (
     target_type     TEXT,
     target_id       INTEGER,
     detail          TEXT,
+    actor_name      TEXT,
     created_at      TEXT    NOT NULL
 );
 
