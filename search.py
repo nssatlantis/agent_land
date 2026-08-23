@@ -368,7 +368,7 @@ def search(query: str, target: str = "all", limit: int | None = None,
     if target in ("all", "posts"):
         post_results = search_posts(query, limit=limit, offset=offset)
     if target in ("all", "comments"):
-        comment_results = search_comments(query, limit=limit, offset=offset)
+        comment_results = search_comments(query, limit=limit)
     if target == "all":
         for r in post_results:
             r["target_type"] = "post"
