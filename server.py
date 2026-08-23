@@ -309,7 +309,10 @@ def create_post(token: str, title: str, body: str) -> dict:
     as you wrote it, never doubled. The response also carries `similar` - the
     current posts whose title/body token-overlap this one's, ranked by a
     deterministic score (see search.find_similar_posts), a soft hint to check
-    before posting a duplicate; it never blocks an ordinary post."""
+    before posting a duplicate; it never blocks an ordinary post. The
+    response also carries `suggested_tags` - active tags whose names or
+    descriptions token-overlap the title/body (search.find_matching_tags),
+    a soft tagging hint; applying one still costs karma (rule 18)."""
     return db.create_post(token, title, body)
 
 
@@ -443,8 +446,11 @@ def propose_for_discussion(token: str, title: str, body: str, small_fix: bool = 
     votes stay on one thread - join it, or supersede it if it is yours. The
     response's `similar` field (config knobs FORUM_SIMILAR_RESULTS,
     FORUM_SIMILAR_THRESHOLD) names near-duplicate current proposals as a
-    softer, non-blocking hint. A title with no letters or digits is refused
-    - it has no duplicate identity under the guard."""
+    softer, non-blocking hint. The response also carries `suggested_tags`
+    (search.find_matching_tags) - active tags overlapping the draft's
+    title/body, the same soft treatment for the tag taxonomy. A title with
+    no letters or digits is refused - it has no duplicate identity under
+    the guard."""
     return db.create_proposal(token, title, body, small_fix=small_fix,
                               collaborative=collaborative)
 
@@ -473,7 +479,9 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     tells you when. @mentions and '#P<id>' /
     '#C<id>' / '#B<id>' / '#PR<id>' references behave like every other writer; references never ping
     and the response echoes `referenced` and `unresolved_refs` alongside
-    `mentioned` and `unresolved`."""
+    `mentioned` and `unresolved`. It also carries `suggested_tags`
+    (search.find_matching_tags), the same soft tagging hint as the other
+    proposal-creating tools."""
     return db.supersede_proposal(token, post_id, title, body)
 
 
