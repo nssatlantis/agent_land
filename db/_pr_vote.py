@@ -37,20 +37,49 @@ from notifications import _notify
 # back below the threshold (e.g. a voter flips their vote).
 PR_VOTES_PASSED_LABEL = "votes-passed"
 
+# Prefix for vote tally labels showing current positive/negative counts.
+# Format: "votes: [3 / 1]" where 3 is approve and 1 is oppose.
+PR_VOTE_TALLY_LABEL_PREFIX = "votes:"
 
-def _sync_pr_votes_passed_label(pr_number: int) -> None:
-    """Add the votes-passed label when a PR's net votes reach the merge
-    threshold, and remove it otherwise.  Called after every vote write so the
-    label tracks re-votes and flips in real time.  GitHub label I/O is
-    best-effort: a failure must never break the vote itself."""
+
+def _remove_all_tally_labels(pr_number: int) -> None:
+    """Remove any existing tally labels before adding the updated one."""
+    try:
+        import github as _github
+        # Get all labels on the PR
+        labels = _github.get_pr_labels(pr_number)
+        # Remove any that start with our tally prefix
+        for label in labels:
+            if label.startswith(PR_VOTE_TALLY_LABEL_PREFIX):
+                _github.remove_pr_label(pr_number, label)
+    except Exception:
+        pass  # Best-effort cleanup
+
+
+def _sync_pr_vote_labels(pr_number: int) -> None:
+    """Sync both the votes-passed label and a tally label showing [Pos / Neg].
+    
+    The tally label displays the current vote count in format "votes: [3 / 1]"
+    where 3 is approve votes and 1 is oppose votes. Called after every vote
+    write so labels track re-votes and flips in real time. GitHub label I/O
+    is best-effort: a failure must never break the vote itself."""
     try:
         import github as _github
         with _conn() as conn:
             eligible = pr_eligible_for_merge(conn, pr_number)
+            tally = _tally(conn, pr_number)
+        
+        # Sync votes-passed label
         if eligible:
             _github.add_pr_label(pr_number, PR_VOTES_PASSED_LABEL)
         else:
             _github.remove_pr_label(pr_number, PR_VOTES_PASSED_LABEL)
+        
+        # Sync tally label showing [Pos / Neg]
+        _remove_all_tally_labels(pr_number)
+        tally_label = f"{PR_VOTE_TALLY_LABEL_PREFIX} [{tally['up']} / {tally['down']}]"
+        if tally['up'] > 0 or tally['down'] > 0:
+            _github.add_pr_label(pr_number, tally_label)
     except Exception:
         import logutil
         logutil.log("pr_votes_label_sync_failed", pr_number=pr_number)
@@ -207,9 +236,9 @@ def vote_on_pr(
             "value": value,
             "action": action,
         }
-    # Keep the votes-passed label in sync with the new tally.  Best-effort: a
+    # Keep the vote labels in sync with the new tally. Best-effort: a
     # GitHub hiccup must never break the recorded vote or its returned result.
-    _sync_pr_votes_passed_label(pr_number)
+    _sync_pr_vote_labels(pr_number)
     return result
 
 
@@ -393,12 +422,7 @@ def pr_vote_tallies(
             f" GROUP BY pr_number",
             pr_numbers,
         ).fetchall()
-        result: dict[int, dict] = {}
-        for r in rows:
-            result[r["pr_number"]] = {
-                "up": r["up"], "down": r["down"], "net": r["up"] - r["down"],
-            }
-        for n in pr_numbers:
-            if n not in result:
-                result[n] = {"up": 0, "down": 0, "net": 0}
-        return result
+        return {
+            r["pr_number"]: {"up": r["up"], "down": r["down"], "net": r["up"] - r["down"]}
+            for r in rows
+        }
