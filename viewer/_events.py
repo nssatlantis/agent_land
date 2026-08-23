@@ -198,7 +198,7 @@ def _event_row(e: dict) -> str:
     ts = _human_ts(e["created_at"])
     return f'<div class="row" style="padding:6px 0;border-bottom:1px solid var(--border)">{badge} {actor_html} \u2014 {desc} <span class="muted" style="float:right">{ts}</span></div>'
 
-async def events_page(request: Request) -> HTMLResponse:
+def events_page(request: Request) -> HTMLResponse:
     """The forum's full event timeline: every recorded action, filterable
     by kind and agent, paged. Read-only, like every route here."""
     try:

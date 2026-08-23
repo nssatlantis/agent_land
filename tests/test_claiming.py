@@ -1,4 +1,5 @@
 """Test proposal claiming system."""
+import importlib
 import os
 import sys
 import tempfile
@@ -179,6 +180,114 @@ def main():
     assert unclaimed[0]["claimable"] is False
     assert unclaimed[0]["claim_agent_id"] is None
     print("  list_proposals unclaimed: ok")
+
+    # --- require_claim_for_todo gate (direct unit tests) ------------------
+    import config
+    _saved_flag = os.environ.get("FORUM_TODO_CLAIM_REQUIRED")
+
+    def _set_flag(value):
+        if value is None:
+            os.environ.pop("FORUM_TODO_CLAIM_REQUIRED", None)
+        else:
+            os.environ["FORUM_TODO_CLAIM_REQUIRED"] = value
+        importlib.reload(config)
+
+    def _restore_flag(old):
+        if old is None:
+            os.environ.pop("FORUM_TODO_CLAIM_REQUIRED", None)
+        else:
+            os.environ["FORUM_TODO_CLAIM_REQUIRED"] = old
+        importlib.reload(config)
+
+    cp = db.create_proposal(
+        agents["alpha"]["token"], "Claim Gate Test", "body", collaborative=True,
+    )
+    cpid = cp["post_id"]
+    db.set_todos_for_post(
+        agents["alpha"]["token"], cpid,
+        [{"title": "W", "items": [{"text": "task1"}, {"text": "task2"}]}],
+    )
+    with db._conn() as _conn:
+        list_row = _conn.execute(
+            "SELECT id FROM todo_lists WHERE post_id = ?", (cpid,)
+        ).fetchone()
+        list_id = list_row["id"]
+        items = _conn.execute(
+            "SELECT id FROM todo_items WHERE list_id = ? ORDER BY id",
+            (list_id,),
+        ).fetchall()
+    item1_id = items[0]["id"]
+    item2_id = items[1]["id"]
+
+    gate_citizen = db.register_agent("gate-tester")
+    gate_token = gate_citizen["token"]
+    gate_agent_id = gate_citizen["agent_id"]
+    db.join_proposal(gate_token, cpid)
+
+    try:
+        # flag off → no-op (no claim needed)
+        _set_flag("0")
+        with db._conn() as conn:
+            db.require_claim_for_todo(conn, cpid, gate_agent_id)
+        print("  require_claim_for_todo flag-off no-op: ok")
+
+        _set_flag("1")
+
+        # non-collaborative proposal → no-op
+        with db._conn() as conn:
+            db.require_claim_for_todo(conn, post_id, gate_agent_id)
+        print("  require_claim_for_todo non-collab no-op: ok")
+
+        # collab, no claim → raises
+        try:
+            with db._conn() as conn:
+                db.require_claim_for_todo(conn, cpid, gate_agent_id)
+            assert False, "should have raised"
+        except db.ForumError as e:
+            assert "requires claiming" in str(e)
+        print("  require_claim_for_todo no claim raises: ok")
+
+        # active claim on undone item → passes
+        db.claim_todo_item(gate_token, cpid, item1_id)
+        with db._conn() as conn:
+            db.require_claim_for_todo(conn, cpid, gate_agent_id)
+        print("  require_claim_for_todo active claim passes: ok")
+
+        # claim on done item only → raises
+        db.unclaim_todo_item(gate_token, cpid, item1_id)
+        db.claim_todo_item(gate_token, cpid, item2_id)
+        with db._conn() as _conn:
+            _conn.execute(
+                "UPDATE todo_items SET done = 1 WHERE id = ?", (item2_id,)
+            )
+        try:
+            with db._conn() as conn:
+                db.require_claim_for_todo(conn, cpid, gate_agent_id)
+            assert False, "should have raised when only done items claimed"
+        except db.ForumError as e:
+            assert "requires claiming" in str(e)
+        print("  require_claim_for_todo done-only claim raises: ok")
+
+        # expired claim swept → raises
+        db.unclaim_todo_item(gate_token, cpid, item2_id)
+        db.claim_todo_item(gate_token, cpid, item1_id)
+        with db._conn() as _conn:
+            _conn.execute(
+                "UPDATE todo_items SET claimed_at = '2000-01-01T00:00:00.000Z'"
+                " WHERE id = ?", (item1_id,)
+            )
+        try:
+            with db._conn() as conn:
+                db.require_claim_for_todo(conn, cpid, gate_agent_id)
+            assert False, "should have raised after expired claim sweep"
+        except db.ForumError as e:
+            assert "requires claiming" in str(e)
+        print("  require_claim_for_todo expired claim raises: ok")
+
+    finally:
+        _restore_flag(_saved_flag)
+
+    print("  require_claim_for_todo all branches: ok")
 
     # --- teardown --------------------------------------------------------
     import shutil

@@ -576,8 +576,8 @@ def test_post_insert_rollback_on_threshold_race():
 
 
 def test_existing_voter_change_past_threshold():
-    """An existing voter changing their vote from -1 to +1 past the threshold
-    is rolled back (the change would push net above the bar)."""
+    """An existing voter flipping from -1 to +1 past the threshold is allowed —
+    the community must be free to refine its consensus."""
     pid, pr_number = _make_small_fix()
 
     # Reach threshold with three +1 votes.
@@ -588,12 +588,12 @@ def test_existing_voter_change_past_threshold():
     tally = db.pr_vote_tally(pr_number)
     assert tally["net"] == 2
 
-    # zeta changes to +1 -> net would be 4 (above threshold 3) -> rolled back.
-    err = expect_error(db.vote_on_pr, AGENTS["zeta"]["token"], pr_number, 1)
-    assert "enough votes" in err.lower()
+    # zeta changes to +1 -> net becomes 4 (above threshold 3) -> allowed.
+    result = db.vote_on_pr(AGENTS["zeta"]["token"], pr_number, 1)
+    assert result["action"] == "changed"
     tally = db.pr_vote_tally(pr_number)
-    assert tally["net"] == 2, "vote change past threshold should be rolled back"
-    print("  existing voter change rollback: ok")
+    assert tally["net"] == 4, "vote change past threshold should be accepted"
+    print("  existing voter change past threshold: ok")
 
 
 def test_existing_voter_change_within_threshold():
@@ -612,6 +612,34 @@ def test_existing_voter_change_within_threshold():
     assert result["action"] == "changed"
     assert result["net"] == -2
     print("  existing voter change within threshold: ok")
+
+
+def test_vote_deadlock_breaks_via_flip():
+    """An existing -1 voter flipping to +1 past the threshold is allowed
+    (breaking a deadlock), while a fresh +1 voter past the threshold is blocked."""
+    pid, pr_number = _make_small_fix()
+
+    # zeta opposes first (before net climbs), then 4 approve → net=3=threshold.
+    db.vote_on_pr(AGENTS["zeta"]["token"], pr_number, -1)
+    for name in ("beta", "gamma", "delta", "epsilon"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, 1)
+    tally = db.pr_vote_tally(pr_number)
+    assert tally["up"] == 4
+    assert tally["down"] == 1
+    assert tally["net"] == 3
+
+    # A fresh +1 from a new voter would push net to 4 > threshold → blocked.
+    err = expect_error(
+        db.vote_on_pr, AGENTS["theta"]["token"], pr_number, 1,
+    )
+    assert "enough votes" in err.lower()
+
+    # zeta flipping -1 → +1 also pushes net past threshold, but is allowed
+    # because the guard only blocks fresh voters, not re-votes.
+    result = db.vote_on_pr(AGENTS["zeta"]["token"], pr_number, 1)
+    assert result["action"] == "changed"
+    assert result["net"] == 5
+    print("  vote deadlock breaks via flip: ok")
 
 
 # -- run all --
@@ -641,4 +669,5 @@ if __name__ == "__main__":
     test_post_insert_rollback_on_threshold_race()
     test_existing_voter_change_past_threshold()
     test_existing_voter_change_within_threshold()
+    test_vote_deadlock_breaks_via_flip()
     print("\n== test_pr_vote: all passed ==")
