@@ -27,6 +27,60 @@ def _claim_expired(claimed_at: str | None) -> bool:
     ).total_seconds() >= timeout
 
 
+def _snapshot_claims(conn: sqlite3.Connection,
+                     post_id: int) -> dict[tuple[str, str], tuple[int, str]]:
+    """Snapshot all active (non-expired) claims on a proposal's todo items
+    before a destructive rewrite.  Returns {(list_title, item_text):
+    (agent_id, claimed_at)} — the key identifies the item by content, so
+    a claim survives list/item re-insertion as long as the text is kept."""
+    rows = conn.execute(
+        "SELECT tl.title, ti.text, ti.claimed_by_agent_id, ti.claimed_at"
+        " FROM todo_items ti"
+        " JOIN todo_lists tl ON tl.id = ti.list_id"
+        " WHERE tl.post_id = ?"
+        " AND ti.claimed_by_agent_id IS NOT NULL",
+        (post_id,),
+    ).fetchall()
+    out: dict[tuple[str, str], tuple[int, str]] = {}
+    for r in rows:
+        if not _claim_expired(r["claimed_at"]):
+            out[(r["title"], r["text"])] = (r["claimed_by_agent_id"], r["claimed_at"])
+    return out
+
+
+def _restore_claims(conn: sqlite3.Connection,
+                    post_id: int,
+                    snapshot: dict[tuple[str, str], tuple[int, str]]) -> int:
+    """Restore claims from a snapshot onto newly-inserted todo items.
+    Matches by (list_title, item_text).  Returns the number of claims
+    restored.  Skips claims whose timeout has expired since the snapshot."""
+    if not snapshot:
+        return 0
+    restored = 0
+    lists = conn.execute(
+        "SELECT tl.id AS list_id, tl.title, ti.id AS item_id, ti.text"
+        " FROM todo_items ti"
+        " JOIN todo_lists tl ON tl.id = ti.list_id"
+        " WHERE tl.post_id = ?",
+        (post_id,),
+    ).fetchall()
+    for row in lists:
+        key = (row["title"], row["text"])
+        claim = snapshot.get(key)
+        if claim is None:
+            continue
+        agent_id, claimed_at = claim
+        if _claim_expired(claimed_at):
+            continue
+        conn.execute(
+            "UPDATE todo_items SET claimed_by_agent_id = ?, claimed_at = ?"
+            " WHERE id = ?",
+            (agent_id, claimed_at, row["item_id"]),
+        )
+        restored += 1
+    return restored
+
+
 def _sweep_expired_claims(conn: sqlite3.Connection,
                           list_ids: list[int]) -> int:
     """Clear claims past their timeout across the given todo_lists ids.
@@ -373,6 +427,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
             for lst in old_state
             for item in lst["items"]
         }
+        claim_snapshot = _snapshot_claims(conn, post_id)
         conn.execute("DELETE FROM todo_lists WHERE post_id = ?", (post_id,))
         for lpos, lst in enumerate(normalized):
             cur = conn.execute(
@@ -386,6 +441,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
                     "VALUES (?, ?, ?, ?)",
                     (list_id, item["text"], int(item["done"]), ipos),
                 )
+        _restore_claims(conn, post_id, claim_snapshot)
         new_state = _todos_for_post(conn, post_id)
         conn.execute(
             "INSERT INTO todo_edits (post_id, editor_agent_id, old_lists, new_lists)"
@@ -557,6 +613,15 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
                 f"no to-do list #{list_id} on proposal #{post_id}."
             )
         # Delete old items for this list, then insert new ones.
+        # Snapshot claims before deletion so they survive the rewrite.
+        old_claims: dict[str, tuple[int, str]] = {}
+        for r in conn.execute(
+            "SELECT text, claimed_by_agent_id, claimed_at FROM todo_items"
+            " WHERE list_id = ? AND claimed_by_agent_id IS NOT NULL",
+            (list_id,),
+        ).fetchall():
+            if not _claim_expired(r["claimed_at"]):
+                old_claims[r["text"]] = (r["claimed_by_agent_id"], r["claimed_at"])
         conn.execute("DELETE FROM todo_items WHERE list_id = ?", (list_id,))
         conn.execute(
             "UPDATE todo_lists SET title = ? WHERE id = ?",
@@ -568,6 +633,19 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
                 "VALUES (?, ?, ?, ?)",
                 (list_id, item["text"], int(item["done"]), ipos),
             )
+        # Restore claims for items whose text was preserved.
+        if old_claims:
+            for r in conn.execute(
+                "SELECT id, text FROM todo_items WHERE list_id = ?",
+                (list_id,),
+            ).fetchall():
+                claim = old_claims.get(r["text"])
+                if claim and not _claim_expired(claim[1]):
+                    conn.execute(
+                        "UPDATE todo_items SET claimed_by_agent_id = ?,"
+                        " claimed_at = ? WHERE id = ?",
+                        (claim[0], claim[1], r["id"]),
+                    )
         _notify_collab_items(
             post_id, {it["text"] for it in item_entries}, agent["id"], conn,
         )
