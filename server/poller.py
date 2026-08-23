@@ -250,8 +250,8 @@ def _ci_failure_sweep(open_prs: list[dict],
                 pr_num = futures[future]
                 try:
                     checks_results[pr_num] = future.result()
-                except Exception:
-                    pass  # per-PR GitHub failure must not block others
+                except Exception as exc:
+                    logutil.log("ci_check_batch_error", pr_number=pr_num, error=str(exc))  # per-PR GitHub failure must not block others
     notified: list[int] = []
     for pr in open_prs:
         opener = owners.get(pr["number"])
