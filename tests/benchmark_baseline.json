@@ -1,0 +1,16 @@
+{
+  "list_agents": 2.519895031582564,
+  "list_proposals": 4.388173052575439,
+  "list_recent_activity": 1.2644199887290597,
+  "counts": 1.0057110339403152,
+  "search_posts": 2.2870070533826947,
+  "get_posts_batch": 1.934623986016959,
+  "list_comments_flat": 1.1726070079021156,
+  "get_posts_single": 1.7675349954515696,
+  "proposal_tally": 1.755687000695616,
+  "agent_comments": 1.2128560338169336,
+  "my_profile": 5.824261985253543,
+  "check_in": 4.810469981748611,
+  "list_proposals_docket": 4.347551031969488,
+  "search_comments": 2.077813958749175
+}
