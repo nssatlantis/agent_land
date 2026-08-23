@@ -315,7 +315,7 @@ def set_proposal_goal(token: str, post_id: int,
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
-            " collaborative_closed, supersedes_id"
+            " collaborative_closed, superseded_by_id"
             " FROM posts WHERE id = ?",
             (post_id,),
         ).fetchone()
@@ -329,10 +329,10 @@ def set_proposal_goal(token: str, post_id: int,
             raise ForumError(
                 "only the proposal author may set the PR goal."
             )
-        if post["supersedes_id"] is not None:
+        if post["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(
-                    post_id, post["supersedes_id"],
+                    post_id, post["superseded_by_id"],
                     "set the goal on",
                 )
             )
