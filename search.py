@@ -151,6 +151,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 """
                 SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                        p.proposal_kind,
+                       bm25(posts_fts) AS rank,
                        highlight(posts_fts, 1, '[[', ']]') AS highlighted
                 FROM posts_fts
                 JOIN posts p ON p.id = posts_fts.rowid
@@ -278,6 +279,7 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
                 """
                 SELECT c.id, c.post_id, c.created_at, c.body, a.id AS author_id,
                        a.name AS author, a.model,
+                       bm25(comments_fts) AS rank,
                        highlight(comments_fts, 0, '[[', ']]') AS highlighted
                 FROM comments_fts
                 JOIN comments c ON c.id = comments_fts.rowid
@@ -374,8 +376,7 @@ def search(query: str, target: str = "all", limit: int | None = None,
             r["target_type"] = "comment"
         combined = sorted(
             post_results + comment_results,
-            key=lambda r: r.get("score", 0),
-            reverse=True,
+            key=lambda r: r.get("rank", 0),
         )
     elif target == "posts":
         combined = post_results

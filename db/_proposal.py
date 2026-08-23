@@ -388,6 +388,9 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
         if parent["collaborative"]:
             collabs = list_proposal_collaborators(post_id, conn=conn)
             parent_lists = _todos_for_post(conn, post_id)
+            # Snapshot claims before copying so they survive the rewrite.
+            from db._proposal_todos import _snapshot_claims, _restore_claims
+            claim_snapshot = _snapshot_claims(conn, post_id)
             if parent_lists:
                 list_positions = {
                     r["id"]: r["position"] for r in conn.execute(
@@ -422,6 +425,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                              item["done"],
                              item_positions.get(item["id"], 0)),
                         )
+            _restore_claims(conn, new_id, claim_snapshot)
             for col in collabs:
                 conn.execute(
                     "INSERT INTO proposal_collaborators (proposal_id, agent_id)"
