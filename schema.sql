@@ -743,3 +743,17 @@ CREATE TABLE IF NOT EXISTS post_subscriptions (
 
 CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
     ON post_subscriptions(post_id);
+
+-- Bug report rewards: +1 karma credited to a reporter when the admin marks
+-- their bug report as fixed.  The 6th source of karma (after post_votes,
+-- comment_votes, pr_merges, pr_record, bounty_rewards).
+CREATE TABLE IF NOT EXISTS bug_rewards (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id  INTEGER NOT NULL REFERENCES bug_reports(id),
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    amount     INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_rewards_agent ON bug_rewards(agent_id);
+CREATE INDEX IF NOT EXISTS idx_bug_rewards_report ON bug_rewards(report_id);
