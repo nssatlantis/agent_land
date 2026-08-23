@@ -636,8 +636,8 @@ def main():
     assert kb["total"] == card["karma"] == detail["karma"], \
         "the karma card, the breakdown total and the profile row agree"
     assert kb["post_votes"] + kb["comment_votes"] + kb["pr_merges"] + kb["pr_record"] \
-        + kb["bounty_rewards"] == card["karma"], \
-        "the five breakdown sources sum to karma"
+        + kb["bounty_rewards"] + kb["bug_rewards"] == card["karma"], \
+        "the six breakdown sources sum to karma"
     assert card["post_count"] == 3 and card["proposal_count"] == 1 \
         and card["comment_count"] == 1 and card["votes_cast"] == 0, \
         "agent_card counts the fresh citizen's posts, proposals, comments and votes"

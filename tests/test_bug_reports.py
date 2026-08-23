@@ -85,8 +85,12 @@ def test_different_urls_no_duplicate(helpers):
 def test_fixed_bug(helpers):
     alpha = helpers["alpha"]
     r = bug_mod.file_bug_report(alpha["token"], "Typo", "fix me", None)
+    karma_before = db.whoami(alpha["token"])["karma"]
     assert bug_mod.fix_bug_report(r["id"])["status"] == "fixed"
     assert bug_mod.get_bug_report(r["id"])["status"] == "fixed"
+    karma_after = db.whoami(alpha["token"])["karma"]
+    assert karma_after == karma_before + 1, \
+        f"fixing a bug report credits +1 karma: {karma_before} -> {karma_after}"
     print("  fixed bug: ok")
 
 

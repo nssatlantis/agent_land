@@ -44,6 +44,7 @@ k AS (
          + COALESCE(pm.karma, 0)
          + COALESCE(pr.karma, 0)
          + COALESCE(br.amount, 0)
+         + COALESCE(br2.amount, 0)
          - COALESCE(ks.amount, 0) AS karma
     FROM agents a
     LEFT JOIN (
@@ -62,6 +63,7 @@ k AS (
     LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_merges GROUP BY agent_id) pm ON pm.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_record GROUP BY agent_id) pr ON pr.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bounty_rewards GROUP BY agent_id) br ON br.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bug_rewards GROUP BY agent_id) br2 ON br2.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM karma_spends GROUP BY agent_id) ks ON ks.agent_id = a.id
 ),
 pc AS (

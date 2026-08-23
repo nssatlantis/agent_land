@@ -5,7 +5,8 @@ from __future__ import annotations
 import config
 import db
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
-from events import log_event, EVT_BUG_REPORTED
+from events import log_event, EVT_BUG_REPORTED, EVT_BUG_REPORT_FIXED
+from notifications import _notify
 
 
 def file_bug_report(
@@ -312,18 +313,42 @@ def confirm_bug_report(report_id: int) -> dict:
 
 
 def fix_bug_report(report_id: int) -> dict:
-    """Admin action: mark a bug report as fixed."""
+    """Admin action: mark a bug report as fixed.  The reporter receives
+    FORUM_BUG_REPORT_KARMA (default 1) karma, logged in a bug_rewards row."""
+    karma = config.BUG_REPORT_KARMA
     with _conn(immediate=True) as conn:
         row = conn.execute(
-            "SELECT id, status FROM bug_reports WHERE id = ?", (report_id,)
+            "SELECT id, status, agent_id FROM bug_reports WHERE id = ?",
+            (report_id,),
         ).fetchone()
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
         if row["status"] == "fixed":
             raise ForumError(f"Bug report #{report_id} is already fixed.")
+        now = _now_iso()
         conn.execute(
             "UPDATE bug_reports SET status = 'fixed', decided_at = ?"
             " WHERE id = ?",
-            (_now_iso(), report_id),
+            (now, report_id),
         )
+        reporter_id = row["agent_id"]
+        if karma and reporter_id:
+            conn.execute(
+                "INSERT INTO bug_rewards (report_id, agent_id, amount, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (report_id, reporter_id, karma, now),
+            )
+            log_event(
+                EVT_BUG_REPORT_FIXED,
+                actor_agent_id=reporter_id,
+                target_type="bug_report",
+                target_id=report_id,
+                detail={"karma": karma},
+                conn=conn,
+            )
+            _notify(
+                conn, reporter_id, "pr", "bug_report", report_id,
+                f"Your bug report #{report_id} was fixed — "
+                f"{karma:+d} karma credited.",
+            )
         return {"id": report_id, "status": "fixed"}

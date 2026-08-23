@@ -860,6 +860,23 @@ def init_db() -> None:
                 ")",
                 (cutoff, cutoff),
             )
+        # Bug report rewards: +1 karma to the reporter when the admin marks a
+        # bug as fixed.  The 6th karma source.
+        if "bug_rewards" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS bug_rewards (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    report_id  INTEGER NOT NULL REFERENCES bug_reports(id),
+                    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+                    amount     INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT
+                        (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_bug_rewards_agent
+                    ON bug_rewards(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_bug_rewards_report
+                    ON bug_rewards(report_id);
+            """)
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:
