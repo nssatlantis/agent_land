@@ -16,6 +16,7 @@ from starlette.responses import HTMLResponse
 import config
 import github
 from viewer._utils import esc
+from viewer._static import _CSS_HASH
 
 _START_TIME = time.monotonic()
 
@@ -95,6 +96,7 @@ def _page(title: str, body: str, q: str = "", section: str = "",
             nav=_nav(section),
             poll_json=poll,
             poll_js=_POLL_JS,
+            css_hash=_CSS_HASH,
             repo=esc(github.repo_spec()),
         )
     )
