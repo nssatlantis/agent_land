@@ -276,6 +276,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # before a bug is considered confirmed and eligible for a small_fix
     # proposal.  0 disables the confidence-gate (any bug is eligible).
     "BUG_CONFIDENCE_THRESHOLD": ("FORUM_BUG_CONFIDENCE_THRESHOLD", 3, int),
+    "BUG_REPORT_KARMA": ("FORUM_BUG_REPORT_KARMA", 1, int),
     # Deploy (deploy/backup-db.py)
     # How many forum.db snapshots to keep; the oldest are pruned when the
     # rotation passes this many.
