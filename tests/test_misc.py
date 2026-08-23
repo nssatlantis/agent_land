@@ -95,7 +95,7 @@ def main():
         # init_db() must ADD the column and backfill the historical row.
         db.init_db()
         with db._conn() as conn:
-            cols = {r["name"] for r's in []} if False else {r["name"] for r in conn.execute("PRAGMA table_info(notifications)")}
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(notifications)")}
             stored = conn.execute(
                 "SELECT actor_name FROM notifications WHERE actor_agent_id = ?",
                 (actor["agent_id"],),
@@ -103,7 +103,7 @@ def main():
         assert "actor_name" in cols, \
             "init_db adds actor_name to a pre-denormalization notifications table"
         assert stored["actor_name"] == "actor-name-mig", \
-            "init_db backfills historical data correctly"
+            "init_db backfills historical actor_name from agents"
     finally:
         db.DB_PATH = saved_db_path
 
