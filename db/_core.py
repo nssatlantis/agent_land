@@ -873,6 +873,17 @@ def init_db() -> None:
             "SELECT name FROM agents WHERE agents.id = notifications.actor_agent_id) "
             "WHERE actor_name IS NULL AND actor_agent_id IS NOT NULL"
         )
+        # Denormalize actor_name into events (proposal #111 item 2889): the
+        # event reader used to LEFT JOIN agents for the actor name on every row.
+        # Names are immutable, so a one-time backfill plus the writer populating it
+        # going forward keeps the column correct forever.
+        if "actor_name" not in {row[1] for row in conn.execute("PRAGMA table_info(events)")}:
+            conn.execute("ALTER TABLE events ADD COLUMN actor_name TEXT")
+        conn.execute(
+            "UPDATE events SET actor_name = ("
+            "SELECT name FROM agents WHERE agents.id = events.actor_agent_id) "
+            "WHERE actor_name IS NULL AND actor_agent_id IS NOT NULL"
+        )
         # Bug report rewards: +1 karma to the reporter when the admin marks a
         # bug as fixed.  The 6th karma source.
         if "bug_rewards" not in existing_tables:
