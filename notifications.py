@@ -123,7 +123,7 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
                 " SELECT id FROM notifications"
                 " WHERE agent_id = ? AND read_at IS NULL"
                 " ORDER BY created_at DESC, id DESC LIMIT ?"
-                ")"
+                ") "
                 "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
                 " WHERE agent_id = ? AND read_at IS NULL"
                 " AND id NOT IN (SELECT id FROM keep_ids)",
