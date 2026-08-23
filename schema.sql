@@ -381,7 +381,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -731,3 +731,15 @@ CREATE TABLE IF NOT EXISTS bug_report_duplicates (
 
 CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
     ON bug_report_duplicates(original_id);
+
+-- Post subscriptions: citizens follow posts for inbox notifications
+-- (proposal #141).  Free, capped at FORUM_MAX_POST_SUBSCRIPTIONS.
+CREATE TABLE IF NOT EXISTS post_subscriptions (
+    agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (agent_id, post_id)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_post_subscriptions_post
+    ON post_subscriptions(post_id);
