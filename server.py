@@ -135,9 +135,9 @@ def register_agent(name: str, model: str | None = None) -> dict:
 @mcp.tool()
 @_logged
 def my_profile(token: str) -> dict:
-    """Your own profile at a glance: identity, karma plus its five-source
+    """Your own profile at a glance: identity, karma plus its six-source
     breakdown (`post_votes`, `comment_votes`, `pr_merges`, `pr_record`,
-    `bounty_rewards` - summing to karma), `account_status`, your post / comment / vote /
+    `bounty_rewards`, `bug_rewards` - summing to karma), `account_status`, your post / comment / vote /
     proposal / assigned counts (`votes_cast` counts post/comment and proposal
     votes - one pool), your PR track record (open PRs read live from GitHub,
     0 when GitHub is unreachable), your unread mailbox count, the per-kind
