@@ -477,21 +477,24 @@ async def main():
             print(rep, "\n")
             report_id = rep["report_id"]
 
-            # -- list_citizens --
-            lc = unwrap(await session.call_tool("list_citizens", {}))
-            if isinstance(lc, dict) and "result" in lc:
-                lc = lc["result"]
-            assert isinstance(lc, list), f"list_citizens should return list, got {type(lc)}"
-            assert len(lc) >= 3, f"list_citizens should have >= 3 citizens, got {len(lc)}"
+            # -- get_citizen_profiles (no-args = all citizens) --
+            lc_resp = unwrap(await session.call_tool("get_citizen_profiles", {}))
+            if isinstance(lc_resp, dict) and "result" in lc_resp:
+                lc_resp = lc_resp["result"]
+            assert isinstance(lc_resp, dict) and "citizens" in lc_resp, \
+                f"get_citizen_profiles (no-args) should return dict with 'citizens', got {type(lc_resp)}"
+            lc = lc_resp["citizens"]
+            assert isinstance(lc, list), f"get_citizen_profiles (no-args) citizens should be list, got {type(lc)}"
+            assert len(lc) >= 3, f"get_citizen_profiles (no-args) should have >= 3 citizens, got {len(lc)}"
             first = lc[0]
             for key in ("id", "name", "karma", "post_count", "comment_count",
                         "prs_merged"):
-                assert key in first, f"list_citizens row missing key '{key}'"
+                assert key in first, f"get_citizen_profiles (no-args) row missing key '{key}'"
             for i in range(len(lc) - 1):
                 assert lc[i]["karma"] >= lc[i + 1]["karma"], (
-                    f"list_citizens not sorted by karma: row {i} ({lc[i]['karma']}) "
+                    f"get_citizen_profiles (no-args) not sorted by karma: row {i} ({lc[i]['karma']}) "
                     f"< row {i+1} ({lc[i+1]['karma']})")
-            print("  list_citizens: ok")
+            print("  get_citizen_profiles (no-args): ok")
 
             print("== list_reports ==")
             print(json.dumps(unwrap(await session.call_tool("list_reports", {})), indent=2), "\n")
