@@ -31,26 +31,55 @@ from events import (
 )
 from notifications import _notify
 
-# Label applied to a PR once community votes reach the merge threshold, so it
-# is visible at a glance that the PR is vote-approved (independent of the
-# separate small-fix auto-merge gate).  Removed again whenever the tally drops
-# back below the threshold (e.g. a voter flips their vote).
-PR_VOTES_PASSED_LABEL = "votes-passed"
+# Prefix for the dynamic vote-tally label applied to PRs.  The full label
+# name is "votes: [+N / -N]" where N = up / down counts.  Only one such
+# label lives on a PR at a time; the old one is removed before the new
+# one is added.
+_VOTES_LABEL_PREFIX = "votes: ["
+_VOTES_LABEL_SUFFIX = "]"
+
+# GitHub hex colours (no '#') for the vote label.
+_LABEL_COLOR_POSITIVE = "0d6838"   # net > 0, below threshold
+_LABEL_COLOR_PASSING = "1a7f37"   # net >= threshold (bright green)
+_LABEL_COLOR_ZERO = "9e7a00"      # net == 0 (amber)
+_LABEL_COLOR_NEGATIVE = "b62324"  # net < 0 (red)
+
+
+def _vote_label_name(up: int, down: int) -> str:
+    return f"votes: [+{up} / -{down}]"
+
+
+def _vote_label_color(net: int, eligible: bool) -> str:
+    if eligible:
+        return _LABEL_COLOR_PASSING
+    if net > 0:
+        return _LABEL_COLOR_POSITIVE
+    if net == 0:
+        return _LABEL_COLOR_ZERO
+    return _LABEL_COLOR_NEGATIVE
 
 
 def _sync_pr_votes_passed_label(pr_number: int) -> None:
-    """Add the votes-passed label when a PR's net votes reach the merge
-    threshold, and remove it otherwise.  Called after every vote write so the
-    label tracks re-votes and flips in real time.  GitHub label I/O is
-    best-effort: a failure must never break the vote itself."""
+    """Update the dynamic vote-tally label on a PR.  Computes the current
+    tally, removes any stale vote label, and adds an updated one with the
+    appropriate colour.  GitHub label I/O is best-effort: a failure must
+    never break the vote itself."""
     try:
         import github as _github
         with _conn() as conn:
+            t = _tally(conn, pr_number)
             eligible = pr_eligible_for_merge(conn, pr_number)
-        if eligible:
-            _github.add_pr_label(pr_number, PR_VOTES_PASSED_LABEL)
-        else:
-            _github.remove_pr_label(pr_number, PR_VOTES_PASSED_LABEL)
+        # Remove any existing vote-tally label on this PR.
+        for name in _github.list_pr_labels(pr_number):
+            if name.startswith(_VOTES_LABEL_PREFIX) and name.endswith(
+                _VOTES_LABEL_SUFFIX
+            ):
+                _github.remove_pr_label(pr_number, name)
+        # Add the current tally label (omit when there are zero votes).
+        if t["up"] or t["down"]:
+            label = _vote_label_name(t["up"], t["down"])
+            color = _vote_label_color(t["net"], eligible)
+            _github.add_pr_label(pr_number, label, color=color)
     except Exception:
         import logutil
         logutil.log("pr_votes_label_sync_failed", pr_number=pr_number)

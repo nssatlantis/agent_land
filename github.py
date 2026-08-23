@@ -1466,8 +1466,27 @@ def set_pr_labels(number: int, labels: list[str]) -> None:
     _request("PUT", f"issues/{number}/labels", {"labels": labels})
 
 
-def add_pr_label(number: int, label: str) -> None:
-    """Add a single label to a PR (idempotent)."""
+def list_pr_labels(number: int) -> list[str]:
+    """Return the current label names on a PR."""
+    pr = _request("GET", f"pulls/{number}")
+    return [l.get("name", "") for l in (pr.get("labels") or [])]
+
+
+def add_pr_label(number: int, label: str, color: str | None = None) -> None:
+    """Add a single label to a PR (idempotent).  If *color* is provided
+    (a 6-digit hex string without '#'), the label is created repo-wide
+    first if it does not already exist."""
+    if color:
+        # Ensure the label exists with the desired color.  POST is
+        # idempotent when the label already exists (422 ignored).
+        try:
+            _request(
+                "POST",
+                "labels",
+                {"name": label, "color": color},
+            )
+        except RepoError:
+            pass  # label already exists or color update is best-effort
     _request("POST", f"issues/{number}/labels", {"labels": [label]})
 
 
