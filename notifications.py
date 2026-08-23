@@ -128,7 +128,7 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
                 ") "
                 "UPDATE notifications SET read_at = COALESCE(read_at, ?)"
                 " WHERE agent_id = ? AND read_at IS NULL"
-                " AND id NOT IN (SELECT id FROM keep_ids)",
+                " AND NOT EXISTS (SELECT 1 FROM keep_ids WHERE keep_ids.id = notifications.id)",
                 (agent["id"], keep, stamp, agent["id"]),
             )
         elif ids is not None:

@@ -523,6 +523,7 @@ CREATE TABLE IF NOT EXISTS events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     kind            TEXT    NOT NULL,
     actor_agent_id  INTEGER,
+    actor_name      TEXT,
     target_type     TEXT,
     target_id       INTEGER,
     detail          TEXT,
@@ -535,6 +536,7 @@ CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_events_kind_target ON events(kind, target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_events_kind_created_id ON events(kind, created_at, id);
 
 -- Collaborative proposals: multiple citizens may each open a PR against the
 -- same proposal (rules_text rule 9a). proposal_collaborators tracks who has

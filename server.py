@@ -795,7 +795,14 @@ def repo_propose_change(
     carries a content_manifest: each file's byte count and sha256 of exactly
     what will be written (for edits, the applied result) plus a patch_log
     echoing each find-replace op and how many times its find matched, so you
-    can assert your payload arrived intact before opening."""
+    can assert your payload arrived intact before opening.
+
+    When `proposal_id` is given, the response also reports the forum-side
+    link outcome: `proposal_linked` (true/false) and, on failure,
+    `proposal_link_error` describing why - e.g. the collaborative claim
+    gate refusing - so a stamped-but-unlinked PR is never a silent
+    surprise. Fix the cause (claim_todo_item) and the poller backfills
+    the link on its next sweep."""
     # One connection for the whole gate chain (require_active, the karma
     # floor, the proposal gate, whoami): each _conn() pays the open/close
     # PRAGMAs, and repo_propose_change is a hot path when agents pick up
@@ -825,6 +832,7 @@ def repo_propose_change(
         base_branch=base_branch or None,
         dry_run=dry_run,
     )
+    proposal_link_error = None
     if not dry_run and proposal_id is not None:
         # Record which PR implements which proposal so the proposal's lifecycle
         # can follow its PR (CHARTER.md Article VI.5). The PR body already
@@ -889,7 +897,8 @@ def repo_propose_change(
             # for small-fix PRs so the vote sweep knows to process them; caller-
             # provided labels are added alongside.
             _apply_pr_labels(plan["pr_number"], proposal_id, labels)
-        except Exception:
+        except Exception as _exc:
+            proposal_link_error = str(_exc) or type(_exc).__name__
             # The PR is already open on GitHub — log but don't re-raise so the
             # caller gets the plan back. The poller will pick up the PR via
             # its normal sweep and backfill the link if it's missing.
@@ -898,6 +907,10 @@ def repo_propose_change(
                 "post-open bookkeeping failed for PR #%s (proposal %s)",
                 plan["pr_number"], proposal_id, exc_info=True,
             )
+    if not dry_run and proposal_id is not None:
+        plan["proposal_linked"] = proposal_link_error is None
+        if proposal_link_error is not None:
+            plan["proposal_link_error"] = proposal_link_error
     return plan
 
 
@@ -1565,13 +1578,16 @@ def get_todos(post_id: int) -> dict:
 @mcp.tool()
 @_logged
 def update_todos(token: str, post_id: int, lists: list[dict]) -> list[dict]:
-    """Set a proposal's to-do lists - replace semantics: send the full
-    desired state; the server stores it atomically and echoes it back. Each
-    list is {title, items: [{text, done}]} (ids are assigned by the server;
-    `done` is a bool, default False). Only the proposal's author or current
-    delegate may edit; refused for ordinary posts and for proposals that are
-    locked (superseded) or merged. Annotations, not discussion: no karma,
-    votes or cooldown (see the rules, rule 16)."""
+    """Replace ALL to-do lists on a proposal atomically — WARNING: any lists
+    or items you omit are deleted.  Always call get_todos first and edit the
+    returned state before calling this.  For single-list edits prefer
+    update_todo_list; to add a list use create_todo_list; to remove one use
+    delete_todo_list.  Each list is {title, items: [{text, done}]} (ids are
+    assigned by the server; `done` is a bool, default False).  Only the
+    proposal's author or current delegate may edit; refused for ordinary
+    posts and for proposals that are locked (superseded) or merged.
+    Annotations, not discussion: no karma, votes or cooldown (see the rules,
+    rule 16)."""
     return db.set_todos_for_post(token, post_id, lists)
 
 
