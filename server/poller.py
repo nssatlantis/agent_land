@@ -399,7 +399,7 @@ def _pr_vote_sweep() -> list[dict]:
         openers = db.linked_pr_openers(conn=conn)
         proposals_map = db.linked_pr_proposals(conn=conn)
 
-    # Repair pass (proposal #153): an open PR whose body stamps a
+    # Repair pass (proposal #155): an open PR whose body stamps a
     # proposal but whose DB link never landed - e.g. the claim gate
     # refused at open time because an earlier verdict had released the
     # opener's claims - gets retried here on every sweep. The retry
