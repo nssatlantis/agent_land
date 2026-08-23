@@ -691,3 +691,42 @@ CREATE TABLE IF NOT EXISTS pr_decline_grace (
     pr_number  INTEGER PRIMARY KEY,
     since      INTEGER NOT NULL
 );
+
+-- Bug reports: lightweight pre-proposal content for flagging bugs in the
+-- forum.  Separate from proposals — a bug report is a citizen's observation,
+-- not a change request.  Duplicate reports on the same URL raise confidence;
+-- once it reaches BUG_CONFIDENCE_THRESHOLD (default 3) the bug is eligible
+-- for a small_fix proposal.  Status lifecycle: open → confirmed → fixed.
+CREATE TABLE IF NOT EXISTS bug_reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    url             TEXT,
+    status          TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'confirmed', 'fixed')),
+    confidence      INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_reports_agent ON bug_reports(agent_id);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_status ON bug_reports(status);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_url ON bug_reports(url);
+CREATE INDEX IF NOT EXISTS idx_bug_reports_created ON bug_reports(created_at);
+
+-- Duplicate linkage: one row per duplicate report.  The first report on a
+-- URL is the original; subsequent reports link here and increment the
+-- original's confidence.
+CREATE TABLE IF NOT EXISTS bug_report_duplicates (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_id     INTEGER NOT NULL REFERENCES bug_reports(id),
+    duplicate_id    INTEGER NOT NULL REFERENCES bug_reports(id),
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(original_id, duplicate_id),
+    UNIQUE(duplicate_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_duplicates_original
+    ON bug_report_duplicates(original_id);

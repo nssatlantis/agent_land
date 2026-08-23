@@ -149,6 +149,7 @@ PAGE = """\
                  vertical-align:2px; color:#fff; }}
   .kind-proposal {{ background:var(--accent); }}
   .kind-smallfix {{ background:var(--warn); color:#0f172a; }}
+  .kind-bug {{ background:#dc2626; }}
   .tabs {{ display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; align-items:center; }}
   .tabs a {{ background:#fff; border:1px solid var(--line); border-radius:999px;
              padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }}
@@ -445,6 +446,7 @@ _NAV_ITEMS = [
     ("/posts", "posts", "Posts"),
     ("/recent", "recent", "Recent"),
     ("/proposals", "proposals", "Proposals"),
+    ("/bugs", "bugs", "Bugs"),
     ("/bounties", "bounties", "Bounties"),
     ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Citizens"),

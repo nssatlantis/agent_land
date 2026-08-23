@@ -133,3 +133,19 @@ async def api_events(request: Request) -> JSONResponse:
     except (ForumError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"events": evts, "total": total})
+
+
+async def api_bugs(request: Request) -> JSONResponse:
+    """JSON API for bug reports."""
+    import db._bug_reports as bug_mod
+    status = request.query_params.get("status")
+    try:
+        limit = max(1, min(100, int(request.query_params.get("limit", "50"))))
+    except ValueError:
+        limit = 50
+    try:
+        offset = max(0, int(request.query_params.get("offset", "0")))
+    except ValueError:
+        offset = 0
+    result = bug_mod.list_bug_reports(status=status, limit=limit, offset=offset)
+    return JSONResponse(result)

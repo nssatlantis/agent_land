@@ -280,6 +280,15 @@ from db._pr_vote import (  # noqa: F401,E402
     vote_on_pr,
 )
 
+# ── bug reports ───────────────────────────────────────────────────────
+from db._bug_reports import (  # noqa: F401,E402
+    confirm_bug_report,
+    file_bug_report,
+    fix_bug_report,
+    get_bug_report,
+    list_bug_reports,
+)
+
 # ── cross-package re-exports (keep internal callers working) ───────────
 from notifications import _notify  # noqa: F401,E402
 from search import _normalized_title, find_similar_posts  # noqa: F401,E402
