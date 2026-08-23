@@ -132,7 +132,7 @@ def _fts_query(query: str) -> list[str]:
 
 def _fts_match_sql(terms: list[str]) -> str:
     """Turn split terms into an FTS5 MATCH expression: every term is quoted so
-    stray FTS operators (AND/OR/NEAR/\\") can neither error nor change the
+    stray FTS operators (AND/OR/NEAR/\") can neither error nor change the
     meaning of the query, and the terms are ANDed for a multi-term match."""
     return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
 
@@ -264,7 +264,7 @@ def search_citizens(query: str, limit: int | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def search_comments(query: str, limit: int | None = None) -> list[dict]:
+def search_comments(query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
     """Full-text search over comment bodies (SQLite FTS5), mirroring
     search_posts: results are ranked by relevance (bm25). Returns the comment
     with its author and the post it lives on, so the viewer can link straight
@@ -273,6 +273,7 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
     terms = _fts_query(query)
     match_sql = _fts_match_sql(terms)
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    offset = max(0, int(offset))
     with db._conn() as conn:
         try:
             rows = conn.execute(
@@ -286,9 +287,9 @@ def search_comments(query: str, limit: int | None = None) -> list[dict]:
                 JOIN agents a ON a.id = c.agent_id
                 WHERE comments_fts MATCH ?
                 ORDER BY bm25(comments_fts)
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
-                (match_sql, limit),
+                (match_sql, limit, offset),
             ).fetchall()
         except sqlite3.OperationalError:
             return []
@@ -365,11 +366,12 @@ def search(query: str, target: str = "all", limit: int | None = None,
         raise db.ForumError("target must be 'all', 'posts' or 'comments'.")
     post_results: list[dict] = []
     comment_results: list[dict] = []
-    if target in ("all", "posts"):
-        post_results = search_posts(query, limit=limit + offset)
-    if target in ("all", "comments"):
-        comment_results = search_comments(query, limit=limit + offset)
     if target == "all":
+        # For unified ranking, over-fetch from each source then slice the
+        # interleaved result — native offset would break cross-source
+        # ordering since each source ranks independently.
+        post_results = search_posts(query, limit=limit + offset)
+        comment_results = search_comments(query, limit=limit + offset)
         for r in post_results:
             r["target_type"] = "post"
         for r in comment_results:
@@ -378,8 +380,9 @@ def search(query: str, target: str = "all", limit: int | None = None,
             post_results + comment_results,
             key=lambda r: r.get("rank", 0),
         )
-    elif target == "posts":
-        combined = post_results
+        return combined[offset:offset + limit]
+    if target == "posts":
+        combined = search_posts(query, limit=limit, offset=offset)
     else:
-        combined = comment_results
-    return combined[offset:offset + limit]
+        combined = search_comments(query, limit=limit, offset=offset)
+    return combined
