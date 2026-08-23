@@ -451,37 +451,68 @@ def test_votes_passed_label_syncs():
 
         # First vote (1-0): below threshold -> label added with green colour.
         db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
-        assert added[-1] == (pr_number, "votes: [+1 / -0]", "0d6838")
+        assert added[-1] == (pr_number, "votes: [+1 | -0]", "0d6838")
 
         # Second vote (2-0): still below threshold -> old label removed, new added.
         db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
-        assert (pr_number, "votes: [+1 / -0]") in removed[-2:]
-        assert added[-1] == (pr_number, "votes: [+2 / -0]", "0d6838")
+        assert (pr_number, "votes: [+1 | -0]") in removed[-2:]
+        assert added[-1] == (pr_number, "votes: [+2 | -0]", "0d6838")
 
         # Third approve reaches threshold (3-0) -> bright green.
         db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
-        assert (pr_number, "votes: [+2 / -0]") in removed[-2:]
-        assert added[-1] == (pr_number, "votes: [+3 / -0]", "1a7f37")
+        assert (pr_number, "votes: [+2 | -0]") in removed[-2:]
+        assert added[-1] == (pr_number, "votes: [+3 | -0]", "1a7f37")
 
         # Voter flips +1 -> -1 (2-1): drops below threshold -> green again.
         db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
-        assert (pr_number, "votes: [+3 / -0]") in removed[-2:]
-        assert added[-1] == (pr_number, "votes: [+2 / -1]", "0d6838")
+        assert (pr_number, "votes: [+3 | -0]") in removed[-2:]
+        assert added[-1] == (pr_number, "votes: [+2 | -1]", "0d6838")
 
         # Flip again to -1 (1-2): net negative -> red.
         db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, -1)
-        assert added[-1] == (pr_number, "votes: [+1 / -2]", "b62324")
+        assert added[-1] == (pr_number, "votes: [+1 | -2]", "b62324")
 
         # All votes removed (0-0): no label added (zero votes omitted).
         db.vote_on_pr(AGENTS["delta"]["token"], pr_number, -1)
-        assert (pr_number, "votes: [+1 / -2]") in removed[-2:]
+        assert (pr_number, "votes: [+1 | -2]") in removed[-2:]
         # The add list should NOT contain a zero-vote label.
-        assert not any(n == pr_number and "0 / -0" in lab for n, lab, _ in added)
+        assert not any(n == pr_number and "0 | -0" in lab for n, lab, _ in added)
     finally:
         _github.add_pr_label = real_add
         _github.remove_pr_label = real_remove
         _github.list_pr_labels = real_list
     print("  votes label sync: ok")
+
+
+def test_remove_pr_label_encodes_url():
+    """remove_pr_label percent-encodes the label name in the DELETE URL
+    so labels containing '/', ':', '[', ']' etc. are sent correctly."""
+    import github as _github
+    import urllib.parse
+    real_request = _github._request
+    captured_paths: list[str] = []
+
+    def _spy_request(method, path, body=None, ok_404=False):
+        captured_paths.append(path)
+        return real_request(method, path, body=body, ok_404=ok_404)
+
+    _github._request = _spy_request
+    try:
+        label = "votes: [+3 | -1]"
+        _github.remove_pr_label(42, label)
+        assert len(captured_paths) == 1
+        path = captured_paths[0]
+        # The label must be percent-encoded in the path.
+        assert urllib.parse.quote(label, safe="") in path, (
+            f"label not encoded in path: {path}"
+        )
+        # Raw special chars must not appear in the path.
+        assert "/" not in path.split("labels/", 1)[1].split("/")[0].replace(
+            urllib.parse.quote("/", safe=""), ""
+        ), f"unencoded / in label path segment: {path}"
+    finally:
+        _github._request = real_request
+    print("  remove_pr_label URL encoding: ok")
 
 
 def test_pr_vote_tally():
