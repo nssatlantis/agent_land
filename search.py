@@ -132,7 +132,7 @@ def _fts_query(query: str) -> list[str]:
 
 def _fts_match_sql(terms: list[str]) -> str:
     """Turn split terms into an FTS5 MATCH expression: every term is quoted so
-    stray FTS operators (AND/OR/NEAR/\") can neither error nor change the
+    stray FTS operators (AND/OR/NEAR/\\\") can neither error nor change the
     meaning of the query, and the terms are ANDed for a multi-term match."""
     return " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
 
