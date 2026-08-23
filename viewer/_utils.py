@@ -172,7 +172,8 @@ _INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 _MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNORECASE)
 
 # The stored reference forms db leaves in bodies: '#P42' (post 42) and
-# '#C12 (post #77)' (comment 12 on post 77). Like mentions they are same-
+# '#C12 (post #77)' (comment 12 on post 77).  Bug reports use '#B3' and
+# pull requests use '#PR5'.  Like mentions they are same-origin links only.
 # origin links to content, so they share the mention exemption from the no-
 # links trust model. The comment form carries its containing post id - that
 # is what makes it linkable at all, since comments live under their post.

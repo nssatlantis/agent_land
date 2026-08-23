@@ -204,12 +204,14 @@ _EXPANDED_REF_RE = EXPANDED_REF_RE
 
 
 def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[dict], list[str]]:
-    """Rewrite every effective '#P<id>' / '#C<id>' reference in `body` to its
-    stored form. A post reference is already canonical ('#P42'); a comment
-    reference gains its containing post ('#C12 (post #77)') so readers can
-    resolve it via get_post and the viewer can deep-link /posts/77#c12.
+    """Rewrite every effective '#P<id>' / '#C<id>' / '#B<id>' / '#PR<id>'
+    reference in `body` to its stored form. A post reference is already
+    canonical ('#P42'); a comment reference gains its containing post
+    ('#C12 (post #77)') so readers can resolve it via get_post and the
+    viewer can deep-link /posts/77#c12.  Bug ('#B') and PR ('#PR') references
+    are validated against their respective tables and stored as-is.
     Returns the rewritten body, the resolved targets (`referenced`, in order
-    of first appearance, deduped: {kind, id} for posts and {kind, id,
+    of first appearance, deduped: {kind, id} for posts/bugs/PRs and {kind, id,
     post_id} for comments) and the unmatched tokens (`unresolved_refs`,
     deduped) so a typo'd id surfaces to the writer. Already-expanded comment
     references are left untouched - re-running is a no-op - and references
