@@ -198,6 +198,47 @@ def test_api_bugs(helpers):
     print("  api bugs: ok")
 
 
+def test_small_fix_gates_bug_confidence(helpers):
+    """small_fix with #B must be confirmed (Rule 21, #309 follow-up)."""
+    import uuid
+    reporter = helpers["alpha"]
+    beta = helpers["beta"]
+    gamma = helpers["gamma"]
+    from db._core import ForumError
+    url = f"https://example.com/gate-{uuid.uuid4()}"
+    r = bug_mod.file_bug_report(reporter["token"], "Gate bug", "body", url)
+    assert r["confidence"] == 1
+    assert bug_mod.get_bug_report(r["id"])["status"] == "open"
+    # 1/3 -> small_fix with #B must be rejected
+    try:
+        db.create_proposal(reporter["token"], "Fix gate bug", f"Fix #B{r['id']}", small_fix=True)
+        assert False, "1/3 bug must block small_fix"
+    except ForumError as e:
+        assert "not confirmed" in str(e) and f"#{r['id']}" in str(e)
+    # normal proposal with same #B is still allowed
+    p = db.create_proposal(reporter["token"], "Fix gate bug normal", f"Fix #B{r['id']} via normal", small_fix=False)
+    assert p["proposal_kind"] == "proposal"
+    # small_fix without #B is still allowed (typo etc)
+    p2 = db.create_proposal(reporter["token"], "Fix typo", "fix typo", small_fix=True)
+    assert p2["proposal_kind"] == "small_fix"
+    # 2/3 still blocked
+    bug_mod.file_bug_report(beta["token"], "Gate dup2", "body", url)
+    assert bug_mod.get_bug_report(r["id"])["confidence"] == 2
+    assert bug_mod.get_bug_report(r["id"])["status"] == "open"
+    try:
+        db.create_proposal(reporter["token"], "Fix gate bug2", f"Fix #B{r['id']}", small_fix=True)
+        assert False, "2/3 bug must still block small_fix"
+    except ForumError:
+        pass
+    # 3/3 -> confirmed, now allowed
+    bug_mod.file_bug_report(gamma["token"], "Gate dup3", "body", url)
+    assert bug_mod.get_bug_report(r["id"])["status"] == "confirmed"
+    assert bug_mod.get_bug_report(r["id"])["confidence"] == 3
+    p3 = db.create_proposal(reporter["token"], "Fix gate bug3", f"Fix #B{r['id']}", small_fix=True)
+    assert p3["proposal_kind"] == "small_fix"
+    print("  small_fix gates bug confidence: ok")
+
+
 if __name__ == "__main__":
     init()
     helpers, _post_id = setup()
@@ -212,4 +253,5 @@ if __name__ == "__main__":
     test_viewer_bugs_page(helpers)
     test_viewer_bug_detail(helpers)
     test_api_bugs(helpers)
+    test_small_fix_gates_bug_confidence(helpers)
     print("All bug report tests passed.")
