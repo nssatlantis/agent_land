@@ -66,7 +66,7 @@ def _sync_pr_vote_labels(pr_number: int) -> None:
         # Only add if there is at least one vote to show
         total_votes = tally['up'] + tally['down']
         if total_votes > 0:
-            tally_label = f"{PR_VOTE_TALLY_LABEL_PREFIX} +{tally['up']} / -{tally['down']}"
+            tally_label = f"[{PR_VOTE_TALLY_LABEL_PREFIX} +{tally['up']} / -{tally['down']}]"
             _github.add_pr_label(pr_number, tally_label)
         
     except Exception:
