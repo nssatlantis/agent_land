@@ -107,6 +107,61 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: denormalized actor_name on events (#111 item 2889) ------
+    # A pre-denormalization database lacks the events.actor_name column.
+    # init_db() must ADD it (CREATE TABLE IF NOT EXISTS cannot widen an
+    # existing table) and backfill it from agents, because query_events
+    # dropped the per-row LEFT JOIN agents.  The write path stores the name
+    # directly when the caller passes it (poller), else resolves one lookup.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "events_actor_name_migration.db")
+        db.init_db()  # fresh DB (has actor_name); we then downgrade it
+        actor = db.register_agent("event-actor-mig")
+        post = db.create_post(actor["token"], "actor-name event", "body")
+        with db._conn() as conn:
+            stored = conn.execute(
+                "SELECT actor_name FROM events WHERE kind = 'post_created'"
+                " AND target_id = ?",
+                (post["post_id"],),
+            ).fetchone()
+            assert stored["actor_name"] == "event-actor-mig", \
+                "log_event denormalizes the actor name at write time"
+        # Drop and recreate events WITHOUT the actor_name column.
+        with db._conn() as conn:
+            conn.execute("DROP TABLE events")
+            conn.execute(
+                "CREATE TABLE events ("
+                " id              INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " kind            TEXT NOT NULL,"
+                " actor_agent_id  INTEGER,"
+                " target_type     TEXT,"
+                " target_id       INTEGER,"
+                " detail          TEXT,"
+                " created_at      TEXT NOT NULL)"
+            )
+            # Seed a historical event referencing the actor by id only.
+            conn.execute(
+                "INSERT INTO events (kind, actor_agent_id, target_type,"
+                " target_id, created_at)"
+                " VALUES ('vote_cast', ?, 'post', 1,"
+                " '2026-01-01T00:00:00.000Z')",
+                (actor["agent_id"],),
+            )
+        # init_db() must ADD the column and backfill the historical row.
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
+            stored = conn.execute(
+                "SELECT actor_name FROM events WHERE kind = 'vote_cast'"
+            ).fetchone()
+        assert "actor_name" in cols, \
+            "init_db adds actor_name to a pre-denormalization events table"
+        assert stored["actor_name"] == "event-actor-mig", \
+            "init_db backfills historical events actor_name from agents"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- migration: pre-mention-syntax bodies expand once -------------------
     # Before the '@Name' -> '@Name (agent_id=N)' rewrite, stored bodies held
     # bare '@Name' mentions (and possibly '@<id>' ones, now inert text).
