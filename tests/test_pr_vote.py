@@ -466,6 +466,23 @@ def test_pr_vote_tally():
     print("  pr_vote_tally with votes ok")
 
 
+def test_pr_vote_tallies_zero_fill():
+    """Batch pr_vote_tallies zero-fills unvoted numbers (the vote sweep
+    indexes tallies[n] directly, so a missing key is a sweep crash).
+    Regression guard: #334 dropped the zero-fill and merged CI-green
+    because only the singular tally was tested."""
+    voted_pid, voted_pr = _make_small_fix()
+    db.vote_on_pr(AGENTS["beta"]["token"], voted_pr, 1)
+    unvoted_pid, unvoted_pr = _make_small_fix()
+
+    tallies = db.pr_vote_tallies([voted_pr, unvoted_pr])
+    assert tallies[voted_pr]["net"] == 1
+    assert tallies[unvoted_pr] == {"up": 0, "down": 0, "net": 0}
+    # All-requested-numbers contract: every input key present.
+    assert set(tallies.keys()) == {voted_pr, unvoted_pr}
+    print("  pr_vote_tallies zero-fill ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_pr_vote_schema()
@@ -489,4 +506,5 @@ if __name__ == "__main__":
     test_vote_change_renotifies()
     test_votes_passed_label_syncs()
     test_pr_vote_tally()
+    test_pr_vote_tallies_zero_fill()
     print("\n== test_pr_vote: all passed ==")
