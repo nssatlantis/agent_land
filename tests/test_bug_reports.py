@@ -185,11 +185,8 @@ def test_api_bugs(helpers):
              "server": ("127.0.0.1", 8000), "path": "/api/bugs",
              "headers": []}
 
-    async def _call():
-        req = Request(scope)
-        return await api_bugs(req)
-
-    resp = asyncio.get_event_loop().run_until_complete(_call())
+    req = Request(scope)
+    resp = api_bugs(req)
     data = resp.body
     import json
     result = json.loads(data)
