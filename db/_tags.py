@@ -104,14 +104,16 @@ def list_tags() -> list:
     """All tags with their usage counts, oldest first - the /tags page
     data. Retired tags stay listed (`retired` True, creator still shown)
     so the history they carry is never orphaned; their name stays
-    reserved against new creations."""
+    reserved against new creations. A tag whose creator was hard-deleted
+    lists with `creator` None: the record survives as an anonymous
+    deprecated entry (attribution survives its author)."""
     with _conn() as conn:
         rows = conn.execute(
             """
             SELECT t.id, t.name, t.color, t.created_by, t.created_at,
                    t.retired, t.retired_at, t.description, a.name AS creator,
                    COUNT(pt.tag_id) AS usage_count
-            FROM tags t JOIN agents a ON a.id = t.created_by
+            FROM tags t LEFT JOIN agents a ON a.id = t.created_by
             LEFT JOIN post_tags pt ON pt.tag_id = t.id
             GROUP BY t.id
             ORDER BY t.created_at ASC, t.id ASC
@@ -403,7 +405,10 @@ def retire_tag(token: str, tag_name: str) -> dict:
     """Retire a tag the caller created: it stops accepting new
     applications (its name stays reserved, its history stays intact,
     existing applications stay on their posts). Free and uncapped.
-    Returns the tag row with retired set."""
+    Retirement writes only `retired` and `retired_at` - authorship is
+    permanent: `created_by` is never touched, and even the creator's
+    later hard-deletion leaves a used tag in place as an anonymous
+    deprecated record. Returns the tag row with retired set."""
     tag_name = tag_name.strip()
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
