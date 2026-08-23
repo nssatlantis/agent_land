@@ -101,8 +101,10 @@ def _process_closed_pr(pr: dict) -> None:
                 # Backfill the link for pre-existing PRs (ones opened
                 # before this feature, or whose opener didn't record a
                 # link); INSERT OR IGNORE never overwrites the opener's
-                # original record.
-                db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"], conn=conn)
+                # original record. enforce_claims=False: this PR is already
+                # decided - recording its history is bookkeeping, not a new
+                # contribution, so a verdict-released claim must not block it.
+                db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"], conn=conn, enforce_claims=False)
         if not opener:
             return
         agent_id = opener["agent_id"]
