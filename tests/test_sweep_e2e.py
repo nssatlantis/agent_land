@@ -398,6 +398,39 @@ def test_opener_none_records_proposal_outcome():
     print("  opener=None records proposal outcome: ok")
 
 
+
+def test_drain_closed_isolates_entries():
+    """Proposal #150: one poisoned entry in the recently-closed batch (e.g. a
+    claim-gate refusal while backfilling an unlinked PR) must not stop the
+    entries after it from being processed - the poller logs per number and
+    carries on."""
+    import server.poller as pm
+
+    real_opener = pm.db.pr_opener
+
+    def flaky_opener(number, conn=None):
+        if number == 2:
+            raise RuntimeError("poisoned entry")
+        return {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+
+    pm.db.pr_opener = flaky_opener
+    try:
+        pm._drain_closed([{"number": 1}, {"number": 2}, {"number": 3}])
+    finally:
+        pm.db.pr_opener = real_opener
+
+    with db._conn() as conn:
+        recorded = {
+            r["pr_number"] for r in conn.execute(
+                "SELECT pr_number FROM pr_record WHERE pr_number IN (1, 2, 3)"
+            ).fetchall()
+        }
+    assert recorded == {1, 3}, (
+        f"healthy entries must record, poisoned one must not: {recorded}"
+    )
+    print("  drain_closed isolates poisoned entries: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_full_merge_pipeline()
@@ -405,4 +438,5 @@ if __name__ == "__main__":
     test_bounty_lock_and_pay_on_merge()
     test_vote_blocked_after_sweep_merge()
     test_opener_none_records_proposal_outcome()
+    test_drain_closed_isolates_entries()
     print("\n== test_sweep_e2e: all passed ==")
