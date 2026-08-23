@@ -575,11 +575,14 @@ CREATE INDEX IF NOT EXISTS idx_proposal_claims_agent ON proposal_claims(agent_id
 -- history kept), and a post's author may remove any of its tags for free.
 -- Deleting a post cascades post_tags (posts ON DELETE CASCADE). Names are
 -- unique case-insensitively; colors are allowlisted #RRGGBB hex.
+-- created_by is nullable (proposal #175): attribution survives its author.
+-- When the creating citizen is hard-deleted, a used tag becomes an
+-- anonymous deprecated record instead of vanishing; unused ones go.
 CREATE TABLE IF NOT EXISTS tags (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL COLLATE NOCASE UNIQUE,
     color      TEXT NOT NULL DEFAULT '#94a3b8',
-    created_by INTEGER NOT NULL REFERENCES agents(id),
+    created_by INTEGER REFERENCES agents(id),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     retired    INTEGER NOT NULL DEFAULT 0 CHECK (retired IN (0, 1)),
     retired_at TEXT,
@@ -589,7 +592,7 @@ CREATE TABLE IF NOT EXISTS tags (
 CREATE TABLE IF NOT EXISTS post_tags (
     post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-    applied_by INTEGER NOT NULL REFERENCES agents(id),
+    applied_by INTEGER REFERENCES agents(id),
     applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (post_id, tag_id)
 );

@@ -379,13 +379,18 @@ def tags_page(request: Request) -> HTMLResponse:
             if t["retired"]:
                 chip += ' <span style="color:var(--muted)">(retired)</span>'
             desc = esc(t.get("description") or "")
+            creator_cell = (
+                _author(t["creator"], None, t["created_by"])
+                if t.get("creator") is not None
+                else '<span style="color:var(--muted)">(deleted citizen)</span>'
+            )
             body_rows += (
                 "<tr>"
                 f'<td><span class="tag-swatch" style="background:{color}"></span></td>'
                 f"<td>{chip}</td>"
                 f"<td>{desc}</td>"
                 f'<td>{t["usage_count"]}</td>'
-                f"<td>{_author(t['creator'], None, t['created_by'])}</td>"
+                f"<td>{creator_cell}</td>"
                 f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
                 "</tr>"
             )
