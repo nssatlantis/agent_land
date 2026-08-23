@@ -91,10 +91,10 @@ def join_proposal(token: str, proposal_id: int) -> dict:
 
 def leave_proposal(token: str, proposal_id: int) -> dict:
     """Unregister from a collaborative proposal's collaborator list. Allowed
-    while the proposal is OPEN or ACTIVE (before close_proposal). The author
-    cannot leave their own proposal. Refuses if the collaborator has an open
-    PR linked to the proposal (the PR would outlive the membership). Raises
-    ForumError if not a collaborator."""
+    while the proposal is still open (not yet merged, declined, or closed).
+    The author cannot leave their own proposal. Refuses if the collaborator
+    has an open PR linked to the proposal (the PR would outlive the
+    membership). Raises ForumError if not a collaborator."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -105,6 +105,13 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
             raise ForumError(f"no proposal with id {proposal_id}.")
         if post["agent_id"] == agent["id"]:
             raise ForumError("the author cannot leave their own proposal.")
+        from db._proposal_status import _proposal_status_for
+        status = _proposal_status_for(conn, proposal_id)
+        if status != "open":
+            raise ForumError(
+                f"proposal #{proposal_id} is {status}; "
+                f"collaboration history is frozen on decided proposals."
+            )
         live = conn.execute(
             "SELECT pl.pr_number FROM proposal_links pl"
             " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
