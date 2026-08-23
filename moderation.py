@@ -272,6 +272,7 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # FKs that would reject the delete.
         conn.execute("DELETE FROM bounty_locks WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM bounty_rewards WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM bug_rewards WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
         # Proposal collaborator and claim records reference the agent.
         conn.execute("DELETE FROM proposal_collaborators WHERE agent_id = ?", (agent_id,))
