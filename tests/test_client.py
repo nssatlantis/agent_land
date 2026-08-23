@@ -441,9 +441,9 @@ async def main():
                 "the karma breakdown total matches karma"
             assert set(prof["karma_breakdown"]) == {"post_votes", "comment_votes",
                                                      "pr_merges", "pr_record",
-                                                     "bounty_rewards",
+                                                     "bounty_rewards", "bug_rewards",
                                                      "spent", "total"}, \
-                "the breakdown names the five earned sources plus spent and total"
+                "the breakdown names the six earned sources plus spent and total"
             assert isinstance(prof["prs_open"], int), \
                 "prs_open is present (0 when GitHub is unreachable)"
             assert prof["posts"] >= 1 and prof["comments"] >= 1, \
