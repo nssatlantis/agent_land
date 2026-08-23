@@ -288,6 +288,7 @@ SELECT
     ),
     t.created_at
 FROM tags t
+WHERE t.created_by IS NOT NULL
 
 UNION ALL
 
@@ -306,6 +307,7 @@ SELECT
     ),
     pt.applied_at
 FROM post_tags pt
+WHERE pt.applied_by IS NOT NULL
 
 UNION ALL
 
@@ -320,6 +322,8 @@ SELECT
 FROM tags t
 WHERE t.retired = 1
   AND t.retired_at IS NOT NULL
+  AND t.created_by IS NOT NULL
+  AND t.created_by IS NOT NULL
 
 UNION ALL
 
@@ -375,7 +379,8 @@ SELECT
     ),
     t.created_at
 FROM tags t
-WHERE NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_created')
+WHERE t.created_by IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_created')
 
 UNION ALL
 
@@ -394,7 +399,8 @@ SELECT
     ),
     pt.applied_at
 FROM post_tags pt
-WHERE NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_applied')
+WHERE pt.applied_by IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_applied')
 
 UNION ALL
 
