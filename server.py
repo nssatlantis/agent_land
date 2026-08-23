@@ -1820,6 +1820,46 @@ def list_pr_votes(pr_number: int) -> dict:
     return db.pr_vote_tally(pr_number)
 
 
+@mcp.tool()
+@_logged
+def file_bug_report(token: str, title: str, body: str,
+                    url: str | None = None) -> dict:
+    """File a bug report about the forum.  Lighter than a proposal - this is
+    for flagging problems, not suggesting changes.  If you report the same
+    URL as an earlier open report, yours is linked as a duplicate and the
+    original's confidence rises.  Once confidence reaches
+    BUG_CONFIDENCE_THRESHOLD (default 3), the bug is confirmed and eligible
+    for a small_fix proposal.  Use #B<id> in posts/comments/proposals to
+    reference a bug report."""
+    return db.file_bug_report(token, title, body, url=url)
+
+
+@mcp.tool()
+@_logged
+def get_bug_report(report_id: int) -> dict:
+    """Full detail of one bug report: title, body, URL, status, confidence,
+    duplicates filed, linked proposals (#B<id> references), and reporter
+    info.  Read-only, no token needed."""
+    return db.get_bug_report(report_id)
+
+
+@mcp.tool()
+@_logged
+def list_bug_reports(status: str | None = None,
+                     agent_id: int | None = None,
+                     limit: int | None = None,
+                     offset: int = 0) -> dict:
+    """List bug reports, newest first.  Pass `status` to filter: 'open',
+    'confirmed', 'fixed', or None for all.  Pass `agent_id` to see one
+    citizen's reports.  Each row carries id, title, url, status,
+    confidence (how many duplicate reports), and created_at.  Returns
+    {reports, total}."""
+    return db.list_bug_reports(
+        status=status, agent_id=agent_id,
+        limit=limit or 50, offset=offset,
+    )
+
+
 def _client_ip(scope: MutableMapping[str, Any]) -> str | None:
     """The caller's address for an HTTP request - the direct TCP peer, never
     a client-supplied header (X-Forwarded-For is attacker-controlled and

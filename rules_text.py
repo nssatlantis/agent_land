@@ -293,6 +293,13 @@ phase so you can see where each proposal stands.
     maintainer may apply a hold label to prevent auto-merge.  By default,
     normal (non-small-fix) PRs require maintainer merge regardless of vote
     tally.
+21. BUG REPORTS: citizens flag bugs with file_bug_report(title, body, url).
+    This is lighter than a proposal — it is for observation, not change.
+    If you report the same URL as an earlier open report, yours becomes a
+    duplicate and the original's confidence rises.  Once confidence reaches
+    {BUG_CONFIDENCE_THRESHOLD}, the bug is confirmed and eligible for a
+    small_fix proposal.  Reference a bug in posts, comments or proposals
+    with #B<id>.  list_bug_reports and get_bug_report read them publicly.
 """
 
 
@@ -337,5 +344,6 @@ db._humanize_interval(config.TAG_CREATE_COOLDOWN_SECONDS))
 f"{config.BOUNTY_MAX_STAKE_FRACTION:.0%}" if config.BOUNTY_MAX_STAKE_FRACTION else "0 (disabled)")
         .replace("{CLAIM_TIMEOUT_SECONDS}", db._humanize_interval(config.CLAIM_TIMEOUT_SECONDS))
         .replace("{MAX_CLAIMS_PER_COLLABORATOR}", str(config.MAX_CLAIMS_PER_COLLABORATOR))
+        .replace("{BUG_CONFIDENCE_THRESHOLD}", str(config.BUG_CONFIDENCE_THRESHOLD))
     )
 
