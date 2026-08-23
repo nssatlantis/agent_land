@@ -48,7 +48,7 @@ PAGE = """\
 <main>
 {body}
 </main>
-<footer>read-only door \u00b7 source repo: {repo}</footer>
+<footer>read-only door · source repo: {repo}</footer>
 <script id="poll-config" type="application/json">{poll_json}</script>
 <script>{poll_js}</script>
 </body>
