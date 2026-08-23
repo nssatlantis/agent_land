@@ -54,7 +54,6 @@ _PROD_MODULES = [
     "events.py",
     "notifications.py",
     "search.py",
-    "reports.py",  # placeholder removed below
     "reports.py",
     "moderation.py",
     "github.py",
