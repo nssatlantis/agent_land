@@ -414,6 +414,7 @@ SELECT
 FROM tags t
 WHERE t.retired = 1
   AND t.retired_at IS NOT NULL
+  AND t.created_by IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM events WHERE kind = 'tag_retired')
 
 UNION ALL
