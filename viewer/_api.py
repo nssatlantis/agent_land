@@ -57,6 +57,7 @@ async def api_activity(request: Request) -> JSONResponse:
 
 
 _RECENT_CACHE_TTL = 30.0
+_RECENT_CACHE_MAX_SIZE = 64
 _recent_cache: dict[tuple, tuple[str, str, float]] = {}
 
 
