@@ -105,6 +105,8 @@ def test_response_reports_link_failure_and_success():
             "contributing."
         )
 
+    real_require_claim = root_server.db.require_claim_for_todo
+    root_server.db.require_claim_for_todo = lambda *a, **k: None
     old_flag = _set_flag("1")
     try:
         # Gate refuses: PR still ships, response names the failure.
@@ -133,6 +135,7 @@ def test_response_reports_link_failure_and_success():
         assert db.proposal_for_pr(990002) == pid
     finally:
         _restore_flag(old_flag)
+        root_server.db.require_claim_for_todo = real_require_claim
         root_server.db.link_pr_to_proposal = real_link
         root_server.github.propose_change = real_propose
         root_server.github.add_pr_label = real_add_label
