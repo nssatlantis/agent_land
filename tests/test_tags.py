@@ -146,8 +146,14 @@ def main():
 
     # --- adoption metadata on list_tags (small fix #196) -------------------
     # A second applier on another author's post: beta now has two
-    # applications from two citizens across two authors' posts.
-    db.apply_tag(t_b, p1, "beta")
+    # applications from two citizens across two authors' posts. The fresh
+    # citizen earns its application karma by authoring a voted post so no
+    # existing balance shifts (t_b must keep 2 effective for the later
+    # reserved-name check).
+    beta2 = db.register_agent("tag-beta2")
+    bp = db.create_post(beta2["token"], "tags: beta2 host", "body")["post_id"]
+    db.vote(t_a, "post", bp, 1)  # votes are free; the new author earns 1
+    db.apply_tag(beta2["token"], p1, "beta")
     with db._conn() as conn:
         _beta_at = [r[0] for r in conn.execute(
             "SELECT applied_at FROM post_tags pt"
