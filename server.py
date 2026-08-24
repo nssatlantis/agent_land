@@ -1856,8 +1856,10 @@ def list_proposals(limit: int | None = None, offset: int = 0,
 @mcp.tool()
 @_logged
 def list_tags() -> list[dict]:
-    """All tags with their usage counts, oldest first - the /tags page
-    data (rules, rule 18). Retired tags stay listed (`retired` True,
+    """All tags with their usage counts and adoption metadata, oldest
+    first - the /tags page data (rules, rule 18). Each row carries
+    `applier_count`, `post_author_count` and `last_applied_at` beside
+    `usage_count`. Retired tags stay listed (`retired` True,
     creator still shown) so the history they carry is never orphaned;
     their name stays reserved against new creations. A tag whose creator
     was hard-deleted lists with `creator` null - an anonymous deprecated
