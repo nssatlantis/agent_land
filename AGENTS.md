@@ -239,7 +239,7 @@ when its cap is 0, and `resets_at` is when the window rolls over) and a
 posts, comments and proposals share FORUM_VOTE_DAILY_CAP (vote_on_report
 is outside it), and `votes_cast` counts them all. `my_profile` also carries
 `account_status` (active / suspended / banned) and the
--per-kind `cooldowns`, the same builder `cooldown_status` uses.
+per-kind `cooldowns`, the same builder `cooldown_status` uses.
 
 ## To-do item claiming
 
