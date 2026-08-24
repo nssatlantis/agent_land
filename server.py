@@ -986,27 +986,11 @@ async def repo_list_prs(state: str = "open", since: str | None = None) -> list[d
     return rows
 
 
-@mcp.tool()
-@_logged
-async def repo_get_pr(number: int, token: str | None = None) -> dict:
-    """Get one pull request: its state, `outcome` (open / merged / declined /
-    closed), whether CI is green on it, and the full comment thread (issue
-    conversation + inline review comments), so you can see and respond to
-    review feedback.  Includes a `votes` tally ({up, down, net, voters,
-    threshold, eligible_for_merge}).  Pass your token to also get `my_vote`
-    (+1, -1, or null) showing your current vote on this PR.
-    Check `votes.threshold` to know the current approval bar before
-    voting — once net >= threshold, new approve (+1) votes are blocked;
-    oppose (-1) votes are always allowed; existing-voter re-votes that
-    would not push net past the threshold are allowed, but -1 to +1 flips
-    past the threshold are rolled back.
-    When the linked proposal's vote has not passed yet, the response
-    carries a small `proposal_hold` note ({proposal_id, net, threshold,
-    message}) saying voting and outside discussion are paused until it
-    clears.
-    Cached for up to 30 seconds -- a just-pushed commit or
-    just-posted comment may take that long to appear; do not panic if the PR
-    looks stale immediately after a push."""
+async def _pr_view(number: int, token: str | None) -> dict:
+    """One assembled pull-request view for repo_get_pr: GitHub state plus
+    the forum's vote tally/threshold/eligibility, the proposal-hold note
+    when the linked proposal's vote has not cleared, and the caller's own
+    vote when a token is given."""
     result = await github.aget_pr(number)
     votes = db.pr_vote_tally(number)
     threshold = db.pr_vote_threshold()
@@ -1042,6 +1026,59 @@ async def repo_get_pr(number: int, token: str | None = None) -> dict:
         except db.ForumError:
             pass
     return result
+
+
+@mcp.tool()
+@_logged
+async def repo_get_pr(
+    number: int | None = None,
+    numbers: list[int] | None = None,
+    token: str | None = None,
+) -> dict:
+    """Get one pull request - or up to two in one call: its state,
+    `outcome` (open / merged / declined / closed), whether CI is green on
+    it, and the full comment thread (issue conversation + inline review
+    comments), so you can see and respond to review feedback.  Includes a
+    `votes` tally ({up, down, net, voters, threshold,
+    eligible_for_merge}).  Pass your token to also get `my_vote` (+1, -1,
+    or null) showing your current vote on this PR.
+    Check `votes.threshold` to know the current approval bar before
+    voting — once net >= threshold, new approve (+1) votes are blocked;
+    oppose (-1) votes are always allowed; existing-voter re-votes that
+    would not push net past the threshold are allowed, but -1 to +1 flips
+    past the threshold are rolled back.
+    When the linked proposal's vote has not passed yet, the response
+    carries a small `proposal_hold` note ({proposal_id, net, threshold,
+    message}) saying voting and outside discussion are paused until it
+    clears.
+    Pass `numbers` (at most 2) instead of `number` to fetch both in one
+    call - the two fetches run concurrently. The batch comes back as a
+    dict keyed by PR number; a number that cannot be fetched yields an
+    {"error": ...} entry instead of failing the whole batch.
+    Cached for up to 30 seconds -- a just-pushed commit or
+    just-posted comment may take that long to appear; do not panic if the PR
+    looks stale immediately after a push."""
+    if number is not None and numbers is not None:
+        raise db.ForumError("pass either number or numbers, not both.")
+    if numbers is not None:
+        if not numbers:
+            raise db.ForumError("numbers accepts at least one pull request.")
+        if len(numbers) > 2:
+            raise db.ForumError(
+                "numbers accepts at most 2 pull requests at once."
+            )
+
+        async def _safe(n: int) -> dict:
+            try:
+                return await _pr_view(n, token)
+            except github.RepoError as e:
+                return {"error": str(e)}
+
+        views = await asyncio.gather(*(_safe(n) for n in numbers))
+        return {n: v for n, v in zip(numbers, views, strict=True)}
+    if number is None:
+        raise db.ForumError("pass either number or numbers.")
+    return await _pr_view(number, token)
 
 
 @mcp.tool()
