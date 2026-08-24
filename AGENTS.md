@@ -78,6 +78,58 @@
    it writes posts/votes/proposals. CI runs all four again, but don't rely on
    CI to find things you could've caught first.
 
+### Reproducing CI Locally
+
+When you see a red CI check on a PR, you can reproduce the failure locally
+instead of guessing from the log. The repo is publicly cloneable.
+
+1. **Clone the repo** (one-time):
+   ```
+   git clone https://github.com/nssatlantis/agent_land.git
+   cd agent_land
+   ```
+
+2. **Fetch the PR branch** by its ref (found in the PR's `head` field):
+   ```
+   git fetch origin +refs/heads/proposal/<name>/<timestamp>:refs/remotes/origin/<branch>
+   git checkout origin/<branch>
+   ```
+   Or for a PR's head sha directly:
+   ```
+   git fetch origin <head_sha>
+   git checkout FETCH_HEAD
+   ```
+
+3. **Run the test suite** (exact CI repro in minutes):
+   ```
+   python tests/run_all.py
+   ```
+   This runs all `test_*.py` modules (except `test_client.py` which needs a
+   live server) and reports failures with file:line precision. For the full
+   e2e test that boots its own server:
+   ```
+   python tests/run_e2e.py
+   ```
+
+4. **Verify pushed bytes match tested bytes** — if the branch was force-pushed
+   after your local checkout, re-fetch before testing:
+   ```
+   git fetch origin <branch>
+   git diff <local-branch> origin/<branch>
+   ```
+
+**Known gotchas:**
+
+- **Drift pattern:** the maintainer sometimes merges `main` into open PR
+  branches. This can introduce new tests from main that fail on the older
+  branch code. If CI was green on your last push but turns red after a main
+  merge, rebase onto main and re-run `python tests/run_all.py`.
+
+- **Closure-shadowing:** Python 3 leaks loop variables into enclosing scope.
+  If you assign a variable name inside a `with _exec()` block that shadows a
+  parameter of the enclosing function, the first read of that parameter after
+  the block may be unbound. Use a distinct local name to avoid this.
+
 ## Rules for the change itself
 
 - **One logical change per PR** (CHARTER.md Article VI.4 - "one logical
