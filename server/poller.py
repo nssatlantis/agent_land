@@ -13,7 +13,7 @@ from db._pr_vote import pr_decline_ready_batch, _pr_vote_threshold
 from events import (
     EVT_PR_MERGED, EVT_PR_DECLINED, EVT_PR_CLOSED,
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
-    EVT_PR_HOLD_RELEASED,
+    EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED,
     log_event,
 )
 import github
@@ -472,70 +472,98 @@ def _pr_vote_sweep(
     # Proposal-hold release pass: a PR opened while its linked proposal
     # was still awaiting the community's vote carries the 'proposal-hold'
     # label and a 'WIP: ' title prefix.  The moment that vote passes this
-    # pass drops the label, strips the prefix, and tells the opener, the
-    # proposal author, and every subscriber that the PR is open for review
-    # and voting.  A held PR cannot orphan-lock: supersede_proposal
-    # refuses while any PR is in flight, so the parent can only lock
-    # after the PR was closed by hand (karma-neutral).  Runs before the
-    # small-fix merge filter below so holds on regular (non-small-fix)
-    # proposals are lifted too.
+    # pass strips the prefix (first), drops the label (last), and tells
+    # the opener, the proposal author, and every subscriber that the PR
+    # is open for review and voting.  Hold membership is DB truth - the
+    # pr_hold_applied event logged at stamp time plus the vote tally -
+    # never the label, which a failed side effect could leave off and
+    # thereby silently unlock an unapproved PR (#375 review).  The
+    # pr_hold_released event is the commit point, so a crash mid-release
+    # converges on the next sweep: the title guard no-ops once stripped,
+    # removing an absent label is tolerated (the label is cosmetic now),
+    # and notifications fire exactly once.  A held PR cannot orphan-lock:
+    # supersede_proposal refuses while any PR is in flight, so the parent
+    # can only lock after the PR was closed by hand (karma-neutral).
+    # Runs before the small-fix merge filter below so holds on regular
+    # (non-small-fix) proposals are lifted too.
     for pr, opener, proposal_post_id in list(candidates):
         number = pr["number"]
-        try:
-            if not github.pr_has_label(number, config.PROPOSAL_HOLD_LABEL):
-                continue
-        except Exception:
-            continue  # GitHub unreachable; retried on the next sweep
+        with db._conn() as conn:
+            applied_row = conn.execute(
+                "SELECT 1 FROM events WHERE kind = ? AND"
+                " target_type = 'pr' AND target_id = ? LIMIT 1",
+                (EVT_PR_HOLD_APPLIED, number),
+            ).fetchone()
+            released_row = conn.execute(
+                "SELECT 1 FROM events WHERE kind = ? AND"
+                " target_type = 'pr' AND target_id = ? LIMIT 1",
+                (EVT_PR_HOLD_RELEASED, number),
+            ).fetchone()
+        if applied_row is None or released_row is not None:
+            continue  # never held, or already released
         try:
             state = db.proposal_vote_state(proposal_post_id)
             if not state["approved"]:
-                continue  # still pending; the label stays on
-            github.remove_pr_label(number, config.PROPOSAL_HOLD_LABEL)
-            title = pr.get("title") or ""
-            if title.upper().startswith("WIP:"):
-                # Strip exactly one leading marker - ours or an author's
-                # self-applied one; either way the hold is over.
+                continue  # still pending; markers stay on
+        except Exception:
+            continue  # unknown proposal state; retried on the next sweep
+        title = pr.get("title") or ""
+        if title.upper().startswith("WIP:"):
+            # Strip exactly one leading marker - ours or an author's
+            # self-applied one; either way the hold is over.  Title
+            # first: a failure here retries cleanly on the next sweep.
+            try:
                 github.update_pr_title(number, title[4:].lstrip())
-            with db._conn() as conn:
-                log_event(
-                    EVT_PR_HOLD_RELEASED,
-                    actor_agent_id=opener["agent_id"],
-                    actor_name=opener.get("name"),
-                    target_type="pr",
-                    target_id=number,
-                    detail={"pr_number": number, "proposal_id": proposal_post_id},
-                    conn=conn,
+            except Exception as exc:
+                logutil.log(
+                    "pr_hold_release_failed",
+                    pr_number=number, error=str(exc),
                 )
-                notifications._notify(
-                    conn, opener["agent_id"], "pr", "pr", number,
-                    f"Proposal #{proposal_post_id} passed its vote - "
-                    f"PR #{number} is now open for review and voting.",
-                )
-                exclude = {opener["agent_id"]}
-                author_row = conn.execute(
-                    "SELECT agent_id FROM posts WHERE id = ?",
-                    (proposal_post_id,),
-                ).fetchone()
-                if author_row and author_row["agent_id"] not in exclude:
-                    notifications._notify(
-                        conn, author_row["agent_id"], "pr", "proposal",
-                        proposal_post_id,
-                        f"Proposal #{proposal_post_id} passed its vote - "
-                        f"PR #{number} is now open for review.",
-                    )
-                    exclude.add(author_row["agent_id"])
-                _notify_proposal_watchers(
-                    conn, proposal_post_id,
-                    f"Proposal #{proposal_post_id} passed its vote - "
-                    f"PR #{number} is now open for review.",
-                    exclude, actor=opener["agent_id"],
-                )
-            actions.append({"action": "hold_released", "pr_number": number})
+                continue
+        try:
+            github.remove_pr_label(number, config.PROPOSAL_HOLD_LABEL)
         except Exception as exc:
+            # Cosmetic only - every gate keys off vote state, not the
+            # label - so a lingering label must not block the release.
             logutil.log(
-                "pr_hold_release_failed",
+                "pr_hold_label_remove_failed",
                 pr_number=number, error=str(exc),
             )
+        with db._conn() as conn:
+            log_event(
+                EVT_PR_HOLD_RELEASED,
+                actor_agent_id=opener["agent_id"],
+                actor_name=opener.get("name"),
+                target_type="pr",
+                target_id=number,
+                detail={"pr_number": number, "proposal_id": proposal_post_id},
+                conn=conn,
+            )
+            notifications._notify(
+                conn, opener["agent_id"], "pr", "pr", number,
+                f"Proposal #{proposal_post_id} passed its vote - "
+                f"PR #{number} is now open for review and voting.",
+            )
+            exclude = {opener["agent_id"]}
+            author_row = conn.execute(
+                "SELECT agent_id FROM posts WHERE id = ?",
+                (proposal_post_id,),
+            ).fetchone()
+            if author_row and author_row["agent_id"] not in exclude:
+                notifications._notify(
+                    conn, author_row["agent_id"], "pr", "proposal",
+                    proposal_post_id,
+                    f"Proposal #{proposal_post_id} passed its vote - "
+                    f"PR #{number} is now open for review.",
+                )
+                exclude.add(author_row["agent_id"])
+            _notify_proposal_watchers(
+                conn, proposal_post_id,
+                f"Proposal #{proposal_post_id} passed its vote - "
+                f"PR #{number} is now open for review.",
+                exclude, actor=opener["agent_id"],
+            )
+        actions.append({"action": "hold_released", "pr_number": number})
 
     numbers = [pr["number"] for (pr, _o, _p) in candidates]
     with db._conn() as conn:
@@ -570,14 +598,19 @@ def _pr_vote_sweep(
     merge_candidates: list[tuple] = []
     for pr, opener, proposal_post_id in candidates:
         number = pr["number"]
-        # Check for blocking labels: the maintainer's 'hold' (don't
-        # auto-merge despite votes) and 'proposal-hold' (the linked
-        # proposal's vote hasn't passed - voting itself is refused while
-        # it is on, but skip defensively anyway).
+        # Proposal-hold skip by DB truth: a linked proposal whose
+        # community vote has not passed blocks auto-merge outright - no
+        # label consulted, so a failed label write can never unlock an
+        # unapproved implementation (#375 review).  The maintainer's
+        # 'hold' label (don't auto-merge despite votes) stays a live
+        # GitHub check.
+        try:
+            if not db.proposal_vote_state(proposal_post_id)["approved"]:
+                continue
+        except Exception:
+            continue  # unknown proposal state; never auto-merge on doubt
         try:
             if github.pr_has_label(number, _HOLD_LABEL):
-                continue
-            if github.pr_has_label(number, config.PROPOSAL_HOLD_LABEL):
                 continue
         except Exception:
             continue  # if we can't check labels, skip
