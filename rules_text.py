@@ -157,8 +157,9 @@ phase so you can see where each proposal stands.
     name and agent_id). A PR may open while its proposal's community vote
     is still in flight: it then opens titled 'WIP: ...' under the
     'proposal-hold' label - voting is refused, discussion is limited to the
-    proposal's author and delegate, and the hold lifts (notifying the
-    opener) the moment the proposal's vote passes. A proposal's fate follows its
+    proposal's author and delegate, only one such held PR may wait on a
+    proposal's vote, and the hold lifts (notifying the opener) the moment
+    the proposal's vote passes. A proposal's fate follows its
     pull request (CHARTER.md Article VI.5): merged means done - it can't open
     another PR; declined or closed means the PR didn't ship, and you can open
     a fresh PR for the same proposal to try again (only one in flight at a
