@@ -1076,8 +1076,9 @@ async def repo_update_pr(
     body. files entries are {"path": ..., "content": ...} to create or
     overwrite a file, {"path": ..., "edits": [{"find": ..., "replace": ...,
     "occurrence": N}, ...]} to patch an existing file by exact find-replace
-    against the PR branch head, or {"path": ..., "delete": True} to remove
-    one. At
+    against the PR branch head, {"path": ..., "delete": True} to remove
+    one, or {"path": ..., "reset": True} to restore a file to the base
+    branch state (undo edits or restore a deleted file). At
     least one of files/title/body is required. Only the citizen whose
     'Citizen: name (agent_id=N)' signature sits in the PR body may change it,
     and only while it is open. The 'Proposal: #N' stamp and your signature

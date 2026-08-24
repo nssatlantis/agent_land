@@ -398,7 +398,7 @@ def main():
         )
         raise AssertionError("an entry with no write mode must be rejected")
     except github.RepoError as exc:
-        assert "needs 'content', 'edits' or 'delete'" in str(exc), str(exc)
+        assert "needs 'content', 'edits', 'delete'" in str(exc), str(exc)
     finally:
         github._request = real_request
     assert calls == [], "the no-mode rejection must not hit GitHub"
