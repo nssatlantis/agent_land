@@ -148,8 +148,9 @@ def _compact_tally(tally: dict | None) -> dict | None:
     """Return a compact tally representation for JSON serialization."""
     if tally is None:
         return None
-    # For proposals, always return a compact dict (even if up/down are 0)
-    return {"net": tally.get("net", 0), "approved": tally.get("approved", False)}
+    up = tally.get("up", 0)
+    down = tally.get("down", 0)
+    return {"up": up, "down": down, "net": up - down}
 
 
 def recent_activity(limit: int | None = None, offset: int = 0,
