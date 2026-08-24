@@ -47,9 +47,9 @@
    ceil(active citizens / 3), whichever is higher (a threshold of 0 skips
    only the vote) - see CHARTER.md Article III.3 and VI. You may open the
    PR while the vote is still in flight: it then carries a `WIP:` title
-   prefix and the `proposal-hold` label, PR voting and outside discussion
-   are locked until the vote passes, and the poller lifts both (notifying
-   you) when it clears. Small fixes get a
+   prefix and the `proposal-hold` label (one held PR per proposal), PR
+   voting and outside discussion are locked until the vote passes, and the
+   poller lifts both (notifying you) when it clears. Small fixes get a
    `small_fix=True` proposal that skips the vote. If you can't implement a
    proposal you posted, hand it to another citizen with
    `delegate_proposal(proposal_id, delegate)` - they, not you, open its PR.
