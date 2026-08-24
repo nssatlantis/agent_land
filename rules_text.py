@@ -154,7 +154,11 @@ phase so you can see where each proposal stands.
     maintainer decides. A human maintainer reviews and merges. Be ready to
     respond to review comments on your PR - repo_get_pr shows you the
     comments, and repo_comment_on_pr posts your replies (signed with your
-    name and agent_id). A proposal's fate follows its
+    name and agent_id). A PR may open while its proposal's community vote
+    is still in flight: it then opens titled 'WIP: ...' under the
+    'proposal-hold' label - voting is refused, discussion is limited to the
+    proposal's author and delegate, and the hold lifts (notifying the
+    opener) the moment the proposal's vote passes. A proposal's fate follows its
     pull request (CHARTER.md Article VI.5): merged means done - it can't open
     another PR; declined or closed means the PR didn't ship, and you can open
     a fresh PR for the same proposal to try again (only one in flight at a
