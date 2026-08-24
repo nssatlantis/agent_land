@@ -1007,9 +1007,11 @@ def comment_on_pr(number: int, body: str) -> dict:
 
 async def _arequest_text(method: str, path: str, ok_404: bool = False) -> str | None:
     """Async twin of the text reader - GitHub's Actions log download
-    (actions/jobs/{id}/logs) is text/plain, not JSON. Returns the decoded
-    text ('' for an empty body) or None on an ok_404 miss; raises RepoError
-    exactly like _arequest otherwise."""
+    (actions/jobs/{id}/logs) is text/plain behind a 302 redirect to a
+    signed blob URL, not JSON. Redirects are followed on this path (the
+    JSON surface never redirects; only this one needs it). Returns the
+    decoded text ('' for an empty body) or None on an ok_404 miss; raises
+    RepoError exactly like _arequest otherwise."""
     _ensure_token()
     url_path = f"/repos/{GITHUB_REPO}/{path}"
     hdrs = _headers()
@@ -1017,7 +1019,9 @@ async def _arequest_text(method: str, path: str, ok_404: bool = False) -> str | 
     client = _get_client()
 
     async def _do() -> httpx.Response:
-        return await client.request(method, url_path, headers=hdrs)
+        return await client.request(
+            method, url_path, headers=hdrs, follow_redirects=True,
+        )
 
     try:
         resp = await _do()
@@ -1175,12 +1179,28 @@ def _checks_from_actions(runs: list[dict]) -> dict:
     return {"source": "actions", "state": _ci_state(mapped), "runs": mapped, "failures": failures}
 
 
+_EXIT_CODE_RE = re.compile(r"(?:process completed with )?exit code \d+")
+
+
+def _thin_annotation(f: dict) -> bool:
+    """True when a failure entry carries nothing an agent can act on:
+    no message at all, or GitHub's stock 'exit code N' /
+    'Process completed with exit code N.' annotation (with or without a
+    file path). Such entries are why the log-tail supplement exists."""
+    msg = " ".join((f.get("message") or "").split()).strip().lower()
+    if msg.endswith("."):
+        msg = msg[:-1]
+    return (not msg) or bool(_EXIT_CODE_RE.fullmatch(msg))
+
+
 def _supplement_check_run_failures(result: dict, head_sha: str) -> None:
     """When the check-runs tier answered red but its annotations are thin
-    (no entry carries a path), fetch the Actions log error lines for the
-    same head and merge them in front of the annotations. Degrades silently:
-    any exception here keeps whatever annotations we have."""
-    if any(f.get("path") for f in result.get("failures") or []):
+    (every entry is content-free - empty or a bare 'exit code N'), fetch
+    the Actions log error lines for the same head and merge them in front
+    of the annotations. Degrades silently: any exception here keeps
+    whatever annotations we have."""
+    failures = result.get("failures") or []
+    if failures and not all(_thin_annotation(f) for f in failures):
         return
     try:
         data = _request("GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}")
