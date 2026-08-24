@@ -1071,7 +1071,7 @@ async def repo_get_pr(
         async def _safe(n: int) -> dict:
             try:
                 return await _pr_view(n, token)
-            except github.RepoError as e:
+            except github.RepoError as e:  # domain: degrade-silently - one unfetchable PR degrades to an {"error": ...} entry; the rest of the batch must survive
                 return {"error": str(e)}
 
         views = await asyncio.gather(*(_safe(n) for n in numbers))
