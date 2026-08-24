@@ -4,6 +4,10 @@ tests/run_all.py (the discovery glob only picks up test_*.py files).
 Two modes:
 
   default        - httpx.MockTransport with an artificial per-request delay,
+                   proving the fan-out structure (the sequential reference arm
+                   runs each request under its own fresh asyncio.run loop -
+                   structure-proof only; do not read its absolute numbers as
+                   production-predictive).
                    proving the fan-out structure: aget_pr's wave-2 reads
                    overlap, so its wall time approaches max(delay) instead
                    of sum(delays).
