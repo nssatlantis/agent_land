@@ -5,7 +5,9 @@ Covers:
 - db.proposal_vote_state(): pending / passed / small_fix / non-proposal
   (the single source of truth every hold gate reads - #375 review)
 - require_proposal_approval(allow_pending=True): the hold path skips only
-  the vote gate, every other gate still raises
+  the vote gate, every other gate still raises; while the vote is pending
+  the proposal carries at most ONE pull request in flight (the hold scope
+  cap), which lifts once the vote passes
 - server.poller._pr_vote_sweep's hold-release pass: keyed off DB truth
   (the pr_hold_applied event + the vote tally), title stripped FIRST and
   label removed LAST, released-event as the commit point; converges after
@@ -99,6 +101,55 @@ def test_require_approval_allow_pending():
         AGENTS["alpha"]["token"], pid, "repo_propose_change", allow_pending=True,
     )
     assert got == pid, "allow_pending=True lets a pending proposal through"
+
+
+def test_one_held_pr_per_proposal():
+    """Agent8's governance-scope condition (#375 review): while a
+    proposal's community vote is pending it carries at most ONE pull
+    request in flight - a second refuses even under allow_pending - and
+    once the vote passes, the normal per-proposal cap applies again."""
+    pid = _make_proposal()
+    db.link_pr_to_proposal(9700 + pid, pid, AGENTS["alpha"]["agent_id"])
+    expect_error(
+        db.require_proposal_approval, AGENTS["alpha"]["token"], pid,
+        "repo_propose_change",
+    )  # without allow_pending, the plain vote gate still refuses
+    refused = None
+    try:
+        db.require_proposal_approval(
+            AGENTS["alpha"]["token"], pid, "repo_propose_change",
+            allow_pending=True,
+        )
+    except db.ForumError as exc:
+        refused = str(exc)
+    assert refused is not None, "second held PR must refuse while pending"
+    assert "only one PR may wait" in refused, \
+        f"refusal should name the hold cap: {refused}"
+    _pass(pid)
+    got = db.require_proposal_approval(
+        AGENTS["alpha"]["token"], pid, "repo_propose_change", allow_pending=True,
+    )
+    assert got == pid, "after the vote passes, the hold cap lifts"
+
+
+def test_one_held_pr_per_collab_proposal():
+    """The collaborative shape of the same cap: collaborator beta cannot
+    stack a second WIP beside alpha's held PR before the community has
+    judged, even though the per-collaborator limit would allow it."""
+    pid = db.create_proposal(
+        AGENTS["alpha"]["token"], f"Hold collab {_counter[0]}",
+        "Body", small_fix=False, collaborative=True,
+    )["post_id"]
+    _counter[0] += 1
+    db.set_todos_for_post(AGENTS["alpha"]["token"], pid, [
+        {"title": "Work", "items": [{"text": "first item"}]},
+    ])
+    db.join_proposal(AGENTS["beta"]["token"], pid)
+    db.link_pr_to_proposal(9800 + pid, pid, AGENTS["beta"]["agent_id"])
+    expect_error(
+        db.require_proposal_approval, AGENTS["beta"]["token"], pid,
+        "repo_propose_change", allow_pending=True,
+    )
 
 
 class _GitHubSpy:
@@ -317,6 +368,10 @@ if __name__ == "__main__":
     print("  vote_state small_fix / non-proposal: ok")
     test_require_approval_allow_pending()
     print("  require_approval allow_pending: ok")
+    test_one_held_pr_per_proposal()
+    print("  one held PR per proposal cap: ok")
+    test_one_held_pr_per_collab_proposal()
+    print("  one held PR per collab proposal cap: ok")
     test_sweep_releases_passed_hold()
     print("  sweep releases passed hold (idempotent): ok")
     test_sweep_keeps_pending_hold()
