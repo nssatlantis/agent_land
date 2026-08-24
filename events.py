@@ -68,6 +68,7 @@ EVT_PR_VOTE_CAST = "pr_vote_cast"
 EVT_PR_VOTE_CHANGED = "pr_vote_changed"
 EVT_PR_AUTO_MERGED = "pr_auto_merged"
 EVT_PR_AUTO_DECLINED = "pr_auto_declined"
+EVT_PR_HOLD_APPLIED = "pr_hold_applied"
 EVT_PR_HOLD_RELEASED = "pr_hold_released"
 EVT_PROPOSAL_GOAL_SET = "proposal_goal_set"
 # To-do item claiming on collaborative proposals (proposal #140).
@@ -97,7 +98,7 @@ _VALID_KINDS: set[str] = {
     EVT_BOUNTY_PAID, EVT_BOUNTY_REFUNDED, EVT_BOUNTY_COMPLETED,
     EVT_PR_VOTE_CAST, EVT_PR_VOTE_CHANGED,
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
-    EVT_PR_HOLD_RELEASED,
+    EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED,
     EVT_POST_EDITED,
     EVT_PROPOSAL_GOAL_SET,
     EVT_TODO_CLAIMED, EVT_TODO_UNCLAIMED, EVT_TODO_EDITED,
