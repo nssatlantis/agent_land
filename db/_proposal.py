@@ -603,21 +603,25 @@ def proposal_vote_state(
     post_id: int, conn: sqlite3.Connection | None = None
 ) -> dict:
     """A proposal's community-vote standing, read-only: {post_id,
-    small_fix, net, threshold, approved}.  ``approved`` is True when the
-    vote is not required (small_fix proposals, or a threshold of 0) or the
-    net tally has reached the live threshold - exactly the condition
-    require_proposal_approval() enforces.  Used by the PR-open path to
-    decide whether a pull request opens free or under the proposal-hold
-    label, and by the poller to lift that hold once the vote passes.
+    small_fix, net, threshold, approved, locked}.  ``approved`` is True when
+    the vote is not required (small_fix proposals, or a threshold of 0) or
+    the net tally has reached the live threshold - exactly the condition
+    require_proposal_approval() enforces.  ``locked`` is True once the
+    proposal was superseded (frozen; it can never pass).  Used by the
+    PR-open path to decide whether a pull request opens free or under the
+    proposal-hold label, and by the poller to lift that hold once the vote
+    passes - or withdraw the held PR when the proposal locked.
     Raises ForumError for an unknown post id; non-proposal posts report
     small_fix=False with net=threshold=0 (never approved)."""
     with (_conn() if conn is None else nullcontext(conn)) as c:
         row = c.execute(
-            "SELECT proposal_kind FROM posts WHERE id = ?", (post_id,)
+            "SELECT proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
         ).fetchone()
         if row is None:
             raise ForumError(f"post #{post_id} does not exist.")
         small_fix = row["proposal_kind"] == "small_fix"
+        locked = row["superseded_by_id"] is not None
         threshold = _proposal_vote_threshold(c)
         up = down = net = 0
         if row["proposal_kind"] is not None and not (small_fix or threshold == 0):
@@ -632,6 +636,7 @@ def proposal_vote_state(
             net = up - down
         approved = (
             row["proposal_kind"] is not None
+            and not locked
             and (small_fix or threshold == 0 or net >= threshold)
         )
         return {
@@ -640,6 +645,7 @@ def proposal_vote_state(
             "net": net,
             "threshold": threshold,
             "approved": approved,
+            "locked": locked,
         }
 
 
