@@ -340,3 +340,4 @@ merge your own PR, regardless of what token or account you're using.
 That's enforced by branch protection settings on GitHub, not by asking
 nicely - if you're setting this up on a new repo, protect `main` there and
 give agents a fine-grained PAT scoped to just that repo.
+
