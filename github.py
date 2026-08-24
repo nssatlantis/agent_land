@@ -2129,11 +2129,26 @@ def _ws_ensure_pool() -> "queue.Queue[int]":
         return _workspace_queue
 
 
+def _rm_readonly(func, path, _exc):
+    """shutil.rmtree onerror handler: Windows marks .git objects read-only,
+    and a partial deletion would leave a half-dead directory that breaks
+    the next clone into it. Tolerates already-vanished paths."""
+    try:
+        os.chmod(path, 0o777)
+    except OSError:
+        pass
+    try:
+        func(path)
+    except FileNotFoundError:
+        pass
+
+
 def _ws_fresh_clone(slot: dict) -> None:
     """Rebuild a slot from scratch - the self-heal path; worst case equals
     today's per-call clone cost."""
     parent = os.path.dirname(slot["dir"])
-    shutil.rmtree(slot["dir"], ignore_errors=True)
+    if os.path.isdir(slot["dir"]):
+        shutil.rmtree(slot["dir"], onerror=_rm_readonly)
     os.makedirs(parent, exist_ok=True)
     _git(parent, "clone", _repo_url(with_token=False),
          os.path.basename(slot["dir"]))
@@ -2142,19 +2157,20 @@ def _ws_fresh_clone(slot: dict) -> None:
 
 
 def _ws_normalize(slot: dict) -> None:
-    """Bring a slot to a clean, current view of every remote branch."""
+    """Bring a slot to a clean, current view of every remote branch.
+
+    The LOCAL scrub runs on every acquire - never skipped. The merge-family
+    flows hardcode `git checkout -b pr_head origin/<head>`, and a leftover
+    local branch from a previous operation would make that fatal (legacy
+    code survived only because it deleted the whole temp clone). Only the
+    network fetch is gated by the TTL: dirty-or-stale slots refresh all
+    remote branches; fresh-but-clean ones skip the network because every
+    flow fetches its own specific base/head refs at body start anyway."""
     if not os.path.isdir(os.path.join(slot["dir"], ".git")):
         _ws_fresh_clone(slot)
         return
     stale = (time.monotonic() - slot["last_fetch"]) > config.GIT_WORKSPACE_FETCH_TTL
-    if not (slot["dirty"] or stale):
-        return
     try:
-        # Refresh ALL remote branches when stale, then force the working
-        # copy to a clean main - the exact state a fresh clone starts from.
-        # A dirty-but-fresh slot skips the network: the merge-family flows
-        # fetch their specific base/head refs at body start anyway, so the
-        # local scrub alone restores a known-good starting point.
         if stale:
             _git(slot["dir"], "fetch", "--prune", "origin",
                  "+refs/heads/*:refs/remotes/origin/*")
@@ -2166,9 +2182,18 @@ def _ws_normalize(slot: dict) -> None:
 
 
 def _ws_git_scrub(dir_: str) -> None:
-    """Best-effort cleanup to the fresh-clone state (no network)."""
+    """Best-effort cleanup to the fresh-clone state (no network). Deletes
+    every local branch except base: flows create working branches by name
+    (`checkout -b pr_head ...`), and a leftover one from an earlier
+    operation must not turn that into a fatal error."""
     _git(dir_, "checkout", "-B", GITHUB_BASE_BRANCH,
          f"origin/{GITHUB_BASE_BRANCH}", check=False)
+    listing = _git(dir_, "branch", "--format=%(refname:short)", check=False)
+    if listing.returncode == 0:
+        for name in listing.stdout.split():
+            name = name.strip()
+            if name and name != GITHUB_BASE_BRANCH:
+                _git(dir_, "branch", "-D", name, check=False)
     _git(dir_, "reset", "--hard", check=False)
     _git(dir_, "clean", "-fdq", check=False)
 
@@ -2177,9 +2202,11 @@ def _ws_git_scrub(dir_: str) -> None:
 def _workspace():
     """Yield a git working directory for one merge-family operation.
 
-    persistent mode: acquire a pool slot (bounded wait -> clean busy-error),
-      normalize it, yield; any failure marks the slot dirty so the next
-      acquirer scrubs it before use.
+    persistent mode: acquire a pool slot (bounded wait) and normalize it;
+      any failure marks the slot dirty so the next acquirer scrubs it
+      before use. A saturated pool degrades to the legacy temp path -
+      warm-when-possible, but never a brand-new failure mode citizens
+      didn't have before.
     temp mode (default): legacy behavior - fresh clone per call, cleaned up.
     """
     if not _ws_mode_persistent():
@@ -2189,14 +2216,22 @@ def _workspace():
         finally:
             _cleanup(d)
         return
+
+    def _temp_fallback():
+        d = _clone_repo()
+        try:
+            yield d
+        finally:
+            _cleanup(d)
+
     q = _ws_ensure_pool()
     timeout = max(0.0, float(config.GIT_WORKSPACE_LOCK_TIMEOUT))
     try:
         idx = q.get(timeout=timeout)
     except queue.Empty:
-        raise RepoError(
-            "git workspace busy - all slots in use; retry shortly."
-        ) from None
+        # Pool saturated: legacy temp clone instead of a new error class.
+        yield from _temp_fallback()
+        return
     slot = _ws_slots[idx]
     try:
         _ws_normalize(slot)

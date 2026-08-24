@@ -6,10 +6,10 @@ calls. These tests pin the contract with local bare remotes (no network):
 - warm slots reuse the same directory and make zero refetches inside the
   fetch TTL (the merge flows fetch their own specific refs at body start,
   so a dirty-but-fresh slot only needs the local scrub);
-- a failed operation marks its slot dirty and the next acquirer scrubs it -
-  one citizen's crashed merge can never poison the next;
-- an exhausted pool fails fast with a clean busy-error (bounded wait),
-  never a hang;
+- the LOCAL scrub runs on every acquire and deletes stray local branches -
+  flows hardcode `checkout -b pr_head`, so leftovers must never accumulate;
+- a failed operation marks its slot dirty; an exhausted pool degrades to
+  the legacy temp path instead of surfacing a brand-new error;
 - a corrupted slot directory self-heals via fresh clone;
 - the default temp mode keeps the legacy clone-per-call contract.
 """
@@ -178,30 +178,71 @@ def test_ttl_expiry_triggers_refetch():
     print("  TTL expiry triggers refetch: ok")
 
 
-def test_exhausted_pool_fails_fast_with_busy_error():
+def test_exhausted_pool_degrades_to_temp_clone():
     sb = _PoolSandbox(pool=2, lock_timeout=0)
     try:
         cm_a, cm_b = gh._workspace(), gh._workspace()
         a = cm_a.__enter__()
         b = cm_b.__enter__()
+        cleaned: list[str] = []
+        orig_cleanup = gh._cleanup
+
+        def spying_cleanup(d):
+            cleaned.append(d)
+            orig_cleanup(d)
+
+        gh._cleanup = spying_cleanup
         try:
-            assert a != b, "concurrent acquires need distinct slots"
-            raised = None
-            try:
-                with gh._workspace():
-                    raise AssertionError("exhausted pool must not yield")
-            except gh.RepoError as exc:
-                raised = str(exc)
-            assert raised is not None and "busy" in raised, raised
+            # A saturated pool must degrade to the legacy temp path -
+            # saturation is not a brand-new failure mode citizens should see.
+            with gh._workspace() as c:
+                assert c != a and c != b, "fallback must be a fresh temp clone"
+                assert os.path.isdir(os.path.join(c, ".git"))
         finally:
+            gh._cleanup = orig_cleanup
             cm_b.__exit__(None, None, None)
             cm_a.__exit__(None, None, None)
-        # Slots released - a later acquire succeeds again.
+        assert len(cleaned) == 1, "temp fallback cleans up after itself"
+        # Slots came back healthy once pressure released.
         with gh._workspace():
             pass
     finally:
         sb.close()
-    print("  exhausted pool fails fast with clean busy-error: ok")
+    print("  exhausted pool degrades to temp clone: ok")
+
+
+def test_flow_leftover_branches_never_poison_the_slot():
+    # The critical regression the first cut missed: merge-family flows
+    # hardcode `git checkout -b pr_head origin/<head>`, and legacy code only
+    # survived because it DELETED the whole temp clone afterwards. A warm
+    # slot keeps local branches, so the scrub must remove every stray one -
+    # otherwise op 2 hits `fatal: a branch named 'pr_head' already exists`
+    # and the slot fails forever. Drive real flow-shaped bodies twice.
+    sb = _PoolSandbox(pool=1)
+    try:
+        # Op 1: successful flow run - creates pr_head, exits CLEANLY (the
+        # success path never sets dirty, which is exactly why the early-
+        # return normalize used to skip even the partial scrub).
+        with gh._workspace() as d:
+            _git("checkout", "-b", "pr_head", "origin/main", cwd=d)
+
+        def local_branches(d):
+            return subprocess.run(
+                ["git", "branch", "--format=%(refname:short)"],
+                cwd=d, check=True, capture_output=True, text=True,
+            ).stdout.split()
+
+        # Op 2 + 3: next citizens' flows must find NO pr_head leftover at
+        # acquire entry (normalize scrubbed it), then recreate it freely.
+        for expected_dir in (d, d, d):
+            with gh._workspace() as dx:
+                assert dx == d, "warm slot expected"
+                assert "pr_head" not in local_branches(dx), \
+                    "acquire must start with stray flow branches scrubbed"
+                _git("checkout", "-b", "pr_head", "origin/main", cwd=dx)
+    finally:
+        sb.close()
+    print("  flow leftover branches never poison the slot: ok")
 
 
 def test_corrupted_slot_self_heals():
@@ -209,12 +250,20 @@ def test_corrupted_slot_self_heals():
     try:
         with gh._workspace() as d:
             pass
-        # Simulate a killed process mid-write: wreck the repository data.
+        # Simulate a killed process mid-write: wreck the repository data,
+        # and leave a read-only file behind so the re-clone's directory
+        # cleanup has to handle Windows' read-only objects too.
+        ro = os.path.join(d, "readonly.bin")
+        with open(ro, "wb") as f:
+            f.write(b"x")
+        os.chmod(ro, 0o444)
         shutil.rmtree(os.path.join(d, ".git"), onerror=_rm_ro)
         with gh._workspace() as d2:
             assert os.path.isdir(os.path.join(d2, ".git")), \
                 "corruption must trigger a fresh clone"
             assert os.path.isfile(os.path.join(d2, "README.md"))
+            assert not os.path.exists(ro), \
+                "self-heal must clear leftovers from the dead operation"
     finally:
         sb.close()
     print("  corrupted slot self-heals via fresh clone: ok")
@@ -224,7 +273,8 @@ def main():
     test_temp_mode_keeps_legacy_contract()
     test_warm_reuse_scrub_and_no_refetch_within_ttl()
     test_ttl_expiry_triggers_refetch()
-    test_exhausted_pool_fails_fast_with_busy_error()
+    test_exhausted_pool_degrades_to_temp_clone()
+    test_flow_leftover_branches_never_poison_the_slot()
     test_corrupted_slot_self_heals()
     print("test_git_workspace: all ok")
     return 0

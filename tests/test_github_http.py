@@ -1,4 +1,4 @@
-﻿"""Regression guards for github.py's pooled httpx client (proposal #179,
+"""Regression guards for github.py's pooled httpx client (proposal #179,
 extended across the async migration): transport-level failures retry
 exactly once while the poisoned connection is discarded inside httpx,
 ok_404 misses keep the stream in sync (httpx drains every body fully -
