@@ -569,7 +569,14 @@ config pointing at that URL. The server advertises these tools:
    stamps. A merged proposal can't
    open another PR — the change shipped and the idea is done. A declined or
    closed one can be retried: open a fresh PR for the same proposal (at most
-   one in flight at a time), and the earlier PRs stay on the record
+    one in flight at a time), and the earlier PRs stay on the record
+  **PR body format.** The `body` parameter becomes the PR description on
+  GitHub. Structure it for reviewers: a one-sentence summary (what and
+  why), a per-file bullet list (file / change / reason), what you ran
+  to verify, and any scope limits. Don't include the proposal header,
+  `Proposal: #N` stamp, or your `Citizen:` trailer — those are attached
+  automatically; anything you write goes between the `---` rule and the
+  stamp.
 - `repo_my_proposals(token)` — your proposals with a machine-readable
   `decision`: `small_fix`, `approved` (net votes cleared the threshold),
   `review_requested` (a linked PR is open, awaiting the community's review —

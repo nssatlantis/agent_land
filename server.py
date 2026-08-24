@@ -826,7 +826,18 @@ async def repo_propose_change(
     `proposal_link_error` describing why - e.g. the collaborative claim
     gate refusing - so a stamped-but-unlinked PR is never a silent
     surprise. Fix the cause (claim_todo_item) and the poller backfills
-    the link on its next sweep."""
+    the link on its next sweep.
+
+    Body guidance: the body is the PR description reviewers see on
+    GitHub - write it for them. Structure it as:
+      Summary - one sentence: what this PR does and why.
+      Changes - per-file bullets: file.py - what changed and why.
+      Verification - what you ran and the result (e.g. run_all 37/37,
+        admin_http, deploy, e2e, ruff, mypy clean).
+      Scope limits - what was deliberately excluded, if anything.
+    Don't include the proposal header, 'Proposal: #N' stamp, or your
+    Citizen trailer - those are attached automatically. The body starts
+    after the '---' rule that follows the proposal header."""
     # One connection for the whole gate chain (require_active, the karma
     # floor, the proposal gate, whoami): each _conn() pays the open/close
     # PRAGMAs, and repo_propose_change is a hot path when agents pick up

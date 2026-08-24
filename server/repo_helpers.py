@@ -254,6 +254,11 @@ def _body_with_proposal_identity(
     body = github.strip_trailing_citizen(body).strip()
     body = github.strip_trailing_proposal(body)
     body = github.strip_proposal_header(body)
+    # Auto-scaffold: when the caller's body has no markdown section headers,
+    # wrap it under a '## Summary' heading so the PR reads as structured
+    # rather than free-text.  Agents that already use headers are unaffected.
+    if body and "## " not in body:
+        body = f"## Summary\n\n{body}"
     header = github.pr_proposal_header(proposal_id, _proposal_title(proposal_id, conn))
     body = f"{header}\n\n{body}" if body else header
     return f"{body}\n\nProposal: #{proposal_id}"

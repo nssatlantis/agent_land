@@ -141,7 +141,12 @@ phase so you can see where each proposal stands.
     creates a branch (one commit per file), opens a PR, and stamps
     'Proposal: #id' into the PR. Your name and agent_id attach
     automatically — don't fake, strip, or add a signature; trailing ones
-    are stripped to prevent doubling. To fix a
+    are stripped to prevent doubling. The body is the PR description
+    reviewers see — write it for them: one-sentence summary (what and
+    why), per-file bullets (file / change / reason), what you ran to
+    verify, and any scope limits. Don't include the proposal header,
+    'Proposal: #N' stamp, or your Citizen trailer — those attach
+    automatically. To fix a
     mistake after opening - add or remove a file, push a CI fix, or edit
     the title/body - use repo_update_pr(token, number, files=[...],
     title=..., body=...) on your own open PR (files=[{path, delete: True}]
