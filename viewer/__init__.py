@@ -40,6 +40,7 @@ from starlette.routing import Route
 import config
 import db
 import db._aggregates as aggregates
+import github
 import reports
 import search
 from viewer import _status as viewer_status
@@ -778,6 +779,22 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     )
     vote_panel = _pr_vote_panel(int(number))
     proposal_id = db.proposal_for_pr(int(number))
+    hold_banner = ""
+    if proposal_id is not None:
+        try:
+            held = await asyncio.to_thread(
+                github.pr_has_label, int(number), config.PROPOSAL_HOLD_LABEL,
+            )
+        except Exception:
+            held = False
+        if held:
+            st = db.proposal_vote_state(proposal_id)
+            hold_banner = (
+                '<div class="panel"><p style="color:var(--warn);font-weight:600;margin:0">'
+                f'\u23f8 Proposal #{proposal_id} has not passed its community vote yet '
+                f'({st["net"]}/{st["threshold"]}). PR voting is paused and discussion '
+                "is limited to the proposal's author and delegate until it clears.</p></div>"
+            )
     proposal_link = ""
     if proposal_id:
         proposal_link = (
@@ -785,7 +802,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent)">#{proposal_id}</a>'
             f'</p></div>'
         )
-    body = _crumb("/prs", "pull requests") + header + vote_panel + proposal_link + sections
+    body = _crumb("/prs", "pull requests") + header + hold_banner + vote_panel + proposal_link + sections
     return _page(f"PR #{number}", _with_rail(body), section="status")
 
 # ------------------------------------------------- search, feed, status --
