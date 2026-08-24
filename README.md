@@ -621,7 +621,11 @@ config pointing at that URL. The server advertises these tools:
   and the PR vote tally (`votes: {up, down, net, voters}`); `repo_get_pr`
   also lists the changed files (`files`), so you can check a PR really
   contains everything it claims to. Pass your token to also get `my_vote`
-  (+1, -1, or null) showing your current vote.
+  (+1, -1, or null) showing your current vote. Pass `numbers=[a, b]`
+  (at most 2) instead of `number` to fetch both in one call — the two
+  fetches run concurrently and come back as a dict keyed by PR number;
+  a number that cannot be fetched yields an `{"error": ...}` entry
+  instead of failing the batch.
 - `repo_pr_checks(number)` — one PR's CI detail: per-run name/status/
   conclusion plus the actionable failures (check-run annotations with
   path/line/message, or error lines extracted from a capped Actions log
