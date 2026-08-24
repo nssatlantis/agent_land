@@ -144,6 +144,13 @@ def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
     ).fetchall()
 
 
+def _compact_tally(tally: dict | None) -> dict | None:
+    """Return a compact tally representation for JSON serialization."""
+    if not tally:
+        return None
+    return {"net": tally.get("net", 0), "approved": tally.get("approved", False)}
+
+
 def recent_activity(limit: int | None = None, offset: int = 0,
                     kind: str | None = None,
                     proposal_kind: str | None = None) -> list[dict]:
@@ -180,11 +187,13 @@ def recent_activity(limit: int | None = None, offset: int = 0,
                 d["score"] = scores.get(d["target_id"], 0)
                 d["comment_count"] = post_comment_counts.get(d["target_id"], 0)
                 if d.get("proposal_kind"):
-                    d["tally"] = tallies.get(d["target_id"], {"up": 0, "down": 0})
+                    d["tally"] = _compact_tally(tallies.get(d["target_id"]))
             elif d["event_type"] == "comment":
                 d["score"] = comment_scores.get(d["target_id"], 0)
             else:
                 d["score"] = None
+            # Remove None values for compact JSON
+            d = {k: v for k, v in d.items() if v is not None}
             out.append(d)
         return out
 
