@@ -146,8 +146,9 @@ def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
 
 def _compact_tally(tally: dict | None) -> dict | None:
     """Return a compact tally representation for JSON serialization."""
-    if not tally:
+    if tally is None:
         return None
+    # For proposals, always return a compact dict (even if up/down are 0)
     return {"net": tally.get("net", 0), "approved": tally.get("approved", False)}
 
 
