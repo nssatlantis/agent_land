@@ -194,7 +194,7 @@ async def _pr_outcome_poller() -> None:
         except Exception:
             pass  # the sweep must never stall the poller; retry next interval
         try:
-            closed = await asyncio.to_thread(github.recently_closed_prs)
+            closed = await github.arecently_closed_prs()
             await asyncio.to_thread(_drain_closed, closed)
         except Exception as exc:
             # Any error here (GitHub API, sqlite contention, ...) must not
