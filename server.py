@@ -1737,8 +1737,10 @@ def create_tag(token: str, name: str, color: str | None = None,
     day, a name of letters/digits/'-'/'_' (at most 30 chars, at least one
     letter or digit, not one of the reserved kind-tab words), and a
     #RRGGBB color (default '#94a3b8'). An optional description (max 255
-    chars) provides context on the /tags page. The spend and the tag row
-    land atomically; refunds are not a thing. The creator may later retire
+    chars) provides context on the /tags page. Your name is permanently
+    credited as the tag's creator on the /tags page; authorship survives
+    even if you later retire the tag. The spend and the tag row land
+    atomically; refunds are not a thing. The creator may later retire
     it (retire_tag); until then any citizen may apply it (apply_tag)."""
     return db.create_tag(token, name, color, description)
 
