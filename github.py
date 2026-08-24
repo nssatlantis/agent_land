@@ -1711,8 +1711,7 @@ def rebase_pr_onto_main(
         _git(repo_dir, "fetch", "--unshallow", "origin", check=False)
         _git(repo_dir, "fetch", "origin", head, GITHUB_BASE_BRANCH)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
-        _git(repo_dir, "config", "user.email", "agentland@local")
-        _git(repo_dir, "config", "user.name", "AgentLand")
+        _seed_identity(repo_dir)
         result = _git(
             repo_dir, "rebase", f"origin/{GITHUB_BASE_BRANCH}",
             check=False,
@@ -2215,6 +2214,7 @@ def _ws_fresh_clone(slot: dict) -> None:
     os.makedirs(parent, exist_ok=True)
     _git(parent, "clone", _repo_url(with_token=False),
          os.path.basename(slot["dir"]))
+    _seed_identity(slot["dir"])
     slot["last_fetch"] = time.monotonic()
     slot["dirty"] = False
 
@@ -2239,6 +2239,9 @@ def _ws_normalize(slot: dict) -> None:
                  "+refs/heads/*:refs/remotes/origin/*")
             slot["last_fetch"] = time.monotonic()
         _ws_git_scrub(slot["dir"])
+        # Heal slots created before identity seeding existed (and keep the
+        # guarantee fresh): every acquire leaves the slot commit-ready.
+        _seed_identity(slot["dir"])
         slot["dirty"] = False
     except RepoError:
         _ws_fresh_clone(slot)
@@ -2320,6 +2323,25 @@ def _workspace():
             q.put(idx)
 
 
+# Fallback committer identity for every working tree we create. Deployment
+# boxes may have no global git config at all - and git demands a committer
+# identity even for operations that do not create a final commit object
+# (e.g. `merge --no-commit`, and any rebase, which stamps a new committer
+# on replayed commits). Without a seed those operations die with
+# "Committer identity unknown". Agent-invoked flows that DO commit pass an
+# explicit citizen identity per command instead.
+_GIT_IDENTITY_NAME = "AgentLand"
+_GIT_IDENTITY_EMAIL = "agentland@local"
+
+
+def _seed_identity(repo_dir: str) -> None:
+    """Write the fallback identity into the repo's LOCAL config (never
+    global). Idempotent and cheap; called when trees are created and on
+    every pool-slot acquire so slots created by older deploys are healed."""
+    _git(repo_dir, "config", "user.email", _GIT_IDENTITY_EMAIL)
+    _git(repo_dir, "config", "user.name", _GIT_IDENTITY_NAME)
+
+
 def _clone_repo() -> str:
     """Clone the repo into a temp directory.  Returns the repo subdir path.
     The clone is anonymous (no auth) since the repo is public; push auth
@@ -2330,7 +2352,9 @@ def _clone_repo() -> str:
     except RepoError:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-    return os.path.join(tmp, "repo")
+    repo_dir = os.path.join(tmp, "repo")
+    _seed_identity(repo_dir)
+    return repo_dir
 
 
 def _cleanup(repo_dir: str) -> None:
@@ -2557,14 +2581,15 @@ def apply_merge_resolutions(
             os.makedirs(parent, exist_ok=True)
             Path(fpath).write_text(r["content"], encoding="utf-8")
             _git(repo_dir, "add", r["file"])
-        # Commit the merge with explicit git identity
+        # Commit the merge under the resolving citizen's identity (the
+        # trailer records the same attribution in the message).
         commit_msg = (
             f"Merge main into {head} — resolve conflicts\n"
             f"\nCitizen: {citizen}"
         )
         _git(
-            repo_dir, "-c", "user.name=agentland",
-            "-c", "user.email=agentland@agentland.dev",
+            repo_dir, "-c", f"user.name={citizen}",
+            "-c", f"user.email={citizen}@agentland.dev",
             "commit", "-m", commit_msg,
         )
         # Authenticate for push, then push
