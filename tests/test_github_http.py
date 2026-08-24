@@ -217,6 +217,227 @@ def test_client_stays_single_owner_across_loops():
     print("  client stays single-owner across loops: ok")
 
 
+_PR_4242 = {
+    "number": 4242,
+    "title": "fan-out probe",
+    "body": "",
+    "head": {"ref": "probe", "sha": "abc123"},
+    "base": {"ref": "main"},
+    "user": {"login": "someone"},
+    "state": "open",
+    "created_at": "2026-08-24T00:00:00Z",
+    "html_url": "https://github.com/x/y/pull/4242",
+}
+
+
+def test_aget_pr_fans_out_concurrently():
+    # Event-gated proof: each of the three wave-2 requests holds until ALL
+    # of them have arrived. A sequential chain deadlocks its first request
+    # (the gate never opens), so passing this test REQUIRES overlap. The
+    # 6s bound keeps a regression a fast failure instead of a hang.
+    gh.clear_cache()
+    arrived: list[str] = []
+    lock = threading.Lock()
+    release = asyncio.Event()
+    # Concurrency contract: wave 1 is the PR fetch alone (ungated); wave 2
+    # overlaps the two comment sources with the files read - THIS gate.
+    expected = (
+        "/repos/nssatlantis/agent_land/issues/4242/comments",
+        "/repos/nssatlantis/agent_land/pulls/4242/comments",
+        "/repos/nssatlantis/agent_land/pulls/4242/files",
+    )
+
+    async def handler(request):
+        path = request.url.path
+        with lock:
+            arrived.append(path)
+            if all(p in arrived for p in expected):
+                release.set()
+        if path.endswith("/pulls/4242"):
+            return httpx.Response(200, json=_PR_4242)
+        # Await (not block) the gate: a SYNC handler would freeze the one
+        # background-loop thread and starve its own sibling requests.
+        try:
+            await asyncio.wait_for(release.wait(), timeout=6)
+        except asyncio.TimeoutError:
+            raise httpx.ConnectError("gate never opened - no wave-2 fan-out", request=request) from None
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    stub_checks = gh._checks_for_head
+    gh._checks_for_head = lambda sha: {"state": "unknown", "source": "stub", "runs": []}
+    try:
+        result = asyncio.run(gh.aget_pr(4242))
+        assert result["number"] == 4242 and result["head"] == "probe"
+        assert result["comments"] == [] and result["files"] == []
+        assert result["checks"]["source"] == "stub"
+        assert all(p in arrived for p in expected), arrived
+    finally:
+        gh._checks_for_head = stub_checks
+        gh._client = old
+        gh.clear_cache()
+    print("  get_pr fans checks/comments/files out concurrently: ok")
+
+
+def test_aget_pr_cache_and_subcache_parity():
+    hits: list[str] = []
+    # Rich file entry: the raw GitHub shape carries extra keys (patch,
+    # blob_url, ...). If the native path ever writes RAW objects into the
+    # shared ("pr_files", n) cache key that sync pr_files fills with the
+    # four-field transform, this assertion catches the shape swap.
+    raw_file = {
+        "filename": "src/app.py",
+        "status": "modified",
+        "additions": 12,
+        "deletions": 3,
+        "changes": 15,
+        "patch": "@@ -1 +1 @@",
+        "blob_url": "https://github.com/x/y/blob/abc/src/app.py",
+        "raw_url": "https://github.com/x/y/raw/abc/src/app.py",
+    }
+    expected_file = {
+        "filename": "src/app.py",
+        "status": "modified",
+        "additions": 12,
+        "deletions": 3,
+    }
+
+    def handler(request):
+        hits.append(request.url.path)
+        if request.url.path.endswith("/pulls/4242"):
+            return httpx.Response(200, json=_PR_4242)
+        if request.url.path.endswith("/files"):
+            return httpx.Response(200, json=[raw_file])
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    stub_checks = gh._checks_for_head
+    gh._checks_for_head = lambda sha: {"state": "unknown", "source": "stub"}
+    try:
+        first = asyncio.run(gh.aget_pr(4242))
+        n_after_first = len(hits)
+        # aget_pr's files (and the sub-cache it warmed) carry the sync
+        # four-field shape - not the raw GitHub objects.
+        assert first["files"] == [expected_file], first["files"]
+        second = asyncio.run(gh.aget_pr(4242))
+        assert second is first or second == first
+        assert len(hits) == n_after_first, "cache hit must make zero transport calls"
+        # Direct apr_files: same four-field contract from the shared key.
+        direct = asyncio.run(gh.apr_files(4242))
+        assert direct == [expected_file], direct
+        assert len(hits) == n_after_first
+        # And the reverse direction: sync pr_files reading whatever the
+        # native path warmed must see the transformed shape too.
+        assert gh.pr_files(4242) == [expected_file]
+        assert len(hits) == n_after_first
+    finally:
+        gh._checks_for_head = stub_checks
+        gh._client = old
+        gh.clear_cache()
+    print("  aget_pr cache + sub-cache parity with sync path: ok")
+
+
+def test_gather_error_propagates_as_repo_error():
+    def handler(request):
+        path, _, _q = str(request.url).partition("?")
+        if "/issues/" in path:
+            return httpx.Response(500, json={"message": "boom"})
+        if path.endswith("/files"):
+            return httpx.Response(200, json=[])
+        if "/pulls/4243" in path:
+            return httpx.Response(200, json=dict(_PR_4242, number=4243))
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    stub_checks = gh._checks_for_head
+    gh._checks_for_head = lambda sha: None
+    try:
+        raised = None
+        try:
+            asyncio.run(gh.aget_pr(4243))
+        except gh.RepoError as exc:
+            raised = str(exc)
+        assert raised is not None and "boom" in raised, raised
+    finally:
+        gh._checks_for_head = stub_checks
+        gh._client = old
+        gh.clear_cache()
+    print("  gather failure surfaces as RepoError with body message: ok")
+
+
+def _install_gated_pair(pair, payloads):
+    """Event-gated async mock proving two specific request paths overlap:
+    each holds until BOTH have arrived (sequential code deadlocks its first
+    request; gathered code passes). Returns the handler to install."""
+    arrived: list[str] = []
+    lock = threading.Lock()
+    release = asyncio.Event()
+
+    async def handler(request):
+        path = request.url.path
+        with lock:
+            arrived.append(path)
+            if all(p in arrived for p in pair):
+                release.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=6)
+        except asyncio.TimeoutError:
+            raise httpx.ConnectError("pair gate never opened - no overlap", request=request) from None
+        base = payloads.get("pr")
+        if base is not None and path.endswith(f"/pulls/{base['number']}"):
+            return httpx.Response(200, json=base)
+        return httpx.Response(200, json=payloads.get(path, []))
+
+    return handler
+
+
+def test_apr_diff_overlaps_payload_with_first_page():
+    gh.clear_cache()
+    pr_payload = dict(_PR_4242, number=5151)
+    pair = ("/repos/nssatlantis/agent_land/pulls/5151",
+            "/repos/nssatlantis/agent_land/pulls/5151/files")
+    payloads = {
+        "pr": pr_payload,
+        pair[1]: [{"filename": "f.py", "additions": 3}],
+    }
+    handler = _install_gated_pair(pair, payloads)
+    old = _install_mock(handler)
+    try:
+        diff = asyncio.run(gh.apr_diff(5151))
+        assert diff["title"] == "fan-out probe"
+        assert diff["files"] == [{"path": "f.py", "status": None, "additions": 3,
+                                  "deletions": 0, "changes": 0, "patch": None}]
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  apr_diff overlaps payload with first files page: ok")
+
+
+def test_apr_commits_overlaps_payload_with_first_page():
+    gh.clear_cache()
+    pr_payload = dict(_PR_4242, number=6161)
+    pair = ("/repos/nssatlantis/agent_land/pulls/6161",
+            "/repos/nssatlantis/agent_land/pulls/6161/commits")
+    payloads = {
+        "pr": pr_payload,
+        pair[1]: [{"sha": "deadbeef", "commit": {"message": "m",
+                   "author": {"name": "n", "date": "2026-08-24T00:00:00Z"}}}],
+    }
+    handler = _install_gated_pair(pair, payloads)
+    old = _install_mock(handler)
+    try:
+        result = asyncio.run(gh.apr_commits(6161))
+        assert result["number"] == 6161 and result["head"] == "probe"
+        assert result["commits"] == [{
+            "sha": "deadbeef", "message": "m",
+            "author_name": "n", "author_date": "2026-08-24T00:00:00Z",
+        }]
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  apr_commits overlaps payload with first commits page: ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -227,8 +448,106 @@ def main():
     test_client_stays_single_owner_across_loops()
     test_sync_bridge_shares_one_client_across_threads()
     test_background_loop_is_reused_not_respawned()
+    test_aget_pr_fans_out_concurrently()
+    test_aget_pr_cache_and_subcache_parity()
+    test_gather_error_propagates_as_repo_error()
+    test_apr_diff_overlaps_payload_with_first_page()
+    test_apr_commits_overlaps_payload_with_first_page()
+    test_pr_files_paginates_past_the_default_page()
+    test_short_first_page_costs_one_request()
+    test_pagination_cap_bounds_runaway_servers()
     print("test_github_http: all ok")
     return 0
+
+
+
+def _serve_pages(hits, path_suffix, pages):
+    """Route list-endpoint requests under /pulls/ to canned pages keyed by
+    the page= query param; anything else gets an empty list."""
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, query = url.partition("?")
+        if "/pulls/" in path and path.rstrip("/").endswith(path_suffix):
+            n = 1
+            for part in query.split("&"):
+                if part.startswith("page="):
+                    n = int(part[len("page="):])
+            return httpx.Response(
+                200, json=pages[n - 1] if n <= len(pages) else []
+            )
+        return httpx.Response(200, json=[])
+    return handler
+
+
+def test_pr_files_paginates_past_the_default_page():
+    hits: list[str] = []
+    page1 = [{"filename": f"a{i}.py", "status": "modified", "additions": 1,
+              "deletions": 0, "patch": "x"} for i in range(100)]
+    page2 = [{"filename": "b7.py", "status": "added", "additions": 9,
+              "deletions": 2}]
+    handler = _serve_pages(hits, "/files", [page1, page2])
+    old = _install_mock(handler)
+
+    def qpage(u):
+        for part in u.partition("?")[2].split("&"):
+            if part.startswith("page="):
+                return int(part[len("page="):])
+        return None
+
+    try:
+        got = gh.pr_files(4244)
+        assert [f["filename"] for f in got[:3]] == ["a0.py", "a1.py", "a2.py"]
+        assert got[-1]["filename"] == "b7.py"
+        assert len(got) == 101
+        assert [qpage(u) for u in hits] == [1, 2], hits
+        assert any("per_page=100" in u for u in hits), hits
+        # Native twin: same aggregated result through the shared key.
+        native = asyncio.run(gh.apr_files(4245))
+        assert len(native) == 101 and native[-1]["filename"] == "b7.py"
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  pr_files paginates past the default 30/100-item page: ok")
+
+
+def test_short_first_page_costs_one_request():
+    hits: list[str] = []
+    handler = _serve_pages(
+        hits, "/comments",
+        [[{"id": 1, "user": {"login": "a"}, "body": "hi",
+           "created_at": "2026-08-24T00:00:00Z"}]],
+    )
+    old = _install_mock(handler)
+    try:
+        got = gh.pr_comments(4246)
+        assert len(got) == 1 and got[0]["kind"] == "review"
+        assert len([u for u in hits if "issues/4246" in u]) == 1
+        assert not any("page=2" in u for u in hits), hits
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  short first page terminates pagination after one request: ok")
+
+
+def test_pagination_cap_bounds_runaway_servers():
+    hits: list[str] = []
+    handler = _serve_pages(
+        hits, "/files",
+        [[{"filename": "x.py", "status": "modified"}] * 100] * 500,
+    )
+    saved_cap = gh._PR_PAGE_CAP
+    gh._PR_PAGE_CAP = 3
+    old = _install_mock(handler)
+    try:
+        got = gh.pr_files(4247)
+        assert len(got) == 300, len(got)
+        assert len([u for u in hits if "pr_files" in u or "/files" in u]) == 3
+    finally:
+        gh._PR_PAGE_CAP = saved_cap
+        gh._client = old
+        gh.clear_cache()
+    print("  page cap bounds a server that never sends a short page: ok")
 
 
 if __name__ == "__main__":
