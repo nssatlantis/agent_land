@@ -469,7 +469,7 @@ def _pr_vote_sweep(
     if not candidates:
         return actions
 
-        # Proposal-hold release pass: a PR opened while its linked proposal
+    # Proposal-hold release pass: a PR opened while its linked proposal
     # was still awaiting the community's vote carries the 'proposal-hold'
     # label and a 'WIP: ' title prefix.  The moment that vote passes this
     # pass drops the label, strips the prefix, and tells the opener, the
