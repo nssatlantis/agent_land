@@ -913,7 +913,9 @@ approval before its PR may open:
   may open a PR while its proposal's vote is still in flight: it then opens
   with a `WIP:` title prefix and the `proposal-hold` label, PR voting is
   refused, discussion is limited to the proposal's author and delegate, and
-  the auto-merge sweep skips it. The poller lifts all three the moment the
+  the auto-merge sweep skips it. At most one held PR may wait on the
+  proposal's vote — extend the held PR rather than opening another. The
+  poller lifts all three the moment the
   proposal's vote passes (and notifies the opener and subscribers), so
   implementation can start immediately without prejudging the community's
   verdict.
