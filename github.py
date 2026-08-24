@@ -24,6 +24,7 @@ import base64
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1670,8 +1672,7 @@ def rebase_pr_onto_main(
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
     head = pr["head"]["ref"]
-    repo_dir = _clone_repo()
-    try:
+    with _workspace() as repo_dir:
         # Unshallow to get the full commit graph needed for rebase.
         _git(repo_dir, "fetch", "--unshallow", "origin", check=False)
         _git(repo_dir, "fetch", "origin", head, GITHUB_BASE_BRANCH)
@@ -1700,8 +1701,6 @@ def rebase_pr_onto_main(
         new_sha = _git(repo_dir, "rev-parse", "HEAD").stdout.strip()
         _invalidate_pr(number)
         return {"status": "ok", "new_sha": new_sha}
-    finally:
-        _cleanup(repo_dir)
 
 
 def wait_for_ci(
@@ -2084,6 +2083,127 @@ def _git(
         raise RepoError("git is not installed or not in PATH") from None
 
 
+# --- persistent git workspace pool (merge-conflict family) -----------------
+# Three flows pay a full network clone per call today. The pool keeps
+# FORUM_GIT_WORKSPACE_POOL warm clones alive between calls: acquire a slot,
+# normalize it (fetch all remote branches when TTL-stale; scrub leftovers if
+# the previous operation failed), run the flow verbatim, release. The locks
+# are IN-MEMORY - a queue of slot tokens. Deployment is single-process, so
+# process death resets everything cleanly and no stale lockfile can exist.
+
+_workspace_queue: "queue.Queue[int] | None" = None
+_ws_slots: list[dict] = []
+_ws_lock = threading.Lock()
+
+
+def _ws_mode_persistent() -> bool:
+    return config.GIT_WORKSPACE_MODE == "persistent"
+
+
+def _ws_root() -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", GITHUB_REPO)
+    root = os.path.join(tempfile.gettempdir(), f"agentland_ws_{slug}")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _ws_ensure_pool() -> "queue.Queue[int]":
+    global _workspace_queue, _ws_slots
+    with _ws_lock:
+        if _workspace_queue is None:
+            n = max(1, int(config.GIT_WORKSPACE_POOL))
+            base = _ws_root()
+            _ws_slots = [
+                {"dir": os.path.join(base, f"slot{i}"), "last_fetch": 0.0,
+                 "dirty": False}
+                for i in range(n)
+            ]
+            q: "queue.Queue[int]" = queue.Queue()
+            for i in range(n):
+                q.put(i)
+            _workspace_queue = q
+        return _workspace_queue
+
+
+def _ws_fresh_clone(slot: dict) -> None:
+    """Rebuild a slot from scratch - the self-heal path; worst case equals
+    today's per-call clone cost."""
+    parent = os.path.dirname(slot["dir"])
+    shutil.rmtree(slot["dir"], ignore_errors=True)
+    os.makedirs(parent, exist_ok=True)
+    _git(parent, "clone", _repo_url(with_token=False),
+         os.path.basename(slot["dir"]))
+    slot["last_fetch"] = time.monotonic()
+    slot["dirty"] = False
+
+
+def _ws_normalize(slot: dict) -> None:
+    """Bring a slot to a clean, current view of every remote branch."""
+    if not os.path.isdir(os.path.join(slot["dir"], ".git")):
+        _ws_fresh_clone(slot)
+        return
+    stale = (time.monotonic() - slot["last_fetch"]) > config.GIT_WORKSPACE_FETCH_TTL
+    if not (slot["dirty"] or stale):
+        return
+    try:
+        # Refresh ALL remote branches when stale, then force the working
+        # copy to a clean main - the exact state a fresh clone starts from.
+        # A dirty-but-fresh slot skips the network: the merge-family flows
+        # fetch their specific base/head refs at body start anyway, so the
+        # local scrub alone restores a known-good starting point.
+        if stale:
+            _git(slot["dir"], "fetch", "--prune", "origin",
+                 "+refs/heads/*:refs/remotes/origin/*")
+            slot["last_fetch"] = time.monotonic()
+        _ws_git_scrub(slot["dir"])
+        slot["dirty"] = False
+    except RepoError:
+        _ws_fresh_clone(slot)
+
+
+def _ws_git_scrub(dir_: str) -> None:
+    """Best-effort cleanup to the fresh-clone state (no network)."""
+    _git(dir_, "checkout", "-B", GITHUB_BASE_BRANCH,
+         f"origin/{GITHUB_BASE_BRANCH}", check=False)
+    _git(dir_, "reset", "--hard", check=False)
+    _git(dir_, "clean", "-fdq", check=False)
+
+
+@contextmanager
+def _workspace():
+    """Yield a git working directory for one merge-family operation.
+
+    persistent mode: acquire a pool slot (bounded wait -> clean busy-error),
+      normalize it, yield; any failure marks the slot dirty so the next
+      acquirer scrubs it before use.
+    temp mode (default): legacy behavior - fresh clone per call, cleaned up.
+    """
+    if not _ws_mode_persistent():
+        d = _clone_repo()
+        try:
+            yield d
+        finally:
+            _cleanup(d)
+        return
+    q = _ws_ensure_pool()
+    timeout = max(0.0, float(config.GIT_WORKSPACE_LOCK_TIMEOUT))
+    try:
+        idx = q.get(timeout=timeout)
+    except queue.Empty:
+        raise RepoError(
+            "git workspace busy - all slots in use; retry shortly."
+        ) from None
+    slot = _ws_slots[idx]
+    try:
+        _ws_normalize(slot)
+        yield slot["dir"]
+    except BaseException:
+        slot["dirty"] = True
+        raise
+    finally:
+        q.put(idx)
+
+
 def _clone_repo() -> str:
     """Clone the repo into a temp directory.  Returns the repo subdir path.
     The clone is anonymous (no auth) since the repo is public; push auth
@@ -2169,8 +2289,7 @@ def detect_merge_conflicts(number: int) -> dict:
         raise RepoError(f"pull request #{number} is not open.")
     head = pr["head"]["ref"]
     base = pr["base"]["ref"]
-    repo_dir = _clone_repo()
-    try:
+    with _workspace() as repo_dir:
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
@@ -2223,8 +2342,6 @@ def detect_merge_conflicts(number: int) -> dict:
             "base": base,
             "conflicts": conflicts,
         }
-    finally:
-        _cleanup(repo_dir)
 
 
 def apply_merge_resolutions(
@@ -2271,8 +2388,7 @@ def apply_merge_resolutions(
         raise RepoError(f"pull request #{number} is not open.")
     head = pr["head"]["ref"]
     base = pr["base"]["ref"]
-    repo_dir = _clone_repo()
-    try:
+    with _workspace() as repo_dir:
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
@@ -2343,8 +2459,6 @@ def apply_merge_resolutions(
                 f"{len(provided)} file(s) resolved."
             ),
         }
-    finally:
-        _cleanup(repo_dir)
 
 # ------------------------------------------------- async surface (twins) --
 
