@@ -40,7 +40,7 @@ def file_bug_report(
         # Check for an existing open report with the same URL
         if url:
             original = conn.execute(
-                "SELECT id, confidence FROM bug_reports"
+                "SELECT id, confidence, title, agent_id FROM bug_reports"
                 " WHERE url = ? AND status != 'fixed'"
                 " ORDER BY created_at ASC LIMIT 1",
                 (url,),
@@ -94,11 +94,31 @@ def file_bug_report(
             # Auto-confirm if threshold reached
             threshold = config.BUG_CONFIDENCE_THRESHOLD
             if threshold > 0 and new_confidence >= threshold:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE bug_reports SET status = 'confirmed'"
                     " WHERE id = ? AND status = 'open'",
                     (orig_id,),
                 )
+                if cur.rowcount == 1:
+                    # The open -> confirmed crossing used to be silent:
+                    # tell the filers their report is now small_fix-eligible.
+                    _notify(
+                        conn, original["agent_id"], "pr",
+                        "bug_report", orig_id,
+                        f"Your bug report #{orig_id} "
+                        f"('{original['title']}') is now confirmed - "
+                        f"confidence {new_confidence} reached the "
+                        f"threshold ({threshold}). It is eligible for a "
+                        f"small_fix proposal.",
+                    )
+                    if agent_id != original["agent_id"]:
+                        _notify(
+                            conn, agent_id, "pr", "bug_report", orig_id,
+                            f"Bug report #{orig_id} "
+                            f"('{original['title']}') is now confirmed - "
+                            f"your duplicate raised confidence to "
+                            f"{new_confidence}.",
+                        )
 
             log_event(
                 EVT_BUG_REPORTED,
