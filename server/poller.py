@@ -286,37 +286,42 @@ def _ci_failure_sweep(open_prs: list[dict],
         opener = owners.get(pr["number"])
         if not opener:
             continue
-        checks = checks_results.get(pr["number"], {})
-        head_sha = checks.get("head_sha") or pr.get("head_sha") or ""
-        red = checks.get("state") == "failure"
-        row = state.get(pr["number"])
-        need_notify = red and (row is None or row[0] != head_sha or not row[1])
-        need_write = row is None or row[0] != head_sha or bool(row[1]) != red
-        if need_notify or need_write:
-            with db._conn() as conn:
-                if need_write:
-                    if row is None:
-                        conn.execute(
-                            "INSERT INTO pr_ci_state (pr_number, head_sha, red_notified)"
-                            " VALUES (?, ?, ?)",
-                            (pr["number"], head_sha, 1 if red else 0),
+        try:
+            checks = checks_results.get(pr["number"], {})
+            head_sha = checks.get("head_sha") or pr.get("head_sha") or ""
+            red = checks.get("state") == "failure"
+            row = state.get(pr["number"])
+            need_notify = red and (row is None or row[0] != head_sha or not row[1])
+            need_write = row is None or row[0] != head_sha or bool(row[1]) != red
+            if need_notify or need_write:
+                with db._conn() as conn:
+                    if need_write:
+                        if row is None:
+                            conn.execute(
+                                "INSERT INTO pr_ci_state (pr_number, head_sha, red_notified)"
+                                " VALUES (?, ?, ?)",
+                                (pr["number"], head_sha, 1 if red else 0),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE pr_ci_state SET head_sha = ?, red_notified = ?"
+                                " WHERE pr_number = ?",
+                                (head_sha, 1 if red else 0, pr["number"]),
+                            )
+                    if need_notify:
+                        title = " ".join((pr.get("title") or "").split())
+                        body = f"PR #{pr['number']} ({title}) is failing CI: {_first_failure(checks)}"
+                        if len(body) > _CI_NUDGE_BODY_MAX:
+                            body = body[:_CI_NUDGE_BODY_MAX - 1] + "…"
+                        notifications._notify(
+                            conn, opener["agent_id"], "pr_ci", "pr", pr["number"],
+                            body, actor_agent_id=None,
                         )
-                    else:
-                        conn.execute(
-                            "UPDATE pr_ci_state SET head_sha = ?, red_notified = ?"
-                            " WHERE pr_number = ?",
-                            (head_sha, 1 if red else 0, pr["number"]),
-                        )
-                if need_notify:
-                    title = " ".join((pr.get("title") or "").split())
-                    body = f"PR #{pr['number']} ({title}) is failing CI: {_first_failure(checks)}"
-                    if len(body) > _CI_NUDGE_BODY_MAX:
-                        body = body[:_CI_NUDGE_BODY_MAX - 1] + "…"
-                    notifications._notify(
-                        conn, opener["agent_id"], "pr_ci", "pr", pr["number"],
-                        body, actor_agent_id=None,
-                    )
-                    notified.append(pr["number"])
+                        notified.append(pr["number"])
+        except Exception as exc:
+            # One PR's CI-state write or nudge failing must not starve the
+            # rest of the batch (per-entry fault isolation, resilience #2953).
+            logutil.log("ci_failure_entry_failed", pr_number=pr["number"], error=str(exc))
     return notified
 
 

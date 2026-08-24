@@ -1442,12 +1442,15 @@ def update_pr(
     changes: list of {"path": str, "content": str} to create or overwrite,
              {"path": str, "edits": [{"find": str, "replace": str,
              "occurrence": int (optional, 1-based)}, ...]} to find-replace an
-             existing file on the PR branch, or {"path": str, "delete": True}
-             to remove - one commit per entry, each carrying the Citizen
-             trailer of whoever is updating. Patch entries are resolved
-             against the PR branch head at call time (they stack on the PR's
-             own earlier commits) and fail closed on no-match / ambiguous /
-             out-of-range / missing / binary, like propose_change.
+             existing file on the PR branch, {"path": str, "delete": True}
+             to remove, or {"path": str, "reset": True} to restore a file
+             to the base branch state - one commit per entry, each carrying
+             the Citizen trailer of whoever is updating. Patch entries are
+             resolved against the PR branch head at call time (they stack on
+             the PR's own earlier commits) and fail closed on no-match /
+             ambiguous / out-of-range / missing / binary, like propose_change.
+             Reset entries fetch the file from the base branch; they fail
+             closed when the file does not exist on the base.
     title/body: optional new PR title/description. body is used verbatim - the
              caller (server.py) is responsible for keeping the 'Proposal: #N'
              stamp and 'Citizen:' trailer lines intact so the outcome poller
@@ -1479,19 +1482,22 @@ def update_pr(
         has_content = "content" in c
         has_edits = "edits" in c
         is_delete = c.get("delete") is True
-        modes = sum(1 for flag in (has_content, has_edits, is_delete) if flag)
+        is_reset = c.get("reset") is True
+        modes = sum(1 for flag in (has_content, has_edits, is_delete, is_reset) if flag)
         if modes == 0:
             raise RepoError(
-                f"change for {path!r} needs 'content', 'edits' or "
-                "'delete': True."
+                f"change for {path!r} needs 'content', 'edits', "
+                "'delete': True or 'reset': True."
             )
         if modes > 1:
             raise RepoError(
                 f"change for {path!r} has more than one of 'content', "
-                "'edits' and 'delete' - use one."
+                "'edits', 'delete' and 'reset' - use one."
             )
         if is_delete:
             planned.append({"path": path, "delete": True})
+        elif is_reset:
+            planned.append({"path": path, "reset": True})
         elif has_edits:
             planned.append({"path": path, "edits": _validate_edits(path, c["edits"])})
         else:
@@ -1515,9 +1521,10 @@ def update_pr(
 
     new_title = (title or current_title).strip()
 
-    # Resolve patch entries against the PR branch head before building the
-    # plan - a patch cannot be previewed (or written) without the base, and
-    # the sha resolution rides along on the same GET.
+    # Resolve patch and reset entries before building the plan - patches
+    # cannot be previewed (or written) without the base, and reset entries
+    # fetch the file from the base branch.
+    base_branch_name = pr["base"]["ref"] if isinstance(pr.get("base"), dict) else "main"
     for p in planned:
         if "edits" in p:
             data = _request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
@@ -1525,6 +1532,25 @@ def update_pr(
             p["content"] = content
             p["sha"] = data.get("sha")
             p["patch_log"] = log
+        elif p.get("reset"):
+            data = _request("GET", f"contents/{p['path']}?ref={base_branch_name}", ok_404=True)
+            if data is None:
+                raise RepoError(
+                    f"cannot reset {p['path']!r} - file does not exist on "
+                    f"the base branch ({base_branch_name!r})."
+                )
+            if data.get("encoding") != "base64":
+                raise RepoError(
+                    f"cannot reset {p['path']!r} - file is not UTF-8 text "
+                    "on the base branch."
+                )
+            import base64 as _b64
+            p["content"] = _b64.b64decode(data["content"]).decode("utf-8")
+            p["base_sha"] = data.get("sha")
+            # Get the PR-branch sha so the PUT overwrites correctly (or
+            # creates if the file was deleted in the PR).
+            pr_data = _request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            p["sha"] = pr_data.get("sha") if pr_data else None
 
     plan = {
         "dry_run": dry_run,
@@ -1552,7 +1578,7 @@ def update_pr(
             if sha is None:
                 raise RepoError(f"no file at {p['path']!r} on branch {branch!r} to delete.")
             _request("DELETE", f"contents/{p['path']}", {**commit_body, "sha": sha})
-        elif "edits" in p:
+        elif "edits" in p or p.get("reset"):
             # Resolved in the pre-pass: content and sha are already current.
             put_body = {
                 **commit_body,

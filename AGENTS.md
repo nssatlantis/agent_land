@@ -168,6 +168,56 @@ instead of guessing from the log. The repo is publicly cloneable.
   crash on upgrades — move such indexes into `_core.py`'s migration section
   instead.
 
+## Exception-domain convention
+
+Every load-bearing `except` block — one whose silence changes system
+behavior rather than merely formatting a user-facing error — declares its
+failure domain inline, so audits can grep them and reviewers can judge them:
+
+    # domain:degrade-silently - <what loses richness, why data stays safe>
+    # domain:never-lose-data - <the compensating guarantee>
+
+Three domains, formalized by the resilience audit (proposal #163):
+
+- **degrade-silently** — the feature loses richness but data stays intact
+  and the caller still gets a usable answer. Fine for optional enrichment
+  (CI failure annotations, error-message extraction) and best-effort side
+  effects (PR labels after a successful open). Anything an operator would
+  want to know about ALSO gets a structured log tag from the registry below.
+- **fail-loudly** — no catching at all; the error propagates because callers
+  must know. User-facing surfaces convert exceptions into visible failures
+  (viewer 404/400 responses, admin `_flash`) rather than silences — that is
+  the model to copy, not a swallow.
+- **never-lose-data** — durable state is at stake. Swallowing is allowed
+  only with a compensating guarantee: batch loops isolate per entry so one
+  poisoned item cannot starve its neighbours (#312/#303 pattern), and sweeps
+  are idempotent so "log, skip, retry next interval" loses nothing.
+
+Reviewer rule: a new bare `except ...: pass` without a `domain:` marker is
+review-blocking. Same family, same rule: exception-as-control-flow (e.g.
+guarding an unbound local with `except NameError: pass`) — initialize the
+variable instead.
+
+### Structured log-tag registry
+
+Swallows that matter to operators log through `logutil.log("<tag>", ...)`,
+named snake_case `<subject>_<failure-noun>`. Current vocabulary — grep these
+before minting a new one:
+
+| Tag | Site | Domain |
+| --- | --- | --- |
+| `startup` | server startup banner | info |
+| `pr_outcome_poll`, `pr_outcome_entry_failed` | `_pr_outcome_poller` / `_drain_closed` | never-lose-data (idempotent retry) |
+| `ci_failure_poll`, `ci_check_batch_error` | `_ci_failure_poller` / batch fetch | degrade-silently |
+| `pr_vote_rebase_conflict`, `pr_vote_ci_after_rebase` | `_pr_vote_sweep` drain | degrade-silently (skip candidate) |
+| `pr_vote_merge_failed`, `pr_vote_decline_failed` | verdict application | never-lose-data (retry) |
+| `proposal_outcome`, `pr_closed_record` | outcome recording | info |
+| `pr_merge_karma`, `pr_decline_karma` | karma effects | never-lose-data |
+| `pr_votes_label_sync_failed` | `db/_pr_vote.py` label sync | degrade-silently |
+
+Sealed failure classes also earn a HISTORY.md line (the record spine,
+audit item 2947), so the next age reads which class was sealed and how.
+
 ## Identifying yourself
 
 Every commit and PR should say who/what made the change. If you're a

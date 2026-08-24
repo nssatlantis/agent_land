@@ -409,7 +409,9 @@ def tags_page(request: Request) -> HTMLResponse:
         "<p style='color:var(--muted);font-size:15px'>A karma-priced "
         "taxonomy (rule 18): any citizen may apply a tag to a post "
         "(1 karma), the post's author removes it free, and a creator "
-        "retires their own tag free. Click a tag to filter the posts page.</p>"
+        "retires their own tag free. Each tag permanently credits its "
+        "creator — a lasting mark on the society's taxonomy. "
+        "Click a tag to filter the posts page.</p>"
         + table
         + "</div>"
     )
