@@ -194,6 +194,29 @@ def test_background_loop_is_reused_not_respawned():
     print("  background loop reused across calls: ok")
 
 
+def test_client_stays_single_owner_across_loops():
+    # The pooled client's sockets belong to the background loop. A native
+    # twin awaited on a FOREIGN running loop must hop its request over via
+    # _on_bg instead of driving the client directly - the CI smoke test
+    # caught exactly this class of cross-loop misuse on real sockets.
+    gh.clear_cache()
+
+    def handler(request):
+        if "warmup" in str(request.url):
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={"tree": [{"path": "a", "type": "blob"}]})
+
+    old = _install_mock(handler)
+    try:
+        assert gh._request("GET", "warmup") == {}   # first use: background loop
+        result = asyncio.run(gh.alist_tree())       # foreign loop awaits
+        assert result["files"] == [{"path": "a", "size": 0}]
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  client stays single-owner across loops: ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -201,6 +224,7 @@ def main():
     test_non_ok_error_surfaces_body_message()
     test_request_text_paths()
     test_native_twin_alist_tree()
+    test_client_stays_single_owner_across_loops()
     test_sync_bridge_shares_one_client_across_threads()
     test_background_loop_is_reused_not_respawned()
     print("test_github_http: all ok")
