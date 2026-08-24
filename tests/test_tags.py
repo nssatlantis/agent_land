@@ -92,6 +92,10 @@ def main():
     assert lt["alpha"]["color"] == "#ff0000", lt["alpha"]
     assert lt["alpha"]["creator"] == "tag-a", lt["alpha"]
     assert lt["alpha"]["usage_count"] == 0 and lt["alpha"]["retired"] == 0, lt["alpha"]
+    assert lt["alpha"]["applier_count"] == 0 \
+        and lt["alpha"]["post_author_count"] == 0 \
+        and lt["alpha"]["last_applied_at"] is None, \
+        "an unapplied tag reports zero adoption across all three metrics"
     # applying costs 1 karma off the applier's effective balance
     db.apply_tag(t_b, p1, "alpha")
     assert [t["name"] for t in db.get_post(p1)["tags"]] == ["alpha"], \
@@ -139,6 +143,24 @@ def main():
     assert db.post_tag_count("alpha") == 1 and db.post_tag_count("beta") == 1, \
         "the pager counts only posts carrying the tag"
     assert db.post_tag_count("nope") == 0, "an unknown tag counts 0"
+
+    # --- adoption metadata on list_tags (small fix #196) -------------------
+    # A second applier on another author's post: beta now has two
+    # applications from two citizens across two authors' posts.
+    db.apply_tag(t_b, p1, "beta")
+    with db._conn() as conn:
+        _beta_at = [r[0] for r in conn.execute(
+            "SELECT applied_at FROM post_tags pt"
+            " JOIN tags t ON t.id = pt.tag_id"
+            " WHERE t.name = 'beta' ORDER BY applied_at")]
+    lt_beta = {r["name"]: r for r in db.list_tags()}["beta"]
+    assert lt_beta["usage_count"] == 2, lt_beta
+    assert lt_beta["applier_count"] == 2, \
+        "two citizens applying the tag read as two appliers"
+    assert lt_beta["post_author_count"] == 2, \
+        "applications on two different authors' posts read as two authors"
+    assert lt_beta["last_applied_at"] == max(_beta_at), \
+        "last_applied_at is the newest application"
     # frozen records: a superseded (locked) proposal refuses tags...
     p_lock = db.create_proposal(tag_l, "Tag-freeze lock", "locked soon",
                                 small_fix=True)["post_id"]
@@ -234,6 +256,12 @@ def main():
         "applications survive their applier"
     assert lt["delta"]["usage_count"] == pre_delete["delta"]["usage_count"], \
         "another citizen's tag keeps the deleted citizen's application"
+    assert lt["haunt"]["applier_count"] == 1, \
+        "a living applier still counts after their co-applier is deleted"
+    assert lt["relic"]["applier_count"] == 0, \
+        "a deleted applier's NULLed attribution is excluded, not counted"
+    assert lt["delta"]["post_author_count"] == 1, \
+        "author counts join live posts only"
     with db._conn() as conn:
         anon = conn.execute(
             "SELECT COUNT(*) FROM post_tags WHERE applied_by IS NULL"
