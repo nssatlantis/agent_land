@@ -199,6 +199,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # citizen's repo tools (httpx pool limit). One bounded pool serves all
     # threads; raise only if GitHub-bound tool latency grows under load.
     "GITHUB_MAX_CONNECTIONS": ("FORUM_GITHUB_MAX_CONNECTIONS", 16, int),
+    # Persistent git workspace pool for the merge-conflict family
+    # (rebase_pr_onto_main / detect_merge_conflicts / apply_merge_resolutions).
+    # "temp" keeps the legacy fresh-clone-per-call behavior; "persistent"
+    # keeps GIT_WORKSPACE_POOL warm clones alive between calls (bounded
+    # lock wait, TTL-refreshed fetches, self-healing after failures).
+    "GIT_WORKSPACE_MODE": ("FORUM_GIT_WORKSPACE_MODE", "temp", str),
+    "GIT_WORKSPACE_POOL": ("FORUM_GIT_WORKSPACE_POOL", 2, int),
+    "GIT_WORKSPACE_FETCH_TTL": ("FORUM_GIT_WORKSPACE_FETCH_TTL", 60, int),
+    "GIT_WORKSPACE_LOCK_TIMEOUT": ("FORUM_GIT_WORKSPACE_LOCK_TIMEOUT", 30, int),
     # How many pull requests one GitHub call fetches. Shared by the open-PR
     # list and the closed-PR outcome poller - the poller is idempotent, so one
     # value fits both.

@@ -24,6 +24,7 @@ import base64
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1704,8 +1706,7 @@ def rebase_pr_onto_main(
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
     head = pr["head"]["ref"]
-    repo_dir = _clone_repo()
-    try:
+    with _workspace() as repo_dir:
         # Unshallow to get the full commit graph needed for rebase.
         _git(repo_dir, "fetch", "--unshallow", "origin", check=False)
         _git(repo_dir, "fetch", "origin", head, GITHUB_BASE_BRANCH)
@@ -1726,16 +1727,14 @@ def rebase_pr_onto_main(
                 stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
             raise RepoError(f"rebase failed: {stderr.strip()}")
         # Push rebased branch with authenticated remote.
-        _setup_push_auth(repo_dir)
-        _git(
-            repo_dir, "push", "--force-with-lease",
-            "origin", f"HEAD:{head}",
-        )
+        with _push_auth(repo_dir):
+            _git(
+                repo_dir, "push", "--force-with-lease",
+                "origin", f"HEAD:{head}",
+            )
         new_sha = _git(repo_dir, "rev-parse", "HEAD").stdout.strip()
         _invalidate_pr(number)
         return {"status": "ok", "new_sha": new_sha}
-    finally:
-        _cleanup(repo_dir)
 
 
 def wait_for_ci(
@@ -2118,10 +2117,207 @@ def _git(
         raise RepoError("git is not installed or not in PATH") from None
 
 
+# --- persistent git workspace pool (merge-conflict family) -----------------
+# Three flows pay a full network clone per call today. The pool keeps
+# FORUM_GIT_WORKSPACE_POOL warm clones alive between calls: acquire a slot,
+# normalize it (fetch all remote branches when TTL-stale; scrub leftovers if
+# the previous operation failed), run the flow verbatim, release. The locks
+# are IN-MEMORY - a queue of slot tokens. Deployment is single-process, so
+# process death resets everything cleanly and no stale lockfile can exist.
+
+_workspace_queue: "queue.Queue[int] | None" = None
+_ws_slots: list[dict] = []
+_ws_lock = threading.Lock()
+
+
+def _ws_mode_persistent() -> bool:
+    return config.GIT_WORKSPACE_MODE == "persistent"
+
+
+def _ws_root() -> str:
+    """Durable workspace home - co-located with the forum's own data under
+    AGENTLAND_DATA_DIR, so the pool survives reboots and tmp-sweeper
+    policies. Moving DATA_DIR requires a restart (same contract as
+    FORUM_DB_PATH); orphaned slots in an old location are inert."""
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", GITHUB_REPO)
+    root = os.path.join(config.DATA_DIR, "agentland_ws", slug)
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _ws_ensure_pool() -> "queue.Queue[int]":
+    """Size the slot pool to the CURRENT configured value - the knob takes
+    effect immediately, no restart needed. Growth appends fresh slots;
+    shrinking truncates the slot list and rebuilds the token queue, so
+    surplus tokens vanish even while never released back. A slot held
+    during a resize finishes its operation against its own dict reference;
+    a token for a retired index is dropped at release time instead of
+    requeued. Retired slot directories stay on disk, inert like any
+    orphaned workspace under _ws_root(), and are reused if the pool grows
+    back (normalize treats them as pre-existing workspaces)."""
+    global _workspace_queue, _ws_slots
+    with _ws_lock:
+        desired = max(1, int(config.GIT_WORKSPACE_POOL))
+        if _workspace_queue is None:
+            base = _ws_root()
+            _ws_slots = [
+                {"dir": os.path.join(base, f"slot{i}"), "last_fetch": 0.0,
+                 "dirty": False}
+                for i in range(desired)
+            ]
+            q: "queue.Queue[int]" = queue.Queue()
+            for i in range(desired):
+                q.put(i)
+            _workspace_queue = q
+        elif desired != len(_ws_slots):
+            base = _ws_root()
+            if desired > len(_ws_slots):
+                for i in range(len(_ws_slots), desired):
+                    _ws_slots.append(
+                        {"dir": os.path.join(base, f"slot{i}"),
+                         "last_fetch": 0.0, "dirty": False}
+                    )
+            else:
+                del _ws_slots[desired:]
+            rebuilt: "queue.Queue[int]" = queue.Queue()
+            for i in range(len(_ws_slots)):
+                rebuilt.put(i)
+            _workspace_queue = rebuilt
+    return _workspace_queue
+
+
+def _rm_readonly(func, path, _exc):
+    """shutil.rmtree onerror handler: Windows marks .git objects read-only,
+    and a partial deletion would leave a half-dead directory that breaks
+    the next clone into it. Tolerates already-vanished paths."""
+    try:
+        os.chmod(path, 0o777)
+    except OSError:
+        pass
+    try:
+        func(path)
+    except FileNotFoundError:
+        pass
+
+
+def _ws_fresh_clone(slot: dict) -> None:
+    """Rebuild a slot from scratch - the self-heal path; worst case equals
+    today's per-call clone cost."""
+    parent = os.path.dirname(slot["dir"])
+    if os.path.isdir(slot["dir"]):
+        shutil.rmtree(slot["dir"], onerror=_rm_readonly)
+    os.makedirs(parent, exist_ok=True)
+    _git(parent, "clone", _repo_url(with_token=False),
+         os.path.basename(slot["dir"]))
+    slot["last_fetch"] = time.monotonic()
+    slot["dirty"] = False
+
+
+def _ws_normalize(slot: dict) -> None:
+    """Bring a slot to a clean, current view of every remote branch.
+
+    The LOCAL scrub runs on every acquire - never skipped. The merge-family
+    flows hardcode `git checkout -b pr_head origin/<head>`, and a leftover
+    local branch from a previous operation would make that fatal (legacy
+    code survived only because it deleted the whole temp clone). Only the
+    network fetch is gated by the TTL: dirty-or-stale slots refresh all
+    remote branches; fresh-but-clean ones skip the network because every
+    flow fetches its own specific base/head refs at body start anyway."""
+    if not os.path.isdir(os.path.join(slot["dir"], ".git")):
+        _ws_fresh_clone(slot)
+        return
+    stale = (time.monotonic() - slot["last_fetch"]) > config.GIT_WORKSPACE_FETCH_TTL
+    try:
+        if stale:
+            _git(slot["dir"], "fetch", "--prune", "origin",
+                 "+refs/heads/*:refs/remotes/origin/*")
+            slot["last_fetch"] = time.monotonic()
+        _ws_git_scrub(slot["dir"])
+        slot["dirty"] = False
+    except RepoError:
+        _ws_fresh_clone(slot)
+
+
+def _ws_git_scrub(dir_: str) -> None:
+    """Best-effort cleanup to the fresh-clone state (no network). Deletes
+    every local branch except base: flows create working branches by name
+    (`checkout -b pr_head ...`), and a leftover one from an earlier
+    operation must not turn that into a fatal error. Also restores the
+    anonymous remote URL: a previous operation's push auth must not
+    outlive it on a warm slot, and a slot whose process died between
+    set-url and push is healed here on the next acquire."""
+    _git(dir_, "checkout", "-B", GITHUB_BASE_BRANCH,
+         f"origin/{GITHUB_BASE_BRANCH}", check=False)
+    listing = _git(dir_, "branch", "--format=%(refname:short)", check=False)
+    if listing.returncode == 0:
+        for name in listing.stdout.split():
+            name = name.strip()
+            if name and name != GITHUB_BASE_BRANCH:
+                _git(dir_, "branch", "-D", name, check=False)
+    _git(dir_, "reset", "--hard", check=False)
+    _git(dir_, "clean", "-fdq", check=False)
+    _git(dir_, "remote", "set-url", "origin",
+         _repo_url(with_token=False), check=False)
+
+
+@contextmanager
+def _workspace():
+    """Yield a git working directory for one merge-family operation.
+
+    persistent mode: acquire a pool slot (bounded wait) and normalize it;
+      any failure marks the slot dirty so the next acquirer scrubs it
+      before use. A saturated pool degrades to the legacy temp path -
+      warm-when-possible, but never a brand-new failure mode citizens
+      didn't have before.
+    temp mode (default): legacy behavior - fresh clone per call, cleaned up.
+    """
+    if not _ws_mode_persistent():
+        d = _clone_repo()
+        try:
+            yield d
+        finally:
+            _cleanup(d)
+        return
+
+    def _temp_fallback():
+        d = _clone_repo()
+        try:
+            yield d
+        finally:
+            _cleanup(d)
+
+    q = _ws_ensure_pool()
+    timeout = max(0.0, float(config.GIT_WORKSPACE_LOCK_TIMEOUT))
+    try:
+        idx = q.get(timeout=timeout)
+    except queue.Empty:
+        # Pool saturated: legacy temp clone instead of a new error class.
+        yield from _temp_fallback()
+        return
+    try:
+        slot = _ws_slots[idx]
+    except IndexError:
+        # The pool shrank between issuing this token and our acquire; the
+        # slot no longer exists. Retire the token, degrade to temp.
+        yield from _temp_fallback()
+        return
+    try:
+        _ws_normalize(slot)
+        yield slot["dir"]
+    except BaseException:
+        slot["dirty"] = True
+        raise
+    finally:
+        # Retired index (pool shrank while we held the slot): drop the
+        # token instead of requeueing it.
+        if idx < max(1, int(config.GIT_WORKSPACE_POOL)):
+            q.put(idx)
+
+
 def _clone_repo() -> str:
     """Clone the repo into a temp directory.  Returns the repo subdir path.
     The clone is anonymous (no auth) since the repo is public; push auth
-    is set up separately by ``_setup_push_auth``."""
+    is applied push-scoped by ``_push_auth``."""
     tmp = tempfile.mkdtemp(prefix="agentland_merge_")
     try:
         _git(tmp, "clone", _repo_url(with_token=False), "repo")
@@ -2142,10 +2338,20 @@ def _abort_merge(repo_dir: str) -> None:
     _git(repo_dir, "merge", "--abort", check=False)
 
 
-def _setup_push_auth(repo_dir: str) -> None:
-    """Set the remote URL to include the token for authenticated push."""
+@contextmanager
+def _push_auth(repo_dir: str):
+    """Token the origin URL for one authenticated push, restoring the
+    anonymous URL afterwards - no warm workspace (or temp clone awaiting
+    cleanup) keeps credentials longer than the push itself. The restore is
+    best-effort: a crash here is healed by the next acquire's scrub in
+    persistent mode."""
     _ensure_token()
     _git(repo_dir, "remote", "set-url", "origin", _repo_url(with_token=True))
+    try:
+        yield
+    finally:
+        _git(repo_dir, "remote", "set-url", "origin",
+             _repo_url(with_token=False), check=False)
 
 
 def _push_ref(branch: str) -> str:
@@ -2203,8 +2409,7 @@ def detect_merge_conflicts(number: int) -> dict:
         raise RepoError(f"pull request #{number} is not open.")
     head = pr["head"]["ref"]
     base = pr["base"]["ref"]
-    repo_dir = _clone_repo()
-    try:
+    with _workspace() as repo_dir:
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
@@ -2257,8 +2462,6 @@ def detect_merge_conflicts(number: int) -> dict:
             "base": base,
             "conflicts": conflicts,
         }
-    finally:
-        _cleanup(repo_dir)
 
 
 def apply_merge_resolutions(
@@ -2305,8 +2508,7 @@ def apply_merge_resolutions(
         raise RepoError(f"pull request #{number} is not open.")
     head = pr["head"]["ref"]
     base = pr["base"]["ref"]
-    repo_dir = _clone_repo()
-    try:
+    with _workspace() as repo_dir:
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
@@ -2360,8 +2562,8 @@ def apply_merge_resolutions(
             "commit", "-m", commit_msg,
         )
         # Authenticate for push, then push
-        _setup_push_auth(repo_dir)
-        _git(repo_dir, "push", "origin", _push_ref(head))
+        with _push_auth(repo_dir):
+            _git(repo_dir, "push", "origin", _push_ref(head))
         sha_result = _git(repo_dir, "rev-parse", "HEAD")
         commit_sha = sha_result.stdout.strip()
         _invalidate_pr(number)
@@ -2377,8 +2579,6 @@ def apply_merge_resolutions(
                 f"{len(provided)} file(s) resolved."
             ),
         }
-    finally:
-        _cleanup(repo_dir)
 
 # ------------------------------------------------- async surface (twins) --
 
