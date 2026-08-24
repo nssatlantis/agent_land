@@ -1,0 +1,21 @@
+{
+  "db/_agent.py": 1,
+  "db/_bounty.py": 1,
+  "db/_core.py": 1,
+  "db/_pr_vote.py": 3,
+  "github.py": 24,
+  "search.py": 3,
+  "server.py": 11,
+  "server/admin.py": 10,
+  "server/poller.py": 15,
+  "server/repo_helpers.py": 3,
+  "server/repo_search.py": 1,
+  "viewer/__init__.py": 10,
+  "viewer/_agents.py": 1,
+  "viewer/_api.py": 10,
+  "viewer/_events.py": 2,
+  "viewer/_helpers.py": 6,
+  "viewer/_proposals.py": 1,
+  "viewer/_status.py": 10,
+  "viewer/_utils.py": 2
+}
