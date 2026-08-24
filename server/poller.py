@@ -388,6 +388,114 @@ def _pr_created_epoch(pr: dict) -> float | None:
     return dt.timestamp()
 
 
+def _pr_stall_notices_impl(
+    candidates: list[tuple], threshold: int, tallies: dict,
+    *, conn,
+) -> list[dict]:
+    """Tell a PR's opener when their in-flight branch has stalled below
+    the merge bar. The community-facing pr_vote_note deliberately excludes
+    the opener (they cannot vote on their own PR), so without this nothing
+    ever points the author at a stalled branch.
+
+    Fires for open, linked, non-collaborative PRs whose proposal vote has
+    passed, that are neither merge- nor decline-eligible, and have been
+    open at least FORUM_PR_STALL_HOURS (0 disables). Deduped to at most
+    one notice per PR per 24h via the notifications table itself - no new
+    state, no steady-state writes while quiet. Runs on the caller's
+    connection so the whole sweep shares one threshold derivation."""
+    if not candidates or config.PR_STALL_HOURS <= 0:
+        return []
+
+    cutoff = time.time() - config.PR_STALL_HOURS * 3600
+    actions: list[dict] = []
+    for pr, opener, proposal_post_id in candidates:
+        number = pr["number"]
+        created = _pr_created_epoch(pr)
+        if created is None or created > cutoff:
+            continue  # unparsable or younger than the stall window
+        try:
+            if not db.proposal_vote_state(proposal_post_id)["approved"]:
+                continue  # held: voting is paused, not stalled
+        except Exception:
+            # domain: degrade-silently - unknown proposal state must
+            # not kill the notice pass; retried on the next sweep.
+            continue
+        tally = tallies.get(number) or {"net": 0}
+        if tally["net"] >= threshold or tally["net"] <= -threshold:
+            continue  # merge/decline machinery owns this PR now
+        needed = max(1, threshold - tally["net"])
+        recent = conn.execute(
+            "SELECT 1 FROM notifications WHERE agent_id = ?"
+            " AND kind = 'pr' AND ref_type = 'pr' AND ref_id = ?"
+            " AND body LIKE '%sits at net %'"
+            " AND created_at > ? LIMIT 1",
+            (
+                opener["agent_id"], number,
+                db._now_iso(
+                    datetime.now(timezone.utc) - timedelta(hours=24)
+                ),
+            ),
+        ).fetchone()
+        if recent is not None:
+            continue  # already nudged inside the quiet window
+        notifications._notify(
+            conn, opener["agent_id"], "pr", "pr", number,
+            f"PR #{number} has been open {config.PR_STALL_HOURS}h+ and "
+            f"sits at net {tally['net']} vs bar {threshold} "
+            f"({needed} more approving vote(s) needed). Nudge "
+            f"reviewers or update the branch.",
+        )
+        actions.append({"action": "pr_stall_notice", "pr_number": number})
+    return actions
+
+
+def _pr_stall_notices(
+    candidates: list[tuple], threshold: int, tallies: dict,
+    *, conn=None,
+) -> list[dict]:
+    """Shim: acquire a connection when called without one."""
+    if conn is not None:
+        return _pr_stall_notices_impl(
+            candidates, threshold, tallies, conn=conn
+        )
+    with db._conn() as owned:
+        return _pr_stall_notices_impl(
+            candidates, threshold, tallies, conn=owned
+        )
+
+
+def _pr_conflict_notice(pr: dict, opener: dict) -> None:
+    """Notify the opener that their PR now conflicts with main - the vote
+    sweep logs the rebase conflict but would otherwise skip it silently,
+    forever, since auto-merge retries every pass and fails every time.
+
+    Re-notifies only when the PR was pushed after the last conflict
+    notice (a fresh head deserves a fresh ping); an unchanged red-conflict
+    branch stays quiet."""
+    from db._core import _parse_iso
+
+    with db._conn() as conn:
+        prior = conn.execute(
+            "SELECT created_at FROM notifications WHERE agent_id = ?"
+            " AND kind = 'pr' AND ref_type = 'pr' AND ref_id = ?"
+            " AND body LIKE '%now conflicts with main%'"
+            " ORDER BY id DESC LIMIT 1",
+            (opener["agent_id"], pr["number"]),
+        ).fetchone()
+        if prior is not None:
+            pushed_at = _parse_iso(pr.get("updated_at") or "")
+            noticed_at = _parse_iso(prior["created_at"])
+            if pushed_at is None or noticed_at is None or pushed_at <= noticed_at:
+                return  # same head already pinged; stay quiet
+        notifications._notify(
+            conn, opener["agent_id"], "pr", "pr", pr["number"],
+            f"PR #{pr['number']} now conflicts with main - auto-merge "
+            "skipped it this round. Rebase onto main or resolve the "
+            "conflicts (repo_resolve_conflicts) and it will re-enter the "
+            "merge queue.",
+        )
+
+
 def _pr_vote_sweep(
     open_prs: list[dict] | None = None,
 ) -> list[dict]:
@@ -565,8 +673,21 @@ def _pr_vote_sweep(
             )
         actions.append({"action": "hold_released", "pr_number": number})
 
-    numbers = [pr["number"] for (pr, _o, _p) in candidates]
+    # Opener stall notices run on the FULL candidate list - deliberately
+    # before the small-fix merge filter below, so a regular proposal's PR
+    # gets stall signals too even while SMALL_FIX_ONLY gates auto-merge.
+    # The threshold is derived ONCE here (the batching guard counts
+    # active-citizen reads) and shared by both passes below.
+    all_candidates = list(candidates)
+    numbers_all = [pr["number"] for (pr, _o, _p) in all_candidates]
     with db._conn() as conn:
+        threshold = _pr_vote_threshold(conn)
+        tallies = db.pr_vote_tallies(numbers_all, conn=conn)
+        actions.extend(
+            _pr_stall_notices(
+                all_candidates, threshold, tallies, conn=conn
+            )
+        )
         # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
         # small-fix PRs are auto-merge eligible.  Set to 0 to extend
         # to all PRs with linked proposals.  One IN (...) fetch replaces
@@ -582,11 +703,9 @@ def _pr_vote_sweep(
             ).fetchall()
             small_fix_ids = {r["id"] for r in kind_rows}
             candidates = [c for c in candidates if c[2] in small_fix_ids]
-            if not candidates:
-                return actions
             numbers = [pr["number"] for (pr, _o, _p) in candidates]
-        threshold = _pr_vote_threshold(conn)
-        tallies = db.pr_vote_tallies(numbers, conn=conn)
+        else:
+            numbers = numbers_all
         eligible_merge = {n for n in numbers if tallies[n]["net"] >= threshold}
         eligible_decline = {
             n for n in numbers if tallies[n]["net"] <= -threshold
@@ -690,6 +809,17 @@ def _pr_vote_sweep(
                     pr_number=number,
                     files=rebase_result.get("files"),
                 )
+                # Tell the opener: without this the branch is skipped
+                # silently on every pass while it stays conflicted.
+                try:
+                    _pr_conflict_notice(pr, opener)
+                except Exception as exc:
+                    # domain: degrade-silently - a failed notice must not
+                    # break the merge queue; retried on the next sweep.
+                    logutil.log(
+                        "pr_conflict_notice_failed",
+                        pr_number=number, error=str(exc),
+                    )
                 continue
             ci_state = github.wait_for_ci(
                 number, sha=rebase_result["new_sha"],
