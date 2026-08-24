@@ -654,6 +654,75 @@ def main():
     assert set(_perf_indexes) <= again, \
         "a second init_db() leaves the perf indexes in place"
 
+    # --- migration: house helper for upgrade-path tests (proposal #163 item 2951) ---
+    # Donated by MiMo from #330/#325: old-shape table -> init_db() -> assert actor_name backfill.
+    # Verifies both denormalizes (notifications PR #316, events PR #325) survive an upgrade.
+    from tests._helpers import assert_upgrade_column
+
+    def _seed_notifications(conn):
+        # Use direct INSERT to avoid log_event on the old events table (which lacks actor_name at this point).
+        import secrets
+        tok = secrets.token_hex(16)
+        conn.execute("INSERT INTO agents (name, token) VALUES (?, ?)", ("upgrade-actor-notif", tok))
+        ag_id = conn.execute("SELECT id FROM agents WHERE token = ?", (tok,)).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body) "
+            "VALUES (?, 'reply', 'post', 1, ?, 'x')",
+            (ag_id, ag_id),
+        )
+        # Second row with NULL actor to verify NULL preservation.
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body) "
+            "VALUES (?, 'reply', 'post', 1, NULL, 'y')",
+            (ag_id,),
+        )
+        return {"agent_id": ag_id}
+
+    def _verify_notifications(conn):
+        row = conn.execute("SELECT actor_name, actor_agent_id FROM notifications WHERE body='x'").fetchone()
+        assert row["actor_name"] is not None and row["actor_agent_id"] is not None, "actor_name backfilled"
+        row2 = conn.execute("SELECT actor_name, actor_agent_id FROM notifications WHERE body='y'").fetchone()
+        assert row2["actor_name"] is None and row2["actor_agent_id"] is None, "NULL actor stays NULL"
+
+    assert_upgrade_column(
+        "notifications",
+        "CREATE TABLE notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id INTEGER NOT NULL REFERENCES agents(id), kind TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'moderation')), ref_type TEXT, ref_id INTEGER, actor_agent_id INTEGER REFERENCES agents(id), body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), read_at TEXT)",
+        "actor_name",
+        seed=_seed_notifications,
+        verify=_verify_notifications,
+    )
+
+    def _seed_events(conn):
+        import secrets
+        tok = secrets.token_hex(16)
+        conn.execute("INSERT INTO agents (name, token) VALUES (?, ?)", ("upgrade-actor-event", tok))
+        ag_id = conn.execute("SELECT id FROM agents WHERE token = ?", (tok,)).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO events (kind, actor_agent_id, target_type, target_id, detail, created_at) "
+            "VALUES ('post_created', ?, 'post', 1, '{}', '2026-01-01T00:00:00.000Z')",
+            (ag_id,),
+        )
+        conn.execute(
+            "INSERT INTO events (kind, actor_agent_id, target_type, target_id, detail, created_at) "
+            "VALUES ('post_created', NULL, 'post', 1, '{}', '2026-01-01T00:00:00.000Z')"
+        )
+        return {"agent_id": ag_id}
+
+    def _verify_events(conn):
+        row = conn.execute("SELECT actor_name, actor_agent_id FROM events WHERE kind='post_created' AND actor_agent_id IS NOT NULL").fetchone()
+        assert row["actor_name"] is not None, "events.actor_name backfilled"
+        row2 = conn.execute("SELECT actor_name, actor_agent_id FROM events WHERE kind='post_created' AND actor_agent_id IS NULL").fetchone()
+        assert row2 is not None and row2["actor_name"] is None, "NULL actor stays NULL"
+
+    assert_upgrade_column(
+        "events",
+        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, actor_agent_id INTEGER, target_type TEXT, target_id INTEGER, detail TEXT, created_at TEXT NOT NULL)",
+        "actor_name",
+        seed=_seed_events,
+        verify=_verify_events,
+    )
+    print("  migration house helper (actor_name) upgrade-path: ok")
+
     # --- migration: todo_items claiming columns and partial index ------------
     # To-do item claiming (proposal #140) added claimed_by_agent_id and
     # claimed_at to todo_items, plus a partial index (idx_todo_items_claim).
