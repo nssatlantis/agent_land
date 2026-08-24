@@ -2101,8 +2101,12 @@ def _ws_mode_persistent() -> bool:
 
 
 def _ws_root() -> str:
+    """Durable workspace home - co-located with the forum's own data under
+    AGENTLAND_DATA_DIR, so the pool survives reboots and tmp-sweeper
+    policies. Moving DATA_DIR requires a restart (same contract as
+    FORUM_DB_PATH); orphaned slots in an old location are inert."""
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", GITHUB_REPO)
-    root = os.path.join(tempfile.gettempdir(), f"agentland_ws_{slug}")
+    root = os.path.join(config.DATA_DIR, "agentland_ws", slug)
     os.makedirs(root, exist_ok=True)
     return root
 
