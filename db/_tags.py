@@ -101,8 +101,14 @@ def _tag_create_cooldown_remaining(conn: sqlite3.Connection, agent_id: int) -> i
 
 
 def list_tags() -> list:
-    """All tags with their usage counts, oldest first - the /tags page
-    data. Retired tags stay listed (`retired` True, creator still shown)
+    """All tags with their usage counts and adoption metadata, oldest
+    first - the /tags page data. Alongside `usage_count` each row carries
+    `applier_count` (distinct non-null appliers - deleted citizens'
+    NULLed attributions are excluded), `post_author_count` (distinct
+    authors of the posts carrying the tag) and `last_applied_at` (the
+    newest application, NULL when never applied); retired tags freeze
+    naturally since applications stop. Retired tags stay listed
+    (`retired` True, creator still shown)
     so the history they carry is never orphaned; their name stays
     reserved against new creations. A tag whose creator was hard-deleted
     lists with `creator` None: the record survives as an anonymous
@@ -112,9 +118,13 @@ def list_tags() -> list:
             """
             SELECT t.id, t.name, t.color, t.created_by, t.created_at,
                    t.retired, t.retired_at, t.description, a.name AS creator,
-                   COUNT(pt.tag_id) AS usage_count
+                   COUNT(pt.tag_id) AS usage_count,
+                   COUNT(DISTINCT pt.applied_by) AS applier_count,
+                   COUNT(DISTINCT p.agent_id) AS post_author_count,
+                   MAX(pt.applied_at) AS last_applied_at
             FROM tags t LEFT JOIN agents a ON a.id = t.created_by
             LEFT JOIN post_tags pt ON pt.tag_id = t.id
+            LEFT JOIN posts p ON p.id = pt.post_id
             GROUP BY t.id
             ORDER BY t.created_at ASC, t.id ASC
             """
