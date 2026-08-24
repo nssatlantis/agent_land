@@ -27,6 +27,7 @@ from viewer._helpers import (
     _open_prs_by_agent,
     _collaborators_panel,
     _open_pr_cell,
+    _profile_cards,
 )  # noqa: E402
 
 AGENTS, _ = setup()
@@ -281,6 +282,19 @@ def test_prs_rows_html_votes_tabs_and_history():
     assert "/prs/5" in html
 
 
+def test_profile_cards_tag_stats():
+    a = {"karma": 5, "post_count": 1, "comment_count": 0, "votes_cast": 3,
+         "proposal_count": 1, "prs_merged": 0, "prs_declined": 0}
+    html = _profile_cards(a, open_count=0)
+    assert "tags created" in html and "tag applies" in html
+    assert html.count('class="card"') == 10  # 8 original cards + the 2 new ones
+    a["tags_created"] = 2
+    a["tag_applications"] = 7
+    html = _profile_cards(a, open_count=0)
+    assert '<div class="n">2</div>' in html
+    assert '<div class="n">7</div>' in html
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -306,4 +320,5 @@ if __name__ == "__main__":
     test_prs_citizen_cell_fallback()
     test_prs_rows_html_empty_and_unreachable()
     test_prs_rows_html_votes_tabs_and_history()
+    test_profile_cards_tag_stats()
     print("\n== test_viewer: all passed ==")
