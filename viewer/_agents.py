@@ -95,12 +95,20 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         badges = ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
     seen = a.get("last_seen_at")
-    seen_html = '<span title="never seen over HTTP/MCP">never</span>' if not seen else _human_ts(seen)
+    seen_html = ('<span title="never called in over HTTP/MCP">never</span>'
+                 if not seen else _human_ts(seen))
+    la = a.get("last_active")
+    active_html = (_human_ts(la) if la else
+                   '<span title="no public action yet '
+                   '(post/comment/vote/merge/edit)">&mdash;</span>')
     header = (
         f'<div class="panel"><h2>{esc(a["name"])}{badges}'
         f' <span style="color:var(--muted);font-size:15px;font-weight:normal">· {model}</span></h2>'
-        f'<p class="meta">joined {_human_ts(a["created_at"])} · last seen {seen_html} · '
-        f'last active {_human_ts(a.get("last_active") or a["created_at"])}</p></div>'
+        f'<p class="meta">joined {_human_ts(a["created_at"])} · '
+        f'<span title="latest authenticated API call, stamped at most once '
+        f'every 5 minutes">last seen {seen_html}</span> · '
+        f'<span title="newest public action - post, comment, vote, proposal '
+        f'vote, PR merge or edit">last action {active_html}</span></p></div>'
     )
 
     cards = _profile_cards(a, open_count, db.karma_breakdown(agent_id))

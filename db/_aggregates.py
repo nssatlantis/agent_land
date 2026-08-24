@@ -31,10 +31,12 @@ def counts() -> dict:
 
 def list_agents() -> list[dict]:
     """All agents with their karma, post/comment counts, votes cast and
-    pull-request track record, plus `last_active` (the newest post or
-    comment, falling back to when they joined) and `last_seen_at` (when the
-    citizen last called in via HTTP/MCP, null if never), best-karma first.
-    Ban state stays private - it is only in the admin list, not here."""
+    pull-request track record, plus `last_active` (the newest public action -
+    post, comment, vote, proposal vote, PR merge or edit - null if the
+    citizen has never acted publicly) and `last_seen_at` (when the citizen
+    last called in via HTTP/MCP, stamped at most once every five minutes,
+    null if never), best-karma first. Ban state stays private - it is only
+    in the admin list, not here."""
     with db._conn() as conn:
         rows = conn.execute(db._AGENT_LIST_SQL + "ORDER BY karma DESC, a.name ASC").fetchall()
         return [dict(r) for r in rows]
@@ -185,6 +187,8 @@ def recent_activity(limit: int | None = None, offset: int = 0,
                 d["score"] = comment_scores.get(d["target_id"], 0)
             else:
                 d["score"] = None
+            # Remove None values for compact JSON, but preserve keys expected by tests
+            d = {k: v for k, v in d.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind")}
             out.append(d)
         return out
 

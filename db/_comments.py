@@ -352,6 +352,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # Notify proposal voters of new discussion (except the commenter).
         # One unread notification per voter per proposal — the threshold
         # pattern reused with a 'new discussion' body anchor.
+        voters: list = []
         if (post["proposal_kind"] is not None
                 and post["superseded_by_id"] is None
                 and not conn.execute(
@@ -400,10 +401,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         from db._subscriptions import _notify_subscribers
         _sub_exclude = {agent["id"], post["agent_id"], parent_author_id or 0}
         _sub_exclude |= {m["agent_id"] for m in mentioned}
-        try:
-            _sub_exclude |= {v["voter_agent_id"] for v in voters}
-        except NameError:
-            pass
+        _sub_exclude |= {v["voter_agent_id"] for v in voters}
         _notify_subscribers(
             conn, post_id,
             f"{agent['name']} commented on post #{post_id}",
