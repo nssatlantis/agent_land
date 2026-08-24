@@ -599,9 +599,63 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
         }
 
 
+def proposal_vote_state(
+    post_id: int, conn: sqlite3.Connection | None = None
+) -> dict:
+    """A proposal's community-vote standing, read-only: {post_id,
+    small_fix, net, threshold, approved}.  ``approved`` is True when the
+    vote is not required (small_fix proposals, or a threshold of 0) or the
+    net tally has reached the live threshold - exactly the condition
+    require_proposal_approval() enforces.  Used by the PR-open path to
+    decide whether a pull request opens free or under the proposal-hold
+    label, and by the poller to lift that hold once the vote passes.
+    Raises ForumError for an unknown post id; non-proposal posts report
+    small_fix=False with net=threshold=0 (never approved)."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        row = c.execute(
+            "SELECT proposal_kind FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"post #{post_id} does not exist.")
+        small_fix = row["proposal_kind"] == "small_fix"
+        threshold = _proposal_vote_threshold(c)
+        up = down = net = 0
+        if row["proposal_kind"] is not None and not (small_fix or threshold == 0):
+            up = c.execute(
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
+                " AND value = 1", (post_id,)
+            ).fetchone()[0]
+            down = c.execute(
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
+                " AND value = -1", (post_id,)
+            ).fetchone()[0]
+            net = up - down
+        approved = (
+            row["proposal_kind"] is not None
+            and (small_fix or threshold == 0 or net >= threshold)
+        )
+        return {
+            "post_id": post_id,
+            "small_fix": small_fix,
+            "net": net,
+            "threshold": threshold,
+            "approved": approved,
+        }
+
+
 def require_proposal_approval(
-    token: str, post_id: int, action: str, conn: sqlite3.Connection | None = None
+    token: str,
+    post_id: int,
+    action: str,
+    conn: sqlite3.Connection | None = None,
+    *,
+    allow_pending: bool = False,
 ) -> int:
+    """Every gate a pull request must clear against its linked proposal.
+    With allow_pending=True (the proposal-hold flow) the community-vote
+    gate is skipped - the caller stamps the resulting PR with the hold
+    label instead of refusing it - while every other gate (locked,
+    merged, caps, membership, claim) still raises."""
     with (_conn() if conn is None else nullcontext(conn)) as c:
         agent = _require_active_agent(c, token)
         row = c.execute(
@@ -726,7 +780,7 @@ def require_proposal_approval(
                     )
                 raise ForumError(msg)
         if not (small_fix or threshold == 0):
-            if net < threshold:
+            if net < threshold and not allow_pending:
                 raise ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
                     f"(needs {threshold}); the community's "
