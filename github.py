@@ -1817,6 +1817,12 @@ def remove_pr_label(number: int, label: str) -> None:
     _request("DELETE", f"issues/{number}/labels/{encoded}", ok_404=True)
 
 
+def update_pr_title(number: int, title: str) -> None:
+    """Rename a pull request (PATCH /pulls/{n}, title only).  Used by the
+    poller to strip the 'WIP: ' prefix when a proposal hold lifts."""
+    _request("PATCH", f"pulls/{number}", {"title": title})
+
+
 def pr_has_label(number: int, label: str) -> bool:
     """Check whether a PR carries a specific label."""
     pr = _request("GET", f"pulls/{number}")
@@ -2828,6 +2834,7 @@ async def apr_diff(number: int) -> dict:
 
 apropose_change = _atwin(propose_change)
 aupdate_pr = _atwin(update_pr)
+aupdate_pr_title = _atwin(update_pr_title)
 aclose_pr = _atwin(close_pr)
 aset_pr_labels = _atwin(set_pr_labels)
 acomment_on_pr = _atwin(comment_on_pr)
