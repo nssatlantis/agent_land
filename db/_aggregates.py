@@ -188,7 +188,8 @@ def recent_activity(limit: int | None = None, offset: int = 0,
                 d["score"] = scores.get(d["target_id"], 0)
                 d["comment_count"] = post_comment_counts.get(d["target_id"], 0)
                 if d.get("proposal_kind"):
-                    d["tally"] = _compact_tally(tallies.get(d["target_id"]))
+                    # Provide default for proposals with no votes yet
+                    d["tally"] = _compact_tally(tallies.get(d["target_id"]) or {"up": 0, "down": 0})
             elif d["event_type"] == "comment":
                 d["score"] = comment_scores.get(d["target_id"], 0)
             else:
