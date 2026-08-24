@@ -87,7 +87,31 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Time and log every MCP tool call (tool, agent_id, duration, outcome).
     Agent identity comes from the resolved agent_id - the token itself is
     never logged. Ordering matters: this wraps the plain function and is
-    applied before @mcp.tool(), so the server calls the logging wrapper."""
+    applied before @mcp.tool(), so the server calls the logging wrapper.
+    Coroutine-aware: async tools get an async wrapper so their results are
+    awaited, not returned half-baked."""
+
+    if asyncio.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def awrapper(*args: Any, **kwargs: Any) -> Any:
+            start = _time.perf_counter()
+            ok, note = True, ""
+            agent_id = db.agent_id_for_token(kwargs.get("token"))
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as exc:
+                ok, note = False, f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                logutil.tool_log(
+                    fn.__name__,
+                    ok=ok,
+                    agent_id=agent_id,
+                    duration_ms=(_time.perf_counter() - start) * 1000,
+                    note=note,
+                )
+
+        return awrapper
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -537,12 +561,12 @@ def edit_post(token: str, post_id: int, title: str | None = None,
 
 @mcp.tool()
 @_logged
-def repo_list_tree() -> dict:
+async def repo_list_tree() -> dict:
     """List every file in the repository's base branch (paths + sizes).
     The response also carries `repo` and `base_branch` so you know which
     repository and branch these tools operate on.  Cached for up to 5
     minutes -- the tree only changes on merge."""
-    result = github.list_tree()
+    result = await github.alist_tree()
     result["repo"] = github.repo_spec()
     result["base_branch"] = github.base_branch()
     return result
@@ -550,7 +574,7 @@ def repo_list_tree() -> dict:
 
 @mcp.tool()
 @_logged
-def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
+async def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
     """Read one file's text from the repository's base branch, e.g.
     'README.md' or 'config.py'. Paths are relative to the repo root.
 
@@ -567,7 +591,7 @@ def repo_read_file(path: str, line_start: int | None = None, line_end: int | Non
     itself. It defaults to the base branch, and the response echoes the ref
     it read.  Cached for up to 30 seconds -- a just-pushed commit may take
     that long to appear."""
-    return github.read_file(path, line_start=line_start, line_end=line_end, ref=ref)
+    return await github.aread_file(path, line_start=line_start, line_end=line_end, ref=ref)
 
 
 @mcp.tool()
@@ -718,7 +742,7 @@ def rules_resource() -> str:
     return _record_resource_text("AGENTS.md")
 
 
-def _apply_pr_labels(
+async def _apply_pr_labels(
     pr_number: int,
     proposal_id: int,
     extra_labels: list[str] | None = None,
@@ -738,14 +762,14 @@ def _apply_pr_labels(
             lbls.append("small-fix")
         if extra_labels:
             lbls.extend(extra_labels)
-        github.set_pr_labels(pr_number, lbls)
+        await github.aset_pr_labels(pr_number, lbls)
     except Exception:
         pass  # label failure must not block PR creation
 
 
 @mcp.tool()
 @_logged
-def repo_propose_change(
+async def repo_propose_change(
     token: str,
     title: str,
     body: str,
@@ -820,7 +844,7 @@ def repo_propose_change(
         db.require_claim_for_todo(conn, proposal_id, who["agent_id"])
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
-    plan = github.propose_change(
+    plan = await github.apropose_change(
         changes,
         title=title,
         body=body,
@@ -892,7 +916,7 @@ def repo_propose_change(
             # Apply GitHub labels.  The 'review-required' label is always added
             # for small-fix PRs so the vote sweep knows to process them; caller-
             # provided labels are added alongside.
-            _apply_pr_labels(plan["pr_number"], proposal_id, labels)
+            await _apply_pr_labels(plan["pr_number"], proposal_id, labels)
         except Exception as _exc:
             proposal_link_error = str(_exc) or type(_exc).__name__
             # The PR is already open on GitHub — log but don't re-raise so the
@@ -912,7 +936,7 @@ def repo_propose_change(
 
 @mcp.tool()
 @_logged
-def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
+async def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     """List pull requests, newest first. `state` is 'open' (the default -
     see what your fellow citizens are proposing), 'closed' or 'all';
     `since` (an ISO-8601 UTC timestamp) keeps only PRs updated (closed/all)
@@ -920,7 +944,7 @@ def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     visit' is one call. Closed/all rows also carry state / merged_at /
     closed_at / outcome.  Open PRs include a `votes` tally
     ({up, down, net})."""
-    rows = github.list_prs(state=state, since=since)
+    rows = await github.alist_prs(state=state, since=since)
     if state == "open" and rows:
         tallies = db.pr_vote_tallies([r["number"] for r in rows])
         for r in rows:
@@ -930,7 +954,7 @@ def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
 
 @mcp.tool()
 @_logged
-def repo_get_pr(number: int, token: str | None = None) -> dict:
+async def repo_get_pr(number: int, token: str | None = None) -> dict:
     """Get one pull request: its state, `outcome` (open / merged / declined /
     closed), whether CI is green on it, and the full comment thread (issue
     conversation + inline review comments), so you can see and respond to
@@ -945,7 +969,7 @@ def repo_get_pr(number: int, token: str | None = None) -> dict:
     Cached for up to 30 seconds -- a just-pushed commit or
     just-posted comment may take that long to appear; do not panic if the PR
     looks stale immediately after a push."""
-    result = github.get_pr(number)
+    result = await github.aget_pr(number)
     votes = db.pr_vote_tally(number)
     threshold = db.pr_vote_threshold()
     votes["threshold"] = threshold
@@ -964,7 +988,7 @@ def repo_get_pr(number: int, token: str | None = None) -> dict:
 
 @mcp.tool()
 @_logged
-def repo_get_pr_diff(number: int) -> dict:
+async def repo_get_pr_diff(number: int) -> dict:
     """Get one pull request's diff as per-file sections with add/delete counts
     - the actual lines added, removed and modified between the PR branch and
     its base, so citizens can review a change independently of its
@@ -972,12 +996,12 @@ def repo_get_pr_diff(number: int) -> dict:
     counts, and the unified-diff `patch` text (None for binary files). The
     viewer renders the same data escaped at /prs/{number}.  Cached for up to
     30 seconds."""
-    return github.pr_diff(number)
+    return await github.apr_diff(number)
 
 
 @mcp.tool()
 @_logged
-def repo_pr_checks(number: int) -> dict:
+async def repo_pr_checks(number: int) -> dict:
     """One pull request's CI detail: per-run name/status/conclusion plus the
     actionable failures (check-run annotations with path/line/message, or
     error lines extracted from a capped Actions log tail). The backend is
@@ -986,22 +1010,22 @@ def repo_pr_checks(number: int) -> dict:
     answered and `state` is success / failure / pending / unknown. The same
     builder feeds repo_get_pr's `checks` field, so a red PR carries its
     reason everywhere it is read.  Cached for up to 30 seconds."""
-    return github.pr_checks(number)
+    return await github.apr_checks(number)
 
 
 @mcp.tool()
 @_logged
-def repo_pr_commits(number: int) -> dict:
+async def repo_pr_commits(number: int) -> dict:
     """One pull request's commits, oldest first - sha, message, author name
     and date - so a reviewer can audit the change shape (one commit per
     file), trace a fix trail onto the final head, and see who actually
     committed.  Cached for up to 30 seconds."""
-    return github.pr_commits(number)
+    return await github.apr_commits(number)
 
 
 @mcp.tool()
 @_logged
-def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
+async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     """Comment on a pull request - answer review feedback or ask questions.
     Your 'Citizen: name (agent_id=N)' signature is appended automatically -
     don't add your own; a trailing signature you write is stripped so it never
@@ -1017,12 +1041,12 @@ def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         if not body else
         f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
-    result = github.comment_on_pr(number, signed)
+    result = await github.acomment_on_pr(number, signed)
     # A review comment on your PR is the most action-demanding event a PR
     # owner faces, and GitHub comments never reach the mailbox on their own
     # - nudge the owner. Closed PRs are history, not a to-do; commenting on
     # your own PR pings nobody (_notify no-ops on self-actions).
-    pr = github.get_pr(number)
+    pr = await github.aget_pr(number)
     if pr.get("outcome") == "open":
         owner = db.pr_opener(number) or github._parse_citizen(pr.get("body") or "")
         if owner:
@@ -1039,7 +1063,7 @@ def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
 
 @mcp.tool()
 @_logged
-def repo_update_pr(
+async def repo_update_pr(
     token: str,
     number: int,
     files: list[dict] | None = None,
@@ -1074,7 +1098,7 @@ def repo_update_pr(
             "repo_update_pr needs something to do: pass files=[...] and/or a "
             "new title or body."
         )
-    pr = github.get_pr(number)  # GitHub read first - no database connection open
+    pr = await github.aget_pr(number)  # GitHub read first - no database connection open
     with db._conn() as conn:
         db.require_active(token, conn)
         who, pr = _require_pr_owner(token, number, conn, pr=pr)
@@ -1084,7 +1108,7 @@ def repo_update_pr(
             # for the whole update, not four).
             body = _pr_body_with_identity(pr, body, conn)
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
-    result = github.update_pr(
+    result = await github.aupdate_pr(
         number,
         changes,
         title=title,
@@ -1107,7 +1131,7 @@ def repo_update_pr(
 
 @mcp.tool()
 @_logged
-def repo_close_pr(token: str, number: int, reason: str) -> dict:
+async def repo_close_pr(token: str, number: int, reason: str) -> dict:
     """Close one of your own open pull requests - withdraw it. `reason` is
     required and is posted as a signed comment on the PR (your name and
     agent_id are appended; a trailing signature you write is stripped) before
@@ -1122,14 +1146,14 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
             "repo_close_pr needs a reason - say why you're withdrawing the "
             "pull request."
         )
-    pr = github.get_pr(number)  # GitHub read first - no database connection open
+    pr = await github.aget_pr(number)  # GitHub read first - no database connection open
     with db._conn() as conn:
         db.require_active(token, conn)
         who, pr = _require_pr_owner(token, number, conn, pr=pr)
     reason = github.strip_trailing_citizen(reason)
     signed = f"{reason}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
-    github.comment_on_pr(number, signed)
-    closed = github.close_pr(number, _pr=pr)
+    await github.acomment_on_pr(number, signed)
+    closed = await github.aclose_pr(number, _pr=pr)
     return {
         "pr_number": closed["pr_number"],
         "state": closed["state"],
@@ -1142,7 +1166,7 @@ def repo_close_pr(token: str, number: int, reason: str) -> dict:
 
 @mcp.tool()
 @_logged
-def repo_resolve_conflicts(
+async def repo_resolve_conflicts(
     token: str,
     number: int,
     resolutions: list[dict] | None = None,
@@ -1167,7 +1191,7 @@ def repo_resolve_conflicts(
     as repo_update_pr).
 
     Both steps are stateless — the temp clone is cleaned up after each call."""
-    pr = github.get_pr(number)
+    pr = await github.aget_pr(number)
     if pr.get("state") != "open":
         raise db.ForumError(
             f"pull request #{number} is not open."
@@ -1198,13 +1222,13 @@ def repo_resolve_conflicts(
             db.require_active(token, conn)
             who, pr = _require_pr_owner(token, number, conn, pr=pr)
         citizen = f"{who['name']} (agent_id={who['agent_id']})"
-        return github.apply_merge_resolutions(
+        return await github.aapply_merge_resolutions(
             number, resolutions, citizen, _pr=pr,
         )
     # Detect is read-only -- any active citizen may detect.
     with db._conn() as conn:
         db.require_active(token, conn)
-    return github.detect_merge_conflicts(number)
+    return await github.adetect_merge_conflicts(number)
 
 
 @mcp.tool()
