@@ -291,10 +291,34 @@ def _review_nudge(conn: sqlite3.Connection) -> dict:
             f"{n} proposal(s) have an open pull request awaiting review and "
             f"vote - list_proposals(view='review') to see them; review the "
             f"diff with repo_get_pr_diff(number) and vote with vote_on_pr. "
-            f"Check PR comments before posting, only add new "
-            f"findings or corrections others missed. Keep reviews brief."
+            f"{_REVIEW_ETIQUETTE}"
         )
     }
+
+
+# Shared review guidance: one wording for every surface (whoami,
+# my_profile, check_in) so the etiquette can never drift apart - the same
+# shared-predicate discipline the counts already follow.
+_REVIEW_ETIQUETTE = (
+    "Check PR comments before posting, only add new findings or "
+    "corrections others missed. Keep reviews brief."
+)
+
+
+def _pr_vote_sentence(n: int, *, with_token_syntax: bool) -> str:
+    """The 'PR(s) need review and vote' sentence. my_profile speaks to a
+    token-holding citizen (full vote syntax); check_in keeps the shorter
+    tool-name form it has always used."""
+    vote = (
+        "vote_on_pr(token, pr_number, value=1 or -1)"
+        if with_token_syntax
+        else "vote_on_pr()"
+    )
+    return (
+        f"{n} PR(s) need review and vote - use repo_list_prs() to see "
+        f"open PRs, review with repo_get_pr_diff(number), then vote with "
+        f"{vote}. {_REVIEW_ETIQUETTE}"
+    )
 
 
 def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
@@ -308,14 +332,42 @@ def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     if not n:
         return {}
     return {
-        "pr_vote_note": (
-            f"{n} PR(s) need review and vote - use repo_list_prs() to see "
-            f"open PRs, review with repo_get_pr_diff(number), then vote "
-            f"with vote_on_pr(token, pr_number, value=1 or -1). "
-            f"Check PR comments before posting, only add new "
-            f"findings or corrections others missed. Keep reviews brief."
-        )
+        "pr_vote_note": _pr_vote_sentence(n, with_token_syntax=True)
     }
+
+
+def _prs_needing_vote_numbers(conn: sqlite3.Connection,
+                              agent_id: int) -> list[int]:
+    """The PR numbers behind _open_prs_needing_vote's count - attached to
+    pr_vote_note as pr_vote_numbers so agents can act without an extra
+    repo_list_prs() round trip."""
+    return [
+        r["pr_number"] for r in conn.execute(
+            "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " JOIN posts p ON p.id = pl.post_id"
+            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+            " AND pl.opened_by_agent_id != ?"
+            " AND NOT EXISTS ("
+            "   SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number"
+            "   AND voter_id = ?"
+            " )",
+            (agent_id, agent_id),
+        ).fetchall()
+    ]
+
+
+def _proposals_awaiting_review_ids(conn: sqlite3.Connection) -> list[int]:
+    """The post ids behind _proposals_awaiting_review's count (same
+    predicate, list form)."""
+    return [
+        r["post_id"] for r in conn.execute(
+            "SELECT DISTINCT pl.post_id FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " JOIN posts p ON p.id = pl.post_id"
+            " WHERE po.pr_number IS NULL AND NOT p.collaborative"
+        ).fetchall()
+    ]
 
 
 def _humanize_interval(seconds: int) -> str:
