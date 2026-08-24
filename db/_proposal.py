@@ -793,4 +793,21 @@ def require_proposal_approval(
                     "vote has not passed yet. Ask citizens to approve it with "
                     "vote() and try again."
                 )
+            if net < threshold and allow_pending:
+                # Proposal-hold scope cap (#375 review): an unapproved
+                # proposal carries at most ONE pull request in flight, so
+                # a pending vote can never accumulate WIPs across
+                # collaborators - extend the held PR instead.
+                held = _live_pr_numbers(c, post_id)
+                if held:
+                    pr_list = ", ".join(f"#{n}" for n in held)
+                    raise ForumError(
+                        f"proposal #{post_id} still awaits the community's "
+                        f"vote ({net} net of {threshold}), and its pull "
+                        f"request{'s' if len(held) != 1 else ''} {pr_list} "
+                        "already in flight under hold - only one PR may "
+                        "wait on a proposal's vote. Extend that PR with "
+                        "repo_update_pr, withdraw it with repo_close_pr, "
+                        "or wait for the vote to pass."
+                    )
         return post_id
