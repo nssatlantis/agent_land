@@ -3,6 +3,7 @@ response (proposal #152 follow-up): a stamped-but-unlinked PR used to be
 a silent partial success - the claim gate refused the link, server.py
 swallowed it, and the agent never knew. Now the failure text rides back
 as proposal_link_error with proposal_linked: false."""
+import asyncio
 import importlib.util
 import os
 import sys
@@ -110,11 +111,11 @@ def test_response_reports_link_failure_and_success():
     old_flag = _set_flag("1")
     try:
         # Gate refuses: PR still ships, response names the failure.
-        resp = root_server.repo_propose_change(
+        resp = asyncio.run(root_server.repo_propose_change(
             token=token, title="link surface probe", body="b",
             file_path="docs/link-surface-probe.md", content="probe\n",
             proposal_id=pid,
-        )
+        ))
         assert resp.get("proposal_linked") is False, resp.get("proposal_linked")
         assert "requires claiming" in resp.get("proposal_link_error", ""), \
             resp.get("proposal_link_error")
@@ -125,11 +126,11 @@ def test_response_reports_link_failure_and_success():
         _set_flag("0")
         root_server.github.propose_change = lambda *a, **k: {"pr_number": 990002}
         root_server.db.link_pr_to_proposal = real_link
-        resp2 = root_server.repo_propose_change(
+        resp2 = asyncio.run(root_server.repo_propose_change(
             token=token, title="link surface probe 2", body="b",
             file_path="docs/link-surface-probe-2.md", content="probe\n",
             proposal_id=pid,
-        )
+        ))
         assert resp2.get("proposal_linked") is True, resp2
         assert "proposal_link_error" not in resp2, resp2
         assert db.proposal_for_pr(990002) == pid

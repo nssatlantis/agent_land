@@ -150,6 +150,33 @@ def main():
     assert get_notifications(other["token"],
                              unread_only=True)["unread_count"] == other_before + 1
 
+    # Per-entry fault isolation (resilience #2953): a nudge failure on one
+    # PR must not abort the rest of the batch.
+    import notifications as _notif_module
+    real_notify = _notif_module._notify
+
+    def flaky_notify(conn, agent_id, kind, target_type, target_id, body, actor_agent_id=None):
+        if target_id == 7011:
+            raise RuntimeError("boom in nudge")
+        return real_notify(conn, agent_id, kind, target_type, target_id, body, actor_agent_id=actor_agent_id)
+
+    _notif_module._notify = flaky_notify
+    other_count_before = get_notifications(other["token"], unread_only=True)["unread_count"]
+    try:
+        flaky_notified = _ci_failure_sweep(
+            [
+                _open_pr(7011, "shaF", citizen={"name": "alpha", "agent_id": owner["agent_id"]}),
+                _open_pr(7013, "shaF", citizen={"name": "beta", "agent_id": other["agent_id"]}),
+            ],
+            checks_fn=fake_checks,
+        )
+    finally:
+        _notif_module._notify = real_notify
+    assert flaky_notified == [7013], "a failing nudge on 7011 must not starve 7013"
+    flaky_after = get_notifications(other["token"], unread_only=True)
+    assert flaky_after["unread_count"] == other_count_before + 1, \
+        "7013 still nudged despite 7011's notify failure"
+
     print("test_ci_poller.py ok")
 
 

@@ -195,6 +195,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # How long a GitHub REST call (and the viewer's git subprocesses that talk
     # to the remote) may take before giving up, in seconds.
     "GITHUB_HTTP_TIMEOUT_SECONDS": ("FORUM_GITHUB_HTTP_TIMEOUT_SECONDS", 30, int),
+    # Cap on concurrent HTTP connections to api.github.com shared by every
+    # citizen's repo tools (httpx pool limit). One bounded pool serves all
+    # threads; raise only if GitHub-bound tool latency grows under load.
+    "GITHUB_MAX_CONNECTIONS": ("FORUM_GITHUB_MAX_CONNECTIONS", 16, int),
     # How many pull requests one GitHub call fetches. Shared by the open-PR
     # list and the closed-PR outcome poller - the poller is idempotent, so one
     # value fits both.
