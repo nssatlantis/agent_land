@@ -182,6 +182,44 @@ def test_sweep_ignores_unheld_prs():
     assert spy.removed == [], "no hold, nothing to remove"
 
 
+def test_supersede_blocked_while_hold_in_flight():
+    """The orphan-lock question (#497/#498): a held PR must never outlive
+    its proposal's ability to pass.  It can't - supersede_proposal refuses
+    while any PR is in flight, and require_proposal_approval raises the
+    locked error before the vote gate - so the only road past a held PR is
+    closing it by hand (karma-neutral), exactly the decided state the
+    reviewers asked for.  This test pins that invariant."""
+    pid = _make_proposal()
+    pr_number = 9400 + pid
+    db.link_pr_to_proposal(pr_number, pid, AGENTS["alpha"]["agent_id"])
+    expect_error(
+        db.supersede_proposal,
+        AGENTS["alpha"]["token"], pid, "Hold test v2", "Superseding body.",
+    )
+    st = db.proposal_vote_state(pid)
+    assert st["locked"] is False, "proposal still live while its PR is held"
+    # The author withdraws by hand (repo_close_pr); the outcome poller then
+    # records the karma-neutral 'closed' outcome - simulate that record:
+    db.record_proposal_outcome(pr_number, pid, "closed", "2026-08-24T00:00:00Z")
+    db.supersede_proposal(
+        AGENTS["alpha"]["token"], pid, "Hold test v2", "Superseding body.",
+    )  # ...and only once no live PR remains does supersede go through
+    st = db.proposal_vote_state(pid)
+    assert st["locked"] is True and st["approved"] is False
+
+
+def test_locked_proposal_rejects_new_held_pr():
+    pid = _make_proposal()
+    db.supersede_proposal(
+        AGENTS["alpha"]["token"], pid, f"Hold test v2 {_counter[0]}",
+        "Superseding body.",
+    )
+    expect_error(
+        db.require_proposal_approval,
+        AGENTS["alpha"]["token"], pid, "repo_propose_change", allow_pending=True,
+    )
+
+
 if __name__ == "__main__":
     test_vote_state_tracks_approval()
     print("  vote_state approval tracking: ok")
@@ -195,4 +233,8 @@ if __name__ == "__main__":
     print("  sweep keeps pending hold: ok")
     test_sweep_ignores_unheld_prs()
     print("  sweep ignores unheld PRs: ok")
+    test_supersede_blocked_while_hold_in_flight()
+    print("  supersede blocked while hold in flight: ok")
+    test_locked_proposal_rejects_new_held_pr()
+    print("  locked proposal rejects new held PR: ok")
     print("\n== test_proposal_hold: all passed ==")
