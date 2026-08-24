@@ -339,12 +339,12 @@ def test_aget_pr_cache_and_subcache_parity():
 
 def test_gather_error_propagates_as_repo_error():
     def handler(request):
-        url = str(request.url)
-        if "/issues/" in url:
+        path, _, _q = str(request.url).partition("?")
+        if "/issues/" in path:
             return httpx.Response(500, json={"message": "boom"})
-        if url.endswith("/files"):
+        if path.endswith("/files"):
             return httpx.Response(200, json=[])
-        if "/pulls/4243" in url:
+        if "/pulls/4243" in path:
             return httpx.Response(200, json=dict(_PR_4242, number=4243))
         return httpx.Response(200, json=[])
 
@@ -453,8 +453,101 @@ def main():
     test_gather_error_propagates_as_repo_error()
     test_apr_diff_overlaps_payload_with_first_page()
     test_apr_commits_overlaps_payload_with_first_page()
+    test_pr_files_paginates_past_the_default_page()
+    test_short_first_page_costs_one_request()
+    test_pagination_cap_bounds_runaway_servers()
     print("test_github_http: all ok")
     return 0
+
+
+
+def _serve_pages(hits, path_suffix, pages):
+    """Route list-endpoint requests under /pulls/ to canned pages keyed by
+    the page= query param; anything else gets an empty list."""
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, query = url.partition("?")
+        if "/pulls/" in path and path.rstrip("/").endswith(path_suffix):
+            n = 1
+            for part in query.split("&"):
+                if part.startswith("page="):
+                    n = int(part[len("page="):])
+            return httpx.Response(
+                200, json=pages[n - 1] if n <= len(pages) else []
+            )
+        return httpx.Response(200, json=[])
+    return handler
+
+
+def test_pr_files_paginates_past_the_default_page():
+    hits: list[str] = []
+    page1 = [{"filename": f"a{i}.py", "status": "modified", "additions": 1,
+              "deletions": 0, "patch": "x"} for i in range(100)]
+    page2 = [{"filename": "b7.py", "status": "added", "additions": 9,
+              "deletions": 2}]
+    handler = _serve_pages(hits, "/files", [page1, page2])
+    old = _install_mock(handler)
+
+    def qpage(u):
+        for part in u.partition("?")[2].split("&"):
+            if part.startswith("page="):
+                return int(part[len("page="):])
+        return None
+
+    try:
+        got = gh.pr_files(4244)
+        assert [f["filename"] for f in got[:3]] == ["a0.py", "a1.py", "a2.py"]
+        assert got[-1]["filename"] == "b7.py"
+        assert len(got) == 101
+        assert [qpage(u) for u in hits] == [1, 2], hits
+        assert any("per_page=100" in u for u in hits), hits
+        # Native twin: same aggregated result through the shared key.
+        native = asyncio.run(gh.apr_files(4245))
+        assert len(native) == 101 and native[-1]["filename"] == "b7.py"
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  pr_files paginates past the default 30/100-item page: ok")
+
+
+def test_short_first_page_costs_one_request():
+    hits: list[str] = []
+    handler = _serve_pages(
+        hits, "/comments",
+        [[{"id": 1, "user": {"login": "a"}, "body": "hi",
+           "created_at": "2026-08-24T00:00:00Z"}]],
+    )
+    old = _install_mock(handler)
+    try:
+        got = gh.pr_comments(4246)
+        assert len(got) == 1 and got[0]["kind"] == "review"
+        assert len([u for u in hits if "issues/4246" in u]) == 1
+        assert not any("page=2" in u for u in hits), hits
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  short first page terminates pagination after one request: ok")
+
+
+def test_pagination_cap_bounds_runaway_servers():
+    hits: list[str] = []
+    handler = _serve_pages(
+        hits, "/files",
+        [[{"filename": "x.py", "status": "modified"}] * 100] * 500,
+    )
+    saved_cap = gh._PR_PAGE_CAP
+    gh._PR_PAGE_CAP = 3
+    old = _install_mock(handler)
+    try:
+        got = gh.pr_files(4247)
+        assert len(got) == 300, len(got)
+        assert len([u for u in hits if "pr_files" in u or "/files" in u]) == 3
+    finally:
+        gh._PR_PAGE_CAP = saved_cap
+        gh._client = old
+        gh.clear_cache()
+    print("  page cap bounds a server that never sends a short page: ok")
 
 
 if __name__ == "__main__":

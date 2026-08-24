@@ -894,9 +894,48 @@ def pr_diff(number: int) -> dict:
     return result
 
 
+_PR_PAGE_SIZE = 100
+# Safety cap: a misbehaving server that never sends a short page must not
+# turn one list read into an unbounded loop. 50 x 100 items is far past any
+# real pull request.
+_PR_PAGE_CAP = 50
+
+
+def _paginated_get(path: str) -> list:
+    """All pages of a GitHub list endpoint, stopping at the first short
+    page. Query strings in *path* are not supported (none of the list
+    endpoints we page need extra params)."""
+    out: list = []
+    page = 1
+    while True:
+        batch = _request(
+            "GET", f"{path}?per_page={_PR_PAGE_SIZE}&page={page}"
+        )
+        out.extend(batch)
+        if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
+            return out
+        page += 1
+
+
+async def _apaginated_get(path: str) -> list:
+    """Async twin of _paginated_get for the native read surface."""
+    out: list = []
+    page = 1
+    while True:
+        batch = await _arequest(
+            "GET", f"{path}?per_page={_PR_PAGE_SIZE}&page={page}"
+        )
+        out.extend(batch)
+        if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
+            return out
+        page += 1
+
+
 def pr_files(number: int) -> list[dict]:
     """The files a pull request changes, for checking what it actually
-    touches: [{filename, status, additions, deletions}].
+    touches: [{filename, status, additions, deletions}]. Paginated
+    (per_page=100) so large pull requests are not silently truncated at
+    GitHub's default 30-item page.
 
     Cached for PR_CACHE_SECONDS (default 30 s)."""
     cache_key = ("pr_files", number)
@@ -910,7 +949,7 @@ def pr_files(number: int) -> list[dict]:
             "additions": f.get("additions", 0),
             "deletions": f.get("deletions", 0),
         }
-        for f in _request("GET", f"pulls/{number}/files")
+        for f in _paginated_get(f"pulls/{number}/files")
     ]
     _pr_cache.set(cache_key, result)
     return result
@@ -919,7 +958,9 @@ def pr_files(number: int) -> list[dict]:
 def pr_comments(number: int) -> list[dict]:
     """All comments on a pull request, newest first.  Two GitHub sources:
     `issue` comments (the conversation thread repo_comment_on_pr writes to)
-    and `review` comments (inline notes on specific diff lines).
+    and `review` comments (inline notes on specific diff lines). Both
+    sources are paginated (per_page=100) so long conversations are not
+    silently truncated at GitHub's default 30-item page.
 
     Cached for PR_CACHE_SECONDS (default 30 s)."""
     cache_key = ("pr_comments", number)
@@ -928,7 +969,7 @@ def pr_comments(number: int) -> list[dict]:
         return cached
     comments: list[dict] = []
     for kind, path in (("issue", f"issues/{number}/comments"), ("review", f"pulls/{number}/comments")):
-        for c in _request("GET", path):
+        for c in _paginated_get(path):
             entry = {
                 "id": c["id"],
                 "kind": kind,
@@ -1248,14 +1289,7 @@ def pr_commits(number: int) -> dict:
     if cached is not None:
         return cached
     pr = _request("GET", f"pulls/{number}")
-    commits: list[dict] = []
-    page = 1
-    while True:
-        batch = _request("GET", f"pulls/{number}/commits?per_page=100&page={page}")
-        commits.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
+    commits = _paginated_get(f"pulls/{number}/commits")
     result = {
         "number": number,
         "head": pr["head"]["ref"],
@@ -2375,9 +2409,10 @@ def _pr_comment_entries(issue: list, review: list) -> list[dict]:
 
 
 async def _apr_comments_impl(number: int) -> list[dict]:
+    # Both sources paginated (per_page=100), still fetched in parallel.
     issue, review = await asyncio.gather(
-        _arequest("GET", f"issues/{number}/comments"),
-        _arequest("GET", f"pulls/{number}/comments"),
+        _apaginated_get(f"issues/{number}/comments"),
+        _apaginated_get(f"pulls/{number}/comments"),
     )
     return _pr_comment_entries(issue, review)
 
@@ -2386,8 +2421,9 @@ async def _apr_files_impl(number: int) -> list[dict]:
     # Transformed exactly like sync pr_files: the ("pr_files", n) cache key
     # is shared between the sync and native paths, so both must write the
     # same shape - otherwise whichever path warms the cache silently
-    # redefines the other's contract for one TTL window.
-    raw = await _arequest("GET", f"pulls/{number}/files")
+    # redefines the other's contract for one TTL window. Paginated exactly
+    # like sync too (per_page=100).
+    raw = await _apaginated_get(f"pulls/{number}/files")
     return [
         {
             "filename": f["filename"],
