@@ -1,8 +1,8 @@
 """
 github.py - read/write access to the society's own source repository.
 
-Plain functions, stdlib only (urllib against the GitHub REST API). No MCP
-types, no HTTP server code - server.py wraps these as tools. Mirror of
+Plain functions over one pooled httpx.AsyncClient to the GitHub REST API.
+No MCP types, no HTTP server code - server.py wraps these as tools. Mirror of
 db's role: protocol-agnostic, so a CLI or cron could reuse it too.
 
 Two hard rules live here, server-side, so every caller goes through them:
@@ -18,14 +18,14 @@ README.md and .env.example.
 
 from __future__ import annotations
 
+import asyncio
+import atexit
 import base64
 import hashlib
-import http.client
 import json
 import os
 import re
 import shutil
-import ssl
 import subprocess
 import tempfile
 import threading
@@ -36,6 +36,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 import config  # noqa: E402 - for the GitHub API / repo-search tunables
 
@@ -145,37 +147,85 @@ def _headers() -> dict:
     return headers
 
 
-# --- thread-local connection pool (keep-alive to api.github.com) ----------
+# --- shared async client on a dedicated background loop --------------------
 
 _GITHUB_HOST = "api.github.com"
-_CONN_IDLE_TIMEOUT = 60  # seconds before an idle connection is closed
-_conn = threading.local()
+_CONN_IDLE_TIMEOUT = 60  # seconds an idle pooled connection stays alive
+
+_loop: asyncio.AbstractEventLoop | None = None
+_client: httpx.AsyncClient | None = None
+_io_lock = threading.Lock()
 
 
-def _get_connection() -> http.client.HTTPSConnection:
-    """Return a reusable HTTPSConnection to api.github.com.  Idle connections
-    older than _CONN_IDLE_TIMEOUT are closed and replaced.  Socket health
-    is checked via ``.sock`` — if the server closed the keep-alive, we
-    reconnect transparently."""
-    conn: http.client.HTTPSConnection | None = getattr(_conn, "handle", None)
-    if conn is not None:
-        idle = time.monotonic() - getattr(_conn, "last_used", 0.0)
-        if idle < _CONN_IDLE_TIMEOUT and conn.sock is not None:
-            return conn
-        # Idle too long or socket gone — close and fall through to reconnect.
-        try:
-            conn.close()
-        except Exception:
-            pass
-    ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(
-        _GITHUB_HOST,
-        context=ctx,
+def _bg_loop() -> asyncio.AbstractEventLoop:
+    """The single event loop all GitHub I/O runs on, started lazily on first
+    use. Sync callers bridge onto it with _sync(); native-await twins share
+    its pooled client. One daemon thread, one loop - so connection pooling,
+    retry behavior and shutdown live in exactly one place."""
+    global _loop
+    with _io_lock:
+        if _loop is None or _loop.is_closed():
+            _loop = asyncio.new_event_loop()
+            threading.Thread(
+                target=_loop.run_forever,
+                daemon=True,
+                name="agentland-github-io",
+            ).start()
+        return _loop
+
+
+def _build_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        base_url=f"https://{_GITHUB_HOST}",
+        limits=httpx.Limits(
+            max_connections=config.GITHUB_MAX_CONNECTIONS,
+            max_keepalive_connections=config.GITHUB_MAX_CONNECTIONS,
+            keepalive_expiry=_CONN_IDLE_TIMEOUT,
+        ),
         timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
     )
-    _conn.handle = conn
-    _conn.last_used = time.monotonic()
-    return conn
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        with _io_lock:
+            if _client is None or _client.is_closed:
+                _client = _build_client()
+    return _client
+
+
+def _sync(coro: Any) -> Any:
+    """Bridge a coroutine onto the background loop and block for its result.
+    Legacy sync entry points ride this bridge; native-await callers use
+    _on_bg instead. Never call _sync from the background loop's own thread
+    - that would deadlock waiting on itself."""
+    return asyncio.run_coroutine_threadsafe(coro, _bg_loop()).result()
+
+
+async def _on_bg(coro: Any) -> Any:
+    """Await a coroutine on the background loop from a foreign loop WITHOUT
+    blocking the caller's loop. The pooled httpx client is owned exclusively
+    by the background loop - its pooled sockets are bound to that loop and
+    corrupt if another drives them - so the native twins hop their requests
+    over here even when the caller already has a running loop."""
+    fut = asyncio.run_coroutine_threadsafe(coro, _bg_loop())
+    return await asyncio.wrap_future(fut)
+
+
+def _shutdown_client() -> None:
+    global _client
+    try:
+        client = _client
+        if client is not None and not client.is_closed:
+            asyncio.run_coroutine_threadsafe(
+                client.aclose(), _bg_loop()
+            ).result(timeout=5)
+    except Exception:
+        pass  # interpreter shutdown - best effort only
+
+
+atexit.register(_shutdown_client)
 
 
 def _ensure_token() -> None:
@@ -204,49 +254,58 @@ def _raise_request_error(e: urllib.error.HTTPError, method: str, path: str,
     raise RepoError(f"GitHub API {e.code}{detail} on {method} {path}") from e
 
 
-def _request(method: str, path: str, body: dict | None = None, ok_404: bool = False):
-    """Hit the GitHub REST API. Raises RepoError on failure. Returns parsed
-    JSON (or None for 204/404-ok)."""
+async def _arequest(method: str, path: str, body: dict | None = None,
+                    ok_404: bool = False):
+    """Async heart of every GitHub REST call. Raises RepoError on failure;
+    returns parsed JSON (or None for an empty 2xx / ok_404 miss).
+
+    httpx reads every response body completely before returning, so the
+    keep-alive stream can never fall out of sync - the unread-404-body bug
+    class behind proposal #179 is structurally gone. A transport-level
+    failure discards just the one bad pooled connection inside httpx while
+    the client itself stays healthy, so the retry simply re-runs once on a
+    fresh connection (#365's heal contract)."""
     _ensure_token()
     url_path = f"/repos/{GITHUB_REPO}/{path}"
     data = None
+    hdrs = _headers()
     if body is not None:
         data = json.dumps(body).encode("utf-8")
-    hdrs = _headers()
-    if data is not None:
         hdrs["Content-Type"] = "application/json"
 
-    def _do_request(conn: http.client.HTTPSConnection) -> http.client.HTTPResponse:
-        conn.request(method, url_path, body=data, headers=hdrs)
-        _conn.last_used = time.monotonic()
-        return conn.getresponse()
+    client = _get_client()
 
-    conn = _get_connection()
+    async def _do() -> httpx.Response:
+        return await client.request(method, url_path, content=data, headers=hdrs)
+
     try:
-        resp = _do_request(conn)
-    except (ConnectionError, http.client.RemoteDisconnected, OSError):
-        try:
-            conn.close()
-        except Exception:
-            pass
-        _conn.handle = None
-        conn = _get_connection()
-        resp = _do_request(conn)
+        resp = await _do()
+    except (httpx.TransportError, OSError):
+        resp = await _do()
 
-    if 200 <= resp.status < 300:
-        raw = resp.read()
+    status = resp.status_code
+    if 200 <= status < 300:
+        raw = resp.content  # fully read by httpx - the stream is always in sync
         if not raw:
             return None
         return json.loads(raw)
-    if resp.status == 404 and ok_404:
+    if status == 404 and ok_404:
         return None
     msg = ""
     try:
-        msg = json.loads(resp.read()).get("message", "")
+        msg = resp.json().get("message", "")
     except Exception:
         pass
     detail = f" ({msg})" if msg else ""
-    raise RepoError(f"GitHub API {resp.status}{detail} on {method} {path}")
+    raise RepoError(f"GitHub API {status}{detail} on {method} {path}")
+
+
+def _request(method: str, path: str, body: dict | None = None,
+             ok_404: bool = False):
+    """Sync face of _arequest for callers without a running loop (viewer
+    helpers, tests, deploy scripts, composite flows on worker threads).
+    Blocks on the background loop's result."""
+    return _sync(_arequest(method, path, body=body, ok_404=ok_404))
 
 
 # ------------------------------------------------------------------ reads --
@@ -280,6 +339,24 @@ def list_tree() -> dict:
     return result
 
 
+async def alist_tree() -> dict:
+    """Native-await twin of list_tree - same cache, same shape, non-blocking
+    I/O. The hot repo_list_tree tool path runs this directly on the event
+    loop instead of occupying a worker thread."""
+    cached = _tree_cache.get("tree", config.GITHUB_TREE_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    tree = await _on_bg(_arequest("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1"))
+    entries = [
+        {"path": item["path"], "size": item.get("size", 0)}
+        for item in tree.get("tree", [])
+        if item.get("type") == "blob"
+    ]
+    result = {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
+    _tree_cache.set("tree", result)
+    return result
+
+
 def read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
     """Read one file's text from the base branch. Binary files come back as a
     note instead of content. With line_start and line_end (1-based, inclusive,
@@ -305,6 +382,46 @@ def read_file(path: str, line_start: int | None = None, line_end: int | None = N
         data = cached
     else:
         data = _request("GET", f"contents/{path}?ref={ref}", ok_404=True)
+        if data is None:
+            raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
+        _pr_cache.set(cache_key, data)
+    raw = base64.b64decode(data.get("content", ""))
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        content = None
+    result = {
+        "path": path,
+        "ref": ref,
+        "size": data.get("size", len(raw)),
+        "content": content,
+        "note": None if content is not None else "(binary file - content not shown)",
+    }
+    if line_start is None and line_end is None:
+        return result
+    if content is None:
+        raise RepoError(
+            f"cannot read lines from {path!r} - it is not UTF-8 text (binary file)."
+        )
+    result["content"], result["total_lines"] = _slice_line_range(
+        path, content, line_start, line_end
+    )
+    result["line_start"] = line_start
+    result["line_end"] = line_end
+    return result
+
+
+async def aread_file(path: str, line_start: int | None = None,
+                     line_end: int | None = None, ref: str | None = None) -> dict:
+    """Native-await twin of read_file - same contract, non-blocking I/O."""
+    path = _validate_path(path)
+    ref = ref or GITHUB_BASE_BRANCH
+    cache_key = ("read_file", path, ref)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        data = cached
+    else:
+        data = await _on_bg(_arequest("GET", f"contents/{path}?ref={ref}", ok_404=True))
         if data is None:
             raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
         _pr_cache.set(cache_key, data)
@@ -466,6 +583,54 @@ def list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     return rows
 
 
+async def alist_prs(state: str = "open", since: str | None = None) -> list[dict]:
+    """Native-await twin of list_prs. The closed/all path is fully native;
+    the open path reuses open_prs()'s cache via one executor hop when its
+    cold fetch is needed (the cache itself stays the single source)."""
+    if state not in ("open", "closed", "all"):
+        raise RepoError("repo_list_prs state must be 'open', 'closed' or 'all'.")
+    if since is not None:
+        try:
+            datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise RepoError(
+                "repo_list_prs since must be an ISO-8601 UTC timestamp like "
+                f"'2026-08-18T00:00:00.000Z', got {since!r}."
+            ) from None
+        if not since.endswith("Z"):
+            raise RepoError(
+                "repo_list_prs since must be a UTC timestamp ending in 'Z' "
+                f"(e.g. '2026-08-18T00:00:00.000Z'), got {since!r}."
+            )
+    if state == "open":
+        rows = await asyncio.to_thread(open_prs)
+        return [r for r in rows if r["created_at"] >= since] if since else rows
+    pulls = await _on_bg(_arequest(
+        "GET",
+        f"pulls?state={state}&sort=updated&direction=desc&per_page={config.GITHUB_PRS_PER_PAGE}",
+    ))
+    rows = []
+    for p in pulls:
+        row = {
+            "number": p["number"],
+            "title": p["title"],
+            "head": p["head"]["ref"],
+            "base": p["base"]["ref"],
+            "author": (p.get("user") or {}).get("login"),
+            "created_at": p["created_at"],
+            "updated_at": p.get("updated_at"),
+            "state": p.get("state"),
+            "merged_at": p.get("merged_at"),
+            "closed_at": p.get("closed_at"),
+            "outcome": _pr_outcome(p),
+            "html_url": p["html_url"],
+        }
+        if since and (row["updated_at"] or "") < since:
+            continue
+        rows.append(row)
+    return rows
+
+
 _CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
 _PROPOSAL_RE = re.compile(r"Proposal:\s*#?(\d+)")
 _TRAILING_CITIZEN_RE = re.compile(
@@ -559,6 +724,31 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
     proposal the PR implements, used by the poller to record the proposal's
     outcome (backfilling pre-existing PRs from the stamp alone)."""
     pulls = _request("GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}")
+    closed = []
+    for p in pulls:
+        labels = [label["name"] for label in (p.get("labels") or [])]
+        closed.append(
+            {
+                "number": p["number"],
+                "title": p["title"],
+                "author": (p.get("user") or {}).get("login"),
+                "merged_at": p.get("merged_at"),
+                "closed_at": p.get("closed_at"),
+                "labels": labels,
+                "declined": _pr_outcome(p) == "declined",
+                "citizen": _parse_citizen(p.get("body") or ""),
+                "proposal_post_id": _parse_proposal(p.get("body") or ""),
+            }
+        )
+    return closed
+
+
+async def arecently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
+    """Native-await twin of recently_closed_prs - the outcome poller's hot
+    fetch, now off the worker threads entirely."""
+    pulls = await _on_bg(_arequest(
+        "GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}"
+    ))
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
@@ -772,46 +962,42 @@ def comment_on_pr(number: int, body: str) -> dict:
     }
 
 
-def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
-    """Like _request but for text responses - GitHub's Actions log download
+async def _arequest_text(method: str, path: str, ok_404: bool = False) -> str | None:
+    """Async twin of the text reader - GitHub's Actions log download
     (actions/jobs/{id}/logs) is text/plain, not JSON. Returns the decoded
     text ('' for an empty body) or None on an ok_404 miss; raises RepoError
-    exactly like _request otherwise."""
+    exactly like _arequest otherwise."""
     _ensure_token()
     url_path = f"/repos/{GITHUB_REPO}/{path}"
     hdrs = _headers()
 
-    def _do_request(conn: http.client.HTTPSConnection) -> http.client.HTTPResponse:
-        conn.request(method, url_path, headers=hdrs)
-        _conn.last_used = time.monotonic()
-        return conn.getresponse()
+    client = _get_client()
 
-    conn = _get_connection()
+    async def _do() -> httpx.Response:
+        return await client.request(method, url_path, headers=hdrs)
+
     try:
-        resp = _do_request(conn)
-    except (ConnectionError, http.client.RemoteDisconnected, OSError):
-        try:
-            conn.close()
-        except Exception:
-            pass
-        _conn.handle = None
-        conn = _get_connection()
-        resp = _do_request(conn)
+        resp = await _do()
+    except (httpx.TransportError, OSError):
+        resp = await _do()
 
-    if 200 <= resp.status < 300:
-        raw = resp.read()
-        if not raw:
-            return ""
-        return raw.decode("utf-8", errors="replace")
-    if resp.status == 404 and ok_404:
+    status = resp.status_code
+    if 200 <= status < 300:
+        return resp.text  # fully read by httpx - "" for an empty body
+    if status == 404 and ok_404:
         return None
     msg = ""
     try:
-        msg = json.loads(resp.read()).get("message", "")
+        msg = resp.json().get("message", "")
     except Exception:
         pass
     detail = f" ({msg})" if msg else ""
-    raise RepoError(f"GitHub API {resp.status}{detail} on {method} {path}")
+    raise RepoError(f"GitHub API {status}{detail} on {method} {path}")
+
+
+def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
+    """Sync face of _arequest_text - see _request."""
+    return _sync(_arequest_text(method, path, ok_404=ok_404))
 
 
 _FAILURE_MARKERS = (
@@ -2133,3 +2319,40 @@ def apply_merge_resolutions(
         }
     finally:
         _cleanup(repo_dir)
+
+# ------------------------------------------------- async surface (twins) --
+
+def _atwin(sync_fn):
+    """Give a composite flow an async face: run the whole sync function on
+    the background executor so the caller's event loop never blocks, and
+    the anyio worker pool stays free for other tools. Used for flows
+    dominated by local git subprocess work (propose / update / close /
+    conflicts) where a thread is the right tool; network-pure hot paths
+    carry true native twins instead (alist_tree / aread_file / alist_prs /
+    arecently_closed_prs).
+
+    Late-binding by design: the twin resolves the function by name on each
+    call, so monkeypatching the sync original (as the test suite does)
+    applies to the twin too."""
+    name = sync_fn.__name__
+
+    async def twin(*args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(globals()[name], *args, **kwargs)
+
+    twin.__name__ = f"a{name}"
+    twin.__qualname__ = twin.__name__
+    twin.__doc__ = sync_fn.__doc__
+    return twin
+
+
+apropose_change = _atwin(propose_change)
+aupdate_pr = _atwin(update_pr)
+aclose_pr = _atwin(close_pr)
+aget_pr = _atwin(get_pr)
+aset_pr_labels = _atwin(set_pr_labels)
+acomment_on_pr = _atwin(comment_on_pr)
+apr_diff = _atwin(pr_diff)
+apr_checks = _atwin(pr_checks)
+apr_commits = _atwin(pr_commits)
+adetect_merge_conflicts = _atwin(detect_merge_conflicts)
+aapply_merge_resolutions = _atwin(apply_merge_resolutions)
