@@ -232,9 +232,10 @@ def test_flow_leftover_branches_never_poison_the_slot():
                 cwd=d, check=True, capture_output=True, text=True,
             ).stdout.split()
 
-        # Op 2 + 3: next citizens' flows must find NO pr_head leftover at
-        # acquire entry (normalize scrubbed it), then recreate it freely.
-        for expected_dir in (d, d, d):
+        # Op 2 + 3 (+1 more for good measure): next citizens' flows must find
+        # NO pr_head leftover at acquire entry (normalize scrubbed it), then
+        # recreate it freely.
+        for _ in range(3):
             with gh._workspace() as dx:
                 assert dx == d, "warm slot expected"
                 assert "pr_head" not in local_branches(dx), \
