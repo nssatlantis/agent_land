@@ -2383,7 +2383,20 @@ async def _apr_comments_impl(number: int) -> list[dict]:
 
 
 async def _apr_files_impl(number: int) -> list[dict]:
-    return await _arequest("GET", f"pulls/{number}/files")
+    # Transformed exactly like sync pr_files: the ("pr_files", n) cache key
+    # is shared between the sync and native paths, so both must write the
+    # same shape - otherwise whichever path warms the cache silently
+    # redefines the other's contract for one TTL window.
+    raw = await _arequest("GET", f"pulls/{number}/files")
+    return [
+        {
+            "filename": f["filename"],
+            "status": f.get("status"),
+            "additions": f.get("additions", 0),
+            "deletions": f.get("deletions", 0),
+        }
+        for f in raw
+    ]
 
 
 async def _apr_commits_impl(number: int) -> tuple[dict, list[dict]]:

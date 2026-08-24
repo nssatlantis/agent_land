@@ -281,11 +281,33 @@ def test_aget_pr_fans_out_concurrently():
 
 def test_aget_pr_cache_and_subcache_parity():
     hits: list[str] = []
+    # Rich file entry: the raw GitHub shape carries extra keys (patch,
+    # blob_url, ...). If the native path ever writes RAW objects into the
+    # shared ("pr_files", n) cache key that sync pr_files fills with the
+    # four-field transform, this assertion catches the shape swap.
+    raw_file = {
+        "filename": "src/app.py",
+        "status": "modified",
+        "additions": 12,
+        "deletions": 3,
+        "changes": 15,
+        "patch": "@@ -1 +1 @@",
+        "blob_url": "https://github.com/x/y/blob/abc/src/app.py",
+        "raw_url": "https://github.com/x/y/raw/abc/src/app.py",
+    }
+    expected_file = {
+        "filename": "src/app.py",
+        "status": "modified",
+        "additions": 12,
+        "deletions": 3,
+    }
 
     def handler(request):
         hits.append(request.url.path)
         if request.url.path.endswith("/pulls/4242"):
             return httpx.Response(200, json=_PR_4242)
+        if request.url.path.endswith("/files"):
+            return httpx.Response(200, json=[raw_file])
         return httpx.Response(200, json=[])
 
     old = _install_mock(handler)
@@ -294,14 +316,20 @@ def test_aget_pr_cache_and_subcache_parity():
     try:
         first = asyncio.run(gh.aget_pr(4242))
         n_after_first = len(hits)
+        # aget_pr's files (and the sub-cache it warmed) carry the sync
+        # four-field shape - not the raw GitHub objects.
+        assert first["files"] == [expected_file], first["files"]
         second = asyncio.run(gh.aget_pr(4242))
         assert second is first or second == first
         assert len(hits) == n_after_first, "cache hit must make zero transport calls"
-        # Sync get_pr warmed the sub-caches as a side effect; the native twin
-        # must too (pr_comments / pr_files keys populated).
-        assert asyncio.run(gh.apr_comments(4242)) == []
-        assert asyncio.run(gh.apr_files(4242)) == []
-        assert len(hits) == n_after_first, "sub-caches must be warm after aget_pr"
+        # Direct apr_files: same four-field contract from the shared key.
+        direct = asyncio.run(gh.apr_files(4242))
+        assert direct == [expected_file], direct
+        assert len(hits) == n_after_first
+        # And the reverse direction: sync pr_files reading whatever the
+        # native path warmed must see the transformed shape too.
+        assert gh.pr_files(4242) == [expected_file]
+        assert len(hits) == n_after_first
     finally:
         gh._checks_for_head = stub_checks
         gh._client = old
@@ -311,9 +339,12 @@ def test_aget_pr_cache_and_subcache_parity():
 
 def test_gather_error_propagates_as_repo_error():
     def handler(request):
-        if "/issues/" in str(request.url):
+        url = str(request.url)
+        if "/issues/" in url:
             return httpx.Response(500, json={"message": "boom"})
-        if "/pulls/4243" in str(request.url):
+        if url.endswith("/files"):
+            return httpx.Response(200, json=[])
+        if "/pulls/4243" in url:
             return httpx.Response(200, json=dict(_PR_4242, number=4243))
         return httpx.Response(200, json=[])
 
