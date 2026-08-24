@@ -469,13 +469,16 @@ def _pr_vote_sweep(
     if not candidates:
         return actions
 
-    # Proposal-hold release pass: a PR opened while its linked proposal
+        # Proposal-hold release pass: a PR opened while its linked proposal
     # was still awaiting the community's vote carries the 'proposal-hold'
     # label and a 'WIP: ' title prefix.  The moment that vote passes this
     # pass drops the label, strips the prefix, and tells the opener, the
     # proposal author, and every subscriber that the PR is open for review
-    # and voting.  Runs before the small-fix merge filter below so holds
-    # on regular (non-small-fix) proposals are lifted too.
+    # and voting.  A held PR cannot orphan-lock: supersede_proposal
+    # refuses while any PR is in flight, so the parent can only lock
+    # after the PR was closed by hand (karma-neutral).  Runs before the
+    # small-fix merge filter below so holds on regular (non-small-fix)
+    # proposals are lifted too.
     for pr, opener, proposal_post_id in list(candidates):
         number = pr["number"]
         try:
