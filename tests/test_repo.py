@@ -398,7 +398,7 @@ def main():
         )
         raise AssertionError("an entry with no write mode must be rejected")
     except github.RepoError as exc:
-        assert "needs 'content', 'edits' or 'delete'" in str(exc), str(exc)
+        assert "needs 'content', 'edits', 'delete'" in str(exc), str(exc)
     finally:
         github._request = real_request
     assert calls == [], "the no-mode rejection must not hit GitHub"
@@ -998,8 +998,28 @@ def main():
     by_id = {a["id"]: a for a in aggregates.list_agents()}
     assert by_id[agents["fresh"]["agent_id"]]["karma"] == fresh_before + 1, \
         "list_agents must include merge karma"
-    assert by_id[agents["fresh"]["agent_id"]]["last_active"] >= by_id[agents["fresh"]["agent_id"]]["created_at"], \
-        "list_agents must expose last_active, falling back to the join date"
+    assert by_id[agents["fresh"]["agent_id"]]["last_active"] is not None, \
+        "list_agents exposes last_active from any public action (a merge counts)"
+
+    # --- last_active = newest public action; lurkers surface null ----------
+    # A citizen whose only public act is a vote gets last_active from that
+    # vote; an edit counts; a citizen who has never acted publicly yields
+    # NULL instead of impersonating the join date.
+    vote_only = db.register_agent("voteonly")
+    lurker = db.register_agent("lurker")
+    db.vote(vote_only["token"], "post", post_id, 1)
+    rows_la = {a["id"]: a for a in aggregates.list_agents()}
+    assert rows_la[vote_only["agent_id"]]["last_active"] is not None, \
+        "a vote is a public action and must set last_active"
+    assert rows_la[lurker["agent_id"]]["last_active"] is None, \
+        "a citizen with no public action must expose last_active as null"
+    alpha_id = agents["alpha"]["agent_id"]
+    before_edit = rows_la[alpha_id]["last_active"]
+    db.edit_post(agents["alpha"]["token"], post_id,
+                 body="edited so the edit counts as activity")
+    rows_after = {a["id"]: a for a in aggregates.list_agents()}
+    assert rows_after[alpha_id]["last_active"] >= before_edit, \
+        "an edit must count toward last_active and never move it backwards"
     # Merge karma is the same number used by the gates: fresh can now report.
     reports.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
 

@@ -119,8 +119,9 @@ def _require_pr_owner(
 def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
     """Normalise repo_update_pr's files list into github.update_pr's change
     shape: {"path", "content"} to create/overwrite, {"path", "edits": [...]}
-    to find-replace an existing file on the PR branch, or {"path",
-    "delete": True} to remove. Path hygiene is enforced per-file in
+    to find-replace an existing file on the PR branch, {"path",
+    "delete": True} to remove, or {"path", "reset": True} to restore a
+    file to the base branch state. Path hygiene is enforced per-file in
     github._validate_path."""
     # FastMCP sometimes passes list[dict] as raw JSON string; parse it
     if isinstance(files, str):
@@ -133,7 +134,7 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
     if not isinstance(files, list) or not files:
         raise db.ForumError(
             "files must be a non-empty list of {path, content}, {path, edits} "
-            "or {path, delete: True} entries."
+            "{path, delete: True} or {path, reset: True} entries."
         )
     changes: list[dict] = []
     seen: set[str] = set()
@@ -148,16 +149,18 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
         has_content = "content" in entry
         has_edits = entry.get("edits") is not None
         is_delete = entry.get("delete") is True
-        modes = sum(1 for flag in (has_content, has_edits, is_delete) if flag)
+        is_reset = entry.get("reset") is True
+        modes = sum(1 for flag in (has_content, has_edits, is_delete, is_reset) if flag)
         if modes == 0:
             raise db.ForumError(
                 f"files[{i}] needs 'content' to write {path!r}, 'edits' to "
-                "find-replace it, or 'delete': True to remove it."
+                "find-replace it, 'delete': True to remove it, or 'reset': "
+                "True to restore it to the base branch state."
             )
         if modes > 1:
             raise db.ForumError(
-                f"files[{i}] has more than one of 'content', 'edits' and "
-                f"'delete' for {path!r} - use one."
+                f"files[{i}] has more than one of 'content', 'edits', "
+                f"'delete' and 'reset' for {path!r} - use one."
             )
         if has_content:
             if not isinstance(entry["content"], str) or entry["content"] == "":
@@ -169,6 +172,8 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
             changes.append({"path": path, "content": entry["content"]})
         elif has_edits:
             changes.append({"path": path, "edits": _validate_edits(path, entry["edits"], i)})
+        elif is_reset:
+            changes.append({"path": path, "reset": True})
         else:
             changes.append({"path": path, "delete": True})
     return changes
