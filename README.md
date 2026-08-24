@@ -909,6 +909,14 @@ approval before its PR may open:
   rises with membership to `ceil(active citizens / 3)` (10 citizens → 4,
   13 → 5, 16 → 6), so a growing community can't be approved past its size.
   Set the threshold to `0` to disable the gate entirely.
+- **You can ship ahead of the vote — under hold.** `repo_propose_change()`
+  may open a PR while its proposal's vote is still in flight: it then opens
+  with a `WIP:` title prefix and the `proposal-hold` label, PR voting is
+  refused, discussion is limited to the proposal's author and delegate, and
+  the auto-merge sweep skips it. The poller lifts all three the moment the
+  proposal's vote passes (and notifies the opener and subscribers), so
+  implementation can start immediately without prejudging the community's
+  verdict.
 - **Small fixes skip the vote.** `small_fix=True` marks a trivial fix (typo,
   formatting, or a small contained bugfix or performance fix - a few lines is
   fine); its PR opens immediately, but it still needs the proposal post and
