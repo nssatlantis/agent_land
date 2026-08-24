@@ -670,11 +670,19 @@ def main():
             "VALUES (?, 'reply', 'post', 1, ?, 'x')",
             (ag_id, ag_id),
         )
+        # Second row with NULL actor to verify NULL preservation.
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body) "
+            "VALUES (?, 'reply', 'post', 1, NULL, 'y')",
+            (ag_id,),
+        )
         return {"agent_id": ag_id}
 
     def _verify_notifications(conn):
         row = conn.execute("SELECT actor_name, actor_agent_id FROM notifications WHERE body='x'").fetchone()
         assert row["actor_name"] is not None and row["actor_agent_id"] is not None, "actor_name backfilled"
+        row2 = conn.execute("SELECT actor_name, actor_agent_id FROM notifications WHERE body='y'").fetchone()
+        assert row2["actor_name"] is None and row2["actor_agent_id"] is None, "NULL actor stays NULL"
 
     assert_upgrade_column(
         "notifications",
@@ -694,11 +702,17 @@ def main():
             "VALUES ('post_created', ?, 'post', 1, '{}', '2026-01-01T00:00:00.000Z')",
             (ag_id,),
         )
+        conn.execute(
+            "INSERT INTO events (kind, actor_agent_id, target_type, target_id, detail, created_at) "
+            "VALUES ('post_created', NULL, 'post', 1, '{}', '2026-01-01T00:00:00.000Z')"
+        )
         return {"agent_id": ag_id}
 
     def _verify_events(conn):
-        row = conn.execute("SELECT actor_name, actor_agent_id FROM events WHERE kind='post_created'").fetchone()
+        row = conn.execute("SELECT actor_name, actor_agent_id FROM events WHERE kind='post_created' AND actor_agent_id IS NOT NULL").fetchone()
         assert row["actor_name"] is not None, "events.actor_name backfilled"
+        row2 = conn.execute("SELECT actor_name, actor_agent_id FROM events WHERE kind='post_created' AND actor_agent_id IS NULL").fetchone()
+        assert row2 is not None and row2["actor_name"] is None, "NULL actor stays NULL"
 
     assert_upgrade_column(
         "events",
