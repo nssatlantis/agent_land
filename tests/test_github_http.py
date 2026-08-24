@@ -217,6 +217,196 @@ def test_client_stays_single_owner_across_loops():
     print("  client stays single-owner across loops: ok")
 
 
+_PR_4242 = {
+    "number": 4242,
+    "title": "fan-out probe",
+    "body": "",
+    "head": {"ref": "probe", "sha": "abc123"},
+    "base": {"ref": "main"},
+    "user": {"login": "someone"},
+    "state": "open",
+    "created_at": "2026-08-24T00:00:00Z",
+    "html_url": "https://github.com/x/y/pull/4242",
+}
+
+
+def test_aget_pr_fans_out_concurrently():
+    # Event-gated proof: each of the three wave-2 requests holds until ALL
+    # of them have arrived. A sequential chain deadlocks its first request
+    # (the gate never opens), so passing this test REQUIRES overlap. The
+    # 6s bound keeps a regression a fast failure instead of a hang.
+    gh.clear_cache()
+    arrived: list[str] = []
+    lock = threading.Lock()
+    release = asyncio.Event()
+    # Concurrency contract: wave 1 is the PR fetch alone (ungated); wave 2
+    # overlaps the two comment sources with the files read - THIS gate.
+    expected = (
+        "/repos/nssatlantis/agent_land/issues/4242/comments",
+        "/repos/nssatlantis/agent_land/pulls/4242/comments",
+        "/repos/nssatlantis/agent_land/pulls/4242/files",
+    )
+
+    async def handler(request):
+        path = request.url.path
+        with lock:
+            arrived.append(path)
+            if all(p in arrived for p in expected):
+                release.set()
+        if path.endswith("/pulls/4242"):
+            return httpx.Response(200, json=_PR_4242)
+        # Await (not block) the gate: a SYNC handler would freeze the one
+        # background-loop thread and starve its own sibling requests.
+        try:
+            await asyncio.wait_for(release.wait(), timeout=6)
+        except asyncio.TimeoutError:
+            raise httpx.ConnectError("gate never opened - no wave-2 fan-out", request=request) from None
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    stub_checks = gh._checks_for_head
+    gh._checks_for_head = lambda sha: {"state": "unknown", "source": "stub", "runs": []}
+    try:
+        result = asyncio.run(gh.aget_pr(4242))
+        assert result["number"] == 4242 and result["head"] == "probe"
+        assert result["comments"] == [] and result["files"] == []
+        assert result["checks"]["source"] == "stub"
+        assert all(p in arrived for p in expected), arrived
+    finally:
+        gh._checks_for_head = stub_checks
+        gh._client = old
+        gh.clear_cache()
+    print("  get_pr fans checks/comments/files out concurrently: ok")
+
+
+def test_aget_pr_cache_and_subcache_parity():
+    hits: list[str] = []
+
+    def handler(request):
+        hits.append(request.url.path)
+        if request.url.path.endswith("/pulls/4242"):
+            return httpx.Response(200, json=_PR_4242)
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    stub_checks = gh._checks_for_head
+    gh._checks_for_head = lambda sha: {"state": "unknown", "source": "stub"}
+    try:
+        first = asyncio.run(gh.aget_pr(4242))
+        n_after_first = len(hits)
+        second = asyncio.run(gh.aget_pr(4242))
+        assert second is first or second == first
+        assert len(hits) == n_after_first, "cache hit must make zero transport calls"
+        # Sync get_pr warmed the sub-caches as a side effect; the native twin
+        # must too (pr_comments / pr_files keys populated).
+        assert asyncio.run(gh.apr_comments(4242)) == []
+        assert asyncio.run(gh.apr_files(4242)) == []
+        assert len(hits) == n_after_first, "sub-caches must be warm after aget_pr"
+    finally:
+        gh._checks_for_head = stub_checks
+        gh._client = old
+        gh.clear_cache()
+    print("  aget_pr cache + sub-cache parity with sync path: ok")
+
+
+def test_gather_error_propagates_as_repo_error():
+    def handler(request):
+        if "/issues/" in str(request.url):
+            return httpx.Response(500, json={"message": "boom"})
+        if "/pulls/4243" in str(request.url):
+            return httpx.Response(200, json=dict(_PR_4242, number=4243))
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    stub_checks = gh._checks_for_head
+    gh._checks_for_head = lambda sha: None
+    try:
+        raised = None
+        try:
+            asyncio.run(gh.aget_pr(4243))
+        except gh.RepoError as exc:
+            raised = str(exc)
+        assert raised is not None and "boom" in raised, raised
+    finally:
+        gh._checks_for_head = stub_checks
+        gh._client = old
+        gh.clear_cache()
+    print("  gather failure surfaces as RepoError with body message: ok")
+
+
+def _install_gated_pair(pair, payloads):
+    """Event-gated async mock proving two specific request paths overlap:
+    each holds until BOTH have arrived (sequential code deadlocks its first
+    request; gathered code passes). Returns the handler to install."""
+    arrived: list[str] = []
+    lock = threading.Lock()
+    release = asyncio.Event()
+
+    async def handler(request):
+        path = request.url.path
+        with lock:
+            arrived.append(path)
+            if all(p in arrived for p in pair):
+                release.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=6)
+        except asyncio.TimeoutError:
+            raise httpx.ConnectError("pair gate never opened - no overlap", request=request) from None
+        base = payloads.get("pr")
+        if base is not None and path.endswith(f"/pulls/{base['number']}"):
+            return httpx.Response(200, json=base)
+        return httpx.Response(200, json=payloads.get(path, []))
+
+    return handler
+
+
+def test_apr_diff_overlaps_payload_with_first_page():
+    gh.clear_cache()
+    pr_payload = dict(_PR_4242, number=5151)
+    pair = ("/repos/nssatlantis/agent_land/pulls/5151",
+            "/repos/nssatlantis/agent_land/pulls/5151/files")
+    payloads = {
+        "pr": pr_payload,
+        pair[1]: [{"filename": "f.py", "additions": 3}],
+    }
+    handler = _install_gated_pair(pair, payloads)
+    old = _install_mock(handler)
+    try:
+        diff = asyncio.run(gh.apr_diff(5151))
+        assert diff["title"] == "fan-out probe"
+        assert diff["files"] == [{"path": "f.py", "status": None, "additions": 3,
+                                  "deletions": 0, "changes": 0, "patch": None}]
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  apr_diff overlaps payload with first files page: ok")
+
+
+def test_apr_commits_overlaps_payload_with_first_page():
+    gh.clear_cache()
+    pr_payload = dict(_PR_4242, number=6161)
+    pair = ("/repos/nssatlantis/agent_land/pulls/6161",
+            "/repos/nssatlantis/agent_land/pulls/6161/commits")
+    payloads = {
+        "pr": pr_payload,
+        pair[1]: [{"sha": "deadbeef", "commit": {"message": "m",
+                   "author": {"name": "n", "date": "2026-08-24T00:00:00Z"}}}],
+    }
+    handler = _install_gated_pair(pair, payloads)
+    old = _install_mock(handler)
+    try:
+        result = asyncio.run(gh.apr_commits(6161))
+        assert result["number"] == 6161 and result["head"] == "probe"
+        assert result["commits"] == [{
+            "sha": "deadbeef", "message": "m",
+            "author_name": "n", "author_date": "2026-08-24T00:00:00Z",
+        }]
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  apr_commits overlaps payload with first commits page: ok")
+
+
 def main():
     test_transport_error_retries_once()
     test_remote_protocol_error_heals()
@@ -227,6 +417,11 @@ def main():
     test_client_stays_single_owner_across_loops()
     test_sync_bridge_shares_one_client_across_threads()
     test_background_loop_is_reused_not_respawned()
+    test_aget_pr_fans_out_concurrently()
+    test_aget_pr_cache_and_subcache_parity()
+    test_gather_error_propagates_as_repo_error()
+    test_apr_diff_overlaps_payload_with_first_page()
+    test_apr_commits_overlaps_payload_with_first_page()
     print("test_github_http: all ok")
     return 0
 
