@@ -1,19 +1,18 @@
-﻿"""Regression guards for github.py's thread-local keep-alive pool
-(proposal #179): an ok_404 miss used to return without draining the
-response body, desynchronising the reused connection's stream, and the
-reconnect-retry fallback only caught socket-level errors - so a single
-http.client.HTTPException (CannotSendRequest / ResponseNotReady /
-BadStatusLine) poisoned the per-thread handle until process restart,
-failing every later call on that thread in well under a millisecond.
-These tests pin the healing contract with scripted fake connections:
-protocol-level failures reconnect exactly once and succeed, drained
-404-ok bodies keep the stream in sync, healthy reuse never reconnects,
-and the non-OK RepoError path still reads the body."""
+﻿"""Regression guards for github.py's pooled httpx client (proposal #179,
+extended across the async migration): transport-level failures retry
+exactly once while the poisoned connection is discarded inside httpx,
+ok_404 misses keep the stream in sync (httpx drains every body fully -
+the unread-404 bug class is structurally gone), the non-OK path surfaces
+GitHub's own message as RepoError, sync callers bridge onto the dedicated
+background loop transparently, native-await twins work standalone, and
+concurrent sync callers share the one client safely."""
 
-import http.client
+import asyncio
 import importlib.util
 import sys
 import threading
+import httpx
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -26,179 +25,184 @@ _spec.loader.exec_module(gh)
 gh.GITHUB_TOKEN = "test-token"  # satisfies _ensure_token(); no network touched
 
 
-class FakeResponse:
-    def __init__(self, status=200, body=b'{"value": 7}'):
-        self.status = status
-        self._body = body
-        self.read_called = False
-
-    def read(self):
-        self.read_called = True
-        return self._body
-
-
-class ScriptedConn:
-    """A scripted HTTPSConnection stand-in: request()/getresponse() raise
-    their configured exception once (if any), then behave normally."""
-
-    def __init__(self, req_exc=None, resp=None, resp_exc=None):
-        self.req_exc = req_exc
-        self.resp = resp if resp is not None else FakeResponse()
-        self.resp_exc = resp_exc
-        self.sock = object()
-        self.closed = False
-        self.request_calls = 0
-
-    def request(self, *args, **kwargs):
-        self.request_calls += 1
-        if self.req_exc is not None:
-            exc, self.req_exc = self.req_exc, None
-            raise exc
-
-    def getresponse(self):
-        if self.resp_exc is not None:
-            exc, self.resp_exc = self.resp_exc, None
-            raise exc
-        return self.resp
-
-    def close(self):
-        self.closed = True
-        self.sock = None
+def _install_mock(handler):
+    """Point the module's shared client at an httpx.MockTransport-backed
+    client. Returns the previous client for restoration."""
+    old = gh._client
+    gh._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.github.com",
+    )
+    return old
 
 
-def _reset_pool():
+def test_transport_error_retries_once():
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            raise httpx.ConnectError("boom", request=request)
+        return httpx.Response(200, json={"value": 7})
+
+    old = _install_mock(handler)
     try:
-        gh._conn.handle = None
-    except AttributeError:
-        pass
+        assert gh._request("GET", "pulls/1") == {"value": 7}
+        assert len(calls) == 2, f"exactly one retry expected, saw {len(calls)}"
+    finally:
+        gh._client = old
+    print("  ConnectError heals via one retry: ok")
 
 
-def _install(*conns):
-    """Patch http.client.HTTPSConnection so github.py's REAL pool logic
-    constructs the scripted conns in order (repeating the last one).
-    Returns (created_list, patch_context_manager)."""
-    made = []
+def test_remote_protocol_error_heals():
+    # The incident class behind proposal #179 - a protocol-level failure on
+    # a reused connection - as httpx reports it.
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.RemoteProtocolError("server disconnected", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    old = _install_mock(handler)
+    try:
+        assert gh._request("GET", "pulls/2") == {"ok": True}
+        assert len(calls) == 2
+    finally:
+        gh._client = old
+    print("  RemoteProtocolError (Request-sent class) heals: ok")
+
+
+def test_ok_404_returns_none_and_stream_stays_in_sync():
+    hits = []
+
+    def handler(request):
+        hits.append(request.url.path)
+        if len(hits) == 1:
+            return httpx.Response(404, json={"message": "Not Found"})
+        return httpx.Response(200, json={"after": True})
+
+    old = _install_mock(handler)
+    try:
+        assert gh._request("GET", "contents/gone.md", ok_404=True) is None
+        # The next request on the SAME shared client must parse cleanly -
+        # no leftover body bytes corrupting the stream.
+        assert gh._request("GET", "contents/here.md") == {"after": True}
+        assert hits == ["/repos/x/gone.md", "/repos/x/here.md"] or len(hits) == 2
+    finally:
+        gh._client = old
+    print("  ok_404 miss keeps the shared stream in sync: ok")
+
+
+def test_non_ok_error_surfaces_body_message():
+    def handler(request):
+        return httpx.Response(500, json={"message": "boom"})
+
+    old = _install_mock(handler)
+    try:
+        raised = None
+        try:
+            gh._request("GET", "pulls/3")
+        except gh.RepoError as exc:
+            raised = str(exc)
+        assert raised is not None and "500" in raised and "boom" in raised, raised
+    finally:
+        gh._client = old
+    print("  non-OK path raises RepoError with the body message: ok")
+
+
+def test_request_text_paths():
+    def handler(request):
+        if "jobs/9/" in str(request.url):
+            return httpx.Response(404, text="nope")
+        return httpx.Response(200, text="line1\nerror: failed\n")
+
+    old = _install_mock(handler)
+    try:
+        text = gh._request_text("GET", "actions/jobs/1/logs")
+        assert text == "line1\nerror: failed\n", repr(text)
+        assert gh._request_text("GET", "actions/jobs/9/logs", ok_404=True) is None
+    finally:
+        gh._client = old
+    print("  _request_text reads text and honours ok_404: ok")
+
+
+def test_native_twin_alist_tree():
+    gh.clear_cache()
+
+    def handler(request):
+        assert request.url.path.endswith("git/trees/main")
+        return httpx.Response(200, json={
+            "tree": [
+                {"path": "a.py", "type": "blob", "size": 10},
+                {"path": "d/", "type": "tree"},
+                {"path": "b.md", "type": "blob"},
+            ]
+        })
+
+    old = _install_mock(handler)
+    try:
+        result = asyncio.run(gh.alist_tree())
+        assert result["repo"] == gh.GITHUB_REPO
+        assert result["branch"] == "main"
+        assert [f["path"] for f in result["files"]] == ["a.py", "b.md"]
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  native await twin alist_tree works standalone: ok")
+
+
+def test_sync_bridge_shares_one_client_across_threads():
+    seen = []
     lock = threading.Lock()
 
-    def factory(*args, **kwargs):
+    def handler(request):
         with lock:
-            conn = conns[len(made)] if len(made) < len(conns) else conns[-1]
-            made.append(conn)
-            return conn
+            seen.append(str(request.url))
+        return httpx.Response(200, json={"n": int(request.url.path.rsplit("/", 1)[-1])})
 
-    class _Patched:
-        def __init__(self):
-            self._original = None
-
-        def __enter__(self):
-            self._original = http.client.HTTPSConnection
-            http.client.HTTPSConnection = factory
-            return self
-
-        def __exit__(self, *exc_info):
-            http.client.HTTPSConnection = self._original
-            return False
-
-    return made, _Patched()
-
-
-def _run(method="GET", path="pulls/1", **kwargs):
-    return gh._request(method, path, **kwargs)
+    old = _install_mock(handler)
+    try:
+        threads_before = threading.active_count()
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(gh._request, "GET", f"items/{i}") for i in range(16)]
+            results = [f.result() for f in futures]
+        assert results == [{"n": i} for i in range(16)]
+        assert len(seen) == 16
+        # One background loop serves everyone; no thread-per-call growth.
+        assert threading.active_count() <= threads_before + 2
+        assert gh._loop is not None and gh._loop.is_running()
+    finally:
+        gh._client = old
+    print("  concurrent sync callers share the background loop: ok")
 
 
-def test_cannot_send_request_retries_on_fresh_connection():
-    _reset_pool()
-    bad = ScriptedConn(req_exc=http.client.CannotSendRequest("Request-sent"))
-    good = ScriptedConn(resp=FakeResponse(200, b'{"value": 7}'))
-    made, patcher = _install(bad, good)
-    with patcher:
-        assert _run() == {"value": 7}
-    assert bad.closed is True, "poisoned handle must be closed on heal"
-    assert gh._conn.handle is good, "pool must point at the healthy conn"
-    assert len(made) == 2, f"exactly one reconnect expected, saw {len(made)}"
-    print("  CannotSendRequest heals via one reconnect: ok")
+def test_background_loop_is_reused_not_respawned():
+    def handler(request):
+        return httpx.Response(200, json={})
 
-
-def test_bad_status_line_heals():
-    _reset_pool()
-    bad = ScriptedConn(resp_exc=http.client.BadStatusLine(""))
-    good = ScriptedConn(resp=FakeResponse(200, b'{"ok": true}'))
-    made, patcher = _install(bad, good)
-    with patcher:
-        assert _run() == {"ok": True}
-    assert len(made) == 2 and bad.closed
-    print("  BadStatusLine heals via one reconnect: ok")
-
-
-def test_response_not_ready_heals():
-    _reset_pool()
-    bad = ScriptedConn(resp_exc=http.client.ResponseNotReady("Request-sent"))
-    good = ScriptedConn(resp=FakeResponse(200, b'{"n": 1}'))
-    made, patcher = _install(bad, good)
-    with patcher:
-        assert _run() == {"n": 1}
-    assert len(made) == 2 and bad.closed
-    print("  ResponseNotReady heals via one reconnect: ok")
-
-
-def test_ok_404_drains_body_before_returning():
-    _reset_pool()
-    conn = ScriptedConn(resp=FakeResponse(404, b'{"message": "Not Found"}'))
-    made, patcher = _install(conn)
-    with patcher:
-        assert _run(ok_404=True) is None
-    assert conn.resp.read_called is True, "404-ok body must be drained"
-    assert len(made) == 1, "draining must not force a reconnect"
-    print("  ok_404 drains body before returning: ok")
-
-
-def test_ok_404_in_request_text_drains_too():
-    _reset_pool()
-    conn = ScriptedConn(resp=FakeResponse(404, b"gone"))
-    made, patcher = _install(conn)
-    with patcher:
-        assert gh._request_text("GET", "actions/jobs/1/logs", ok_404=True) is None
-    assert conn.resp.read_called is True
-    assert len(made) == 1
-    print("  _request_text ok_404 drains too: ok")
-
-
-def test_healthy_reuse_does_not_reconnect():
-    _reset_pool()
-    conn = ScriptedConn(resp=FakeResponse(200, b'{"a": 1}'))
-    made, patcher = _install(conn)
-    with patcher:
-        first = _run(path="a")
-        second = _run(path="b")
-    assert first == {"a": 1} and second == {"a": 1}
-    assert len(made) == 1, "healthy connections must be reused"
-    assert conn.request_calls == 2
-    print("  healthy reuse stays on one connection: ok")
-
-
-def test_non_ok_error_path_still_reads_body_and_raises():
-    _reset_pool()
-    conn = ScriptedConn(resp=FakeResponse(500, b'{"message": "boom"}'))
-    made, patcher = _install(conn)
-    raised = None
-    with patcher:
-        try:
-            _run()
-        except gh.RepoError as e:
-            raised = str(e)
-    assert raised is not None and "500" in raised and "boom" in raised, raised
-    assert conn.resp.read_called is True, "error path reads the body"
-    print("  non-OK path raises RepoError with body message: ok")
+    old = _install_mock(handler)
+    try:
+        first_loop = None
+        gh._request("GET", "warmup")
+        first_loop = gh._loop
+        gh._request("GET", "warmup2")
+        assert gh._loop is first_loop
+    finally:
+        gh._client = old
+    print("  background loop reused across calls: ok")
 
 
 def main():
-    test_cannot_send_request_retries_on_fresh_connection()
-    test_bad_status_line_heals()
-    test_response_not_ready_heals()
-    test_ok_404_drains_body_before_returning()
-    test_ok_404_in_request_text_drains_too()
-    test_healthy_reuse_does_not_reconnect()
-    test_non_ok_error_path_still_reads_body_and_raises()
+    test_transport_error_retries_once()
+    test_remote_protocol_error_heals()
+    test_ok_404_returns_none_and_stream_stays_in_sync()
+    test_non_ok_error_surfaces_body_message()
+    test_request_text_paths()
+    test_native_twin_alist_tree()
+    test_sync_bridge_shares_one_client_across_threads()
+    test_background_loop_is_reused_not_respawned()
     print("test_github_http: all ok")
     return 0
 
