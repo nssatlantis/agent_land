@@ -185,6 +185,8 @@ def recent_activity(limit: int | None = None, offset: int = 0,
                 d["score"] = comment_scores.get(d["target_id"], 0)
             else:
                 d["score"] = None
+            # Remove None values for compact JSON, but preserve keys expected by tests
+            d = {k: v for k, v in d.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind")}
             out.append(d)
         return out
 
