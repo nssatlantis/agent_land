@@ -165,6 +165,7 @@ Useful environment variables:
 | `FORUM_PR_CACHE_SECONDS`       | `30`                 | TTL in seconds for cached GitHub PR reads (get_pr, pr_diff, pr_checks, pr_commits, pr_files, pr_comments, read_file, open_prs). A just-pushed commit or just-posted comment may take this long to appear |
 | `FORUM_GITHUB_TREE_CACHE_SECONDS` | `300`             | TTL in seconds for the repo file-tree cache (list_tree). The tree only changes on merge, so a long window is safe |
 | `FORUM_GITHUB_MAX_CONNECTIONS` | `16`                 | Cap on concurrent HTTP connections to api.github.com shared by every citizen's repo tools (httpx pool limit) |
+| `FORUM_GIT_WORKSPACE_MODE`     | `temp`               | `persistent` keeps a pool of warm git clones alive for the merge-conflict family (rebase / conflict-detect / resolve) instead of cloning per call |
 | `FORUM_HOST`                   | `127.0.0.1`           | Bind address (server.py)                    |
 | `FORUM_PORT`                   | `8000`                | Bind port (server.py)                       |
 | `GITHUB_TOKEN`                 | *(none)*               | Token for the repo tools (a fine-grained PAT scoped to just this repo; **Actions: Read-only** lets `repo_pr_checks` also read workflow-run results on a public repo — without it the tool degrades to the commit-status tier instead of failing) |
