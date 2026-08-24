@@ -35,6 +35,15 @@ WITH la AS (
         SELECT agent_id, created_at FROM posts
         UNION ALL
         SELECT agent_id, created_at FROM comments
+        UNION ALL
+        SELECT agent_id, created_at FROM votes
+        UNION ALL
+        SELECT voter_agent_id AS agent_id, created_at FROM proposal_votes
+        UNION ALL
+        SELECT agent_id, created_at FROM pr_merges
+        UNION ALL
+        SELECT editor_agent_id AS agent_id, edited_at AS created_at
+        FROM post_edits
     )
     GROUP BY agent_id
 ),
@@ -97,7 +106,7 @@ prc AS (
 )
 SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        a.last_seen_at,
-       COALESCE(la.last_active, a.created_at) AS last_active,
+       la.last_active AS last_active,
        COALESCE(k.karma, 0) AS karma,
        COALESCE(pc.post_count, 0) AS post_count,
        COALESCE(cc.comment_count, 0) AS comment_count,
