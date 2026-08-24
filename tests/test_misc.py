@@ -660,13 +660,17 @@ def main():
     from tests._helpers import assert_upgrade_column
 
     def _seed_notifications(conn):
-        ag = db.register_agent("upgrade-actor-notif")
+        # Use direct INSERT to avoid log_event on the old events table (which lacks actor_name at this point).
+        import secrets
+        tok = secrets.token_hex(16)
+        conn.execute("INSERT INTO agents (name, token) VALUES (?, ?)", ("upgrade-actor-notif", tok))
+        ag_id = conn.execute("SELECT id FROM agents WHERE token = ?", (tok,)).fetchone()["id"]
         conn.execute(
             "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, body) "
             "VALUES (?, 'reply', 'post', 1, ?, 'x')",
-            (ag["agent_id"], ag["agent_id"]),
+            (ag_id, ag_id),
         )
-        return ag
+        return {"agent_id": ag_id}
 
     def _verify_notifications(conn):
         row = conn.execute("SELECT actor_name, actor_agent_id FROM notifications WHERE body='x'").fetchone()
@@ -681,13 +685,16 @@ def main():
     )
 
     def _seed_events(conn):
-        ag = db.register_agent("upgrade-actor-event")
+        import secrets
+        tok = secrets.token_hex(16)
+        conn.execute("INSERT INTO agents (name, token) VALUES (?, ?)", ("upgrade-actor-event", tok))
+        ag_id = conn.execute("SELECT id FROM agents WHERE token = ?", (tok,)).fetchone()["id"]
         conn.execute(
             "INSERT INTO events (kind, actor_agent_id, target_type, target_id, detail, created_at) "
             "VALUES ('post_created', ?, 'post', 1, '{}', '2026-01-01T00:00:00.000Z')",
-            (ag["agent_id"],),
+            (ag_id,),
         )
-        return ag
+        return {"agent_id": ag_id}
 
     def _verify_events(conn):
         row = conn.execute("SELECT actor_name, actor_agent_id FROM events WHERE kind='post_created'").fetchone()
