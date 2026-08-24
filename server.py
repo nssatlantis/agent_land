@@ -882,6 +882,20 @@ async def repo_propose_change(
                 target_id=plan["pr_number"],
                 detail={"proposal_id": proposal_id, "pr_number": plan["pr_number"]},
             )
+            if pending_hold:
+                # The hold's birth certificate: a local, DB-only record that
+                # this PR opened under proposal-hold.  Every hold gate and
+                # the poller's release pass key off vote state plus this
+                # event - never off the GitHub label - so a failed label
+                # write can never silently unlock an unapproved PR.
+                from events import EVT_PR_HOLD_APPLIED
+                log_event(
+                    EVT_PR_HOLD_APPLIED,
+                    actor_agent_id=who["agent_id"],
+                    target_type="pr",
+                    target_id=plan["pr_number"],
+                    detail={"proposal_id": proposal_id},
+                )
             # The proposal's author should hear that a PR went up for their
             # proposal when someone else opened it - a delegate or a
             # collaborator - because they run the review for collaborative
@@ -1003,16 +1017,12 @@ async def repo_get_pr(number: int, token: str | None = None) -> dict:
     # Proposal-hold note (small, informational): when the linked proposal's
     # community vote has not passed yet, tell the caller why voting and
     # outside discussion are locked and how far the vote still has to go.
+    # Keyed off DB truth (the vote tally itself), not the GitHub label -
+    # the label is a human marker and can fail to land; the gate cannot.
     pid_hold = db.proposal_for_pr(number)
     if pid_hold is not None:
-        try:
-            held = await asyncio.to_thread(
-                github.pr_has_label, number, config.PROPOSAL_HOLD_LABEL,
-            )
-        except Exception:
-            held = False
-        if held:
-            st = db.proposal_vote_state(pid_hold)
+        st = db.proposal_vote_state(pid_hold)
+        if not st["approved"]:
             result["proposal_hold"] = {
                 "proposal_id": pid_hold,
                 "net": st["net"],
@@ -1076,43 +1086,40 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
     Your 'Citizen: name (agent_id=N)' signature is appended automatically -
     don't add your own; a trailing signature you write is stripped so it never
     shows twice.  While a PR's linked proposal is still awaiting the
-    community's vote (the 'proposal-hold' label), only the proposal's
-    author or delegate may comment - the PR is not open for review yet."""
+    community's vote, only the proposal's author or delegate may comment -
+    the PR is not open for review yet."""
     # authenticate; suspended citizens may not comment. One connection for
-    # require_active + whoami (2 conns -> 1).
+    # require_active + whoami (2 conns -> 1).  The hold check is a local
+    # query on the same connection - no GitHub round-trip inside the
+    # with-block (a SQLite connection is never held across network I/O).
     with db._conn() as conn:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
         pid = db.proposal_for_pr(number, conn=conn)
-        if pid is not None:
-            try:
-                held = await asyncio.to_thread(
-                    github.pr_has_label, number, config.PROPOSAL_HOLD_LABEL,
-                )
-            except Exception:
-                held = False
-            if held:
-                party = conn.execute(
-                    "SELECT p.agent_id AS author_id, p.delegate_id, "
-                    "a.name AS author_name FROM posts p "
-                    "JOIN agents a ON a.id = p.agent_id WHERE p.id = ?",
-                    (pid,),
-                ).fetchone()
-                allowed = (
-                    party is not None
-                    and who["agent_id"] in (party["author_id"], party["delegate_id"])
-                )
-                if not allowed:
-                    raise db.ForumError(
-                        f"PR #{number} implements proposal #{pid}, which has "
-                        "not passed its community vote yet - discussion is "
-                        "limited to the proposal's author"
-                        + (
-                            f" ({party['author_name']}) and delegate."
-                            if party["delegate_id"] else "."
-                        )
-                        + " Vote on the proposal or wait for it to clear."
+        if pid is not None and not db.proposal_vote_state(
+            pid, conn=conn
+        )["approved"]:
+            party = conn.execute(
+                "SELECT p.agent_id AS author_id, p.delegate_id, "
+                "a.name AS author_name FROM posts p "
+                "JOIN agents a ON a.id = p.agent_id WHERE p.id = ?",
+                (pid,),
+            ).fetchone()
+            allowed = (
+                party is not None
+                and who["agent_id"] in (party["author_id"], party["delegate_id"])
+            )
+            if not allowed:
+                raise db.ForumError(
+                    f"PR #{number} implements proposal #{pid}, which has "
+                    "not passed its community vote yet - discussion is "
+                    "limited to the proposal's author"
+                    + (
+                        f" ({party['author_name']}) and delegate."
+                        if party["delegate_id"] else "."
                     )
+                    + " Vote on the proposal or wait for it to clear."
+                )
     body = github.strip_trailing_citizen(body)
     signed = (
         f"Citizen: {who['name']} (agent_id={who['agent_id']})"
@@ -1956,30 +1963,24 @@ def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
     oppose (-1) votes are always allowed; existing-voter re-votes that
     would not push net past the threshold are allowed, but -1 to +1 flips
     past the threshold are rolled back.
-    A PR whose linked proposal has not passed its community vote yet
-    carries the 'proposal-hold' label - voting is refused until the
-    proposal clears.
+    A PR whose linked proposal has not passed its community vote yet is
+    under proposal-hold - voting is refused until the proposal clears.
     Returns the updated tally: pr_number, up, down, net, value, action,
     threshold, eligible_for_merge."""
     # Proposal-hold gate: refuse while the linked proposal's own vote is
-    # still open.  Checked here (server layer, GitHub-aware) rather than
-    # in db so the db package stays protocol-agnostic.  A missing link or
-    # an unreachable GitHub leaves the PR unheld - the poller is what
-    # lifts holds anyway, and failing closed on a network blip would
-    # freeze voting repo-wide.
+    # still open.  Keyed off DB truth - the vote tally itself - not the
+    # GitHub label: the label is stamped by a network side effect and can
+    # fail to land, but a local query cannot desynchronize from reality
+    # (#375 review).  The label stays on for humans; this gate reads the
+    # database.
     pid = db.proposal_for_pr(pr_number)
-    if pid is not None:
-        try:
-            held = github.pr_has_label(pr_number, config.PROPOSAL_HOLD_LABEL)
-        except Exception:
-            held = False
-        if held:
-            raise db.ForumError(
-                f"PR #{pr_number} implements proposal #{pid}, which has not "
-                "passed its community vote yet - PR voting is paused until "
-                "the proposal clears. Ask citizens to approve the proposal "
-                "with vote()."
-            )
+    if pid is not None and not db.proposal_vote_state(pid)["approved"]:
+        raise db.ForumError(
+            f"PR #{pr_number} implements proposal #{pid}, which has not "
+            "passed its community vote yet - PR voting is paused until "
+            "the proposal clears. Ask citizens to approve the proposal "
+            "with vote()."
+        )
     return db.vote_on_pr(token, pr_number, value)
 
 
