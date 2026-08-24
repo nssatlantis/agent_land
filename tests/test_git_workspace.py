@@ -1,4 +1,4 @@
-﻿"""Behavioral guards for the persistent git workspace pool (proposal #184,
+"""Behavioral guards for the persistent git workspace pool (proposal #184,
 Phase A). Three merge-family flows used to pay a full network clone per
 call; the pool keeps FORUM_GIT_WORKSPACE_POOL warm clones alive between
 calls. These tests pin the contract with local bare remotes (no network):
@@ -269,6 +269,70 @@ def test_corrupted_slot_self_heals():
         sb.close()
     print("  corrupted slot self-heals via fresh clone: ok")
 
+
+
+def test_push_auth_restores_anonymous_remote():
+    """The anonymous-read invariant: scrub restores the anon URL at
+    acquire-entry, _push_auth tokens only for the push and restores
+    afterwards - even when the push raises."""
+    sb = _PoolSandbox()
+    gh._repo_url = lambda with_token=False: sb.bare + ("-auth" if with_token else "")
+    saved_token_fn = gh._ensure_token
+    gh._ensure_token = lambda: None
+    try:
+        def url(d):
+            return gh._git(d, "config", "--get", "remote.origin.url").stdout.strip()
+
+        with gh._workspace() as d:
+            # A previous operation's push auth must not survive the scrub.
+            gh._git(d, "remote", "set-url", "origin", sb.bare + "-auth")
+            gh._ws_git_scrub(d)
+            assert url(d) == sb.bare, f"scrub left tokened URL: {url(d)}"
+            with gh._push_auth(d):
+                assert url(d) == sb.bare + "-auth", url(d)
+            assert url(d) == sb.bare, f"push auth not restored: {url(d)}"
+            try:
+                with gh._push_auth(d):
+                    raise RuntimeError("boom")
+            except RuntimeError:
+                pass
+            assert url(d) == sb.bare, "push auth not restored on failure"
+        print("  push auth restores the anonymous remote: ok")
+    finally:
+        gh._ensure_token = saved_token_fn
+        sb.close()
+
+
+def test_pool_size_follows_config_changes():
+    """FORUM_GIT_WORKSPACE_POOL takes effect without a restart: growth
+    adds usable slots, shrink retires surplus slots (and their queued
+    tokens), regrow reuses the orphaned slot directories."""
+    sb = _PoolSandbox(pool=1, lock_timeout=2)
+    try:
+        with gh._workspace() as first:
+            pass
+        assert os.path.dirname(first) == gh._ws_root()
+
+        gh.config.GIT_WORKSPACE_POOL = 2  # grow without restart
+        gh._ws_ensure_pool()
+        assert len(gh._ws_slots) == 2, gh._ws_slots
+        with gh._workspace() as second:
+            assert second != first, "grown pool did not yield a new slot"
+            assert os.path.dirname(second) == gh._ws_root()
+
+        gh.config.GIT_WORKSPACE_POOL = 1  # shrink retires the surplus slot
+        gh._ws_ensure_pool()
+        assert len(gh._ws_slots) == 1, gh._ws_slots
+        with gh._workspace() as third:
+            assert third == first, f"expected surviving slot0: {third}"
+
+        gh.config.GIT_WORKSPACE_POOL = 2  # regrow reuses the orphaned dir
+        gh._ws_ensure_pool()
+        with gh._workspace() as fourth:
+            assert fourth in (first, second), fourth
+        print("  pool size follows config changes: ok")
+    finally:
+        sb.close()
 
 def main():
     test_temp_mode_keeps_legacy_contract()

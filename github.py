@@ -1693,11 +1693,11 @@ def rebase_pr_onto_main(
                 stderr = stderr.replace(GITHUB_TOKEN, "<redacted>")
             raise RepoError(f"rebase failed: {stderr.strip()}")
         # Push rebased branch with authenticated remote.
-        _setup_push_auth(repo_dir)
-        _git(
-            repo_dir, "push", "--force-with-lease",
-            "origin", f"HEAD:{head}",
-        )
+        with _push_auth(repo_dir):
+            _git(
+                repo_dir, "push", "--force-with-lease",
+                "origin", f"HEAD:{head}",
+            )
         new_sha = _git(repo_dir, "rev-parse", "HEAD").stdout.strip()
         _invalidate_pr(number)
         return {"status": "ok", "new_sha": new_sha}
@@ -2112,21 +2112,44 @@ def _ws_root() -> str:
 
 
 def _ws_ensure_pool() -> "queue.Queue[int]":
+    """Size the slot pool to the CURRENT configured value - the knob takes
+    effect immediately, no restart needed. Growth appends fresh slots;
+    shrinking truncates the slot list and rebuilds the token queue, so
+    surplus tokens vanish even while never released back. A slot held
+    during a resize finishes its operation against its own dict reference;
+    a token for a retired index is dropped at release time instead of
+    requeued. Retired slot directories stay on disk, inert like any
+    orphaned workspace under _ws_root(), and are reused if the pool grows
+    back (normalize treats them as pre-existing workspaces)."""
     global _workspace_queue, _ws_slots
     with _ws_lock:
+        desired = max(1, int(config.GIT_WORKSPACE_POOL))
         if _workspace_queue is None:
-            n = max(1, int(config.GIT_WORKSPACE_POOL))
             base = _ws_root()
             _ws_slots = [
                 {"dir": os.path.join(base, f"slot{i}"), "last_fetch": 0.0,
                  "dirty": False}
-                for i in range(n)
+                for i in range(desired)
             ]
             q: "queue.Queue[int]" = queue.Queue()
-            for i in range(n):
+            for i in range(desired):
                 q.put(i)
             _workspace_queue = q
-        return _workspace_queue
+        elif desired != len(_ws_slots):
+            base = _ws_root()
+            if desired > len(_ws_slots):
+                for i in range(len(_ws_slots), desired):
+                    _ws_slots.append(
+                        {"dir": os.path.join(base, f"slot{i}"),
+                         "last_fetch": 0.0, "dirty": False}
+                    )
+            else:
+                del _ws_slots[desired:]
+            rebuilt: "queue.Queue[int]" = queue.Queue()
+            for i in range(len(_ws_slots)):
+                rebuilt.put(i)
+            _workspace_queue = rebuilt
+    return _workspace_queue
 
 
 def _rm_readonly(func, path, _exc):
@@ -2185,7 +2208,10 @@ def _ws_git_scrub(dir_: str) -> None:
     """Best-effort cleanup to the fresh-clone state (no network). Deletes
     every local branch except base: flows create working branches by name
     (`checkout -b pr_head ...`), and a leftover one from an earlier
-    operation must not turn that into a fatal error."""
+    operation must not turn that into a fatal error. Also restores the
+    anonymous remote URL: a previous operation's push auth must not
+    outlive it on a warm slot, and a slot whose process died between
+    set-url and push is healed here on the next acquire."""
     _git(dir_, "checkout", "-B", GITHUB_BASE_BRANCH,
          f"origin/{GITHUB_BASE_BRANCH}", check=False)
     listing = _git(dir_, "branch", "--format=%(refname:short)", check=False)
@@ -2196,6 +2222,8 @@ def _ws_git_scrub(dir_: str) -> None:
                 _git(dir_, "branch", "-D", name, check=False)
     _git(dir_, "reset", "--hard", check=False)
     _git(dir_, "clean", "-fdq", check=False)
+    _git(dir_, "remote", "set-url", "origin",
+         _repo_url(with_token=False), check=False)
 
 
 @contextmanager
@@ -2232,7 +2260,13 @@ def _workspace():
         # Pool saturated: legacy temp clone instead of a new error class.
         yield from _temp_fallback()
         return
-    slot = _ws_slots[idx]
+    try:
+        slot = _ws_slots[idx]
+    except IndexError:
+        # The pool shrank between issuing this token and our acquire; the
+        # slot no longer exists. Retire the token, degrade to temp.
+        yield from _temp_fallback()
+        return
     try:
         _ws_normalize(slot)
         yield slot["dir"]
@@ -2240,13 +2274,16 @@ def _workspace():
         slot["dirty"] = True
         raise
     finally:
-        q.put(idx)
+        # Retired index (pool shrank while we held the slot): drop the
+        # token instead of requeueing it.
+        if idx < max(1, int(config.GIT_WORKSPACE_POOL)):
+            q.put(idx)
 
 
 def _clone_repo() -> str:
     """Clone the repo into a temp directory.  Returns the repo subdir path.
     The clone is anonymous (no auth) since the repo is public; push auth
-    is set up separately by ``_setup_push_auth``."""
+    is applied push-scoped by ``_push_auth``."""
     tmp = tempfile.mkdtemp(prefix="agentland_merge_")
     try:
         _git(tmp, "clone", _repo_url(with_token=False), "repo")
@@ -2267,10 +2304,20 @@ def _abort_merge(repo_dir: str) -> None:
     _git(repo_dir, "merge", "--abort", check=False)
 
 
-def _setup_push_auth(repo_dir: str) -> None:
-    """Set the remote URL to include the token for authenticated push."""
+@contextmanager
+def _push_auth(repo_dir: str):
+    """Token the origin URL for one authenticated push, restoring the
+    anonymous URL afterwards - no warm workspace (or temp clone awaiting
+    cleanup) keeps credentials longer than the push itself. The restore is
+    best-effort: a crash here is healed by the next acquire's scrub in
+    persistent mode."""
     _ensure_token()
     _git(repo_dir, "remote", "set-url", "origin", _repo_url(with_token=True))
+    try:
+        yield
+    finally:
+        _git(repo_dir, "remote", "set-url", "origin",
+             _repo_url(with_token=False), check=False)
 
 
 def _push_ref(branch: str) -> str:
@@ -2481,8 +2528,8 @@ def apply_merge_resolutions(
             "commit", "-m", commit_msg,
         )
         # Authenticate for push, then push
-        _setup_push_auth(repo_dir)
-        _git(repo_dir, "push", "origin", _push_ref(head))
+        with _push_auth(repo_dir):
+            _git(repo_dir, "push", "origin", _push_ref(head))
         sha_result = _git(repo_dir, "rev-parse", "HEAD")
         commit_sha = sha_result.stdout.strip()
         _invalidate_pr(number)

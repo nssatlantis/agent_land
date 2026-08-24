@@ -459,7 +459,6 @@ def test_resolve_success():
         patch("github._clone_repo", return_value=fake_repo),
         patch("github._git", side_effect=fake_git),
         patch("github._cleanup"),
-        patch("github._setup_push_auth"),
         patch("github._invalidate_pr"),
     ):
         result = github.apply_merge_resolutions(
