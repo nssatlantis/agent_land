@@ -803,7 +803,9 @@ async def repo_propose_change(
     vote) - but you may open the PR while the vote is still in flight:
     it then opens with a 'WIP: ' title prefix and the 'proposal-hold'
     label, PR voting and outside discussion stay locked, and the poller
-    lifts both the moment the proposal's vote passes.  Only a merged proposal is done; a
+    lifts both the moment the proposal's vote passes.  Only one PR may
+    wait on a proposal's vote - extend the held PR rather than opening
+    another. Only a merged proposal is done; a
     declined or closed one can be retried here - the author (or delegate, if
     the proposal is delegated) opens a fresh PR under the same proposal, at
     most FORUM_MAX_PRS_PER_PROPOSAL (default 2) PRs in flight at a time. With dry_run=True it returns the plan
