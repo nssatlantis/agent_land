@@ -224,7 +224,7 @@ def _request(method: str, path: str, body: dict | None = None, ok_404: bool = Fa
     conn = _get_connection()
     try:
         resp = _do_request(conn)
-    except (ConnectionError, http.client.RemoteDisconnected, OSError):
+    except (ConnectionError, OSError, http.client.HTTPException):
         try:
             conn.close()
         except Exception:
@@ -239,6 +239,7 @@ def _request(method: str, path: str, body: dict | None = None, ok_404: bool = Fa
             return None
         return json.loads(raw)
     if resp.status == 404 and ok_404:
+        resp.read()  # drain the keep-alive stream so the next request stays in sync
         return None
     msg = ""
     try:
@@ -789,7 +790,7 @@ def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
     conn = _get_connection()
     try:
         resp = _do_request(conn)
-    except (ConnectionError, http.client.RemoteDisconnected, OSError):
+    except (ConnectionError, OSError, http.client.HTTPException):
         try:
             conn.close()
         except Exception:
@@ -804,6 +805,7 @@ def _request_text(method: str, path: str, ok_404: bool = False) -> str | None:
             return ""
         return raw.decode("utf-8", errors="replace")
     if resp.status == 404 and ok_404:
+        resp.read()  # drain the keep-alive stream so the next request stays in sync
         return None
     msg = ""
     try:
