@@ -197,10 +197,20 @@ def _get_client() -> httpx.AsyncClient:
 
 def _sync(coro: Any) -> Any:
     """Bridge a coroutine onto the background loop and block for its result.
-    Legacy sync entry points ride this bridge; native-await callers never
-    do. Never call _sync from the background loop's own thread - that would
-    deadlock waiting on itself."""
+    Legacy sync entry points ride this bridge; native-await callers use
+    _on_bg instead. Never call _sync from the background loop's own thread
+    - that would deadlock waiting on itself."""
     return asyncio.run_coroutine_threadsafe(coro, _bg_loop()).result()
+
+
+async def _on_bg(coro: Any) -> Any:
+    """Await a coroutine on the background loop from a foreign loop WITHOUT
+    blocking the caller's loop. The pooled httpx client is owned exclusively
+    by the background loop - its pooled sockets are bound to that loop and
+    corrupt if another drives them - so the native twins hop their requests
+    over here even when the caller already has a running loop."""
+    fut = asyncio.run_coroutine_threadsafe(coro, _bg_loop())
+    return await asyncio.wrap_future(fut)
 
 
 def _shutdown_client() -> None:
@@ -336,7 +346,7 @@ async def alist_tree() -> dict:
     cached = _tree_cache.get("tree", config.GITHUB_TREE_CACHE_SECONDS)
     if cached is not None:
         return cached
-    tree = await _arequest("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1")
+    tree = await _on_bg(_arequest("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1"))
     entries = [
         {"path": item["path"], "size": item.get("size", 0)}
         for item in tree.get("tree", [])
@@ -411,7 +421,7 @@ async def aread_file(path: str, line_start: int | None = None,
     if cached is not None:
         data = cached
     else:
-        data = await _arequest("GET", f"contents/{path}?ref={ref}", ok_404=True)
+        data = await _on_bg(_arequest("GET", f"contents/{path}?ref={ref}", ok_404=True))
         if data is None:
             raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
         _pr_cache.set(cache_key, data)
@@ -595,10 +605,10 @@ async def alist_prs(state: str = "open", since: str | None = None) -> list[dict]
     if state == "open":
         rows = await asyncio.to_thread(open_prs)
         return [r for r in rows if r["created_at"] >= since] if since else rows
-    pulls = await _arequest(
+    pulls = await _on_bg(_arequest(
         "GET",
         f"pulls?state={state}&sort=updated&direction=desc&per_page={config.GITHUB_PRS_PER_PAGE}",
-    )
+    ))
     rows = []
     for p in pulls:
         row = {
@@ -736,9 +746,9 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
 async def arecently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
     """Native-await twin of recently_closed_prs - the outcome poller's hot
     fetch, now off the worker threads entirely."""
-    pulls = await _arequest(
+    pulls = await _on_bg(_arequest(
         "GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}"
-    )
+    ))
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
