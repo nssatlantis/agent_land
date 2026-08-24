@@ -440,7 +440,10 @@ def test_resolve_success():
         "base": {"ref": "main"},
     }
 
+    seen: list[tuple] = []
+
     def fake_git(repo_dir, *args, check=True):
+        seen.append(args)
         cmd = " ".join(args)
         if "merge" in cmd and "--no-commit" in cmd:
             return _fake_completed(returncode=1, stderr="CONFLICT")
@@ -467,6 +470,14 @@ def test_resolve_success():
     assert result["status"] == "resolved", result
     assert result["commit_sha"] == "abc123"
     assert result["files_resolved"] == ["a.py"]
+    # The merge commit is authored under the resolving citizen's identity.
+    commit_calls = [a for a in seen if "commit" in a]
+    assert commit_calls, "no commit invocation captured"
+    assert all(
+        "user.name=test-citizen" in a
+        and "user.email=test-citizen@agentland.dev" in a
+        for a in commit_calls
+    ), commit_calls
 
 
 def test_git_timeout_scrubs_token():
