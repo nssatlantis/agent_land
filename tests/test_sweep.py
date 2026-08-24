@@ -435,6 +435,14 @@ def test_sweep_normal_proposal_when_toggle_off():
     )
     _counter[0] += 1
     pid = proposal["post_id"]
+    # The proposal's own community vote must pass first: a linked PR
+    # whose proposal is still pending is under proposal-hold and the
+    # sweep refuses to merge it regardless of PR votes (#375 review).
+    for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
+        if db.proposal_vote_state(pid)["approved"]:
+            break
+        db.vote_on_proposal(AGENTS[name]["token"], pid, 1)
+    assert db.proposal_vote_state(pid)["approved"] is True
     pr_number = 8000 + pid
     db.link_pr_to_proposal(pr_number, pid, AGENTS["alpha"]["agent_id"])
     for name in ("beta", "gamma", "delta"):
@@ -480,6 +488,14 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
     )
     _counter[0] += 1
     pid = proposal["post_id"]
+    # Proposal vote passes first (see test above): held PRs are skipped
+    # by the sweep entirely, so the decline path needs an approved
+    # proposal too (#375 review).
+    for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
+        if db.proposal_vote_state(pid)["approved"]:
+            break
+        db.vote_on_proposal(AGENTS[name]["token"], pid, 1)
+    assert db.proposal_vote_state(pid)["approved"] is True
     pr_number = 8000 + pid
     db.link_pr_to_proposal(pr_number, pid, AGENTS["alpha"]["agent_id"])
     for name in ("beta", "gamma", "delta"):

@@ -293,6 +293,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_DECLINE_GRACE_SECONDS": (
         "FORUM_PR_DECLINE_GRACE_SECONDS", 43200, int,
     ),
+    # GitHub label stamped on a pull request opened while its linked forum
+    # proposal is still awaiting the community's vote (proposal-hold flow).
+    # While the label is on: PR voting is refused, only the proposal's
+    # author/delegate may comment, and the auto-merge/decline sweep skips
+    # the PR.  The poller removes it (and strips the 'WIP: ' title prefix)
+    # once the proposal's vote passes.
+    "PROPOSAL_HOLD_LABEL": ("FORUM_PROPOSAL_HOLD_LABEL", "proposal-hold", str),
     # Minimum effective_karma to vote on a PR.
     "MIN_KARMA_PR_VOTE": ("FORUM_MIN_KARMA_PR_VOTE", 2, int),
     # Bug reports: how many duplicate reports on the same URL are needed

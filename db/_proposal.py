@@ -599,9 +599,69 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
         }
 
 
+def proposal_vote_state(
+    post_id: int, conn: sqlite3.Connection | None = None
+) -> dict:
+    """A proposal's community-vote standing, read-only: {post_id,
+    small_fix, net, threshold, approved, locked}.  ``approved`` is True when
+    the vote is not required (small_fix proposals, or a threshold of 0) or
+    the net tally has reached the live threshold - exactly the condition
+    require_proposal_approval() enforces.  ``locked`` is True once the
+    proposal was superseded (frozen; it can never pass).  Used by the
+    PR-open path to decide whether a pull request opens free or under the
+    proposal-hold label, and by the poller to lift that hold once the vote
+    passes - or withdraw the held PR when the proposal locked.
+    Raises ForumError for an unknown post id; non-proposal posts report
+    small_fix=False with net=threshold=0 (never approved)."""
+    with (_conn() if conn is None else nullcontext(conn)) as c:
+        row = c.execute(
+            "SELECT proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"post #{post_id} does not exist.")
+        small_fix = row["proposal_kind"] == "small_fix"
+        locked = row["superseded_by_id"] is not None
+        threshold = _proposal_vote_threshold(c)
+        up = down = net = 0
+        if row["proposal_kind"] is not None and not (small_fix or threshold == 0):
+            up = c.execute(
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
+                " AND value = 1", (post_id,)
+            ).fetchone()[0]
+            down = c.execute(
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
+                " AND value = -1", (post_id,)
+            ).fetchone()[0]
+            net = up - down
+        approved = (
+            row["proposal_kind"] is not None
+            and not locked
+            and (small_fix or threshold == 0 or net >= threshold)
+        )
+        return {
+            "post_id": post_id,
+            "small_fix": small_fix,
+            "net": net,
+            "threshold": threshold,
+            "approved": approved,
+            "locked": locked,
+        }
+
+
 def require_proposal_approval(
-    token: str, post_id: int, action: str, conn: sqlite3.Connection | None = None
+    token: str,
+    post_id: int,
+    action: str,
+    conn: sqlite3.Connection | None = None,
+    *,
+    allow_pending: bool = False,
 ) -> int:
+    """Every gate a pull request must clear against its linked proposal.
+    With allow_pending=True (the proposal-hold flow) the community-vote
+    gate is skipped - the caller stamps the resulting PR with the hold
+    label instead of refusing it - while every other gate (locked,
+    merged, caps, membership, claim) still raises."""
     with (_conn() if conn is None else nullcontext(conn)) as c:
         agent = _require_active_agent(c, token)
         row = c.execute(
@@ -726,11 +786,28 @@ def require_proposal_approval(
                     )
                 raise ForumError(msg)
         if not (small_fix or threshold == 0):
-            if net < threshold:
+            if net < threshold and not allow_pending:
                 raise ForumError(
                     f"proposal #{post_id} has {net} net approval votes "
                     f"(needs {threshold}); the community's "
                     "vote has not passed yet. Ask citizens to approve it with "
                     "vote() and try again."
                 )
+            if net < threshold and allow_pending:
+                # Proposal-hold scope cap (#375 review): an unapproved
+                # proposal carries at most ONE pull request in flight, so
+                # a pending vote can never accumulate WIPs across
+                # collaborators - extend the held PR instead.
+                held = _live_pr_numbers(c, post_id)
+                if held:
+                    pr_list = ", ".join(f"#{n}" for n in held)
+                    raise ForumError(
+                        f"proposal #{post_id} still awaits the community's "
+                        f"vote ({net} net of {threshold}), and its pull "
+                        f"request{'s' if len(held) != 1 else ''} {pr_list} "
+                        "already in flight under hold - only one PR may "
+                        "wait on a proposal's vote. Extend that PR with "
+                        "repo_update_pr, withdraw it with repo_close_pr, "
+                        "or wait for the vote to pass."
+                    )
         return post_id
