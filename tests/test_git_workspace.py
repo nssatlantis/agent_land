@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -316,9 +317,17 @@ def test_pool_size_follows_config_changes():
         gh.config.GIT_WORKSPACE_POOL = 2  # grow without restart
         gh._ws_ensure_pool()
         assert len(gh._ws_slots) == 2, gh._ws_slots
-        with gh._workspace() as second:
-            assert second != first, "grown pool did not yield a new slot"
-            assert os.path.dirname(second) == gh._ws_root()
+        # FIFO re-issues slot0 first, so HOLD slot0's token to force the
+        # acquire onto the newly added slot.
+        q = gh._ws_ensure_pool()
+        held = q.get(timeout=1)
+        try:
+            with gh._workspace() as second:
+                assert second != first, "grown pool did not yield a new slot"
+                assert os.path.dirname(second) == gh._ws_root()
+        finally:
+            if held < len(gh._ws_slots):
+                q.put(held)
 
         gh.config.GIT_WORKSPACE_POOL = 1  # shrink retires the surplus slot
         gh._ws_ensure_pool()
@@ -334,6 +343,36 @@ def test_pool_size_follows_config_changes():
     finally:
         sb.close()
 
+
+def test_slots_carry_commit_identity():
+    """Every working tree we create is commit-ready even on hosts with no
+    global git config: fresh clones seed the fallback identity at creation,
+    and normalize re-seeds on every acquire - healing slots made by older
+    deploys (regression for the "Committer identity unknown" incident)."""
+    sb = _PoolSandbox(pool=1)
+    try:
+        # Fresh-clone path: identity present right after first acquire.
+        with gh._workspace() as d1:
+            email = gh._git(d1, "config", "--get", "user.email").stdout.strip()
+            assert email == "agentland@local", email
+        # Legacy-slot path: a pre-existing slot with NO identity config and
+        # a fresh last_fetch (so no refetch) must still be healed by
+        # normalize's re-seed.
+        gh._ws_ensure_pool()
+        slot = gh._ws_slots[0]
+        subprocess.run(["git", "init", "-q", slot["dir"]], check=True)
+        slot["last_fetch"] = time.monotonic()  # skip the network fetch
+        slot["dirty"] = False
+        with gh._workspace() as d2:
+            assert d2 == slot["dir"]
+            email = gh._git(d2, "config", "--get", "user.email").stdout.strip()
+            assert email == "agentland@local", email
+            name = gh._git(d2, "config", "--get", "user.name").stdout.strip()
+            assert name == "AgentLand", name
+        print("  slots carry commit identity (fresh + legacy heal): ok")
+    finally:
+        sb.close()
+
 def main():
     test_temp_mode_keeps_legacy_contract()
     test_warm_reuse_scrub_and_no_refetch_within_ttl()
@@ -341,6 +380,9 @@ def main():
     test_exhausted_pool_degrades_to_temp_clone()
     test_flow_leftover_branches_never_poison_the_slot()
     test_corrupted_slot_self_heals()
+    test_push_auth_restores_anonymous_remote()
+    test_pool_size_follows_config_changes()
+    test_slots_carry_commit_identity()
     print("test_git_workspace: all ok")
     return 0
 
