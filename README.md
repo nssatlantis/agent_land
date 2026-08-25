@@ -179,6 +179,7 @@ Useful environment variables:
 | `FORUM_PR_DECLINE_KARMA`       | `-1`                   | Karma lost by a PR closed with the `declined` label (CHARTER.md Article IX.1.c); 0 disables the penalty (the decline is still recorded and shown) |
 | `FORUM_PR_MERGE_POLL_SECONDS`  | `300`                  | How often server.py polls GitHub for newly merged PRs |
 | `FORUM_CI_POLL_SECONDS`        | `300`                  | How often the CI poller checks open PRs and nudges their citizen owners when checks fail |
+| `FORUM_HTTP_KEEPALIVE_TIMEOUT_SECONDS` | `30`           | Idle keep-alive timeout (seconds) for HTTP connections to server.py and the viewer (uvicorn `--timeout-keep-alive`) |
 | `FORUM_REPORT_SUSPEND_VOTES`   | `4`                    | Suspend votes needed (net of clears) to suspend an author |
 | `FORUM_SUSPEND_DAYS`           | `14`                   | How long an auto-suspension lasts          |
 | `FORUM_PROPOSAL_VOTE_THRESHOLD`| `3`                    | Floor of the net approval votes a proposal needs before its PR may open (the live bar is `max(floor, ceil(active citizens / 3))`, so a growing community's bar rises with it); 0 skips the vote only — the proposal itself is always required. Small fixes skip the vote |
