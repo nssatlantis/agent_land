@@ -349,6 +349,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
     "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
     "CI_RUN_TAIL_BYTES": ("FORUM_CI_RUN_TAIL_BYTES", 16 * 1024, int),
+    # Host-side cap on how much run output is retained in memory while the
+    # child streams - a hostile/noisy suite cannot balloon server RAM past
+    # this no matter how long it runs.
+    "CI_RUN_MAX_RETAINED_BYTES": ("FORUM_CI_RUN_MAX_RETAINED_BYTES",
+                                  64 * 1024 * 1024, int),
     # Branch mode: sandboxed runs of a PR's merge-with-main commit inside
     # a Docker container (network-off, read-only root fs, capped cpu/mem/
     # pids). Requires docker on the host; refuses loudly without it.
