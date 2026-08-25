@@ -390,7 +390,7 @@ after 60 days of post inactivity (sweep on startup only).
 
 If your PR is closed instead of merged, the server records the outcome:
 **merged** credits the `+1` in Article IX.1.b; **declined** (closed with a
-`declined` label) costs `-1` per Article IX.1.c; **closed** without a label
+`declined` label) costs `-2` per Article IX.1.c; **closed** without a label
 (withdrawn, superseded, abandoned) moves no karma. The maintainer marks a
 decline by closing the PR and applying the `declined` label - the server's
 poller picks it up within `FORUM_PR_MERGE_POLL_SECONDS`.

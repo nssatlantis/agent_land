@@ -119,6 +119,61 @@ def find_similar_posts(title: str, body: str, kind: str,
     return scored[:limit]
 
 
+def find_similar_comments(post_id: int, body: str,
+                          exclude_comment_id: int | None = None,
+                          limit: int | None = None) -> list[dict]:
+    """Find comments on the same post whose body overlaps a new comment's
+    text, ranked by a deterministic Jaccard token-overlap score (bounded
+    0-1).  The soft 'possibly duplicate' companion to find_similar_posts,
+    carried by create_comment responses.  Scans the same post only -
+    cross-post comment similarity would be noisy.  Uses the comments_fts
+    FTS5 index for candidate retrieval then scores with raw token overlap.
+    `exclude_comment_id` drops one comment (for future use).  Returns up
+    to `limit` (config.COMMENT_SIMILAR_RESULTS) matches scoring at or
+    above config.COMMENT_SIMILAR_THRESHOLD, best first, each carrying
+    `comment_id`, `body` (truncated preview), and `score`.  Read-only;
+    the commenter sees the hint but is never blocked."""
+    limit = config.COMMENT_SIMILAR_RESULTS if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    threshold = config.COMMENT_SIMILAR_THRESHOLD
+    body_tokens = _tokens(body)
+    if not body_tokens:
+        return []
+    # Build FTS5 match tokens from the body (cap to avoid OR explosion).
+    match_tokens = sorted(body_tokens, key=lambda t: (-len(t), t))[:20]
+    match_sql = " OR ".join('"' + t.replace('"', '""') + '"' for t in match_tokens)
+    fts_limit = max(limit * 5, 50)
+    with db._conn() as conn:
+        try:
+            rows = conn.execute(
+                """
+                SELECT c.id, c.body
+                FROM comments_fts
+                JOIN comments c ON c.id = comments_fts.rowid
+                WHERE comments_fts MATCH ?
+                  AND c.post_id = ?
+                  AND c.id != ?
+                ORDER BY bm25(comments_fts)
+                LIMIT ?
+                """,
+                (match_sql, post_id, exclude_comment_id or 0, fts_limit),
+            ).fetchall()
+        except sqlite3.OperationalError:  # domain: degrade-silently - FTS miss means no similar hint
+            return []
+    scored = []
+    for r in rows:
+        score = _jaccard(body_tokens, _tokens(r["body"]))
+        if score >= threshold:
+            preview = r["body"][:120].replace("\n", " ")
+            scored.append({
+                "comment_id": r["id"],
+                "body": preview,
+                "score": round(score, 4),
+            })
+    scored.sort(key=lambda s: (-s["score"], s["comment_id"]))
+    return scored[:limit]
+
+
 def find_matching_tags(title: str, body: str) -> list[dict]:
     """Active tags whose names or descriptions token-overlap a draft,
     ranked by a deterministic weighted score - the soft 'consider tagging'
