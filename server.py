@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import inspect
 import json
 import sys
 import time as _time
@@ -91,7 +92,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     Coroutine-aware: async tools get an async wrapper so their results are
     awaited, not returned half-baked."""
 
-    if asyncio.iscoroutinefunction(fn):
+    if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def awrapper(*args: Any, **kwargs: Any) -> Any:
             start = _time.perf_counter()
