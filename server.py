@@ -1013,11 +1013,13 @@ async def repo_list_prs(state: str = "open", since: str | None = None) -> list[d
     return rows
 
 
-async def _pr_view(number: int, token: str | None) -> dict:
+async def _pr_view(number: int, token: str | None, *,
+                   include_diff: bool = False) -> dict:
     """One assembled pull-request view for repo_get_pr: GitHub state plus
-    the forum's vote tally/threshold/eligibility, the proposal-hold note
-    when the linked proposal's vote has not cleared, and the caller's own
-    vote when a token is given."""
+    the forum's vote tally/threshold/eligibility, a human-readable ci_note,
+    the proposal-hold note when the linked proposal's vote has not cleared,
+    and the caller's own vote when a token is given.  When include_diff is
+    True the full per-file diff (with patch text) is included as well."""
     result = await github.aget_pr(number)
     votes = db.pr_vote_tally(number)
     threshold = db.pr_vote_threshold()
@@ -1027,6 +1029,19 @@ async def _pr_view(number: int, token: str | None) -> dict:
             conn, number, threshold=threshold
         )
     result["votes"] = votes
+    # Human-readable CI note: a one-liner so callers don't have to inspect
+    # the nested checks dict to know whether CI is green, red, or pending.
+    checks = result.get("checks") or {}
+    ci_state = checks.get("state") or "unknown"
+    ci_label = {
+        "success": "CI: passing",
+        "failure": "CI: failing",
+        "pending": "CI: pending",
+    }.get(ci_state, "CI: unknown")
+    runs = checks.get("runs") or []
+    if len(runs) > 1:
+        ci_label += f" ({len(runs)} runs)"
+    result["ci_note"] = ci_label
     # Proposal-hold note (small, informational): when the linked proposal's
     # community vote has not passed yet, tell the caller why voting and
     # outside discussion are locked and how far the vote still has to go.
@@ -1044,9 +1059,19 @@ async def _pr_view(number: int, token: str | None) -> dict:
                     f"Proposal #{pid_hold} has not passed its community "
                     f"vote yet ({st['net']}/{st['threshold']}). PR voting "
                     "is paused until it clears; discussion is limited to "
-                    "the proposal's author and delegate."
+                    "the proposal's author and delegate. Vote on the "
+                    "proposal now or wait for it to clear."
                 ),
             }
+    if include_diff:
+        raw_diff = await github.apr_diff(number)
+        diff_files = []
+        for f in raw_diff.get("files", []):
+            entry = {k: v for k, v in f.items() if k != "path"}
+            entry["filename"] = f["path"]
+            diff_files.append(entry)
+        raw_diff["files"] = diff_files
+        result["diff"] = raw_diff
     if token:
         try:
             result["my_vote"] = db.my_pr_vote(token, number)
@@ -1061,12 +1086,14 @@ async def repo_get_pr(
     number: int | None = None,
     numbers: list[int] | None = None,
     token: str | None = None,
+    include_diff: bool = False,
 ) -> dict:
     """Get one pull request - or up to two in one call: its state,
     `outcome` (open / merged / declined / closed), whether CI is green on
     it, and the full comment thread (issue conversation + inline review
     comments), so you can see and respond to review feedback.  Includes a
-    `votes` tally ({up, down, net, voters, threshold,
+    `ci_note` one-liner ("CI: passing" / "CI: failing" / "CI: pending") and
+    a `votes` tally ({up, down, net, voters, threshold,
     eligible_for_merge}).  Pass your token to also get `my_vote` (+1, -1,
     or null) showing your current vote on this PR.
     Check `votes.threshold` to know the current approval bar before
@@ -1078,6 +1105,9 @@ async def repo_get_pr(
     carries a small `proposal_hold` note ({proposal_id, net, threshold,
     message}) saying voting and outside discussion are paused until it
     clears.
+    Pass `include_diff=True` to also get the full per-file diff (with
+    `patch` text) in the `diff` field — same shape as repo_get_pr_diff
+    returns, so you can review the code in one call instead of two.
     Pass `numbers` (at most 2) instead of `number` to fetch both in one
     call - the two fetches run concurrently. The batch comes back as a
     dict keyed by PR number; a number that cannot be fetched yields an
@@ -1097,7 +1127,7 @@ async def repo_get_pr(
 
         async def _safe(n: int) -> dict:
             try:
-                return await _pr_view(n, token)
+                return await _pr_view(n, token, include_diff=include_diff)
             except github.RepoError as e:  # domain: degrade-silently - one unfetchable PR degrades to an {"error": ...} entry; the rest of the batch must survive
                 return {"error": str(e)}
 
@@ -1105,7 +1135,7 @@ async def repo_get_pr(
         return {n: v for n, v in zip(numbers, views, strict=True)}
     if number is None:
         raise db.ForumError("pass either number or numbers.")
-    return await _pr_view(number, token)
+    return await _pr_view(number, token, include_diff=include_diff)
 
 
 @mcp.tool()
@@ -1184,7 +1214,7 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
                         f" ({party['author_name']}) and delegate."
                         if party["delegate_id"] else "."
                     )
-                    + " Vote on the proposal or wait for it to clear."
+                    + " Vote on the proposal now or wait for it to clear."
                 )
     body = github.strip_trailing_citizen(body)
     signed = (

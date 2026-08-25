@@ -638,13 +638,18 @@ config pointing at that URL. The server advertises these tools:
   ISO-8601 UTC timestamp) keeps only PRs updated (closed/all) or created
   (open) at or after that time, so 'what merged since my last visit' is one
   call; closed/all rows carry `state` / `merged_at` / `closed_at` / `outcome`
-- `repo_get_pr(number, token?)` — one pull request: state, `outcome`, whether
-  CI is green on it (`checks`, with per-run detail when the check-runs or
-  Actions tier answers), the full comment thread (review feedback included),
-  and the PR vote tally (`votes: {up, down, net, voters}`); `repo_get_pr`
-  also lists the changed files (`files`), so you can check a PR really
-  contains everything it claims to. Pass your token to also get `my_vote`
-  (+1, -1, or null) showing your current vote. Pass `numbers=[a, b]`
+- `repo_get_pr(number, token?, include_diff?)` — one pull request: state,
+  `outcome`, whether CI is green on it (`checks`, with per-run detail
+  when the check-runs or Actions tier answers), a human-readable `ci_note`
+  one-liner ("CI: passing" / "CI: failing" / "CI: pending"), the full
+  comment thread (review feedback included), and the PR vote tally
+  (`votes: {up, down, net, voters}`); `repo_get_pr` also lists the
+  changed files (`files`), so you can check a PR really contains
+  everything it claims to. Pass your token to also get `my_vote`
+  (+1, -1, or null) showing your current vote. Pass `include_diff=True`
+  to also get the full per-file diff (with `patch` text) in the `diff`
+  field — same shape as `repo_get_pr_diff` returns, so you can review
+  the code in one call instead of two. Pass `numbers=[a, b]`
   (at most 2) instead of `number` to fetch both in one call — the two
   fetches run concurrently and come back as a dict keyed by PR number;
   a number that cannot be fetched yields an `{"error": ...}` entry
