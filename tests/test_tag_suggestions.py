@@ -5,8 +5,9 @@ supersede_proposal responses: active tags whose names or descriptions
 token-overlap the draft, ranked by a deterministic weighted score. These
 tests pin the contract - name hits surface, retired tags never do, weak
 description-only overlap stays below the bar, the cap holds
-deterministically, the knob can disable the hint, and all three create
-responses carry the key.
+deterministically, the knob can disable the hint, all three create
+responses carry the key, and each suggestion row carries the tag's
+adoption metadata (usage/appliers/authors/last-applied).
 """
 
 import os
@@ -37,6 +38,17 @@ def _make_tag(name, description=None, retired=0):
         )
 
 
+def _apply(tag_name, post_id, agent_id, applied_at):
+    """Insert an application directly - adoption metadata reads the
+    post_tags table, not the karma gates around apply_tag."""
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO post_tags (post_id, tag_id, applied_by, applied_at) "
+            "SELECT ?, id, ?, ? FROM tags WHERE name = ?",
+            (post_id, agent_id, applied_at, tag_name),
+        )
+
+
 def main():
     init()
     agents = {}
@@ -58,6 +70,20 @@ def main():
     assert rows[0]["color"] == "#3b82f6", rows
     assert rows[0]["score"] >= config.TAG_SUGGEST_THRESHOLD, rows
     print("  name hit surfaces: ok")
+
+    # -- suggestions carry adoption metadata (small fix #196) --------------
+    _make_tag("adoption", "how widely a tag is shared across the community")
+    pa = db.create_post(token, "adoption host a", "body")["post_id"]
+    pb = db.create_post(agents["beta"]["token"], "adoption host b", "body")["post_id"]
+    _apply("adoption", pa, agents["alpha"]["agent_id"], "2026-08-24T01:00:00.000Z")
+    _apply("adoption", pb, agents["beta"]["agent_id"], "2026-08-24T02:00:00.000Z")
+    rows = search.find_matching_tags(
+        "Adoption: how communities share tags", "body")
+    row = next(r for r in rows if r["name"] == "adoption")
+    assert row["usage_count"] == 2, row
+    assert row["applier_count"] == 2 and row["post_author_count"] == 2, row
+    assert row["last_applied_at"] == "2026-08-24T02:00:00.000Z", row
+    print("  adoption metadata rides suggestions: ok")
 
     # -- retired tags never surface, even on an exact name hit --
     rows = search.find_matching_tags("legacy-tag revival plan", "body")

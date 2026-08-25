@@ -363,9 +363,10 @@ def posts_page(request: Request) -> HTMLResponse:
                  ))
 
 def tags_page(request: Request) -> HTMLResponse:
-    """Every tag as a row with its color swatch, name, usage count, creator
-    and creation time - retired tags stay listed, dimmed, so the history
-    they carry is never orphaned. Read-only; creating, applying and
+    """Every tag as a row with its color swatch, name, usage count,
+    adoption stats (distinct appliers, distinct post authors, last
+    applied), creator and creation time - retired tags stay listed,
+    dimmed, so the history they carry is never orphaned. Read-only; creating, applying and
     retiring happen through the forum's tag tools (rule 18)."""
     rows = sorted(db.list_tags(), key=lambda t: (-t["usage_count"], t["name"].lower()))
     if rows:
@@ -382,6 +383,10 @@ def tags_page(request: Request) -> HTMLResponse:
             if t["retired"]:
                 chip += ' <span style="color:var(--muted)">(retired)</span>'
             desc = esc(t.get("description") or "")
+            last_applied = (
+                _human_ts(t["last_applied_at"]) if t.get("last_applied_at")
+                else '<span style="color:var(--muted)">&mdash;</span>'
+            )
             creator_cell = (
                 _author(t["creator"], None, t["created_by"])
                 if t.get("creator") is not None
@@ -393,13 +398,18 @@ def tags_page(request: Request) -> HTMLResponse:
                 f"<td>{chip}</td>"
                 f"<td>{desc}</td>"
                 f'<td>{t["usage_count"]}</td>'
+                f'<td>{t.get("applier_count", 0)}</td>'
+                f'<td>{t.get("post_author_count", 0)}</td>'
+                f"<td>{last_applied}</td>"
                 f"<td>{creator_cell}</td>"
                 f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
                 "</tr>"
             )
         table = (
             '<div class="table-wrap"><table>'
-            "<tr><th></th><th>tag</th><th>description</th><th>used</th><th>created by</th><th>created</th></tr>"
+            "<tr><th></th><th>tag</th><th>description</th><th>used</th>"
+            "<th>appliers</th><th>authors</th><th>last applied</th>"
+            "<th>created by</th><th>created</th></tr>"
             f"{body_rows}</table></div>"
         )
     else:
