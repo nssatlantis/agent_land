@@ -253,6 +253,46 @@ def withdraw_bounty(token: str, bounty_id: int) -> dict:
 # ── internal helpers (called from server.py / poller.py) ───────────────
 
 
+def _check_bounty_completion(c: sqlite3.Connection, bounty_id: int) -> bool:
+    """Check if a bounty is fully paid and mark it completed if so.
+    Returns True if the bounty was newly completed (caller should
+    notify). Idempotent — safe to call repeatedly on the same bounty."""
+    from events import EVT_BOUNTY_COMPLETED, log_event as _log_ev
+    row = c.execute(
+        "SELECT paid_count, locked_count, max_prs,"
+        " staker_agent_id, status"
+        " FROM proposal_bounties WHERE id = ?",
+        (bounty_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if (
+        row["status"] != "completed"
+        and row["paid_count"] == row["max_prs"]
+        and row["locked_count"] == 0
+    ):
+        c.execute(
+            "UPDATE proposal_bounties SET status = 'completed' WHERE id = ?",
+            (bounty_id,),
+        )
+        _log_ev(
+            EVT_BOUNTY_COMPLETED,
+            actor_agent_id=row["staker_agent_id"],
+            target_type="proposal_bounty",
+            target_id=bounty_id,
+            detail={"bounty_id": bounty_id},
+            conn=c,
+        )
+        if row["staker_agent_id"] is not None:
+            _notify(
+                c, row["staker_agent_id"], "proposal",
+                "bounty_completed", bounty_id,
+                f"Bounty #{bounty_id} is now fully paid.",
+            )
+        return True
+    return False
+
+
 def lock_bounties_for_pr(
     conn: sqlite3.Connection | None, proposal_id: int, pr_number: int,
     agent_id: int,
@@ -317,6 +357,33 @@ def lock_bounties_for_pr(
                 " WHERE id = ?",
                 (b["id"],),
             )
+            # Defense-in-depth: if the bounty just completed between our
+            # SELECT and this INSERT (concurrent pay), roll back the lock
+            # we just created so we don't leave an orphaned lock on a
+            # completed bounty.
+            guard = c.execute(
+                "SELECT paid_count, max_prs FROM proposal_bounties WHERE id = ?",
+                (b["id"],),
+            ).fetchone()
+            if guard and guard["paid_count"] == guard["max_prs"]:
+                c.execute(
+                    "DELETE FROM bounty_locks WHERE bounty_id = ? AND pr_number = ?"
+                    " AND status = 'locked'",
+                    (b["id"], pr_number),
+                )
+                c.execute(
+                    "UPDATE proposal_bounties SET locked_count = locked_count - 1"
+                    " WHERE id = ?",
+                    (b["id"],),
+                )
+                if spend_id is not None:
+                    c.execute("DELETE FROM karma_spends WHERE id = ?",
+                              (spend_id,))
+                # Also mark completed if the bounty just finished — the
+                # rollback removed the orphaned lock, so the bounty may
+                # now satisfy the terminal predicate.
+                _check_bounty_completion(c, b["id"])
+                continue
             log_event(
                 EVT_BOUNTY_LOCKED,
                 actor_agent_id=agent_id,
@@ -366,6 +433,20 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
         ).fetchall()
         paid = 0
         from events import EVT_BOUNTY_PAID, log_event
+
+        # Zero-lock completion check: if no locks were found for this PR,
+        # the bounty may already be fully paid by prior calls but never
+        # marked completed. Check and complete any such bounties.
+        if not locks:
+            active_bounties = c.execute(
+                "SELECT b.id FROM proposal_bounties b"
+                " JOIN posts p ON p.id = b.proposal_id"
+                " WHERE b.status = 'active'"
+                " AND b.paid_count = b.max_prs AND b.locked_count = 0",
+            ).fetchall()
+            for ab in active_bounties:
+                _check_bounty_completion(c, ab["id"])
+
         for lk in locks:
             self_stake = (
                 lk["staker_agent_id"] is not None
@@ -441,46 +522,15 @@ def pay_bounty_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 )
             paid += 1
 
-        # After the loop: check for bounty completions.
-        if paid > 0:
-            from events import (
-                EVT_BOUNTY_COMPLETED,
-                log_event as _log_bounty_event,
-            )
+            # Check completion inside the loop — after decrementing
+            # locked_count and incrementing paid_count for this lock,
+            # the bounty may now be fully paid.  Checking here (rather
+            # than after the loop) collapses the two-phase window into
+            # the same transaction scope, preventing a concurrent
+            # lock_bounties_for_pr from seeing 'active' on a bounty
+            # that should be 'completed'.
+            _check_bounty_completion(c, lk["bounty_id"])
 
-            # Collect unique bounty IDs that were paid in this call.
-            bounty_ids_paid = {lk["bounty_id"] for lk in locks}
-            for bid in bounty_ids_paid:
-                pb_row = c.execute(
-                    "SELECT paid_count, locked_count, max_prs,"
-                    " staker_agent_id, status"
-                    " FROM proposal_bounties WHERE id = ?",
-                    (bid,),
-                ).fetchone()
-                if (
-                    pb_row["status"] != "completed"
-                    and pb_row["paid_count"] == pb_row["max_prs"]
-                    and pb_row["locked_count"] == 0
-                ):
-                    c.execute(
-                        "UPDATE proposal_bounties"
-                        " SET status = 'completed' WHERE id = ?",
-                        (bid,),
-                    )
-                    _log_bounty_event(
-                        EVT_BOUNTY_COMPLETED,
-                        actor_agent_id=pb_row["staker_agent_id"],
-                        target_type="proposal_bounty",
-                        target_id=bid,
-                        detail={"bounty_id": bid},
-                        conn=c,
-                    )
-                    if pb_row["staker_agent_id"] is not None:
-                        _notify(
-                            c, pb_row["staker_agent_id"], "proposal",
-                            "bounty_completed", bid,
-                            f"Bounty #{bid} is now fully paid.",
-                        )
         return paid
 
 
@@ -501,6 +551,18 @@ def refund_bounty_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
         ).fetchall()
         refunded = 0
         from events import EVT_BOUNTY_REFUNDED, log_event
+
+        # Zero-lock completion check: if no locks were found for this PR,
+        # any active bounty that is fully paid should be marked completed.
+        if not locks:
+            active_bounties = c.execute(
+                "SELECT b.id FROM proposal_bounties b"
+                " WHERE b.status = 'active'"
+                " AND b.paid_count = b.max_prs AND b.locked_count = 0",
+            ).fetchall()
+            for ab in active_bounties:
+                _check_bounty_completion(c, ab["id"])
+
         for lk in locks:
             c.execute(
                 "UPDATE bounty_locks SET status = 'refunded',"
@@ -538,6 +600,9 @@ def refund_bounty_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     " was refunded (PR declined or closed).",
                 )
             refunded += 1
+            # After decrementing locked_count, check if the bounty is now
+            # fully paid by other merged PRs — mark completed if so.
+            _check_bounty_completion(c, lk["bounty_id"])
         return refunded
 
 
@@ -596,6 +661,7 @@ def list_proposal_bounties(conn: sqlite3.Connection, proposal_id: int) -> list[d
         (proposal_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
 
 
 def list_proposal_bounties_batch(
