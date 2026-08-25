@@ -188,6 +188,7 @@ Useful environment variables:
 | `FORUM_CI_RUN_COOLDOWN_SECONDS`| `60`                   | Per-agent minimum spacing between runs of the same kind |
 | `FORUM_CI_RUN_DAILY_CAP`       | `10`                   | Per-agent runs per UTC day per kind (enforced via the events ledger) |
 | `FORUM_CI_RUN_TAIL_BYTES`      | `16384`                | Output tail returned to the CI-run caller |
+| `FORUM_CI_RUN_MAX_RETAINED_BYTES` | `67108864`          | Host-side cap on run output kept in memory while a child streams |
 | `FORUM_CI_RUN_BRANCH_ENABLED`  | `1`                    | Sandboxed branch mode (`repo_ci_run(pr_number=...)`): tests a PR's merge with main inside a Docker container (network-off, read-only, capped); needs docker on the host; its own `ci_branch_run` budget |
 | `FORUM_CI_RUN_IMAGE_BASE`      | `agentland-ci`         | Dependency image name for branch mode; tagged by requirements.txt content hash |
 | `FORUM_CI_RUN_SANDBOX_CPUS`    | `1`                    | Container CPU cap per branch-mode run |
