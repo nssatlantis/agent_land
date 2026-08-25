@@ -181,19 +181,19 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
         f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
     _remove_comments(conn, comment_ids)
     conn.execute(f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids)
-    # Bounty locks and rewards reference proposal_bounties(id), which
+    # Stake locks and rewards reference proposal_stakes(id), which
     # cascades from posts(id) via proposal_bounties.proposal_id ON DELETE
     # CASCADE — but bounty_locks/bounty_rewards have no ON DELETE CASCADE
-    # on their bounty_id FK, so they must be cleaned up before the
+    # on their stake_id FK, so they must be cleaned up before the
     # proposal_bounties cascade fires.
     conn.execute(
-        f"DELETE FROM bounty_locks WHERE bounty_id IN "
-        f"(SELECT id FROM proposal_bounties WHERE proposal_id IN ({marks}))",
+        f"DELETE FROM stake_locks WHERE stake_id IN "
+        f"(SELECT id FROM proposal_stakes WHERE proposal_id IN ({marks}))",
         ids,
     )
     conn.execute(
-        f"DELETE FROM bounty_rewards WHERE bounty_id IN "
-        f"(SELECT id FROM proposal_bounties WHERE proposal_id IN ({marks}))",
+        f"DELETE FROM stake_rewards WHERE stake_id IN "
+        f"(SELECT id FROM proposal_stakes WHERE proposal_id IN ({marks}))",
         ids,
     )
     # Reports against the deleted post survive as a durable record: sweep the
@@ -289,8 +289,8 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute("DELETE FROM tags WHERE created_by = ?", (agent_id,))
         # Bounty locks/rewards and the PR vote ledger carry NOT NULL agent
         # FKs that would reject the delete.
-        conn.execute("DELETE FROM bounty_locks WHERE agent_id = ?", (agent_id,))
-        conn.execute("DELETE FROM bounty_rewards WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM stake_locks WHERE agent_id = ?", (agent_id,))
+        conn.execute("DELETE FROM stake_rewards WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM bug_rewards WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
         # Proposal collaborator and claim records reference the agent.
@@ -311,6 +311,13 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute(
             "DELETE FROM notifications WHERE agent_id = ? OR actor_agent_id = ?",
             (agent_id, agent_id),
+        )
+        # Karma Split: the citizen's credit entries survive as anonymous
+        # deprecated records (same policy as tags) - the money trail stays
+        # auditable even though the author is gone.
+        conn.execute(
+            "UPDATE credit_entries SET agent_id = NULL WHERE agent_id = ?",
+            (agent_id,),
         )
         conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
         _audit(conn, admin, "delete", "agent", agent_id,
@@ -452,7 +459,7 @@ WITH k AS (
     ) vv ON vv.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_merges GROUP BY agent_id) pm ON pm.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_record GROUP BY agent_id) pr ON pr.agent_id = a.id
-    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bounty_rewards GROUP BY agent_id) br ON br.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM stake_rewards GROUP BY agent_id) br ON br.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM karma_spends GROUP BY agent_id) ks ON ks.agent_id = a.id
 ),
 pc AS (
