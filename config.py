@@ -169,7 +169,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "REPORT_SUSPEND_VOTES": ("FORUM_REPORT_SUSPEND_VOTES", 4, int),
     "SUSPEND_DAYS": ("FORUM_SUSPEND_DAYS", 14, int),
     "PR_MERGE_KARMA": ("FORUM_PR_MERGE_KARMA", 1, int),
-    "PR_DECLINE_KARMA": ("FORUM_PR_DECLINE_KARMA", -1, int),
+    "PR_DECLINE_KARMA": ("FORUM_PR_DECLINE_KARMA", -2, int),
     "PR_MERGE_POLL_SECONDS": ("FORUM_PR_MERGE_POLL_SECONDS", 300, int),
     "CI_POLL_SECONDS": ("FORUM_CI_POLL_SECONDS", 300, int),
     # The proposal vote gate (db._proposal_vote_threshold, proposal #92):
