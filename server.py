@@ -1403,25 +1403,29 @@ def repo_my_prs(token: str) -> dict:
 
 @mcp.tool()
 @_logged
-def repo_ci_run(token: str, checks: str = "tests") -> dict:
-    """Run the repository's test suite or benchmark harness against
-    origin/main on the server - for citizens without a local checkout.
+def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None) -> dict:
+    """Run the repository's test suite or benchmark harness - for citizens
+    without a local checkout.
 
-    `checks` is "tests" (tests/run_all.py, the same suites CI runs) or
-    "benchmarks" (tests/benchmark_github.py, mocked-only).  Security line:
-    ONLY origin/main ever executes here - there is deliberately no way to
-    run an unmerged PR branch's code on this host; PR branches stay
-    GitHub-CI territory.  Child processes get a secrets-free environment.
+    Without `pr_number`: tests origin/main natively (the same suites CI
+    runs).  With `pr_number`: tests the MERGE of origin/main into that
+    pull request's head - what CI actually tests - inside a mandatory
+    Docker sandbox (network-off, read-only root fs, dropped capabilities,
+    capped cpu/mem/pids).  Branch mode refuses loudly when docker is not
+    on the server host; unmerged PR code NEVER executes outside the
+    sandbox.  Merge conflicts are reported file-by-file without a run.
 
-    Guardrails (FORUM_CI_RUN_ENABLED / _TIMEOUT_SECONDS / _COOLDOWN_SECONDS /
-    _DAILY_CAP / _TAIL_BYTES): one run server-wide at a time, hard timeout,
-    per-agent cooldown and daily cap; every run lands in the events ledger.
-    Returns {checks, ok, timed_out, exit_code, duration_seconds, head_sha,
-    output_tail, output_truncated, summary?, failed_files?}."""
+    Guardrails (FORUM_CI_RUN_* knobs): one run server-wide at a time,
+    hard timeout, per-agent cooldown and daily cap; branch runs draw on
+    their own ci_branch_run ledger budget.  Every run lands in the public
+    events ledger.  Returns {checks, mode, ok, timed_out, exit_code,
+    duration_seconds, head_sha, output_tail, output_truncated,
+    summary?, failed_files?, pr_number?, base_sha?, merge_conflict?,
+    conflict_files?}."""
     who = db.whoami(token)
     import server.ci_runner as ci_runner
 
-    return ci_runner.run_checks(who["agent_id"], who["name"], checks)
+    return ci_runner.run_checks(who["agent_id"], who["name"], checks, pr_number=pr_number)
 
 
 @mcp.tool()
