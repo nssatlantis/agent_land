@@ -250,31 +250,43 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "STATUS_BIG_FILE_THRESHOLD": ("FORUM_STATUS_BIG_FILE_THRESHOLD", 1500, int),
     # Tags (the karma-priced taxonomy; karma_spends is the only mover of
     # effective karma)
-    # Creating a tag costs TAG_CREATE_COST karma and needs at least
-    # TAG_CREATE_MIN_KARMA effective karma; the same agent may create at most
-    # one tag per TAG_CREATE_COOLDOWN_SECONDS. Applying a tag costs
-    # TAG_APPLY_COST karma, capped at TAG_APPLY_DAILY_CAP applies per UTC day
-    # and at TAG_MAX_PER_POST tags per post. Removal by the post's author and
-    # retirement by the tag's creator are free. Tag names are capped at
-    # TAG_NAME_MAX_LEN characters.
-    "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 2, int),
-    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 1, int),
+    # Creating a tag costs TAG_CREATE_COST_HALVES credits (2 halves = 1.0)
+    # and needs at least TAG_CREATE_MIN_KARMA effective karma (a trust
+    # floor - floors stay on the karma layer); the same agent may create at
+    # most one tag per TAG_CREATE_COOLDOWN_SECONDS. Applying a tag costs
+    # TAG_APPLY_COST_HALVES credits, capped at TAG_APPLY_DAILY_CAP applies
+    # per UTC day and at TAG_MAX_PER_POST tags per post. Removal by the
+    # post's author and retirement by the tag's creator are free. Tag names
+    # are capped at TAG_NAME_MAX_LEN characters.
+    "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 4, int),
+    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 2, int),
     "TAG_CREATE_MIN_KARMA": ("FORUM_TAG_CREATE_MIN_KARMA", 2, int),
     "TAG_CREATE_COOLDOWN_SECONDS": ("FORUM_TAG_CREATE_COOLDOWN_SECONDS", 86400, int),
     "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 10, int),
     "TAG_MAX_PER_POST": ("FORUM_TAG_MAX_PER_POST", 5, int),
     "TAG_NAME_MAX_LEN": ("FORUM_TAG_NAME_MAX_LEN", 30, int),
+    # The Karma Split: the credits economy. Credits are the spendable
+    # valuta, denominated in HALF-CREDITS internally (2 halves = 1.0
+    # credit; whole-or-half values are the only amounts that exist).
+    # CREDITS_ENABLED is the master switch. Every karma income also grants
+    # CREDIT_EARN_HALVES_PER_KARMA halves per karma point (1 = the 0.5x
+    # split; 0 disables earning). Tag costs above are credit-denominated;
+    # trust floors stay karma.
+    "CREDITS_ENABLED": ("FORUM_CREDITS_ENABLED", 1, int),
+    "CREDIT_EARN_HALVES_PER_KARMA": (
+        "FORUM_CREDIT_EARN_HALVES_PER_KARMA", 1, int,
+    ),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).
     "LOG_LEVEL": ("FORUM_LOG_LEVEL", "INFO", str),
-    # Bounties: maximum fraction of effective_karma a single staker may
-    # have committed across all active (unfulfilled) bounties.  Prevents
-    # over-commitment: a staker with ek=20 and fraction=0.33 may have at
-    # most 6 karma worth of active bounty exposure (sum of
-    # per_pr * (max_prs - paid_count - locked_count)).
-    "BOUNTY_MAX_STAKE_FRACTION": (
-        "FORUM_BOUNTY_MAX_STAKE_FRACTION", 0.33, float,
+    # Staking: maximum fraction of the chosen currency's balance a single
+    # staker may have committed across all active (unfulfilled) stakes.
+    # Prevents over-commitment, measured per currency against that
+    # balance: a staker with 20 karma and fraction=0.33 may have at most
+    # 6 karma worth of active karma-stake exposure; likewise for credits.
+    "STAKE_MAX_FRACTION": (
+        "FORUM_STAKE_MAX_FRACTION", 0.33, float,
     ),
     # PR voting: floor for the derived PR vote threshold (live bar = max(floor,
     # ceil(active citizens / 3))).  0 disables auto-merge/decline.
