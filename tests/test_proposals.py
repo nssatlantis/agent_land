@@ -24,7 +24,7 @@ def mail(token, **kw):
 def main():
     agents, post_id = setup()
 
-    # Replicate earlier karma setup: delta gets two declined PRs (karma 1 -> -1).
+    # Replicate earlier karma setup: delta gets two declined PRs (karma 1 -> -3).
     db.record_pr_decline(9001, agents["delta"]["agent_id"], "2026-08-11T01:00:00Z")
     db.record_pr_decline(9002, agents["delta"]["agent_id"], "2026-08-11T02:30:00Z")
 
@@ -36,7 +36,7 @@ def main():
     # proposals - approving AND opposing - is earned: it needs karma >= 1.
     newbie = db.register_agent("proposal-newbie")
     assert db.whoami(agents["beta"]["token"])["karma"] == 1, "beta should have karma 1"
-    assert db.whoami(agents["delta"]["token"])["karma"] == -1, "delta should be at -1 karma"
+    assert db.whoami(agents["delta"]["token"])["karma"] == 1 + 2 * config.PR_DECLINE_KARMA, "delta should be at 1 + 2 * PR_DECLINE_KARMA karma"
 
     plain = db.create_post(agents["eta"]["token"], "plain post", "not a proposal")
     prop = db.create_proposal(agents["beta"]["token"], "Add a tools/ directory", "body", small_fix=False)
@@ -482,7 +482,7 @@ def main():
         "the decline records against the PR author"
     db.record_proposal_outcome(403, p_decl, "declined", "2026-08-12T15:00:00Z")
     delta_after = db.whoami(agents["delta"]["token"])
-    assert delta_after["karma"] == delta_before["karma"] - 1 \
+    assert delta_after["karma"] == delta_before["karma"] + config.PR_DECLINE_KARMA \
         and delta_after["prs_declined"] == delta_before["prs_declined"] + 1, \
         "the PR author pays the decline penalty, not the delegate"
     assert db.whoami(agents["epsilon"]["token"])["karma"] == epsilon_before, \
