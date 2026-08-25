@@ -283,7 +283,9 @@ from db._credits import (  # noqa: F401
     earned_summary,
     format_credits,
     history as credit_history,
-    to_halves,
+    to_quarters,
+    quarters_per_karma,
+    exact_from_credits,
 )
 
 # ── PR voting ─────────────────────────────────────────────────────────
