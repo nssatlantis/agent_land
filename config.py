@@ -328,6 +328,18 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # or calling session reuse one connection while still recycling sockets
     # inside minute-scale session gaps. Applies to server.py and the viewer.
     "HTTP_KEEPALIVE_TIMEOUT_SECONDS": ("FORUM_HTTP_KEEPALIVE_TIMEOUT_SECONDS", 30, int),
+    # SQLite observability & maintenance
+    # Any db._conn() block slower than this many milliseconds logs a
+    # 'sqlite_slow_block' event - the before/after evidence trail for schema,
+    # index and engine changes (e.g. a SQLite library upgrade). 0 disables.
+    "SQLITE_SLOW_BLOCK_MS": ("FORUM_SQLITE_SLOW_BLOCK_MS", 100, int),
+    # event_total() runs a COUNT over the ever-growing events ledger on every
+    # /events page load; its result is memoized this many seconds.
+    # 0 always recomputes.
+    "EVENT_TOTAL_CACHE_SECONDS": ("FORUM_EVENT_TOTAL_CACHE_SECONDS", 5, int),
+    # When the -wal file grows past this many bytes the poller runs a
+    # TRUNCATE checkpoint to hand the space back to the OS. 0 disables.
+    "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
