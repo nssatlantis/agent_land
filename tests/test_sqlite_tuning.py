@@ -81,22 +81,71 @@ def test_event_total_cache_staleness_window():
         events._total_cache.clear()
 
 
-def test_wal_guard_runs_and_degrades_quietly():
+def test_wal_guard_decides_by_size_and_degrades_quietly():
+    """The guard's contract: checkpoint exactly when enabled AND the -wal
+    exceeds the threshold; stay silent when disabled, small, or unreadable.
+    Spied rather than exercised against fabricated wal files - a hand-made
+    -wal is garbage to SQLite and newer engines reject the aftermath."""
+    import contextlib
+
     from server import poller
 
     old = os.environ.get("FORUM_WAL_CHECKPOINT_BYTES")
     try:
         db.init_db()
-        wal_path = str(db.DB_PATH) + "-wal"
-        os.environ["FORUM_WAL_CHECKPOINT_BYTES"] = "10"
-        Path(wal_path).write_bytes(b"x" * 64)
-        poller._maybe_truncate_wal()  # must not raise on a healthy db
-        os.environ["FORUM_WAL_CHECKPOINT_BYTES"] = "0"
-        poller._maybe_truncate_wal()  # disabled: early return even without a wal
-        Path(wal_path).unlink(missing_ok=True)
-        poller._maybe_truncate_wal()  # missing file degrades quietly
+        limit = 8 * 1024 * 1024
+
+        class _SpyConn:
+            def __init__(self):
+                self.executed: list[str] = []
+
+            def execute(self, sql):
+                self.executed.append(sql)
+
+        entered: list[_SpyConn] = []
+        real_conn = db._conn
+
+        def spy_conn(immediate=False):
+            sc = _SpyConn()
+            entered.append(sc)
+
+            @contextlib.contextmanager
+            def cm():
+                yield sc
+
+            return cm()
+
+        with unittest.mock.patch.object(
+            poller.os.path, "getsize", return_value=limit + 1
+        ), unittest.mock.patch.object(db, "_conn", spy_conn):
+            os.environ["FORUM_WAL_CHECKPOINT_BYTES"] = str(limit)
+            poller._maybe_truncate_wal()
+            assert len(entered) == 1, "over threshold + enabled: must checkpoint"
+            assert entered[0].executed == ["PRAGMA wal_checkpoint(TRUNCATE)"]
+
+            os.environ["FORUM_WAL_CHECKPOINT_BYTES"] = "0"
+            poller._maybe_truncate_wal()
+            assert len(entered) == 1, "disabled: early return"
+
+            entered.clear()
+            with unittest.mock.patch.object(
+                poller.os.path, "getsize", return_value=limit - 1
+            ):
+                os.environ["FORUM_WAL_CHECKPOINT_BYTES"] = str(limit)
+                poller._maybe_truncate_wal()
+            assert entered == [], "under threshold: no checkpoint"
+
+            entered.clear()
+            with unittest.mock.patch.object(
+                poller.os.path,
+                "getsize",
+                side_effect=OSError("no such file"),
+            ):
+                poller._maybe_truncate_wal()
+            assert entered == [], "missing -wal degrades quietly"
     finally:
         _set_env("FORUM_WAL_CHECKPOINT_BYTES", old)
+        db._conn = real_conn
 
 
 def test_storage_stats_names_the_engine():
@@ -149,7 +198,7 @@ def main():
     test_knob_defaults()
     test_slow_block_threshold_gating()
     test_event_total_cache_staleness_window()
-    test_wal_guard_runs_and_degrades_quietly()
+    test_wal_guard_decides_by_size_and_degrades_quietly()
     test_storage_stats_names_the_engine()
     test_slow_block_counters_and_process_info()
     test_effective_configuration_panel_starts_closed()
