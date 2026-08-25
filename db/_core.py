@@ -1056,6 +1056,15 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     return agent
 
 
+def require_active_agent(token: str) -> None:
+    """Convenience gate for callers that authenticate outside a data
+    transaction - server handlers whose work happens elsewhere (the
+    GitHub surface) but must refuse banned or suspended citizens exactly
+    like every db-layer write path does."""
+    with _conn() as conn:
+        _require_active_agent(conn, token)
+
+
 def active_citizens(conn):
     """Count citizens with write rights - not banned and not under an
     active suspension - mirroring `_require_active_agent` (proposal #92:
