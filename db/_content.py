@@ -184,9 +184,9 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
         threshold = _proposal_vote_threshold(conn)
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
-        from db._bounty import _bounty_totals_batch as _btb
-        proposal_ids_for_bounties = [r["id"] for r in rows if r["proposal_kind"]]
-        bounty_totals = _btb(conn, proposal_ids_for_bounties)
+        from db._staking import _stake_totals_batch as _btb
+        proposal_ids_for_stakes = [r["id"] for r in rows if r["proposal_kind"]]
+        stake_totals = _btb(conn, proposal_ids_for_stakes)
         out = []
         for r in rows:
             d = dict(r)
@@ -220,9 +220,9 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"]["claimable"] = bool(d["claimable"])
                 d["proposal"]["claim_agent_id"] = d["claim_agent_id"]
                 d["proposal"]["claim_name"] = d["claim_name"]
-                bt = bounty_totals.get(d["id"])
-                d["proposal"]["bounty_total"] = bt["total"] if bt else 0
-                d["proposal"]["bounty_count"] = bt["count"] if bt else 0
+                bt = stake_totals.get(d["id"])
+                d["proposal"]["stake_total"] = bt["total"] if bt else 0
+                d["proposal"]["stake_count"] = bt["count"] if bt else 0
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
                 d["stale"] = (
@@ -352,8 +352,8 @@ def get_post(post_id: int) -> dict:
         edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else _post_edits_for(conn, post_id)
         collabs = list_proposal_collaborators(post_id, conn=conn) if post["proposal_kind"] else []
         pr_history = _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
-        from db._bounty import list_proposal_bounties as _lpb
-        bounties = _lpb(conn, post_id) if post["proposal_kind"] else []
+        from db._staking import list_proposal_stakes as _lpb
+        stakes = _lpb(conn, post_id) if post["proposal_kind"] else []
 
         return {
             "id": post["id"],
@@ -391,7 +391,7 @@ def get_post(post_id: int) -> dict:
                     "claim_name": post["claim_name"],
                     "collaborative_closed": post["collaborative_closed"],
                     "pr_goal": post["pr_goal"],
-                    "bounties": bounties,
+                    "stakes": stakes,
                 }
                 if post["proposal_kind"] else None
             ),
@@ -467,7 +467,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                      prs_by_post, edits_by_post, post_edits_by_post,
                      collabs_by_post, todos_by_post, tags_by_post,
                      supersedes_map, tallies, score_map, threshold,
-                     bounties_by_post=None):
+                     stakes_by_post=None):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
     post_id = post["id"]
@@ -496,7 +496,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
     t = tallies.get(post_id, {"up": 0, "down": 0})
     decisive = _decisive_pr(pr_history)
     status = decisive["status"] if decisive else "open"
-    bps = bounties_by_post or {}
+    bps = stakes_by_post or {}
     return {
         "id": post["id"],
         "title": post["title"],
@@ -533,7 +533,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                 "claimable": bool(post["claimable"]),
                 "claim_agent_id": post["claim_agent_id"],
                 "claim_name": post["claim_name"],
-                "bounties": bps.get(post_id, []),
+                "stakes": bps.get(post_id, []),
             }
             if post["proposal_kind"] else None
         ),
@@ -625,8 +625,8 @@ def get_posts(post_ids: list[int]) -> dict:
         tallies = _proposal_tally_batch(conn, proposal_ids)
         supersedes_map = _supersedes_map(conn, posts)
         threshold = _proposal_vote_threshold(conn)
-        from db._bounty import list_proposal_bounties_batch as _lpb_batch
-        bounties_by_post = _lpb_batch(conn, proposal_ids)
+        from db._staking import list_proposal_stakes_batch as _lpb_batch
+        stakes_by_post = _lpb_batch(conn, proposal_ids)
         # Build results
         out = {}
         for pid in post_ids:
@@ -638,7 +638,7 @@ def get_posts(post_ids: list[int]) -> dict:
                 prs_by_post, edits_by_post, post_edits_by_post,
                 collabs_by_post, todos_by_post, tags_by_post,
                 supersedes_map, tallies, score_map, threshold,
-                bounties_by_post,
+                stakes_by_post,
             )
         return out
 
@@ -906,6 +906,20 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             log_event(EVT_VOTE_CHANGED, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"old_value": prev_vote["value"], "new_value": value}, conn=conn)
         else:
             log_event(EVT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"value": value}, conn=conn)
+        # Karma Split: the author earns credits on the NET vote delta - a
+        # new vote grants once, a flip adjusts (±2 halves), a same-value
+        # re-vote is a no-op. Karma itself stays derived from this votes
+        # row; the entry is the credits mirror of that net movement.
+        import db._credits as _credits
+
+        _net = value - (prev_vote["value"] if prev_vote else 0)
+        _per = config.CREDIT_EARN_HALVES_PER_KARMA
+        if _net:
+            _credits.grant(
+                target["agent_id"], _net * _per,
+                f"{target_type}_vote",
+                target_type=target_type, target_id=target_id, conn=conn,
+            )
         return {
             "target_type": target_type,
             "target_id": target_id,

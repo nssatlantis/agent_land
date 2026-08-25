@@ -41,7 +41,7 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
             (agent_id,),
         ).fetchone()[0],
         "bounty_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards"
+            "SELECT COALESCE(SUM(amount), 0) FROM stake_rewards"
             " WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
@@ -62,7 +62,8 @@ def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
 
 def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """What a citizen has spent of their earned karma on the karma-priced
-    tags ledger (kinds: tag_create / tag_apply / bounty_lock). Spends are
+    staking lock ledger (kind stake_lock for karma-denominated stakes;
+    tags moved to the credits ledger in the Karma Split). Spends are
     the only thing that ever moves effective karma; they never touch the
     earned sources (CHARTER.md Article IX keeps them untouched)."""
     return conn.execute(
@@ -128,7 +129,7 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
     ).fetchall():
         earned[row["agent_id"]] += row["ek"]
     for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM bounty_rewards "
+        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM stake_rewards "
         f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
         agent_ids,
     ).fetchall():
@@ -199,6 +200,15 @@ def award_pr_merge_karma(
                 c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was merged - "
                 f"{config.PR_MERGE_KARMA:+d} karma credited.",
+            )
+            # Karma Split: merged PRs earn credits too, at the configured
+            # halves-per-karma rate (same txn - the entry commits or rolls
+            # back with the award).
+            import db._credits as _credits
+
+            _credits.grant(
+                agent_id, config.PR_MERGE_KARMA * config.CREDIT_EARN_HALVES_PER_KARMA,
+                "pr_merge", target_type="pr", target_id=pr_number, conn=c,
             )
         return cur.rowcount > 0
 
