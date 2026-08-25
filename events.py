@@ -82,6 +82,7 @@ EVT_SUBSCRIPTION_NOTIFIED = "subscription_notified"
 EVT_BUG_REPORT_FIXED = "bug_report_fixed"
 EVT_CI_RUN = "ci_run"
 EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
+EVT_CI_BRANCH_RUN = "ci_branch_run"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -108,7 +109,7 @@ _VALID_KINDS: set[str] = {
     EVT_TODO_CLAIMED, EVT_TODO_UNCLAIMED, EVT_TODO_EDITED,
     EVT_BUG_REPORTED, EVT_BUG_REPORT_FIXED,
     EVT_SUBSCRIPTION_NOTIFIED,
-    EVT_CI_RUN, EVT_CI_BENCHMARK_RUN,
+    EVT_CI_RUN, EVT_CI_BENCHMARK_RUN, EVT_CI_BRANCH_RUN,
 }
 
 # -- write helper --------------------------------------------------------
