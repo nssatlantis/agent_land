@@ -74,12 +74,23 @@ def _event_text_sql() -> str:
         f" WHEN 'tag_applied' THEN 'applied tag \"' || {_jx('tag_name')}"
         f"   || '\" on post #' || e.target_id"
         f" WHEN 'tag_retired' THEN 'retired tag \"' || {_jx('name')} || '\"'"
+        f" WHEN 'stake_created' THEN 'staked ' || {_jx('per_pr')} || ' ' ||"
+        f"   {_jx('currency')} || ' x '"
+        f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
+        f" WHEN 'credit_earned' THEN 'earned ' || {_jx('credits')} ||"
+        f"   ' credits (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_spent' THEN 'spent ' || {_jx('credits')} ||"
+        f"   ' credits (' || {_jx('reason')} || ')'"
         f" WHEN 'bounty_created' THEN 'staked ' || {_jx('per_pr')} || ' karma x '"
         f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
         f" WHEN 'bounty_paid' THEN 'earned ' || {_jx('amount')}"
         f"   || ' karma from the bounty on PR #' || {_jx('pr_number')}"
         f"   || CASE json_extract(e.detail, '$.self_stake')"
         f"      WHEN 1 THEN ' (self-stake refund)' ELSE '' END"
+        f" WHEN 'stake_paid' THEN 'earned ' || {_jx('amount')} || ' ' ||"
+        f"   {_jx('currency')} || ' from the stake on PR #' || {_jx('pr_number')}"
+        f" WHEN 'stake_refunded' THEN 'stake of ' || {_jx('amount')} || ' ' ||"
+        f"   {_jx('currency')} || ' refunded (' || {_jx('reason')} || ')'"
         f" WHEN 'bounty_refunded' THEN 'bounty of ' || {_jx('amount')}"
         f"   || ' karma refunded (' || {_jx('reason')} || ')'"
         " ELSE e.kind END"
@@ -154,7 +165,7 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
     """Newest posts, comments, votes and headline ledger events as one
     timestamped feed. Votes are included so the viewer can show the
     society's pulse, not just speech; a small human-interest subset of
-    the events ledger (new citizens, PR merges, bounty payouts, report
+    the events ledger (new citizens, PR merges, stake payouts, report
     resolutions) rides along on the same terms."""
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))

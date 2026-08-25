@@ -131,7 +131,7 @@ def _process_closed_pr(pr: dict) -> None:
             if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
                 logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
-            # Lock any bounties the direct call in
+            # Lock any stakes the direct call in
             # repo_propose_change may have missed (narrow
             # race window).  lock_stakes_for_pr is
             # idempotent — the UNIQUE(bounty_id, pr_number)

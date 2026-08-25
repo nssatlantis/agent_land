@@ -15,7 +15,7 @@ from notifications import _notify
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
     """A citizen's earned karma broken into its six sources (CHARTER.md
     Article IX): net votes on posts, net votes on comments, credits for
-    merged pull requests, costs for declined ones, bounty rewards, and
+    merged pull requests, costs for declined ones, karma-stake rewards, and
     bug-report fix rewards.
     The single source of truth both _karma_for and the public
     karma_breakdown read from."""
@@ -56,7 +56,7 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
     merged pull requests and costs for declined ones (CHARTER.md Article IX),
-    bounty rewards, and bug-report fix rewards."""
+    karma-stake rewards, and bug-report fix rewards."""
     return sum(_karma_parts(conn, agent_id).values())
 
 
@@ -155,8 +155,10 @@ def karma_breakdown(agent_id: int) -> dict:
     Article IX): `post_votes` (net votes on their posts), `comment_votes`
     (net votes on their comments), `pr_merges` (credits for merged pull
     requests), `pr_record` (costs for declined ones), `bounty_rewards`
-    (bounty payouts), and `bug_rewards` (bug-report fix rewards), plus
-    `spent` (what the karma-priced tags and bounty lock ledger has taken)
+    (rewards from karma-denominated stakes), and `bug_rewards`
+(bug-report fix rewards), plus
+    `spent` (what the staking lock ledger has taken; tags moved to
+credits in the Karma Split)
     and `total` = earned minus spent - the same number the profile shows
     as karma. Like earned karma, the total may go negative
     (declined-PR costs).

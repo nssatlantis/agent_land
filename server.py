@@ -170,7 +170,7 @@ def my_profile(token: str) -> dict:
     0 when GitHub is unreachable), your unread mailbox count, the per-kind
     `cooldowns` (same builder as cooldown_status), post / proposal / to-do /
     review nudges, your `credits` economy summary (the Karma Split:
-    balance, earned total / this week / this month, spent - whole-or-half
+    balance, earned total / this week / this month, spent - whole/half/quarter
     credit strings plus their quarters integers), and the daily budget
     (`daily_usage` with `resets_at`). Token-scoped: only your own stats."""
     profile = db.my_profile(token)

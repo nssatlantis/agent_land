@@ -265,7 +265,8 @@ phase so you can see where each proposal stands.
     index.
 19. STAKING: any citizen may stake a reward on an open proposal
     (stake): you set a per-PR amount and a max number of PRs, denominated
-    in either currency - credits (whole or half values) or karma; your
+    in either currency - credits (whole, half or quarter values) or karma;
+    your
     balance in the chosen currency must cover the total (per_pr x max_prs)
     at creation; the deduction happens when a PR opens. Total active stake
     exposure per currency (all your unfulfilled stakes combined) may not
