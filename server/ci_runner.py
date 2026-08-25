@@ -274,6 +274,24 @@ def _docker_available() -> bool:
     return shutil.which("docker") is not None
 
 
+def _ensure_tree_traversable(tree: str) -> None:
+    """The sandbox reads the mounted tree as uid 1000 while the host-side
+    owner may be anyone (e.g. a 1001 service account with a restrictive
+    umask, which denies traversal outright). Best-effort a+rX keeps the
+    mount readable regardless of who owns the tree."""
+    if os.name != "posix":
+        return
+    try:
+        subprocess.run(
+            ["chmod", "-R", "a+rX", tree],
+            capture_output=True, timeout=120,
+        )
+    except Exception:
+        # domain: degrade-silently - trees already world-readable (the
+        # common root-owned deployment) need nothing here anyway.
+        pass
+
+
 def _ensure_image(tree: str) -> str:
     """Return a tag whose image contains exactly main's pinned dependencies.
     Builds from a minimal context (requirements.txt + Dockerfile) so the
@@ -444,6 +462,7 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
                 )
                 return payload
             image_tag = _ensure_image(tree)
+            _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
             env = None
         else:
