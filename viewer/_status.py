@@ -22,6 +22,7 @@ from starlette.responses import HTMLResponse
 import config
 import db
 import db._aggregates as aggregates
+import events
 import github
 import reports
 from viewer._utils import (
@@ -202,6 +203,8 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
         _timed("list_recent_activity", lambda: aggregates.list_recent_activity(50)),
         _timed("storage_stats", db.storage_stats),
         _timed("schema_version", db.schema_version),
+        _timed("process_info", db.process_info),
+        _timed("event_total", events.event_total),
     )
     latency = {label: ms for label, _, ms, _ in reads}
     by_name = {label: value for label, value, _, _ in reads}
@@ -420,6 +423,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("github", "github"),
                 ("config", "configuration"),
                 ("storage", "storage"),
+                ("process", "process"),
                 ("bigfiles", "source files"),
                 ("perf", "read latency"),
             ]
@@ -553,6 +557,7 @@ async def status_page(request: Request) -> HTMLResponse:
         "Effective configuration",
         f"<table class='kv'>{_rows([(k, esc(v)) for k, v in knob_rows])}</table>",
         "config",
+        open=False,
     )
 
     # --- storage ----------------------------------------------------------
@@ -577,6 +582,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("reclaimable (freelist)", esc(_human_bytes(stats["freelist_count"] * stats["page_size"]))),
                 ("journal mode", esc(stats["journal_mode"])),
                 ("sqlite", esc(stats.get("sqlite_version", "unknown"))),
+                ("wal size", esc(_human_bytes(stats["wal_bytes"]) if stats.get("wal_bytes") else "—")),
                 ("auto_vacuum", esc({0: "off", 1: "full", 2: "incremental"}.get(stats["auto_vacuum"], stats["auto_vacuum"]))),
                 ("free space (data dir)", esc(free)),
                 ("db file mtime", mtime),
@@ -586,6 +592,33 @@ async def status_page(request: Request) -> HTMLResponse:
     else:
         storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
     storage_panel = _collapsible("Storage", storage_inner, "storage")
+
+    # --- process / runtime facts ------------------------------------------
+    proc = by_name["process_info"]
+    if proc:
+        last = proc.get("last")
+        last_txt = (
+            f"{last['ms']:.0f} ms ({'immediate' if last['immediate'] else 'read'}, "
+            f"{_human_ts_absolute(last['at'])})"
+            if last
+            else "none since boot"
+        )
+        proc_inner = (
+            '<table class="kv">'
+            + _rows([
+                ("python", esc(proc["python_version"])),
+                ("pid", str(proc["pid"])),
+                ("uptime", esc(_human_duration(proc["uptime_seconds"]))),
+                ("event ledger rows", f"{(by_name.get('event_total') or 0):,}"),
+                ("planner stats refreshed",
+                 esc(_ts_or_dash(proc.get("stats_refreshed_at")))),
+                ("slow db blocks", f"{proc['count']} · {esc(last_txt)}"),
+            ])
+            + "</table>"
+        )
+    else:
+        proc_inner = "<p style='color:var(--muted)'>unavailable</p>"
+    process_panel = _collapsible("Process", proc_inner, "process")
 
     # --- source files (large .py files) -----------------------------------
     threshold = config.STATUS_BIG_FILE_THRESHOLD
@@ -637,6 +670,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + github_panel
         + config_panel
         + storage_panel
+        + process_panel
         + bigfiles_panel
         + perf_panel
         + explain_panel
