@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 
+import config
 import db
 
 # -- event kinds (the ``kind`` column) ------------------------------------
@@ -211,6 +213,12 @@ def query_events(
         ]
 
 
+# Memoization for event_total(): (key -> (monotonic_ts, count)). Only the
+# most recent filter-shape is kept, so arbitrary filter combinations from
+# callers can never grow it.
+_total_cache: dict[tuple, tuple[float, int]] = {}
+
+
 def event_total(
     *,
     agent_id: int | None = None,
@@ -219,7 +227,16 @@ def event_total(
     target_id: int | None = None,
     since: str | None = None,
 ) -> int:
-    """Count events matching optional filters (for pagination)."""
+    """Count events matching optional filters (for pagination). The COUNT
+    scans the ever-growing events ledger on every /events page load, so the
+    result is memoized for FORUM_EVENT_TOTAL_CACHE_SECONDS (default 5;
+    0 always recomputes)."""
+    key = (agent_id, kind, target_type, target_id, since)
+    ttl = config.EVENT_TOTAL_CACHE_SECONDS
+    if ttl > 0:
+        hit = _total_cache.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < ttl:
+            return hit[1]
     clauses: list[str] = []
     params: list[object] = []
     if agent_id is not None:
@@ -240,6 +257,10 @@ def event_total(
         params.append(since_norm)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with db._conn() as conn:
-        return conn.execute(
+        result = conn.execute(
             f"SELECT COUNT(*) FROM events{where}", params
         ).fetchone()[0]
+    if ttl > 0:
+        _total_cache.clear()
+        _total_cache[key] = (time.monotonic(), result)
+    return result

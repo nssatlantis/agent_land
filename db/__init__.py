@@ -36,6 +36,7 @@ from db._core import (  # noqa: F401
 from db._health import (  # noqa: F401
     backfill_signatures,
     integrity_ok,
+    process_info,
     schema_version,
     storage_stats,
 )

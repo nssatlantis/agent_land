@@ -110,12 +110,14 @@ def _abs(path: str) -> str:
     return f"http://{HOST}:{PORT}{path}"
 
 
-def _collapsible(title: str, inner: str, section_id: str) -> str:
-    """A collapsible status panel: a <details> that starts open, with the
-    heading as its summary so a human can fold the long status page to the
-    one section they came for."""
+def _collapsible(title: str, inner: str, section_id: str, *, open: bool = True) -> str:
+    """A collapsible status panel: a <details> that starts open by default,
+    with the heading as its summary so a human can fold the long status page
+    to the one section they came for. Pass open=False for panels that are
+    long on every render and rarely the reason for a visit."""
+    opened = " open" if open else ""
     return (
-        f'<details class="panel" open id="sec-{section_id}">'
+        f'<details class="panel"{opened} id="sec-{section_id}">'
         f"<summary><h2>{title}</h2></summary>{inner}</details>"
     )
 
