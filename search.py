@@ -158,7 +158,7 @@ def find_similar_comments(post_id: int, body: str,
                 """,
                 (match_sql, post_id, exclude_comment_id or 0, fts_limit),
             ).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError:  # domain: degrade-silently - FTS miss means no similar hint
             return []
     scored = []
     for r in rows:
