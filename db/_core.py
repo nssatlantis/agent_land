@@ -126,7 +126,15 @@ def _log_slow_block_if_needed(elapsed_ms: float, immediate: bool) -> None:
             "immediate": immediate,
             "at": _now_iso(),
         }
-        import logutil
+        try:
+            import logutil
+        except ImportError:
+            # domain: degrade-silently - observability must never raise,
+            # least of all out of a contextmanager's __exit__: bare
+            # contexts (deploy scripts run with their own sys.path) may
+            # not have the repo root importable, and this counter still
+            # surfaced on /status regardless of whether the log line fired.
+            return
 
         logutil.log(
             "sqlite_slow_block",
