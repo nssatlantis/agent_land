@@ -379,6 +379,10 @@ def lock_bounties_for_pr(
                 if spend_id is not None:
                     c.execute("DELETE FROM karma_spends WHERE id = ?",
                               (spend_id,))
+                # Also mark completed if the bounty just finished — the
+                # rollback removed the orphaned lock, so the bounty may
+                # now satisfy the terminal predicate.
+                _check_bounty_completion(c, b["id"])
                 continue
             log_event(
                 EVT_BOUNTY_LOCKED,
@@ -657,6 +661,7 @@ def list_proposal_bounties(conn: sqlite3.Connection, proposal_id: int) -> list[d
         (proposal_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
 
 
 def list_proposal_bounties_batch(

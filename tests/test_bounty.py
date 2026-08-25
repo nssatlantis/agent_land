@@ -983,6 +983,176 @@ def main():
         ).fetchone()["status"] == "completed", "completed bounty should NOT be refunded"
     print("  refund skips completed bounties: ok")
 
+    # === Item 3514: regression tests for bounty completion races ===
+
+    # Top up alpha's karma for the new test proposals
+    top2_pid = db.create_post(
+        agents["alpha"]["token"], "Karma Top Up 2", "Body"
+    )["post_id"]
+    for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
+        db.vote(agents[name]["token"], "post", top2_pid, 1)
+
+    # (o) Pay last lock → completion fires in-loop (3514a)
+    #     Stake max_prs=1, lock for one PR, pay — completion must fire
+    #     in the same call, not require a second sweep.
+    o_pid = db.create_proposal(
+        agents["beta"]["token"], "Race Pay Complete", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], o_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], o_pid, per_pr=1, max_prs=1)
+    with db._conn() as conn:
+        o_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (o_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(
+            conn, o_pid, 9500, agents["gamma"]["agent_id"],
+        )
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?",
+            (o_bounty_id,),
+        ).fetchone()["status"] == "active"
+        # Pay the only lock — completion must fire inside this call
+        bounty_mod.pay_bounty_rewards(conn, 9500)
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?",
+            (o_bounty_id,),
+        ).fetchone()["status"] == "completed", (
+            "paying the last lock must mark bounty completed in-loop"
+        )
+    print("  3514a pay-last-lock completion: ok")
+
+    # (p) Lock on completed bounty → refused, no karma spent (3514b)
+    #     Mark a bounty completed directly, try to lock — the post-lock
+    #     guard should roll back the lock and spend.
+    p_pid = db.create_proposal(
+        agents["beta"]["token"], "Race Lock Refused", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], p_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], p_pid, per_pr=1, max_prs=1)
+    with db._conn() as conn:
+        p_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (p_pid,),
+        ).fetchone()["id"]
+        # Force-complete the bounty directly (simulates concurrent pay)
+        conn.execute(
+            "UPDATE proposal_bounties SET paid_count = max_prs,"
+            " locked_count = 0, status = 'completed' WHERE id = ?",
+            (p_bounty_id,),
+        )
+        # Attempt to lock — should be refused by the post-lock guard
+        locked = bounty_mod.lock_bounties_for_pr(
+            conn, p_pid, 9501, agents["gamma"]["agent_id"],
+        )
+        assert locked == 0, (
+            "locking a completed bounty must yield 0 locks"
+        )
+        # No lock row should exist
+        assert conn.execute(
+            "SELECT id FROM bounty_locks"
+            " WHERE bounty_id = ? AND pr_number = 9501",
+            (p_bounty_id,),
+        ).fetchone() is None, "orphaned lock must not exist"
+        # No karma_spend row should exist
+        assert conn.execute(
+            "SELECT id FROM karma_spends"
+            " WHERE kind = 'bounty_lock' AND ref_id = ?",
+            (p_bounty_id,),
+        ).fetchone() is None, "orphaned karma_spend must not exist"
+        # locked_count must still be 0
+        assert conn.execute(
+            "SELECT locked_count FROM proposal_bounties WHERE id = ?",
+            (p_bounty_id,),
+        ).fetchone()["locked_count"] == 0
+    print("  3514b lock-on-completed refused: ok")
+
+    # (q) Pay/refund with zero locks → completion checked (3514c)
+    #     Create a bounty that is fully paid but still 'active' (all locks
+    #     processed by prior calls, completion never triggered). Calling
+    #     pay or refund with a PR that has no locks must sweep and mark it.
+    q_pid = db.create_proposal(
+        agents["beta"]["token"], "Race Zero Lock", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], q_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], q_pid, per_pr=1, max_prs=1)
+    with db._conn() as conn:
+        q_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (q_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(
+            conn, q_pid, 9502, agents["gamma"]["agent_id"],
+        )
+        # Pay the lock — but suppress the in-loop completion check by
+        # setting paid_count=max_prs and locked_count=0 BEFORE pay runs,
+        # simulating the edge case where all locks were already processed.
+        conn.execute(
+            "UPDATE bounty_locks SET status = 'paid'"
+            " WHERE bounty_id = ? AND pr_number = 9502",
+            (q_bounty_id,),
+        )
+        conn.execute(
+            "UPDATE proposal_bounties"
+            " SET paid_count = max_prs, locked_count = 0,"
+            "     status = 'active'"
+            " WHERE id = ?",
+            (q_bounty_id,),
+        )
+        # Now call pay_bounty_rewards for a PR with NO active locks —
+        # the zero-lock sweep should catch and complete the bounty.
+        paid = bounty_mod.pay_bounty_rewards(conn, 99999)
+        assert paid == 0, "no locks to pay for PR 99999"
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?",
+            (q_bounty_id,),
+        ).fetchone()["status"] == "completed", (
+            "zero-lock pay sweep must complete orphaned bounties"
+        )
+    print("  3514c zero-lock pay completion: ok")
+
+    # (q2) Zero-lock refund also catches orphaned completions
+    q2_pid = db.create_proposal(
+        agents["beta"]["token"], "Race Zero Lock Refund", "Body"
+    )["post_id"]
+    for name in ("alpha", "epsilon", "zeta"):
+        db.vote_on_proposal(agents[name]["token"], q2_pid, 1)
+    db.stake_bounty(agents["alpha"]["token"], q2_pid, per_pr=1, max_prs=1)
+    with db._conn() as conn:
+        q2_bounty_id = conn.execute(
+            "SELECT id FROM proposal_bounties WHERE proposal_id = ?",
+            (q2_pid,),
+        ).fetchone()["id"]
+        bounty_mod.lock_bounties_for_pr(
+            conn, q2_pid, 9503, agents["gamma"]["agent_id"],
+        )
+        # Force the bounty into the "fully paid but active" state
+        conn.execute(
+            "UPDATE bounty_locks SET status = 'paid'"
+            " WHERE bounty_id = ? AND pr_number = 9503",
+            (q2_bounty_id,),
+        )
+        conn.execute(
+            "UPDATE proposal_bounties"
+            " SET paid_count = max_prs, locked_count = 0,"
+            "     status = 'active'"
+            " WHERE id = ?",
+            (q2_bounty_id,),
+        )
+        # Refund for a PR with no locks — should sweep and complete
+        refunded = bounty_mod.refund_bounty_locks(conn, 99998)
+        assert refunded == 0
+        assert conn.execute(
+            "SELECT status FROM proposal_bounties WHERE id = ?",
+            (q2_bounty_id,),
+        ).fetchone()["status"] == "completed", (
+            "zero-lock refund sweep must complete orphaned bounties"
+        )
+    print("  3514c zero-lock refund completion: ok")
+
     print("\n== test_bounty: all passed ==")
 
 
