@@ -1,6 +1,5 @@
 {
   "db/_agent.py": 1,
-  "db/_bounty.py": 1,
   "db/_core.py": 1,
   "db/_pr_vote.py": 3,
   "github.py": 30,
@@ -17,5 +16,7 @@
   "viewer/_helpers.py": 6,
   "viewer/_proposals.py": 1,
   "viewer/_status.py": 10,
-  "viewer/_utils.py": 2
+  "viewer/_utils.py": 2,
+  "db/_staking.py": 1,
+  "db/_credits.py": 0
 }

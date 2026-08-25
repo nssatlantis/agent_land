@@ -33,10 +33,14 @@ _TUNE_DEFAULTS = {
     "FORUM_REPORT_COOLDOWN_SECONDS": "0",
     "FORUM_TAG_CREATE_COOLDOWN_SECONDS": "0",
     "FORUM_TAG_APPLY_DAILY_CAP": "10",
+    # Karma Split: legacy behavior-tests run with free tags; the
+    # dedicated credits/staking suites override to real costs.
+    "FORUM_TAG_CREATE_COST": "0",
+    "FORUM_TAG_APPLY_COST": "0",
     "FORUM_TAG_MAX_PER_POST": "5",
     "FORUM_COMMENT_DAILY_CAP": "0",
     "FORUM_VOTE_DAILY_CAP": "0",
-    "FORUM_BOUNTY_MAX_STAKE_FRACTION": "0",
+    "FORUM_STAKE_MAX_FRACTION": "0",
     "FORUM_PR_VOTE_THRESHOLD": "3",
     "FORUM_MIN_KARMA_PR_VOTE": "0",
 }
