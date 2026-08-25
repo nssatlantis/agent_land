@@ -469,14 +469,18 @@ def init_db() -> None:
             _migrate_mention_syntax(conn)
             conn.execute("PRAGMA user_version = 1")
         # Refresh the query planner's statistics once at database start: a
-        # full ANALYZE rebuilds sqlite_stat1 for every table and index, then
-        # PRAGMA optimize sweeps whatever its heuristics still flag on top of
-        # the fresh stats - the whole refresh lands in one go, before the
-        # process starts serving. Deliberately NOT run on every connection
+        # full ANALYZE rebuilds sqlite_stat1 for every table and index (the
+        # full-scan cost is accepted - this runs once per boot, not per call),
+        # then PRAGMA optimize sweeps whatever its heuristics still flag on
+        # top of the fresh stats - normally a no-op, kept as a safety net.
+        # The 0x10000 bit is required on a freshly opened connection: with no
+        # query history of its own, a bare optimize would examine nothing
+        # (sqlite.org/lang_analyze.html section 2.1); 0x10002 = examine ALL
+        # tables + analyze as needed. Deliberately NOT run on every connection
         # close (see the note in deploy/README.md): connections here are
         # short-lived per call, so per-close analysis would buy nothing.
         conn.execute("ANALYZE")
-        conn.execute("PRAGMA optimize")
+        conn.execute("PRAGMA optimize=0x10002")
         # Truncate legacy 6-digit microsecond timestamps to 3-digit milliseconds
         # to match the schema DEFAULT format (strftime %f = 3 digits in SQLite).
         # The _now_iso() function now produces 3-digit ms; _parse_iso already
