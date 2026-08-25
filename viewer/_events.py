@@ -164,6 +164,24 @@ def _event_description(e: dict) -> str:
         return f'Bounty #{d.get("bounty_id", tid)} paid for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
     if k == "bounty_refunded":
         return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+    if k == "stake_created":
+        cur = d.get("currency", "karma")
+        return f'{actor} staked {d.get("per_pr", "?")} {cur}/PR (max {d.get("max_prs", "?")}, total {d.get("total", "?")}) on proposal #{d.get("proposal_id", "?")}'
+    if k == "stake_withdrawn":
+        return f'{actor} withdrew stake #{tid}'
+    if k == "stake_locked":
+        return f'Stake #{d.get("stake_id", tid)} locked {d.get("amount", "?")} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}'
+    if k == "stake_paid":
+        suffix = " (self-stake)" if d.get("self_stake") else ""
+        return f'Stake #{d.get("stake_id", tid)} paid {d.get("amount", "?")} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}{suffix}'
+    if k == "stake_refunded":
+        return f'Stake #{d.get("stake_id", tid)} refunded ({d.get("amount", "?")} {d.get("currency", "karma")}, {d.get("reason", "pr outcome")})'
+    if k == "stake_completed":
+        return f'Stake #{tid} completed (all PRs paid)'
+    if k == "credit_earned":
+        return f'{actor} earned {d.get("credits", "?")} credits ({d.get("reason", "?")})'
+    if k == "credit_spent":
+        return f'{actor} spent {d.get("credits", "?")} credits ({d.get("reason", "?")})'
     if k == "bounty_completed":
         return f'Bounty #{tid} completed (all PRs paid)'
     if k == "pr_opened":
@@ -226,6 +244,9 @@ def events_page(request: Request) -> HTMLResponse:
         ("proposal_claimed", "Claims"),
         ("tag_created", "Tags"),
         ("bounty_created", "Bounties"), ("bounty_paid", "Bounty paid"),
+    ("stake_created", "Stakes"), ("stake_paid", "Stake paid"),
+    ("stake_locked", "Stakes locked"), ("stake_refunded", "Stakes refunded"),
+    ("credit_earned", "Credits earned"), ("credit_spent", "Credits spent"),
         ("report_filed", "Reports"), ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
         ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),

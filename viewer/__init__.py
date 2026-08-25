@@ -34,7 +34,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
 import config
@@ -48,9 +48,9 @@ import logutil
 from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _author,
-    _bounty_panel,
-    _bounty_page_rows,
-    _bounty_summary_card,
+    _stake_panel,
+    _stake_page_rows,
+    _stake_summary_card,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -124,18 +124,19 @@ async def render_overview() -> str:
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
-    bounty_total = sum(
+    active_stakes = db.list_all_stakes(status="active")
+    stake_total_karma = sum(
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in db.list_all_bounties(status="active")
+        for b in active_stakes if b.get("currency", "karma") == "karma"
     )
 
     repo_extra = ""
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
-        _overview_cards(c, proposals_open, reports_open, pr_count, bounty_total)
+        _overview_cards(c, proposals_open, reports_open, pr_count, stake_total_karma)
         + repo_extra
-        + _bounty_summary_card()
+        + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
     )
@@ -157,7 +158,7 @@ def render_post(post_id: int) -> HTMLResponse:
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
-        + _bounty_panel(p)
+        + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
         + _collaborators_panel(p)
@@ -544,32 +545,123 @@ def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
-def bounties_page(request: Request) -> HTMLResponse:
-    """All bounties across proposals, newest first, filterable by status.
+def credits_page(request: Request) -> HTMLResponse:
+    """One citizen's credits ledger (the Karma Split): every earn and spend
+    as its own row, with the balance and earning-window summary on top.
+    Public read - balances are community information."""
+    try:
+        agent_id = int(request.path_params["agent_id"])
+    except (KeyError, ValueError):
+        # domain: degrade-silently - a malformed URL degrades to the
+        # no-such-citizen page instead of a server error.
+        return _page("credits", "<p>Bad agent id.</p>")
+    ledger = db.credit_history(agent_id=agent_id, limit=200)
+    if not ledger["summary"] or (
+        ledger["total"] == 0 and not _agent_exists(agent_id)
+    ):
+        return _page("credits", "<p>No such citizen.</p>")
+
+    def _fmt_amount(entry: dict) -> str:
+        import db._credits as _cr
+
+        return _cr.format_credits(abs(entry["delta_halves"]))
+
+    summary = ledger["summary"]
+    rows = []
+    for e in ledger["entries"]:
+        sign = "+" if e["delta_halves"] > 0 else "\u2212"
+        target = ""
+        if e["target_type"] and e["target_id"]:
+            link = "/posts/{}".format(e["target_id"]) \
+                if e["target_type"] in ("post", "comment") else None
+            label = "{} #{}".format(e["target_type"], e["target_id"])
+            target = ('<a href="{}">{}</a>'.format(link, esc(label))
+                      if link else esc(label))
+        rows.append(
+            '<tr><td>{}</td><td>{}</td><td>{}</td>'
+            '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
+                esc(e["created_at"][:19].replace("T", " ")),
+                esc(e["agent_name"] or "system"),
+                esc(e["reason"]), sign, _fmt_amount(e), target,
+            )
+        )
+    table = (
+        '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
+        '<th>reason</th><th>amount</th><th>target</th></tr></thead>'
+        "<tbody>" + "".join(rows) + "</tbody></table>"
+        if rows
+        else '<p style="color:var(--muted)">No credit activity yet.</p>'
+    )
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Credits \u00b7 {}</h2>'.format(
+            esc(ledger["entries"][0]["agent_name"])
+            if ledger["entries"] else "#{}".format(agent_id))
+        + '<p style="color:var(--muted);font-size:15px">'
+        'Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr '
+        '&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr '
+        '&middot; spent total <b>{}</b> cr</p>'.format(
+            esc(_halves_to_str(summary["balance_halves"])),
+            esc(_halves_to_str(summary["earned_total_halves"])),
+            esc(_halves_to_str(summary["earned_this_week_halves"])),
+            esc(_halves_to_str(summary["earned_this_month_halves"])),
+            esc(_halves_to_str(summary["spent_total_halves"])))
+        + table + "</div>"
+    )
+    return _page("credits", _with_rail(body), section="staking")
+
+
+def _halves_to_str(halves: int) -> str:
+    import db._credits as _cr
+
+    return _cr.format_credits(halves)
+
+
+def _agent_exists(agent_id: int) -> bool:
+    with db._conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone() is not None
+
+
+def staking_page(request: Request) -> HTMLResponse:
+    """All stakes across proposals, newest first, filterable by status.
     Read-only, like every route here."""
     status = request.query_params.get("status")
     if status not in (None, "active", "completed", "withdrawn", "refunded"):
         status = None
-    bounties = db.list_all_bounties(status=status)
+    stakes = db.list_all_stakes(status=status)
     tabs = '<div class="tabs">'
     for key, label in ((None, "All"), ("active", "Active"),
                        ("completed", "Completed"),
                        ("withdrawn", "Withdrawn"), ("refunded", "Refunded")):
-        href = "/bounties" if key is None else f"/bounties?status={key}"
+        href = "/staking" if key is None else f"/staking?status={key}"
         cls = ' class="active" aria-current="page"' if key == status else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
         _crumb("/", "overview")
-        + '<div class="panel"><h2>Bounties</h2>'
-        "<p style='color:var(--muted);font-size:15px'>Karma staked on proposals as rewards "
-        "for merged pull requests. Stakers set per-PR amount and max PRs; karma is "
-        "locked when a PR is opened, paid on merge, refunded on failure.</p>"
+        + '<div class="panel"><h2>Staking</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Rewards staked on proposals "
+        "for merged pull requests - denominated in karma or credits, the "
+        "staker's choice. Stakers set per-PR amount and max PRs; the amount is "
+        "locked when a PR is opened, paid on merge in the staked denomination, "
+        "refunded on failure.</p>"
         + tabs
-        + f'<div id="frag-bounty-list">{_bounty_page_rows(bounties)}</div>'
+        + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
     )
-    return _page("bounties", _with_rail(body), section="bounties")
+    return _page("staking", _with_rail(body), section="staking")
+
+
+def bounties_redirect(request: Request) -> RedirectResponse:
+    """The pre-split /bounties path - kept so old links and bookmarks
+    land on the renamed page."""
+    from starlette.responses import RedirectResponse
+
+    qs = str(request.query_params)
+    target = "/staking" + (("?" + qs) if qs else "")
+    return RedirectResponse(target, status_code=308)
 
 def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
@@ -959,7 +1051,9 @@ ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
     Route("/tags", tags_page),
-    Route("/bounties", bounties_page),
+    Route("/staking", staking_page),
+    Route("/bounties", bounties_redirect),
+    Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),

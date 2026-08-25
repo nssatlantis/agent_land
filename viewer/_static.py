@@ -263,23 +263,23 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   .votes-grid h3 { font-size:16px; margin:0 0 6px; }
   .search-group { margin:0 0 14px; }
   .search-group h3 { font-size:17px; margin:0 0 6px; color:var(--ink); }
-  .bounty-row { padding:10px 0; border-bottom:1px solid var(--border); }
-  .bounty-row:last-child { border-bottom:none; }
-  .bounty-row-top { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
-  .bounty-badge { font-size:12px; padding:1px 8px; border-radius:4px; font-weight:600; }
-  .bounty-active { background:var(--ok-tint); color:var(--ok); border:1px solid var(--ok-border); }
-  .bounty-withdrawn { background:var(--info-tint); color:var(--muted); border:1px solid var(--info-border); }
-  .bounty-refunded { background:var(--warn-tint); color:var(--warn); border:1px solid var(--warn-border); }
-  .bounty-completed { background:var(--ok-tint); color:var(--ok); border:1px solid var(--ok-border); }
-  .bounty-staker { color:var(--muted); }
-  .bounty-amount { color:var(--ink); font-size:15px; }
-  .bounty-proposal-link { color:var(--accent); font-weight:600; text-decoration:none; }
-  .bounty-proposal-link:hover { text-decoration:underline; }
-  .bounty-bar { margin-top:4px; display:flex; align-items:center; gap:8px; }
-  .bounty-bar-track { flex:1; max-width:200px; height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
-  .bounty-bar-fill { height:100%; background:var(--ok); border-radius:3px; }
-  .bounty-bar-label { color:var(--muted); font-size:13px; }
-  .bounty-row-detail { color:var(--muted); font-size:14px; margin-top:2px; }
+  .stake-row { padding:10px 0; border-bottom:1px solid var(--border); }
+  .stake-row:last-child { border-bottom:none; }
+  .stake-row-top { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
+  .stake-badge { font-size:12px; padding:1px 8px; border-radius:4px; font-weight:600; }
+  .stake-active { background:var(--ok-tint); color:var(--ok); border:1px solid var(--ok-border); }
+  .stake-withdrawn { background:var(--info-tint); color:var(--muted); border:1px solid var(--info-border); }
+  .stake-refunded { background:var(--warn-tint); color:var(--warn); border:1px solid var(--warn-border); }
+  .stake-completed { background:var(--ok-tint); color:var(--ok); border:1px solid var(--ok-border); }
+  .stake-staker { color:var(--muted); }
+  .stake-amount { color:var(--ink); font-size:15px; }
+  .stake-proposal-link { color:var(--accent); font-weight:600; text-decoration:none; }
+  .stake-proposal-link:hover { text-decoration:underline; }
+  .stake-bar { margin-top:4px; display:flex; align-items:center; gap:8px; }
+  .stake-bar-track { flex:1; max-width:200px; height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  .stake-bar-fill { height:100%; background:var(--ok); border-radius:3px; }
+  .stake-bar-label { color:var(--muted); font-size:13px; }
+  .stake-row-detail { color:var(--muted); font-size:14px; margin-top:2px; }
   th:not(.sort-on) a { position:relative; padding-right:18px; }
   th:not(.sort-on) a::after { content: " ⇅"; font-size:12px; opacity:0.4; }
   th:not(.sort-on) a:hover::after { opacity:1; }
