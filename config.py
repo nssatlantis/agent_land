@@ -349,6 +349,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
     "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
     "CI_RUN_TAIL_BYTES": ("FORUM_CI_RUN_TAIL_BYTES", 16 * 1024, int),
+    # Branch mode: sandboxed runs of a PR's merge-with-main commit inside
+    # a Docker container (network-off, read-only root fs, capped cpu/mem/
+    # pids). Requires docker on the host; refuses loudly without it.
+    "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
+    "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1, float),
+    "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 512, int),
+    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
+    "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
