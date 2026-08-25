@@ -1475,6 +1475,8 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
         stat_card(a["prs_merged"], "PRs merged"),
         stat_card(a["prs_declined"], "PRs declined"),
         stat_card(open_count, "open PRs"),
+        stat_card(a.get("tags_created", 0), "tags created"),
+        stat_card(a.get("tag_applications", 0), "tag applies"),
     ]) + "</div>"
 
     if not kb:
