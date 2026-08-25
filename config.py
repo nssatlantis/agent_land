@@ -340,6 +340,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # When the -wal file grows past this many bytes the poller runs a
     # TRUNCATE checkpoint to hand the space back to the OS. 0 disables.
     "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
+    # Server-side CI runner (repo_ci_run): executes the repo's own test
+    # suite / benchmark harness against origin/main in a refreshed,
+    # secrets-free workspace. Kill switch, hard timeout, per-agent
+    # cooldown and daily cap; every run is logged to the events ledger.
+    "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
+    "CI_RUN_TIMEOUT_SECONDS": ("FORUM_CI_RUN_TIMEOUT_SECONDS", 600, int),
+    "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
+    "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
+    "CI_RUN_TAIL_BYTES": ("FORUM_CI_RUN_TAIL_BYTES", 16 * 1024, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
