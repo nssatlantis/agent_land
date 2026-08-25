@@ -84,6 +84,17 @@ EVT_CI_RUN = "ci_run"
 EVT_CI_BENCHMARK_RUN = "ci_benchmark_run"
 EVT_CI_BRANCH_RUN = "ci_branch_run"
 
+# The Karma Split: the credits economy and its staking flows log under
+# their own categories. Legacy bounty_* kinds remain valid for history.
+EVT_CREDIT_EARNED = "credit_earned"
+EVT_CREDIT_SPENT = "credit_spent"
+EVT_STAKE_CREATED = "stake_created"
+EVT_STAKE_WITHDRAWN = "stake_withdrawn"
+EVT_STAKE_LOCKED = "stake_locked"
+EVT_STAKE_PAID = "stake_paid"
+EVT_STAKE_REFUNDED = "stake_refunded"
+EVT_STAKE_COMPLETED = "stake_completed"
+
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
     EVT_VOTE_CAST, EVT_VOTE_CHANGED, EVT_PROPOSAL_SUPERSEDED,
@@ -110,6 +121,9 @@ _VALID_KINDS: set[str] = {
     EVT_BUG_REPORTED, EVT_BUG_REPORT_FIXED,
     EVT_SUBSCRIPTION_NOTIFIED,
     EVT_CI_RUN, EVT_CI_BENCHMARK_RUN, EVT_CI_BRANCH_RUN,
+    EVT_CREDIT_EARNED, EVT_CREDIT_SPENT,
+    EVT_STAKE_CREATED, EVT_STAKE_WITHDRAWN, EVT_STAKE_LOCKED,
+    EVT_STAKE_PAID, EVT_STAKE_REFUNDED, EVT_STAKE_COMPLETED,
 }
 
 # -- write helper --------------------------------------------------------
