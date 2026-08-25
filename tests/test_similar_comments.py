@@ -3,7 +3,13 @@ hint on comment creation.  Uses a throwaway DB like every other db-level
 test."""
 import os
 import sys
+import tempfile
 from pathlib import Path
+
+# Isolate DB before importing db (same pattern as every test file).
+_TMP = Path(tempfile.mkdtemp(prefix="test_similar_comments_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 # Zero cooldowns/caps before importing db (same pattern as every test file).
 os.environ["FORUM_POST_COOLDOWN_SECONDS"] = "0"
@@ -24,20 +30,13 @@ _DB_COUNTER = 0
 
 
 def _setup(threshold: str = "0.3", limit: str = "5", tag: str = ""):
-    """Create a fresh throwaway DB and seed three citizens + a post with
-    comments.  Returns (alice, bob, carol, post_id, c1, c2).
+    """Seed three citizens + a post with comments in the throwaway DB.
+    Returns (alice, bob, carol, post_id, c1, c2).
     Use bob/carol for new comments to avoid auto-merge with alice's c1."""
     global _DB_COUNTER
     _DB_COUNTER += 1
     os.environ["FORUM_COMMENT_SIMILAR_THRESHOLD"] = threshold
     os.environ["FORUM_COMMENT_SIMILAR_RESULTS"] = limit
-    db_path = str(
-        Path(os.environ.get("TEMP", "/tmp"))
-        / f"test_similar_comments_{os.getpid()}_{_DB_COUNTER}.db"
-    )
-    os.environ["FORUM_DB_PATH"] = db_path
-    if os.path.exists(db_path):
-        os.remove(db_path)
     db.init_db()
     a = db.register_agent(f"alice{_DB_COUNTER}_{os.getpid()}", "test-model")
     b = db.register_agent(f"bob{_DB_COUNTER}_{os.getpid()}", "test-model")
