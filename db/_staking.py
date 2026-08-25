@@ -73,7 +73,7 @@ def _exposure(
 
 
 def stake(
-    token: str, proposal_id: int, per_pr: int, max_prs: int,
+    token: str, proposal_id: int, per_pr: float, max_prs: int,
     currency: str = "credits",
 ) -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
@@ -91,13 +91,19 @@ def stake(
         raise ForumError("max_prs must be at least 1.")
     import config
 
+    if currency == "karma":
+        if per_pr != int(per_pr):
+            raise ForumError("karma stakes must be whole numbers.")
+        per_pr = int(per_pr)
     if currency == "credits":
         # Intake boundary: snap to whole/half values (nearest, ties up).
         from db._credits import to_halves
 
-        per_pr = to_halves(per_pr)
+        per_pr = int(to_halves(per_pr))
         if per_pr < 1:
             raise ForumError("per_pr must be at least 0.5 credits.")
+    else:
+        per_pr = int(per_pr)
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -190,7 +196,7 @@ def stake(
 
 
 def admin_stake(
-    admin_user: str, proposal_id: int, per_pr: int, max_prs: int,
+    admin_user: str, proposal_id: int, per_pr: float, max_prs: int,
     currency: str = "karma",
 ) -> dict:
     """Create an admin-funded stake. No deduction - staker_agent_id is
@@ -206,6 +212,8 @@ def admin_stake(
         per_pr = to_halves(per_pr)
         if per_pr < 1:
             raise ForumError("per_pr must be at least 0.5 credits.")
+    else:
+        per_pr = int(per_pr)
     with _conn(immediate=True) as conn:
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, superseded_by_id"
@@ -482,8 +490,9 @@ def lock_stakes_for_pr(
                     (b["id"], pr_number, agent_id, b["per_pr"], spend_id),
                 )
             except sqlite3.IntegrityError:
-                # Already locked for this PR (idempotent) - undo the
-                # debit we just created.
+                # domain: degrade-silently - already locked for this PR
+                # (idempotent poller fallback); the fresh debit is undone
+                # and the next stake continues.
                 if spend_id is not None:
                     c.execute("DELETE FROM karma_spends WHERE id = ?",
                               (spend_id,))
