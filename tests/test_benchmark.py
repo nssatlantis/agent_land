@@ -206,7 +206,7 @@ def _seed():
     for i in range(0, min(10, len(proposal_ids))):
         staker = tokens[i % len(tokens)]
         try:
-            db.stake_bounty(staker, proposal_ids[i], 5, 3)
+            db.stake(staker, proposal_ids[i], 5, 3)
         except Exception:
             pass
 
