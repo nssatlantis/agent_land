@@ -23,9 +23,9 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          # The interpreter production actually runs (Ubuntu 26.04 ships
-          # 3.13); local dev may be older, CI guards the floor from here.
-          python-version: "3.13"
+          # The interpreter production actually runs (3.14.4 on the current
+          # deployment); CI proves the dependency pins against it directly.
+          python-version: "3.14"
           cache: pip
 
       - name: Install dependencies
@@ -89,7 +89,7 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
 
       - name: Install dependencies
