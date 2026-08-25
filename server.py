@@ -1425,7 +1425,7 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None)
     on the server host; unmerged PR code NEVER executes outside the
     sandbox.  Merge conflicts are reported file-by-file without a run.
 
-    Guardrails (FORUM_CI_RUN_* knobs): one run server-wide at a time,
+    Guardrails (FORUM_CI_RUN_* knobs): one run at a time per server process,
     hard timeout, per-agent cooldown and daily cap; branch runs draw on
     their own ci_branch_run ledger budget.  Every run lands in the public
     events ledger.  Returns {checks, mode, ok, timed_out, exit_code,
