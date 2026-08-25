@@ -287,6 +287,74 @@ def test_events_under_own_categories():
     assert any(e["detail"]["reason"] == "post_vote" for e in rows)
 
 
+
+def test_credit_stake_lifecycle_lock_pay_refund():
+    """The highest-risk path, executed end to end: lock debits the
+    staker's ledger, merge pays the opener a stake_paid grant, decline
+    refunds via a compensating entry - and the karma rewards table is
+    never touched by credit-denominated stakes."""
+    agents, _ = _setup()
+    prop = db.create_proposal(agents["gamma"]["token"], "Lifecycle prop",
+                              "Body", small_fix=False)
+    prop_id = prop["post_id"]
+    import db._credits as cr
+
+    with db._conn() as conn:
+        cr.grant(agents["alpha"]["agent_id"], 40, "admin_adjust",
+                 target_type="test", target_id=1, conn=conn)  # 10 cr
+        cr.grant(agents["delta"]["agent_id"], 40, "admin_adjust",
+                 target_type="test", target_id=1, conn=conn)
+
+    r = db.stake(agents["alpha"]["token"], prop_id,
+                 per_pr=1.5, max_prs=2, currency="credits")
+    assert r["stake_id"] > 0
+    after_stake = _bal(agents["alpha"]["agent_id"])
+
+    # --- PR #1 opens: lock debits 6 quarters (1.5 cr)
+    locked = db.lock_stakes_for_pr(None, prop_id, 9700,
+                                   agents["delta"]["agent_id"])
+    assert locked == 1
+    assert _bal(agents["alpha"]["agent_id"]) == after_stake - 6
+
+    # --- PR #1 merges: opener paid in credits; staker stays debited
+    with db._conn() as conn:
+        db.award_pr_merge_karma(9700, agents["delta"]["agent_id"],
+                                "2026-08-25T12:00:00.000Z", conn=conn)
+        paid = db.pay_stake_rewards(conn, 9700)
+    assert paid == 1
+    assert _bal(agents["alpha"]["agent_id"]) == after_stake - 6, \
+        "the staker\'s debit persists as a true transfer"
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT reason, delta_quarters FROM credit_entries"
+            " WHERE agent_id = ? AND reason IN ('stake_paid','stake_refund')"
+            " ORDER BY id", (agents["delta"]["agent_id"],)
+        ).fetchall()
+    assert any(r["reason"] == "stake_paid" and r["delta_quarters"] == 6
+               for r in rows), "opener must receive a stake_paid grant"
+    with db._conn() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM stake_rewards").fetchone()[0] == 0, \
+            "credit stakes must never write karma reward rows"
+
+    # --- PR #2 opens then declines: compensating refund entry
+    before_decline = _bal(agents["alpha"]["agent_id"])
+    locked2 = db.lock_stakes_for_pr(None, prop_id, 9701,
+                                    agents["epsilon"]["agent_id"])
+    assert locked2 == 1
+    assert _bal(agents["alpha"]["agent_id"]) == before_decline - 6
+    refunded = db.refund_stake_locks(None, 9701)
+    assert refunded == 1
+    assert _bal(agents["alpha"]["agent_id"]) == before_decline, \
+        "decline restores the exact quarter amount"
+    with db._conn() as conn:
+        reasons = [r["reason"] for r in conn.execute(
+            "SELECT reason FROM credit_entries WHERE agent_id = ?",
+            (agents["alpha"]["agent_id"],)).fetchall()]
+    assert reasons.count("stake_refund") >= 1
+
+
+
 def main():
     test_vote_earns_quarters_and_flips_adjust()
     test_scale_zero_disables_earning()
@@ -300,6 +368,7 @@ def main():
     test_karma_stake_flow_unaffected()
     test_history_and_balances_shapes()
     test_events_under_own_categories()
+    test_credit_stake_lifecycle_lock_pay_refund()
     print("test_credits: all ok")
 
 

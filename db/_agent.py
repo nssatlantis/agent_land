@@ -253,6 +253,14 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
                 (agent["id"],),
             ).fetchone()[0],
         }
+        import db._credits as _credits
+        from db._credits import format_credits as _fmt_credits
+
+        _w_bal = _credits.balance_for(c, agent["id"])
+        result["credits"] = {
+            "balance_quarters": _w_bal,
+            "balance": _fmt_credits(_w_bal),
+        }
         result.update(_pr_counts_for(c, agent["id"]))
         from db._cooldown import _cooldowns_for
         cooldowns = _cooldowns_for(c, agent["id"])

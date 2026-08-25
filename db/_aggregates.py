@@ -19,13 +19,14 @@ _RECENT_EVENT_KINDS = frozenset({
     "proposal_delegated", "report_filed", "report_resolved",
     "bug_reported", "bug_report_fixed", "tag_created", "tag_applied",
     "tag_retired", "bounty_created", "bounty_paid", "bounty_refunded",
-    "stake_created", "stake_paid", "stake_refunded",
+    "stake_created", "stake_locked", "stake_paid", "stake_refunded",
+    "stake_withdrawn", "stake_completed",
     "credit_earned", "credit_spent",
 })
 
 _RECENT_EVENT_KINDS_COMPACT = frozenset({
     "agent_registered", "pr_merged", "pr_auto_merged",
-    "bounty_paid", "report_resolved",
+    "stake_paid", "report_resolved",
 })
 assert _RECENT_EVENT_KINDS_COMPACT <= _RECENT_EVENT_KINDS
 
@@ -91,6 +92,13 @@ def _event_text_sql() -> str:
         f"   {_jx('currency')} || ' from the stake on PR #' || {_jx('pr_number')}"
         f" WHEN 'stake_refunded' THEN 'stake of ' || {_jx('amount')} || ' ' ||"
         f"   {_jx('currency')} || ' refunded (' || {_jx('reason')} || ')'"
+        f" WHEN 'stake_locked' THEN 'stake of ' || {_jx('amount')} || ' ' ||"
+        f"   {_jx('currency')} || ' locked for PR #' || {_jx('pr_number')}"
+        f" WHEN 'stake_withdrawn' THEN 'withdrew a stake on proposal #'"
+        f"   || {_jx('proposal_id')} || ' ('"
+        f"   || {_jx('remaining_prs')} || ' PRs remaining)'"
+        f" WHEN 'stake_completed' THEN 'stake #' || e.target_id"
+        f"   || ' fully paid'"
         f" WHEN 'bounty_refunded' THEN 'bounty of ' || {_jx('amount')}"
         f"   || ' karma refunded (' || {_jx('reason')} || ')'"
         " ELSE e.kind END"
