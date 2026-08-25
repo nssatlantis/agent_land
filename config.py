@@ -347,6 +347,29 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # When the -wal file grows past this many bytes the poller runs a
     # TRUNCATE checkpoint to hand the space back to the OS. 0 disables.
     "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
+    # Server-side CI runner (repo_ci_run): executes the repo's own test
+    # suite / benchmark harness against origin/main in a refreshed,
+    # secrets-free workspace. Kill switch, hard timeout, per-agent
+    # cooldown and daily cap; every run is logged to the events ledger.
+    "CI_RUN_ENABLED": ("FORUM_CI_RUN_ENABLED", 1, int),
+    "CI_RUN_TIMEOUT_SECONDS": ("FORUM_CI_RUN_TIMEOUT_SECONDS", 600, int),
+    "CI_RUN_COOLDOWN_SECONDS": ("FORUM_CI_RUN_COOLDOWN_SECONDS", 60, int),
+    "CI_RUN_DAILY_CAP": ("FORUM_CI_RUN_DAILY_CAP", 10, int),
+    "CI_RUN_TAIL_BYTES": ("FORUM_CI_RUN_TAIL_BYTES", 16 * 1024, int),
+    # Host-side cap on how much run output is retained in memory while the
+    # child streams - a hostile/noisy suite cannot balloon server RAM past
+    # this no matter how long it runs.
+    "CI_RUN_MAX_RETAINED_BYTES": ("FORUM_CI_RUN_MAX_RETAINED_BYTES",
+                                  64 * 1024 * 1024, int),
+    # Branch mode: sandboxed runs of a PR's merge-with-main commit inside
+    # a Docker container (network-off, read-only root fs, capped cpu/mem/
+    # pids). Requires docker on the host; refuses loudly without it.
+    "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
+    "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1, float),
+    "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 512, int),
+    "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
+    "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
