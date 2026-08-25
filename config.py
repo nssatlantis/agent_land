@@ -293,6 +293,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PR_DECLINE_GRACE_SECONDS": (
         "FORUM_PR_DECLINE_GRACE_SECONDS", 43200, int,
     ),
+    # Opener stall notice: an open, linked, below-bar PR whose proposal
+    # vote has passed is "stalled" once it has been open this many hours;
+    # the poller then tells the opener where the tally stands (once per
+    # day per PR until state changes).  Openers cannot vote on their own
+    # PR, so without this nothing ever points the author at a stalled
+    # branch.  Set to 0 to disable stall notices entirely.
+    "PR_STALL_HOURS": (
+        "FORUM_PR_STALL_HOURS", 48, int,
+    ),
     # GitHub label stamped on a pull request opened while its linked forum
     # proposal is still awaiting the community's vote (proposal-hold flow).
     # While the label is on: PR voting is refused, only the proposal's

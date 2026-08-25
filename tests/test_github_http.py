@@ -456,6 +456,8 @@ def main():
     test_pr_files_paginates_past_the_default_page()
     test_short_first_page_costs_one_request()
     test_pagination_cap_bounds_runaway_servers()
+    test_request_text_follows_redirect_to_blob()
+    test_supplement_enriches_thin_exit_code_annotations()
     print("test_github_http: all ok")
     return 0
 
@@ -548,6 +550,82 @@ def test_pagination_cap_bounds_runaway_servers():
         gh._client = old
         gh.clear_cache()
     print("  page cap bounds a server that never sends a short page: ok")
+
+
+def test_request_text_follows_redirect_to_blob():
+    """GitHub's job-log endpoint answers 302 -> signed blob URL. The text
+    reader must follow it (httpx defaults to NOT following), or the
+    Actions log tier can never produce a line."""
+    def handler(request):
+        url = str(request.url)
+        if url.endswith("/actions/jobs/777/logs"):
+            return httpx.Response(
+                302, headers={"Location": "https://blob.example/log.txt"},
+            )
+        if url == "https://blob.example/log.txt":
+            return httpx.Response(200, text="step ok\nerror: boom\n")
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        text = gh._request_text("GET", "actions/jobs/777/logs")
+        assert text is not None and "boom" in text, text
+    finally:
+        gh._client = old
+    print("  _request_text follows the log redirect: ok")
+
+
+def test_supplement_enriches_thin_exit_code_annotations():
+    """A pathed-but-content-free annotation ('exit code 1') must not
+    suppress the log-tail supplement: the merged failures carry the real
+    assertion lines ahead of the thin annotation."""
+    def handler(request):
+        url = str(request.url)
+        path, _, query = url.partition("?")
+        if "/check-runs?" in path or path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": []})
+        if path.endswith("/actions/runs") and "head_sha=" in query:
+            return httpx.Response(200, json={"workflow_runs": [{
+                "id": 1, "name": "CI", "conclusion": "failure",
+                "html_url": "https://ci/run/1",
+            }]})
+        if path.endswith("/jobs"):
+            return httpx.Response(200, json={"jobs": [{
+                "id": 9, "name": "test", "conclusion": "failure",
+            }]})
+        if path.endswith("/logs"):
+            return httpx.Response(
+                302,
+                headers={"Location": "https://blob.example/job9.txt"},
+            )
+        if url == "https://blob.example/job9.txt":
+            body = (
+                "2026-08-24T22:49:13Z FAILED: test_tags.py\n"
+                "2026-08-24T22:49:13Z "
+                "AssertionError: a retired tag's name stays reserved\n"
+            )
+            return httpx.Response(200, text=body)
+        return httpx.Response(200, json={})
+
+    result = {
+        "source": "check_runs", "state": "failure",
+        "runs": [{"name": "CI", "status": "completed",
+                  "conclusion": "failure"}],
+        "failures": [{"name": "CI", "path": ".github/workflows/ci.yml",
+                      "message": "exit code 1", "line": 30}],
+    }
+    old = _install_mock(handler)
+    try:
+        gh._supplement_check_run_failures(result, "deadsha")
+        msgs = [f["message"] for f in result["failures"]]
+        assert any("AssertionError" in m for m in msgs), msgs
+        # Log lines were merged IN FRONT of the thin annotation.
+        assert any("AssertionError" in m for m in msgs[:2]), msgs
+        assert msgs[-1] == "exit code 1", msgs
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  thin 'exit code' annotations get enriched from logs: ok")
 
 
 if __name__ == "__main__":
