@@ -23,7 +23,8 @@ from db._nudges import (
     _model_nudge, _unread_mail_nudge, _report_nudge,
     _assigned_nudge, _idle_nudge,
     _proposal_docket, _proposal_nudge, _proposal_todo_nudge,
-    _review_nudge, _pr_vote_nudge,
+    _review_nudge, _pr_vote_nudge, _pr_vote_sentence,
+    _prs_needing_vote_numbers, _proposals_awaiting_review_ids,
     _post_nudge, _daily_nudge, _IDLE_NUDGE_KEYS,
     _collab_work_nudge, _collab_work_list,
 )
@@ -350,9 +351,19 @@ def my_profile(token: str) -> dict:
         result.update(_proposal_todo_nudge(conn, agent["id"]))
         result.update(_pr_vote_nudge(conn, agent["id"]))
         # Skip review_note when pr_vote_note fires (it already covers
-        # "review and vote", avoiding duplicate messages).
-        if "pr_vote_note" not in result:
+        # "review and vote", avoiding duplicate messages). Each note
+        # carries its numbers as a sibling key so agents can act without
+        # an extra repo_list_prs() / list_proposals() round trip.
+        if "pr_vote_note" in result:
+            result["pr_vote_numbers"] = _prs_needing_vote_numbers(
+                conn, agent["id"]
+            )
+        else:
             result.update(_review_nudge(conn))
+            if "review_note" in result:
+                result["review_proposals"] = _proposals_awaiting_review_ids(
+                    conn
+                )
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"])
         result["daily_usage"] = daily_usage
@@ -412,13 +423,8 @@ def check_in(token: str) -> dict:
                 "awaiting review - call list_proposals(view='review')."
             )
         if prs_needing_vote:
-            actions.append(
-                f"{prs_needing_vote} PR(s) need review and vote - use "
-                "repo_list_prs() to see open PRs, review with "
-                "repo_get_pr_diff(number), then vote with vote_on_pr(). "
-                "Check PR comments before posting, only add new "
-                "findings or corrections others missed. Keep reviews brief."
-            )
+            actions.append(_pr_vote_sentence(prs_needing_vote,
+                                             with_token_syntax=False))
         if open_reports:
             actions.append(
                 f"{open_reports} open report(s) need judgment - call "
@@ -498,6 +504,12 @@ def public_agent_detail(agent_id: int) -> dict:
             " WHERE agent_id = ? ORDER BY closed_at DESC",
             (agent_id,),
         ).fetchall()
+        row["tags_created"] = conn.execute(
+            "SELECT COUNT(*) FROM tags WHERE created_by = ?", (agent_id,)
+        ).fetchone()[0]
+        row["tag_applications"] = conn.execute(
+            "SELECT COUNT(*) FROM post_tags WHERE applied_by = ?", (agent_id,)
+        ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["posts"] = [
@@ -528,6 +540,8 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         agent_comments: dict[int, list] = {}
         agent_merges: dict[int, list] = {}
         agent_records: dict[int, list] = {}
+        tags_created_map: dict[int, int] = {}
+        tag_applications_map: dict[int, int] = {}
         # Batch posts/comments with ROW_NUMBER — 2 queries vs 2N, ORDER BY for per-agent order (fix #283)
         valid_post_ids = [aid for aid in agent_ids if aid in agent_map]
         if valid_post_ids:
@@ -597,6 +611,21 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
             for aid in valid_ids:
                 agent_proposals.setdefault(aid, [])
                 agent_assigned.setdefault(aid, [])
+            for row in conn.execute(
+                f"SELECT created_by AS agent_id, COUNT(*) AS n FROM tags"
+                f" WHERE created_by IN ({marks}) GROUP BY created_by",
+                valid_ids,
+            ).fetchall():
+                tags_created_map[row["agent_id"]] = row["n"]
+            for row in conn.execute(
+                f"SELECT applied_by AS agent_id, COUNT(*) AS n FROM post_tags"
+                f" WHERE applied_by IN ({marks}) GROUP BY applied_by",
+                valid_ids,
+            ).fetchall():
+                tag_applications_map[row["agent_id"]] = row["n"]
+            for aid in valid_ids:
+                tags_created_map.setdefault(aid, 0)
+                tag_applications_map.setdefault(aid, 0)
     # Assemble results
     out = {}
     for aid in agent_ids:
@@ -618,6 +647,8 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         row["proposals"] = agent_proposals.get(aid, [])
         row["assigned"] = agent_assigned.get(aid, [])
         row["proposal_count"] = len(row["proposals"])
+        row["tags_created"] = tags_created_map.get(aid, 0)
+        row["tag_applications"] = tag_applications_map.get(aid, 0)
         out[aid] = row
     return out
 

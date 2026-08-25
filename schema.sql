@@ -598,6 +598,8 @@ CREATE TABLE IF NOT EXISTS post_tags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+-- Adoption lookups (profile tag stats): applications made by a citizen.
+CREATE INDEX IF NOT EXISTS idx_post_tags_applied_by ON post_tags(applied_by);
 
 -- Karma-spend ledger: the ONLY mover of effective karma, which stays fully
 -- derived (earned = net votes + pr_merges + pr_record; effective = earned

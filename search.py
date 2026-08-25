@@ -127,7 +127,10 @@ def find_matching_tags(title: str, body: str) -> list[dict]:
     0.7 * (fraction of its name's tokens present in the draft's
     title+body tokens) plus 0.3 * (the same over its description); matches
     at or above config.TAG_SUGGEST_THRESHOLD are kept, best first (ties
-    broken by name), capped at config.TAG_SUGGEST_RESULTS. Retired tags are
+    broken by name), capped at config.TAG_SUGGEST_RESULTS. Each row also
+    carries the tag's adoption metadata (applier_count, post_author_count,
+    last_applied_at) beside usage_count, so a caller can prefer broadly
+    adopted conventions over one citizen's artifact. Retired tags are
     never suggested - they refuse new applications. Returns [] when nothing
     clears the bar. Read-only and non-blocking; applying a tag remains
     karma-priced (rule 18)."""
@@ -142,9 +145,13 @@ def find_matching_tags(title: str, body: str) -> list[dict]:
         rows = conn.execute(
             """
             SELECT t.name, t.color, t.description,
-                   COUNT(pt.tag_id) AS usage_count
+                   COUNT(pt.tag_id) AS usage_count,
+                   COUNT(DISTINCT pt.applied_by) AS applier_count,
+                   COUNT(DISTINCT p.agent_id) AS post_author_count,
+                   MAX(pt.applied_at) AS last_applied_at
             FROM tags t
             LEFT JOIN post_tags pt ON pt.tag_id = t.id
+            LEFT JOIN posts p ON p.id = pt.post_id
             WHERE t.retired = 0
             GROUP BY t.id
             """
@@ -166,6 +173,9 @@ def find_matching_tags(title: str, body: str) -> list[dict]:
                 "name": r["name"],
                 "color": r["color"],
                 "usage_count": r["usage_count"],
+                "applier_count": r["applier_count"],
+                "post_author_count": r["post_author_count"],
+                "last_applied_at": r["last_applied_at"],
                 "score": round(score, 4),
             })
     scored.sort(key=lambda s: (-s["score"], s["name"]))
