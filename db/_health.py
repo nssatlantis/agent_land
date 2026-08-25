@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import os
+import platform
 import sqlite3
+import time
 
-from db._core import _conn
+from db._core import (
+    DB_PATH,
+    _conn,
+    slow_block_stats,
+    stats_refreshed_at,
+)
 from db._text import _reconcile_signature, _ensure_signature
+
+# Captured when this module first loads (seconds after true process start):
+# the denominator for process_info()'s uptime figure.
+_LOADED_MONO = time.monotonic()
 
 
 def schema_version() -> int:
@@ -30,8 +42,15 @@ def storage_stats() -> dict:
     with _conn() as conn:
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        try:
+            wal_bytes: int | None = os.path.getsize(str(DB_PATH) + "-wal")
+        except OSError:
+            # domain: degrade-silently - no -wal file right now is the normal
+            # steady state; /status shows a dash and nothing is lost.
+            wal_bytes = None
         return {
             "sqlite_version": sqlite3.sqlite_version,
+            "wal_bytes": wal_bytes,
             "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0],
             "page_size": page_size,
             "page_count": page_count,
@@ -39,6 +58,20 @@ def storage_stats() -> dict:
             "auto_vacuum": conn.execute("PRAGMA auto_vacuum").fetchone()[0],
             "size": page_count * page_size,
         }
+
+
+def process_info() -> dict:
+    """Runtime facts for /status's Process panel: which interpreter this is
+    (the ground truth during a Python upgrade), the process id, how long the
+    process has been up, when the planner statistics were last refreshed by
+    init_db(), and the slow-block counters. Protocol-agnostic."""
+    return {
+        "python_version": platform.python_version(),
+        "pid": os.getpid(),
+        "uptime_seconds": int(time.monotonic() - _LOADED_MONO),
+        "stats_refreshed_at": stats_refreshed_at(),
+        **slow_block_stats(),
+    }
 
 
 def backfill_signatures() -> dict:
