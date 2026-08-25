@@ -30,7 +30,7 @@ def _uid() -> int:
     """Fresh actor id per executing scenario - shared ids would trip the
     real cooldown between tests."""
     return next(_uid_counter)
-_SAVED = {}
+_SAVED: dict[str, object] = {}
 
 
 def _shadow(name: str, value):
@@ -228,6 +228,52 @@ def test_output_tail_truncation():
         stub.cleanup()
 
 
+def test_output_retained_bytes_capped_against_host_memory():
+    """A noisy (potentially hostile) suite cannot balloon server RAM: the
+    drain keeps at most CI_RUN_MAX_RETAINED_BYTES no matter how much the
+    child streams, while total-count still drives the truncated flag."""
+    stub = _StubTree("tests", """
+        import sys
+        for _ in range(200):
+            print("y" * 10000, flush=True)
+        print("all 1 test files passed")
+        sys.exit(0)
+    """)
+    _shadow("CI_RUN_MAX_RETAINED_BYTES", 2048)
+    _shadow("CI_RUN_TAIL_BYTES", 256)
+    try:
+        started = time.monotonic()
+        result = ci_runner.run_checks(_uid(), "t", "tests")
+        assert time.monotonic() - started < 60
+        assert result["ok"] is True
+        assert result["output_truncated"] is True
+        # Tail survived the cap: the pass line is near the stream's end.
+        assert "all 1 test files passed" in result["output_tail"]
+    finally:
+        _restore()
+        stub.cleanup()
+
+
+def test_multibyte_tail_is_byte_exact():
+    """Truncation flag and returned tail must agree in BYTES: multi-byte
+    output used to make a character slice exceed the byte budget ~3x."""
+    stub = _StubTree("tests", """
+        import sys
+        print("héllo-🎉" * 5000)
+        print("all 1 test files passed")
+        sys.exit(0)
+    """)
+    _shadow("CI_RUN_TAIL_BYTES", 64)
+    try:
+        result = ci_runner.run_checks(_uid(), "t", "tests")
+        assert result["output_truncated"] is True
+        assert len(result["output_tail"].encode("utf-8")) <= 64 + 4, \
+            "tail exceeded its byte budget"
+    finally:
+        _restore()
+        stub.cleanup()
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -240,6 +286,8 @@ def main():
     test_cooldown_gate()
     test_daily_cap_gate()
     test_output_tail_truncation()
+    test_output_retained_bytes_capped_against_host_memory()
+    test_multibyte_tail_is_byte_exact()
     print("test_ci_runner: all ok")
 
 
