@@ -28,6 +28,10 @@ Security posture (deliberate - do not loosen casually):
   default-path write lands in /tmp and vanishes afterwards.  With no
   token in the env the benchmark harness's live mode cannot activate
   either - runs are mocked-only by construction.
+- Gate: suspended and banned citizens are refused exactly like every
+  other write path (db.require_active_agent) - suspension is
+  read-only by charter, and running CI or touching PRs is not
+  reading.
 - Guardrails: one run at a time per server process (the deployment is a
   single uvicorn worker; a multi-worker deployment would need a
   cross-worker lock), a hard timeout with process-group kill, output
@@ -257,7 +261,13 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
-    failed_files = re.findall(r"^FAILED: (\S+)$", output, re.M)
+    # run_all.py prints bare basenames ("FAILED: test_x.py"); prefix them
+    # so failed_files entries are copy-pasteable paths from the repo root.
+    raw = re.findall(r"^FAILED: (\S+)$", output, re.M)
+    failed_files = [
+        name if "/" in name or not name.endswith(".py") else "tests/" + name
+        for name in raw
+    ]
     summary: dict | None = None
     ok_all = re.search(r"all (\d+) test files passed", output)
     failed = re.search(r"FAILED: (\d+) of (\d+) test files", output)
@@ -319,6 +329,34 @@ def _ensure_tree_traversable(tree: str) -> None:
             pass
 
 
+def _prune_stale_images(keep_tag: str) -> None:
+    """Housekeeping: the dependency set changes rarely, but every change
+    leaves a slim image behind; drop our prefix's other tags so they do
+    not accumulate on the host."""
+    prefix = config.CI_RUN_IMAGE_BASE + ":"
+    try:
+        ls = subprocess.run(
+            ["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}",
+             "--filter",
+             f"reference={re.escape(config.CI_RUN_IMAGE_BASE)}:*"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if ls.returncode != 0:
+            # domain: degrade-silently - listing is housekeeping; stale
+            # tags simply survive until a later build prunes them.
+            return
+        for line in ls.stdout.splitlines():
+            tag = line.strip()
+            if tag and tag != keep_tag and tag.startswith(prefix):
+                subprocess.run(
+                    ["docker", "rmi", "-f", tag],
+                    capture_output=True, text=True, timeout=120,
+                )
+    except Exception:
+        # domain: degrade-silently - image GC must never fail a run.
+        pass
+
+
 def _ensure_image(tree: str, rev: str) -> str:
     """Return a tag whose image contains exactly the pinned dependencies of
     *rev* - branch mode always passes origin/main's sha, never the merge
@@ -350,6 +388,7 @@ def _ensure_image(tree: str, rev: str) -> str:
                 f"sandbox image build failed: "
                 f"{(build.stderr or build.stdout).strip()[-300:]}"
             )
+        _prune_stale_images(tag)
         return tag
     finally:
         shutil.rmtree(context, ignore_errors=True)
@@ -370,6 +409,9 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "--user", "1000:1000",
         "--cpus", str(config.CI_RUN_SANDBOX_CPUS),
         "--memory", f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
+        # memory-swap == memory disables swap for the container, so the
+        # memory cap is a hard cap even on hosts with swap enabled.
+        "--memory-swap", f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
         "--pids-limit", str(config.CI_RUN_SANDBOX_PIDS),
         "--tmpfs", f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
         "--env", "PYTHONDONTWRITEBYTECODE=1",
