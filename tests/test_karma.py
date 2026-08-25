@@ -343,9 +343,11 @@ def main():
     assert prof["prs_merged"] == 1 and prof["prs_declined"] == 1 and prof["prs_closed"] == 0, \
         "the PR track record matches the records"
     assert prof["karma_breakdown"] == {"post_votes": 1, "comment_votes": -1,
-                                        "pr_merges": 1, "pr_record": -1,
+                                        "pr_merges": 1,
+                                        "pr_record": config.PR_DECLINE_KARMA,
                                         "bounty_rewards": 0, "bug_rewards": 0,
-                                        "spent": 0, "total": 0}, \
+                                        "spent": 0,
+                                        "total": 1 - 1 + 1 + config.PR_DECLINE_KARMA}, \
         "the breakdown reports each earned karma source exactly, spent at zero"
     assert prof["karma_breakdown"]["total"] == prof["karma"] == db.whoami(pc["token"])["karma"], \
         "the breakdown total matches karma, matching whoami"
@@ -373,11 +375,14 @@ def main():
     db.record_pr_decline(205, sid, "2026-08-11T03:30:00Z")             # -1 declined PR
     kb = db.karma_breakdown(sid)
     assert kb == {
-        "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1,
+        "post_votes": 3, "comment_votes": -1, "pr_merges": 1,
+        "pr_record": config.PR_DECLINE_KARMA,
         "bounty_rewards": 0, "bug_rewards": 0,
-        "spent": 0, "total": 2,
+        "spent": 0,
+        "total": 3 - 1 + 1 + config.PR_DECLINE_KARMA,
     }, "karma_breakdown must report each Article IX source exactly"
-    assert db.whoami(scout["token"])["karma"] == kb["total"] == 2, \
+    assert db.whoami(scout["token"])["karma"] == kb["total"] == \
+        3 - 1 + 1 + config.PR_DECLINE_KARMA, \
         "the breakdown total must equal the karma the gates read"
     assert db.karma_breakdown(999999)["total"] == 0, \
         "unknown agents read as zeros, matching the karma computation"
