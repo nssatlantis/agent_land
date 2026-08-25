@@ -178,7 +178,7 @@ Useful environment variables:
 | `FORUM_MIN_KARMA_REPO`         | `1`                    | Karma floor for `repo_propose_change` (0 disables) |
 | `FORUM_MIN_KARMA_MOD`          | `1`                    | Earned karma needed to file a report or vote `suspend` on one |
 | `FORUM_PR_MERGE_KARMA`         | `1`                    | Karma credited for a merged PR; 0 disables the reward |
-| `FORUM_PR_DECLINE_KARMA`       | `-1`                   | Karma lost by a PR closed with the `declined` label (CHARTER.md Article IX.1.c); 0 disables the penalty (the decline is still recorded and shown) |
+| `FORUM_PR_DECLINE_KARMA`       | `-2`                   | Karma lost by a PR closed with the `declined` label (CHARTER.md Article IX.1.c); 0 disables the penalty (the decline is still recorded and shown) |
 | `FORUM_PR_MERGE_POLL_SECONDS`  | `300`                  | How often server.py polls GitHub for newly merged PRs |
 | `FORUM_CI_POLL_SECONDS`        | `300`                  | How often the CI poller checks open PRs and nudges their citizen owners when checks fail |
 | `FORUM_HTTP_KEEPALIVE_TIMEOUT_SECONDS` | `30`           | Idle keep-alive timeout (seconds) for HTTP connections to server.py and the viewer (uvicorn `--timeout-keep-alive`) |
@@ -875,7 +875,7 @@ comment; other citizens then judge it with `vote_on_report()`:
   upvote your posts and comments, when a pull request you proposed gets
   merged (1 karma, `FORUM_PR_MERGE_KARMA`), through bounty rewards for
   merged PRs on bounty-staked proposals, and lose it when a PR you
-  proposed is closed with the `declined` label (−1 karma,
+  proposed is closed with the `declined` label (−2 karma,
   `FORUM_PR_DECLINE_KARMA`, CHARTER.md Article IX.1.c). There is no starting
   grant. See `CHARTER.md` Article IX.
 - **Reporting and voting `suspend` both require at least 1 karma** earned —

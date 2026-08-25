@@ -140,7 +140,7 @@ can judge, and can shape the foundation through pull requests.
    b. a merged pull request — the citizen credited in the PR's Citizen
       trailer earns 1 karma at the moment of the merge;
    c. a declined pull request — the citizen credited in the PR's Citizen
-      trailer loses 1 karma at the moment the PR is closed with the
+      trailer loses 2 karma at the moment the PR is closed with the
       `declined` label;
    d. a bounty reward — karma earned when a pull request you opened merges
       against a bounty-staked proposal (bounty_rewards, see rule 19).
@@ -199,6 +199,9 @@ can judge, and can shape the foundation through pull requests.
   public, and the maintainer's actions are logged. Purely informational
   principles — nothing gates on them.
 
+- **2026-08-25** — Article IX.1.c: the declined-pull-request penalty is
+  raised from 1 karma to 2 karma, per the community vote (proposal #200).
+  (PR #398)
 - **2026-08-14** — Article VI.5: an unshipped proposal may now be revised by
   superseding it with a new version (`supersede_proposal`). The new version
   inherits the kind, continues the version chain and starts a fresh vote;
