@@ -1268,6 +1268,235 @@ def _checks_for_head(head_sha: str) -> dict | None:
         return None
 
 
+async def _afetch_annotations(run_id):
+    """One check-run's annotations, empty on any API failure - mirrors the
+    sync tier's per-run degrade."""
+    if run_id is None:
+        return []
+    try:
+        return await _arequest(
+            "GET", f"check-runs/{run_id}/annotations?per_page=100"
+        ) or []
+    except RepoError:
+        # domain: degrade-silently - one unreadable annotation set keeps
+        # its run entry; sibling runs' annotations still land.
+        return []
+
+
+async def _afrom_check_runs(runs):
+    """Async twin of _checks_from_check_runs: identical mapping and
+    failure-entry shapes, but every failed run's annotation fetch is
+    gathered concurrently instead of chaining."""
+    mapped = []
+    failed = []
+    for r in runs:
+        name = r.get("name") or "check"
+        mapped.append({
+            "name": name,
+            "status": r.get("status") or "queued",
+            "conclusion": r.get("conclusion"),
+            "html_url": r.get("html_url"),
+        })
+        if r.get("conclusion") not in ("failure", "cancelled", "timed_out", "action_required"):
+            continue
+        failed.append((name, r.get("id"), r.get("html_url")))
+    ann_lists = (
+        list(await asyncio.gather(*[_afetch_annotations(rid) for _, rid, _u in failed]))
+        if failed else []
+    )
+    failures = []
+    for (name, _run_id, run_url), anns in zip(
+        failed, ann_lists, strict=True
+    ):
+        for a in anns[:_MAX_FAILURE_LINES]:
+            failures.append({
+                "name": name,
+                "path": a.get("path"),
+                "line": a.get("start_line"),
+                "message": (a.get("message") or "")[:2000],
+                "log_url": run_url,
+            })
+    return {"source": "check_runs", "state": _ci_state(mapped),
+            "runs": mapped, "failures": failures}
+
+
+async def _afetch_jobs(run_id):
+    """One workflow run's jobs, empty on any API failure - mirrors the
+    sync tier's per-run degrade."""
+    if run_id is None:
+        return []
+    try:
+        data = await _arequest(
+            "GET", f"actions/runs/{run_id}/jobs?per_page=100"
+        ) or {}
+        return data.get("jobs") or []
+    except RepoError:
+        # domain: degrade-silently - one unreadable jobs list keeps the
+        # run link; sibling runs still enrich.
+        return []
+
+
+async def _afetch_job_log(run_id, job_id):
+    """A failed job's extracted log error lines plus its web URL -
+    mirrors the sync tier's per-job degrade (unreadable log -> no lines,
+    no link fabricated)."""
+    if job_id is None or run_id is None:
+        return [], None
+    try:
+        lines = _extract_failure_lines(
+            await _arequest_text("GET", f"actions/jobs/{job_id}/logs") or ""
+        )
+        return (
+            lines[:_MAX_FAILURE_LINES],
+            f"https://github.com/{GITHUB_REPO}/actions/runs/{run_id}/job/{job_id}",
+        )
+    except RepoError:
+        # domain: degrade-silently - an unfetchable log keeps the job's
+        # place in the batch without fabricating content.
+        return [], None
+
+
+async def _afrom_actions(runs):
+    """Async twin of _checks_from_actions: identical mapping and
+    failure-entry shapes; failed runs' job lists are gathered
+    concurrently, then ALL failed jobs' logs are downloaded concurrently
+    (the expensive tail - each can be tens of KB behind a redirect)."""
+    mapped = []
+    failed_runs = []
+    for r in runs:
+        name = r.get("name") or "workflow"
+        mapped.append({
+            "name": name,
+            "status": r.get("status") or "completed",
+            "conclusion": r.get("conclusion"),
+            "html_url": r.get("html_url"),
+        })
+        if r.get("conclusion") not in ("failure", "cancelled", "timed_out"):
+            continue
+        failed_runs.append((name, r.get("id"), r.get("html_url")))
+    job_lists = (
+        list(await asyncio.gather(*[_afetch_jobs(rid) for _n, rid, _u in failed_runs]))
+        if failed_runs else []
+    )
+    failed_jobs = []
+    for (name, run_id, _url), jobs in zip(failed_runs, job_lists, strict=True):
+        for job in jobs:
+            if job.get("conclusion") not in ("failure", "cancelled", "timed_out"):
+                continue
+            failed_jobs.append(
+                (name, run_id, f"{name} / {job.get('name') or 'job'}",
+                 job.get("id"))
+            )
+    log_results = (
+        list(await asyncio.gather(
+            *[_afetch_job_log(rid, jid) for _n, rid, _jn, jid in failed_jobs]
+        ))
+        if failed_jobs else []
+    )
+    failures = []
+    for (_name, _run_id, fq_name, _jid), (lines, log_url) in zip(
+        failed_jobs, log_results, strict=True
+    ):
+        for line in lines:
+            failures.append(
+                {"name": fq_name, "message": line, "log_url": log_url}
+            )
+    return {"source": "actions", "state": _ci_state(mapped),
+            "runs": mapped, "failures": failures}
+
+
+async def _asupplement_check_run_failures(result, head_sha):
+    """Async twin of _supplement_check_run_failures - the same
+    thin-annotation gate and merge order, built on the concurrent
+    Actions readers."""
+    failures = result.get("failures") or []
+    if failures and not all(_thin_annotation(f) for f in failures):
+        return
+    try:
+        data = await _arequest(
+            "GET",
+            f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}",
+        )
+        runs = data.get("workflow_runs") or []
+        if not runs:
+            return
+        actions = await _afrom_actions(runs)
+        log_lines = actions.get("failures") or []
+        if not log_lines:
+            return
+        merged = log_lines + result["failures"]
+        result["failures"] = _dedup_failures(merged)
+    except Exception:
+        # domain: degrade-silently - supplement is best-effort enrichment;
+        # any failure keeps whatever annotations we already have.
+        pass
+
+
+async def _achecks_impl(number, *, _pr=None, _head_sha=None):
+    """Native body behind apr_checks: the same tiered chain as
+    _checks_for_head, with intra-tier fan-out. Never fails the read."""
+    if _head_sha:
+        head_sha = _head_sha
+    else:
+        pr = _pr or await _arequest("GET", f"pulls/{number}")
+        head_sha = pr["head"]["sha"]
+    try:
+        data = await _arequest(
+            "GET",
+            f"commits/{head_sha}/check-runs?per_page={_MAX_CHECK_RUNS}",
+        )
+        runs = data.get("check_runs") or []
+        if runs:
+            result = await _afrom_check_runs(runs)
+            if result["state"] == "failure":
+                await _asupplement_check_run_failures(result, head_sha)
+            return result
+    except RepoError:
+        # domain: degrade-silently - fall through to the Actions tier on
+        # any check-runs API failure, exactly like the sync chain.
+        pass
+    try:
+        data = await _arequest(
+            "GET",
+            f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}",
+        )
+        runs = data.get("workflow_runs") or []
+        if runs:
+            return await _afrom_actions(runs)
+    except RepoError:
+        # domain: degrade-silently - fall through to combined status on
+        # any Actions API failure, exactly like the sync chain.
+        pass
+    try:
+        data = await _arequest("GET", f"commits/{head_sha}/status")
+        statuses = data.get("statuses") or []
+        return {
+            "source": "statuses",
+            "state": data.get("state") or ("unknown" if not statuses else "pending"),
+            "runs": [
+                {
+                    "name": s.get("context") or "status",
+                    "status": "completed",
+                    "conclusion": s.get("state"),
+                    "html_url": s.get("target_url"),
+                }
+                for s in statuses
+            ],
+            "failures": [
+                {
+                    "name": s.get("context") or "status",
+                    "message": s.get("description") or "",
+                    "log_url": s.get("target_url"),
+                }
+                for s in statuses
+                if s.get("state") in ("failure", "error")
+            ],
+        }
+    except RepoError:
+        # domain: degrade-silently - a total outage yields the None shape
+        # callers already treat as unknown.
+        return None
+
 def pr_checks(number: int, *, _pr: dict | None = None,
               _head_sha: str | None = None) -> dict:
     """One pull request's CI detail: per-run name/status/conclusion plus the
@@ -2877,12 +3106,30 @@ async def apr_diff(number: int) -> dict:
     return result
 
 
+async def apr_checks(number: int, *, _pr: dict | None = None,
+                     _head_sha: str | None = None) -> dict:
+    """Native-await twin of pr_checks - the tiered chain (check-runs ->
+    Actions logs -> combined status) is preserved, and within a tier every
+    per-run annotation / jobs-list / log download fans out concurrently.
+    Log downloads are the expensive tail: each can be tens of KB behind a
+    redirect. Shares the ("pr_checks", number) cache key with the sync
+    face; ``_pr`` / ``_head_sha`` mirror pr_checks' private shortcuts."""
+    cache_key = ("pr_checks", number)
+    cached = _pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    result = await _on_bg(
+        _achecks_impl(number, _pr=_pr, _head_sha=_head_sha)
+    )
+    _pr_cache.set(cache_key, result)
+    return result
+
+
 apropose_change = _atwin(propose_change)
 aupdate_pr = _atwin(update_pr)
 aupdate_pr_title = _atwin(update_pr_title)
 aclose_pr = _atwin(close_pr)
 aset_pr_labels = _atwin(set_pr_labels)
 acomment_on_pr = _atwin(comment_on_pr)
-apr_checks = _atwin(pr_checks)
 adetect_merge_conflicts = _atwin(detect_merge_conflicts)
 aapply_merge_resolutions = _atwin(apply_merge_resolutions)
