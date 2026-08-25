@@ -341,9 +341,9 @@ def test_hostile_payload_contained():
     env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
     subprocess.run(["git", "-C", str(fx.work), "commit", "-m", "empty reqs"],
                    check=True, capture_output=True, env=env)
-    new_sha = subprocess.run(["git", "-C", str(fx.work), "rev-parse", "HEAD"],
-                             capture_output=True, text=True).stdout.strip()
-    _git(fx.bare, "update-ref", "refs/pull/7/head", new_sha)
+    # Push (not update-ref): the bare fixture has never seen this commit,
+    # so the object must travel with the ref change.
+    _git(fx.work, "push", str(fx.bare), "feature:refs/pull/7/head")
 
     payload = textwrap.dedent("""
         import json, socket, sys
