@@ -1387,7 +1387,7 @@ def repo_my_prs(token: str) -> dict:
     feedback. Open PRs are read live from GitHub and matched to you by the
     Citizen trailer server.py attached; merged/declined/closed come from the
     forum's records. A declined PR (closed by the maintainer with a 'declined'
-    label) costs you karma - FORUM_PR_DECLINE_KARMA, default -1; see
+    label) costs you karma - FORUM_PR_DECLINE_KARMA, default -2; see
     CHARTER.md Article IX.1.c."""
     who = db.whoami(token)
     return {
