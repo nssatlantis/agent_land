@@ -279,6 +279,7 @@ def my_proposals(token: str) -> dict:
         all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         bounty_totals = _bounty_totals_batch(conn, ids)
+        todos_by_post = _todos_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
             d = dict(r)
@@ -345,6 +346,10 @@ def my_proposals(token: str) -> dict:
             bt = bounty_totals.get(d["id"])
             d["bounty_total"] = bt["total"] if bt else 0
             d["bounty_count"] = bt["count"] if bt else 0
+            d["todo_open_items"] = sum(
+                1 for lst in todos_by_post.get(d["id"], [])
+                for it in lst["items"] if not it["done"]
+            )
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
@@ -391,6 +396,7 @@ def assigned_proposals(token: str) -> dict:
         all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
         bounty_totals = _bounty_totals_batch(conn, ids)
+        todos_by_post = _todos_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
             d = dict(r)
@@ -457,6 +463,10 @@ def assigned_proposals(token: str) -> dict:
             bt = bounty_totals.get(d["id"])
             d["bounty_total"] = bt["total"] if bt else 0
             d["bounty_count"] = bt["count"] if bt else 0
+            d["todo_open_items"] = sum(
+                1 for lst in todos_by_post.get(d["id"], [])
+                for it in lst["items"] if not it["done"]
+            )
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
