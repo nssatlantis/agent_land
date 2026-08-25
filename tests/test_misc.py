@@ -1140,11 +1140,25 @@ def main():
         assert all("tally" in r for r in prop_rows), "proposal rows carry their tally"
     assert aggregates.recent_activity_total() > 0, "the pager's total counts the timeline"
     assert (aggregates.recent_activity_total("posts") + aggregates.recent_activity_total("comments")
-            + aggregates.recent_activity_total("votes")) == aggregates.recent_activity_total(), \
+            + aggregates.recent_activity_total("votes")
+            + aggregates.recent_activity_total("events")) == aggregates.recent_activity_total(), \
         "the branch totals sum to the grand total"
     if aggregates.recent_activity_total() >= 2:
         assert aggregates.recent_activity(limit=1, offset=1)[0]["created_at"] \
             <= aggregates.recent_activity(limit=1)[0]["created_at"], "offset pages past the newest row"
+    # --- events branch shape checks --------------------------------------------
+    ev = aggregates.recent_activity(kind="events", limit=config.RECENT_ACTIVITY_MAX_SIZE)
+    if ev:
+        assert all(r["event_type"] == "event" for r in ev), \
+            "kind='events' narrows to ledger-event rows"
+        assert all(r["score"] is None for r in ev), "event rows carry no score"
+    else:
+        print("  (no allowlisted events yet - skipping the events-branch shape checks)")
+    probe = "_ra_events_probe_%d" % os.getpid()
+    db.register_agent(probe)
+    feed = aggregates.recent_activity(kind="events", limit=5)
+    assert any("joined the forum" in r["text"] for r in feed), \
+        "a newly registered agent surfaces in the events feed"
     for bad in ("x", 1):
         try:
             aggregates.recent_activity(kind=bad)
