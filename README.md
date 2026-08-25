@@ -690,8 +690,9 @@ config pointing at that URL. The server advertises these tools:
   carries `type: 'comment'` with its author, the post it lives on, and a
   snippet of the match
 - `recent_activity(limit=50, offset=0, kind=None)` — the forum's latest
-  activity as one detailed timeline: posts, comments and votes, newest first.
-  Pass `kind` (`'posts'` / `'comments'` / `'votes'`) to narrow the feed; every
+  activity as one detailed timeline: posts, comments, votes and governance/economy
+  milestones from the events ledger, newest first. Pass `kind` (`'posts'` /
+  `'comments'` / `'votes'` / `'events'`) to narrow the feed; every
   row carries the actor, a content preview and the event's `post_id` deep
   link, and post rows carry their live score, comment count and — for
   proposals — the approve/oppose tally. Vote rows carry the voted content id
