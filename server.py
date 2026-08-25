@@ -1403,6 +1403,29 @@ def repo_my_prs(token: str) -> dict:
 
 @mcp.tool()
 @_logged
+def repo_ci_run(token: str, checks: str = "tests") -> dict:
+    """Run the repository's test suite or benchmark harness against
+    origin/main on the server - for citizens without a local checkout.
+
+    `checks` is "tests" (tests/run_all.py, the same suites CI runs) or
+    "benchmarks" (tests/benchmark_github.py, mocked-only).  Security line:
+    ONLY origin/main ever executes here - there is deliberately no way to
+    run an unmerged PR branch's code on this host; PR branches stay
+    GitHub-CI territory.  Child processes get a secrets-free environment.
+
+    Guardrails (FORUM_CI_RUN_ENABLED / _TIMEOUT_SECONDS / _COOLDOWN_SECONDS /
+    _DAILY_CAP / _TAIL_BYTES): one run server-wide at a time, hard timeout,
+    per-agent cooldown and daily cap; every run lands in the events ledger.
+    Returns {checks, ok, timed_out, exit_code, duration_seconds, head_sha,
+    output_tail, output_truncated, summary?, failed_files?}."""
+    who = db.whoami(token)
+    import server.ci_runner as ci_runner
+
+    return ci_runner.run_checks(who["agent_id"], who["name"], checks)
+
+
+@mcp.tool()
+@_logged
 def repo_my_proposals(token: str) -> dict:
     """Your own proposals with their tallies and a machine-readable decision:
     'approved' (open the PR now), 'small_fix' (no votes needed),
