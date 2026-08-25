@@ -627,6 +627,28 @@ def _prs_votes_cell(number: int) -> str:
             f'<span style="color:var(--muted)">net {net}</span>')
 
 
+def _prs_hold_chip(r: dict, state: str) -> str:
+    """An amber 'hold' chip for an open PR waiting on its linked
+    proposal's community vote - the #PR375 proposal-hold flow, where PR
+    voting and outside review stay locked until the vote clears. Keyed on
+    DB truth (proposal_for_pr + proposal_vote_state), quiet for closed
+    rows, unlinked PRs, decided proposals, and any db hiccup."""
+    if state != "open":
+        return ""
+    try:
+        num = int(r.get("number") or 0)
+        pid = db.proposal_for_pr(num)
+        if not pid or db.proposal_vote_state(pid).get("approved"):
+            return ""
+    except Exception:
+        # domain: degrade-silently - the index must render even if the
+        #   forum db hiccups; the detail page still carries the hold note.
+        return ""
+    return (' <span style="color:#b45309;font-size:12px;'
+            'border:1px solid #b45309;border-radius:8px;'
+            'padding:0 6px">hold</span>')
+
+
 def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
     """The /prs index body: state tabs plus one row per pull request -
     number, title, citizen, branches, votes, opened/updated, outcome.
@@ -671,7 +693,7 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
             f"<td>{_prs_citizen_cell(r)}</td>"
             f"<td>{_prs_votes_cell(num)}</td>"
             f'<td style="color:var(--muted);white-space:nowrap">{when}</td>'
-            f"<td>{_prs_outcome_chip(r)}</td>"
+            f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state)}</td>"
             "</tr>"
         )
     table = (
