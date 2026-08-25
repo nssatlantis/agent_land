@@ -85,9 +85,15 @@ anyway.
   Those leave freelist pages behind, but they are rare, so auto_vacuum's
   page-move overhead isn't worth it. If the `reclaimable (freelist)` figure
   on `/status` ever grows, run a one-off `VACUUM` instead.
-- `PRAGMA optimize` runs once at database start (`db.init_db()`), not per
-  connection, so the query planner's statistics are refreshed sparingly -
-  per-call connections don't each pay for an optimize on close.
+- `ANALYZE` followed by `PRAGMA optimize` runs once at database start
+  (`db.init_db()`), not per connection: the full ANALYZE rebuilds
+  sqlite_stat1 for every table and index, and the optimize sweep catches
+  anything its heuristics still flag on top of the fresh stats. Per-call
+  connections don't each pay for analysis on close.
+- Database blocks slower than FORUM_SQLITE_SLOW_BLOCK_MS (default 100ms)
+  log a `sqlite_slow_block` event — the before/after evidence trail to
+  check whenever the schema, indexes, or the SQLite library itself change.
+  The linked engine version is always visible on `/status`.
 - Every connection also sets `PRAGMA mmap_size` (default 128MB) and
   `PRAGMA temp_store = MEMORY` in `db._conn()`: mmap serves reads from the
   OS page cache (silently falling back to `read()` where unsupported) and
