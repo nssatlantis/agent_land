@@ -1,7 +1,9 @@
 """Tests for the credits economy (the Karma Split): earning mirrors karma
-incomes at the configured halves-per-karma rate, spends debit atomically,
+incomes at the configured KARMA_TO_CREDIT_RATIO rate, spends debit
+atomically,
 balances are derived sums that never go negative, staking rides either
 currency, and the ledger/history surfaces expose everything."""
+import importlib
 import os
 import sys
 import tempfile
@@ -47,26 +49,45 @@ def _restore():
     _SAVED.clear()
 
 
-def test_vote_earns_halves_and_flips_adjust():
+def _arm(env_key: str, value: str | None):
+    """Env + reload - the reliable override path (attribute shadows lose
+    to the live-env resolution layer)."""
+    old = os.environ.get(env_key)
+    if value is None:
+        os.environ.pop(env_key, None)
+    else:
+        os.environ[env_key] = value
+    importlib.reload(config)
+    return old
+
+
+def _unarm(old, env_key: str):
+    if old is None:
+        os.environ.pop(env_key, None)
+    else:
+        os.environ[env_key] = old
+    importlib.reload(config)
+
+def test_vote_earns_quarters_and_flips_adjust():
     agents, pid = _setup()
     author_id = AGENTS["gamma"]["agent_id"]  # the fresh post's author
     before = _bal(author_id)
     db.vote(agents["beta"]["token"], "post", pid, 1)
-    assert _bal(author_id) == before + 1, \
-        "+1 karma income = +1 half (0.5 credits)"
-    # Flip to downvote: net delta -2 halves from the prior +1.
+    assert _bal(author_id) == before + 2, \
+        "+1 karma at ratio 0.5 = +2 quarters (0.5 credits)"
+    # Flip to downvote: net delta -4 quarters from the prior +2.
     db.vote(agents["beta"]["token"], "post", pid, -1)
-    assert _bal(author_id) == before - 1, "net movement mirrored"
+    assert _bal(author_id) == before - 2, "net movement mirrored"
     # Same-value re-vote is a no-op.
     db.vote(agents["beta"]["token"], "post", pid, -1)
-    assert _bal(author_id) == before - 1
+    assert _bal(author_id) == before - 2
 
 
 def test_scale_zero_disables_earning():
     agents, pid = _setup()
     author_id = AGENTS["gamma"]["agent_id"]
     _shadow("CREDITS_ENABLED", 1)
-    _shadow("CREDIT_EARN_HALVES_PER_KARMA", 0)
+    _shadow("KARMA_TO_CREDIT_RATIO", 0.0)
     try:
         before = _bal(author_id)
         db.vote(agents["beta"]["token"], "post", pid, 1)
@@ -81,11 +102,11 @@ def test_pr_merge_earns():
     before = _bal(aid)
     ok = db.award_pr_merge_karma(777001, aid, "2026-08-25T00:00:00.000Z")
     assert ok is True
-    halves = config.PR_MERGE_KARMA * config.CREDIT_EARN_HALVES_PER_KARMA
-    assert _bal(aid) == before + halves
+    quarters = config.PR_MERGE_KARMA * config.KARMA_TO_CREDIT_RATIO * 4
+    assert _bal(aid) == before + quarters
     # Idempotent: a second detection must not double-grant.
     db.award_pr_merge_karma(777001, aid, "2026-08-25T00:00:00.000Z")
-    assert _bal(aid) == before + halves
+    assert _bal(aid) == before + quarters
 
 
 def test_bug_fix_earns():
@@ -96,8 +117,8 @@ def test_bug_fix_earns():
     )
     before = _bal(aid)
     db.fix_bug_report(rep["id"])
-    halves = config.BUG_REPORT_KARMA * config.CREDIT_EARN_HALVES_PER_KARMA
-    assert _bal(aid) == before + halves
+    quarters = config.BUG_REPORT_KARMA * config.KARMA_TO_CREDIT_RATIO * 4
+    assert _bal(aid) == before + quarters
 
 
 def test_tag_create_spends_credits_and_floor_stays_karma():
@@ -109,10 +130,15 @@ def test_tag_create_spends_credits_and_floor_stays_karma():
     for v in voters:
         db.vote(agents[v]["token"], "post", pid, 1)
     aid = agents["alpha"]["agent_id"]
-    balance_before = _bal(aid)
-    assert balance_before >= config.TAG_CREATE_COST
-    db.create_tag(agents["alpha"]["token"], "credit-tag")
-    assert _bal(aid) == balance_before - config.TAG_CREATE_COST
+    old = _arm("FORUM_TAG_CREATE_COST", "2.0")
+    try:
+        balance_before = _bal(aid)
+        cost_q = 8  # 2.0 credits
+        assert balance_before >= cost_q
+        db.create_tag(agents["alpha"]["token"], "credit-tag")
+        assert _bal(aid) == balance_before - cost_q
+    finally:
+        _unarm(old, "FORUM_TAG_CREATE_COST")
     # The trust floor still reads karma even when credits run dry:
     # a fresh citizen with zero karma cannot create tags regardless.
     try:
@@ -136,24 +162,21 @@ def test_tag_apply_refuses_when_credits_insufficient():
     # scenario since the shared setup defaults tags to free.)
     import db._credits as cr2
 
-    _bal0 = cr2.balance_for.__self__ if False else None
-    with db._conn() as conn:
-        bal_now = cr2.balance_for(conn, agents["fresh"]["agent_id"])
-        if bal_now >= config.TAG_APPLY_COST:
-            cr2.grant(agents["fresh"]["agent_id"],
-                      -(bal_now - config.TAG_APPLY_COST + 1),
-                      "admin_adjust", target_type="test", target_id=1,
-                      conn=conn)
-    _old_apply = config.TAG_APPLY_COST
-    config.TAG_APPLY_COST = max(config.TAG_APPLY_COST, 4)
+    old_apply = _arm("FORUM_TAG_APPLY_COST", "1.0")  # 4 quarters
     try:
+        with db._conn() as conn:
+            bal_now = cr2.balance_for(conn, agents["fresh"]["agent_id"])
+            if bal_now >= 4:
+                cr2.grant(agents["fresh"]["agent_id"], -(bal_now - 3),
+                          "admin_adjust", target_type="test", target_id=1,
+                          conn=conn)
         try:
             db.apply_tag(agents["fresh"]["token"], pid, "apply-tag")
             raise AssertionError("expected ForumError")
         except db.ForumError as exc:
             assert "insufficient credits" in str(exc)
     finally:
-        config.TAG_APPLY_COST = _old_apply
+        _unarm(old_apply, "FORUM_TAG_APPLY_COST")
 
 
 def test_apply_daily_cap_counts_credit_entries():
@@ -163,7 +186,7 @@ def test_apply_daily_cap_counts_credit_entries():
     import db._credits as cr
 
     with db._conn() as conn:
-        cr.grant(agents["beta"]["agent_id"], 100, "admin_adjust",
+        cr.grant(agents["beta"]["agent_id"], 400, "admin_adjust",
                  target_type="test", target_id=1, conn=conn)
     posts = []
     for n in range(3):
@@ -200,12 +223,12 @@ def test_credit_stake_lock_pay_flow():
     result = db.stake(agents["alpha"]["token"], prop_id,
                       per_pr=2.5, max_prs=2, currency="credits")
     assert result["currency"] == "credits"
-    assert result["per_pr"] == 5, "2.5 credits snap to 5 halves"
+    assert result["per_pr"] == 10, "2.5 credits snap to 10 quarters"
     assert result["per_pr_credits"] == "2.5"
-    # Rounding intake: fractional input snapped to nearest half.
+    # Rounding intake: fractional input snapped to nearest quarter.
     r2 = db.stake(agents["delta"]["token"], prop_id,
                   per_pr=2.3, max_prs=1, currency="credits")
-    assert r2["per_pr"] == 5 and r2["per_pr_credits"] == "2.5"
+    assert r2["per_pr"] == 9 and r2["per_pr_credits"] == "2.25"
 
 
 def test_credit_stake_exposure_cap_is_per_currency():
@@ -215,7 +238,7 @@ def test_credit_stake_exposure_cap_is_per_currency():
     import db._credits as cr
 
     with db._conn() as conn:
-        cr.grant(agents["epsilon"]["agent_id"], 2, "admin_adjust",
+        cr.grant(agents["epsilon"]["agent_id"], 4, "admin_adjust",
                  target_type="test", target_id=1, conn=conn)  # 1.0 credit
     p1 = db.create_proposal(agents["gamma"]["token"], "capA", "b",
                             small_fix=False)
@@ -249,7 +272,7 @@ def test_history_and_balances_shapes():
     assert {"entries", "total", "has_more", "summary"} <= set(hist)
     if hist["entries"]:
         e = hist["entries"][0]
-        assert {"credits", "delta_halves", "reason", "agent_name"} <= set(e)
+        assert {"credits", "delta_quarters", "reason", "agent_name"} <= set(e)
     glob = db.credit_history(limit=5)
     assert len(glob["entries"]) <= 5
     balances = db.balances_for([agents["alpha"]["agent_id"],
@@ -265,7 +288,7 @@ def test_events_under_own_categories():
 
 
 def main():
-    test_vote_earns_halves_and_flips_adjust()
+    test_vote_earns_quarters_and_flips_adjust()
     test_scale_zero_disables_earning()
     test_pr_merge_earns()
     test_bug_fix_earns()
