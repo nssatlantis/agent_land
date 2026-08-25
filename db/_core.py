@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import functools
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
@@ -89,6 +90,52 @@ def now() -> dict:
     return {"now_iso": _now_iso(dt), "now_epoch": int(dt.timestamp())}
 
 
+# Observability counters for /status's Process panel (see the getters at the
+# bottom of this module). Plain ints/dicts: GIL makes += and rebind atomic.
+_slow_block_count = 0
+_last_slow_block: dict | None = None
+_stats_refreshed_at: str | None = None
+
+
+def slow_block_stats() -> dict:
+    """How many db blocks have logged as slow since process start, plus the
+    most recent one. The UI face of FORUM_SQLITE_SLOW_BLOCK_MS - a rising
+    count after an engine or schema change is the signal to look closer."""
+    return {"count": _slow_block_count, "last": _last_slow_block}
+
+
+def stats_refreshed_at() -> str | None:
+    """When init_db last ran the ANALYZE + optimize refresh (None until the
+    first boot with that code path). Confirms on /status that the planner
+    statistics are fresh after an upgrade."""
+    return _stats_refreshed_at
+
+
+def _log_slow_block_if_needed(elapsed_ms: float, immediate: bool) -> None:
+    """Emit one structured 'sqlite_slow_block' event for a database block
+    that ran at least FORUM_SQLITE_SLOW_BLOCK_MS (0 disables). Observability,
+    not enforcement: the point is a before/after evidence trail for schema,
+    index and engine changes - e.g. when comparing plans across a SQLite or
+    OS-level library upgrade."""
+    threshold = config.SQLITE_SLOW_BLOCK_MS
+    if threshold > 0 and elapsed_ms >= threshold:
+        global _slow_block_count, _last_slow_block
+        _slow_block_count += 1
+        _last_slow_block = {
+            "ms": round(elapsed_ms, 1),
+            "immediate": immediate,
+            "at": _now_iso(),
+        }
+        import logutil
+
+        logutil.log(
+            "sqlite_slow_block",
+            ms=round(elapsed_ms, 1),
+            threshold=threshold,
+            immediate=immediate,
+        )
+
+
 @contextmanager
 def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     """A connection in one transaction, committed on clean exit (rolled back
@@ -141,6 +188,7 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     temp_store = config.SQLITE_TEMP_STORE
     if temp_store in (0, 1, 2):
         conn.execute(f"PRAGMA temp_store = {temp_store}")
+    started = time.perf_counter()
     try:
         if immediate:
             conn.execute("BEGIN IMMEDIATE")
@@ -148,6 +196,7 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
         conn.commit()
     finally:
         conn.close()
+        _log_slow_block_if_needed((time.perf_counter() - started) * 1000, immediate)
 
 
 def init_db() -> None:
@@ -447,13 +496,21 @@ def init_db() -> None:
             from db._text import _migrate_mention_syntax
             _migrate_mention_syntax(conn)
             conn.execute("PRAGMA user_version = 1")
-        # Refresh the query planner's statistics (auto-ANALYZE) once at
-        # database start so lookups like the karma aggregates in list_agents
-        # keep using good plans as the DB grows. Deliberately NOT run on every
-        # connection close (see the PRAGMA optimize note in deploy/README.md):
-        # the connections here are short-lived per call, and optimize only
-        # needs to run when the planner sees something worth analyzing.
-        conn.execute("PRAGMA optimize")
+        # Refresh the query planner's statistics once at database start: a
+        # full ANALYZE rebuilds sqlite_stat1 for every table and index (the
+        # full-scan cost is accepted - this runs once per boot, not per call),
+        # then PRAGMA optimize sweeps whatever its heuristics still flag on
+        # top of the fresh stats - normally a no-op, kept as a safety net.
+        # The 0x10000 bit is required on a freshly opened connection: with no
+        # query history of its own, a bare optimize would examine nothing
+        # (sqlite.org/lang_analyze.html section 2.1); 0x10002 = examine ALL
+        # tables + analyze as needed. Deliberately NOT run on every connection
+        # close (see the note in deploy/README.md): connections here are
+        # short-lived per call, so per-close analysis would buy nothing.
+        conn.execute("ANALYZE")
+        conn.execute("PRAGMA optimize=0x10002")
+        global _stats_refreshed_at
+        _stats_refreshed_at = _now_iso()
         # Truncate legacy 6-digit microsecond timestamps to 3-digit milliseconds
         # to match the schema DEFAULT format (strftime %f = 3 digits in SQLite).
         # The _now_iso() function now produces 3-digit ms; _parse_iso already

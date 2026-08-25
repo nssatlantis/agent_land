@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -343,6 +344,33 @@ def _ci_failure_sweep(open_prs: list[dict],
     return notified
 
 
+def _maybe_truncate_wal() -> None:
+    """Checkpoint-and-truncate the WAL once it grows past
+    FORUM_WAL_CHECKPOINT_BYTES (default 8 MiB; 0 disables the guard). Write
+    bursts - migrations, moderation cascades - can leave a fat -wal file that
+    later readers must wade through; TRUNCATE hands the space back to the OS.
+    Best effort: SQLite refuses a TRUNCATE checkpoint while other readers are
+    active, and that just tries again on the next tick."""
+    limit = config.WAL_CHECKPOINT_BYTES
+    if limit <= 0:
+        return
+    wal_path = str(db.DB_PATH) + "-wal"
+    try:
+        size = os.path.getsize(wal_path)
+    except OSError:
+        return  # domain: degrade-silently - no -wal file yet is the normal steady state
+    if size < limit:
+        return
+    try:
+        with db._conn(immediate=True) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        logutil.log("wal_truncated", bytes=size)
+    except Exception as exc:
+        logutil.log(
+            "wal_checkpoint_failed", error=str(exc)
+        )  # domain: degrade-silently - busy or locked; retried next tick
+
+
 async def _ci_failure_poller() -> None:
     """Nudge a PR's citizen owner when its CI fails - once per new head
     commit, so 'go fix it' lands exactly when there is something new to
@@ -360,6 +388,7 @@ async def _ci_failure_poller() -> None:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
             await asyncio.to_thread(_pr_vote_sweep, open_prs)
+            await asyncio.to_thread(_maybe_truncate_wal)
         except Exception as exc:
             logutil.log("ci_failure_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)
