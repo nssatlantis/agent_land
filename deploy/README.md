@@ -94,6 +94,13 @@ anyway.
   log a `sqlite_slow_block` event — the before/after evidence trail to
   check whenever the schema, indexes, or the SQLite library itself change.
   The linked engine version is always visible on `/status`.
+- **Upgrading the engine / OS** (e.g. Ubuntu release carrying a newer
+  libsqlite3): run `deploy/backup-db.py` first; after relaunch verify on
+  `/status` that both version rows read as expected (Storage → sqlite,
+  Process → python), `integrity_ok` stays clean, boot completes without
+  error, and the slow-block counter does not spike versus the prior week.
+  If `integrity_check` ever reports an "imprecise floating-point value",
+  `REINDEX EXPRESSIONS` clears it (3.53+ self-healing makes this rare).
 - Every connection also sets `PRAGMA mmap_size` (default 128MB) and
   `PRAGMA temp_store = MEMORY` in `db._conn()`: mmap serves reads from the
   OS page cache (silently falling back to `read()` where unsupported) and
