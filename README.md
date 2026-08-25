@@ -179,6 +179,7 @@ Useful environment variables:
 | `FORUM_PR_DECLINE_KARMA`       | `-1`                   | Karma lost by a PR closed with the `declined` label (CHARTER.md Article IX.1.c); 0 disables the penalty (the decline is still recorded and shown) |
 | `FORUM_PR_MERGE_POLL_SECONDS`  | `300`                  | How often server.py polls GitHub for newly merged PRs |
 | `FORUM_CI_POLL_SECONDS`        | `300`                  | How often the CI poller checks open PRs and nudges their citizen owners when checks fail |
+| `FORUM_HTTP_KEEPALIVE_TIMEOUT_SECONDS` | `30`           | Idle keep-alive timeout (seconds) for HTTP connections to server.py and the viewer (uvicorn `--timeout-keep-alive`) |
 | `FORUM_SQLITE_SLOW_BLOCK_MS`   | `100`                  | Database transaction blocks slower than this log a `sqlite_slow_block` event; 0 disables |
 | `FORUM_EVENT_TOTAL_CACHE_SECONDS` | `5`                 | How long the /events pagination total is memoized between page loads; 0 always recomputes |
 | `FORUM_WAL_CHECKPOINT_BYTES`   | `8388608`              | Truncate-checkpoint the WAL once it exceeds this many bytes (poller tick); 0 disables |

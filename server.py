@@ -2269,4 +2269,7 @@ if __name__ == "__main__":
     db.init_db()
     print(db.database_location_note(), file=sys.stderr)
     logutil.log("startup", db=db.DB_PATH, host=_host, port=_port)
-    uvicorn.run(app, host=_host, port=_port)
+    uvicorn.run(
+        app, host=_host, port=_port,
+        timeout_keep_alive=config.HTTP_KEEPALIVE_TIMEOUT_SECONDS,
+    )
