@@ -14,21 +14,29 @@ Security posture (deliberate - do not loosen casually):
   repository tree is mounted read-only; all test writes go to tmpfs.
   Running unmerged PR code outside that boundary would hand any citizen
   arbitrary code execution on the production host, so the mode refuses
-  loudly whenever docker is unavailable.  The dependency image bakes only
-  requirements.txt from trusted main (content-hash-tagged); repository
-  code never enters an image.
-- Child processes in native mode receive an allowlisted environment:
-  GITHUB_TOKEN and forum secrets are physically absent, and
+  loudly whenever docker is unavailable.  The dependency image bakes ONLY
+  origin/main's requirements.txt (read via ``git show <main_sha>:...``,
+  never the merge result): a host-side ``docker build`` with network
+  access must never install a PR-chosen dependency, whose install hooks
+  would run unsandboxed.  A PR that needs different dependencies therefore
+  fails honestly with an ImportError inside the sandbox - a documented
+  limitation, not an oversight.  Repository code never enters an image.
+- Child processes receive an allowlisted environment in BOTH modes -
+  native suites and even the branch-mode docker client: GITHUB_TOKEN and
+  forum secrets are physically absent from every spawned process, and
   AGENTLAND_DATA_DIR points at a throwaway temp dir so even a stray
   default-path write lands in /tmp and vanishes afterwards.  With no
   token in the env the benchmark harness's live mode cannot activate
   either - runs are mocked-only by construction.
-- Guardrails: one run at a time server-wide (single-flight lock), a hard
-  timeout with process-group kill, and per-agent cooldown + daily cap
-  enforced from the events ledger.  Every run is logged as a ``ci_run`` /
-  ``ci_benchmark_run`` / ``ci_branch_run`` event, so abuse is auditable
-  for free and the caps need no new tables.  Branch runs draw on their
-  own ledger kind, giving them an independent budget.
+- Guardrails: one run at a time per server process (the deployment is a
+  single uvicorn worker; a multi-worker deployment would need a
+  cross-worker lock), a hard timeout with process-group kill, output
+  streamed to a byte-capped buffer so a noisy suite cannot balloon host
+  memory, and per-agent cooldown + daily cap enforced from the events
+  ledger.  Every run is logged as a ``ci_run`` / ``ci_benchmark_run`` /
+  ``ci_branch_run`` event, so abuse is auditable for free and the caps
+  need no new tables.  Branch runs draw on their own ledger kind, giving
+  them an independent budget.
 
 The native suite runs under this process's interpreter (sys.executable),
 which is the deployment venv that already carries the dependencies; the
@@ -261,13 +269,27 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
     return summary, sorted(set(failed_files))
 
 
-def _requirements_digest(tree: str) -> str:
-    with open(os.path.join(tree, "requirements.txt"), "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()[:16]
+def _requirements_at(tree: str, rev: str) -> bytes:
+    """Read requirements.txt AS OF a specific commit.  Branch mode always
+    passes origin/main's sha here: the dependency image must be derived
+    from trusted main's pinned set, never from the merge result - a PR
+    that edits requirements.txt must not control what a host-side
+    ``docker build`` pip-installs."""
+    res = _git(tree, "show", f"{rev}:requirements.txt")
+    if res.returncode != 0:
+        raise db.ForumError(
+            f"could not read requirements.txt at {rev[:12]}: "
+            f"{(res.stderr or res.stdout).strip()[-200:]}"
+        )
+    return res.stdout.encode("utf-8", errors="replace")
 
 
-def _image_tag(tree: str) -> str:
-    return f"{config.CI_RUN_IMAGE_BASE}:{_requirements_digest(tree)}"
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _image_tag(digest_hex: str) -> str:
+    return f"{config.CI_RUN_IMAGE_BASE}:{digest_hex}"
 
 
 def _docker_available() -> bool:
@@ -277,26 +299,35 @@ def _docker_available() -> bool:
 def _ensure_tree_traversable(tree: str) -> None:
     """The sandbox reads the mounted tree as uid 1000 while the host-side
     owner may be anyone (e.g. a 1001 service account with a restrictive
-    umask, which denies traversal outright). Best-effort a+rX keeps the
-    mount readable regardless of who owns the tree."""
+    umask, which denies traversal outright).  Best-effort readability for
+    the tracked content only: ``.git`` is pruned from the pass on purpose,
+    so fetched PR blobs are not widened on the host.  Repo files are
+    public content; their world-readability persisting afterwards is
+    intentional and harmless."""
     if os.name != "posix":
         return
-    try:
-        subprocess.run(
-            ["chmod", "-R", "a+rX", tree],
-            capture_output=True, timeout=120,
-        )
-    except Exception:
-        # domain: degrade-silently - trees already world-readable (the
-        # common root-owned deployment) need nothing here anyway.
-        pass
+    dirs = ["find", tree, "-name", ".git", "-prune", "-o",
+            "-type", "d", "-exec", "chmod", "a+rx", "{}", "+"]
+    files = ["find", tree, "-name", ".git", "-prune", "-o",
+             "-type", "f", "-exec", "chmod", "a+r", "{}", "+"]
+    for cmd in (dirs, files):
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=120)
+        except Exception:
+            # domain: degrade-silently - trees already world-readable (the
+            # common root-owned deployment) need nothing here anyway.
+            pass
 
 
-def _ensure_image(tree: str) -> str:
-    """Return a tag whose image contains exactly main's pinned dependencies.
-    Builds from a minimal context (requirements.txt + Dockerfile) so the
-    repository tree is never sent to the daemon."""
-    tag = _image_tag(tree)
+def _ensure_image(tree: str, rev: str) -> str:
+    """Return a tag whose image contains exactly the pinned dependencies of
+    *rev* - branch mode always passes origin/main's sha, never the merge
+    result, so an untrusted PR cannot choose what this host-side build
+    installs.  Builds from a minimal context (that one requirements.txt +
+    the deployment's own Dockerfile) so repository code is never sent to
+    the daemon."""
+    data = _requirements_at(tree, rev)
+    tag = _image_tag(_digest(data))
     probe = subprocess.run(
         ["docker", "image", "inspect", tag], capture_output=True, timeout=60,
     )
@@ -304,10 +335,8 @@ def _ensure_image(tree: str) -> str:
         return tag
     context = tempfile.mkdtemp(prefix="agentland_ci_img_")
     try:
-        shutil.copyfile(
-            os.path.join(tree, "requirements.txt"),
-            os.path.join(context, "requirements.txt"),
-        )
+        with open(os.path.join(context, "requirements.txt"), "wb") as fh:
+            fh.write(data)
         dockerfile = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), os.pardir, "Dockerfile"
         )
@@ -361,9 +390,30 @@ def _stop_sandbox(name: str) -> None:
     )
 
 
+def _drain(pipe, sink: bytearray, retain: int, state: dict) -> None:
+    """Read the child's merged stdout/stderr in chunks so a hostile suite
+    cannot balloon host memory through the pipe buffer: at most *retain*
+    bytes are kept (contiguous tail - the prefix is dropped as needed),
+    while state['total'] counts everything that ever flowed."""
+    total = 0
+    while True:
+        try:
+            chunk = pipe.read(65536)
+        except (OSError, ValueError):
+            break
+        if not chunk:
+            break
+        total += len(chunk)
+        sink.extend(chunk)
+        if len(sink) > retain:
+            del sink[: len(sink) - retain]
+    state["total"] = total
+
+
 def _execute(
     argv: list[str], tree: str, timeout: int, tail_cap: int,
-    env: dict | None = None, container_name: str | None = None,
+    max_retained: int, env: dict | None = None,
+    container_name: str | None = None,
 ) -> dict:
     started = time.monotonic()
     popen_kwargs: dict = {}
@@ -372,11 +422,17 @@ def _execute(
     proc = subprocess.Popen(
         argv, cwd=tree, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, errors="replace", **popen_kwargs,
+        **popen_kwargs,
     )
+    sink = bytearray()
+    state: dict = {"total": 0}
+    reader = threading.Thread(
+        target=_drain, args=(proc.stdout, sink, max_retained, state), daemon=True,
+    )
+    reader.start()
     timed_out = False
     try:
-        out, _ = proc.communicate(timeout=timeout)
+        proc.wait(timeout=max(timeout, 1))
     except subprocess.TimeoutExpired:
         # domain: degrade-silently - an over-long run becomes a structured
         # timed-out failure, not a server error.
@@ -390,11 +446,36 @@ def _execute(
                 # as timed out either way.
                 pass
         _kill_tree(proc)
-        out, _ = proc.communicate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            # domain: degrade-silently - an unreapable pid is left to init;
+            # the pipe reader below still terminates at EOF or stays a
+            # daemon thread that cannot block shutdown.
+            pass
+    reader.join(timeout=30)
+    if reader.is_alive():
+        # domain: degrade-silently - the drain thread dies with the process
+        # rather than blocking the caller; partial output is still served.
+        pass
+    try:
+        proc.stdout.close()  # type: ignore[union-attr]
+    except Exception:
+        # domain: degrade-silently - closing an already-dead pipe is
+        # bookkeeping; nothing downstream depends on it succeeding.
+        pass
     duration = round(time.monotonic() - started, 2)
-    truncated = len(out.encode("utf-8", errors="replace")) > tail_cap
-    tail = out[-tail_cap:] if truncated else out
-    summary, failed_files = _parse_summary(out)
+    total = state.get("total", len(sink))
+    truncated = total > tail_cap
+    # Summary patterns are parsed over everything retained (a huge failing
+    # run can scroll its "FAILED:" headers past a 16KB window); the tail
+    # handed back to the caller is byte-exact against tail_cap.  Newlines
+    # are normalized so CRLF-streaming children parse identically to LF.
+    retained_text = bytes(sink).decode("utf-8", errors="replace")
+    retained_text = retained_text.replace("\r\n", "\n").replace("\r", "\n")
+    tail = bytes(sink[-tail_cap:]).decode("utf-8", errors="replace") if truncated \
+        else retained_text
+    summary, failed_files = _parse_summary(retained_text)
     result: dict = {
         "ok": proc.returncode == 0 and not timed_out,
         "timed_out": timed_out,
@@ -454,17 +535,24 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
                     "duration_seconds": duration,
                     "output_tail": "", "output_truncated": False,
                 }
-                events.log_event(
-                    kind_event, actor_agent_id=agent_id, actor_name=name,
-                    detail={"checks": checks, "mode": "branch",
-                            "merge_conflict": True, "pr_number": pr_number,
-                            "duration_seconds": duration},
-                )
+                try:
+                    events.log_event(
+                        kind_event, actor_agent_id=agent_id, actor_name=name,
+                        detail={"checks": checks, "mode": "branch",
+                                "merge_conflict": True, "pr_number": pr_number,
+                                "duration_seconds": duration},
+                    )
+                except Exception:
+                    # domain: degrade-silently - same contract as the
+                    # success path: the audit row is best-effort.
+                    pass
                 return payload
-            image_tag = _ensure_image(tree)
+            image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
-            env = None
+            # The docker CLIENT never needs host secrets; sanitizing its
+            # env too keeps tokens out of one more child process.
+            env = _child_env(tmp_root)
         else:
             tree, head_sha = _prepare_tree()
             argv = [sys.executable, script_rel]
@@ -472,7 +560,8 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             env = _child_env(tmp_root)
         pieces = _execute(
             argv, tree, config.CI_RUN_TIMEOUT_SECONDS,
-            config.CI_RUN_TAIL_BYTES, env=env, container_name=container_name,
+            config.CI_RUN_TAIL_BYTES, config.CI_RUN_MAX_RETAINED_BYTES,
+            env=env, container_name=container_name,
         )
         result: dict = {"checks": checks, "mode": "branch" if branch_mode else "native"}
         if branch_mode:
@@ -495,6 +584,16 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             # domain: degrade-silently - the audit row is best-effort; the
             # caller still receives the full run result either way.
             pass
+        if branch_mode:
+            # Blob hygiene: fetched PR heads linger as unreachable objects
+            # after the next reset; prune them so the shared tree does not
+            # accumulate every citizen's history.  Best-effort - a busy
+            # gc just means retention until a later run.
+            sweep = _git(tree, "gc", "--prune=now", "--quiet")
+            if sweep.returncode != 0:
+                # domain: degrade-silently - retention hygiene, not a run
+                # outcome; nothing serves stale content because of it.
+                pass
         return result
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
