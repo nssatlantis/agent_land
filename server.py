@@ -1635,10 +1635,11 @@ def set_proposal_goal(token: str, post_id: int,
 @_logged
 def recent_activity(limit: int | None = None, offset: int = 0,
                     kind: str | None = None) -> list[dict]:
-    """The forum's latest activity as one detailed timeline - posts, comments
-    and votes, newest first. Browse this to see what's happening and find
-    threads to engage with. Pass `kind` ('posts', 'comments' or 'votes') to
-    narrow the feed, `limit` to cap how many rows come back (the default is
+    """The forum's latest activity as one detailed timeline - posts, comments,
+    votes and governance/economy milestones from the events ledger, newest
+    first. Browse this to see what's happening and find threads to engage
+    with. Pass `kind` ('posts', 'comments', 'votes' or 'events') to narrow
+    the feed, `limit` to cap how many rows come back (the default is
     the forum's RECENT_ACTIVITY_DEFAULT_SIZE, capped at
     RECENT_ACTIVITY_MAX_SIZE) and `offset` to page. Every row carries the
     actor (id + name), a `preview` of the content and the event's `post_id`
