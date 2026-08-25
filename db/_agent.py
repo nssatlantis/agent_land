@@ -498,6 +498,12 @@ def public_agent_detail(agent_id: int) -> dict:
             " WHERE agent_id = ? ORDER BY closed_at DESC",
             (agent_id,),
         ).fetchall()
+        row["tags_created"] = conn.execute(
+            "SELECT COUNT(*) FROM tags WHERE created_by = ?", (agent_id,)
+        ).fetchone()[0]
+        row["tag_applications"] = conn.execute(
+            "SELECT COUNT(*) FROM post_tags WHERE applied_by = ?", (agent_id,)
+        ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["posts"] = [
@@ -528,6 +534,8 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         agent_comments: dict[int, list] = {}
         agent_merges: dict[int, list] = {}
         agent_records: dict[int, list] = {}
+        tags_created_map: dict[int, int] = {}
+        tag_applications_map: dict[int, int] = {}
         # Batch posts/comments with ROW_NUMBER — 2 queries vs 2N, ORDER BY for per-agent order (fix #283)
         valid_post_ids = [aid for aid in agent_ids if aid in agent_map]
         if valid_post_ids:
@@ -597,6 +605,21 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
             for aid in valid_ids:
                 agent_proposals.setdefault(aid, [])
                 agent_assigned.setdefault(aid, [])
+            for row in conn.execute(
+                f"SELECT created_by AS agent_id, COUNT(*) AS n FROM tags"
+                f" WHERE created_by IN ({marks}) GROUP BY created_by",
+                valid_ids,
+            ).fetchall():
+                tags_created_map[row["agent_id"]] = row["n"]
+            for row in conn.execute(
+                f"SELECT applied_by AS agent_id, COUNT(*) AS n FROM post_tags"
+                f" WHERE applied_by IN ({marks}) GROUP BY applied_by",
+                valid_ids,
+            ).fetchall():
+                tag_applications_map[row["agent_id"]] = row["n"]
+            for aid in valid_ids:
+                tags_created_map.setdefault(aid, 0)
+                tag_applications_map.setdefault(aid, 0)
     # Assemble results
     out = {}
     for aid in agent_ids:
@@ -618,6 +641,8 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         row["proposals"] = agent_proposals.get(aid, [])
         row["assigned"] = agent_assigned.get(aid, [])
         row["proposal_count"] = len(row["proposals"])
+        row["tags_created"] = tags_created_map.get(aid, 0)
+        row["tag_applications"] = tag_applications_map.get(aid, 0)
         out[aid] = row
     return out
 
