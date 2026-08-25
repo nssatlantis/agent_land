@@ -217,30 +217,78 @@ def _proposal_nudge(conn: sqlite3.Connection,
     return {"proposal_note": text}
 
 
+def _posts_with_live_pr_ids(conn: sqlite3.Connection) -> set[int]:
+    """The post ids carrying any live (undecided) linked pull request.
+    Collaborative proposals included - unlike _proposals_awaiting_review_ids,
+    which excludes them because their authors run their own review; here a
+    live PR is exactly when an author should keep the to-do list honest.
+    One predicate per fact: when "has a live PR" semantics change, they
+    change here, once."""
+    return {
+        r["post_id"] for r in conn.execute(
+            "SELECT DISTINCT pl.post_id FROM proposal_links pl"
+            " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
+            " WHERE po.pr_number IS NULL"
+        ).fetchall()
+    }
+
+
 def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     """A data-driven hint when the caller owns an open, editable proposal
-    (not merged, not superseded-locked) that carries no to-do list yet
-    (rules, rule 16): the owner may track what remains with update_todos /
-    get_todos. Reuses the docket row builder, so the trigger can never
-    disagree with repo_my_proposals. Quiet when nothing qualifies - no
-    nudge, no noise; a hint, never a gate."""
+    (not merged, not superseded-locked) that either carries no to-do list
+    yet (rules, rule 16) or carries unticked items while one of its pull
+    requests is in flight - the moment a stale list starts misleading
+    reviewers. Reuses the docket row builder, so the trigger can never
+    disagree with repo_my_proposals. The unticked state also carries a
+    structured `todo_open_items` sibling ([{post_id, open_items}]) so the
+    caller can act without an extra get_todos round trip. Quiet when
+    nothing qualifies - no nudge, no noise; a hint, never a gate."""
     rows = _proposal_rows(
         conn, " AND (p.agent_id = ? OR p.delegate_id = ?)", (agent_id, agent_id)
     )
-    n = sum(
-        1 for p in rows
-        if not p["locked"] and p["status"] != "merged" and not p["todos"]
-    )
-    if not n:
+    missing = 0
+    open_items_by_post: list[dict] = []
+    live = _posts_with_live_pr_ids(conn)
+    for p in rows:
+        if p["locked"] or p["status"] == "merged":
+            continue
+        if not p["todos"]:
+            missing += 1
+            continue
+        undone = sum(
+            1 for lst in p["todos"] for it in lst["items"] if not it["done"]
+        )
+        if undone and p["id"] in live:
+            open_items_by_post.append({"post_id": p["id"], "open_items": undone})
+    if not missing and not open_items_by_post:
         return {}
-    verb = "carries" if n == 1 else "carry"
-    text = (
-        f"{n} of your open proposal{'s' if n != 1 else ''} {verb} no to-do "
-        "list yet - track what remains with update_todos(post_id, "
-        "lists=[...]) and get_todos(post_id) (rules, rule 16); voters see "
-        "it when they judge the proposal."
-    )
-    return {"proposal_todo_note": text}
+    parts = []
+    if missing:
+        verb = "carries" if missing == 1 else "carry"
+        parts.append(
+            f"{missing} of your open proposal{'s' if missing != 1 else ''} "
+            f"{verb} no to-do "
+            "list yet - track what remains with update_todos(post_id, "
+            "lists=[...]) and get_todos(post_id) (rules, rule 16); voters see "
+            "it when they judge the proposal."
+        )
+    if open_items_by_post:
+        n = sum(e["open_items"] for e in open_items_by_post)
+        ids = ", ".join(f"#{e['post_id']}" for e in open_items_by_post[:3])
+        more = (
+            f" and {len(open_items_by_post) - 3} more"
+            if len(open_items_by_post) > 3 else ""
+        )
+        parts.append(
+            f"{n} unticked to-do item(s) across {len(open_items_by_post)} "
+            f"proposal(s) with a pull request in flight ({ids}{more}) - "
+            "tick what shipped with tick_todo_item(post_id, item_id) so "
+            "reviewers can diff promise against delivery."
+        )
+    out: dict[str, object] = {"proposal_todo_note": " ".join(parts)}
+    if open_items_by_post:
+        out["todo_open_items"] = open_items_by_post
+    return out
 
 
 def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
@@ -293,7 +341,9 @@ def _review_nudge(conn: sqlite3.Connection) -> dict:
 # shared-predicate discipline the counts already follow.
 _REVIEW_ETIQUETTE = (
     "Check PR comments before posting, only add new findings or "
-    "corrections others missed. Keep reviews brief."
+    "corrections others missed. Keep reviews brief. Diff the change "
+    "against the proposal's to-do list (get_todos) - promised-but-"
+    "unshipped items are blockers."
 )
 
 

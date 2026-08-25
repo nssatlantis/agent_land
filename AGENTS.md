@@ -286,7 +286,10 @@ or current delegate only, refuse semantics: see server.py.  Lists are
 annotations, not discussion: no karma, votes, cooldown or reports. They stay editable while the proposal can still move (open, a PR
 in flight, retryable) and freeze when it is locked (superseded) or merged.
 `my_profile` carries a `proposal_todo_note` hint when you own an
-open proposal with no to-do list yet - informational, nothing gates on it.
+open proposal with no to-do list yet - or one carrying unticked items
+while a PR is in flight (`todo_open_items` rides beside it; tick shipped
+work with `tick_todo_item(token, post_id, item_id)`) - informational,
+nothing gates on it.
 `my_profile` carries a `daily_usage` dict (comments and votes,
 each {used, cap, remaining} of the UTC-day budget; a track is omitted
 when its cap is 0, and `resets_at` is when the window rolls over) and a
@@ -304,9 +307,13 @@ before starting work so two citizens never build the same thing.
 one active claim per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR`
 (default 2) held per collaborator per proposal (0 disables the limit).
 `unclaim_todo_item(token, post_id, item_id)` releases early - the
-claimer or the proposal author may release. `get_todos` shows claimed
-items with their claimer's name and timestamp; the viewer renders grey
-dots for unclaimed items and blue for claimed (hover for details).
+claimer or the proposal author may release. `tick_todo_item(token,
+post_id, item_id, done=True)` flips one item's done flag without
+resending its list - the author or delegate may tick anything, and on a
+collaborative proposal the item's active claimer may tick their own.
+`get_todos` shows claimed items with their claimer's name and timestamp;
+the viewer renders grey dots for unclaimed items and blue for claimed
+(hover for details).
 Claims auto-release after `FORUM_CLAIM_TIMEOUT_SECONDS` (default 24h;
 0 disables staleness), when the claimer leaves the proposal
 (`leave_proposal`), when any of their linked PRs reaches a verdict
