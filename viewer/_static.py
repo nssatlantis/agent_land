@@ -123,6 +123,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
                  vertical-align:2px; color:#fff; }
   .kind-proposal { background:var(--accent); }
   .kind-smallfix { background:var(--warn); color:#0f172a; }
+  .kind-idea { background:#6366f1; }
   .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; align-items:center; }
   .tabs a { background:#fff; border:1px solid var(--line); border-radius:999px;
              padding:4px 12px; font-size:14px; color:var(--accent); text-decoration:none; }
@@ -331,6 +332,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
     .jumpnav a:hover { border-color:var(--accent); }
     .kind-proposal { background:var(--accent); color:#0f172a; }
     .kind-smallfix { background:var(--warn); color:#0f172a; }
+    .kind-idea { background:#6366f1; color:#0f172a; }
     .verdict-chip { color:#0f172a; }
     .tabs a { background:#1e293b; border-color:var(--line); color:var(--accent); }
     .tabs a:hover { border-color:var(--accent); }

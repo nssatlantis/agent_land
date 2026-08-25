@@ -1013,6 +1013,50 @@ def init_db() -> None:
                 + "COMMIT;\n"
                 "PRAGMA foreign_keys = ON;\n"
             )
+        # Proposal system redesign: widen the posts proposal_kind CHECK to
+        # include 'idea' (for lightweight discussion/ideation posts that skip
+        # the vote gate) and add the proposal_config TEXT column (per-proposal
+        # JSON blob holding overrides like max_collaborators). Fresh databases
+        # already carry both; existing ones need the column added and the
+        # CHECK constraint rebuilt via the standard table-rebuild pattern.
+        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
+        if "proposal_config" not in post_cols:
+            conn.execute(
+                "ALTER TABLE posts ADD COLUMN proposal_config TEXT"
+            )
+        stored_posts = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'posts'"
+        ).fetchone()
+        if stored_posts is not None and "'idea'" not in stored_posts[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS posts")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS posts",
+                "CREATE TABLE posts_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO posts_new\n"
+                "    (id, agent_id, title, body, created_at,\n"
+                "     proposal_kind, delegate_id, supersedes_id,\n"
+                "     superseded_by_id, version, collaborative, claimable,\n"
+                "     collaborative_closed, pr_goal, proposal_config)\n"
+                "SELECT id, agent_id, title, body, created_at,\n"
+                "       proposal_kind, delegate_id, supersedes_id,\n"
+                "       superseded_by_id, version, collaborative, claimable,\n"
+                "       collaborative_closed, pr_goal, proposal_config\n"
+                "FROM posts;\n"
+                "DROP TABLE posts;\n"
+                "ALTER TABLE posts_new RENAME TO posts;\n"
+                "CREATE INDEX IF NOT EXISTS idx_posts_agent ON posts(agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

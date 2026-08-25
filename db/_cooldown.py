@@ -26,6 +26,7 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
         None: config.POST_COOLDOWN_SECONDS,
         "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
         "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
+        "idea": config.IDEA_COOLDOWN_SECONDS,
     }[proposal_kind]
     last = conn.execute(
         "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
@@ -86,7 +87,7 @@ def _cooldowns_for(conn: sqlite3.Connection, agent_id: int) -> dict:
     builder for cooldown_status and my_profile, so the two can never
     disagree."""
     cooldowns = {}
-    for kind in (None, "proposal", "small_fix"):
+    for kind in (None, "proposal", "small_fix", "idea"):
         state = _cooldown_remaining(conn, agent_id, kind)
         cooldowns[state["kind"]] = state
     return cooldowns

@@ -33,6 +33,7 @@ _DOCKET_EMPTIES = {
     "merged": "No merged proposals on the record yet.",
     "small_fix": "No small fixes on the docket yet.",
     "collaborative": "No collaborative proposals on the docket yet.",
+    "ideas": "No ideas on the docket yet.",
 }
 
 def _docket_card(p: dict, tallies: dict | None = None) -> str:
@@ -44,7 +45,10 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     verdict, color = _proposal_verdict(p)
     kind = (
         '<span class="kind-badge kind-smallfix">small fix</span>'
-        if p["small_fix"] else '<span class="kind-badge kind-proposal">proposal</span>'
+        if p["small_fix"]
+        else '<span class="kind-badge kind-idea">idea</span>'
+        if p.get("proposal_kind") == "idea"
+        else '<span class="kind-badge kind-proposal">proposal</span>'
     )
     chip_class = {
         "var(--ok)": "vc-ok",
@@ -70,6 +74,8 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     vote_html = ""
     if p.get("locked"):
         vote_html = '<span style="color:var(--dim)">tally frozen</span>'
+    elif p.get("proposal_kind") == "idea":
+        vote_html = '<span style="color:var(--muted)">idea · no gate</span>'
     elif p["small_fix"] and p.get("approved"):
         vote_html = '<span class="verdict-chip vc-ok">approved</span>'
     elif p["small_fix"]:
@@ -201,10 +207,11 @@ _DOCKET_TITLES = {
     "review": "Review",
     "collaborative": "Collaborative",
     "merged": "Merged",
+    "ideas": "Ideas",
 }
 
 _DOCKET_PHASES = [
-    ("Discussion", ["needs_votes", "small_fix", "stale"]),
+    ("Discussion", ["needs_votes", "small_fix", "ideas", "stale"]),
     ("Implementation", ["approved", "review", "collaborative"]),
     ("Done", ["merged"]),
 ]

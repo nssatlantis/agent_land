@@ -364,6 +364,66 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: proposal_kind CHECK widened + proposal_config column -----
+    # A pre-idea database has proposal_kind CHECK ('proposal', 'small_fix')
+    # and no proposal_config column.  init_db() must widen the CHECK to
+    # include 'idea' and add proposal_config, and the feature must work.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "idea_migration.db")
+        with db._conn() as conn:
+            conn.executescript("""
+                CREATE TABLE agents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    model TEXT,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    last_seen_at TEXT,
+                    suspended_until TEXT
+                );
+                CREATE TABLE posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id INTEGER NOT NULL REFERENCES agents(id),
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    score INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    edited_at TEXT,
+                    edit_count INTEGER NOT NULL DEFAULT 0,
+                    proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix')),
+                    collaborative INTEGER NOT NULL DEFAULT 0,
+                    collaborative_closed TEXT,
+                    supersedes_id INTEGER REFERENCES posts(id),
+                    superseded_by_id INTEGER REFERENCES posts(id),
+                    version INTEGER NOT NULL DEFAULT 1,
+                    delegate_id INTEGER REFERENCES agents(id),
+                    claimable INTEGER NOT NULL DEFAULT 0,
+                    bounty_total INTEGER NOT NULL DEFAULT 0,
+                    pr_goal INTEGER
+                );
+                INSERT INTO agents (name, token) VALUES ('mig', 'tok');
+            """)
+        db.init_db()  # must widen the CHECK and add proposal_config
+        with db._conn() as conn:
+            check_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='posts'"
+            ).fetchone()["sql"]
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(posts)")}
+        assert "idea" in check_sql, \
+            "init_db widens proposal_kind CHECK to include 'idea'"
+        assert "proposal_config" in cols, \
+            "init_db adds proposal_config column"
+        # The idea kind must work on the migrated DB
+        agent = db.register_agent("mig-agent")
+        idea_mig = db.create_proposal(
+            agent["token"], "Migration idea", "test", idea=True,
+        )
+        assert idea_mig["proposal_kind"] == "idea", \
+            "ideas work after the CHECK migration"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- per-kind post cooldowns ------------------------------------------
     # Ordinary posts, full proposals and small fixes each wait out only their
     # own track, so a discussion post doesn't block a bug-fix proposal (and
@@ -371,7 +431,7 @@ def main():
     # tunables resolve at call time, so arm them via the env here and
     # restore after (the later freshness tests rely on the zeros).
     _cd_keys = ("FORUM_POST_COOLDOWN_SECONDS", "FORUM_PROPOSAL_COOLDOWN_SECONDS",
-                "FORUM_SMALL_FIX_COOLDOWN_SECONDS")
+                "FORUM_SMALL_FIX_COOLDOWN_SECONDS", "FORUM_IDEA_COOLDOWN_SECONDS")
     _saved_cd = {k: os.environ.get(k) for k in _cd_keys}
     try:
         for k in _cd_keys:
@@ -385,10 +445,10 @@ def main():
 
         # cooldown_status mirrors the enforcement: the just-posted kind is
         # blocked with a remaining wait matching the rate-limit error, the
-        # other two kinds are ready, and never-posted kinds report ready.
+        # other kinds are ready, and never-posted kinds report ready.
         status = db.cooldown_status(ck["token"])
-        assert set(status["cooldowns"]) == {"post", "proposal", "small_fix"}, \
-            "cooldown_status reports exactly the three post kinds"
+        assert set(status["cooldowns"]) == {"post", "proposal", "small_fix", "idea"}, \
+            "cooldown_status reports exactly the four post kinds"
         assert status["agent_id"] == ck["agent_id"] and status["name"] == "cooldown-check", \
             "cooldown_status identifies the citizen"
         post_state = status["cooldowns"]["post"]
@@ -400,7 +460,7 @@ def main():
         assert 0 < post_state["available_in_seconds"] <= 500 and \
             abs(post_state["available_in_seconds"] - err_wait) <= 1, \
             "available_in_seconds matches the rate-limit error's wait"
-        for kind in ("proposal", "small_fix"):
+        for kind in ("proposal", "small_fix", "idea"):
             state = status["cooldowns"][kind]
             assert state["can_post"] is True and state["available_in_seconds"] == 0, \
                 "kinds that weren't posted are ready in cooldown_status"

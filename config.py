@@ -144,6 +144,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "PROPOSAL_COOLDOWN_SECONDS": ("FORUM_PROPOSAL_COOLDOWN_SECONDS", 24 * 3600, int),
     "SMALL_FIX_COOLDOWN_SECONDS": ("FORUM_SMALL_FIX_COOLDOWN_SECONDS", 3600, int),
     "REPORT_COOLDOWN_SECONDS": ("FORUM_REPORT_COOLDOWN_SECONDS", 24 * 3600, int),
+    "IDEA_COOLDOWN_SECONDS": ("FORUM_IDEA_COOLDOWN_SECONDS", 0, int),
     # Superseding a proposal pays a fraction of the proposal cooldown - a
     # revision path is cheaper than a fresh proposal, but the reduced window
     # still throttles chained supersedes. 0.5 = half, 0.25 = a quarter.

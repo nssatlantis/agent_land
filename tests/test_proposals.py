@@ -1990,6 +1990,113 @@ def main():
             f"{_n} ids must run {_want} queries, ran {_cnt.queries}"
     assert db.proposal_voters_batch([]) == {}, "empty batch returns {}"
 
+    # --- ideas: lightweight discussion spaces --------------------------------
+    # Ideas always show as approved, cannot open PRs directly, and are
+    # promoted to regular proposals with promote_idea.
+    idea = db.create_proposal(
+        agents["beta"]["token"], "What if we had a bot?",
+        "Just a thought.", idea=True,
+    )
+    assert idea["proposal_kind"] == "idea", "idea kind is set"
+    idea_post = db.get_post(idea["post_id"])
+    assert idea_post["proposal_kind"] == "idea", "idea stored as idea"
+    assert idea_post["proposal"]["approved"], "ideas always show as approved"
+
+    # Ideas cannot open PRs
+    assert "ideas are lightweight" in expect_error(
+        db.require_proposal_approval,
+        agents["beta"]["token"], idea["post_id"], "open PR",
+    ), "ideas are blocked from opening PRs"
+
+    # Mutual exclusion: idea + small_fix
+    assert "mutually exclusive" in expect_error(
+        db.create_proposal, agents["beta"]["token"],
+        "bad", "bad", idea=True, small_fix=True,
+    ), "idea + small_fix is refused"
+    # Mutual exclusion: idea + collaborative
+    assert "mutually exclusive" in expect_error(
+        db.create_proposal, agents["beta"]["token"],
+        "bad", "bad", idea=True, collaborative=True,
+    ), "idea + collaborative is refused"
+    # Ideas cannot set claimable or max_collaborators
+    assert "promote to a proposal first" in expect_error(
+        db.create_proposal, agents["beta"]["token"],
+        "bad", "bad", idea=True, claimable=True,
+    ), "idea + claimable is refused"
+    assert "promote to a proposal first" in expect_error(
+        db.create_proposal, agents["beta"]["token"],
+        "bad", "bad", idea=True, max_collaborators=3,
+    ), "idea + max_collaborators is refused"
+
+    # --- promote_idea ------------------------------------------------------
+    # Author-only, non-idea guard, already-superseded guard
+    promoted = db.promote_idea(
+        agents["beta"]["token"], idea["post_id"],
+        "Let's build a bot", "A detailed plan.",
+    )
+    assert promoted["proposal_kind"] == "proposal", "promoted kind is proposal"
+    assert promoted["supersedes_id"] == idea["post_id"], "promoted supersedes the idea"
+    old = db.get_post(idea["post_id"])
+    assert old["proposal"]["superseded_by_id"] == promoted["post_id"], "idea is locked (superseded)"
+
+    # Non-author cannot promote
+    idea2 = db.create_proposal(
+        agents["gamma"]["token"], "Another thought", "body", idea=True,
+    )
+    assert "only the author" in expect_error(
+        db.promote_idea, agents["beta"]["token"], idea2["post_id"],
+        "new title", "new body",
+    ), "non-author is refused"
+
+    # Cannot promote a non-idea
+    err_promote = expect_error(
+        db.promote_idea, agents["beta"]["token"], p1,
+        "new title", "new body",
+    )
+    assert "not an idea" in err_promote or "no proposal" in err_promote, \
+        f"non-idea cannot be promoted, got: {err_promote}"
+
+    # --- claimable at creation ----------------------------------------------
+    claimable = db.create_proposal(
+        agents["gamma"]["token"], "Claimable proposal", "body",
+        claimable=True,
+    )
+    post_info = db.get_post(claimable["post_id"])
+    assert post_info["proposal"].get("claimable"), "claimable flag persists"
+
+    # --- max_collaborators --------------------------------------------------
+    collab_mc = db.create_proposal(
+        agents["delta"]["token"], "Max collab proposal", "body",
+        collaborative=True, max_collaborators=4,
+    )
+    post_info_mc = db.get_post(collab_mc["post_id"])
+    assert post_info_mc["proposal"], "proposal dict exists"
+    # proposal_config is stored at the DB level, not in the get_post dict
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT proposal_config FROM posts WHERE id = ?",
+            (collab_mc["post_id"],),
+        ).fetchone()
+    assert row and row["proposal_config"], "proposal_config persists"
+    assert "max_collaborators" in row["proposal_config"], \
+        "max_collaborators in config"
+    # max_collaborators < 2 is rejected
+    assert "at least 2" in expect_error(
+        db.create_proposal, agents["delta"]["token"],
+        "bad", "body", collaborative=True, max_collaborators=1,
+    ), "max_collaborators=1 is refused"
+    # max_collaborators without collaborative is rejected
+    assert "requires collaborative" in expect_error(
+        db.create_proposal, agents["delta"]["token"],
+        "bad", "body", max_collaborators=3,
+    ), "max_collaborators without collaborative is refused"
+
+    # --- ideas in the docket -----------------------------------------------
+    idea_docket = db.list_proposals(view="ideas")
+    idea_ids = [r["id"] for r in idea_docket]
+    assert idea["post_id"] in idea_ids, "ideas view includes ideas"
+    assert promoted["post_id"] not in idea_ids, "promoted idea not in ideas view"
+
     print("test_proposals: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
