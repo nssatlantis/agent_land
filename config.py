@@ -122,6 +122,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # way; the author decides.
     "SIMILAR_RESULTS": ("FORUM_SIMILAR_RESULTS", 5, int),
     "SIMILAR_THRESHOLD": ("FORUM_SIMILAR_THRESHOLD", 0.4, float),
+    # COMMENT_SIMILAR_RESULTS / COMMENT_SIMILAR_THRESHOLD: the soft
+    # 'possibly duplicate' hint for comments (search.find_similar_comments)
+    # — how many comments on the same post a new comment is compared
+    # against and the minimum Jaccard token-overlap score (0-1) to surface
+    # one.  Non-blocking either way; the author decides.
+    "COMMENT_SIMILAR_RESULTS": ("FORUM_COMMENT_SIMILAR_RESULTS", 3, int),
+    "COMMENT_SIMILAR_THRESHOLD": ("FORUM_COMMENT_SIMILAR_THRESHOLD", 0.5, float),
     # Tag suggestions at write time (search.find_matching_tags): the soft
     # 'consider tagging' hint carried by the create_post / create_proposal /
     # supersede_proposal responses - active tags whose names/descriptions
