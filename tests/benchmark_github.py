@@ -117,9 +117,81 @@ def bench_live(pr_number: int) -> None:
           f"native {async_ms:.0f} ms ({sync_ms / max(async_ms, 0.001):.2f}x)")
 
 
+def _install_checks_delay_mock(delay: float):
+    """Red-PR fixture for the checks tier: empty check-runs (forces the
+    Actions tier), one failed run, two failed jobs, two 2KB logs. The
+    native win is the concurrent log tail."""
+    hits: list[str] = []
+
+    async def handler(request):
+        await asyncio.sleep(delay)
+        hits.append(request.url.path)
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": []})
+        if path.endswith("/actions/runs"):
+            return httpx.Response(200, json={"workflow_runs": [{
+                "id": 31, "name": "CI", "conclusion": "failure",
+                "html_url": "https://ci/run/31",
+            }]})
+        if path.endswith("/jobs"):
+            return httpx.Response(200, json={"jobs": [
+                {"id": 111, "name": "test", "conclusion": "failure"},
+                {"id": 112, "name": "lint", "conclusion": "failure"},
+            ]})
+        if "/logs" in path:
+            return httpx.Response(200, text="error: boom\n" * 80)
+        return httpx.Response(200, json={})
+
+    old = gh._client
+    gh._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.github.com",
+    )
+    return hits, old
+
+
+def bench_apr_checks() -> None:
+    """apr_checks on a red PR issues 5 requests (probe + runs + jobs +
+    two log downloads); the two log tails are the expensive calls and
+    overlap natively. Sequential ~= 5*delay, fan-out ~= 3*delay
+    (probe -> runs -> [jobs -> logs] waves)."""
+    hits, old = _install_checks_delay_mock(DELAY_S)
+    try:
+        seq_paths = [
+            "/repos/nssatlantis/agent_land/commits/deadsha/check-runs",
+            "/repos/nssatlantis/agent_land/actions/runs?head_sha=deadsha",
+            "/repos/nssatlantis/agent_land/actions/runs/31/jobs?per_page=100",
+            "/repos/nssatlantis/agent_land/actions/jobs/111/logs",
+            "/repos/nssatlantis/agent_land/actions/jobs/112/logs",
+        ]
+        t0 = time.perf_counter()
+        for p in seq_paths[:2]:
+            asyncio.run(gh._arequest("GET", p))
+        for p in seq_paths[2:]:
+            asyncio.run(gh._arequest_text("GET", p))
+        seq_ms = (time.perf_counter() - t0) * 1000
+
+        gh.clear_cache()
+        t1 = time.perf_counter()
+        result = asyncio.run(gh.apr_checks(9001, _head_sha="deadsha"))
+        fan_ms = (time.perf_counter() - t1) * 1000
+
+        assert result["source"] == "actions" and len(result["failures"]) >= 2
+        print("  apr_checks requests  : 5 (red path, 2 log tails)")
+        print(f"  sequential (naive)   : {seq_ms:7.1f} ms")
+        print(f"  fan-out (native)     : {fan_ms:7.1f} ms")
+        print(f"  latency saved        : {seq_ms - fan_ms:7.1f} ms  "
+              f"({seq_ms / max(fan_ms, 0.001):.2f}x)")
+    finally:
+        gh._client = old
+        gh.clear_cache()
+
+
 def main():
     print(f"benchmark_github: per-request delay {DELAY_S*1000:.0f} ms (MockTransport)")
     bench_fanout()
+    bench_apr_checks()
     if os.environ.get("BENCH_LIVE") == "1" and os.environ.get("GITHUB_TOKEN"):
         gh.clear_cache()
         try:
