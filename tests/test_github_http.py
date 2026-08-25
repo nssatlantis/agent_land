@@ -9,6 +9,7 @@ concurrent sync callers share the one client safely."""
 
 import asyncio
 import importlib.util
+import re
 import sys
 import threading
 import httpx
@@ -458,6 +459,10 @@ def main():
     test_pagination_cap_bounds_runaway_servers()
     test_request_text_follows_redirect_to_blob()
     test_supplement_enriches_thin_exit_code_annotations()
+    test_apr_checks_fans_out_job_logs()
+    test_apr_checks_cache_parity_with_sync()
+    test_apr_checks_falls_through_to_actions_tier()
+    test_apr_checks_head_sha_shortcut_skips_pr_fetch()
     print("test_github_http: all ok")
     return 0
 
@@ -626,6 +631,145 @@ def test_supplement_enriches_thin_exit_code_annotations():
         gh._client = old
         gh.clear_cache()
     print("  thin 'exit code' annotations get enriched from logs: ok")
+
+
+def _actions_tier_handler(hits, *, job_bodies=None, gate=None):
+    """Routes the Actions tier for one head sha. Two failed jobs (111
+    test / 112 lint); when *gate* is an (Event, order-list) pair,
+    /logs requests record start/end around a both-started barrier so a
+    sequential caller deadlocks instead of passing."""
+    job_bodies = job_bodies or {}
+
+    async def handler(request):
+        url = str(request.url)
+        path, _, query = url.partition("?")
+        hits.append(url)
+        if path.endswith("/pulls/4244") or path.endswith("/pulls/4245"):
+            return httpx.Response(200, json={
+                "number": 4244, "head": {"sha": "deadsha", "ref": "b"},
+                "base": {"ref": "main"},
+            })
+        if path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": []})
+        if path.endswith("/actions/runs") and "head_sha=" in query:
+            return httpx.Response(200, json={"workflow_runs": [{
+                "id": 31, "name": "CI", "conclusion": "failure",
+                "html_url": "https://ci/run/31",
+            }]})
+        if path.endswith("/jobs"):
+            return httpx.Response(200, json={"jobs": [
+                {"id": 111, "name": "test", "conclusion": "failure"},
+                {"id": 112, "name": "lint", "conclusion": "failure"},
+            ]})
+        m = re.search(r"/actions/jobs/(\d+)/logs$", path)
+        if m:
+            jid = m.group(1)
+            body = job_bodies.get(jid, f"error: boom-{jid}\n")
+            if gate is not None:
+                ev, order = gate
+                order.append(("start", jid))
+                if len([e for e in order if e[0] == "start"]) >= 2:
+                    ev.set()
+                await asyncio.wait_for(ev.wait(), 2)
+                order.append(("end", jid))
+            return httpx.Response(200, text=body)
+        return httpx.Response(200, json={})
+
+    return handler
+
+
+def test_apr_checks_fans_out_job_logs():
+    """The expensive tail - failed jobs' log downloads - must overlap:
+    both requests start before either completes. A sequential chain
+    deadlocks on the gate and times out."""
+    hits: list = []
+    order: list = []
+    gate = asyncio.Event()
+    handler = _actions_tier_handler(
+        hits,
+        job_bodies={"111": "error: boom-111\n", "112": "error: boom-112\n"},
+        gate=(gate, order),
+    )
+    old = _install_mock(handler)
+    try:
+        result = asyncio.run(gh.apr_checks(4244, _head_sha="deadsha"))
+        assert result["source"] == "actions", result["source"]
+        assert result["state"] == "failure"
+        names = [f["name"] for f in result["failures"]]
+        assert sorted(names) == ["CI / lint", "CI / test"], names
+        msgs = {f["name"]: f["message"] for f in result["failures"]}
+        assert msgs["CI / test"] == "error: boom-111"
+        assert msgs["CI / lint"] == "error: boom-112"
+        # Overlap proof: the second log request STARTED before the first
+        # ENDED (a sequential implementation times out on the gate).
+        starts = [i for i, ev in enumerate(order) if ev[0] == "start"]
+        ends = [i for i, ev in enumerate(order) if ev[0] == "end"]
+        assert max(starts) < min(ends), order
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  apr_checks fans job logs out concurrently: ok")
+
+
+def test_apr_checks_cache_parity_with_sync():
+    hits: list = []
+    handler = _actions_tier_handler(
+        hits, job_bodies={"111": "error: x\n", "112": "error: y\n"}
+    )
+    old = _install_mock(handler)
+    try:
+        native = asyncio.run(gh.apr_checks(4244, _head_sha="deadsha"))
+        n_hits = len(hits)
+        sync_face = gh.pr_checks(4244, _head_sha="deadsha")
+        assert sync_face == native, "sync/native shapes diverged"
+        assert len(hits) == n_hits, "sync face must read the shared cache"
+        # Reverse direction on a second number: sync warms, native reads.
+        native2 = asyncio.run(gh.apr_checks(4245, _head_sha="deadsha"))
+        _ = gh.pr_checks(4245, _head_sha="deadsha")
+        # Per red read on the actions tier: check-runs probe + runs list
+        # + jobs list + two log downloads = 5 transport calls.
+        assert len(hits) == n_hits + 5, (n_hits, len(hits))
+        assert native2 == gh.pr_checks(4245, _head_sha="deadsha")
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  apr_checks shares the pr_checks cache byte-for-byte: ok")
+
+
+def test_apr_checks_falls_through_to_actions_tier():
+    hits: list = []
+    handler = _actions_tier_handler(hits)
+
+    def failing(request):
+        url = str(request.url)
+        path, _, query = url.partition("?")
+        hits.append(url)
+        if path.endswith("/check-runs"):
+            return httpx.Response(404, json={"message": "no check runs"})
+        return handler(request)
+
+    old = _install_mock(failing)
+    try:
+        result = asyncio.run(gh.apr_checks(4244, _head_sha="deadsha"))
+        assert result["source"] == "actions", result["source"]
+        assert any("check-runs" in u for u in hits), hits
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  check-run failures fall through to the actions tier: ok")
+
+
+def test_apr_checks_head_sha_shortcut_skips_pr_fetch():
+    hits: list = []
+    handler = _actions_tier_handler(hits)
+    old = _install_mock(handler)
+    try:
+        asyncio.run(gh.apr_checks(4244, _head_sha="deadsha"))
+        assert not any("/pulls/" in u for u in hits), hits
+    finally:
+        gh._client = old
+        gh.clear_cache()
+    print("  _head_sha shortcut skips the PR fetch: ok")
 
 
 if __name__ == "__main__":
