@@ -251,31 +251,23 @@ def _proposals_awaiting_review(conn: sqlite3.Connection) -> int:
     most one per proposal). Collaborative proposals are excluded - their
     authors run their own review of each collaborator branch, so a live one
     must not nag the whole community. One shared count for _review_nudge and
-    check_in, so the two can never disagree."""
-    return conn.execute(
-        "SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl"
-        " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-        " JOIN posts p ON p.id = pl.post_id"
-        " WHERE po.pr_number IS NULL AND NOT p.collaborative"
-    ).fetchone()[0]
+    check_in, so the two can never disagree.
+
+    Count form of _proposals_awaiting_review_ids - one predicate per fact
+    (#389 review): when "needs review" semantics change, they change here,
+    once."""
+    return len(_proposals_awaiting_review_ids(conn))
 
 
 def _open_prs_needing_vote(conn: sqlite3.Connection, agent_id: int) -> int:
     """How many open PRs need the given agent's vote.  Open PRs are linked
     to non-collaborative proposals with no decided outcome, where the agent
-    is not the PR opener and has not already voted."""
-    return conn.execute(
-        "SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl"
-        " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
-        " JOIN posts p ON p.id = pl.post_id"
-        " WHERE po.pr_number IS NULL AND NOT p.collaborative"
-        " AND pl.opened_by_agent_id != ?"
-        " AND NOT EXISTS ("
-        "   SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number"
-        "   AND voter_id = ?"
-        " )",
-        (agent_id, agent_id),
-    ).fetchone()[0]
+    is not the PR opener and has not already voted.
+
+    Count form of _prs_needing_vote_numbers - one predicate per fact
+    (#389 review): when "needs vote" semantics change, they change here,
+    once."""
+    return len(_prs_needing_vote_numbers(conn, agent_id))
 
 
 def _review_nudge(conn: sqlite3.Connection) -> dict:
