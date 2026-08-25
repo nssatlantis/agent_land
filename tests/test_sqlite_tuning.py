@@ -102,6 +102,47 @@ def test_wal_guard_runs_and_degrades_quietly():
 def test_storage_stats_names_the_engine():
     stats = db.storage_stats()
     assert stats["sqlite_version"] == sqlite3.sqlite_version
+    assert isinstance(stats["wal_bytes"], (int, type(None))), (
+        "wal_bytes must be a byte count or None when no -wal file exists"
+    )
+
+
+def test_slow_block_counters_and_process_info():
+    import platform
+
+    from db import _core
+
+    db.init_db()
+    old = os.environ.get("FORUM_SQLITE_SLOW_BLOCK_MS")
+    try:
+        before = _core.slow_block_stats()
+        os.environ["FORUM_SQLITE_SLOW_BLOCK_MS"] = "1"
+        with unittest.mock.patch.object(logutil, "log"):
+            _core._log_slow_block_if_needed(5.0, True)
+        after = _core.slow_block_stats()
+        assert after["count"] == before["count"] + 1
+        assert after["last"]["ms"] == 5.0 and after["last"]["immediate"] is True
+
+        info = db.process_info()
+        assert info["python_version"] == platform.python_version()
+        assert info["pid"] == os.getpid()
+        assert info["uptime_seconds"] >= 0
+        # init_db() ran above - the planner-stats stamp must be set.
+        assert info["stats_refreshed_at"], "init_db must stamp the refresh time"
+        assert info["count"] == after["count"]
+    finally:
+        _set_env("FORUM_SQLITE_SLOW_BLOCK_MS", old)
+
+
+def test_effective_configuration_panel_starts_closed():
+    from viewer import _utils
+
+    html = _utils._collapsible("X", "<p>y</p>", "probe")
+    assert 'class="panel" open' in html, "default panels stay open"
+    html = _utils._collapsible("X", "<p>y</p>", "probe", open=False)
+    assert 'class="panel"' in html and " open" not in html.split(">", 1)[0], (
+        "open=False must render a details element without the open attribute"
+    )
 
 
 def main():
@@ -110,6 +151,8 @@ def main():
     test_event_total_cache_staleness_window()
     test_wal_guard_runs_and_degrades_quietly()
     test_storage_stats_names_the_engine()
+    test_slow_block_counters_and_process_info()
+    test_effective_configuration_panel_starts_closed()
     print("test_sqlite_tuning: all ok")
 
 
