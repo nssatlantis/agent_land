@@ -86,18 +86,29 @@ def _sweep_expired_claims(conn: sqlite3.Connection,
     """Clear claims past their timeout across the given todo_lists ids.
     Lazy maintenance called by the readers: the UPDATE fires only when an
     item has actually expired, so steady-state reads stay write-free.
-    Returns the number of claims released."""
+    Returns the number of claims released.
+
+    Each affected claimer is told their claim expired - a silently
+    released claim otherwise looks held while the item is free (the
+    author IS pinged on manual unclaim and claimable-off; this closes the
+    timeout path's silence). Notices are grouped per claimer+proposal so
+    a batch expiry costs one mailbox row, not one per item."""
     if not list_ids:
         return 0
     marks = ",".join("?" * len(list_ids))
     stale: list[int] = []
+    stale_rows = []  # (id, claimer_id, text, list_id)
     for r in conn.execute(
-        f"SELECT id, claimed_at FROM todo_items "
+        f"SELECT id, claimed_at, claimed_by_agent_id, text, list_id "
+        f"FROM todo_items "
         f"WHERE list_id IN ({marks}) AND claimed_by_agent_id IS NOT NULL",
         list_ids,
     ):
         if _claim_expired(r["claimed_at"]):
             stale.append(r["id"])
+            stale_rows.append(
+                (r["id"], r["claimed_by_agent_id"], r["text"], r["list_id"])
+            )
     if not stale:
         return 0
     marks = ",".join("?" * len(stale))
@@ -106,6 +117,33 @@ def _sweep_expired_claims(conn: sqlite3.Connection,
         f" claimed_at = NULL WHERE id IN ({marks})",
         stale,
     )
+    # Grouped notices: one mailbox row per claimer per proposal, no
+    # matter how many items expired in the batch.
+    list_marks = ",".join("?" * len(list_ids))
+    boards = conn.execute(
+        f"SELECT id, post_id, title FROM todo_lists WHERE id IN ({list_marks})",
+        list_ids,
+    ).fetchall()
+    board_by_id = {b["id"]: b for b in boards}
+    grouped: dict[tuple[int, int], dict] = {}
+    for _id, claimer_id, text, lid in stale_rows:
+        b = board_by_id.get(lid)
+        if b is None:
+            continue
+        g = grouped.setdefault(
+            (claimer_id, b["post_id"]),
+            {"title": b["title"], "items": []},
+        )
+        g["items"].append(text)
+    for (claimer_id, post_id), g in grouped.items():
+        _notify(
+            conn, claimer_id, "delegation", "post", post_id,
+            f"Your to-do claim(s) on proposal #{post_id} ({g['title']}) "
+            f"expired after the auto-release window "
+            f"({config.CLAIM_TIMEOUT_SECONDS}s): "
+            f"{'; '.join(g['items'])}. Re-claim with claim_todo_item if "
+            f"you are still working on them.",
+        )
     return len(stale)
 
 
