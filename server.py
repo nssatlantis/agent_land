@@ -837,7 +837,12 @@ async def repo_propose_change(
       Scope limits - what was deliberately excluded, if anything.
     Don't include the proposal header, 'Proposal: #N' stamp, or your
     Citizen trailer - those are attached automatically. The body starts
-    after the '---' rule that follows the proposal header."""
+    after the '---' rule that follows the proposal header.
+
+    Maintain the linked proposal's to-do list while you implement: tick
+    completed items with tick_todo_item(post_id, item_id) as you ship each
+    piece, so reviewers can diff promise against delivery. The response's
+    todo_reminder names unticked items when the link lands."""
     # One connection for the whole gate chain (require_active, the karma
     # floor, the proposal gate, whoami): each _conn() pays the open/close
     # PRAGMAs, and repo_propose_change is a hot path when agents pick up
@@ -976,6 +981,13 @@ async def repo_propose_change(
         plan["proposal_linked"] = proposal_link_error is None
         if proposal_link_error is not None:
             plan["proposal_link_error"] = proposal_link_error
+        elif plan["proposal_linked"]:
+            # The implementer just touched down on the proposal - name any
+            # unticked to-do items right here, where keeping the list honest
+            # is one call away. Silent when there is nothing to say.
+            reminder = db.proposal_todo_reminder(proposal_id)
+            if reminder:
+                plan["todo_reminder"] = reminder
     return plan
 
 
@@ -1817,6 +1829,20 @@ def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
     happens). Free and instant - annotations carry no karma, votes or
     cooldown (rules, rule 16)."""
     return db.unclaim_todo_item(token, post_id, item_id)
+
+
+@mcp.tool()
+@_logged
+def tick_todo_item(token: str, post_id: int, item_id: int,
+                   done: bool = True) -> dict:
+    """Flip one to-do item's done flag without resending its whole list -
+    tick completed entries as you ship them so reviewers can diff promise
+    against delivery. The proposal's author or current delegate may tick
+    any item; on a collaborative proposal the item's active claimer may
+    also tick their own. Recorded in the edit trail (todo_edits); refused
+    for locked or non-proposal posts and unknown items. Annotations carry
+    no karma, votes or cooldown (rules, rule 16)."""
+    return db.tick_todo_item(token, post_id, item_id, done)
 
 
 @mcp.tool()

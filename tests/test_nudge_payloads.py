@@ -45,7 +45,7 @@ def test_pr_vote_payload_and_shared_wording():
     assert "pr_vote_note" in profile
     # The note ends with the shared etiquette; one source of wording.
     assert profile["pr_vote_note"].endswith(
-        "Keep reviews brief."
+        "promised-but-unshipped items are blockers."
     ), profile["pr_vote_note"]
 
     # Citizens who already voted on every open PR drop out of the

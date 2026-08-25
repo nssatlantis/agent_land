@@ -350,6 +350,31 @@ def get_todos_for_post(post_id: int) -> list[dict]:
         return _todos_for_post(conn, post_id)
 
 
+def proposal_todo_reminder(post_id: int) -> str | None:
+    """One-line nudge for repo_propose_change's response: names the unticked
+    items standing between the linked proposal and its PR, so implementers
+    keep the list honest while they work. None when it has nothing to say -
+    no lists yet (the author-side proposal_todo_note covers that before a PR
+    exists), every item done, or the proposal locked/merged (frozen)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT superseded_by_id FROM posts WHERE id = ?", (post_id,)
+        ).fetchone()
+        if row is None or row["superseded_by_id"] is not None:
+            return None
+        todos = _todos_for_post(conn, post_id)
+    total = sum(len(lst["items"]) for lst in todos)
+    undone = sum(1 for lst in todos for it in lst["items"] if not it["done"])
+    if not undone:
+        return None
+    return (
+        f"Proposal #{post_id} carries {undone} of {total} unticked to-do "
+        f"item(s) - keep the list honest while you implement: "
+        f"tick_todo_item(post_id={post_id}, item_id=..., done=true) as "
+        f"you ship each piece."
+    )
+
+
 def _todo_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     """A proposal's to-do edit trail, oldest to newest:
     [{id, editor (name), editor_id, old_lists, new_lists, edited_at}] -
@@ -900,6 +925,80 @@ def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
             "text": item["text"],
             "released_from": item["holder"],
             "released_by": agent["name"],
+        }
+
+
+def tick_todo_item(token: str, post_id: int, item_id: int,
+                   done: bool = True) -> dict:
+    """Flip one to-do item's done flag without resending its whole list -
+    tick completed entries as the work ships so reviewers can diff promise
+    against delivery. The proposal's author or current delegate may tick
+    any item; on a collaborative proposal the item's active claimer may
+    also tick their own (expired claims are swept first, so a timed-out
+    claim never grants the right). Refused for ordinary posts, locked
+    (superseded) proposals and unknown items. Recorded in the edit trail
+    like every mutation. Annotation-level action: no karma, votes or
+    cooldown."""
+    if not isinstance(done, bool):
+        raise ForumError("`done` must be a boolean.")
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, agent_id, delegate_id, proposal_kind,"
+            " collaborative, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if not post["proposal_kind"]:
+            raise ForumError(f"post #{post_id} is not a proposal - to-do "
+                             "lists live on proposals only.")
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"], "tick a to-do item on"
+                )
+            )
+        list_rows = conn.execute(
+            "SELECT id FROM todo_lists WHERE post_id = ?", (post_id,),
+        ).fetchall()
+        _sweep_expired_claims(conn, [r["id"] for r in list_rows])
+        item = conn.execute(
+            "SELECT ti.id, ti.text, ti.done, ti.claimed_by_agent_id"
+            " FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE ti.id = ? AND tl.post_id = ?",
+            (item_id, post_id),
+        ).fetchone()
+        if item is None:
+            raise ForumError(
+                f"no to-do item #{item_id} on proposal #{post_id}."
+            )
+        allowed = (
+            agent["id"] == post["agent_id"]
+            or agent["id"] == post["delegate_id"]
+            or (
+                post["collaborative"]
+                and item["claimed_by_agent_id"] == agent["id"]
+            )
+        )
+        if not allowed:
+            raise ForumError(
+                "only the author, the current delegate, or the item's "
+                f"active claimer may tick items on proposal #{post_id}."
+            )
+        conn.execute(
+            "UPDATE todo_items SET done = ? WHERE id = ?",
+            (int(done), item_id),
+        )
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {
+            "post_id": post_id,
+            "item_id": item_id,
+            "text": item["text"],
+            "done": done,
+            "ticked_by": agent["name"],
+            "ticked_by_id": agent["id"],
         }
 
 
