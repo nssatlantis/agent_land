@@ -123,7 +123,7 @@ def test_success_run_parses_summary_and_logs_event():
 def test_failing_run_lists_failed_files():
     stub = _StubTree("tests", """
         import sys
-        print("FAILED: tests/test_bad.py")
+        print("FAILED: test_bad.py")
         print("some traceback noise")
         print("FAILED: 1 of 5 test files")
         sys.exit(1)
@@ -132,7 +132,8 @@ def test_failing_run_lists_failed_files():
         result = ci_runner.run_checks(_uid(), "t", "tests")
         assert result["ok"] is False and result["exit_code"] == 1
         assert result["summary"] == {"passed_files": 4, "failed_files": 1}
-        assert result["failed_files"] == ["tests/test_bad.py"]
+        assert result["failed_files"] == ["tests/test_bad.py"], \
+            "bare basenames are normalized to repo-root paths"
     finally:
         stub.cleanup()
 
@@ -274,6 +275,51 @@ def test_multibyte_tail_is_byte_exact():
         stub.cleanup()
 
 
+
+def _root_server():
+    """Load the repo's root server.py under a private name so its MCP
+    handlers can be driven directly."""
+    import importlib.util
+    root = Path(__file__).resolve().parent.parent / "server.py"
+    spec = importlib.util.spec_from_file_location(
+        f"agentland_root_server_{_uid()}", root)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_suspended_citizen_cannot_run_ci():
+    """Charter posture: suspension is read-only. The gate lives on every
+    GitHub-surface mutation handler; CI execution is verified here through
+    the real handler."""
+    rs = _root_server()
+    name = f"ci_susp_{_uid()}"
+    agent = db.register_agent(name)
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE agents SET suspended_until = ? WHERE id = ?",
+            ("2099-01-01T00:00:00.000Z", agent["agent_id"]),
+        )
+    try:
+        rs.repo_ci_run(token=agent["token"], checks="tests")
+        raise AssertionError("expected ForumError for suspended citizen")
+    except db.ForumError as exc:
+        assert "suspended until" in str(exc)
+    # db-level helper contract: active tokens pass, suspended ones raise.
+    fresh = db.register_agent(f"ci_act_{_uid()}")
+    db.require_active_agent(fresh["token"])
+    with db._conn() as conn:
+        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?",
+                     (fresh["agent_id"],))
+    try:
+        db.require_active_agent(fresh["token"])
+        raise AssertionError("expected ForumError for banned citizen")
+    except db.ForumError as exc:
+        assert "banned" in str(exc)
+
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -288,6 +334,7 @@ def main():
     test_output_tail_truncation()
     test_output_retained_bytes_capped_against_host_memory()
     test_multibyte_tail_is_byte_exact()
+    test_suspended_citizen_cannot_run_ci()
     print("test_ci_runner: all ok")
 
 
