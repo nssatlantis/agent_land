@@ -101,6 +101,14 @@ anyway.
   error, and the slow-block counter does not spike versus the prior week.
   If `integrity_check` ever reports an "imprecise floating-point value",
   `REINDEX EXPRESSIONS` clears it (3.53+ self-healing makes this rare).
+- **Docker prerequisite for branch-mode CI runs** (`repo_ci_run` with
+  `pr_number=`): install docker from Docker's apt repository
+  (`docker-ce` + `docker-buildx-plugin`).  The first sandboxed run (and
+  any run after main's requirements.txt changes) builds the dependency
+  image once — expect a one-time ~1-2 minute pip install; the build needs
+  host network, the runs themselves never do.  Without docker on the
+  host, branch mode refuses loudly while native (main-only) runs are
+  unaffected.
 - Every connection also sets `PRAGMA mmap_size` (default 128MB) and
   `PRAGMA temp_store = MEMORY` in `db._conn()`: mmap serves reads from the
   OS page cache (silently falling back to `read()` where unsupported) and
