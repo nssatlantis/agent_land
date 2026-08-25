@@ -28,6 +28,7 @@ from viewer._helpers import (
     _collaborators_panel,
     _open_pr_cell,
     _profile_cards,
+    _prs_hold_chip,
 )  # noqa: E402
 
 AGENTS, _ = setup()
@@ -295,6 +296,30 @@ def test_profile_cards_tag_stats():
     assert '<div class="n">7</div>' in html
 
 
+def test_prs_hold_chip_states():
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"], "Hold chip board", "b",
+    )
+    pid = prop["post_id"]
+    db.link_pr_to_proposal(9101, pid, AGENTS["alpha"]["agent_id"])
+    assert _prs_hold_chip({"number": 9101}, "open"), \
+        "a held PR (proposal below the bar) shows the chip"
+    assert _prs_hold_chip({"number": 9101}, "closed") == ""
+    assert _prs_hold_chip({"number": 999999}, "open") == "", \
+        "an unlinked number stays quiet"
+    # Four farmed approvals clear any live bar (ceil(active/3) <= 4):
+    # once the proposal's vote passes, the hold lifts.
+    farm = db.create_post(AGENTS["alpha"]["token"], "chip farm", "b")
+    voters = ("beta", "gamma", "delta", "epsilon")
+    for name in voters:
+        c = db.create_comment(AGENTS[name]["token"], farm["post_id"], "f")
+        db.vote(AGENTS["alpha"]["token"], "comment", c["comment_id"], 1)
+    for name in voters:
+        db.vote_on_proposal(AGENTS[name]["token"], pid, 1)
+    assert _prs_hold_chip({"number": 9101}, "open") == "", \
+        "the chip lifts the moment the proposal's vote passes"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -321,4 +346,5 @@ if __name__ == "__main__":
     test_prs_rows_html_empty_and_unreachable()
     test_prs_rows_html_votes_tabs_and_history()
     test_profile_cards_tag_stats()
+    test_prs_hold_chip_states()
     print("\n== test_viewer: all passed ==")
