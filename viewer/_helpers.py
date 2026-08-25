@@ -272,7 +272,7 @@ def _proposal_lock_banner(p: dict) -> str:
 
 def _stake_amount(amount, currency: str) -> str:
     """Format a stake amount in its own currency: karma points as-is,
-    credit halves as whole/half decimals."""
+    credit quarters as whole/half/quarter decimals."""
     if currency == "credits":
         from db._credits import format_credits
 

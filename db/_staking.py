@@ -11,8 +11,8 @@ payouts/refunds are grants - entries are never mutated or deleted, so a
 refund is a compensating entry rather than a reversal.
 
 Amounts are stored in the currency's natural integer unit: karma points,
-or HALF-CREDITS for credit stakes (see db._credits - whole-or-half values
-only).  Every response and event names its currency so consumers never
+or QUARTER-CREDITS for credit stakes (see db._credits - whole/half/
+quarter values only).  Every response and event names its currency so consumers never
 guess.
 """
 
@@ -78,8 +78,8 @@ def stake(
 ) -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
     PRs (total exposure = per_pr × max_prs), denominated in *currency* -
-    "karma" (integer points) or "credits" (whole/half values, stored as
-    halves). The chosen balance is checked at creation time against the
+    "karma" (integer points) or "credits" (whole/half/quarter values, stored as
+    quarter-credits). The chosen balance is checked at creation time against the
     per-currency exposure cap; the actual deduction happens when a PR is
     opened (lock_stakes_for_pr). On merge, the lock pays out to the PR
     opener in the staked denomination (true transfer); on decline/close it
@@ -96,12 +96,13 @@ def stake(
             raise ForumError("karma stakes must be whole numbers.")
         per_pr = int(per_pr)
     if currency == "credits":
-        # Intake boundary: snap to whole/half values (nearest, ties up).
-        from db._credits import to_halves
+        # Intake boundary: snap to whole/half/quarter values (nearest,
+        # ties up).
+        from db._credits import to_quarters
 
-        per_pr = int(to_halves(per_pr))
+        per_pr = int(to_quarters(per_pr))
         if per_pr < 1:
-            raise ForumError("per_pr must be at least 0.5 credits.")
+            raise ForumError("per_pr must be at least 0.25 credits.")
     else:
         per_pr = int(per_pr)
     with _conn(immediate=True) as conn:
@@ -188,7 +189,7 @@ def stake(
         from db._credits import format_credits
 
         out["per_pr_credits"] = format_credits(per_pr)
-        out["new_balance_halves"] = new_balance
+        out["new_balance_quarters"] = new_balance
         out["new_balance_credits"] = format_credits(new_balance)
     else:
         out["new_effective_karma"] = new_balance
@@ -207,11 +208,11 @@ def admin_stake(
     if max_prs < 1:
         raise ForumError("max_prs must be at least 1.")
     if currency == "credits":
-        from db._credits import to_halves
+        from db._credits import to_quarters
 
-        per_pr = to_halves(per_pr)
+        per_pr = to_quarters(per_pr)
         if per_pr < 1:
-            raise ForumError("per_pr must be at least 0.5 credits.")
+            raise ForumError("per_pr must be at least 0.25 credits.")
     else:
         per_pr = int(per_pr)
     with _conn(immediate=True) as conn:
@@ -353,7 +354,7 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
     if currency == "credits":
         from db._credits import format_credits
 
-        out["new_balance_halves"] = new_balance
+        out["new_balance_quarters"] = new_balance
         out["new_balance_credits"] = (
             format_credits(new_balance) if new_balance is not None else None
         )
@@ -832,7 +833,7 @@ def refund_proposal_stakes(
 
 def list_proposal_stakes(conn: sqlite3.Connection, proposal_id: int) -> list[dict]:
     """Return all stakes for a proposal, newest first. For display in
-    get_posts and list_proposals. Credit-denominated amounts are halves;
+    get_posts and list_proposals. Credit-denominated amounts are quarters;
     every row carries its currency."""
     rows = conn.execute(
         "SELECT b.id, b.staker_agent_id, a.name AS staker_name,"

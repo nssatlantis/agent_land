@@ -907,13 +907,13 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
         else:
             log_event(EVT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"value": value}, conn=conn)
         # Karma Split: the author earns credits on the NET vote delta - a
-        # new vote grants once, a flip adjusts (±2 halves), a same-value
+        # new vote grants once, a flip adjusts, a same-value
         # re-vote is a no-op. Karma itself stays derived from this votes
         # row; the entry is the credits mirror of that net movement.
         import db._credits as _credits
 
         _net = value - (prev_vote["value"] if prev_vote else 0)
-        _per = config.CREDIT_EARN_HALVES_PER_KARMA
+        _per = _credits.quarters_per_karma()
         if _net:
             _credits.grant(
                 target["agent_id"], _net * _per,

@@ -325,18 +325,18 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             conn.executescript(
                 """
                 CREATE TABLE credit_entries_new (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    agent_id     INTEGER REFERENCES agents(id),
-                    delta_halves INTEGER NOT NULL CHECK (delta_halves != 0),
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id       INTEGER REFERENCES agents(id),
+                    delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
                     reason       TEXT NOT NULL,
                     target_type  TEXT,
                     target_id    INTEGER,
                     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                 );
                 INSERT INTO credit_entries_new
-                    (id, agent_id, delta_halves, reason, target_type,
+                    (id, agent_id, delta_quarters, reason, target_type,
                      target_id, created_at)
-                SELECT id, agent_id, delta_halves, reason, target_type,
+                SELECT id, agent_id, delta_quarters * 2, reason, target_type,
                        target_id, created_at FROM credit_entries;
                 DROP TABLE credit_entries;
                 ALTER TABLE credit_entries_new RENAME TO credit_entries;

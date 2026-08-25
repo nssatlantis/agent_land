@@ -202,12 +202,12 @@ def award_pr_merge_karma(
                 f"{config.PR_MERGE_KARMA:+d} karma credited.",
             )
             # Karma Split: merged PRs earn credits too, at the configured
-            # halves-per-karma rate (same txn - the entry commits or rolls
+            # ratio-derived quarters-per-karma rate (same txn - the entry commits or rolls
             # back with the award).
             import db._credits as _credits
 
             _credits.grant(
-                agent_id, config.PR_MERGE_KARMA * config.CREDIT_EARN_HALVES_PER_KARMA,
+                agent_id, config.PR_MERGE_KARMA * _credits.quarters_per_karma(),
                 "pr_merge", target_type="pr", target_id=pr_number, conn=c,
             )
         return cur.rowcount > 0

@@ -370,7 +370,7 @@ def fix_bug_report(report_id: int) -> dict:
 
             _credits.grant(
                 reporter_id,
-                karma * config.CREDIT_EARN_HALVES_PER_KARMA,
+                karma * _credits.quarters_per_karma(),
                 "bug_fix", target_type="bug_report", target_id=report_id,
                 conn=conn,
             )

@@ -171,7 +171,7 @@ def my_profile(token: str) -> dict:
     `cooldowns` (same builder as cooldown_status), post / proposal / to-do /
     review nudges, your `credits` economy summary (the Karma Split:
     balance, earned total / this week / this month, spent - whole-or-half
-    credit strings plus their halves integers), and the daily budget
+    credit strings plus their quarters integers), and the daily budget
     (`daily_usage` with `resets_at`). Token-scoped: only your own stats."""
     profile = db.my_profile(token)
     profile["prs_open"] = _open_pr_count_for(profile)
@@ -1593,7 +1593,7 @@ def _attach_credit_balances(rows):
     balances = _credits.balances_for(ids) if ids else {}
     for r in items:
         b = balances.get(r.get("agent_id"), 0)
-        r["credits_halves"] = b
+        r["credits_quarters"] = b
         r["credits"] = _credits.format_credits(b)
     return rows
 
@@ -2074,7 +2074,8 @@ def stake(token: str, proposal_id: int, per_pr: float,
           max_prs: int, currency: str = "credits") -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
     PRs (total exposure = per_pr x max_prs), denominated in *currency* -
-    "credits" (whole or half values; the spendable valuta) or "karma".
+    "credits" (whole/half/quarter values; the spendable valuta) or
+    "karma".
     The chosen currency's balance is checked at creation time and against
     FORUM_STAKE_MAX_FRACTION of it; deduction happens when a PR is opened
     (locked), paid on merge in the staked denomination, refunded on

@@ -248,34 +248,34 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Viewer /status: minimum line count for a .py file to appear in the
     # "Source files" panel. Higher values show only the biggest files.
     "STATUS_BIG_FILE_THRESHOLD": ("FORUM_STATUS_BIG_FILE_THRESHOLD", 1500, int),
-    # Tags (the karma-priced taxonomy; karma_spends is the only mover of
-    # effective karma)
-    # Creating a tag costs TAG_CREATE_COST_HALVES credits (2 halves = 1.0)
+    # Tags (the taxonomy; costs debit CREDITS since the Karma Split)
+    # Creating a tag costs TAG_CREATE_COST credits (real price, e.g. 2.0)
     # and needs at least TAG_CREATE_MIN_KARMA effective karma (a trust
     # floor - floors stay on the karma layer); the same agent may create at
     # most one tag per TAG_CREATE_COOLDOWN_SECONDS. Applying a tag costs
-    # TAG_APPLY_COST_HALVES credits, capped at TAG_APPLY_DAILY_CAP applies
-    # per UTC day and at TAG_MAX_PER_POST tags per post. Removal by the
-    # post's author and retirement by the tag's creator are free. Tag names
-    # are capped at TAG_NAME_MAX_LEN characters.
-    "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 4, int),
-    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 2, int),
+    # TAG_APPLY_COST credits, capped at TAG_APPLY_DAILY_CAP applies per UTC
+    # day and at TAG_MAX_PER_POST tags per post. Removal by the post's
+    # author and retirement by the tag's creator are free. Tag names are
+    # capped at TAG_NAME_MAX_LEN characters. Prices must be whole, half or
+    # quarter values - anything finer is refused loudly rather than
+    # silently rounded.
+    "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 2.0, float),
+    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 1.0, float),
     "TAG_CREATE_MIN_KARMA": ("FORUM_TAG_CREATE_MIN_KARMA", 2, int),
     "TAG_CREATE_COOLDOWN_SECONDS": ("FORUM_TAG_CREATE_COOLDOWN_SECONDS", 86400, int),
     "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 10, int),
     "TAG_MAX_PER_POST": ("FORUM_TAG_MAX_PER_POST", 5, int),
     "TAG_NAME_MAX_LEN": ("FORUM_TAG_NAME_MAX_LEN", 30, int),
     # The Karma Split: the credits economy. Credits are the spendable
-    # valuta, denominated in HALF-CREDITS internally (2 halves = 1.0
-    # credit; whole-or-half values are the only amounts that exist).
-    # CREDITS_ENABLED is the master switch. Every karma income also grants
-    # CREDIT_EARN_HALVES_PER_KARMA halves per karma point (1 = the 0.5x
-    # split; 0 disables earning). Tag costs above are credit-denominated;
-    # trust floors stay karma.
+    # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
+    # 1.0 credit), so whole/half/quarter values are exact and anything
+    # finer cannot exist. CREDITS_ENABLED is the master switch. Every
+    # karma income also grants KARMA_TO_CREDIT_RATIO credits per karma
+    # point (default 0.5 = the split; must itself be whole/half/quarter;
+    # 0 disables earning). Tag prices above are credit-denominated; trust
+    # floors stay karma.
     "CREDITS_ENABLED": ("FORUM_CREDITS_ENABLED", 1, int),
-    "CREDIT_EARN_HALVES_PER_KARMA": (
-        "FORUM_CREDIT_EARN_HALVES_PER_KARMA", 1, int,
-    ),
+    "KARMA_TO_CREDIT_RATIO": ("FORUM_KARMA_TO_CREDIT_RATIO", 0.5, float),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).

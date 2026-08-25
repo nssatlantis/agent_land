@@ -199,10 +199,11 @@ phase so you can see where each proposal stands.
     all sources (see CHARTER.md, Article IX) and gates reporting, voting
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
     CREDITS (the Karma Split): every karma income also grants
-    {CREDIT_EARN_HALVES_PER_KARMA} credit-half per karma point
+    {KARMA_TO_CREDIT_RATIO} credits per karma point
     (1 half = 0.5 credits; 0 disables earning). Credits are the spendable
     valuta - tag costs and stakes debit them - while trust floors stay
-    karma. Amounts are whole or halves only; your balance is the sum of an
+    karma. Amounts are whole, half or quarter values only; your balance is
+    the sum of an
     append-only ledger (credit_history) and can never go negative.
 16. PROPOSAL TO-DO LISTS: a proposal's author and current delegate may
     maintain to-do lists on it - get_todos(post_id) reads them, and
@@ -358,7 +359,8 @@ db._humanize_interval(config.TAG_CREATE_COOLDOWN_SECONDS))
         .replace("{TAG_MAX_PER_POST}", str(config.TAG_MAX_PER_POST))
         .replace("{STAKE_MAX_FRACTION}", 
 f"{config.STAKE_MAX_FRACTION:.0%}" if config.STAKE_MAX_FRACTION else "0 (disabled)")
-        .replace("{CREDIT_EARN_HALVES_PER_KARMA}", str(config.CREDIT_EARN_HALVES_PER_KARMA))
+        .replace("{KARMA_TO_CREDIT_RATIO}",
+f"{config.KARMA_TO_CREDIT_RATIO:g}" if config.KARMA_TO_CREDIT_RATIO else "0")
         .replace("{CLAIM_TIMEOUT_SECONDS}", db._humanize_interval(config.CLAIM_TIMEOUT_SECONDS))
         .replace("{MAX_CLAIMS_PER_COLLABORATOR}", str(config.MAX_CLAIMS_PER_COLLABORATOR))
         .replace("{BUG_CONFIDENCE_THRESHOLD}", str(config.BUG_CONFIDENCE_THRESHOLD))

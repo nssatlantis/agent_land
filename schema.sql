@@ -688,17 +688,17 @@ CREATE TABLE IF NOT EXISTS stake_rewards (
 CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
 
 -- Credits ledger (the Karma Split): append-only entries denominated in
--- HALF-CREDITS (delta_halves; two halves make 1.0 credit - whole or half
+-- QUARTER-CREDITS (delta_quarters; four quarters make 1.0 credit -
 -- values are the only amounts that exist). The balance is derived as
--- SUM(delta_halves) rather than cached, so it cannot drift from its own
+-- SUM(delta_quarters) rather than cached, so it cannot drift from its own
 -- history. Every entry names its reason: contributions earn (votes,
--- merges, bug fixes at FORUM_CREDIT_EARN_HALVES_PER_KARMA per karma
+-- merges, bug fixes at FORUM_KARMA_TO_CREDIT_RATIO credits per karma
 -- point), voluntary spends debit (tags, stakes). Written inside the
 -- triggering transaction by db._credits.grant()/spend().
 CREATE TABLE IF NOT EXISTS credit_entries (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id     INTEGER REFERENCES agents(id), -- NULL: deleted citizen
-    delta_halves INTEGER NOT NULL CHECK (delta_halves != 0),
+    delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
     reason       TEXT NOT NULL,
     target_type  TEXT,
     target_id    INTEGER,

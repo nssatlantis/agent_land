@@ -564,12 +564,12 @@ def credits_page(request: Request) -> HTMLResponse:
     def _fmt_amount(entry: dict) -> str:
         import db._credits as _cr
 
-        return _cr.format_credits(abs(entry["delta_halves"]))
+        return _cr.format_credits(abs(entry["delta_quarters"]))
 
     summary = ledger["summary"]
     rows = []
     for e in ledger["entries"]:
-        sign = "+" if e["delta_halves"] > 0 else "\u2212"
+        sign = "+" if e["delta_quarters"] > 0 else "\u2212"
         target = ""
         if e["target_type"] and e["target_id"]:
             link = "/posts/{}".format(e["target_id"]) \
@@ -601,20 +601,20 @@ def credits_page(request: Request) -> HTMLResponse:
         'Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr '
         '&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr '
         '&middot; spent total <b>{}</b> cr</p>'.format(
-            esc(_halves_to_str(summary["balance_halves"])),
-            esc(_halves_to_str(summary["earned_total_halves"])),
-            esc(_halves_to_str(summary["earned_this_week_halves"])),
-            esc(_halves_to_str(summary["earned_this_month_halves"])),
-            esc(_halves_to_str(summary["spent_total_halves"])))
+            esc(_quarters_to_str(summary["balance_quarters"])),
+            esc(_quarters_to_str(summary["earned_total_quarters"])),
+            esc(_quarters_to_str(summary["earned_this_week_quarters"])),
+            esc(_quarters_to_str(summary["earned_this_month_quarters"])),
+            esc(_quarters_to_str(summary["spent_total_quarters"])))
         + table + "</div>"
     )
     return _page("credits", _with_rail(body), section="staking")
 
 
-def _halves_to_str(halves: int) -> str:
+def _quarters_to_str(quarters: int) -> str:
     import db._credits as _cr
 
-    return _cr.format_credits(halves)
+    return _cr.format_credits(quarters)
 
 
 def _agent_exists(agent_id: int) -> bool:

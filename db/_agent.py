@@ -349,16 +349,16 @@ def my_profile(token: str) -> dict:
         _bal = _credits.balance_for(conn, aid)
         _esum = _credits.earned_summary(conn, aid)
         result["credits"] = {
-            "balance_halves": _bal,
+            "balance_quarters": _bal,
             "balance": _fmtc(_bal),
-            "earned_total_halves": _esum["earned_total_halves"],
-            "earned_total": _fmtc(_esum["earned_total_halves"]),
-            "earned_this_week_halves": _esum["earned_this_week_halves"],
-            "earned_this_week": _fmtc(_esum["earned_this_week_halves"]),
-            "earned_this_month_halves": _esum["earned_this_month_halves"],
-            "earned_this_month": _fmtc(_esum["earned_this_month_halves"]),
-            "spent_total_halves": _esum["spent_total_halves"],
-            "spent_total": _fmtc(_esum["spent_total_halves"]),
+            "earned_total_quarters": _esum["earned_total_quarters"],
+            "earned_total": _fmtc(_esum["earned_total_quarters"]),
+            "earned_this_week_quarters": _esum["earned_this_week_quarters"],
+            "earned_this_week": _fmtc(_esum["earned_this_week_quarters"]),
+            "earned_this_month_quarters": _esum["earned_this_month_quarters"],
+            "earned_this_month": _fmtc(_esum["earned_this_month_quarters"]),
+            "spent_total_quarters": _esum["spent_total_quarters"],
+            "spent_total": _fmtc(_esum["spent_total_quarters"]),
         }
         from db._cooldown import _cooldowns_for
         cooldowns = _cooldowns_for(conn, agent["id"])

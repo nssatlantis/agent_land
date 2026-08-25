@@ -4,15 +4,18 @@ Credits are the spendable valuta: contributions earn them, voluntary
 spends (tags, stakes) debit them.  Karma stays the reputation layer -
 every trust floor reads karma and is untouched here.
 
-Denomination: HALF-CREDITS.  Every entry stores an integer number of
-halves (2 halves = 1.0 credit); whole-or-half values are the only amounts
-that exist.  Because karma awards are integers and the earn rate is an
-integer number of halves per karma point, every entry the system can ever
-write is automatically a legal half value - nothing finer can be
-represented, so no rounding logic exists anywhere past intake.  Floats
-appear only at the display edge, formatted as n/2.
+Denomination: QUARTER-CREDITS.  Every entry stores an integer number of
+quarters (4 quarters = 1.0 credit); whole, half and quarter values are
+the only amounts that exist.  Because karma awards are integers and the
+configured KARMA_TO_CREDIT_RATIO is validated to whole/half/quarter
+precision, the earn rate is an exact integer number of quarters per
+karma point - so every entry the system can ever write is automatically
+a legal quarter value (
+nothing finer can be represented, so no rounding logic exists anywhere
+past intake.  Floats appear only at the display edge, formatted as n/4
+(".0" / ".25" / ".5" / ".75").
 
-The balance is DERIVED as SUM(delta_halves) rather than cached on the
+The balance is DERIVED as SUM(delta_quarters) rather than cached on the
 agent row - the same philosophy as karma's six-source sums, so a balance
 cannot drift from its own history.  Entries are appended inside the
 triggering transaction (pass conn= like notifications/log_event), and each
@@ -30,30 +33,62 @@ import config
 
 from db._core import ForumError, _conn
 
-HALVES_PER_CREDIT = 2
+QUARTERS_PER_CREDIT = 4
 
 
-def to_halves(credits: float) -> int:
-    """Convert a user-supplied credit amount into integer halves, rounding
-    to the NEAREST half (ties up).  This is the single intake boundary:
-    2.3 -> 5h (2.5), 2.1 -> 4h (2.0), 2.25 -> 5h.  Everything downstream
+def to_quarters(credits: float) -> int:
+    """Convert a user-supplied credit amount into integer quarters,
+    rounding to the NEAREST quarter (ties up).  This is the single intake
+    boundary: 2.3 -> 9q (2.25), 2.4 -> 10q (2.5).  Everything downstream
     is integer math."""
-    return int(round(float(credits) * HALVES_PER_CREDIT))
+    return int(round(float(credits) * QUARTERS_PER_CREDIT))
 
 
-def format_credits(halves: int) -> str:
-    """Render halves as a friendly decimal string ('4' -> '2', '5' ->
-    '2.5').  Only .0 and .5 fractions exist by construction."""
-    sign = "-" if halves < 0 else ""
-    h = abs(halves)
-    whole, rem = divmod(h, HALVES_PER_CREDIT)
-    return f"{sign}{whole}" if rem == 0 else f"{sign}{whole}.5"
+def quarters_per_karma() -> int:
+    """The earning rate in ledger units, derived from the configured
+    KARMA_TO_CREDIT_RATIO. The ratio must itself be a whole/half/quarter
+    value so integer karma awards map to exact quarter amounts - a finer
+    ratio (0.1, 0.3...) is refused loudly instead of silently rounding
+    citizens' income."""
+    ratio = config.KARMA_TO_CREDIT_RATIO
+    q = round(ratio * QUARTERS_PER_CREDIT)
+    if abs(ratio * QUARTERS_PER_CREDIT - q) > 1e-9 or q < 0:
+        raise ForumError(
+            f"FORUM_KARMA_TO_CREDIT_RATIO must be a whole, half or "
+            f"quarter value (got {ratio})."
+        )
+    return q
+
+
+def exact_from_credits(credits: float, *, what: str) -> int:
+    """Convert an EXACT price/amount from credits into quarters, refusing
+    anything that is not whole/half/quarter. Used for configured prices -
+    unlike to_quarters() (stake intake), mis-set prices must fail loudly,
+    never silently snap.""" 
+    q = round(float(credits) * QUARTERS_PER_CREDIT)
+    if abs(float(credits) * QUARTERS_PER_CREDIT - q) > 1e-9:
+        raise ForumError(
+            f"{what} must be a whole, half or quarter credit value "
+            f"(got {credits})."
+        )
+    return q
+
+
+def format_credits(quarters: int) -> str:
+    """Render quarters as a friendly decimal string ('8' -> '2', '9' ->
+    '2.25', '10' -> '2.5').  Only .0/.25/.5/.75 fractions exist by
+    construction."""
+    sign = "-" if quarters < 0 else ""
+    q = abs(quarters)
+    whole, rem = divmod(q, QUARTERS_PER_CREDIT)
+    frac = {0: "", 1: ".25", 2: ".5", 3: ".75"}[rem]
+    return f"{sign}{whole}{frac}"
 
 
 def _log_entry(
     c: sqlite3.Connection,
-    agent_id: int,
-    delta_halves: int,
+    agent_id: int | None,
+    delta_quarters: int,
     reason: str,
     target_type: str | None,
     target_id: int | None,
@@ -63,9 +98,9 @@ def _log_entry(
     transaction and has already validated the balance for spends."""
     c.execute(
         "INSERT INTO credit_entries"
-        " (agent_id, delta_halves, reason, target_type, target_id)"
+        " (agent_id, delta_quarters, reason, target_type, target_id)"
         " VALUES (?, ?, ?, ?, ?)",
-        (agent_id, delta_halves, reason, target_type, target_id),
+        (agent_id, delta_quarters, reason, target_type, target_id),
     )
     import events
 
@@ -76,8 +111,8 @@ def _log_entry(
         target_id=target_id,
         detail={
             "reason": reason,
-            "credits": format_credits(delta_halves),
-            "delta_halves": delta_halves,
+            "credits": format_credits(delta_quarters),
+            "delta_quarters": delta_quarters,
         },
         conn=c,
     )
@@ -85,85 +120,88 @@ def _log_entry(
 
 def grant(
     agent_id: int,
-    delta_halves: int,
+    delta_quarters: int,
     reason: str,
     *,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
-    """Credit halves to a citizen for a contribution.  Returns False when
+    """Credit quarters to a citizen for a contribution.  Returns False when
     earning is disabled by config or the delta is zero; the caller decides
     whether that is fine.  Pass conn when already inside a transaction."""
-    if not config.CREDITS_ENABLED or delta_halves == 0:
+    if not config.CREDITS_ENABLED or delta_quarters == 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
-        _log_entry(c, agent_id, delta_halves, reason, target_type, target_id, True)
+        _log_entry(c, agent_id, delta_quarters, reason, target_type,
+                   target_id, True)
     return True
 
 
 def spend(
     agent_id: int,
-    amount_halves: int,
+    amount_quarters: int,
     reason: str,
     *,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
-    """Debit halves from a citizen for a voluntary spend.  Raises when the
-    balance cannot cover it - the refusal mirrors karma's effective-karma
-    gate, but a credit balance never goes negative (spends are bounded by
-    earnings; penalties live on the karma layer)."""
-    if amount_halves == 0:
+    """Debit quarters from a citizen for a voluntary spend.  Raises when
+    the balance cannot cover it - the refusal mirrors karma's effective-
+    karma gate, but a credit balance never goes negative (spends are
+    bounded by earnings; penalties live on the karma layer)."""
+    if amount_quarters == 0:
         return False
-    if amount_halves < 0:
+    if amount_quarters < 0:
         raise ForumError("credit amounts must be positive.")
     with _conn() if conn is None else nullcontext(conn) as c:
         balance = balance_for(c, agent_id)
-        if balance < amount_halves:
+        if balance < amount_quarters:
             raise ForumError(
                 f"insufficient credits: this costs "
-                f"{format_credits(amount_halves)} but you have "
+                f"{format_credits(amount_quarters)} but you have "
                 f"{format_credits(balance)}."
             )
         _log_entry(
-            c, agent_id, -amount_halves, reason, target_type, target_id, False
+            c, agent_id, -amount_quarters, reason, target_type, target_id,
+            False,
         )
     return True
 
 
 def refund(
     agent_id: int,
-    amount_halves: int,
+    amount_quarters: int,
     reason: str,
     *,
     target_type: str | None = None,
     target_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Return previously-spent halves (stake refunds/withdrawals).  A
-    grant-shaped entry with a spend-flow reason."""
-    grant(agent_id, amount_halves, reason, target_type=target_type,
+    """Return previously-spent quarters (stake refunds/withdrawals).  A
+    grant-shaped entry with a stake-flow reason."""
+    grant(agent_id, amount_quarters, reason, target_type=target_type,
           target_id=target_id, conn=conn)
 
 
 def balance_for(conn: sqlite3.Connection, agent_id: int) -> int:
-    """A citizen's credit balance in halves (derived, never cached)."""
+    """A citizen's credit balance in quarters (derived, never cached)."""
     return conn.execute(
-        "SELECT COALESCE(SUM(delta_halves), 0) FROM credit_entries WHERE agent_id = ?",
+        "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+        " WHERE agent_id = ?",
         (agent_id,),
     ).fetchone()[0]
 
 
 def balance_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict[int, int]:
-    """Balances in halves for a batch of agents in one GROUP BY query -
+    """Balances in quarters for a batch of agents in one GROUP BY query -
     the same shape as effective_karma_many."""
     if not agent_ids:
         return {}
     marks = ",".join("?" * len(agent_ids))
     rows = conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(delta_halves), 0) FROM credit_entries"
+        f"SELECT agent_id, COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
         f" WHERE agent_id IN ({marks}) GROUP BY agent_id",
         agent_ids,
     ).fetchall()
@@ -195,21 +233,23 @@ def earned_summary(
     def _sum(extra_where: str = "", params: tuple = ()) -> int:
         cond = f" AND {extra_where}" if extra_where else ""
         return conn.execute(
-            f"SELECT COALESCE(SUM(delta_halves), 0) FROM credit_entries"
-            f" WHERE agent_id = ? AND delta_halves > 0{cond}",
+            f"SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            f" WHERE agent_id = ? AND delta_quarters > 0{cond}",
             (agent_id, *params),
         ).fetchone()[0]
 
     spent = conn.execute(
-        "SELECT COALESCE(SUM(-delta_halves), 0) FROM credit_entries"
-        " WHERE agent_id = ? AND delta_halves < 0",
+        "SELECT COALESCE(SUM(-delta_quarters), 0) FROM credit_entries"
+        " WHERE agent_id = ? AND delta_quarters < 0",
         (agent_id,),
     ).fetchone()[0]
     return {
-        "earned_total_halves": _sum(),
-        "earned_this_week_halves": _sum("created_at >= ?", (_iso(week_start),)),
-        "earned_this_month_halves": _sum("created_at >= ?", (_iso(month_start),)),
-        "spent_total_halves": spent,
+        "earned_total_quarters": _sum(),
+        "earned_this_week_quarters": _sum("created_at >= ?",
+                                          (_iso(week_start),)),
+        "earned_this_month_quarters": _sum("created_at >= ?",
+                                           (_iso(month_start),)),
+        "spent_total_quarters": spent,
     }
 
 
@@ -229,7 +269,8 @@ def history(
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = conn.execute(
             f"SELECT e.id, e.agent_id, a.name AS agent_name,"
-            f" e.delta_halves, e.reason, e.target_type, e.target_id, e.created_at"
+            f" e.delta_quarters, e.reason, e.target_type, e.target_id,"
+            f" e.created_at"
             f" FROM credit_entries e JOIN agents a ON a.id = e.agent_id"
             f"{where} ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             (*params, limit + 1, offset),
@@ -242,8 +283,8 @@ def history(
                 "id": r["id"],
                 "agent_id": r["agent_id"],
                 "agent_name": r["agent_name"],
-                "credits": format_credits(r["delta_halves"]),
-                "delta_halves": r["delta_halves"],
+                "credits": format_credits(r["delta_quarters"]),
+                "delta_quarters": r["delta_quarters"],
                 "reason": r["reason"],
                 "target_type": r["target_type"],
                 "target_id": r["target_id"],
@@ -256,7 +297,7 @@ def history(
         )
         summary = (
             {
-                "balance_halves": balances[agent_id],
+                "balance_quarters": balances[agent_id],
                 **earned_summary(conn, agent_id),
             }
             if agent_id is not None
