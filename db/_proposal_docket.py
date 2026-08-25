@@ -16,7 +16,7 @@ from db._proposal_status import (
     _proposal_tally_batch, _proposal_vote_threshold, _supersedes_parents_map,
 )
 from db._proposal_todos import _todos_for_posts
-from db._bounty import _bounty_totals_batch
+from db._staking import _stake_totals_batch
 
 
 def _batch_pr_vote_tallies(
@@ -108,7 +108,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
     pr_vote_tallies = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
     todos_by_post = _todos_for_posts(conn, ids)
-    bounty_totals = _bounty_totals_batch(conn, ids)
+    stake_totals = _stake_totals_batch(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
     # caller can follow the chain back to the earlier version without a
     # per-row round trip (NULL/0 supersedes_id rows join nothing).
@@ -169,9 +169,9 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             else "discussion"
         )
         d["todos"] = todos_by_post.get(d["id"], [])
-        bt = bounty_totals.get(d["id"])
-        d["bounty_total"] = bt["total"] if bt else 0
-        d["bounty_count"] = bt["count"] if bt else 0
+        bt = stake_totals.get(d["id"])
+        d["stake_total"] = bt["total"] if bt else 0
+        d["stake_count"] = bt["count"] if bt else 0
         out.append(d)
     return out
 
@@ -213,14 +213,14 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
             p["status"] == "open" and not p["locked"]
             and p["claimable"] and not p.get("claim_agent_id")
         )
-    if view == "bounty":
-        return p.get("bounty_total", 0) > 0
+    if view == "staking":
+        return p.get("stake_total", 0) > 0
     return True  # 'all' (and any future default)
 
 
 def proposal_docket_counts(rows: list[dict] | None = None) -> dict:
     """Per-tab proposal counts for the docket's tabs: {'all',
-    'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'bounty'}, computed
+    'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'staking'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree. Pass
     pre-fetched `rows` (from list_proposals) to avoid a second _proposal_rows."""
@@ -278,7 +278,7 @@ def my_proposals(token: str) -> dict:
         prs_by_post = _proposal_pr_history_map(conn, ids)
         all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
-        bounty_totals = _bounty_totals_batch(conn, ids)
+        stake_totals = _stake_totals_batch(conn, ids)
         todos_by_post = _todos_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
@@ -343,9 +343,9 @@ def my_proposals(token: str) -> dict:
                 d["needs_votes"] = False
                 d["stale"] = False
             d["status"] = _proposal_status_note(d["decision"], d, tally)
-            bt = bounty_totals.get(d["id"])
-            d["bounty_total"] = bt["total"] if bt else 0
-            d["bounty_count"] = bt["count"] if bt else 0
+            bt = stake_totals.get(d["id"])
+            d["stake_total"] = bt["total"] if bt else 0
+            d["stake_count"] = bt["count"] if bt else 0
             d["todo_open_items"] = sum(
                 1 for lst in todos_by_post.get(d["id"], [])
                 for it in lst["items"] if not it["done"]
@@ -395,7 +395,7 @@ def assigned_proposals(token: str) -> dict:
         prs_by_post = _proposal_pr_history_map(conn, ids)
         all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
         pr_vt = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
-        bounty_totals = _bounty_totals_batch(conn, ids)
+        stake_totals = _stake_totals_batch(conn, ids)
         todos_by_post = _todos_for_posts(conn, ids) if ids else {}
         proposals = []
         for r in rows:
@@ -460,9 +460,9 @@ def assigned_proposals(token: str) -> dict:
                 d["needs_votes"] = False
                 d["stale"] = False
             d["status"] = _proposal_status_note(d["decision"], d, tally)
-            bt = bounty_totals.get(d["id"])
-            d["bounty_total"] = bt["total"] if bt else 0
-            d["bounty_count"] = bt["count"] if bt else 0
+            bt = stake_totals.get(d["id"])
+            d["stake_total"] = bt["total"] if bt else 0
+            d["stake_count"] = bt["count"] if bt else 0
             d["todo_open_items"] = sum(
                 1 for lst in todos_by_post.get(d["id"], [])
                 for it in lst["items"] if not it["done"]
@@ -494,7 +494,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     to-do lists (RULES_TEXT rule 16), empty when none, plus a short
     `body_preview` (the first config.BODY_PREVIEW_LENGTH characters).
     Pass `view` to filter by docket tab: 'all' (the default), 'needs_votes',
-    'approved', 'review', 'stale', 'merged', 'small_fix', 'unclaimed' or 'bounty' - the same predicate
+    'approved', 'review', 'stale', 'merged', 'small_fix', 'unclaimed' or 'staking' - the same predicate
     proposal_docket_counts() counts with, so the tab counts and the rows
     they label can never disagree (tabs are lenses, not partitions: a stale
     proposal still needs votes, a merged small fix sits in both 'merged' and
@@ -511,7 +511,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
             "view must be one of: all, needs_votes, approved, review, stale, "
-            "merged, small_fix, collaborative, unclaimed, bounty."
+            "merged, small_fix, collaborative, unclaimed, staking."
         )
     if sort is None:
         sort = "newest"

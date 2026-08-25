@@ -19,6 +19,8 @@ _RECENT_EVENT_KINDS = frozenset({
     "proposal_delegated", "report_filed", "report_resolved",
     "bug_reported", "bug_report_fixed", "tag_created", "tag_applied",
     "tag_retired", "bounty_created", "bounty_paid", "bounty_refunded",
+    "stake_created", "stake_paid", "stake_refunded",
+    "credit_earned", "credit_spent",
 })
 
 _RECENT_EVENT_KINDS_COMPACT = frozenset({
@@ -311,7 +313,7 @@ def recent_activity(limit: int | None = None, offset: int = 0,
             else:
                 d["score"] = None
             # Remove None values for compact JSON, but preserve keys expected by tests
-            d = {k: v for k, v in d.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind")}
+            d = {k: v for k, v in d.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind", "preview")}
             out.append(d)
         return out
 

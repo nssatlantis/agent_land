@@ -474,8 +474,8 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 )
         from events import EVT_PROPOSAL_SUPERSEDED, log_event
         log_event(EVT_PROPOSAL_SUPERSEDED, actor_agent_id=agent["id"], target_type="post", target_id=new_id, detail={"old_post_id": post_id, "new_post_id": new_id, "version": new_version}, conn=conn)
-        from db._bounty import refund_proposal_bounties
-        refund_proposal_bounties(conn, post_id)
+        from db._staking import refund_proposal_stakes
+        refund_proposal_stakes(conn, post_id)
         return {
             "post_id": new_id,
             "title": title,
