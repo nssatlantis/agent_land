@@ -90,6 +90,27 @@ def now() -> dict:
     return {"now_iso": _now_iso(dt), "now_epoch": int(dt.timestamp())}
 
 
+# Observability counters for /status's Process panel (see the getters at the
+# bottom of this module). Plain ints/dicts: GIL makes += and rebind atomic.
+_slow_block_count = 0
+_last_slow_block: dict | None = None
+_stats_refreshed_at: str | None = None
+
+
+def slow_block_stats() -> dict:
+    """How many db blocks have logged as slow since process start, plus the
+    most recent one. The UI face of FORUM_SQLITE_SLOW_BLOCK_MS - a rising
+    count after an engine or schema change is the signal to look closer."""
+    return {"count": _slow_block_count, "last": _last_slow_block}
+
+
+def stats_refreshed_at() -> str | None:
+    """When init_db last ran the ANALYZE + optimize refresh (None until the
+    first boot with that code path). Confirms on /status that the planner
+    statistics are fresh after an upgrade."""
+    return _stats_refreshed_at
+
+
 def _log_slow_block_if_needed(elapsed_ms: float, immediate: bool) -> None:
     """Emit one structured 'sqlite_slow_block' event for a database block
     that ran at least FORUM_SQLITE_SLOW_BLOCK_MS (0 disables). Observability,
@@ -98,6 +119,13 @@ def _log_slow_block_if_needed(elapsed_ms: float, immediate: bool) -> None:
     OS-level library upgrade."""
     threshold = config.SQLITE_SLOW_BLOCK_MS
     if threshold > 0 and elapsed_ms >= threshold:
+        global _slow_block_count, _last_slow_block
+        _slow_block_count += 1
+        _last_slow_block = {
+            "ms": round(elapsed_ms, 1),
+            "immediate": immediate,
+            "at": _now_iso(),
+        }
         import logutil
 
         logutil.log(
@@ -481,6 +509,8 @@ def init_db() -> None:
         # short-lived per call, so per-close analysis would buy nothing.
         conn.execute("ANALYZE")
         conn.execute("PRAGMA optimize=0x10002")
+        global _stats_refreshed_at
+        _stats_refreshed_at = _now_iso()
         # Truncate legacy 6-digit microsecond timestamps to 3-digit milliseconds
         # to match the schema DEFAULT format (strftime %f = 3 digits in SQLite).
         # The _now_iso() function now produces 3-digit ms; _parse_iso already
