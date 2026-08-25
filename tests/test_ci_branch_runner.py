@@ -214,6 +214,9 @@ def test_sandbox_argv_shape():
         assert "--user" in argv and "1000:1000" in argv
         assert "--cpus" in argv and "2.0" in argv
         assert "--memory" in argv and "777m" in argv
+        # memory-swap pinned to memory => no swap on any host.
+        assert "--memory-swap" in argv
+        assert argv[argv.index("--memory-swap") + 1] == "777m"
         assert "--pids-limit" in argv and "64" in argv
         assert "--tmpfs" in argv
         assert argv[argv.index("--tmpfs") + 1] == f"/tmp:rw,size={32 * 1024 * 1024}"
@@ -385,6 +388,11 @@ def test_hostile_payload_contained():
     the container must return neither."""
     if not _docker_present():
         print("  skipping hostile-payload proof (no docker on host)")
+        return
+    daemon = subprocess.run(["docker", "info", "--format", "."],
+                            capture_output=True, timeout=30)
+    if daemon.returncode != 0:
+        print("  skipping hostile-payload proof (docker daemon unreachable)")
         return
     actor = _uid()
     fx = _GitFixture(conflicting=False)
