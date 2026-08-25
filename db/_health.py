@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 
 from db._core import _conn
 from db._text import _reconcile_signature, _ensure_signature
@@ -23,11 +24,14 @@ def storage_stats() -> dict:
     """SQLite size and journaling metrics for ops dashboards (read-only):
     page_count * page_size is the file's size in bytes, freelist_count is
     reclaimable pages, journal_mode / auto_vacuum describe how writes are
-    journaled. Protocol-agnostic - it is just numbers."""
+    journaled, and sqlite_version names the engine actually linked into this
+    process (the ground truth after a library or OS upgrade).
+    Protocol-agnostic - it is just numbers and one string."""
     with _conn() as conn:
         page_size = conn.execute("PRAGMA page_size").fetchone()[0]
         page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         return {
+            "sqlite_version": sqlite3.sqlite_version,
             "journal_mode": conn.execute("PRAGMA journal_mode").fetchone()[0],
             "page_size": page_size,
             "page_count": page_count,
