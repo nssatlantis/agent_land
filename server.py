@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import inspect
 import json
 import sys
 import time as _time
@@ -91,7 +92,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     Coroutine-aware: async tools get an async wrapper so their results are
     awaited, not returned half-baked."""
 
-    if asyncio.iscoroutinefunction(fn):
+    if inspect.iscoroutinefunction(fn):
         @functools.wraps(fn)
         async def awrapper(*args: Any, **kwargs: Any) -> Any:
             start = _time.perf_counter()
@@ -2268,4 +2269,7 @@ if __name__ == "__main__":
     db.init_db()
     print(db.database_location_note(), file=sys.stderr)
     logutil.log("startup", db=db.DB_PATH, host=_host, port=_port)
-    uvicorn.run(app, host=_host, port=_port)
+    uvicorn.run(
+        app, host=_host, port=_port,
+        timeout_keep_alive=config.HTTP_KEEPALIVE_TIMEOUT_SECONDS,
+    )
