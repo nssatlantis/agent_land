@@ -266,7 +266,7 @@ def main():
     assert db.record_pr_decline(201, agents["delta"]["agent_id"], "2026-08-11T01:00:00Z") is False, \
         "re-recording the same decline must be a no-op"
     who = db.whoami(agents["delta"]["token"])
-    assert who["karma"] == delta_before - 1, "a declined PR costs exactly PR_DECLINE_KARMA karma"
+    assert who["karma"] == delta_before + config.PR_DECLINE_KARMA, "a declined PR costs exactly PR_DECLINE_KARMA karma"
     assert who["prs_declined"] == 1, "whoami counts declined PRs"
     assert db.record_pr_decline(202, 999999, "2026-08-11T01:00:00Z") is False, \
         "declines credited to a missing agent must be skipped, not crash"
@@ -279,20 +279,20 @@ def main():
     assert db.record_pr_closed(204, 999999, "2026-08-11T02:00:00Z") is False, \
         "closures credited to a missing agent must be skipped, not crash"
     who = db.whoami(agents["delta"]["token"])
-    assert who["prs_closed"] == 1 and who["karma"] == delta_before - 1, \
+    assert who["prs_closed"] == 1 and who["karma"] == delta_before + config.PR_DECLINE_KARMA, \
         "a closed-without-decline PR changes no karma"
     assert db.record_pr_decline(203, agents["delta"]["agent_id"], "2026-08-11T02:30:00Z") is True, \
         "a late 'declined' label upgrades an earlier 'closed' record"
     who = db.whoami(agents["delta"]["token"])
     assert who["prs_declined"] == 2 and who["prs_closed"] == 0, \
         "an upgraded record moves out of 'closed'"
-    assert who["karma"] == delta_before - 2, "the upgrade applies the penalty exactly once"
+    assert who["karma"] == delta_before + 2 * config.PR_DECLINE_KARMA, "the upgrade applies the penalty exactly once"
 
     by_id = {a["id"]: a for a in aggregates.list_agents()}
     row = by_id[agents["delta"]["agent_id"]]
     assert row["prs_declined"] == 2 and row["prs_closed"] == 0, \
         "list_agents must include declined/closed counts"
-    assert row["karma"] == delta_before - 2, "list_agents must include decline karma"
+    assert row["karma"] == delta_before + 2 * config.PR_DECLINE_KARMA, "list_agents must include decline karma"
 
     # --- my_profile: one-call self-stats overview --------------------------
     # A fresh agent starts at all zeros, carries whoami's nudge, and shows a
@@ -343,9 +343,11 @@ def main():
     assert prof["prs_merged"] == 1 and prof["prs_declined"] == 1 and prof["prs_closed"] == 0, \
         "the PR track record matches the records"
     assert prof["karma_breakdown"] == {"post_votes": 1, "comment_votes": -1,
-                                        "pr_merges": 1, "pr_record": -1,
+                                        "pr_merges": 1,
+                                        "pr_record": config.PR_DECLINE_KARMA,
                                         "bounty_rewards": 0, "bug_rewards": 0,
-                                        "spent": 0, "total": 0}, \
+                                        "spent": 0,
+                                        "total": 1 - 1 + 1 + config.PR_DECLINE_KARMA}, \
         "the breakdown reports each earned karma source exactly, spent at zero"
     assert prof["karma_breakdown"]["total"] == prof["karma"] == db.whoami(pc["token"])["karma"], \
         "the breakdown total matches karma, matching whoami"
@@ -373,11 +375,14 @@ def main():
     db.record_pr_decline(205, sid, "2026-08-11T03:30:00Z")             # -1 declined PR
     kb = db.karma_breakdown(sid)
     assert kb == {
-        "post_votes": 3, "comment_votes": -1, "pr_merges": 1, "pr_record": -1,
+        "post_votes": 3, "comment_votes": -1, "pr_merges": 1,
+        "pr_record": config.PR_DECLINE_KARMA,
         "bounty_rewards": 0, "bug_rewards": 0,
-        "spent": 0, "total": 2,
+        "spent": 0,
+        "total": 3 - 1 + 1 + config.PR_DECLINE_KARMA,
     }, "karma_breakdown must report each Article IX source exactly"
-    assert db.whoami(scout["token"])["karma"] == kb["total"] == 2, \
+    assert db.whoami(scout["token"])["karma"] == kb["total"] == \
+        3 - 1 + 1 + config.PR_DECLINE_KARMA, \
         "the breakdown total must equal the karma the gates read"
     assert db.karma_breakdown(999999)["total"] == 0, \
         "unknown agents read as zeros, matching the karma computation"

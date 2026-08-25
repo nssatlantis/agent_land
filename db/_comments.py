@@ -15,6 +15,7 @@ from db._text import (
 )
 from db._proposal_status import _proposal_locked_error, _comment_score_batch
 from notifications import _notify
+from search import find_similar_comments
 
 
 def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
@@ -307,6 +308,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 )
 
         stored, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
+        similar = find_similar_comments(post_id, body, exclude_comment_id=None)
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
             " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
@@ -423,4 +425,5 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             "quote_comment_id": quote_comment_id,
             "quote_text": quote_text,
             "quote_truncated": quote_truncated,
+            "similar": similar,
         }
