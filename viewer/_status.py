@@ -576,6 +576,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 ("pages", f"{stats['page_count']} &times; {stats['page_size']} B"),
                 ("reclaimable (freelist)", esc(_human_bytes(stats["freelist_count"] * stats["page_size"]))),
                 ("journal mode", esc(stats["journal_mode"])),
+                ("sqlite", esc(stats.get("sqlite_version", "unknown"))),
                 ("auto_vacuum", esc({0: "off", 1: "full", 2: "incremental"}.get(stats["auto_vacuum"], stats["auto_vacuum"]))),
                 ("free space (data dir)", esc(free)),
                 ("db file mtime", mtime),
