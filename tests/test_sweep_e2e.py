@@ -22,7 +22,7 @@ from tests._setup import db, setup  # noqa: E402
 import github  # noqa: E402
 import events  # noqa: E402
 import config  # noqa: E402
-import db._bounty as bounty_mod  # noqa: E402
+import db._staking as staking_mod  # noqa: E402
 from server.poller import _pr_vote_sweep  # noqa: E402
 
 
@@ -222,22 +222,21 @@ def test_full_decline_pipeline():
     print("  full decline pipeline: ok")
 
 
-def test_bounty_lock_and_pay_on_merge():
+def test_stake_lock_and_pay_on_merge():
     """Bounty staked -> PR locked -> PR merged -> verify financial state."""
     pid, pr_number = _make_small_fix()
 
     # Staker (beta) stakes a bounty on the proposal
-    bounty_result = db.stake_bounty(
-        AGENTS["beta"]["token"], pid, per_pr=1, max_prs=1,
-    )
-    bounty_id = bounty_result["bounty_id"]
+    bounty_result = db.stake(
+        AGENTS["beta"]["token"], pid, per_pr=1, max_prs=1, currency="karma")
+    stake_id = bounty_result["stake_id"]
 
     # Lock bounties for the PR (simulates repo_propose_change)
-    db.lock_bounties_for_pr(None, pid, pr_number, AGENTS["alpha"]["agent_id"])
+    db.lock_stakes_for_pr(None, pid, pr_number, AGENTS["alpha"]["agent_id"])
 
     with db._conn() as conn:
         lock = conn.execute(
-            "SELECT status, amount FROM bounty_locks WHERE pr_number = ?",
+            "SELECT status, amount FROM stake_locks WHERE pr_number = ?",
             (pr_number,),
         ).fetchone()
         assert lock is not None, "bounty lock must exist"
@@ -245,9 +244,9 @@ def test_bounty_lock_and_pay_on_merge():
         assert lock["amount"] == 1
 
         spend = conn.execute(
-            "SELECT amount FROM karma_spends WHERE kind = 'bounty_lock'"
+            "SELECT amount FROM karma_spends WHERE kind = 'stake_lock'"
             " AND ref_id = ?",
-            (bounty_id,),
+            (stake_id,),
         ).fetchone()
         assert spend is not None, "karma_spend must exist for lock"
 
@@ -255,26 +254,26 @@ def test_bounty_lock_and_pay_on_merge():
     with db._conn() as conn:
         db.award_pr_merge_karma(pr_number, AGENTS["alpha"]["agent_id"],
                                 "2026-08-20T12:00:00.000Z", conn=conn)
-        bounty_mod.pay_bounty_rewards(conn, pr_number)
+        staking_mod.pay_stake_rewards(conn, pr_number)
 
     with db._conn() as conn:
         lock = conn.execute(
-            "SELECT status FROM bounty_locks WHERE pr_number = ?",
+            "SELECT status FROM stake_locks WHERE pr_number = ?",
             (pr_number,),
         ).fetchone()
         assert lock["status"] == "paid", "lock should be paid"
 
         reward = conn.execute(
-            "SELECT amount FROM bounty_rewards WHERE pr_number = ?",
+            "SELECT amount FROM stake_rewards WHERE pr_number = ?",
             (pr_number,),
         ).fetchone()
-        assert reward is not None, "bounty_rewards row must exist"
+        assert reward is not None, "stake_rewards row must exist"
         assert reward["amount"] == 1
 
         spend = conn.execute(
-            "SELECT id FROM karma_spends WHERE kind = 'bounty_lock'"
+            "SELECT id FROM karma_spends WHERE kind = 'stake_lock'"
             " AND ref_id = ?",
-            (bounty_id,),
+            (stake_id,),
         ).fetchone()
         assert spend is not None, "karma_spend persists (true transfer, not self-stake)"
 
@@ -435,7 +434,7 @@ def test_drain_closed_isolates_entries():
 if __name__ == "__main__":
     test_full_merge_pipeline()
     test_full_decline_pipeline()
-    test_bounty_lock_and_pay_on_merge()
+    test_stake_lock_and_pay_on_merge()
     test_vote_blocked_after_sweep_merge()
     test_opener_none_records_proposal_outcome()
     test_drain_closed_isolates_entries()

@@ -32,12 +32,13 @@ _BASELINE = Path(__file__).resolve().parent / "exception_domain_baseline.json"
 
 FILE_LIST = (
     "server.py", "github.py", "db/_core.py", "db/_agent.py",
-    "db/_content.py", "db/_proposal.py", "db/_tags.py",
+    "db/_content.py", "db/_proposal.py", "db/_tags.py", "db/_staking.py",
+    "db/_credits.py",
     "db/_collaborative.py", "db/_karma.py", "db/_text.py",
     "db/_health.py", "db/_aggregates.py", "db/_cooldown.py",
     "db/_comments.py", "db/_nudges.py", "db/_proposal_status.py",
     "db/_proposal_todos.py", "db/_proposal_delegation.py",
-    "db/_proposal_docket.py", "db/_claiming.py", "db/_bounty.py",
+    "db/_proposal_docket.py", "db/_claiming.py", 
     "db/_pr_vote.py", "db/_bug_reports.py", "db/_subscriptions.py",
     "logutil.py", "server/admin.py", "rules_text.py", "moderation.py",
     "notifications.py", "search.py", "server/repo_search.py",

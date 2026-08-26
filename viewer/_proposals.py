@@ -12,6 +12,7 @@ from starlette.responses import HTMLResponse
 
 import config
 import db
+from db._credits import format_credits as _fmt_q
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _crumb,
@@ -152,17 +153,23 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'{merged} PR{"s" if merged != 1 else ""} merged</div>'
             )
     stale_cls = " stale-card" if p.get("stale") else ""
-    bounty = ""
-    bt = p.get("bounty_total", 0)
-    if bt:
-        bounty = (
-            f' <span class="verdict-chip vc-ok" title="bounty">'
-            f'bounty {bt}</span>'
+    stake_chip = ""
+    sk = p.get("stake_total_karma", 0)
+    sc = p.get("stake_total_credits_quarters", 0)
+    if sk or sc:
+        bits = []
+        if sk:
+            bits.append(f"{sk} karma")
+        if sc:
+            bits.append(f"{_fmt_q(sc)} credits")
+        stake_chip = (
+            f' <span class="verdict-chip vc-ok" title="staked">'
+            f"staked {' + '.join(bits)}</span>"
         )
     return (
         f'<div class="docket-card{stale_cls}">'
         f'<div class="docket-top"><h3>{kind}{_proposal_lineage_badge(p)}'
-        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a>{bounty}</h3>'
+        f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a>{stake_chip}</h3>'
         f'<div class="docket-chips">{"".join(chips)}</div></div>'
         f'<div class="docket-vote">{vote_html}</div>'
         f'<div class="meta">{meta}</div>'

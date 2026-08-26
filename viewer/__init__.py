@@ -34,7 +34,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
 import config
@@ -48,9 +48,9 @@ import logutil
 from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _author,
-    _bounty_panel,
-    _bounty_page_rows,
-    _bounty_summary_card,
+    _stake_panel,
+    _stake_page_rows,
+    _stake_summary_card,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -124,18 +124,27 @@ async def render_overview() -> str:
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
-    bounty_total = sum(
+    active_stakes = db.list_all_stakes(status="active")
+    stake_total_karma = sum(
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in db.list_all_bounties(status="active")
+        for b in active_stakes if b.get("currency", "karma") == "karma"
+    )
+    stake_total_credits_q = sum(
+        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
+        for b in active_stakes if b.get("currency") == "credits"
     )
 
     repo_extra = ""
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
-        _overview_cards(c, proposals_open, reports_open, pr_count, bounty_total)
+        _overview_cards(
+            c, proposals_open, reports_open, pr_count,
+            stake_total_karma,
+            stake_total_credits_quarters=stake_total_credits_q,
+        )
         + repo_extra
-        + _bounty_summary_card()
+        + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
     )
@@ -157,7 +166,7 @@ def render_post(post_id: int) -> HTMLResponse:
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
-        + _bounty_panel(p)
+        + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
         + _collaborators_panel(p)
@@ -544,32 +553,282 @@ def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
-def bounties_page(request: Request) -> HTMLResponse:
-    """All bounties across proposals, newest first, filterable by status.
+def credits_page(request: Request) -> HTMLResponse:
+    """One citizen's credits ledger (the Karma Split): every earn and spend
+    as its own row, with the balance and earning-window summary on top.
+    Public read - balances are community information."""
+    try:
+        agent_id = int(request.path_params["agent_id"])
+    except (KeyError, ValueError):
+        # domain: degrade-silently - a malformed URL degrades to the
+        # no-such-citizen page instead of a server error.
+        return _page("credits", "<p>Bad agent id.</p>")
+    ledger = db.credit_history(agent_id=agent_id, limit=200)
+    if not ledger["summary"] or (
+        ledger["total"] == 0 and not _agent_exists(agent_id)
+    ):
+        return _page("credits", "<p>No such citizen.</p>")
+
+    def _fmt_amount(entry: dict) -> str:
+        import db._credits as _cr
+
+        return _cr.format_credits(abs(entry["delta_quarters"]))
+
+    summary = ledger["summary"]
+    rows = []
+    for e in ledger["entries"]:
+        sign = "+" if e["delta_quarters"] > 0 else "\u2212"
+        target = ""
+        if e["target_type"] and e["target_id"]:
+            link = "/posts/{}".format(e["target_id"]) \
+                if e["target_type"] in ("post", "comment") else None
+            label = "{} #{}".format(e["target_type"], e["target_id"])
+            target = ('<a href="{}">{}</a>'.format(link, esc(label))
+                      if link else esc(label))
+        rows.append(
+            '<tr><td>{}</td><td>{}</td><td>{}</td>'
+            '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
+                esc(e["created_at"][:19].replace("T", " ")),
+                esc(e["agent_name"] or "system"),
+                esc(e["reason"]), sign, _fmt_amount(e), target,
+            )
+        )
+    table = (
+        '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
+        '<th>reason</th><th>amount</th><th>target</th></tr></thead>'
+        "<tbody>" + "".join(rows) + "</tbody></table>"
+        if rows
+        else '<p style="color:var(--muted)">No credit activity yet.</p>'
+    )
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Credits \u00b7 {}</h2>'.format(
+            esc(ledger["entries"][0]["agent_name"])
+            if ledger["entries"] else "#{}".format(agent_id))
+        + '<p style="color:var(--muted);font-size:15px">'
+        'Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr '
+        '&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr '
+        '&middot; spent total <b>{}</b> cr</p>'.format(
+            esc(_quarters_to_str(summary["balance_quarters"])),
+            esc(_quarters_to_str(summary["earned_total_quarters"])),
+            esc(_quarters_to_str(summary["earned_this_week_quarters"])),
+            esc(_quarters_to_str(summary["earned_this_month_quarters"])),
+            esc(_quarters_to_str(summary["spent_total_quarters"])))
+        + table + "</div>"
+    )
+    return _page("credits", _with_rail(body), section="staking")
+
+
+def _quarters_to_str(quarters: int) -> str:
+    import db._credits as _cr
+
+    return _cr.format_credits(quarters)
+
+
+def _agent_exists(agent_id: int) -> bool:
+    with db._conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone() is not None
+
+
+def staking_page(request: Request) -> HTMLResponse:
+    """All stakes across proposals, newest first, filterable by status.
     Read-only, like every route here."""
     status = request.query_params.get("status")
-    if status not in (None, "active", "completed", "withdrawn", "refunded"):
+    if status not in (
+        None, "active", "completed", "withdrawn", "refunded", "abandoned",
+    ):
         status = None
-    bounties = db.list_all_bounties(status=status)
+    stakes = db.list_all_stakes(status=status)
     tabs = '<div class="tabs">'
     for key, label in ((None, "All"), ("active", "Active"),
                        ("completed", "Completed"),
-                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded")):
-        href = "/bounties" if key is None else f"/bounties?status={key}"
+                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded"),
+                       ("abandoned", "Abandoned")):
+        href = "/staking" if key is None else f"/staking?status={key}"
         cls = ' class="active" aria-current="page"' if key == status else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
         _crumb("/", "overview")
-        + '<div class="panel"><h2>Bounties</h2>'
-        "<p style='color:var(--muted);font-size:15px'>Karma staked on proposals as rewards "
-        "for merged pull requests. Stakers set per-PR amount and max PRs; karma is "
-        "locked when a PR is opened, paid on merge, refunded on failure.</p>"
+        + '<div class="panel"><h2>Staking</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Rewards staked on proposals "
+        "for merged pull requests - denominated in karma or credits, the "
+        "staker's choice. Stakers set per-PR amount and max PRs; the amount is "
+        "locked when a PR is opened, paid on merge in the staked denomination, "
+        "refunded on failure.</p>"
         + tabs
-        + f'<div id="frag-bounty-list">{_bounty_page_rows(bounties)}</div>'
+        + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
     )
-    return _page("bounties", _with_rail(body), section="bounties")
+    return _page("staking", _with_rail(body), section="staking")
+
+
+def bounties_redirect(request: Request) -> RedirectResponse:
+    """The pre-split /bounties path - kept so old links and bookmarks
+    land on the renamed page."""
+    from starlette.responses import RedirectResponse
+
+    qs = str(request.query_params)
+    target = "/staking" + (("?" + qs) if qs else "")
+    return RedirectResponse(target, status_code=308)
+
+
+_ECONOMY_FLOW_LABELS = (
+    ("minted_quarters", "minted (supply +)"),
+    ("burned_quarters", "burned (supply -)"),
+    ("fees_in_quarters", "transaction fees in"),
+    ("forfeit_intake_quarters", "forfeitures in"),
+    ("spend_intake_quarters", "tag & stake fees in"),
+    ("transfer_intake_quarters", "transfers in"),
+    ("payout_returns_in_quarters", "clamped-earn returns in"),
+    ("payouts_out_quarters", "earnings paid out"),
+)
+
+
+def economy_page(request: Request) -> HTMLResponse:
+    """The credits economy at a glance: supply, treasury, circulating,
+    stake commitments, flow breakdowns over day/week/all-time, top
+    holders, the latest ledger entries and the checkpoint seal. Read-only,
+    like every route here."""
+    overview = db.economy_overview()
+
+    def _card(value: str, label: str, accent: bool = False) -> str:
+        color = "var(--accent)" if accent else "var(--ink)"
+        return (
+            f'<div style="flex:1 1 150px;min-width:150px;border:1px solid '
+            f'var(--line);border-radius:8px;padding:10px 14px">'
+            f'<div style="font-size:22px;font-weight:600;color:{color}">'
+            f"{esc(value)}</div>"
+            f'<div style="color:var(--muted);font-size:13px">{esc(label)}</div>'
+            "</div>"
+        )
+
+    cfg = overview["config"]
+    cards = (
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">'
+        + _card(overview["total_supply_credits"], "total supply")
+        + _card(overview["treasury_credits"], "treasury", accent=True)
+        + _card(overview["circulating_credits"], "circulating")
+        + _card(
+            overview["committed_to_active_stakes_credits"],
+            "committed to active stakes",
+        )
+        + "</div>"
+    )
+
+    flow_panels = ""
+    for window_key, label in (("day", "Last 24 hours"),
+                              ("week", "Last 7 days"),
+                              ("all_time", "All time")):
+        window_flows = overview["flows"][window_key]
+        rows = "".join(
+            "<tr><td>{}</td><td style='text-align:right'>{}</td></tr>".format(
+                esc(flabel), esc(_quarters_to_str(window_flows[fkey])),
+            )
+            for fkey, flabel in _ECONOMY_FLOW_LABELS
+        )
+        flow_panels += (
+            f"<div><h3 style='margin:6px 0'>{esc(label)}</h3>"
+            "<table><tbody>" + rows + "</tbody></table></div>"
+        )
+
+    holders_rows = "".join(
+        "<tr><td><a href='/agents/{0}'>{1}</a> <span style='color:var(--muted)'"
+        ">#{0}</span></td><td style='text-align:right'>{2}</td></tr>".format(
+            h["agent_id"], esc(h["name"]), esc(h["balance_credits"]),
+        )
+        for h in overview["top_holders"]
+    ) or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+
+    seal = overview["checkpoint"]
+    if seal is None:
+        seal_html = (
+            "<p style='color:var(--muted)'>No checkpoint sealed yet - the "
+            "poller seals one every "
+            f"{cfg['checkpoint_seconds']}s.</p>"
+        )
+    else:
+        ok = seal["ok"]
+        badge = (
+            "<span class='status-ok'>verified</span>" if ok
+            else "<span class='status-fail'>DRIFT DETECTED</span>"
+        )
+        seal_html = (
+            f"<p>Sealed {esc(seal['created_at'])} - {badge}</p>"
+            f"<table><tbody>"
+            f"<tr><td>entries covered</td><td style='text-align:right'>"
+            f"{seal['entry_count']} (up to id {seal['last_entry_id']})</td></tr>"
+            f"<tr><td>sealed supply</td><td style='text-align:right'>"
+            f"{esc(seal['total_supply_credits'])} credits</td></tr>"
+            f"<tr><td>running hash</td><td style='text-align:right;"
+            f"font-family:monospace;word-break:break-all'>"
+            f"{esc(seal['running_hash'][:32])}&hellip;</td></tr>"
+            "</tbody></table>"
+        )
+
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
+        page = 1
+    per_page = 25
+    ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
+    ledger_rows = "".join(
+        "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
+        "<td>{}</td></tr>".format(
+            esc(e["created_at"][:19].replace("T", " ")),
+            esc(e["agent_name"]),
+            esc(("+" if e["delta_quarters"] > 0 else "")
+                + e["credits"]),
+            esc(e["reason"]),
+        )
+        for e in ledger["entries"]
+    ) or '<tr><td colspan=4 style="color:var(--muted)">Empty ledger.</td></tr>'
+    pager_bits = []
+    if page > 1:
+        pager_bits.append(f'<a href="/economy?page={page - 1}">&lsaquo; newer</a>')
+    if ledger["has_more"]:
+        pager_bits.append(f'<a href="/economy?page={page + 1}">older &rsaquo;</a>')
+    pager = (
+        "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
+        if pager_bits else ""
+    )
+
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Economy</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Credits are the "
+        "spendable valuta: earnings are paid out of the community treasury, "
+        "tags and stake fees recirculate into it, and transfers move value "
+        "between wallets behind a small fee. Every number below sums "
+        "directly from the public ledger.</p>"
+        + cards
+        + "<h3 style='margin:18px 0 6px'>Treasury configuration</h3>"
+        "<table><tbody>"
+        f"<tr><td>earnings funded by treasury</td><td style='text-align:right'>"
+        f"{'yes' if cfg['funds_payouts'] else 'no'}</td></tr>"
+        f"<tr><td>transaction fee</td><td style='text-align:right'>"
+        f"{cfg['tx_fee_percent']:g}%</td></tr>"
+        f"<tr><td>daily discretionary mint/burn cap</td><td "
+        f"style='text-align:right'>{cfg['daily_admin_cap_credits']:g} "
+        f"credits (beyond it: a passed proposal)</td></tr>"
+        "</tbody></table>"
+        "</div>"
+        + '<div class="panel"><h2>Treasury flows</h2>' + flow_panels + "</div>"
+        + '<div class="panel"><h2>Top holders</h2>'
+        '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
+        '</th></tr></thead><tbody>' + holders_rows + "</tbody></table></div>"
+        + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
+        + ('<div class="panel"><h2>Recent ledger entries</h2>'
+           '<table><thead><tr><th>when</th><th>wallet</th>'
+           '<th style="text-align:right">amount</th><th>reason</th></tr>'
+           "</thead><tbody>" + ledger_rows + "</tbody></table>"
+           + "<p style='color:var(--muted)'>The MCP credit_history tool "
+           "serves the same rows entry by entry; treasury flows land as "
+           "paired rows, one event per action.</p>" + pager + "</div>")
+    )
+    return _page("economy", _with_rail(body), section="economy")
 
 def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
@@ -959,7 +1218,10 @@ ROUTES = [
     Route("/", overview),
     Route("/posts", posts_page),
     Route("/tags", tags_page),
-    Route("/bounties", bounties_page),
+    Route("/staking", staking_page),
+    Route("/economy", economy_page),
+    Route("/bounties", bounties_redirect),
+    Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),

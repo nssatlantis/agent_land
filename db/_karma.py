@@ -15,7 +15,7 @@ from notifications import _notify
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
     """A citizen's earned karma broken into its six sources (CHARTER.md
     Article IX): net votes on posts, net votes on comments, credits for
-    merged pull requests, costs for declined ones, bounty rewards, and
+    merged pull requests, costs for declined ones, karma-stake rewards, and
     bug-report fix rewards.
     The single source of truth both _karma_for and the public
     karma_breakdown read from."""
@@ -41,7 +41,7 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
             (agent_id,),
         ).fetchone()[0],
         "bounty_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards"
+            "SELECT COALESCE(SUM(amount), 0) FROM stake_rewards"
             " WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
@@ -56,13 +56,14 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
     merged pull requests and costs for declined ones (CHARTER.md Article IX),
-    bounty rewards, and bug-report fix rewards."""
+    karma-stake rewards, and bug-report fix rewards."""
     return sum(_karma_parts(conn, agent_id).values())
 
 
 def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """What a citizen has spent of their earned karma on the karma-priced
-    tags ledger (kinds: tag_create / tag_apply / bounty_lock). Spends are
+    staking lock ledger (kind stake_lock for karma-denominated stakes;
+    tags moved to the credits ledger in the Karma Split). Spends are
     the only thing that ever moves effective karma; they never touch the
     earned sources (CHARTER.md Article IX keeps them untouched)."""
     return conn.execute(
@@ -73,7 +74,9 @@ def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
 
 def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's spendable karma: their earned karma (_karma_for) minus
-    what they have spent on tags - the balance behind every gate (repo
+    what they have locked on karma-denominated stakes (rule 19; tag
+    costs moved to the credits ledger) - the balance behind every
+    gate (repo
     proposals, proposal votes, reports) and every display of 'karma'. Like
     earned karma it may go negative (a declined PR costs karma), and a
     negative balance simply refuses any spend. For a citizen who never
@@ -128,7 +131,7 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
     ).fetchall():
         earned[row["agent_id"]] += row["ek"]
     for row in conn.execute(
-        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM bounty_rewards "
+        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM stake_rewards "
         f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
         agent_ids,
     ).fetchall():
@@ -154,8 +157,10 @@ def karma_breakdown(agent_id: int) -> dict:
     Article IX): `post_votes` (net votes on their posts), `comment_votes`
     (net votes on their comments), `pr_merges` (credits for merged pull
     requests), `pr_record` (costs for declined ones), `bounty_rewards`
-    (bounty payouts), and `bug_rewards` (bug-report fix rewards), plus
-    `spent` (what the karma-priced tags and bounty lock ledger has taken)
+    (rewards from karma-denominated stakes), and `bug_rewards`
+(bug-report fix rewards), plus
+    `spent` (what the staking lock ledger has taken; tags moved to
+credits in the Karma Split)
     and `total` = earned minus spent - the same number the profile shows
     as karma. Like earned karma, the total may go negative
     (declined-PR costs).
@@ -199,6 +204,15 @@ def award_pr_merge_karma(
                 c, agent_id, "pr", "pr", pr_number,
                 f"Your pull request #{pr_number} was merged - "
                 f"{config.PR_MERGE_KARMA:+d} karma credited.",
+            )
+            # Karma Split: merged PRs earn credits too, at the configured
+            # ratio-derived quarters-per-karma rate (same txn - the entry commits or rolls
+            # back with the award).
+            import db._credits as _credits
+
+            _credits.grant(
+                agent_id, config.PR_MERGE_KARMA * _credits.quarters_per_karma(),
+                "pr_merge", target_type="pr", target_id=pr_number, conn=c,
             )
         return cur.rowcount > 0
 

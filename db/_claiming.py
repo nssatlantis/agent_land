@@ -250,7 +250,7 @@ def claim_proposal(token: str, proposal_id: int) -> dict:
 
 def unclaim_proposal(token: str, proposal_id: int) -> dict:
     """Release your claim on a proposal.  Only the current claimer (delegate)
-    may unclaim.  Refused if the claimer has open PRs (bounty locks — future
+    may unclaim.  Refused if the claimer has open PRs (stake locks — future
     guard).  Clears delegate_id and deletes the claim row."""
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
@@ -274,8 +274,8 @@ def unclaim_proposal(token: str, proposal_id: int) -> dict:
                 "only the claimer may unclaim a proposal."
             )
         # Guard: refuse if the claimer has open (undecided) PRs linked to
-        # this proposal.  (Currently no bounty locks exist — this is a
-        # forward-looking guard for the bounty system.)
+        # this proposal.  (Currently no stake locks exist — this is a
+        # forward-looking guard for the staking system.)
         open_prs = conn.execute(
             "SELECT pl.pr_number FROM proposal_links pl"
             " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"

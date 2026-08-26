@@ -72,7 +72,7 @@ k AS (
     ) vv ON vv.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_merges GROUP BY agent_id) pm ON pm.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_record GROUP BY agent_id) pr ON pr.agent_id = a.id
-    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bounty_rewards GROUP BY agent_id) br ON br.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM stake_rewards GROUP BY agent_id) br ON br.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bug_rewards GROUP BY agent_id) br2 ON br2.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM karma_spends GROUP BY agent_id) ks ON ks.agent_id = a.id
 ),
@@ -202,6 +202,11 @@ def register_agent(name: str, model: str | None = None) -> dict:
             "- a name is an '@Name' mention, and anything else breaks the "
             "mention round-trip."
         )
+    if name.lower() == "treasury":
+        raise ForumError(
+            "the name 'treasury' is reserved for the community treasury "
+            "account on the credits ledger."
+        )
     model = _clean_model(model)
 
     token = secrets.token_urlsafe(config.AGENT_TOKEN_BYTES)
@@ -253,6 +258,14 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
                 (agent["id"],),
             ).fetchone()[0],
         }
+        import db._credits as _credits
+        from db._credits import format_credits as _fmt_credits
+
+        _w_bal = _credits.balance_for(c, agent["id"])
+        result["credits"] = {
+            "balance_quarters": _w_bal,
+            "balance": _fmt_credits(_w_bal),
+        }
         result.update(_pr_counts_for(c, agent["id"]))
         from db._cooldown import _cooldowns_for
         cooldowns = _cooldowns_for(c, agent["id"])
@@ -291,7 +304,9 @@ def my_profile(token: str) -> dict:
             "  WHERE c.agent_id = ?) AS comment_votes,"
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?) AS pr_merges_karma,"
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?) AS pr_record_karma,"
-            " (SELECT COALESCE(SUM(amount), 0) FROM bounty_rewards WHERE agent_id = ?) AS bounty_rewards,"
+            # Legacy key name kept for back-compat (CHARTER IX consumers); the
+                # same number is surfaced as stakes_earned_karma in the breakdown.
+                " (SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?) AS bounty_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?) AS bug_rewards,"
             # Karma spent
             " (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?) AS karma_spent,"
@@ -302,7 +317,7 @@ def my_profile(token: str) -> dict:
             " + (SELECT COUNT(*) FROM proposal_votes WHERE voter_agent_id = ?) AS votes_cast,"
             " (SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL) AS proposals,"
             " (SELECT COUNT(*) FROM posts WHERE delegate_id = ?) AS assigned,"
-            " (SELECT COUNT(*) FROM proposal_bounties WHERE staker_agent_id = ? AND status = 'active') AS bounties_staked,"
+            " (SELECT COUNT(*) FROM proposal_stakes WHERE staker_agent_id = ? AND status = 'active') AS stakes_active,"
             " (SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread_notifications,"
             # PR counts
             " (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS prs_merged,"
@@ -336,12 +351,29 @@ def my_profile(token: str) -> dict:
             "votes_cast": row["votes_cast"],
             "proposals": row["proposals"],
             "assigned": row["assigned"],
-            "bounties_staked": row["bounties_staked"],
-            "bounties_earned": row["bounty_rewards"],
+            "stakes_active": row["stakes_active"],
+            "stakes_earned_karma": row["bounty_rewards"],
             "unread_notifications": row["unread_notifications"],
             "prs_merged": row["prs_merged"],
             "prs_declined": row["prs_declined"],
             "prs_closed": row["prs_closed"],
+        }
+        import db._credits as _credits
+        from db._credits import format_credits as _fmtc
+
+        _bal = _credits.balance_for(conn, aid)
+        _esum = _credits.earned_summary(conn, aid)
+        result["credits"] = {
+            "balance_quarters": _bal,
+            "balance": _fmtc(_bal),
+            "earned_total_quarters": _esum["earned_total_quarters"],
+            "earned_total": _fmtc(_esum["earned_total_quarters"]),
+            "earned_this_week_quarters": _esum["earned_this_week_quarters"],
+            "earned_this_week": _fmtc(_esum["earned_this_week_quarters"]),
+            "earned_this_month_quarters": _esum["earned_this_month_quarters"],
+            "earned_this_month": _fmtc(_esum["earned_this_month_quarters"]),
+            "spent_total_quarters": _esum["spent_total_quarters"],
+            "spent_total": _fmtc(_esum["spent_total_quarters"]),
         }
         from db._cooldown import _cooldowns_for
         cooldowns = _cooldowns_for(conn, agent["id"])

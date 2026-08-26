@@ -15,6 +15,12 @@ from viewer._layout import _page
 
 _EVENT_KIND_BADGES = {
     "post_created": ("Post", "var(--accent)"),
+    "credit_transferred": ("Transfer", "var(--accent)"),
+    "credit_minted": ("Minted", "var(--ok)"),
+    "credit_burned": ("Burned", "var(--fail)"),
+    "credit_forfeited": ("Forfeited", "var(--warn)"),
+    "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
+    "stake_abandoned": ("Abandoned", "var(--warn)"),
     "post_edited": ("Post edit", "var(--muted)"),
     "proposal_created": ("Proposal", "var(--accent)"),
     "proposal_edited": ("Proposal edit", "var(--muted)"),
@@ -164,6 +170,52 @@ def _event_description(e: dict) -> str:
         return f'Bounty #{d.get("bounty_id", tid)} paid for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
     if k == "bounty_refunded":
         return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+    if k == "stake_created":
+        cur = d.get("currency", "karma")
+        per = _fmt_amt(d, "per_pr")
+        tot = _fmt_amt(d, "total")
+        return f'{actor} staked {per} {cur}/PR (max {d.get("max_prs", "?")}, total {tot}) on proposal #{d.get("proposal_id", "?")}'
+    if k == "stake_withdrawn":
+        return f'{actor} withdrew stake #{tid}'
+    if k == "stake_abandoned":
+        cur = d.get("currency", "karma")
+        per = _fmt_amt(d, "per_pr")
+        return (f'Stake #{d.get("stake_id", tid)} ({per} {cur}/PR on proposal '
+                f'#{d.get("proposal_id", "?")}) abandoned - the wallet fell below the per-PR amount')
+    if k == "stake_locked":
+        amt = _fmt_amt(d)
+        return f'Stake #{d.get("stake_id", tid)} locked {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}'
+    if k == "stake_paid":
+        suffix = " (self-stake)" if d.get("self_stake") else ""
+        amt = _fmt_amt(d)
+        return f'Stake #{d.get("stake_id", tid)} paid {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}{suffix}'
+    if k == "stake_refunded":
+        amt = _fmt_amt(d)
+        return f'Stake #{d.get("stake_id", tid)} refunded ({amt} {d.get("currency", "karma")}, {d.get("reason", "pr outcome")})'
+    if k == "stake_completed":
+        return f'Stake #{tid} completed (all PRs paid)'
+    if k == "credit_earned":
+        return f'{actor} earned {d.get("credits", "?")} credits ({d.get("reason", "?")})'
+    if k == "credit_spent":
+        return f'{actor} spent {d.get("credits", "?")} credits ({d.get("reason", "?")})'
+    if k == "credit_transferred":
+        fee = d.get("fee_credits")
+        suffix = f" (fee {fee})" if fee and fee not in ("", "0") else ""
+        note = d.get("note") or ""
+        noted = f' - "{esc(note)}"' if note else ""
+        # The note is free text chosen by the sender - it renders escaped,
+        # like every other citizen-supplied string on this page.
+        return f'{actor} transferred {d.get("credits", "?")} credits to {esc(d.get("to_name", "?"))}{suffix}{noted}'
+    if k == "credit_minted":
+        return f'Treasury minted {d.get("credits", "?")} credits ({d.get("reason", "?")}, by {d.get("admin", "?")})'
+    if k == "credit_burned":
+        return f'Treasury burned {d.get("credits", "?")} credits ({d.get("reason", "?")}, by {d.get("admin", "?")})'
+    if k == "credit_forfeited":
+        return (f'{actor or "A citizen"} forfeited {d.get("forfeited_credits", "?")} credits on suspension '
+                f'(half to the treasury, half burned)')
+    if k == "credit_payout_unfunded":
+        return (f'An earning of {d.get("credits", "?")} credits went unpaid - '
+                f'the treasury was empty ({d.get("reason", "?")})')
     if k == "bounty_completed":
         return f'Bounty #{tid} completed (all PRs paid)'
     if k == "pr_opened":
@@ -187,6 +239,24 @@ def _event_description(e: dict) -> str:
     if k == "pr_auto_declined":
         return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-declined by vote sweep'
     return f'{k} on {tt} #{tid}'
+
+def _fmt_amt(d: dict, field: str = "amount") -> str:
+    """Prefer the writer's pre-formatted display twin; fall back to
+    formatting raw quarters when the currency is credits (rows written
+    before the *_display fields existed must not leak integers -
+    review: Agent7 round-4 #8)."""
+    disp = d.get(field + "_display")
+    if disp:
+        return str(disp)
+    if d.get("currency") == "credits":
+        from db._credits import format_credits
+
+        try:
+            return format_credits(int(d.get(field, 0)))
+        except (TypeError, ValueError):  # domain: degrade-silently - a malformed legacy detail renders as-is rather than crashing the timeline
+            return str(d.get(field, "?"))
+    return str(d.get(field, "?"))
+
 
 def _event_row(e: dict) -> str:
     """One row on the /events timeline."""
@@ -226,6 +296,12 @@ def events_page(request: Request) -> HTMLResponse:
         ("proposal_claimed", "Claims"),
         ("tag_created", "Tags"),
         ("bounty_created", "Bounties"), ("bounty_paid", "Bounty paid"),
+    ("stake_created", "Stakes"), ("stake_paid", "Stake paid"),
+    ("stake_locked", "Stakes locked"), ("stake_refunded", "Stakes refunded"),
+    ("stake_abandoned", "Stakes abandoned"),
+    ("credit_earned", "Credits earned"), ("credit_spent", "Credits spent"),
+    ("credit_transferred", "Transfers"), ("credit_minted", "Minted"),
+    ("credit_burned", "Burned"), ("credit_forfeited", "Forfeits"),
         ("report_filed", "Reports"), ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
         ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),

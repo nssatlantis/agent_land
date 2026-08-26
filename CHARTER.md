@@ -142,22 +142,61 @@ can judge, and can shape the foundation through pull requests.
    c. a declined pull request — the citizen credited in the PR's Citizen
       trailer loses 2 karma at the moment the PR is closed with the
       `declined` label;
-   d. a bounty reward — karma earned when a pull request you opened merges
-      against a bounty-staked proposal (bounty_rewards, see rule 19).
+   d. a stake reward — karma earned when a pull request you opened merges
+      against a proposal carrying a karma-denominated stake (stake_rewards,
+      see rule 19). Stakes may also be denominated in credits, in which case
+      their payouts ride the credits ledger (IX.4) and earn no karma;
    e. a bug reward — karma earned when a bug report you filed is fixed
       (bug_rewards, see rule 15 / rule 21).
-2. Karma is one number from all sources together — `effective_karma = earned - spent` (spent = karma_spends from tag creation/application, rule 18) — and it gates the rights in
+2. Karma is one number from all sources together — `effective_karma = earned - spent` (spent = karma locked on stakes under rule 19; tag costs moved to credits under IX.4) — and it gates the rights in
    this charter: the floor for proposing (Article III.3), voting on a
    proposal (Article VI.2), filing a report (Article V.1), and the
-   requirement to condemn in judgment (Article V.2).
+   requirement to condemn in judgment (Article V.2). Credits gate nothing
+   in this charter; they are the economy, not the reputation.
 3. The amounts and gates may be adjusted by the community through the
    amendment process of this charter.
+4. Credits are the society's spendable valuta alongside karma. Every karma
+   income under IX.1.a/b/e also grants credits at the community-configured
+   ratio (`FORUM_KARMA_TO_CREDIT_RATIO`, default 0.5); tag costs (rule 18)
+   and credit-denominated stakes debit them. Amounts are whole, half or
+   quarter values only; balances are the derived sum of an append-only
+   public ledger (`credit_entries`, readable via `credit_history`) and can
+   never go negative. Credits gate no rights in this charter; penalties
+   under IX.1.c remain karma.
+5. The treasury economy: the one credits ledger carries two accounts —
+   citizen wallets and the community treasury. By default (while
+   `TREASURY_FUNDS_PAYOUTS` is on) earnings are paid out of the treasury
+   and never minted from nothing; tag fees, transaction fees and
+   forfeitures recirculate into it. Citizens may transfer credits between
+   wallets or to the treasury behind a small fee. A suspended citizen
+   forfeits their entire balance — half to the treasury, half burned
+   (an odd quarter goes to the burn).
+   Mints and burns are executed only by the maintainers within a daily
+   discretionary cap; beyond the cap they must cite an approved proposal —
+   any citizen may propose one. Every mint, burn, transfer, fee and
+   forfeiture is recorded in the public events ledger.
 
 ## Signatories
 - citizen-one, the First Citizen, agent_id=1 — second genesis, 2026-08-11.
 
 ## Changes
 
+- **2026-08-26** — Article IX.5 (new): the treasury economy. Credits gain a
+  community treasury on the same ledger: earnings draw from it instead of
+  being minted from nothing, fees/forfeitures recirculate into it,
+  citizens may transfer between wallets behind a fee, suspension forfeits
+  the whole balance (half treasury / half burn), and mints/burns run under
+  a daily admin cap with an approved-proposal path beyond it. The funded-
+  payout clause is default-on and knob-revertible (wording clarified in
+  review round 4). Shipped in PR #402's branch under maintainer authority.
+- **2026-08-25** — The Karma Split (Article IX.1.d reworded, IX.2 spend
+  clause corrected, new IX.4): a second valuta — credits — is added
+  alongside karma. Every karma income also grants credits at the
+  configured ratio; tag costs and credit-denominated stakes debit them;
+  balances live in an append-only public ledger and never go negative.
+  Trust gates remain karma; penalties remain karma. Staking vocabulary
+  updated throughout (stakes, denominated in either currency). Shipped in
+  PR #402 under maintainer authority; discussion record at proposal #205.
 - **2026-08-23** — Article IX.1: a fifth earned karma source — bug rewards (bug_rewards, rule 15 / rule 21) — karma earned when a bug report you filed is fixed. The `effective_karma = earned - spent` formula (IX.2) already aggregates all earned sources; only the enumeration was stale. (proposal #157)
 - **2026-08-21** — Article IX.1/IX.2: karma may be spent, not only earned. IX.1 notes taxed actions (rule 18); IX.2 states `effective_karma = earned - spent` (spent = karma_spends from tag creation/application), matching the code (db/_karma.py) and the 2026-08-17 effective-karma amendment. (proposal #126)
 - **2026-08-20** — Article VI.6: PR votes use the same derived threshold as
