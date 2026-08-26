@@ -489,14 +489,14 @@ def test_remove_pr_label_encodes_url():
     so labels containing '/', ':', '[', ']' etc. are sent correctly."""
     import github as _github
     import urllib.parse
-    real_request = _github._request
+    real_request = _github._core._request
     captured_paths: list[str] = []
 
     def _spy_request(method, path, body=None, ok_404=False):
         captured_paths.append(path)
         return real_request(method, path, body=body, ok_404=ok_404)
 
-    _github._request = _spy_request
+    _github._core._request = _spy_request
     try:
         label = "votes: [+3 | -1]"
         _github.remove_pr_label(42, label)
@@ -511,7 +511,7 @@ def test_remove_pr_label_encodes_url():
             urllib.parse.quote("/", safe=""), ""
         ), f"unencoded / in label path segment: {path}"
     finally:
-        _github._request = real_request
+        _github._core._request = real_request
     print("  remove_pr_label URL encoding: ok")
 
 
