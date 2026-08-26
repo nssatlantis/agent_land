@@ -1306,6 +1306,56 @@ def init_db() -> None:
                 "PRAGMA foreign_keys = ON;\n"
             )
 
+        # Official jobs: creator_agent_id becomes nullable so admin-panel
+        # positions have no sponsor citizen (NULL in DB).  Same table-rebuild
+        # pattern as proposal_links.  Idempotent once migrated.
+        stored_jobs = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'jobs'"
+        ).fetchone()
+        if (
+            stored_jobs is not None
+            and "creator_agent_id  INTEGER NOT NULL" in stored_jobs[0]
+        ):
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS jobs")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS jobs",
+                "CREATE TABLE jobs_new",
+            ).replace(
+                "creator_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
+                "creator_agent_id  INTEGER REFERENCES agents(id),",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO jobs_new\n"
+                " (id, creator_agent_id, offered_to_agent_id, worker_agent_id,"
+                " title, description, scope, kind, payment_quarters,"
+                " total_cycles, cycles_done, official, status,"
+                " created_at, decided_at)\n"
+                "SELECT id, creator_agent_id, offered_to_agent_id,"
+                " worker_agent_id, title, description, scope, kind,"
+                " payment_quarters, total_cycles, cycles_done, official,"
+                " status, created_at, decided_at\n"
+                "FROM jobs;\n"
+                "DROP TABLE jobs;\n"
+                "ALTER TABLE jobs_new RENAME TO jobs;\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_creator"
+                " ON jobs(creator_agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_worker"
+                " ON jobs(worker_agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_offered_to"
+                " ON jobs(offered_to_agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_status"
+                " ON jobs(status);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
+
         # The treasury economy: split the one credits ledger into the two
         # public accounts via the `account` column ('agent' | 'treasury').
         # An existing forum.db would otherwise lack the column; a plain
