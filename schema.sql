@@ -719,7 +719,7 @@ CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
 -- paid from the treasury per accepted cycle instead.
 CREATE TABLE IF NOT EXISTS jobs (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    creator_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    creator_agent_id    INTEGER REFERENCES agents(id),
     worker_agent_id     INTEGER REFERENCES agents(id),  -- NULL until claimed/accepted
     offered_to_agent_id INTEGER REFERENCES agents(id),  -- pending direct offer
     title               TEXT NOT NULL,

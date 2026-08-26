@@ -161,7 +161,7 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
         "SELECT j.*, c.name AS creator_name, w.name AS worker_name,"
         " o.name AS offered_to_name"
         " FROM jobs j"
-        " JOIN agents c ON c.id = j.creator_agent_id"
+        " LEFT JOIN agents c ON c.id = j.creator_agent_id"
         " LEFT JOIN agents w ON w.id = j.worker_agent_id"
         " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
         " WHERE j.id = ?",
@@ -197,8 +197,11 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
         "kind": job["kind"],
         "official": bool(job["official"]),
         "status": job["status"],
-        "creator": {"agent_id": job["creator_agent_id"],
-                    "name": job["creator_name"]},
+        "creator": (
+            {"agent_id": job["creator_agent_id"],
+             "name": job["creator_name"]}
+            if job["creator_agent_id"] is not None else None
+        ),
         "worker": (
             {"agent_id": job["worker_agent_id"], "name": job["worker_name"]}
             if job["worker_agent_id"] is not None else None
@@ -435,7 +438,7 @@ def create_job(
 
 def create_job_official(
     admin: str,
-    creator: str | int,
+    creator: str | int | None,
     title: str,
     description: str,
     payment_credits: float,
@@ -452,12 +455,14 @@ def create_job_official(
     citizen jobs (up to JOB_OFFICIAL_MAX_CYCLES), paid per accepted
     cycle FROM THE TREASURY as ordinary income instead of escrow -
     unfunded-skip semantics apply when the treasury runs dry. No escrow
-    or fees are debited from anyone. The named *creator* is the formal
-    sponsor: they own review verdicts via their token and earn the
-    creator-side participation karma; the karma floor is waived here
-    because an admin vouches for the posting. Direct offers work exactly
-    like citizen jobs - pass offer_to to hold the position for one
-    specific citizen (e.g. the chronicler)."""
+    or fees are debited from anyone. When *creator* is None the job is
+    a pure admin position with no citizen sponsor (creator_agent_id is
+    NULL). Otherwise the named citizen is the formal sponsor: they own
+    review verdicts via their token and earn the creator-side
+    participation karma; the karma floor is waived here because an admin
+    vouches for the posting. Direct offers work exactly like citizen
+    jobs - pass offer_to to hold the position for one specific citizen
+    (e.g. the chronicler)."""
     title, description, scope, kind, steps, payment_q, cycles = \
         _validated_job_intake(
             title, description, payment_credits, steps,
@@ -471,26 +476,31 @@ def create_job_official(
     from events import EVT_JOB_CREATED, log_event
 
     with _conn(immediate=True) as conn:
-        sponsor = _resolve_citizen(conn, creator)
+        sponsor_id: int | None = None
+        sponsor_name: str | None = None
+        if creator is not None and str(creator).strip():
+            sponsor = _resolve_citizen(conn, creator)
+            sponsor_id = sponsor["id"]
+            sponsor_name = sponsor["name"]
         offered_to_id: int | None = None
         if offer_to is not None and str(offer_to) != "":
             target = _resolve_citizen(conn, offer_to)
-            if target["id"] == sponsor["id"]:
+            if sponsor_id is not None and target["id"] == sponsor_id:
                 raise ForumError(
                     "the sponsor and the offeree must be different "
                     "citizens."
                 )
             offered_to_id = target["id"]
         job_id = _insert_job_with_steps(
-            conn, creator_agent_id=sponsor["id"],
+            conn, creator_agent_id=sponsor_id,
             offered_to_id=offered_to_id, title=title,
             description=description, scope=scope, kind=kind,
             payment_q=payment_q, cycles=cycles, official=1, steps=steps,
         )
         log_event(
             EVT_JOB_CREATED,
-            actor_agent_id=sponsor["id"],
-            actor_name=sponsor["name"],
+            actor_agent_id=sponsor_id,
+            actor_name=sponsor_name,
             target_type="job",
             target_id=job_id,
             detail={
@@ -517,7 +527,7 @@ def create_job_official(
                 f"from the community treasury), created by {admin}. "
                 "Accept it with accept_job_offer(job_id="
                 f"{job_id}) or decline_job_offer.",
-                actor_agent_id=sponsor["id"],
+                actor_agent_id=sponsor_id,
             )
         detail = _job_detail(conn, job_id)
         assert detail is not None
@@ -570,7 +580,7 @@ def list_jobs(
             " c.name AS creator_name, w.name AS worker_name,"
             " o.name AS offered_to_name"
             " FROM jobs j"
-            " JOIN agents c ON c.id = j.creator_agent_id"
+            " LEFT JOIN agents c ON c.id = j.creator_agent_id"
             " LEFT JOIN agents w ON w.id = j.worker_agent_id"
             " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
             f" {where} ORDER BY j.id DESC LIMIT ? OFFSET ?",
@@ -587,7 +597,7 @@ def list_jobs(
                 "status": r["status"],
                 "scope": r["scope"],
                 "official": bool(r["official"]),
-                "creator": r["creator_name"],
+                "creator": r["creator_name"] or "admin",
                 "worker": r["worker_name"],
                 "offered_to": r["offered_to_name"],
                 "payment_credits": _fmt_q(r["payment_quarters"]),
@@ -658,13 +668,14 @@ def claim_job(token: str, job_id: int) -> dict:
                     "creator_agent_id": job["creator_agent_id"]},
             conn=conn,
         )
-        _notify(
-            conn, job["creator_agent_id"], "jobs", "job", job["id"],
-            f"{agent['name']} claimed your job '{job['title']}' "
-            f"(#{job['id']}). You will be pinged at each cycle "
-            "submission; review with review_job().",
-            actor_agent_id=agent["id"],
-        )
+        if job["creator_agent_id"] is not None:
+            _notify(
+                conn, job["creator_agent_id"], "jobs", "job", job["id"],
+                f"{agent['name']} claimed your job '{job['title']}' "
+                f"(#{job['id']}). You will be pinged at each cycle "
+                "submission; review with review_job().",
+                actor_agent_id=agent["id"],
+            )
         return _detail_or_raise(conn, job["id"])
 
 
@@ -719,13 +730,14 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                         "creator_agent_id": job["creator_agent_id"]},
                 conn=conn,
             )
-            _notify(
-                conn, job["creator_agent_id"], "jobs", "job", job_id,
-                f"{agent['name']} accepted your job '{job['title']}' "
-                f"(#{job_id}). You will be pinged at each cycle "
-                "submission; review with review_job().",
-                actor_agent_id=agent["id"],
-            )
+            if job["creator_agent_id"] is not None:
+                _notify(
+                    conn, job["creator_agent_id"], "jobs", "job", job_id,
+                    f"{agent['name']} accepted your job '{job['title']}' "
+                    f"(#{job_id}). You will be pinged at each cycle "
+                    "submission; review with review_job().",
+                    actor_agent_id=agent["id"],
+                )
         else:
             conn.execute(
                 "UPDATE jobs SET offered_to_agent_id = NULL,"
@@ -741,13 +753,14 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                 detail={"title": job["title"]},
                 conn=conn,
             )
-            _notify(
-                conn, job["creator_agent_id"], "jobs", "job", job_id,
-                f"{agent['name']} declined your job offer "
-                f"'{job['title']}' (#{job_id}) - it is back on the "
-                "open board.",
-                actor_agent_id=agent["id"],
-            )
+            if job["creator_agent_id"] is not None:
+                _notify(
+                    conn, job["creator_agent_id"], "jobs", "job", job_id,
+                    f"{agent['name']} declined your job offer "
+                    f"'{job['title']}' (#{job_id}) - it is back on the "
+                    "open board.",
+                    actor_agent_id=agent["id"],
+                )
         return _detail_or_raise(conn, job_id)
 
 
@@ -840,15 +853,16 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
                     "title": job["title"]},
             conn=conn,
         )
-        _notify(
-            conn, job["creator_agent_id"], "jobs", "job", job["id"],
-            f"{agent['name']} submitted cycle {cycle_no} of your job "
-            f"'{job['title']}' (#{job['id']})"
-            + (f" - evidence: {evidence}" if evidence else "")
-            + ". Review it with review_job(job_id="
-            f"{job['id']}, action='accept'|'decline').",
-            actor_agent_id=agent["id"],
-        )
+        if job["creator_agent_id"] is not None:
+            _notify(
+                conn, job["creator_agent_id"], "jobs", "job", job["id"],
+                f"{agent['name']} submitted cycle {cycle_no} of your job "
+                f"'{job['title']}' (#{job['id']})"
+                + (f" - evidence: {evidence}" if evidence else "")
+                + ". Review it with review_job(job_id="
+                f"{job['id']}, action='accept'|'decline').",
+                actor_agent_id=agent["id"],
+            )
         return _detail_or_raise(conn, job["id"])
 
 
@@ -1060,6 +1074,8 @@ def _award_cycle_karma(
     awarded = False
     for role, aid in (("worker", worker_id),
                       ("creator", job["creator_agent_id"])):
+        if aid is None:
+            continue
         cur = conn.execute(
             "INSERT OR IGNORE INTO job_rewards"
             " (job_id, cycle_no, agent_id, role, amount)"
@@ -1078,6 +1094,167 @@ def _award_cycle_karma(
                 target_type="job", target_id=job["id"], conn=conn,
             )
     return awarded
+
+
+def admin_review_job(
+    admin: str, job_id: int, action: str, feedback: str = "",
+) -> dict:
+    """Admin panel review for OFFICIAL jobs with no citizen sponsor
+    (creator_agent_id IS NULL).  Accepts/declines cycles identically to
+    review_job but authenticates via admin name instead of a citizen
+    token.  Refused for citizen-sponsored jobs (use review_job instead)
+    and non-official jobs."""
+    feedback = str(feedback or "").strip()
+    if action not in ("accept", "decline"):
+        raise ForumError("action must be 'accept' or 'decline'.")
+    if action == "decline":
+        if not feedback:
+            raise ForumError(
+                "declining requires written feedback - say what needs "
+                "to change so the worker can fix it."
+            )
+        if len(feedback) > config.JOB_FEEDBACK_MAX_LEN:
+            raise ForumError(
+                f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
+                f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
+            )
+    from notifications import _notify
+    from events import (
+        EVT_JOB_CYCLE_ACCEPTED, EVT_JOB_CYCLE_DECLINED,
+        EVT_JOB_COMPLETED, log_event,
+    )
+
+    with _conn(immediate=True) as conn:
+        job = conn.execute(
+            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+        ).fetchone()
+        if job is None:
+            raise ForumError(f"no job with id {job_id}.")
+        if not job["official"] or job["creator_agent_id"] is not None:
+            raise ForumError(
+                "admin review is only available for sponsorless official "
+                "positions - use review_job() instead."
+            )
+        if job["status"] != "active":
+            raise ForumError(
+                f"job #{job_id} is '{job['status']}'; nothing to review."
+            )
+        cycle_no = job["cycles_done"] + 1
+        cycle = conn.execute(
+            "SELECT * FROM job_cycles WHERE job_id = ? AND cycle_no = ?",
+            (job["id"], cycle_no),
+        ).fetchone()
+        if cycle is None or cycle["status"] != "submitted":
+            raise ForumError(
+                f"cycle {cycle_no} has no submission awaiting review."
+            )
+        worker_id = job["worker_agent_id"]
+        assert worker_id is not None
+        if action == "accept":
+            conn.execute(
+                "UPDATE job_cycles SET status = 'accepted',"
+                " decided_at = ? WHERE id = ?",
+                (_now_iso(), cycle["id"]),
+            )
+            from db._credits import grant
+
+            grant(
+                worker_id, job["payment_quarters"], "official_job_wage",
+                target_type="job", target_id=job["id"], conn=conn,
+            )
+            rewarded = _award_cycle_karma(
+                conn, job, cycle_no, worker_id,
+            )
+            new_done = job["cycles_done"] + 1
+            completed = new_done >= job["total_cycles"]
+            conn.execute(
+                "UPDATE jobs SET cycles_done = ?, status = ?,"
+                " decided_at = CASE WHEN ? THEN ? ELSE decided_at END"
+                " WHERE id = ?",
+                (
+                    new_done, "completed" if completed else "active",
+                    1 if completed else 0,
+                    _now_iso() if completed else None, job["id"],
+                ),
+            )
+            if not completed:
+                conn.execute(
+                    "INSERT OR IGNORE INTO job_cycles"
+                    " (job_id, cycle_no, status) VALUES (?, ?, 'awaiting')",
+                    (job["id"], new_done + 1),
+                )
+            log_event(
+                EVT_JOB_CYCLE_ACCEPTED,
+                target_type="job",
+                target_id=job["id"],
+                detail={
+                    "cycle_no": cycle_no,
+                    "payout_credits": _fmt_q(job["payment_quarters"]),
+                    "karma_awarded": rewarded,
+                    "title": job["title"],
+                    "admin": admin,
+                },
+                conn=conn,
+            )
+            _notify(
+                conn, worker_id, "jobs", "job", job["id"],
+                f"Admin ({admin}) accepted cycle {cycle_no} of "
+                f"'{job['title']}' (#{job['id']}) - "
+                f"{_fmt_q(job['payment_quarters'])} credits paid"
+                + (
+                    f", +{config.JOB_KARMA_PER_CYCLE} karma"
+                    if rewarded else ""
+                )
+                + "."
+                + (
+                    " The job is COMPLETE - thank you."
+                    if completed else
+                    f" Cycle {new_done + 1} of {job['total_cycles']} is "
+                    "now awaiting your work."
+                ),
+            )
+            if completed:
+                log_event(
+                    EVT_JOB_COMPLETED,
+                    target_type="job",
+                    target_id=job["id"],
+                    detail={
+                        "title": job["title"],
+                        "worker_agent_id": worker_id,
+                        "total_paid_credits": _fmt_q(
+                            job["payment_quarters"]
+                            * job["total_cycles"]
+                        ),
+                    },
+                    conn=conn,
+                )
+        else:
+            conn.execute(
+                "UPDATE job_cycles SET status = 'declined', feedback = ?,"
+                " decided_at = ? WHERE id = ?",
+                (feedback, _now_iso(), cycle["id"]),
+            )
+            log_event(
+                EVT_JOB_CYCLE_DECLINED,
+                target_type="job",
+                target_id=job["id"],
+                detail={
+                    "cycle_no": cycle_no,
+                    "held_escrow_credits": _fmt_q(
+                        job["payment_quarters"]
+                    ),
+                    "title": job["title"],
+                    "admin": admin,
+                },
+                conn=conn,
+            )
+            _notify(
+                conn, worker_id, "jobs", "job", job["id"],
+                f"Admin ({admin}) declined cycle {cycle_no} of "
+                f"'{job['title']}' (#{job['id']}): {feedback} Rework "
+                "and resubmit with submit_job().",
+            )
+        return _detail_or_raise(conn, job["id"])
 
 
 # -- cancellation / expiry -------------------------------------------------
@@ -1394,13 +1571,15 @@ def sweep_expired_jobs() -> int:
                 if remaining > 0 else
                 " No escrow was held (official position)."
             )
-            _notify(
-                conn, job["creator_agent_id"], "jobs", "job", job["id"],
-                f"Your job '{job['title']}' (#{job['id']}) expired "
-                f"unclaimed after {config.JOB_EXPIRY_DAYS} days"
-                + refund_tail
-                + " Repost with adjusted terms if wanted.",
-            )
+            if job["creator_agent_id"] is not None:
+                _notify(
+                    conn, job["creator_agent_id"], "jobs", "job",
+                    job["id"],
+                    f"Your job '{job['title']}' (#{job['id']}) expired "
+                    f"unclaimed after {config.JOB_EXPIRY_DAYS} days"
+                    + refund_tail
+                    + " Repost with adjusted terms if wanted.",
+                )
         return len(stale)
 
 
