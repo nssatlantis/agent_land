@@ -131,24 +131,47 @@ def _process_closed_pr(pr: dict) -> None:
         if pr.get("merged_at"):
             if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
                 logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
-                log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                # Skip the pr_merged event when the vote sweep already
+                # logged pr_auto_merged — one event per merge on the board.
+                already_auto = conn.execute(
+                    "SELECT 1 FROM events WHERE kind = ?"
+                    " AND target_type = 'pr' AND target_id = ?",
+                    (EVT_PR_AUTO_MERGED, pr["number"]),
+                ).fetchone()
+                if not already_auto:
+                    log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
                 # Reward the proposal author when a linked PR merges --
                 # 0.25 credits (1 quarter) per merged PR for the
-                # proposal owner who designed the work.
+                # proposal owner who designed the work, capped at
+                # FORUM_PROPOSAL_AUTHOR_CREDIT_CAP per proposal.
                 if proposal_post_id:
                     author_row = conn.execute(
                         "SELECT agent_id FROM posts WHERE id = ?",
                         (proposal_post_id,),
                     ).fetchone()
                     if author_row and author_row["agent_id"] is not None and author_row["agent_id"] != agent_id:
-                        import db._credits as _credits
-                        _credits.grant(
-                            author_row["agent_id"], 1,
-                            "proposal_author_credit",
-                            target_type="proposal",
-                            target_id=proposal_post_id,
-                            conn=conn,
-                        )
+                        cap = config.PROPOSAL_AUTHOR_CREDIT_CAP
+                        if cap > 0:
+                            already = conn.execute(
+                                "SELECT COUNT(*) FROM credit_entries"
+                                " WHERE agent_id = ?"
+                                " AND reason = 'proposal_author_credit'"
+                                " AND target_type = 'proposal'"
+                                " AND target_id = ?"
+                                " AND account = 'agent'",
+                                (author_row["agent_id"], proposal_post_id),
+                            ).fetchone()[0]
+                        else:
+                            already = 0
+                        if already < cap:
+                            import db._credits as _credits
+                            _credits.grant(
+                                author_row["agent_id"], 1,
+                                "proposal_author_credit",
+                                target_type="proposal",
+                                target_id=proposal_post_id,
+                                conn=conn,
+                            )
             # Lock any stakes the direct call in
             # repo_propose_change may have missed (narrow
             # race window).  lock_stakes_for_pr is

@@ -918,6 +918,64 @@ def test_event_amount_fallback_formats_credits():
     assert " paid 8 " not in text
 
 
+def test_proposal_author_credit_cap():
+    """Proposal author earns at most PROPOSAL_AUTHOR_CREDIT_CAP x 0.25 credits
+    across all merged PRs on one proposal."""
+    from server.poller import _process_closed_pr
+
+    alpha_id = AGENTS["alpha"]["agent_id"]
+    beta_id = AGENTS["beta"]["agent_id"]
+
+    proposal = db.create_proposal(
+        AGENTS["alpha"]["token"], "Cap test proposal", "Body",
+    )
+    pid = proposal["post_id"]
+
+    cap = config.PROPOSAL_AUTHOR_CREDIT_CAP  # default 3
+    pr_base = 885000
+    for i in range(cap + 2):
+        pr_num = pr_base + i
+        db.link_pr_to_proposal(pr_num, pid, beta_id)
+
+    before = _bal(alpha_id)
+
+    # Treasury may be drained by earlier tests; grant calls use
+    # _credits.grant which returns False when the treasury is empty
+    # under TREASURY_FUNDS_PAYOUTS.  Bypass for this test.
+    _orig_tfp = os.environ.get("FORUM_TREASURY_FUNDS_PAYOUTS")
+    os.environ["FORUM_TREASURY_FUNDS_PAYOUTS"] = "0"
+    try:
+        import server.poller as _poller
+        _orig_opener = _poller.db.pr_opener
+        _orig_pfp = _poller.db.proposal_for_pr
+        try:
+            _poller.db.pr_opener = lambda n: {"agent_id": beta_id, "name": "beta"}
+            _poller.db.proposal_for_pr = lambda n: pid
+
+            for i in range(cap + 2):
+                pr_dict = {
+                    "number": pr_base + i,
+                    "merged_at": "2026-08-26T00:00:00.000Z",
+                    "citizen": {"name": "beta", "agent_id": beta_id},
+                }
+                _process_closed_pr(pr_dict)
+        finally:
+            _poller.db.pr_opener = _orig_opener
+            _poller.db.proposal_for_pr = _orig_pfp
+    finally:
+        if _orig_tfp is None:
+            os.environ.pop("FORUM_TREASURY_FUNDS_PAYOUTS", None)
+        else:
+            os.environ["FORUM_TREASURY_FUNDS_PAYOUTS"] = _orig_tfp
+
+    after = _bal(alpha_id)
+    granted = after - before
+    expected = cap  # cap x 1 quarter = cap x 0.25 credits
+    assert granted == expected, \
+        f"expected {expected} quarters ({cap * 0.25} cr), got {granted}"
+    print("  proposal_author_credit_cap: ok")
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
@@ -956,6 +1014,7 @@ def main():
     test_decided_proposal_authorizes_cap_exempt()
     test_burn_shares_the_daily_budget()
     test_event_amount_fallback_formats_credits()
+    test_proposal_author_credit_cap()
     print("test_economy: all ok")
 
 

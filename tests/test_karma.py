@@ -365,7 +365,7 @@ def main():
     sid = scout["agent_id"]
     assert db.karma_breakdown(sid) == {
         "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0,
-        "bounty_rewards": 0, "bug_rewards": 0, "job_rewards": 0,
+        "bounty_rewards": 0, "bug_rewards": 0, "job_rewards": 0, "job_penalties": 0,
         "spent": 0, "total": 0,
     }, "a brand-new citizen breaks down to zeros"
     bpost = db.create_post(scout["token"], "scout post", "body")
@@ -379,7 +379,7 @@ def main():
     assert kb == {
         "post_votes": 3, "comment_votes": -1, "pr_merges": 1,
         "pr_record": config.PR_DECLINE_KARMA,
-        "bounty_rewards": 0, "bug_rewards": 0, "job_rewards": 0,
+        "bounty_rewards": 0, "bug_rewards": 0, "job_rewards": 0, "job_penalties": 0,
         "spent": 0,
         "total": 3 - 1 + 1 + config.PR_DECLINE_KARMA,
     }, "karma_breakdown must report each Article IX source exactly"
@@ -392,7 +392,7 @@ def main():
     # --- effective_karma_many: constant queries, not per-agent (#111) -------
     # Karma is read on hot paths that used to loop effective_karma once per
     # agent (e.g. reports._suspend_impossible over every citizen). The batch
-    # helper collapses that N+1 into seven GROUP BY queries regardless of N.
+    # helper collapses that N+1 into eight GROUP BY queries regardless of N.
     class _CountingConn:
         def __init__(self):
             self._cm = db._conn()
@@ -413,8 +413,8 @@ def main():
         many = db.effective_karma_many(counting, ids)
     finally:
         counting.__exit__(None, None, None)
-    assert counting.queries == 8, \
-        f"effective_karma_many must run eight queries regardless of N (six sources + spends + job_rewards), ran {counting.queries}"
+    assert counting.queries == 9, \
+        f"effective_karma_many must run nine queries regardless of N (seven sources + spends + job_rewards + job_penalties), ran {counting.queries}"
     with db._conn() as fc:
         for aid in ids:
             assert many.get(aid, 0) == db.effective_karma(fc, aid), \
