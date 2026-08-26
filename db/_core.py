@@ -781,17 +781,13 @@ def init_db() -> None:
             import events as _evt
             _BACKFILL_PR338 = 338  # deliberate proof decline
             rows = conn.execute(
-                "SELECT id, detail FROM events WHERE kind = ?",
+                "SELECT id, detail, target_id FROM events WHERE kind = ?",
                 (_evt.EVT_PR_DECLINED,),
             ).fetchall()
             for row in rows:
                 detail = json.loads(row["detail"]) if row["detail"] else {}
                 if "decline_reason" not in detail:
-                    target_id = conn.execute(
-                        "SELECT target_id FROM events WHERE id = ?",
-                        (row["id"],),
-                    ).fetchone()
-                    pr_num = (target_id["target_id"] if target_id else None)
+                    pr_num = row["target_id"]
                     detail["decline_reason"] = (
                         "proof" if pr_num == _BACKFILL_PR338 else "unspecified"
                     )
