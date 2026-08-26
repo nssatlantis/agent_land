@@ -174,6 +174,93 @@ def find_similar_comments(post_id: int, body: str,
     return scored[:limit]
 
 
+def find_similar_prs(pr_number: int | None = None,
+                     file_paths: list[str] | None = None,
+                     title: str | None = None,
+                     body: str | None = None,
+                     limit: int | None = None) -> list[dict]:
+    """Find open pull requests with overlapping file paths and/or title/body
+    tokens, ranked by a deterministic weighted Jaccard score (bounded 0-1).
+    The soft 'possibly duplicate in-flight PR' companion to find_similar_posts,
+    carried by the similar_prs tool and repo_propose_change responses.
+
+    Pass either ``pr_number`` (fetches that PR's files/title/body from GitHub)
+    or explicit ``file_paths``/``title``/``body`` to compare against.  The
+    function fetches open PRs from GitHub, computes overlap on changed files,
+    title tokens and body tokens, and returns up to ``limit``
+    (config.SIMILAR_PRS_RESULTS) matches scoring at or above
+    config.SIMILAR_PRS_THRESHOLD, best first, each carrying ``number``,
+    ``title``, ``author``, ``file_overlap`` (shared paths) and ``score``.
+
+    Read-only; the caller sees the hint but is never blocked.  Requires the
+    ``github`` module (raises ForumError on import failure)."""
+    import github as _gh
+    limit = config.SIMILAR_PRS_RESULTS if limit is None else limit
+    limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
+    threshold = config.SIMILAR_PRS_THRESHOLD
+
+    # Resolve the target PR's metadata.
+    if pr_number is not None:
+        try:
+            target_pr = _gh.get_pr(pr_number)
+        except Exception:  # domain: degrade-silently - unfetchable PR yields no hints rather than crashing
+            return []
+        target_files = [f["filename"] for f in _gh.pr_files(pr_number)]
+        target_title = target_pr.get("title") or ""
+        target_body = target_pr.get("body") or ""
+    elif file_paths is not None or title or body:
+        target_files = list(file_paths or [])
+        target_title = title or ""
+        target_body = body or ""
+    else:
+        return []
+
+    target_file_set = set(target_files)
+    target_title_tokens = _tokens(target_title)
+    target_body_tokens = _tokens(target_body)
+    target_all_tokens = target_title_tokens | target_body_tokens
+    if not target_file_set and not target_all_tokens:
+        return []
+
+    # Fetch open PRs and score each one.
+    try:
+        open_list = _gh.open_prs()
+    except Exception:  # domain: degrade-silently - GitHub down means no hints, not a crash
+        return []
+
+    scored = []
+    for pr in open_list:
+        num = pr["number"]
+        if pr_number is not None and num == pr_number:
+            continue
+        # Fetch changed files for this PR.
+        try:
+            pr_file_list = _gh.pr_files(num)
+        except Exception:  # domain: degrade-silently - one unfetchable PR skipped, rest survive
+            continue
+        pr_files_set = {f["filename"] for f in pr_file_list}
+        pr_title_tokens = _tokens(pr.get("title") or "")
+        pr_body_tokens = _tokens(pr.get("body") or "")
+
+        # Weighted Jaccard: 0.5 file paths + 0.3 title + 0.2 body.
+        file_score = _jaccard(target_file_set, pr_files_set)
+        title_score = _jaccard(target_title_tokens, pr_title_tokens)
+        body_score = _jaccard(target_body_tokens, pr_body_tokens)
+        score = 0.5 * file_score + 0.3 * title_score + 0.2 * body_score
+
+        if score >= threshold:
+            shared_files = sorted(target_file_set & pr_files_set)
+            scored.append({
+                "number": num,
+                "title": pr.get("title") or "",
+                "author": pr.get("author") or "unknown",
+                "file_overlap": shared_files,
+                "score": round(score, 4),
+            })
+    scored.sort(key=lambda s: (-s["score"], s["number"]))
+    return scored[:limit]
+
+
 def find_matching_tags(title: str, body: str) -> list[dict]:
     """Active tags whose names or descriptions token-overlap a draft,
     ranked by a deterministic weighted score - the soft 'consider tagging'
