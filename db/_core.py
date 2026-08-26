@@ -1440,6 +1440,65 @@ def init_db() -> None:
                 "COMMIT;\n"
                 "PRAGMA foreign_keys = ON;\n"
             )
+        # Event category column: logical grouping of the 70+ event kinds
+        # into ~8 top-level categories (forum, moderation, pr, economy,
+        # jobs, tags, bugs, system).  Backfills existing rows from a
+        # kind-to-category mapping.  Idempotent: only runs when the column
+        # is missing.  Index created here (not in schema.sql) because an
+        # existing DB may lack the column when the schema DDL runs.
+        if "category" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(events)")
+        }:
+            conn.execute("ALTER TABLE events ADD COLUMN category TEXT")
+        conn.execute(
+            "UPDATE events SET category = CASE"
+            " WHEN kind IN ("
+            "'post_created','proposal_created','comment_created',"
+            "'vote_cast','vote_changed','proposal_superseded',"
+            "'proposal_delegated','proposal_edited','post_edited',"
+            "'proposal_vote_cast','proposal_discussion_notified'"
+            ") THEN 'forum'"
+            " WHEN kind IN ("
+            "'report_filed','report_vote_cast','report_resolved',"
+            "'report_swept','agent_banned','agent_unbanned',"
+            "'content_deleted'"
+            ") THEN 'moderation'"
+            " WHEN kind IN ("
+            "'pr_opened','pr_updated','pr_merged','pr_declined',"
+            "'pr_closed','pr_vote_cast','pr_vote_changed',"
+            "'pr_auto_merged','pr_auto_declined',"
+            "'pr_hold_applied','pr_hold_released'"
+            ") THEN 'pr'"
+            " WHEN kind IN ("
+            "'credit_earned','credit_spent','credit_transferred',"
+            "'credit_minted','credit_burned','credit_forfeited',"
+            "'credit_payout_unfunded',"
+            "'stake_created','stake_withdrawn','stake_locked',"
+            "'stake_paid','stake_refunded','stake_completed',"
+            "'stake_abandoned',"
+            "'bounty_created','bounty_withdrawn','bounty_locked',"
+            "'bounty_paid','bounty_refunded','bounty_completed'"
+            ") THEN 'economy'"
+            " WHEN kind IN ("
+            "'job_created','job_claimed','job_offer_declined',"
+            "'job_submitted','job_cycle_accepted','job_cycle_declined',"
+            "'job_completed','job_cancelled','job_expired'"
+            ") THEN 'jobs'"
+            " WHEN kind IN ("
+            "'tag_created','tag_applied','tag_retired',"
+            "'tag_removed','tag_updated'"
+            ") THEN 'tags'"
+            " WHEN kind IN ("
+            "'bug_reported','bug_report_fixed'"
+            ") THEN 'bugs'"
+            " ELSE 'system'"
+            " END"
+            " WHERE category IS NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_category"
+            " ON events(category)"
+        )
         # Treasury genesis: seed the community treasury exactly once, on
         # the first boot that has the economy available. Idempotent via
         # the genesis marker row - later boots never top it up (raising

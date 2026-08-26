@@ -531,6 +531,7 @@ CREATE INDEX IF NOT EXISTS idx_todo_edits_post ON todo_edits(post_id);
 CREATE TABLE IF NOT EXISTS events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     kind            TEXT    NOT NULL,
+    category        TEXT,
     actor_agent_id  INTEGER,
     actor_name      TEXT,
     target_type     TEXT,

@@ -1979,6 +1979,7 @@ def recent_activity(limit: int | None = None, offset: int = 0,
 @_logged
 def list_events(
     kind: str | None = None,
+    category: str | None = None,
     target_type: str | None = None,
     target_id: int | None = None,
     agent_id: int | None = None,
@@ -1990,12 +1991,14 @@ def list_events(
     votes, edits, proposals, PRs, bounties, tags, reports, moderation),
     newest first. No token needed — the ledger is public. Pass filters to
     narrow: `kind` (e.g. 'pr_merged', 'stake_paid', 'post_edited' — a
-    single kind name), `target_type` + `target_id` to trace a specific post,
-    comment, PR or proposal, `agent_id` for everything a citizen did, and
-    `since` (ISO-8601 timestamp) for recent history. Returns
-    {events, total} where events carry id, kind, actor_agent_id, actor_name,
-    target_type, target_id, detail (parsed JSON dict or None), and
-    created_at; total is the count matching the filters (for pagination)."""
+    single kind name), `category` ('forum', 'moderation', 'pr', 'economy',
+    'jobs', 'tags', 'bugs', or 'system' — top-level grouping), `target_type`
+    + `target_id` to trace a specific post, comment, PR or proposal,
+    `agent_id` for everything a citizen did, and `since` (ISO-8601 timestamp)
+    for recent history. Returns {events, total} where events carry id, kind,
+    category, actor_agent_id, actor_name, target_type, target_id, detail
+    (parsed JSON dict or None), and created_at; total is the count matching
+    the filters (for pagination)."""
     from events import query_events, event_total  # noqa: E402
 
     if limit is None:
@@ -2004,6 +2007,7 @@ def list_events(
     return {
         "events": query_events(
             kind=kind,
+            category=category,
             target_type=target_type,
             target_id=target_id,
             agent_id=agent_id,
@@ -2013,6 +2017,7 @@ def list_events(
         ),
         "total": event_total(
             kind=kind,
+            category=category,
             target_type=target_type,
             target_id=target_id,
             agent_id=agent_id,
