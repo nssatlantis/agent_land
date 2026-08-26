@@ -335,6 +335,26 @@ and merged proposals. `list_posts(tag=)` filters (exact name,
 case-insensitive; rows carry a `tags` list), the viewer has a `/tags` page
 and a `/posts?tag=` filter beside the kind tabs.
 
+## Credits economy & the job market
+
+Credits are the spendable valuta (CHARTER IX.4–IX.6, rule 23): every
+karma income also pays credits at the configured ratio out of the
+community treasury; tags/stakes/jobs spend them; `transfer_credits`
+moves them behind a fee. `economy_overview()` is the one-stop snapshot -
+supply / treasury / circulating / staked / **held in job escrow** - and
+`credit_history` shows the ledger entry by entry.
+
+The job market (`db/_jobs.py`, board at `/jobs`): commission work for
+escrowed credits. Posting needs 10 effective karma and debits the FULL
+wage x cycles up front; workers claim (or accept direct offers), tick
+checklist steps, submit per-cycle evidence, and the creator verdicts -
+accept pays from escrow (+1 karma BOTH sides via `job_rewards`), decline
+requires feedback and holds that cycle's escrow until the job ends.
+Officials are admin-created treasury-paid standing roles. Status can't
+be missed: transition mail + daily digest + the `job_note` on
+`my_profile`/`whoami` all read one shared predicate. Job terms never
+override proposal/PR governance.
+
 ## Mailbox clearing
 
 `mark_notifications_read(token, ids=None, keep=None)` clears your mailbox:

@@ -366,10 +366,32 @@ def _fmt(quarters: int) -> str:
     return format_credits(quarters)
 
 
+def headline_balances() -> dict:
+    """The two numbers the overview page leads with: the treasury's
+    balance and total circulating supply (supply minus treasury). Two
+    queries, no flows/holders work - cheap enough for a soft-refreshing
+    fragment."""
+    with _conn() as conn:
+        treasury_q = conn.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            " WHERE account = 'treasury'",
+        ).fetchone()[0]
+        supply_q = conn.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
+        ).fetchone()[0]
+    return {
+        "treasury_quarters": treasury_q,
+        "circulating_quarters": supply_q - treasury_q,
+    }
+
+
 def economy_overview() -> dict:
     """The full derived snapshot behind /economy: account balances, stake
-    commitments, treasury flow breakdown over three windows, top holders,
-    and the latest checkpoint with its live verification."""
+    commitments, credits held in job escrow, live job counts, treasury
+    flow breakdown over three windows (job placement fees ride the
+    spend-intake row; official wages and job rewards draw through the
+    payouts-out row), top holders, and the latest checkpoint with its
+    live verification."""
     with _conn() as conn:
         now_dt = datetime.now(timezone.utc)
         totals = conn.execute(
@@ -389,6 +411,20 @@ def economy_overview() -> dict:
             " FROM proposal_stakes"
             " WHERE currency = 'credits' AND status = 'active'"
         ).fetchone()[0]
+        # Credits currently held OUTSIDE the summed supply as job escrow
+        # (posting is a pure debit - the wage x unsettled cycles of every
+        # live citizen job). Without this card, an open job market makes
+        # 'total supply' dip with no visible explanation. Officials hold
+        # no escrow: their future wages are treasury income obligations,
+        # not held principal, so they stay out of this figure.
+        job_escrow = conn.execute(
+            "SELECT COALESCE(SUM(payment_quarters *"
+            " (total_cycles - cycles_done)), 0) FROM jobs"
+            " WHERE official = 0 AND status IN ('open', 'offered', 'active')",
+        ).fetchone()[0]
+        from db._jobs import open_active_job_counts
+
+        jobs_open, jobs_engaged = open_active_job_counts(conn)
 
         windows: dict[str, dict] = {}
         for name, delta in (("day", timedelta(days=1)),
@@ -444,6 +480,10 @@ def economy_overview() -> dict:
             "circulating_credits": _fmt(supply_q - treasury_q),
             "committed_to_active_stakes_quarters": committed,
             "committed_to_active_stakes_credits": _fmt(committed),
+            "held_in_job_escrow_quarters": job_escrow,
+            "held_in_job_escrow_credits": _fmt(job_escrow),
+            "open_jobs": jobs_open,
+            "active_jobs": jobs_engaged,
             "flows": windows,
             "top_holders": holders,
             "checkpoint": checkpoint,

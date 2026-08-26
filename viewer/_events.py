@@ -6,6 +6,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 from events import query_events, event_total
+import config
 from viewer._utils import esc, _human_ts
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import _page
@@ -20,6 +21,15 @@ _EVENT_KIND_BADGES = {
     "credit_burned": ("Burned", "var(--fail)"),
     "credit_forfeited": ("Forfeited", "var(--warn)"),
     "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
+    "job_created": ("Job posted", "#2563eb"),
+    "job_claimed": ("Job claimed", "#2563eb"),
+    "job_offer_declined": ("Offer declined", "var(--warn)"),
+    "job_submitted": ("Submitted", "#7c3aed"),
+    "job_cycle_accepted": ("Cycle paid", "var(--ok)"),
+    "job_cycle_declined": ("Cycle declined", "var(--warn)"),
+    "job_completed": ("Job completed", "var(--ok)"),
+    "job_cancelled": ("Job cancelled", "var(--muted)"),
+    "job_expired": ("Expired", "var(--muted)"),
     "stake_abandoned": ("Abandoned", "var(--warn)"),
     "post_edited": ("Post edit", "var(--muted)"),
     "proposal_created": ("Proposal", "var(--accent)"),
@@ -216,6 +226,62 @@ def _event_description(e: dict) -> str:
     if k == "credit_payout_unfunded":
         return (f'An earning of {d.get("credits", "?")} credits went unpaid - '
                 f'the treasury was empty ({d.get("reason", "?")})')
+    if k in ("job_created", "job_claimed", "job_offer_declined",
+             "job_submitted", "job_cycle_accepted", "job_cycle_declined",
+             "job_completed", "job_cancelled", "job_expired"):
+        title = esc(d.get("title", "?"))
+        if k == "job_created":
+            text = (f'posted the job "{title}" ({d.get("payment_credits", "?")}'
+                    f" credits/cycle x {d.get('total_cycles', '?')}")
+            if d.get("official"):
+                text += ", treasury-paid, no escrow"
+            else:
+                text += f", escrowed {d.get('escrow_credits', '?')} credits"
+            text += ")"
+            if d.get("admin"):
+                text += f" - created by admin {esc(d['admin'])}"
+            return text
+        if k == "job_claimed":
+            if d.get("how") == "offer_accepted":
+                return f'{actor} accepted the offered job "{title}"'
+            return f'{actor} claimed the job "{title}"'
+        if k == "job_offer_declined":
+            return (f'{actor} declined the job offer "{title}" - it'
+                    " returned to the open board")
+        if k == "job_submitted":
+            ev = d.get("evidence")
+            suffix = f' - evidence: {esc(ev)}' if ev else ""
+            return (f'{actor} submitted cycle {d.get("cycle_no", "?")} of'
+                    f' "{title}" for review{suffix}')
+        if k == "job_cycle_accepted":
+            karma = (f', +{config.JOB_KARMA_PER_CYCLE} karma both sides'
+                     if d.get("karma_awarded") else "")
+            return (f'{actor} accepted cycle {d.get("cycle_no", "?")} of'
+                    f' "{title}" (paid {d.get("payout_credits", "?")}'
+                    f' credits{karma})')
+        if k == "job_cycle_declined":
+            return (f'{actor} declined cycle {d.get("cycle_no", "?")} of'
+                    f' "{title}" - escrow stays held until the job ends')
+        if k == "job_completed":
+            return (f'the job "{title}" is complete - all cycles paid'
+                    f' ({d.get("total_paid_credits", "?")} credits total)')
+        if k == "job_cancelled":
+            rq = int(d.get("refunded_quarters", 0) or 0)
+            if d.get("reason") == "admin_moderation":
+                base = (f'{actor} closed the job "{title}" by admin'
+                        f' {esc(d.get("admin", "?"))}')
+            else:
+                base = f'{actor} cancelled the job "{title}"'
+            if rq > 0:
+                base += (f' - {d.get("refunded_credits", "?")} credits of'
+                         " unearned escrow returned")
+            return base
+        # job_expired
+        rq = int(d.get("refunded_quarters", 0) or 0)
+        tail = (f' - {d.get("refunded_credits", "?")} credits of escrow'
+                " refunded" if rq > 0 else " - no escrow was held")
+        return (f'the job "{title}" expired unclaimed after '
+                f'{config.JOB_EXPIRY_DAYS} days{tail}')
     if k == "bounty_completed":
         return f'Bounty #{tid} completed (all PRs paid)'
     if k == "pr_opened":
@@ -302,6 +368,8 @@ def events_page(request: Request) -> HTMLResponse:
     ("credit_earned", "Credits earned"), ("credit_spent", "Credits spent"),
     ("credit_transferred", "Transfers"), ("credit_minted", "Minted"),
     ("credit_burned", "Burned"), ("credit_forfeited", "Forfeits"),
+    ("job_created", "Jobs"), ("job_submitted", "Job submissions"),
+    ("job_cycle_accepted", "Cycle payouts"), ("job_completed", "Jobs completed"),
         ("report_filed", "Reports"), ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
         ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),

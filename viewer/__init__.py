@@ -133,6 +133,9 @@ async def render_overview() -> str:
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
         for b in active_stakes if b.get("currency") == "credits"
     )
+    with db._conn() as _c:
+        jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
+    headline = db.headline_balances()
 
     repo_extra = ""
 
@@ -142,6 +145,9 @@ async def render_overview() -> str:
             c, proposals_open, reports_open, pr_count,
             stake_total_karma,
             stake_total_credits_quarters=stake_total_credits_q,
+            jobs_open=jobs_open,
+            treasury_quarters=headline["treasury_quarters"],
+            circulating_quarters=headline["circulating_quarters"],
         )
         + repo_extra
         + _stake_summary_card()
@@ -714,19 +720,23 @@ def jobs_page(request: Request) -> HTMLResponse:
     tab = request.query_params.get("status")
     if tab not in {t for t, _ in _JOBS_TABS}:
         tab = None
+    all_jobs = db.list_jobs(view="all", limit=300)["jobs"]
+    counts = {
+        "open": sum(1 for j in all_jobs if j["status"] == "open"),
+        "offered": sum(1 for j in all_jobs if j["status"] == "offered"),
+        "active": sum(1 for j in all_jobs if j["status"] == "active"),
+        "completed": sum(1 for j in all_jobs if j["status"] == "completed"),
+    }
     if tab == "open":
-        listing = db.list_jobs(view="open", limit=100)
+        jobs = [j for j in all_jobs if j["status"] in ("open", "offered")]
     elif tab == "active":
-        listing = db.list_jobs(view="all", limit=200)
-    else:
-        listing = db.list_jobs(view="all", limit=100)
-    jobs = listing["jobs"]
-    if tab == "active":
-        jobs = [j for j in jobs if j["status"] == "active"]
+        jobs = [j for j in all_jobs if j["status"] == "active"]
     elif tab == "completed":
-        jobs = [j for j in jobs if j["status"] == "completed"]
+        jobs = [j for j in all_jobs if j["status"] == "completed"]
     elif tab == "closed":
-        jobs = [j for j in jobs if j["status"] in ("cancelled", "expired")]
+        jobs = [j for j in all_jobs if j["status"] in ("cancelled", "expired")]
+    else:
+        jobs = all_jobs
     tabs = '<div class="tabs">'
     for key, label in _JOBS_TABS:
         href = "/jobs" if key is None else f"/jobs?status={key}"
@@ -741,6 +751,13 @@ def jobs_page(request: Request) -> HTMLResponse:
             "a credit wage, and the full escrow leaves your wallet up "
             "front so acceptance can never renege.</p>"
         )
+    strip = (
+        f"<p class='meta' style='margin:0 0 8px'>"
+        f"{counts['open']} open &middot; "
+        f"{counts['offered'] + counts['active']} in progress &middot; "
+        f"{counts['completed']} completed"
+        f"</p>"
+    )
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Jobs</h2>'
@@ -749,8 +766,8 @@ def jobs_page(request: Request) -> HTMLResponse:
         "creator's wallet at posting time; each accepted cycle pays the "
         "worker (+1 karma both sides), declines demand feedback and pay "
         "nothing (their escrow stays held until the job ends). Scope "
-        "tags are advisory pointers, "
-        "never restrictions.</p>"
+        "tags are advisory pointers, never restrictions.</p>"
+        + strip
         + tabs
         + cards
         + "</div>"
@@ -813,7 +830,7 @@ _ECONOMY_FLOW_LABELS = (
     ("burned_quarters", "burned (supply -)"),
     ("fees_in_quarters", "transaction fees in"),
     ("forfeit_intake_quarters", "forfeitures in"),
-    ("spend_intake_quarters", "tag & stake fees in"),
+    ("spend_intake_quarters", "tag, stake & job fees in"),
     ("transfer_intake_quarters", "transfers in"),
     ("payout_returns_in_quarters", "clamped-earn returns in"),
     ("payouts_out_quarters", "earnings paid out"),
@@ -848,7 +865,16 @@ def economy_page(request: Request) -> HTMLResponse:
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
         )
+        + _card(
+            overview["held_in_job_escrow_credits"],
+            "held in job escrow",
+        )
         + "</div>"
+    ) + (
+        f"<p class='meta' style='margin:6px 0 0'>Labor market: "
+        f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
+        f" progress - see the <a href='/jobs'>jobs board</a>.</p>"
+        if (overview["open_jobs"] or overview["active_jobs"]) else ""
     )
 
     flow_panels = ""

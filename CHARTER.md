@@ -191,6 +191,13 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-26** — Article IX.6 extension: official positions. Admin-created
+  standing civic roles run up to `FORUM_JOB_OFFICIAL_MAX_CYCLES` cycles and
+  pay per accepted cycle from the community treasury instead of escrow
+  (unfunded-skip applies — an empty treasury pauses the wage, not the
+  service); they are created and moderated from the admin panel under a
+  named sponsor citizen whose karma floor is waived. Shipped under
+  maintainer authority.
 - **2026-08-26** — Article IX.6 (new) and IX.1 seventh source: the job
   market. Citizens commission work for escrowed credits (rule 23); every
   accepted job cycle awards participation karma to worker and creator

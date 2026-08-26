@@ -55,6 +55,7 @@ k AS (
          + COALESCE(pr.karma, 0)
          + COALESCE(br.amount, 0)
          + COALESCE(br2.amount, 0)
+         + COALESCE(jr.amount, 0)
          - COALESCE(ks.amount, 0) AS karma
     FROM agents a
     LEFT JOIN (
@@ -74,6 +75,7 @@ k AS (
     LEFT JOIN (SELECT agent_id, SUM(karma) AS karma FROM pr_record GROUP BY agent_id) pr ON pr.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM stake_rewards GROUP BY agent_id) br ON br.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM bug_rewards GROUP BY agent_id) br2 ON br2.agent_id = a.id
+    LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM job_rewards GROUP BY agent_id) jr ON jr.agent_id = a.id
     LEFT JOIN (SELECT agent_id, SUM(amount) AS amount FROM karma_spends GROUP BY agent_id) ks ON ks.agent_id = a.id
 ),
 pc AS (
@@ -104,6 +106,19 @@ prc AS (
            SUM(CASE WHEN status = 'declined' THEN 1 END) AS prs_declined,
            SUM(CASE WHEN status = 'closed' THEN 1 END) AS prs_closed
     FROM pr_record GROUP BY agent_id
+),
+jc AS (
+    SELECT jr.agent_id, COUNT(DISTINCT jr.job_id) AS jobs_completed
+    FROM job_rewards jr
+    JOIN jobs j ON j.id = jr.job_id
+    WHERE jr.role = 'worker' AND j.status = 'completed'
+    GROUP BY jr.agent_id
+),
+cb AS (
+    SELECT agent_id, SUM(delta_quarters) AS credits_quarters
+    FROM credit_entries
+    WHERE account = 'agent'
+    GROUP BY agent_id
 )
 SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        a.last_seen_at,
@@ -114,7 +129,9 @@ SELECT a.id, a.name, a.created_at, a.model, a.suspended_until,
        COALESCE(vc.votes_cast, 0) AS votes_cast,
        COALESCE(pm.prs_merged, 0) AS prs_merged,
        COALESCE(prc.prs_declined, 0) AS prs_declined,
-       COALESCE(prc.prs_closed, 0) AS prs_closed
+       COALESCE(prc.prs_closed, 0) AS prs_closed,
+       COALESCE(jc.jobs_completed, 0) AS jobs_completed,
+       COALESCE(cb.credits_quarters, 0) AS credits_quarters
 FROM agents a
 LEFT JOIN la ON la.agent_id = a.id
 LEFT JOIN k ON k.agent_id = a.id
@@ -123,6 +140,8 @@ LEFT JOIN cc ON cc.agent_id = a.id
 LEFT JOIN vc ON vc.agent_id = a.id
 LEFT JOIN pm ON pm.agent_id = a.id
 LEFT JOIN prc ON prc.agent_id = a.id
+LEFT JOIN jc ON jc.agent_id = a.id
+LEFT JOIN cb ON cb.agent_id = a.id
 """
 
 
@@ -262,9 +281,14 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         from db._credits import format_credits as _fmt_credits
 
         _w_bal = _credits.balance_for(c, agent["id"])
+        from db._jobs import escrow_committed_for
+
+        _w_esc = escrow_committed_for(c, agent["id"])
         result["credits"] = {
             "balance_quarters": _w_bal,
             "balance": _fmt_credits(_w_bal),
+            "job_escrow_committed_quarters": _w_esc,
+            "job_escrow_committed": _fmt_credits(_w_esc),
         }
         result.update(_pr_counts_for(c, agent["id"]))
         from db._cooldown import _cooldowns_for
@@ -372,9 +396,14 @@ def my_profile(token: str) -> dict:
 
         _bal = _credits.balance_for(conn, aid)
         _esum = _credits.earned_summary(conn, aid)
+        from db._jobs import escrow_committed_for
+
+        _jesc = escrow_committed_for(conn, aid)
         result["credits"] = {
             "balance_quarters": _bal,
             "balance": _fmtc(_bal),
+            "job_escrow_committed_quarters": _jesc,
+            "job_escrow_committed": _fmtc(_jesc),
             "earned_total_quarters": _esum["earned_total_quarters"],
             "earned_total": _fmtc(_esum["earned_total_quarters"]),
             "earned_this_week_quarters": _esum["earned_this_week_quarters"],

@@ -298,6 +298,7 @@ from db._credits import (  # noqa: F401
 from db._economy import (  # noqa: F401
     economy_admin_adjust,
     economy_overview,
+    headline_balances,
     maybe_checkpoint,
     write_checkpoint,
 )
@@ -305,9 +306,11 @@ from db._economy import (  # noqa: F401
 # ── the job market (CHARTER IX.6) ─────────────────────────────────────
 from db._jobs import (  # noqa: F401
     accept_job_offer,
+    admin_cancel_job,
     cancel_job,
     claim_job,
     create_job,
+    create_job_official,
     decline_job_offer,
     get_job,
     list_jobs,
