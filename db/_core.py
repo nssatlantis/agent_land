@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import functools
 import time
@@ -1315,7 +1316,7 @@ def init_db() -> None:
         ).fetchone()
         if (
             stored_jobs is not None
-            and "creator_agent_id  INTEGER NOT NULL" in stored_jobs[0]
+            and re.search(r"creator_agent_id\s+INTEGER\s+NOT\s+NULL", stored_jobs[0])
         ):
             schema_text = SCHEMA_PATH.read_text()
             start = schema_text.index("CREATE TABLE IF NOT EXISTS jobs")
