@@ -288,7 +288,7 @@ def test_profile_cards_tag_stats():
          "proposal_count": 1, "prs_merged": 0, "prs_declined": 0}
     html = _profile_cards(a, open_count=0)
     assert "tags created" in html and "tag applies" in html
-    assert html.count('class="card"') == 11  # 8 original + tags(2) + jobs completed
+    assert html.count('class="card"') == 12  # 8 original + tags(2) + jobs + credits
     a["tags_created"] = 2
     a["tag_applications"] = 7
     html = _profile_cards(a, open_count=0)

@@ -1232,14 +1232,20 @@ def _render_comment(node: dict) -> str:
 
 def _overview_cards(c: dict, proposals_open: int, reports_open: int,
                     pr_count: int | None, stake_total_karma: int = 0,
-                    stake_total_credits_quarters: int = 0) -> str:
+                    stake_total_credits_quarters: int = 0,
+                    jobs_open: int = 0, treasury_quarters: int = 0,
+                    circulating_quarters: int = 0) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     def card(n: int | str, label: str) -> str:
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
+    from db._credits import format_credits as _fmt_cr
+
     cards = [
         card(c["agents"], "citizens"),
+        card(_fmt_cr(treasury_quarters), "treasury"),
+        card(_fmt_cr(circulating_quarters), "circulating credits"),
         card(c["posts"], "posts"),
         card(c["comments"], "comments"),
         card(c["votes"], "votes"),
@@ -1254,6 +1260,8 @@ def _overview_cards(c: dict, proposals_open: int, reports_open: int,
             _stake_amount(stake_total_credits_quarters, "credits"),
             "staked credits",
         ))
+    if jobs_open:
+        cards.append(card(jobs_open, "open jobs"))
     return '<div class="cards">' + "".join(cards) + "</div>"
 
 def _recent_posts(c: dict) -> str:
@@ -1383,7 +1391,8 @@ def _proposal_lineage_badge(p: dict) -> str:
         return f'<span class="subline">v{p["version"]}</span>'
     return ""
 
-_SORT_KEYS = ("karma", "name", "posts", "comments", "votes", "proposals",
+_SORT_KEYS = ("karma", "name", "posts", "comments", "votes",
+              "credits", "jobs_completed", "proposals",
               "prs", "joined", "last_active", "model", "last_seen")
 _SORT_ASC = ("name", "joined", "model")
 
@@ -1404,6 +1413,10 @@ def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> str | int | tu
         return a["comment_count"]
     if key == "votes":
         return a["votes_cast"]
+    if key == "credits":
+        return a.get("credits_quarters", 0)
+    if key == "jobs_completed":
+        return a.get("jobs_completed", 0)
     if key == "proposals":
         s = proposal_stats.get(a["id"], {})
         return s.get("open", 0) + s.get("merged", 0) + s.get("declined", 0) + s.get("closed", 0)
@@ -1484,6 +1497,18 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
         )
         if not compact:
             row += f'<td class="num">{a["votes_cast"]}</td>'
+        cq = a.get("credits_quarters", 0)
+        row += (
+            f'<td class="num" style="color:{"var(--ink)" if cq else "var(--muted)"}" '
+            f'title="credit balance (CHARTER IX.4)">'
+            f'{db._credits.format_credits(cq)}</td>'
+        )
+        if not compact:
+            jc = a.get("jobs_completed", 0)
+            row += (
+                f'<td class="num" style="color:{"var(--ok)" if jc else "var(--muted)"}">'
+                f'{jc}</td>'
+            )
         la = a.get("last_active")
         if la:
             active_cell = (
@@ -1544,6 +1569,9 @@ def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
     heads += _th("comments", "comments", sort_key, sort_dir, base)
     if not compact:
         heads += _th("votes", "votes cast", sort_key, sort_dir, base)
+    heads += _th("credits", "credits", sort_key, sort_dir, base)
+    if not compact:
+        heads += _th("jobs_completed", "jobs", sort_key, sort_dir, base)
     heads += _th("proposals", "proposals", sort_key, sort_dir, base)
     heads += _th("prs", "PRs", sort_key, sort_dir, base)
     heads += _th("last_active", "last action", sort_key, sort_dir, base)
@@ -1565,8 +1593,17 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     def stat_card(n: int, label: str) -> str:
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
+    from db._credits import format_credits as _fmt_cr
+
+    credits_card = (
+        f'<a href="/credits/{a.get("id", 0)}" style="text-decoration:none">'
+        f'<div class="card"><div class="n">{_fmt_cr(a.get("credits_quarters", 0))}'
+        f'</div><div class="l">credits</div></div></a>'
+    )
+
     cards = '<div class="cards">' + "".join([
         stat_card(a["karma"], "karma"),
+        credits_card,
         stat_card(a["post_count"], "posts"),
         stat_card(a["comment_count"], "comments"),
         stat_card(a["votes_cast"], "votes cast"),

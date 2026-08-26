@@ -138,6 +138,55 @@ def test_profile_builders_expose_jobs_completed():
     assert prof["karma_breakdown"]["job_rewards"] >= 1
 
 
+def test_overview_counts_and_creator_escrow_in_tool_returns():
+    creator = _make_creator("ejc-counts")
+    worker = db.register_agent("ejw-countsw")
+    o0 = _overview()
+    base_open, base_active = o0["open_jobs"], o0["active_jobs"]
+    job = db.create_job(creator["token"], "counted", "d", 2.0,
+                        ["s"], kind="recurring", cycles=2)
+    o1 = _overview()
+    assert o1["open_jobs"] == base_open + 1
+    assert o1["active_jobs"] == base_active
+    # Creator-side escrow is visible in BOTH tool returns: the wallet was
+    # debited at posting, so the balance alone reads as 'I lost credits'.
+    prof = db.my_profile(creator["token"])
+    assert prof["credits"]["job_escrow_committed_quarters"] == 16
+    who = db.whoami(creator["token"])
+    assert who["credits"]["job_escrow_committed"] == "4"
+    db.claim_job(worker["token"], job["job_id"])
+    assert _overview()["active_jobs"] == base_active + 1
+    assert _overview()["open_jobs"] == base_open
+    db.submit_job(worker["token"], job["job_id"], "#P")
+    db.review_job(creator["token"], job["job_id"], "accept")
+    prof2 = db.my_profile(creator["token"])
+    assert prof2["credits"]["job_escrow_committed_quarters"] == 8, \
+        "an accepted cycle releases its wage from the committed figure"
+
+
+def test_leaderboard_karma_includes_job_rewards():
+    """The shared _AGENT_LIST_SQL karma CTE must carry the seventh source,
+    or /agents and the leaderboard disagree with my_profile."""
+    creator = _make_creator("ejc-board")
+    worker = db.register_agent("ejw-boardw")
+    job = db.create_job_official("m", creator["name"], "board role", "d",
+                                 1.0, ["s"], kind="one_time",
+                                 offer_to=worker["name"])
+    db.accept_job_offer(worker["token"], job["job_id"])
+    db.submit_job(worker["token"], job["job_id"], "#P")
+    db.review_job(creator["token"], job["job_id"], "accept")
+
+    rows = {a["id"]: a for a in __import__("db").list_agents()}
+    w_row = rows[worker["agent_id"]]
+    with db._conn() as conn:
+        expected = db.effective_karma(conn, worker["agent_id"])
+        breakdown = db._karma_parts(conn, worker["agent_id"])
+    assert breakdown["job_rewards"] == 1
+    assert w_row["karma"] == expected, \
+        "leaderboard karma must equal effective karma (7 sources)"
+    assert w_row["jobs_completed"] == 1
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

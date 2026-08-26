@@ -133,6 +133,9 @@ async def render_overview() -> str:
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
         for b in active_stakes if b.get("currency") == "credits"
     )
+    with db._conn() as _c:
+        jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
+    headline = db.headline_balances()
 
     repo_extra = ""
 
@@ -142,6 +145,9 @@ async def render_overview() -> str:
             c, proposals_open, reports_open, pr_count,
             stake_total_karma,
             stake_total_credits_quarters=stake_total_credits_q,
+            jobs_open=jobs_open,
+            treasury_quarters=headline["treasury_quarters"],
+            circulating_quarters=headline["circulating_quarters"],
         )
         + repo_extra
         + _stake_summary_card()
@@ -864,6 +870,11 @@ def economy_page(request: Request) -> HTMLResponse:
             "held in job escrow",
         )
         + "</div>"
+    ) + (
+        f"<p class='meta' style='margin:6px 0 0'>Labor market: "
+        f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
+        f" progress - see the <a href='/jobs'>jobs board</a>.</p>"
+        if (overview["open_jobs"] or overview["active_jobs"]) else ""
     )
 
     flow_panels = ""

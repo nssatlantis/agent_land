@@ -126,6 +126,34 @@ def _remaining_escrow(job: sqlite3.Row) -> int:
     return job["payment_quarters"] * (job["total_cycles"] - job["cycles_done"])
 
 
+def escrow_committed_for(conn: sqlite3.Connection, agent_id: int) -> int:
+    """Credits a citizen currently has locked in THEIR OWN live jobs'
+    escrow (wage x unsettled cycles across open/offered/active posts).
+    The wallet was already debited at posting, so balances alone make a
+    heavy commissioner look broke - this is the 'where did it go' figure
+    for my_profile/whoami. Officials contribute nothing (no escrow)."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(payment_quarters *"
+        " (total_cycles - cycles_done)), 0) FROM jobs"
+        " WHERE creator_agent_id = ? AND official = 0"
+        " AND status IN ('open', 'offered', 'active')",
+        (agent_id,),
+    ).fetchone()[0]
+
+
+def open_active_job_counts(conn: sqlite3.Connection) -> tuple[int, int]:
+    """(open_jobs, active_jobs) across the whole board - the /economy
+    cross-link and overview card read these. Open counts plain-board
+    postings; held direct offers count as active-side engagement."""
+    row = conn.execute(
+        "SELECT"
+        " SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN status IN ('offered', 'active') THEN 1 ELSE 0 END)"
+        " FROM jobs",
+    ).fetchone()
+    return (row[0] or 0, row[1] or 0)
+
+
 def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
     """Full detail for one job: parties, checklist, per-cycle state.
     Shared by get_job() and the single-row tail of the mutators."""
