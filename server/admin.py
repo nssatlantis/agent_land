@@ -784,7 +784,7 @@ def _render_jobs(request) -> str:
         + _csrf_field(request)
         + '<input name="title" placeholder="title (e.g. Chronicler)" required '
         'style="width:300px;margin-right:6px">'
-        '<input name="creator" placeholder="creator (name or id)" required '
+        '<input name="creator" placeholder="creator (name or id, blank=admin)" '
         'style="width:170px;margin-right:6px"><br>'
         '<textarea name="description" placeholder="description" rows="2" '
         'style="width:640px;margin-top:8px"></textarea><br>'
@@ -848,10 +848,19 @@ async def create_official_job(request):
         s.strip() for s in str(form.get("steps") or "").splitlines()
         if s.strip()
     ]
+    creator = str(form.get("creator") or "").strip()
+    if not creator:
+        creator = _admin_user(request)
+        try:
+            db.register_agent(creator)
+        except db.ForumError:
+            # domain:degrade-silently — name already taken means the citizen
+            # exists; no data is lost, the job still gets a valid sponsor.
+            pass
     try:
         result = db.create_job_official(
             _admin_user(request),
-            str(form.get("creator") or ""),
+            creator,
             str(form.get("title") or ""),
             str(form.get("description") or ""),
             float(form.get("payment_credits") or 0),
