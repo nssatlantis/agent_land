@@ -217,24 +217,24 @@ def test_repo_url_without_token():
 
 
 def test_repo_url_with_token():
-    old = github.GITHUB_TOKEN
+    old = github._core.GITHUB_TOKEN
     try:
-        github.GITHUB_TOKEN = "ghp_test123"
+        github._core.GITHUB_TOKEN = "ghp_test123"
         url = _repo_url(with_token=True)
         assert "x-access-token" in url
         assert "nssatlantis/agent_land.git" in url
     finally:
-        github.GITHUB_TOKEN = old
+        github._core.GITHUB_TOKEN = old
 
 
 def test_repo_url_with_special_chars_in_token():
-    old = github.GITHUB_TOKEN
+    old = github._core.GITHUB_TOKEN
     try:
-        github.GITHUB_TOKEN = "ghp_abc/def+ghi"
+        github._core.GITHUB_TOKEN = "ghp_abc/def+ghi"
         url = _repo_url(with_token=True)
         assert "ghp_abc%2Fdef%2Bghi" in url
     finally:
-        github.GITHUB_TOKEN = old
+        github._core.GITHUB_TOKEN = old
 
 
 # ---- _push_ref ------------------------------------------------------------
@@ -275,10 +275,10 @@ def test_detect_clean_merge():
         return _fake_completed()
 
     with (
-        patch("github._request", return_value=pr_data),
-        patch("github._clone_repo", return_value=fake_repo),
-        patch("github._git", side_effect=fake_git),
-        patch("github._cleanup") as mc,
+        patch("github._core._request", return_value=pr_data),
+        patch("github._gitops._clone_repo", return_value=fake_repo),
+        patch("github._gitops._git", side_effect=fake_git),
+        patch("github._gitops._cleanup") as mc,
     ):
         result = github.detect_merge_conflicts(42)
     assert result["status"] == "clean", result
@@ -314,11 +314,11 @@ def test_detect_conflicts_with_regions():
         return os.path.join(repo_dir, file_path)
 
     with (
-        patch("github._request", return_value=pr_data),
-        patch("github._clone_repo", return_value=fake_repo),
-        patch("github._git", side_effect=fake_git),
-        patch("github._safe_path", side_effect=fake_sp),
-        patch("github._cleanup"),
+        patch("github._core._request", return_value=pr_data),
+        patch("github._gitops._clone_repo", return_value=fake_repo),
+        patch("github._gitops._git", side_effect=fake_git),
+        patch("github._gitops._safe_path", side_effect=fake_sp),
+        patch("github._gitops._cleanup"),
     ):
         with patch.object(Path, "read_text", return_value=conflict_content):
             result = github.detect_merge_conflicts(42)
@@ -356,11 +356,11 @@ def test_detect_unreadable_file_graceful():
         raise github.RepoError("path escapes the repository root")
 
     with (
-        patch("github._request", return_value=pr_data),
-        patch("github._clone_repo", return_value=fake_repo),
-        patch("github._git", side_effect=fake_git),
-        patch("github._safe_path", side_effect=fake_sp),
-        patch("github._cleanup"),
+        patch("github._core._request", return_value=pr_data),
+        patch("github._gitops._clone_repo", return_value=fake_repo),
+        patch("github._gitops._git", side_effect=fake_git),
+        patch("github._gitops._safe_path", side_effect=fake_sp),
+        patch("github._gitops._cleanup"),
     ):
         result = github.detect_merge_conflicts(42)
     assert result["status"] == "conflicts", result
@@ -390,11 +390,11 @@ def test_resolve_partial_coverage_rejected():
 
     resolutions = [{"file": "a.py", "content": "resolved a"}]
     with (
-        patch("github._ensure_token"),
-        patch("github._request", return_value=pr_data),
-        patch("github._clone_repo", return_value=fake_repo),
-        patch("github._git", side_effect=fake_git),
-        patch("github._cleanup"),
+        patch("github._core._ensure_token"),
+        patch("github._core._request", return_value=pr_data),
+        patch("github._gitops._clone_repo", return_value=fake_repo),
+        patch("github._gitops._git", side_effect=fake_git),
+        patch("github._gitops._cleanup"),
     ):
         try:
             github.apply_merge_resolutions(
@@ -414,8 +414,8 @@ def test_resolve_markers_in_content_rejected():
     }
     bad_content = "<<<<<<< still in conflict ======= nope >>>>>>>"
     with (
-        patch("github._ensure_token"),
-        patch("github._request", return_value=pr_data),
+        patch("github._core._ensure_token"),
+        patch("github._core._request", return_value=pr_data),
     ):
         try:
             github.apply_merge_resolutions(
@@ -457,12 +457,12 @@ def test_resolve_success():
 
     resolutions = [{"file": "a.py", "content": "resolved content"}]
     with (
-        patch("github._ensure_token"),
-        patch("github._request", return_value=pr_data),
-        patch("github._clone_repo", return_value=fake_repo),
-        patch("github._git", side_effect=fake_git),
-        patch("github._cleanup"),
-        patch("github._invalidate_pr"),
+        patch("github._core._ensure_token"),
+        patch("github._core._request", return_value=pr_data),
+        patch("github._gitops._clone_repo", return_value=fake_repo),
+        patch("github._gitops._git", side_effect=fake_git),
+        patch("github._gitops._cleanup"),
+        patch("github._core._invalidate_pr"),
     ):
         result = github.apply_merge_resolutions(
             42, resolutions, "test-citizen", _pr=pr_data,
@@ -484,9 +484,9 @@ def test_git_timeout_scrubs_token():
     """_git scrubbing works in the timeout path too."""
     import subprocess as _sp
 
-    old = github.GITHUB_TOKEN
+    old = github._core.GITHUB_TOKEN
     try:
-        github.GITHUB_TOKEN = "ghp_secret123"
+        github._core.GITHUB_TOKEN = "ghp_secret123"
         with tempfile.TemporaryDirectory() as tmp:
             # Mock subprocess.run to immediately raise TimeoutExpired
             # so the test doesn't actually wait 120s.
@@ -495,7 +495,7 @@ def test_git_timeout_scrubs_token():
 
             with patch("subprocess.run", side_effect=fake_run):
                 try:
-                    github._git(tmp, "remote", "set-url", "origin",
+                    github._gitops._git(tmp, "remote", "set-url", "origin",
                                 "https://x-access-token:ghp_secret123@github.com/x/y.git")
                     assert False, "should have raised"
                 except github.RepoError as e:
@@ -504,7 +504,7 @@ def test_git_timeout_scrubs_token():
                     assert "secret123" not in msg, f"token leaked (partial): {msg}"
                     assert "timed out" in msg
     finally:
-        github.GITHUB_TOKEN = old
+        github._core.GITHUB_TOKEN = old
 
 
 # ---- runner ---------------------------------------------------------------

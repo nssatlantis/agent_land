@@ -5,7 +5,7 @@ files = [
     "db",
     "server.py",
     "viewer",
-    "github.py",
+    "github",
     "logutil.py",
     "server/admin.py",
     "rules_text.py",
@@ -35,7 +35,7 @@ select = ["E9", "F", "B"]
 
 [tool.coverage.run]
 branch = true
-source = ["db", "server.py", "github.py", "moderation.py", "reports.py", "notifications.py", "search.py", "events.py", "config.py", "logutil.py", "rules_text.py"]
+source = ["db", "server.py", "github", "moderation.py", "reports.py", "notifications.py", "search.py", "events.py", "config.py", "logutil.py", "rules_text.py"]
 omit = ["tests/*", "viewer/*", "deploy/*"]
 warn_no_data = false
 
