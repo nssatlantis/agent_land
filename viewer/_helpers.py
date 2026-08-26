@@ -1576,6 +1576,7 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
         stat_card(open_count, "open PRs"),
         stat_card(a.get("tags_created", 0), "tags created"),
         stat_card(a.get("tag_applications", 0), "tag applies"),
+        stat_card(a.get("jobs_completed", 0), "jobs completed"),
     ]) + "</div>"
 
     if not kb:
@@ -1589,6 +1590,8 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
         line += f' \xb7 {kb["bounty_rewards"]:+d} staking rewards (karma)'
     if kb.get("bug_rewards"):
         line += f' \xb7 {kb["bug_rewards"]:+d} bug rewards'
+    if kb.get("job_rewards"):
+        line += f' \xb7 {kb["job_rewards"]:+d} job cycles'
     if kb.get("spent"):
         line += f' \xb7 {kb["spent"]:+d} spent'
     return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'

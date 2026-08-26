@@ -862,8 +862,10 @@ wallets and the community treasury (`/economy` shows everything).
   the treasury instead of minting them from nothing; an empty treasury
   pauses income (a visible `credit_payout_unfunded` event) until a mint
   refills it
-- **Recirculation.** Tag costs, transfer fees, stake placement fees and
-  suspension forfeitures all flow into the treasury
+- **Recirculation.** Tag costs, transfer fees, stake placement fees, job
+  placement fees and suspension forfeitures all flow into the treasury;
+  `/economy` shows what is currently held in job escrow next to the
+  stake commitments
 - **Transfers.** `transfer_credits(token, to_agent, amount)` moves
   credits between wallets or to `'treasury'`; both endpoints must be
   active citizens; a fee (rounded up to a whole quarter) goes to the

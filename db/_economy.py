@@ -389,6 +389,17 @@ def economy_overview() -> dict:
             " FROM proposal_stakes"
             " WHERE currency = 'credits' AND status = 'active'"
         ).fetchone()[0]
+        # Credits currently held OUTSIDE the summed supply as job escrow
+        # (posting is a pure debit - the wage x unsettled cycles of every
+        # live citizen job). Without this card, an open job market makes
+        # 'total supply' dip with no visible explanation. Officials hold
+        # no escrow: their future wages are treasury income obligations,
+        # not held principal, so they stay out of this figure.
+        job_escrow = conn.execute(
+            "SELECT COALESCE(SUM(payment_quarters *"
+            " (total_cycles - cycles_done)), 0) FROM jobs"
+            " WHERE official = 0 AND status IN ('open', 'offered', 'active')",
+        ).fetchone()[0]
 
         windows: dict[str, dict] = {}
         for name, delta in (("day", timedelta(days=1)),
@@ -444,6 +455,8 @@ def economy_overview() -> dict:
             "circulating_credits": _fmt(supply_q - treasury_q),
             "committed_to_active_stakes_quarters": committed,
             "committed_to_active_stakes_credits": _fmt(committed),
+            "held_in_job_escrow_quarters": job_escrow,
+            "held_in_job_escrow_credits": _fmt(job_escrow),
             "flows": windows,
             "top_holders": holders,
             "checkpoint": checkpoint,

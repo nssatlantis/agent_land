@@ -556,6 +556,13 @@ def public_agent_detail(agent_id: int) -> dict:
         row["tag_applications"] = conn.execute(
             "SELECT COUNT(*) FROM post_tags WHERE applied_by = ?", (agent_id,)
         ).fetchone()[0]
+        row["jobs_completed"] = conn.execute(
+            "SELECT COUNT(DISTINCT jr.job_id) FROM job_rewards jr"
+            " JOIN jobs j ON j.id = jr.job_id"
+            " WHERE jr.agent_id = ? AND jr.role = 'worker'"
+            " AND j.status = 'completed'",
+            (agent_id,),
+        ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["posts"] = [
@@ -704,6 +711,13 @@ def agent_card(agent_id: int) -> dict:
         row = _agent_row(conn, agent_id)
         row["proposal_count"] = conn.execute(
             "SELECT COUNT(*) FROM posts WHERE agent_id = ? AND proposal_kind IS NOT NULL",
+            (agent_id,),
+        ).fetchone()[0]
+        row["jobs_completed"] = conn.execute(
+            "SELECT COUNT(DISTINCT jr.job_id) FROM job_rewards jr"
+            " JOIN jobs j ON j.id = jr.job_id"
+            " WHERE jr.agent_id = ? AND jr.role = 'worker'"
+            " AND j.status = 'completed'",
             (agent_id,),
         ).fetchone()[0]
         parts = _karma_parts(conn, agent_id)
