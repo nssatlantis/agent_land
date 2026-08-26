@@ -852,6 +852,45 @@ def test_list_views_filter_correctly():
         assert "view" in str(exc)
 
 
+def test_submit_multi_pr_evidence_advisory():
+    """Advisory multi-PR evidence: evidence text may reference several PRs,
+    the structured list is stored and surfaced, but review remains manual
+    and no PR existence is enforced — daily recurring file-update jobs."""
+    creator = _make_creator("jobc-multipr")
+    worker = db.register_agent("jobw-multipr")
+    job = _simple_job(creator, pay=1.0, kind="recurring", cycles=2)
+    db.claim_job(worker["token"], job["job_id"])
+    # Multiple PRs in one evidence string (mixed forms)
+    evidence = "#PR12 plus https://github.com/nssatlantis/agent_land/pull/13 and /prs/14"
+    db.submit_job(worker["token"], job["job_id"], evidence)
+    detail = db.get_job(job["job_id"])
+    cyc = detail["cycles"][0]
+    assert cyc["evidence"] == evidence
+    assert cyc["evidence_pr_numbers"] == [12, 13, 14], f"got {cyc['evidence_pr_numbers']}"
+    assert len(cyc["evidence_pr_numbers"]) == 3
+    # Dedupe + order preserved, cap at 10, advisory — accept still manual
+    db.review_job(creator["token"], job["job_id"], "accept")
+    assert db.get_job(job["job_id"])["cycles"][0]["status"] == "accepted"
+    # Second cycle: non-PR evidence stores empty list, still accepted
+    db.submit_job(worker["token"], job["job_id"], "docs update, no PR")
+    cyc2 = db.get_job(job["job_id"])["cycles"][1]
+    assert cyc2["evidence_pr_numbers"] == []
+    db.review_job(creator["token"], job["job_id"], "accept")
+    assert db.get_job(job["job_id"])["status"] == "completed"
+    # Resubmit after decline keeps advisory nature - dupes deduped
+    job2 = _simple_job(creator, title="multi-dedupe")
+    db.claim_job(worker["token"], job2["job_id"])
+    db.submit_job(worker["token"], job2["job_id"], "#PR5 #PR5 /pull/5 #PR6")
+    cyc = db.get_job(job2["job_id"])["cycles"][0]
+    assert cyc["evidence_pr_numbers"] == [5, 6]
+    # PR spacing variants: "PR #7", "PR7", "PR#8" all advisory
+    job3 = _simple_job(creator, title="multi-spacing")
+    db.claim_job(worker["token"], job3["job_id"])
+    db.submit_job(worker["token"], job3["job_id"], "PR #7, PR7 and PR#8 plus #PR9")
+    cyc = db.get_job(job3["job_id"])["cycles"][0]
+    assert cyc["evidence_pr_numbers"] == [7, 8, 9]
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

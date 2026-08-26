@@ -431,10 +431,20 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # pids). Requires docker on the host; refuses loudly without it.
     "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
     "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
-    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1, float),
-    "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 512, int),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1.5, float),
+    "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 768, int),
+    "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
+    # Hybrid CI: local fallback when GitHub Actions is down. Concurrency
+    # controls how many sandboxed branch runs may overlap on the single
+    # forum host (each slot has its own -ci tree), and the poller consults
+    # the local result when GitHub's checks stay pending/unknown/failure
+    # or the API is unreachable — either CI passing is sufficient to merge
+    # (user-directed OR gate). 0 disables the fallback entirely.
+    "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 2, int),
+    "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
+    "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from

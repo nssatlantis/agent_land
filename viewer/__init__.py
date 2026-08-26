@@ -696,6 +696,40 @@ def _job_card(job: dict) -> str:
         bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
         if c["evidence"]:
             bits.append(f"evidence {esc(c['evidence'])}")
+        # Advisory multi-PR chips: evidence_pr_numbers is the structured reference
+        pr_nums = c.get("evidence_pr_numbers") or []
+        pr_shas = c.get("evidence_pr_shas") or []
+        if pr_nums:
+            chip_parts = []
+            for idx, n in enumerate(pr_nums):
+                if not str(n).isdigit():
+                    continue
+                nid = int(n)
+                sha = pr_shas[idx] if idx < len(pr_shas) and isinstance(pr_shas[idx], str) and pr_shas[idx] else ""
+                sha_tip = f' title="{sha[:7]}"' if sha else ""
+                # Best-effort CI badge — advisory only, never blocks render
+                badge = ""
+                try:
+                    chk = github.pr_checks(nid)
+                    st = (chk.get("state") or "").lower()
+                    if st == "success":
+                        col = "var(--ok)"
+                    elif st == "failure":
+                        col = "var(--warn)"
+                    elif st in ("pending", "unknown"):
+                        col = "var(--muted)"
+                    else:
+                        col = ""
+                    if col:
+                        badge = f'<span style="background:{col};width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:4px;vertical-align:middle"></span>'
+                except Exception:
+                    # domain: degrade-silently - pr_checks unavailable, chip without badge
+                    badge = ""
+                chip_parts.append(
+                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
+                )
+            if chip_parts:
+                bits.append(f"PRs {' '.join(chip_parts)}")
         if c["feedback"]:
             bits.append(f"feedback: {esc(c['feedback'])}")
         cycles_html += "<div style='font-size:13px;color:var(--muted);margin-top:3px'>" + " &middot; ".join(bits) + "</div>"
