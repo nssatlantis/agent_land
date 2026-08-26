@@ -1,0 +1,405 @@
+"""db._economy — treasury governance, checkpoints, and the economy overview.
+
+The treasury is a public account on the credits ledger (see db._credits).
+This module owns its three governance surfaces:
+
+- ADMIN MINT/BURN: the maintainer creates or destroys treasury credits.
+  Discretionary adjustments are rate-capped per UTC day
+  (FORUM_ADMIN_MINT_DAILY_CAP_CREDITS); above the cap the adjustment must
+  cite a currently-APPROVED forum proposal (net votes >= the live
+  threshold) - the community's mint/burn path.  Every adjustment lands in
+  the events ledger with its reason and proposal reference.
+
+- CHECKPOINTS: periodic sealed snapshots of the economy - total supply,
+  entry count and a running SHA-256 chain over every ledger row's
+  IMMUTABLE fields (id, account, delta, reason, target, created_at;
+  agent_id is deliberately excluded so deletion anonymization can never
+  break a seal).  The poller calls maybe_checkpoint() on its tick; the
+  /economy page verifies the latest seal against a live recomputation of
+  everything up to its last_entry_id.
+
+- OVERVIEW: one derived snapshot powering the /economy page and the
+  economy_overview MCP tool - supply, treasury, circulating, stake
+  commitments, flow breakdown by ledger reason over 24h/7d/all-time, top
+  holders, recent entries and checkpoint verification.  Everything sums
+  from credit_entries directly; no counter can drift from its history.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
+
+import config
+
+from db._core import ForumError, _conn, _now_iso
+
+_ADMIN_ADJUST_REASONS = ("admin_mint", "admin_burn")
+
+
+# -- admin mint/burn (the governance gate) --------------------------------
+
+
+def _utc_day_start_iso() -> str:
+    now_dt = datetime.now(timezone.utc)
+    day_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_dt_to_iso(day_start)
+
+
+def day_dt_to_iso(d: datetime) -> str:
+    return d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _approved_proposal_check(
+    conn: sqlite3.Connection, proposal_id: int
+) -> dict:
+    """Validate that `proposal_id` is an OPEN proposal whose vote has
+    passed (net >= the live threshold) - the cap-exempt community path.
+    Returns the post row on success."""
+    from db._proposal_status import (
+        _proposal_status_for,
+        _proposal_tally_for,
+    )
+
+    row = conn.execute(
+        "SELECT id, agent_id, proposal_kind, superseded_by_id"
+        " FROM posts WHERE id = ?",
+        (proposal_id,),
+    ).fetchone()
+    if row is None or row["proposal_kind"] is None:
+        raise ForumError(f"no proposal with id {proposal_id}.")
+    if row["superseded_by_id"] is not None:
+        raise ForumError(
+            f"proposal #{proposal_id} was superseded by proposal "
+            f"#{row['superseded_by_id']} and is locked - it cannot "
+            "authorize a mint/burn."
+        )
+    if _proposal_status_for(conn, proposal_id) != "open":
+        raise ForumError(
+            f"proposal #{proposal_id} is no longer open - it cannot "
+            "authorize a mint/burn."
+        )
+    tally = _proposal_tally_for(conn, proposal_id, row["proposal_kind"])
+    if tally["net"] < tally["threshold"]:
+        raise ForumError(
+            f"proposal #{proposal_id} has not cleared the community vote "
+            f"(net {tally['net']} vs threshold {tally['threshold']}) - "
+            "it cannot authorize a cap-exempt mint/burn."
+        )
+    return row
+
+
+def economy_admin_adjust(
+    action: str,
+    amount_credits: float,
+    reason: str,
+    *,
+    admin: str = "admin",
+    proposal_id: int | None = None,
+) -> dict:
+    """Mint or burn treasury credits behind the governance gate: within
+    FORUM_ADMIN_MINT_DAILY_CAP_CREDITS per UTC day the admin may adjust
+    freely; a larger adjustment requires `proposal_id` of a currently-
+    approved proposal.  Amounts must be exact quarter values."""
+    from db._credits import burn, exact_from_credits, format_credits, mint
+
+    if action not in ("mint", "burn"):
+        raise ForumError("action must be 'mint' or 'burn'.")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ForumError("a reason is required for every mint/burn.")
+    reason = reason[:200]
+    quarters = exact_from_credits(
+        amount_credits, what="the mint/burn amount",
+    )
+    with _conn(immediate=True) as conn:
+        cap = float(config.ADMIN_MINT_DAILY_CAP_CREDITS)
+        if proposal_id is None:
+            used = conn.execute(
+                "SELECT COALESCE(SUM(ABS(delta_quarters)), 0)"
+                " FROM credit_entries"
+                " WHERE account = 'treasury' AND reason IN (?, ?)"
+                " AND target_type = 'economy' AND target_id IS NULL"
+                " AND created_at >= ?",
+                (*_ADMIN_ADJUST_REASONS, _utc_day_start_iso()),
+            ).fetchone()[0]
+            if cap >= 0 and (used + quarters) > round(cap * 4):
+                raise ForumError(
+                    f"that {action} ({format_credits(quarters)}) exceeds "
+                    f"the daily discretionary budget: "
+                    f"{format_credits(used)} of "
+                    f"{format_credits(round(cap * 4))} used today. Pass a "
+                    "passed proposal id to go beyond the cap - the "
+                    "community decides."
+                )
+            fn_reason = f"admin_{action}"
+        else:
+            _approved_proposal_check(conn, proposal_id)
+            fn_reason = f"proposal_{action}"
+        fn = mint if action == "mint" else burn
+        result = fn(
+            quarters,
+            fn_reason,
+            admin=admin,
+            proposal_id=proposal_id,
+            conn=conn,
+        )
+    result["reason"] = fn_reason
+    result["proposal_id"] = proposal_id
+    return result
+
+
+# -- checkpoints -----------------------------------------------------------
+
+
+def _chain_hash(prev_hash: str, row: sqlite3.Row) -> str:
+    """One link of the running hash chain over a ledger row's IMMUTABLE
+    fields.  agent_id is deliberately excluded: delete_agent anonymizes it
+    in place, and rewriting history must never break a seal."""
+    payload = "|".join((
+        prev_hash,
+        str(row["id"]),
+        row["account"],
+        str(row["delta_quarters"]),
+        row["reason"],
+        row["target_type"] or "",
+        str(row["target_id"] if row["target_id"] is not None else ""),
+        row["created_at"],
+    ))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def write_checkpoint(conn: sqlite3.Connection | None = None) -> dict:
+    """Seal the current state of the ledger: extend the previous seal's
+    hash chain over every new entry, then store totals + entry count +
+    last_entry_id.  Idempotent per call; returns the new seal."""
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
+        prev = c.execute(
+            "SELECT last_entry_id, running_hash FROM economy_checkpoints"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        since_id = prev["last_entry_id"] if prev else 0
+        prev_hash = prev["running_hash"] if prev else "genesis"
+        running = prev_hash
+        rows = c.execute(
+            "SELECT id, account, delta_quarters, reason, target_type,"
+            " target_id, created_at"
+            " FROM credit_entries WHERE id > ? ORDER BY id ASC",
+            (since_id,),
+        ).fetchall()
+        for row in rows:
+            running = _chain_hash(running, row)
+        stats = c.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s"
+            " FROM credit_entries"
+        ).fetchone()
+        treasury_q = c.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            " WHERE account = 'treasury'"
+        ).fetchone()[0]
+        last_id = rows[-1]["id"] if rows else since_id
+        c.execute(
+            "INSERT INTO economy_checkpoints"
+            " (created_at, last_entry_id, entry_count, total_supply_q,"
+            "  treasury_q, running_hash)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (_now_iso(), last_id, stats["n"], stats["s"], treasury_q,
+             running),
+        )
+        return {
+            "last_entry_id": last_id,
+            "entry_count": stats["n"],
+            "total_supply_quarters": stats["s"],
+            "treasury_quarters": treasury_q,
+            "running_hash": running,
+        }
+
+
+def maybe_checkpoint(conn: sqlite3.Connection | None = None) -> bool:
+    """Poller hook: seal a checkpoint when the configured interval has
+    elapsed since the last one.  Degrades silently - checkpointing is
+    observability, never load-bearing, and must not break a poll tick."""
+    seconds = config.ECONOMY_CHECKPOINT_SECONDS
+    if seconds <= 0:
+        return False
+    try:
+        with _conn() as c:
+            latest = c.execute(
+                "SELECT created_at FROM economy_checkpoints"
+                " ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if latest is not None:
+            from db._core import _parse_iso
+
+            age = (
+                datetime.now(timezone.utc) - _parse_iso(latest["created_at"])
+            ).total_seconds()
+            if age < seconds:
+                return False
+        write_checkpoint(conn)
+        return True
+    except Exception as exc:
+        import logutil
+
+        logutil.log("economy_checkpoint_failed", error=str(exc))
+        # domain: degrade-silently - a failed seal retries next poll tick
+        return False
+
+
+def _verify_checkpoint(
+    conn: sqlite3.Connection, seal: sqlite3.Row
+) -> dict:
+    """Recompute everything the seal claims, over exactly the entry range
+    it covers, and report whether reality still matches."""
+    live = conn.execute(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s"
+        " FROM credit_entries WHERE id <= ?",
+        (seal["last_entry_id"],),
+    ).fetchone()
+    ok = (
+        live["n"] == seal["entry_count"]
+        and live["s"] == seal["total_supply_q"]
+    )
+    return {
+        "ok": ok,
+        "sealed_entry_count": seal["entry_count"],
+        "live_entry_count": live["n"],
+        "sealed_supply_quarters": seal["total_supply_q"],
+        "live_supply_quarters": live["s"],
+    }
+
+
+# -- the economy overview --------------------------------------------------
+
+
+def _flow_rows(
+    conn: sqlite3.Connection, since_iso: str | None
+) -> dict[str, int]:
+    """Treasury-side ledger movements grouped by reason, optionally since a
+    timestamp: mints, burns, fees, forfeit intake, payout draw-downs and
+    tag/spend intake are all visible as the treasury side of their pairs."""
+    where = "WHERE account = 'treasury'"
+    params: tuple = ()
+    if since_iso is not None:
+        where += " AND created_at >= ?"
+        params = (since_iso,)
+    rows = conn.execute(
+        f"SELECT reason, SUM(delta_quarters) AS total FROM credit_entries"
+        f" {where} GROUP BY reason",
+        params,
+    ).fetchall()
+    return {r["reason"]: r["total"] for r in rows}
+
+
+def _summarize_flows(flows: dict[str, int]) -> dict:
+    def _take(*reasons: str) -> int:
+        return sum(-flows[r] for r in reasons if flows.get(r))
+
+    return {
+        "minted_quarters": _take("genesis", "admin_mint", "proposal_mint"),
+        "burned_quarters": _take("admin_burn", "proposal_burn"),
+        "fees_in_quarters": flows.get("transfer_fee_intake", 0),
+        "forfeit_intake_quarters": flows.get("forfeit_intake", 0),
+        "spend_intake_quarters": sum(
+            v for k, v in flows.items()
+            if k.endswith("_intake")
+            and k not in ("transfer_fee_intake", "forfeit_intake",
+                          "transfer_intake")
+        ),
+        "transfer_intake_quarters": flows.get("transfer_intake", 0),
+        "payouts_out_quarters": flows.get("payout_source", 0),
+    }
+
+
+def _fmt(quarters: int) -> str:
+    from db._credits import format_credits
+
+    return format_credits(quarters)
+
+
+def economy_overview() -> dict:
+    """The full derived snapshot behind /economy: account balances, stake
+    commitments, treasury flow breakdown over three windows, top holders,
+    and the latest checkpoint with its live verification."""
+    with _conn() as conn:
+        now_dt = datetime.now(timezone.utc)
+        totals = conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s"
+            " FROM credit_entries"
+        ).fetchone()
+        treasury_q = conn.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            " WHERE account = 'treasury'"
+        ).fetchone()[0]
+        committed = conn.execute(
+            "SELECT COALESCE(SUM(per_pr * (max_prs - paid_count)), 0)"
+            " FROM proposal_stakes"
+            " WHERE currency = 'credits' AND status = 'active'"
+        ).fetchone()[0]
+
+        windows: dict[str, dict] = {}
+        for name, delta in (("day", timedelta(days=1)),
+                            ("week", timedelta(days=7))):
+            bound = day_dt_to_iso(now_dt - delta)
+            flows = _summarize_flows(_flow_rows(conn, bound))
+            flows["window_start"] = bound
+            windows[name] = flows
+        windows["all_time"] = _summarize_flows(_flow_rows(conn, None))
+
+        holders = [
+            {
+                "agent_id": r["agent_id"],
+                "name": r["name"],
+                "balance_quarters": r["bal"],
+                "balance_credits": _fmt(r["bal"]),
+            }
+            for r in conn.execute(
+                "SELECT e.agent_id AS agent_id, a.name AS name,"
+                " SUM(e.delta_quarters) AS bal"
+                " FROM credit_entries e JOIN agents a ON a.id = e.agent_id"
+                " GROUP BY e.agent_id HAVING bal != 0"
+                " ORDER BY bal DESC LIMIT 10"
+            ).fetchall()
+        ]
+
+        seal_row = conn.execute(
+            "SELECT * FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        checkpoint = None
+        if seal_row is not None:
+            check = _verify_checkpoint(conn, seal_row)
+            checkpoint = {
+                "created_at": seal_row["created_at"],
+                "last_entry_id": seal_row["last_entry_id"],
+                "entry_count": seal_row["entry_count"],
+                "total_supply_quarters": seal_row["total_supply_q"],
+                "total_supply_credits": _fmt(seal_row["total_supply_q"]),
+                "treasury_quarters": seal_row["treasury_q"],
+                "treasury_credits": _fmt(seal_row["treasury_q"]),
+                "running_hash": seal_row["running_hash"],
+                **check,
+            }
+
+        supply_q = totals["s"]
+        return {
+            "entry_count": totals["n"],
+            "total_supply_quarters": supply_q,
+            "total_supply_credits": _fmt(supply_q),
+            "treasury_quarters": treasury_q,
+            "treasury_credits": _fmt(treasury_q),
+            "circulating_quarters": supply_q - treasury_q,
+            "circulating_credits": _fmt(supply_q - treasury_q),
+            "committed_to_active_stakes_quarters": committed,
+            "committed_to_active_stakes_credits": _fmt(committed),
+            "flows": windows,
+            "top_holders": holders,
+            "checkpoint": checkpoint,
+            "config": {
+                "funds_payouts": bool(config.TREASURY_FUNDS_PAYOUTS),
+                "tx_fee_percent": config.TX_FEE_PERCENT,
+                "daily_admin_cap_credits": config.ADMIN_MINT_DAILY_CAP_CREDITS,
+                "checkpoint_seconds": config.ECONOMY_CHECKPOINT_SECONDS,
+            },
+        }

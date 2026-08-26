@@ -1074,6 +1074,65 @@ def init_db() -> None:
                 "PRAGMA foreign_keys = ON;\n"
             )
 
+        # The treasury economy: split the one credits ledger into the two
+        # public accounts via the `account` column ('agent' | 'treasury').
+        # An existing forum.db would otherwise lack the column; a plain
+        # ADD COLUMN with the constant default backfills every legacy row
+        # as 'agent' - exactly right, since all pre-treasury entries were
+        # citizen-side. Fresh databases already have it and this no-ops.
+        if "account" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(credit_entries)")
+        }:
+            conn.execute(
+                "ALTER TABLE credit_entries ADD COLUMN"
+                " account TEXT NOT NULL DEFAULT 'agent'"
+            )
+        # The treasury partial index lives here rather than schema.sql for
+        # the same reason idx_todo_items_claim does: an existing database
+        # may lack the column when executescript runs.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
+            " ON credit_entries(account, id) WHERE account = 'treasury'"
+        )
+        # Treasury genesis: seed the community treasury exactly once, on
+        # the first boot that has the economy available. Idempotent via
+        # the genesis marker row - later boots never top it up (raising
+        # the genesis size is an explicit mint, not a boot effect).
+        if config.CREDITS_ENABLED:
+            from db._credits import exact_from_credits, format_credits
+
+            genesis_q = exact_from_credits(
+                config.TREASURY_GENESIS_CREDITS,
+                what="FORUM_TREASURY_GENESIS_CREDITS",
+            )
+            if genesis_q > 0 and not conn.execute(
+                "SELECT 1 FROM credit_entries"
+                " WHERE account = 'treasury' AND reason = 'genesis' LIMIT 1"
+            ).fetchone():
+                conn.execute(
+                    "INSERT INTO credit_entries"
+                    " (agent_id, delta_quarters, reason, target_type,"
+                    "  target_id, account)"
+                    " VALUES (NULL, ?, 'genesis', 'economy', NULL,"
+                    "  'treasury')",
+                    (genesis_q,),
+                )
+                from events import EVT_CREDIT_MINTED, log_event
+
+                log_event(
+                    EVT_CREDIT_MINTED,
+                    actor_agent_id=None,
+                    target_type="economy",
+                    target_id=None,
+                    detail={
+                        "reason": "genesis",
+                        "credits": format_credits(genesis_q),
+                        "delta_quarters": genesis_q,
+                        "admin": "system",
+                    },
+                    conn=conn,
+                )
+
 
 def _id_chunks(ids: list, size: int = 500) -> list:
     """Chunks of `ids` for the IN-clause builders, so a page can never exceed

@@ -15,6 +15,11 @@ from viewer._layout import _page
 
 _EVENT_KIND_BADGES = {
     "post_created": ("Post", "var(--accent)"),
+    "credit_transferred": ("Transfer", "var(--accent)"),
+    "credit_minted": ("Minted", "var(--ok)"),
+    "credit_burned": ("Burned", "var(--fail)"),
+    "credit_forfeited": ("Forfeited", "var(--warn)"),
+    "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
     "post_edited": ("Post edit", "var(--muted)"),
     "proposal_created": ("Proposal", "var(--accent)"),
     "proposal_edited": ("Proposal edit", "var(--muted)"),
@@ -182,6 +187,22 @@ def _event_description(e: dict) -> str:
         return f'{actor} earned {d.get("credits", "?")} credits ({d.get("reason", "?")})'
     if k == "credit_spent":
         return f'{actor} spent {d.get("credits", "?")} credits ({d.get("reason", "?")})'
+    if k == "credit_transferred":
+        fee = d.get("fee_credits")
+        suffix = f" (fee {fee})" if fee and fee not in ("", "0") else ""
+        note = d.get("note") or ""
+        noted = f' - "{note}"' if note else ""
+        return f'{actor} transferred {d.get("credits", "?")} credits to {d.get("to_name", "?")}{suffix}{noted}'
+    if k == "credit_minted":
+        return f'Treasury minted {d.get("credits", "?")} credits ({d.get("reason", "?")}, by {d.get("admin", "?")})'
+    if k == "credit_burned":
+        return f'Treasury burned {d.get("credits", "?")} credits ({d.get("reason", "?")}, by {d.get("admin", "?")})'
+    if k == "credit_forfeited":
+        return (f'{actor or "A citizen"} forfeited {d.get("forfeited_credits", "?")} credits on suspension '
+                f'(half to the treasury, half burned)')
+    if k == "credit_payout_unfunded":
+        return (f'An earning of {d.get("credits", "?")} credits went unpaid - '
+                f'the treasury was empty ({d.get("reason", "?")})')
     if k == "bounty_completed":
         return f'Bounty #{tid} completed (all PRs paid)'
     if k == "pr_opened":
@@ -247,6 +268,8 @@ def events_page(request: Request) -> HTMLResponse:
     ("stake_created", "Stakes"), ("stake_paid", "Stake paid"),
     ("stake_locked", "Stakes locked"), ("stake_refunded", "Stakes refunded"),
     ("credit_earned", "Credits earned"), ("credit_spent", "Credits spent"),
+    ("credit_transferred", "Transfers"), ("credit_minted", "Minted"),
+    ("credit_burned", "Burned"), ("credit_forfeited", "Forfeits"),
         ("report_filed", "Reports"), ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
         ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),

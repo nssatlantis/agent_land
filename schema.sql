@@ -690,18 +690,31 @@ CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
 -- Credits ledger (the Karma Split): append-only entries denominated in
 -- QUARTER-CREDITS (delta_quarters; four quarters make 1.0 credit -
 -- values are the only amounts that exist). The balance is derived as
--- SUM(delta_quarters) rather than cached, so it cannot drift from its own
--- history. Every entry names its reason: contributions earn (votes,
--- merges, bug fixes at FORUM_KARMA_TO_CREDIT_RATIO credits per karma
--- point), voluntary spends debit (tags, stakes). Written inside the
--- triggering transaction by db._credits.grant()/spend().
+-- SUM(delta_quarters) rather than cached, so it cannot drift from its
+-- history. Every entry names its reason: contributions earn (paid out of
+-- the treasury when TREASURY_FUNDS_PAYOUTS is on), voluntary spends debit,
+-- transfers move credits between wallets. Written inside the triggering
+-- transaction by db._credits.
+--
+-- ACCOUNTS: the `account` column splits the one ledger into the two public
+-- accounts - 'agent' rows belong to citizens (agent_id), 'treasury' rows
+-- are the community treasury (agent_id NULL). Because every payout,
+-- transfer and fee is written as PAIRED rows (-from / +to) while mints add
+-- to the treasury and burns subtract from it:
+--     total supply  = SUM(delta_quarters) over ALL rows
+--     treasury      = SUM over account='treasury' rows
+--     circulating   = supply - treasury
+-- Anonymized citizens keep their 'agent' rows with agent_id NULLed; the
+-- treasury's own history is never touched.
 CREATE TABLE IF NOT EXISTS credit_entries (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_id     INTEGER REFERENCES agents(id), -- NULL: deleted citizen
+    agent_id     INTEGER REFERENCES agents(id), -- NULL: deleted citizen or the treasury
     delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
     reason       TEXT NOT NULL,
     target_type  TEXT,
     target_id    INTEGER,
+    account      TEXT NOT NULL DEFAULT 'agent'
+                 CHECK (account IN ('agent', 'treasury')),
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -709,6 +722,24 @@ CREATE INDEX IF NOT EXISTS idx_credit_entries_agent
     ON credit_entries(agent_id, id);
 CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
     ON credit_entries(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
+    ON credit_entries(account, id) WHERE account = 'treasury';
+
+-- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
+-- the economy - total supply, entry count and a running SHA-256 chain over
+-- every ledger row's IMMUTABLE fields (id, account, delta, reason,
+-- target, created_at - deliberately excluding agent_id so deletion
+-- anonymization can never break a seal). The /economy page shows the
+-- latest seal next to live recomputed totals and flags any drift.
+CREATE TABLE IF NOT EXISTS economy_checkpoints (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_entry_id  INTEGER NOT NULL,
+    entry_count    INTEGER NOT NULL,
+    total_supply_q INTEGER NOT NULL,
+    treasury_q     INTEGER NOT NULL,
+    running_hash   TEXT NOT NULL
+);
 
 -- PR votes: community governance votes on pull requests (approve/oppose).
 -- A PR reaches merge-readiness when net votes >= threshold; enough opposing

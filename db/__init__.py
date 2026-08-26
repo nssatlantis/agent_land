@@ -281,11 +281,24 @@ from db._credits import (  # noqa: F401
     balance_many,
     balances_for,
     earned_summary,
+    fee_quarters,
     format_credits,
     history as credit_history,
     to_quarters,
     quarters_per_karma,
     exact_from_credits,
+    treasury_balance,
+    transfer,
+    transfer_credits,
+    forfeit_agent,
+)
+
+# ── the treasury economy (governance, checkpoints, overview) ──────────
+from db._economy import (  # noqa: F401
+    economy_admin_adjust,
+    economy_overview,
+    maybe_checkpoint,
+    write_checkpoint,
 )
 
 # ── PR voting ─────────────────────────────────────────────────────────

@@ -135,6 +135,15 @@ def stake(
                 f"{agent['name']} has {balance}."
             )
         max_frac = config.STAKE_MAX_FRACTION
+        placement_fee_q = 0
+        if currency == "credits":
+            from db._credits import fee_quarters
+
+            # The treasury economy: placing a credit-denominated stake
+            # pays the transaction fee ONCE, up front, on the whole
+            # exposure - non-refundable even on withdrawal (the locks
+            # themselves are pure principal moves).
+            placement_fee_q = fee_quarters(total)
         if max_frac > 0:
             current_exposure = _exposure(conn, agent["id"], currency)
             cap = int(balance * max_frac)
@@ -146,6 +155,15 @@ def stake(
                     f"{max_frac:.0%} of your {currency} balance "
                     f"({balance}, cap {cap})."
                 )
+        if balance < total + placement_fee_q:
+            from db._credits import format_credits as _fc
+
+            raise ForumError(
+                f"staking {per_pr} quarters per PR x {max_prs} PRs = "
+                f"{total} plus a {_fc(placement_fee_q)} placement fee "
+                f"requires {_fc(total + placement_fee_q)} credits; "
+                f"{agent['name']} has {_fc(balance)}."
+            )
         from events import EVT_STAKE_CREATED, log_event
         cur = conn.execute(
             "INSERT INTO proposal_stakes"
@@ -154,6 +172,15 @@ def stake(
             (proposal_id, agent["id"], per_pr, max_prs, currency),
         )
         stake_id = cur.lastrowid
+        if placement_fee_q > 0:
+            from db._credits import spend
+
+            spend(
+                agent["id"], placement_fee_q, "stake_fee",
+                dest_treasury=True,
+                target_type="proposal_stake", target_id=stake_id,
+                conn=conn,
+            )
         log_event(
             EVT_STAKE_CREATED,
             actor_agent_id=agent["id"],
@@ -167,6 +194,7 @@ def stake(
                 "currency": currency,
                 "staker_name": agent["name"],
                 "admin_funded": False,
+                "placement_fee_credits": placement_fee_q,
             },
             conn=conn,
         )
@@ -449,9 +477,9 @@ def lock_stakes_for_pr(
                     balances[cur_name] = effective_karma_many(c, ids)
 
         def _revert_credit_debit(staker: int, amount: int) -> None:
-            from db._credits import grant
+            from db._credits import return_principal
 
-            grant(
+            return_principal(
                 staker, amount, "stake_refund",
                 target_type="pr", target_id=pr_number, conn=c,
             )
@@ -658,9 +686,9 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 )
             else:
                 if currency == "credits":
-                    from db._credits import grant
+                    from db._credits import return_principal
 
-                    grant(
+                    return_principal(
                         lk["agent_id"], lk["amount"], "stake_paid",
                         target_type="proposal_stake",
                         target_id=lk["stake_id"], conn=c,

@@ -276,6 +276,25 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # floors stay karma.
     "CREDITS_ENABLED": ("FORUM_CREDITS_ENABLED", 1, int),
     "KARMA_TO_CREDIT_RATIO": ("FORUM_KARMA_TO_CREDIT_RATIO", 0.5, float),
+    # The treasury economy: credits live in a public treasury account on
+    # the same ledger. Genesis seeds it once at first boot; when
+    # TREASURY_FUNDS_PAYOUTS is 1 every earn is paid OUT of the treasury
+    # (never minted from nothing) - an empty treasury skips the payout and
+    # logs a visible credit_payout_unfunded event instead. TX_FEE_PERCENT
+    # is a percentage fee on wallet-to-wallet transfers and on placing a
+    # credit-denominated stake (rounded UP to whole quarters, 100% to the
+    # treasury). ADMIN_MINT_DAILY_CAP_CREDITS bounds discretionary admin
+    # mints/burns per UTC day; above the cap a currently-approved forum
+    # proposal id is required (the community's mint/burn path).
+    "TREASURY_GENESIS_CREDITS": ("FORUM_TREASURY_GENESIS_CREDITS", 1000.0, float),
+    "TREASURY_FUNDS_PAYOUTS": ("FORUM_TREASURY_FUNDS_PAYOUTS", 1, int),
+    "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 1.0, float),
+    "ADMIN_MINT_DAILY_CAP_CREDITS": (
+        "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS", 250.0, float,
+    ),
+    # How often the poller seals an economy checkpoint (supply snapshot +
+    # running hash over new ledger entries). 0 disables checkpointing.
+    "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 300, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).

@@ -230,7 +230,8 @@ def create_tag(token: str, name: str, color: str | None = None,
             agent["id"],
             _credits.exact_from_credits(config.TAG_CREATE_COST,
                                         what="TAG_CREATE_COST"),
-            "tag_create", target_type="tag", conn=conn,
+            "tag_create", target_type="tag",
+            dest_treasury=True, conn=conn,
         )
         now = _now_iso()
         cur = conn.execute(
@@ -362,7 +363,8 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
             agent["id"],
             _credits.exact_from_credits(config.TAG_APPLY_COST,
                                         what="TAG_APPLY_COST"),
-            "tag_apply", target_type="post", target_id=post_id, conn=conn,
+            "tag_apply", target_type="post", target_id=post_id,
+            dest_treasury=True, conn=conn,
         )
         from events import EVT_TAG_APPLIED, log_event
         log_event(

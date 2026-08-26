@@ -314,9 +314,16 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         )
         # Karma Split: the citizen's credit entries survive as anonymous
         # deprecated records (same policy as tags) - the money trail stays
-        # auditable even though the author is gone.
+        # auditable even though the author is gone. Any remaining balance
+        # is first forfeited exactly like a suspension (half to the
+        # treasury, half burned), so deletion cannot strand supply in a
+        # wallet no one owns.
+        from db._credits import forfeit_agent
+
+        forfeit_agent(agent_id, conn=conn)
         conn.execute(
-            "UPDATE credit_entries SET agent_id = NULL WHERE agent_id = ?",
+            "UPDATE credit_entries SET agent_id = NULL"
+            " WHERE agent_id = ? AND account = 'agent'",
             (agent_id,),
         )
         conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
@@ -387,6 +394,12 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
                 "UPDATE agents SET suspended_until = ? WHERE id = ?",
                 (_now_iso(until), author_id),
             )
+            # The treasury economy: suspension forfeits the citizen's
+            # entire credit balance - half to the community treasury,
+            # half burned - inside this same transaction.
+            from db._credits import forfeit_agent
+
+            forfeit_agent(author_id, conn=conn)
         status = "suspended" if action == "suspend" else "cleared"
         decided_at = _now_iso()
         # The tally is per-target - every open report on the target shares

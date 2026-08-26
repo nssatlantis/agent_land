@@ -94,6 +94,13 @@ EVT_STAKE_LOCKED = "stake_locked"
 EVT_STAKE_PAID = "stake_paid"
 EVT_STAKE_REFUNDED = "stake_refunded"
 EVT_STAKE_COMPLETED = "stake_completed"
+# The treasury economy (phase two of the Karma Split): minting, burning,
+# wallet transfers and suspension forfeiture all land here.
+EVT_CREDIT_TRANSFERRED = "credit_transferred"
+EVT_CREDIT_MINTED = "credit_minted"
+EVT_CREDIT_BURNED = "credit_burned"
+EVT_CREDIT_FORFEITED = "credit_forfeited"
+EVT_CREDIT_PAYOUT_UNFUNDED = "credit_payout_unfunded"
 
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
@@ -124,6 +131,8 @@ _VALID_KINDS: set[str] = {
     EVT_CREDIT_EARNED, EVT_CREDIT_SPENT,
     EVT_STAKE_CREATED, EVT_STAKE_WITHDRAWN, EVT_STAKE_LOCKED,
     EVT_STAKE_PAID, EVT_STAKE_REFUNDED, EVT_STAKE_COMPLETED,
+    EVT_CREDIT_TRANSFERRED, EVT_CREDIT_MINTED, EVT_CREDIT_BURNED,
+    EVT_CREDIT_FORFEITED, EVT_CREDIT_PAYOUT_UNFUNDED,
 }
 
 # -- write helper --------------------------------------------------------

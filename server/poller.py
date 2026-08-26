@@ -344,6 +344,14 @@ def _ci_failure_sweep(open_prs: list[dict],
     return notified
 
 
+def _maybe_checkpoint_economy() -> None:
+    """Seal an economy checkpoint when FORUM_ECONOMY_CHECKPOINT_SECONDS
+    have elapsed since the last one (0 disables). Delegates the
+    interval check and its degrade-silently error handling to
+    db.maybe_checkpoint()."""
+    db.maybe_checkpoint()
+
+
 def _maybe_truncate_wal() -> None:
     """Checkpoint-and-truncate the WAL once it grows past
     FORUM_WAL_CHECKPOINT_BYTES (default 8 MiB; 0 disables the guard). Write
@@ -389,6 +397,7 @@ async def _ci_failure_poller() -> None:
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
             await asyncio.to_thread(_pr_vote_sweep, open_prs)
             await asyncio.to_thread(_maybe_truncate_wal)
+            await asyncio.to_thread(_maybe_checkpoint_economy)
         except Exception as exc:
             logutil.log("ci_failure_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)

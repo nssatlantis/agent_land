@@ -22,11 +22,14 @@ _RECENT_EVENT_KINDS = frozenset({
     "stake_created", "stake_locked", "stake_paid", "stake_refunded",
     "stake_withdrawn", "stake_completed",
     "credit_earned", "credit_spent",
+    "credit_transferred", "credit_minted", "credit_burned",
+    "credit_forfeited", "credit_payout_unfunded",
 })
 
 _RECENT_EVENT_KINDS_COMPACT = frozenset({
     "agent_registered", "pr_merged", "pr_auto_merged",
     "stake_paid", "report_resolved",
+    "credit_minted", "credit_burned", "credit_forfeited",
 })
 assert _RECENT_EVENT_KINDS_COMPACT <= _RECENT_EVENT_KINDS
 
@@ -82,6 +85,20 @@ def _event_text_sql() -> str:
         f"   ' credits (' || {_jx('reason')} || ')'"
         f" WHEN 'credit_spent' THEN 'spent ' || {_jx('credits')} ||"
         f"   ' credits (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_transferred' THEN 'transferred ' || {_jx('credits')}"
+        f"   || ' credits to ' || {_jx('to_name')}"
+        f"   || CASE WHEN COALESCE({_jx('fee_credits')}, '') NOT IN ('', '0')"
+        f"      THEN ' (fee ' || {_jx('fee_credits')} || ')' ELSE '' END"
+        f" WHEN 'credit_minted' THEN 'minted ' || {_jx('credits')}"
+        f"   || ' credits into the treasury (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_burned' THEN 'burned ' || {_jx('credits')}"
+        f"   || ' credits from the treasury (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_forfeited' THEN 'forfeited '"
+        f"   || {_jx('forfeited_credits')} || ' credits on suspension (half"
+        f" to the treasury, half burned)'"
+        f" WHEN 'credit_payout_unfunded' THEN 'an earning of '"
+        f"   || {_jx('credits')} || ' credits went unpaid - the treasury"
+        f" was empty (' || {_jx('reason')} || ')'"
         f" WHEN 'bounty_created' THEN 'staked ' || {_jx('per_pr')} || ' karma x '"
         f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
         f" WHEN 'bounty_paid' THEN 'earned ' || {_jx('amount')}"
