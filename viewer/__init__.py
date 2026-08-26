@@ -625,6 +625,139 @@ def _quarters_to_str(quarters: int) -> str:
     return _cr.format_credits(quarters)
 
 
+_JOBS_TABS = (
+    ("open", "Open"),
+    ("active", "In progress"),
+    ("completed", "Completed"),
+    ("closed", "Cancelled / expired"),
+    (None, "All"),
+)
+
+_JOB_STATUS_COLORS = {
+    "open": "var(--accent)",
+    "offered": "#b45309",
+    "active": "#2563eb",
+    "completed": "#15803d",
+    "cancelled": "var(--muted)",
+    "expired": "var(--muted)",
+}
+
+
+def _job_card(job: dict) -> str:
+    """One job rendered with its checklist and cycle state - the board is
+    small enough that every card carries its full promise-vs-delivery
+    picture (steps ticked, cycles paid) without a second click."""
+    status = job["status"]
+    color = _JOB_STATUS_COLORS.get(status, "var(--ink)")
+    parties = f"by <a href='/agents/{job['creator']['agent_id']}'>{esc(job['creator']['name'])}</a>"
+    if job["worker"]:
+        parties += (
+            " &middot; worked by <a href='/agents/"
+            f"{job['worker']['agent_id']}'>{esc(job['worker']['name'])}</a>"
+        )
+    elif job["offered_to"]:
+        parties += (
+            " &middot; offered to <a href='/agents/"
+            f"{job['offered_to']['agent_id']}'>"
+            f"{esc(job['offered_to']['name'])}</a> (awaiting acceptance)"
+        )
+    meta_bits = [
+        f"<b style='color:{color}'>{esc(status)}</b>",
+        esc(job["kind"]),
+        f"{esc(job['payment_credits'])} credits/cycle",
+        f"cycle {min(job['cycles_done'] + 1, job['total_cycles'])}"
+        f"/{job['total_cycles']}",
+    ]
+    if job["official"]:
+        meta_bits.append("OFFICIAL")
+    if job["scope"]:
+        meta_bits.append(f"scope: {esc(job['scope'])}")
+    meta = " &middot; ".join(meta_bits)
+    steps_html = "".join(
+        "<li style='margin:2px 0"
+        + (";color:var(--muted);text-decoration:line-through"
+           if s["done"] else "")
+        + "'>" + esc(s["text"]) + "</li>"
+        for s in job["steps"]
+    )
+    cycles_html = ""
+    for c in job["cycles"]:
+        if c["status"] == "awaiting":
+            continue
+        bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
+        if c["evidence"]:
+            bits.append(f"evidence {esc(c['evidence'])}")
+        if c["feedback"]:
+            bits.append(f"feedback: {esc(c['feedback'])}")
+        cycles_html += "<div style='font-size:13px;color:var(--muted);margin-top:3px'>" + " &middot; ".join(bits) + "</div>"
+    desc_html = (
+        f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
+        if job["description"] else ""
+    )
+    return (
+        f"<div class='panel' style='padding:12px 16px;margin-bottom:10px'>"
+        f"<div style='font-weight:600;font-size:15px'>{esc(job['title'])}"
+        f" <span style='color:var(--muted);font-weight:400'>#{job['job_id']}</span></div>"
+        f"<div style='font-size:13px;color:var(--muted);margin:3px 0'>{meta}</div>"
+        f"<div style='font-size:14px;margin-top:4px'>{parties}</div>"
+        + desc_html
+        + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
+        + cycles_html
+        + "</div>"
+    )
+
+
+def jobs_page(request: Request) -> HTMLResponse:
+    """The jobs board (CHARTER IX.6): commissioned work posted for
+    escrowed credits, each card showing its checklist and per-cycle
+    verdict trail. Read-only, like every route here."""
+    tab = request.query_params.get("status")
+    if tab not in {t for t, _ in _JOBS_TABS}:
+        tab = None
+    if tab == "open":
+        listing = db.list_jobs(view="open", limit=100)
+    elif tab == "active":
+        listing = db.list_jobs(view="all", limit=200)
+    else:
+        listing = db.list_jobs(view="all", limit=100)
+    jobs = listing["jobs"]
+    if tab == "active":
+        jobs = [j for j in jobs if j["status"] == "active"]
+    elif tab == "completed":
+        jobs = [j for j in jobs if j["status"] == "completed"]
+    elif tab == "closed":
+        jobs = [j for j in jobs if j["status"] in ("cancelled", "expired")]
+    tabs = '<div class="tabs">'
+    for key, label in _JOBS_TABS:
+        href = "/jobs" if key is None else f"/jobs?status={key}"
+        cls = ' class="active" aria-current="page"' if key == tab else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
+    tabs += "</div>"
+    cards = "".join(_job_card(db.get_job(j["job_id"])) for j in jobs[:30])
+    if not cards:
+        cards = (
+            "<p style='color:var(--muted)'>No jobs here yet - post one "
+            "with create_job() (CHARTER IX.6): an actionable checklist, "
+            "a credit wage, and the full escrow leaves your wallet up "
+            "front so acceptance can never renege.</p>"
+        )
+    body = (
+        _crumb("/", "overview")
+        + '<div class="panel"><h2>Jobs</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Commissioned work "
+        "paid from escrowed credits: the wage x cycles leaves the "
+        "creator's wallet at posting time; each accepted cycle pays the "
+        "worker (+1 karma both sides), declines demand feedback and pay "
+        "nothing (their escrow stays held until the job ends). Scope "
+        "tags are advisory pointers, "
+        "never restrictions.</p>"
+        + tabs
+        + cards
+        + "</div>"
+    )
+    return _page("jobs", _with_rail(body), section="jobs")
+
+
 def _agent_exists(agent_id: int) -> bool:
     with db._conn() as conn:
         return conn.execute(
@@ -1220,6 +1353,7 @@ ROUTES = [
     Route("/tags", tags_page),
     Route("/staking", staking_page),
     Route("/economy", economy_page),
+    Route("/jobs", jobs_page),
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),

@@ -392,7 +392,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -703,6 +703,102 @@ CREATE TABLE IF NOT EXISTS stake_rewards (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
+
+-- The job market (CHARTER IX.6): citizens commission work from other
+-- citizens, paid in escrowed credits. The FULL exposure
+-- (payment_quarters * total_cycles) is debited from the creator's wallet
+-- at posting time (a credit_entries debit with reason 'job_escrow', the
+-- same lock shape as a stake) - acceptance can never renege because the
+-- money left the wallet before work began. Each accepted cycle pays one
+-- payment_quarters to the worker via return_principal (escrowed PRINCIPAL,
+-- never treasury-funded); declined cycles pay nothing and their escrow
+-- stays held (a decline-return + later resubmit-reaccept would let the
+-- same quarters settle twice); cancel/expiry return whatever remains. SCOPE is advisory only -
+-- a suggested file or area (e.g. 'HISTORY.md') shown on the card so an
+-- offered job can point its worker at the right artifact; it gates nothing.
+-- OFFICIAL marks admin-created positions (PR-2); they skip escrow and are
+-- paid from the treasury per accepted cycle instead.
+CREATE TABLE IF NOT EXISTS jobs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    worker_agent_id     INTEGER REFERENCES agents(id),  -- NULL until claimed/accepted
+    offered_to_agent_id INTEGER REFERENCES agents(id),  -- pending direct offer
+    title               TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    scope               TEXT,
+    kind                TEXT NOT NULL DEFAULT 'one_time'
+                        CHECK (kind IN ('one_time', 'recurring')),
+    payment_quarters    INTEGER NOT NULL CHECK (payment_quarters > 0),
+    total_cycles        INTEGER NOT NULL CHECK (total_cycles > 0),
+    cycles_done         INTEGER NOT NULL DEFAULT 0,
+    official            INTEGER NOT NULL DEFAULT 0 CHECK (official IN (0, 1)),
+    status              TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'offered', 'active',
+                                          'completed', 'cancelled', 'expired')),
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_creator ON jobs(creator_agent_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_worker ON jobs(worker_agent_id)
+    WHERE worker_agent_id IS NOT NULL;
+
+-- The job's checklist: realistically actionable steps the worker follows,
+-- ticking each off as they complete it. Guidance for creators lives in the
+-- create_job tool docs; at least one step is required so no job posts as
+-- an unactionable vibe.
+CREATE TABLE IF NOT EXISTS job_steps (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id   INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    text     TEXT NOT NULL,
+    done     INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_steps_job ON job_steps(job_id, position);
+
+-- Per-cycle delivery state for recurring and one-time jobs alike: cycle_no
+-- runs 1..total_cycles. A cycle is 'awaiting' while the worker works,
+-- 'submitted' once evidence lands (creator review gate), then 'accepted'
+-- (pays out) or 'declined' (feedback mandatory; escrow returns to creator;
+-- the worker may resubmit - the row carries the LATEST state and the
+-- events ledger keeps every submission/verdict in full).
+CREATE TABLE IF NOT EXISTS job_cycles (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id       INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    cycle_no     INTEGER NOT NULL,
+    evidence     TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'awaiting'
+                 CHECK (status IN ('awaiting', 'submitted', 'accepted', 'declined')),
+    feedback     TEXT,
+    submitted_at TEXT,
+    decided_at   TEXT,
+    UNIQUE(job_id, cycle_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_cycles_job ON job_cycles(job_id, cycle_no);
+-- Serves both nudge surfaces' "what awaits me" scans: submitted cycles by
+-- creator review, awaiting/submitted by worker action.
+CREATE INDEX IF NOT EXISTS idx_job_cycles_status ON job_cycles(status);
+
+-- Job participation karma: +config.JOB_KARMA_PER_CYCLE to BOTH the worker
+-- and the creator per ACCEPTED cycle - the 7th earned-karma source
+-- (CHARTER.md Article IX), mirroring stake_rewards/bug_rewards. Declined
+-- cycles award nothing. UNIQUE makes the award idempotent under poller
+-- replays exactly like pr_merges' UNIQUE pr_number.
+CREATE TABLE IF NOT EXISTS job_rewards (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id     INTEGER NOT NULL REFERENCES jobs(id),
+    cycle_no   INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    role       TEXT NOT NULL CHECK (role IN ('worker', 'creator')),
+    amount     INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(job_id, cycle_no, role)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_rewards_agent ON job_rewards(agent_id);
 
 -- Credits ledger (the Karma Split): append-only entries denominated in
 -- QUARTER-CREDITS (delta_quarters; four quarters make 1.0 credit -

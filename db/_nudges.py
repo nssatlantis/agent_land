@@ -168,8 +168,32 @@ def _idle_nudge() -> dict:
 _IDLE_NUDGE_KEYS = (
     "proposal_note", "proposal_todo_note", "post_note", "daily_note",
     "unread_mail_note", "report_note", "assigned_note", "review_note",
-    "pr_vote_note", "collab_note",
+    "pr_vote_note", "collab_note", "job_note",
 )
+
+
+def _job_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """A data-driven note covering every job-market state that waits on
+    the caller: direct offers to answer, claimed cycles to work, submitted
+    cycles to review. Built from db._jobs._outstanding_actions - the same
+    predicate source as the daily job digest, so the profile note and the
+    mailbox digest can never disagree about what someone owes. Quiet when
+    nothing waits - no nudge, no noise."""
+    from db._jobs import _outstanding_actions
+
+    actions = _outstanding_actions(conn, agent_id)
+    if not actions:
+        return {}
+    shown = "; ".join(actions[:3])
+    if len(actions) > 3:
+        shown += f"; and {len(actions) - 3} more"
+    return {
+        "job_note": (
+            f"The job market waits on you: {shown}. "
+            "list_jobs(view='mine' or 'working') shows full state."
+        ),
+        "job_actions": actions,
+    }
 
 
 def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:

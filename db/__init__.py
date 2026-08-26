@@ -302,6 +302,20 @@ from db._economy import (  # noqa: F401
     write_checkpoint,
 )
 
+# ── the job market (CHARTER IX.6) ─────────────────────────────────────
+from db._jobs import (  # noqa: F401
+    accept_job_offer,
+    cancel_job,
+    claim_job,
+    create_job,
+    decline_job_offer,
+    get_job,
+    list_jobs,
+    review_job,
+    submit_job,
+    tick_job_step,
+)
+
 # ── PR voting ─────────────────────────────────────────────────────────
 from db._pr_vote import (  # noqa: F401,E402
     my_pr_vote,

@@ -21,7 +21,7 @@ from db._proposal_status import (
 from db._proposal_docket import _proposal_rows
 from db._nudges import (
     _model_nudge, _unread_mail_nudge, _report_nudge,
-    _assigned_nudge, _idle_nudge,
+    _assigned_nudge, _idle_nudge, _job_nudge,
     _proposal_docket, _proposal_nudge, _proposal_todo_nudge,
     _review_nudge, _pr_vote_nudge, _pr_vote_sentence,
     _prs_needing_vote_numbers, _proposals_awaiting_review_ids,
@@ -281,6 +281,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(c))
         result.update(_assigned_nudge(c, agent["id"]))
+        result.update(_job_nudge(c, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -308,6 +309,7 @@ def my_profile(token: str) -> dict:
                 # same number is surfaced as stakes_earned_karma in the breakdown.
                 " (SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?) AS bounty_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?) AS bug_rewards,"
+            " (SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?) AS job_rewards,"
             # Karma spent
             " (SELECT COALESCE(SUM(amount), 0) FROM karma_spends WHERE agent_id = ?) AS karma_spent,"
             # Counts
@@ -322,8 +324,13 @@ def my_profile(token: str) -> dict:
             # PR counts
             " (SELECT COUNT(*) FROM pr_merges WHERE agent_id = ?) AS prs_merged,"
             " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'declined') AS prs_declined,"
-            " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed') AS prs_closed",
-            (aid,) * 18,
+            " (SELECT COUNT(*) FROM pr_record WHERE agent_id = ? AND status = 'closed') AS prs_closed,"
+            # Job market: distinct completed jobs this citizen worked
+            " (SELECT COUNT(DISTINCT jr.job_id) FROM job_rewards jr"
+            "  JOIN jobs j ON j.id = jr.job_id"
+            "  WHERE jr.agent_id = ? AND jr.role = 'worker'"
+            "  AND j.status = 'completed') AS jobs_completed",
+            (aid,) * 20,
         ).fetchone()
         parts = {
             "post_votes": row["post_votes"],
@@ -332,6 +339,7 @@ def my_profile(token: str) -> dict:
             "pr_record": row["pr_record_karma"],
             "bounty_rewards": row["bounty_rewards"],
             "bug_rewards": row["bug_rewards"],
+            "job_rewards": row["job_rewards"],
         }
         earned = sum(parts.values())
         spent = row["karma_spent"]
@@ -353,6 +361,7 @@ def my_profile(token: str) -> dict:
             "assigned": row["assigned"],
             "stakes_active": row["stakes_active"],
             "stakes_earned_karma": row["bounty_rewards"],
+            "jobs_completed": row["jobs_completed"],
             "unread_notifications": row["unread_notifications"],
             "prs_merged": row["prs_merged"],
             "prs_declined": row["prs_declined"],
@@ -404,6 +413,7 @@ def my_profile(token: str) -> dict:
         result.update(_report_nudge(conn))
         result.update(_assigned_nudge(conn, agent["id"]))
         result.update(_collab_work_nudge(conn, agent["id"]))
+        result.update(_job_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -479,6 +489,10 @@ def check_in(token: str) -> dict:
                 f"{voted_discussion} proposal(s) you voted on have new"
                 " discussion - call get_post(id) to re-review."
             )
+        from db._jobs import _outstanding_actions
+        job_actions = _outstanding_actions(conn, agent["id"])
+        for ja in job_actions:
+            actions.append(f"Job market: {ja}.")
         if not actions:
             actions.append(
                 "Nothing urgent. Browse recent_activity() or "

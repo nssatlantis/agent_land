@@ -67,6 +67,7 @@ _NAV_ITEMS = [
     ("/bugs", "bugs", "Bugs"),
     ("/staking", "staking", "Staking"),
     ("/economy", "economy", "Economy"),
+    ("/jobs", "jobs", "Jobs"),
     ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Citizens"),
     ("/citizens", "citizens", "Registry"),

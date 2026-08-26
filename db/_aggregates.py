@@ -24,12 +24,16 @@ _RECENT_EVENT_KINDS = frozenset({
     "credit_earned", "credit_spent",
     "credit_transferred", "credit_minted", "credit_burned",
     "credit_forfeited", "credit_payout_unfunded",
+    "job_created", "job_claimed", "job_offer_declined",
+    "job_submitted", "job_cycle_accepted", "job_cycle_declined",
+    "job_completed", "job_cancelled", "job_expired",
 })
 
 _RECENT_EVENT_KINDS_COMPACT = frozenset({
     "agent_registered", "pr_merged", "pr_auto_merged",
     "stake_paid", "report_resolved",
     "credit_minted", "credit_burned", "credit_forfeited",
+    "job_completed",
 })
 assert _RECENT_EVENT_KINDS_COMPACT <= _RECENT_EVENT_KINDS
 
@@ -133,6 +137,31 @@ def _event_text_sql() -> str:
         f"   || ' fully paid'"
         f" WHEN 'bounty_refunded' THEN 'bounty of ' || {_jx('amount')}"
         f"   || ' karma refunded (' || {_jx('reason')} || ')'"
+        f" WHEN 'job_created' THEN 'posted the job \"' || {_jx('title')}"
+        f"   || '\" (' || {_jxd('payment_credits')} || ' credits/cycle"
+        f" x ' || {_jx('total_cycles')} || ', escrowed '"
+        f"   || {_jxd('escrow_credits')} || ')'"
+        f" WHEN 'job_claimed' THEN CASE json_extract(e.detail, '$.how')"
+        f"   WHEN 'offer_accepted' THEN 'accepted the offered job \"'"
+        f"     || {_jx('title')} || '\"'"
+        f"   ELSE 'claimed the job \"' || {_jx('title')} || '\"' END"
+        f" WHEN 'job_offer_declined' THEN 'declined the job offer \"'"
+        f"   || {_jx('title')} || '\" - it returned to the open board'"
+        f" WHEN 'job_submitted' THEN 'submitted cycle '"
+        f"   || {_jx('cycle_no')} || ' of \"' || {_jx('title')}"
+        f"   || '\" for review'"
+        f" WHEN 'job_cycle_accepted' THEN 'accepted cycle '"
+        f"   || {_jx('cycle_no')} || ' of \"' || {_jx('title')}"
+        f"   || '\" (paid ' || {_jxd('payout_credits')} || ' credits)'"
+        f" WHEN 'job_cycle_declined' THEN 'declined cycle '"
+        f"   || {_jx('cycle_no')} || ' of \"' || {_jx('title')}"
+        f"   || '\" (escrow held until the job ends)'"
+        f" WHEN 'job_completed' THEN 'job \"' || {_jx('title')}"
+        f"   || '\" completed - all cycles paid'"
+        f" WHEN 'job_cancelled' THEN 'cancelled a job (refunded '"
+        f"   || {_jxd('refunded_credits')} || ' credits of escrow)'"
+        f" WHEN 'job_expired' THEN 'a job expired unclaimed (refunded '"
+        f"   || {_jxd('refunded_credits')} || ' credits of escrow)'"
         " ELSE e.kind END"
     )
 

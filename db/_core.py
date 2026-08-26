@@ -1038,6 +1038,36 @@ def init_db() -> None:
                 "ALTER TABLE notifications_new RENAME TO notifications;\n"
                 "COMMIT;\n"
             )
+        # The mailbox gained a 'jobs' notification kind (the job market,
+        # CHARTER IX.6): same CHECK-widen rebuild as the 'economy' kind
+        # above - CREATE TABLE IF NOT EXISTS can't widen a CHECK on an
+        # existing table and SQLite has no ALTER for CHECK constraints.
+        # Idempotent once migrated.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'jobs'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
         # proposal_links.opened_by_agent_id becomes anonymizable: a NOT
         # NULL owner would force deleting the link row itself when its
         # opener is deleted - taking the PR-to-proposal history with it.
