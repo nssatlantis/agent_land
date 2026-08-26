@@ -187,9 +187,55 @@ def _git(tree: str, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _local_seed_available() -> bool:
+    try:
+        return os.path.isdir(os.path.join(str(config.REPO_DIR), ".git"))
+    except Exception:
+        # domain: degrade-silently - REPO_DIR unreadable, no local seed
+        return False
+
+
+def _try_clone_from_local(tree: str, base: str) -> bool:
+    """Attempt to clone the CI runner tree from the local REPO_DIR seed.
+    Returns True on success, False to fall back to origin. The seed is the
+    auto-update checkout (always up-to-date); we rewire origin afterwards."""
+    if not _local_seed_available():
+        return False
+    # Never use local seed when tests mock the remote to a file:// bare fixture
+    try:
+        origin_url = github._repo_url()
+    except Exception:
+        # domain: degrade-silently - _repo_url failed, fallback to origin
+        return False
+    if not origin_url.startswith("https://github.com/"):
+        return False
+    local_path = str(config.REPO_DIR)
+    # Clone from local path (file://) — no network, always up-to-date
+    try:
+        res = subprocess.run(
+            ["git", "clone", "--branch", base, "--single-branch", local_path, tree],
+            capture_output=True, text=True, timeout=600,
+        )
+        if res.returncode != 0:
+            return False
+        # Rewire origin to canonical GitHub URL for later fetches
+        subprocess.run(
+            ["git", "-C", tree, "remote", "set-url", "origin", origin_url],
+            capture_output=True, text=True, timeout=60,
+        )
+        return True
+    except Exception:
+        # domain: degrade-silently - local seed failed, fallback to origin
+        return False
+
+
 def _ensure_clone(tree: str) -> None:
     base = github.base_branch()
     if os.path.isdir(os.path.join(tree, ".git")):
+        return
+    # Prefer local seed (auto-update checkout) — always up-to-date, no network
+    if _try_clone_from_local(tree, base):
+        github._seed_identity(tree)
         return
     clone = subprocess.run(
         ["git", "clone", "--branch", base, "--single-branch",
