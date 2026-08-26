@@ -216,7 +216,7 @@ def main():
         assert row["body"] == \
             f"ping @legacy-one (agent_id={legacy['agent_id']}) and @stranger and @2 in prose", \
             "the migration expands effective '@Name' mentions, leaving unknown words and ids literal"
-        assert version == 2, "a booted database lands on the latest user_version"
+        assert version == 3, "a booted database lands on the latest user_version"
         assert any(h["id"] == row["id"] for h in search.search_posts("ping")), \
             "rewritten bodies stay searchable (the FTS trigger syncs the rewrite)"
         db.init_db()  # idempotent: a second boot rewrites nothing
@@ -354,7 +354,7 @@ def main():
         assert got == expected, f"timestamp migration truncated 6-digit values: {got}"
         assert merged == "2006-01-01T00:00:00Z" and closed == "2007-01-01T00:00:00Z", \
             "GitHub-sourced timestamps are left as-is"
-        assert version == 2, "the timestamp migration stamps PRAGMA user_version"
+        assert version == 3, "the timestamp migration stamps PRAGMA user_version"
         db.init_db()  # idempotent: a second boot truncates nothing
         with db._conn() as conn:
             again = conn.execute(
@@ -704,7 +704,7 @@ def main():
                      "idx_posts_proposal_kind_created", "idx_proposal_votes_post_value",
                      "idx_proposal_votes_voter_created", "idx_reports_status",
                      "idx_reports_reporter", "idx_reports_target", "idx_todo_lists_post", "idx_todo_items_list", "idx_posts_delegate_kind_created",
-                     "idx_events_kind_target", "idx_events_kind_created",
+                     "idx_events_kind_created",
                      "idx_events_target", "idx_reports_target_status",
                      "idx_notifications_agent_read_created", "idx_proposal_links_opener")
     _perf_in_list = "('" + "', '".join(_perf_indexes) + "')"

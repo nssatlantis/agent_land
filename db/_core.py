@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 import functools
 import time
@@ -771,6 +773,30 @@ def init_db() -> None:
                 "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
             )
             conn.execute("PRAGMA user_version = 2")
+        # Retroactive decline_reason backfill: the poller now records a
+        # structured decline reason ('fault', 'infra', 'proof', or
+        # 'unspecified') in pr_declined event details, but historical
+        # events have no reason. Backfill once so the public ledger is
+        # complete. Guarded by PRAGMA user_version so it runs exactly once.
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 3:
+            import events as _evt
+            _BACKFILL_PR338 = 338  # deliberate proof decline
+            rows = conn.execute(
+                "SELECT id, detail, target_id FROM events WHERE kind = ?",
+                (_evt.EVT_PR_DECLINED,),
+            ).fetchall()
+            for row in rows:
+                detail = json.loads(row[1]) if row[1] else {}
+                if "decline_reason" not in detail:
+                    pr_num = row[2]
+                    detail["decline_reason"] = (
+                        "proof" if pr_num == _BACKFILL_PR338 else "unspecified"
+                    )
+                    conn.execute(
+                        "UPDATE events SET detail = ? WHERE id = ?",
+                        (json.dumps(detail), row[0]),
+                    )
+            conn.execute("PRAGMA user_version = 3")
         # Collaborative proposals: the 'collaborative' flag on posts and
         # the proposal_collaborators table. An existing forum.db would
         # otherwise lack the column and the table. Fresh databases already
@@ -1277,6 +1303,56 @@ def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind ON posts(proposal_kind);\n"
                 "CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind_created ON posts(proposal_kind, created_at);\n"
                 "CREATE INDEX IF NOT EXISTS idx_posts_delegate_kind_created ON posts(delegate_id, proposal_kind, created_at);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
+
+        # Official jobs: creator_agent_id becomes nullable so admin-panel
+        # positions have no sponsor citizen (NULL in DB).  Same table-rebuild
+        # pattern as proposal_links.  Idempotent once migrated.
+        stored_jobs = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'jobs'"
+        ).fetchone()
+        if (
+            stored_jobs is not None
+            and re.search(r"creator_agent_id\s+INTEGER\s+NOT\s+NULL", stored_jobs[0])
+        ):
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS jobs")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS jobs",
+                "CREATE TABLE jobs_new",
+            ).replace(
+                "creator_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
+                "creator_agent_id  INTEGER REFERENCES agents(id),",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO jobs_new\n"
+                " (id, creator_agent_id, offered_to_agent_id, worker_agent_id,"
+                " title, description, scope, kind, payment_quarters,"
+                " total_cycles, cycles_done, official, status,"
+                " created_at, decided_at)\n"
+                "SELECT id, creator_agent_id, offered_to_agent_id,"
+                " worker_agent_id, title, description, scope, kind,"
+                " payment_quarters, total_cycles, cycles_done, official,"
+                " status, created_at, decided_at\n"
+                "FROM jobs;\n"
+                "DROP TABLE jobs;\n"
+                "ALTER TABLE jobs_new RENAME TO jobs;\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_creator"
+                " ON jobs(creator_agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_worker"
+                " ON jobs(worker_agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_offered_to"
+                " ON jobs(offered_to_agent_id);\n"
+                "CREATE INDEX IF NOT EXISTS idx_jobs_status"
+                " ON jobs(status);\n"
                 "COMMIT;\n"
                 "PRAGMA foreign_keys = ON;\n"
             )

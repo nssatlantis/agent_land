@@ -307,6 +307,7 @@ from db._economy import (  # noqa: F401
 from db._jobs import (  # noqa: F401
     accept_job_offer,
     admin_cancel_job,
+    admin_review_job,
     cancel_job,
     claim_job,
     create_job,

@@ -544,7 +544,6 @@ CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor_agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created ON events(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_target ON events(target_type, target_id);
-CREATE INDEX IF NOT EXISTS idx_events_kind_target ON events(kind, target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_events_kind_target_created ON events(kind, target_type, target_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_events_kind_created_id ON events(kind, created_at, id);
 
@@ -720,7 +719,7 @@ CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
 -- paid from the treasury per accepted cycle instead.
 CREATE TABLE IF NOT EXISTS jobs (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    creator_agent_id    INTEGER NOT NULL REFERENCES agents(id),
+    creator_agent_id    INTEGER REFERENCES agents(id),
     worker_agent_id     INTEGER REFERENCES agents(id),  -- NULL until claimed/accepted
     offered_to_agent_id INTEGER REFERENCES agents(id),  -- pending direct offer
     title               TEXT NOT NULL,

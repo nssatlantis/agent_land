@@ -186,6 +186,36 @@ def main():
     }) == "merged", "a merged PR stays merged even with a declined label"
     assert github._pr_outcome({}) == "open", "an unlabelled, open-shaped PR defaults to open"
 
+    # --- decline reason parsing (label vocabulary) ---------------------------
+    assert github._parse_decline_reason({
+        "state": "closed", "merged_at": None,
+        "labels": [{"name": "declined"}],
+    }) == "unspecified", "bare declined label maps to unspecified"
+    assert github._parse_decline_reason({
+        "state": "closed", "merged_at": None,
+        "labels": [{"name": "declined:fault"}],
+    }) == "fault", "declined:fault parses the reason"
+    assert github._parse_decline_reason({
+        "state": "closed", "merged_at": None,
+        "labels": [{"name": "declined:infra"}],
+    }) == "infra", "declined:infra parses the reason"
+    assert github._parse_decline_reason({
+        "state": "closed", "merged_at": None,
+        "labels": [{"name": "declined:proof"}],
+    }) == "proof", "declined:proof parses the reason"
+    assert github._parse_decline_reason({
+        "state": "closed", "merged_at": None,
+        "labels": [{"name": "declined:nonsense"}],
+    }) == "unspecified", "unrecognised suffix maps to unspecified"
+    assert github._parse_decline_reason({
+        "state": "closed", "merged_at": None, "labels": [],
+    }) == "", "no labels on a closed PR returns empty (not declined)"
+    assert github._parse_decline_reason({
+        "state": "closed", "merged_at": "2026-08-11T00:00:00Z",
+        "labels": [{"name": "declined:fault"}],
+    }) == "", "merged PR with declined:fault label returns empty (outcome wins)"
+    assert github._parse_decline_reason({}) == "", "open PR returns empty string"
+
     # --- multi-file PR planning (repo_propose_change -> propose_change) ---
     # dry_run plans never touch GitHub, so this is safe to test anywhere. The
     # plan must list every file the PR will touch, one commit each, with the
