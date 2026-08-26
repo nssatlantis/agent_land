@@ -43,7 +43,6 @@ side effect.
 
 from __future__ import annotations
 
-import math
 import sqlite3
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -159,12 +158,18 @@ def treasury_balance(conn: sqlite3.Connection) -> int:
 def fee_quarters(amount_quarters: int) -> int:
     """The transaction fee for moving `amount_quarters`, rounded UP to
     whole quarters (the sender pays the rounding), 100% to the treasury.
-    A tiny epsilon guards the ceil against float noise like 4 * 1.0 being
-    4.000000000000001."""
+    Decimal arithmetic end-to-end: binary-float ceil drifted on large
+    amounts / fractional percents, the same class to_quarters fixed by
+    going Decimal (review M1)."""
     pct = max(0.0, float(config.TX_FEE_PERCENT))
     if pct == 0 or amount_quarters <= 0:
         return 0
-    return int(math.ceil(amount_quarters * pct / 100.0 - 1e-9))
+    from decimal import ROUND_CEILING, Decimal
+
+    fee = (
+        Decimal(amount_quarters) * Decimal(str(pct)) / Decimal(100)
+    )
+    return int(fee.to_integral_value(rounding=ROUND_CEILING))
 
 
 def grant(
@@ -296,12 +301,16 @@ def grant_earned(
         effective = max(delta_quarters, -balance)
         if effective == 0:
             return False
+        # Cancellations carry their own reason so the profile's
+        # spent_total can tell reversals of income apart from actual
+        # spending (review note N2, PR #402).
+        cancel_reason = f"{reason}_cancel"
         import events
 
         if config.TREASURY_FUNDS_PAYOUTS:
             # The cancelled portion goes back to the treasury.
             _insert_entry(
-                c, agent_id, "agent", effective, reason,
+                c, agent_id, "agent", effective, cancel_reason,
                 target_type, target_id,
             )
             _insert_entry(
@@ -310,7 +319,7 @@ def grant_earned(
             )
         else:
             _insert_entry(
-                c, agent_id, "agent", effective, reason,
+                c, agent_id, "agent", effective, cancel_reason,
                 target_type, target_id,
             )
         events.log_event(
@@ -319,7 +328,7 @@ def grant_earned(
             target_type=target_type or "credit",
             target_id=target_id,
             detail={
-                "reason": reason,
+                "reason": cancel_reason,
                 "credits": format_credits(effective),
                 "delta_quarters": effective,
                 "requested_delta_quarters": delta_quarters,
@@ -799,7 +808,11 @@ def earned_summary(
     conn: sqlite3.Connection, agent_id: int
 ) -> dict[str, int]:
     """Earning windows for profile displays: total earned vs spent, plus
-    earned since UTC week start (Monday) and month start."""
+    earned since UTC week start (Monday) and month start.  'Spent' means
+    the citizen directed credits somewhere: voluntary spends, stake
+    commitments, transfers and fees.  Flip-cancellations (income
+    reversals) and forfeitures (judgment penalties, karma layer) are
+    excluded - neither is spending (review note N2, PR #402)."""
     now_dt = datetime.now(timezone.utc)
     week_start = (now_dt - timedelta(days=now_dt.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -819,7 +832,13 @@ def earned_summary(
 
     spent = conn.execute(
         "SELECT COALESCE(SUM(-delta_quarters), 0) FROM credit_entries"
-        " WHERE agent_id = ? AND delta_quarters < 0",
+        " WHERE agent_id = ? AND delta_quarters < 0"
+        # Not spending: flip-cancellations reverse income (they carry
+        # their own *_cancel reason) and forfeitures are judgment
+        # penalties that live on the karma layer - neither belongs in a
+        # 'what did I spend' number (review note N2, PR #402).
+        " AND reason NOT IN ('post_vote_cancel', 'comment_vote_cancel',"
+        " 'forfeit_to_treasury', 'forfeit_burned')",
         (agent_id,),
     ).fetchone()[0]
     return {
@@ -857,6 +876,10 @@ def history(
             f"{where} ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             (*params, limit + 1, offset),
         ).fetchall()
+        # The global view counts treasury rows too (agent_id IS NULL):
+        # they are rendered as 'Treasury' entries above, so the total must
+        # include them or pagination would drift. Per-agent views filter
+        # on agent_id and never see them.
         total = conn.execute(
             f"SELECT COUNT(*) FROM credit_entries e{where}", params
         ).fetchone()[0]

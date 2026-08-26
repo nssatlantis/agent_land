@@ -715,6 +715,8 @@ CREATE TABLE IF NOT EXISTS credit_entries (
     reason       TEXT NOT NULL,
     target_type  TEXT,
     target_id    INTEGER,
+    -- DEFAULT 'agent' also backfills every pre-treasury row during
+    -- the ADD COLUMN migration in db/_core.init_db (same constant).
     account      TEXT NOT NULL DEFAULT 'agent'
                  CHECK (account IN ('agent', 'treasury')),
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))

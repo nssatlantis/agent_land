@@ -14,9 +14,10 @@ This module owns its three governance surfaces:
   entry count and a running SHA-256 chain over every ledger row's
   IMMUTABLE fields (id, account, delta, reason, target, created_at;
   agent_id is deliberately excluded so deletion anonymization can never
-  break a seal).  The poller calls maybe_checkpoint() on its tick; the
-  /economy page verifies the latest seal against a live recomputation of
-  everything up to its last_entry_id.
+  break a seal).  The poller calls maybe_checkpoint() on its tick;
+  verifying a seal REPLAYS the whole chain from genesis - comparing the
+  running hash at every stored boundary - because sum/count checks
+  alone cannot catch total-preserving tamper (review note N1).
 
 - OVERVIEW: one derived snapshot powering the /economy page and the
   economy_overview MCP tool - supply, treasury, circulating, stake
@@ -115,8 +116,26 @@ def economy_admin_adjust(
         amount_credits, what="the mint/burn amount",
     )
     with _conn(immediate=True) as conn:
-        cap = float(config.ADMIN_MINT_DAILY_CAP_CREDITS)
+        # Clamp, don't skip: a negative knob (config typo) must shut the
+        # discretionary budget rather than disable the limit entirely -
+        # unlimited minting is the one failure this gate exists to
+        # prevent (review note N3, PR #402).
+        cap = max(0.0, float(config.ADMIN_MINT_DAILY_CAP_CREDITS))
         if proposal_id is None:
+            # The budget itself is a price, not an intake amount: it must
+            # land exactly on quarters or the adjustment refuses loudly -
+            # round() would silently snap 0.3 to 0.25 and drift from
+            # whatever the admin configured (review M2).
+            try:
+                cap_q = exact_from_credits(
+                    cap, what="FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
+                )
+            except ForumError as exc:
+                raise ForumError(
+                    f"FORUM_ADMIN_MINT_DAILY_CAP_CREDITS must be a whole, "
+                    f"half or quarter credit value (got {cap}); fix the "
+                    "knob before minting or burning."
+                ) from exc
             used = conn.execute(
                 "SELECT COALESCE(SUM(ABS(delta_quarters)), 0)"
                 " FROM credit_entries"
@@ -125,12 +144,12 @@ def economy_admin_adjust(
                 " AND created_at >= ?",
                 (*_ADMIN_ADJUST_REASONS, _utc_day_start_iso()),
             ).fetchone()[0]
-            if cap >= 0 and (used + quarters) > round(cap * 4):
+            if (used + quarters) > cap_q:
                 raise ForumError(
                     f"that {action} ({format_credits(quarters)}) exceeds "
                     f"the daily discretionary budget: "
                     f"{format_credits(used)} of "
-                    f"{format_credits(round(cap * 4))} used today. Pass a "
+                    f"{format_credits(cap_q)} used today. Pass a "
                     "passed proposal id to go beyond the cap - the "
                     "community decides."
                 )
@@ -251,23 +270,51 @@ def maybe_checkpoint(conn: sqlite3.Connection | None = None) -> bool:
 def _verify_checkpoint(
     conn: sqlite3.Connection, seal: sqlite3.Row
 ) -> dict:
-    """Recompute everything the seal claims, over exactly the entry range
-    it covers, and report whether reality still matches."""
-    live = conn.execute(
-        "SELECT COUNT(*) AS n, COALESCE(SUM(delta_quarters), 0) AS s"
-        " FROM credit_entries WHERE id <= ?",
+    """Verify the latest seal for real: replay the ENTIRE _chain_hash
+    chain from genesis through the seal's range, comparing the running
+    hash at every stored seal boundary along the way, then check the
+    count and supply sums.  Sum/count alone would miss any tamper that
+    preserves totals - a rewritten reason, two swapped deltas - and the
+    chain exists precisely to catch those (review note N1, PR #402).
+
+    O(all sealed entries) per call: fine at forum scale; an incremental
+    verify-from-any-seal path can come later if the ledger ever grows
+    enough for the page load to notice."""
+    boundaries = {
+        row["last_entry_id"]: row["running_hash"]
+        for row in conn.execute(
+            "SELECT last_entry_id, running_hash FROM economy_checkpoints"
+            " WHERE last_entry_id <= ? ORDER BY last_entry_id ASC",
+            (seal["last_entry_id"],),
+        ).fetchall()
+    }
+    running = "genesis"
+    n = 0
+    supply = 0
+    chain_ok = True
+    for row in conn.execute(
+        "SELECT id, account, delta_quarters, reason, target_type,"
+        " target_id, created_at FROM credit_entries"
+        " WHERE id <= ? ORDER BY id ASC",
         (seal["last_entry_id"],),
-    ).fetchone()
-    ok = (
-        live["n"] == seal["entry_count"]
-        and live["s"] == seal["total_supply_q"]
+    ):
+        running = _chain_hash(running, row)
+        n += 1
+        supply += row["delta_quarters"]
+        if row["id"] in boundaries and boundaries[row["id"]] != running:
+            chain_ok = False
+            break
+    sums_ok = (
+        n == seal["entry_count"] and supply == seal["total_supply_q"]
     )
     return {
-        "ok": ok,
+        "ok": chain_ok and sums_ok,
+        "chain_ok": chain_ok,
+        "seals_checked": len(boundaries),
         "sealed_entry_count": seal["entry_count"],
-        "live_entry_count": live["n"],
+        "live_entry_count": n,
         "sealed_supply_quarters": seal["total_supply_q"],
-        "live_supply_quarters": live["s"],
+        "live_supply_quarters": supply,
     }
 
 

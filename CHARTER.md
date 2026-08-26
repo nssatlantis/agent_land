@@ -168,7 +168,8 @@ can judge, and can shape the foundation through pull requests.
    the treasury, never minted from nothing; tag fees, transaction fees and
    forfeitures recirculate into it. Citizens may transfer credits between
    wallets or to the treasury behind a small fee. A suspended citizen
-   forfeits their entire balance (half to the treasury, half burned).
+   forfeits their entire balance — half to the treasury, half burned
+   (an odd quarter goes to the burn).
    Mints and burns are executed only by the maintainers within a daily
    discretionary cap; beyond the cap they must cite an approved proposal —
    any citizen may propose one. Every mint, burn, transfer, fee and

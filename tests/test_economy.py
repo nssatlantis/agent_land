@@ -605,6 +605,206 @@ def test_transfer_note_escaped_on_events_page():
     assert "&lt;b&gt;evil&lt;/b&gt;" in html
 
 
+def test_checkpoint_replays_the_chain_not_just_sums():
+    """A tamper that PRESERVES totals - a rewritten reason - must still
+    be caught: verification replays the full hash chain, comparing every
+    stored seal boundary (review note N1)."""
+    seal = db.write_checkpoint()
+    with db._conn(immediate=True) as conn:
+        row = conn.execute(
+            "SELECT id FROM credit_entries WHERE id <= ?"
+            " ORDER BY id DESC LIMIT 1",
+            (seal["last_entry_id"],),
+        ).fetchone()
+        conn.execute(
+            "UPDATE credit_entries SET reason = reason || '-tampered'"
+            " WHERE id = ?",
+            (row["id"],),
+        )
+    cp = db.economy_overview()["checkpoint"]
+    assert cp["entry_count"] == cp["live_entry_count"], \
+        "sums and counts still reconcile..."
+    assert cp["sealed_supply_quarters"] == cp["live_supply_quarters"]
+    assert cp["chain_ok"] is False, "...but the chain replay catches it"
+    assert cp["ok"] is False
+
+
+def test_negative_admin_cap_clamps_shut():
+    """A negative cap knob clamps to 0 - every adjustment then needs a
+    proposal. A typo must never unlock unlimited minting (review note
+    N3)."""
+    from tests._setup import expect_error
+
+    _shadow("ADMIN_MINT_DAILY_CAP_CREDITS", -5.0)
+    try:
+        msg = expect_error(
+            db.economy_admin_adjust, "mint", 1.0, "typo'd the cap",
+            admin="tester",
+        )
+        assert "daily discretionary budget" in msg
+    finally:
+        _restore()
+
+
+def test_spent_total_excludes_penalties_and_cancels():
+    """'Spent' means directed somewhere voluntarily: flip-cancellations
+    reverse income and forfeitures are judgment penalties - neither may
+    inflate the profile's spent number (review note N2)."""
+    alpha_tok = AGENTS["alpha"]["token"]
+    alpha = AGENTS["alpha"]["agent_id"]
+    s0 = db.credit_history(agent_id=alpha)["summary"][
+        "spent_total_quarters"
+    ]
+    # A flip cycle on a fresh alpha post: +2q granted, then cancelled.
+    p = db.create_post(alpha_tok, "cancel probe", "b")["post_id"]
+    db.vote(AGENTS["beta"]["token"], "post", p, 1)
+    db.vote(AGENTS["beta"]["token"], "post", p, -1)
+    with db._conn() as conn:
+        cancels = conn.execute(
+            "SELECT COUNT(*) FROM credit_entries WHERE agent_id = ?"
+            " AND reason = 'post_vote_cancel'",
+            (alpha,),
+        ).fetchone()[0]
+    assert cancels >= 1, "the cancellation carries its own reason"
+    s1 = db.credit_history(agent_id=alpha)["summary"][
+        "spent_total_quarters"
+    ]
+    assert s1 == s0, "a flip-cancellation is not spending"
+    # Forfeiture entries likewise.
+    victim = db.register_agent("econ-spent-forfeit")
+    _fund(victim["agent_id"], 6)
+    db.forfeit_agent(victim["agent_id"])
+    vs = db.credit_history(agent_id=victim["agent_id"])["summary"][
+        "spent_total_quarters"
+    ]
+    assert vs == 0, "forfeiture is a penalty, not spending"
+    # Positive control: a real spend moves the number.
+    db._credits.spend(alpha, 4, "probe_buy")
+    s2 = db.credit_history(agent_id=alpha)["summary"][
+        "spent_total_quarters"
+    ]
+    assert s2 == s0 + 4
+
+
+def test_batch_locks_track_remaining_balance():
+    """One staker, THREE same-proposal stakes of 5q against a 12q wallet:
+    the first two lock (7q, then 2q left); the third passes the stale
+    snapshot check but its live-balance spend refuses - it must abandon
+    on its own instead of raising inside BEGIN IMMEDIATE and rolling
+    back its siblings (review H1)."""
+    from events import EVT_STAKE_ABANDONED
+
+    staker = db.register_agent("econ-batch")
+    _fund(staker["agent_id"], 12)
+    prop = db.create_proposal(AGENTS["alpha"]["token"],
+                              "batch lock target", "b")
+    pid = prop["post_id"]
+    ids = []
+    for _ in range(3):
+        out = db.stake(staker["token"], pid, per_pr=1.25, max_prs=1,
+                       currency="credits")
+        ids.append(out["stake_id"])
+    locked = db.lock_stakes_for_pr(None, pid, 993001,
+                                   AGENTS["beta"]["agent_id"])
+    assert locked == 2, "the two funded locks land; the batch survives"
+    with db._conn() as conn:
+        rows = {
+            r["id"]: r["status"]
+            for r in conn.execute(
+                f"SELECT id, status FROM proposal_stakes WHERE id IN "
+                f"({','.join('?' * len(ids))})",
+                ids,
+            ).fetchall()
+        }
+    assert list(rows.values()).count("active") == 2
+    assert list(rows.values()).count("abandoned") == 1, \
+        "the stale-snapshot third stake abandons instead of crashing"
+    kinds = [e for e in _events(EVT_STAKE_ABANDONED)]
+    abandoned_ids = {ids[2]}
+    assert all(e["target_id"] in abandoned_ids
+               for e in kinds if e["target_id"] in ids)
+
+
+def test_bad_genesis_knob_does_not_block_boot():
+    """A non-quarter FORUM_TREASURY_GENESIS_CREDITS logs loudly and skips
+    seeding - init_db must never refuse to open the database over it
+    (review H2)."""
+    import importlib
+
+    old = os.environ.get("FORUM_TREASURY_GENESIS_CREDITS")
+    os.environ["FORUM_TREASURY_GENESIS_CREDITS"] = "1000.3"
+    try:
+        importlib.reload(config)
+        db.init_db()  # must NOT raise
+        with db._conn() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM credit_entries"
+                " WHERE account = 'treasury' AND reason = 'genesis'"
+            ).fetchone()[0]
+        assert n <= 1, "no duplicate/corrupt genesis write"
+    finally:
+        if old is None:
+            os.environ.pop("FORUM_TREASURY_GENESIS_CREDITS", None)
+        else:
+            os.environ["FORUM_TREASURY_GENESIS_CREDITS"] = old
+        importlib.reload(config)
+
+
+def test_fee_decimal_exactness():
+    """Large amounts under fractional percents stay exact in Decimal -
+    binary-float ceil drifted here (review M1)."""
+    _shadow("TX_FEE_PERCENT", 0.33)
+    try:
+        assert db.fee_quarters(1_000_000) == 3300
+        assert db.fee_quarters(10_000) == 33, "exact boundary stays exact"
+        assert db.fee_quarters(3) == 1, "ceil still rounds up"
+    finally:
+        _restore()
+
+
+def test_fractional_cap_refused_loudly():
+    """The daily budget is a price: a knob like 0.3 refuses the
+    adjustment naming the knob, rather than silently snapping to 0.25
+    (review M2)."""
+    from tests._setup import expect_error
+
+    _shadow("ADMIN_MINT_DAILY_CAP_CREDITS", 0.3)
+    try:
+        msg = expect_error(
+            db.economy_admin_adjust, "mint", 0.25, "fractional cap",
+            admin="tester",
+        )
+        assert "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS" in msg
+        assert "whole, half or quarter" in msg
+    finally:
+        _restore()
+
+
+def test_docket_and_overview_commitment_agree():
+    """Docket stake totals and /economy's committed-to-active-stakes are
+    the SAME quantity (remaining commitment), computed identically
+    (review M3)."""
+    staker = db.register_agent("econ-agree")
+    _fund(staker["agent_id"], 40)
+    prop = db.create_proposal(AGENTS["alpha"]["token"],
+                              "agreement probe", "b")
+    pid = prop["post_id"]
+    db.stake(staker["token"], pid, per_pr=1.0, max_prs=2,
+             currency="credits")   # 8q remaining
+    db.stake(staker["token"], pid, per_pr=0.5, max_prs=1,
+             currency="credits")   # 2q remaining
+    expected = 8 + 2
+    overview = db.economy_overview()
+    assert (
+        overview["committed_to_active_stakes_quarters"] >= expected
+    ), "overview counts at least these commitments"
+    docket = [p for p in db.list_proposals() if p["id"] == pid]
+    assert docket, "the probe proposal rides the docket"
+    got = docket[0]["stake_total_credits_quarters"]
+    assert got == expected, \
+        f"docket says {got}, overview formula says {expected}"
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
@@ -630,6 +830,14 @@ def main():
     test_credit_sub_one_stake_floor()
     test_treasury_name_reserved_and_precedence()
     test_transfer_note_escaped_on_events_page()
+    test_checkpoint_replays_the_chain_not_just_sums()
+    test_negative_admin_cap_clamps_shut()
+    test_spent_total_excludes_penalties_and_cancels()
+    test_batch_locks_track_remaining_balance()
+    test_bad_genesis_knob_does_not_block_boot()
+    test_fee_decimal_exactness()
+    test_fractional_cap_refused_loudly()
+    test_docket_and_overview_commitment_agree()
     print("test_economy: all ok")
 
 

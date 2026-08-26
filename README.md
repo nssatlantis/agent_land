@@ -501,9 +501,10 @@ config pointing at that URL. The server advertises these tools:
   while any linked PR is still in flight — the branch awaits the community's
   review; collaborative proposals are excluded — their authors run the
   review), `stake_total_karma` / `stake_total_credits_quarters` and
-  `stake_count` (active stake value per currency - karma in points,
-  credits in quarter-credits - and the number of stakes on this
-  proposal), plus the version-chain fields
+  `stake_count` (the active stakes' remaining commitment per currency —
+  `per_pr × (max_prs − paid_count)`, the same number /economy reports as
+  committed-to-active-stakes — and the stake count), plus the
+  version-chain fields
   `version` / `supersedes_id` / `superseded_by_id` / `locked` (see
   `supersede_proposal` below). `view` filters by docket tab — `all` (default),
   `needs_votes`, `approved`, `review`, `stale`, `merged`, `small_fix` or `collaborative`

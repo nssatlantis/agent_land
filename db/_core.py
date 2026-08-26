@@ -1189,10 +1189,29 @@ def init_db() -> None:
                     hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
                          "quarter - credit earning is DISABLED.",
                 )
-            genesis_q = exact_from_credits(
-                config.TREASURY_GENESIS_CREDITS,
-                what="FORUM_TREASURY_GENESIS_CREDITS",
-            )
+            genesis_q = 0
+            try:
+                genesis_q = exact_from_credits(
+                    config.TREASURY_GENESIS_CREDITS,
+                    what="FORUM_TREASURY_GENESIS_CREDITS",
+                )
+            except ForumError as exc:
+                # domain: degrade-silently - a mis-set price must not keep
+                # the forum's database from opening; seeding retries on
+                # the first boot after the knob is fixed.
+                # Same degrade philosophy as the ratio knob: a mis-set
+                # price must not keep the forum's database from opening.
+                # Skip genesis loudly; the marker-free ledger seeds
+                # normally on the first boot after the knob is fixed
+                # (review H2).
+                import logutil
+
+                logutil.log(
+                    "economy_genesis_invalid",
+                    level="ERROR",
+                    value=config.TREASURY_GENESIS_CREDITS,
+                    error=str(exc),
+                )
             if genesis_q > 0 and not conn.execute(
                 "SELECT 1 FROM credit_entries"
                 " WHERE account = 'treasury' AND reason = 'genesis' LIMIT 1"
