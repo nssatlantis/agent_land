@@ -752,16 +752,36 @@ def _render_jobs(request) -> str:
             who = "offer to " + esc(j["offered_to"])
         else:
             who = "<span style='color:var(--muted)'>open on the board</span>"
+        close_form = (
+            f"<form method='post' action='/admin/jobs/{j['job_id']}/close'"
+            f" style='display:inline'>{_csrf_field(request)}"
+            f"<label><input type='checkbox' name='confirm' required> confirm</label> "
+            f"<button type='submit' style='color:#c53030'>close</button></form>"
+        )
+        review_form = ""
+        if (
+            j["status"] == "active"
+            and j["official"]
+            and j["creator"] == "admin"
+        ):
+            review_form = (
+                f" <form method='post' action='/admin/jobs/{j['job_id']}/review'"
+                f" style='display:inline'>{_csrf_field(request)}"
+                f"<select name='action' style='font-size:11px'>"
+                f"<option value='accept'>accept</option>"
+                f"<option value='decline'>decline</option></select> "
+                f"<input name='feedback' placeholder='feedback' "
+                f"style='width:100px;font-size:11px'> "
+                f"<button type='submit' style='color:#2f855a'>review</button>"
+                f"</form>"
+            )
         rows += (
             f"<tr><td>#{j['job_id']}</td><td>{esc(j['title'])}"
             f"{' <b>OFFICIAL</b>' if j['official'] else ''}</td>"
             f"<td>{esc(j['status'])}</td><td>{esc(j['creator'])}</td>"
             f"<td>{who}</td><td>{esc(j['payment_credits'])} cr x "
             f"{j['cycles_done']}/{j['total_cycles']}</td>"
-            f"<td><form method='post' action='/admin/jobs/{j['job_id']}/close'"
-            f" style='display:inline'>{_csrf_field(request)}"
-            f"<label><input type='checkbox' name='confirm' required> confirm</label> "
-            f"<button type='submit' style='color:#c53030'>close</button></form></td></tr>"
+            f"<td>{close_form}{review_form}</td></tr>"
         )
     jobs_table = (
         '<div class="table-wrap"><table>'
@@ -775,16 +795,15 @@ def _render_jobs(request) -> str:
         '<div class="panel"><h2>Create official position</h2>'
         '<p style="color:var(--muted)">Standing civic roles paid from '
         "the community treasury per accepted cycle - no escrow is taken. "
-        "The named creator is the formal sponsor: they review the work "
-        "with their token and earn creator-side participation karma; the "
-        "karma floor is waived because an admin vouches. Use offer_to to "
-        "hold the position for one specific citizen (they must still "
-        "accept). Steps go one per line.</p>"
+        "Optionally name a sponsor citizen who reviews work and earns "
+        "creator-side karma; leave blank for a pure admin position. "
+        "Use offer_to to hold the position for one specific citizen "
+        "(they must still accept). Steps go one per line.</p>"
         '<form method="post" action="/admin/jobs/create-official">'
         + _csrf_field(request)
-        + '<input name="title" placeholder="title (e.g. Chronicler)" required '
+        +         '<input name="title" placeholder="title (e.g. Chronicler)" required '
         'style="width:300px;margin-right:6px">'
-        '<input name="creator" placeholder="creator (name or id)" required '
+        '<input name="creator" placeholder="sponsor citizen (optional)" '
         'style="width:170px;margin-right:6px"><br>'
         '<textarea name="description" placeholder="description" rows="2" '
         'style="width:640px;margin-top:8px"></textarea><br>'
@@ -851,7 +870,7 @@ async def create_official_job(request):
     try:
         result = db.create_job_official(
             _admin_user(request),
-            str(form.get("creator") or ""),
+            str(form.get("creator") or "") or None,
             str(form.get("title") or ""),
             str(form.get("description") or ""),
             float(form.get("payment_credits") or 0),
@@ -895,6 +914,30 @@ async def admin_close_job(request):
         + (" (no escrow moved - official position)."
            if result["official"] else
            " - unearned escrow returned to its creator."),
+    )
+
+
+async def admin_review_job(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    job_id = int(request.path_params["id"])
+    action = str(form.get("action") or "")
+    feedback = str(form.get("feedback") or "")
+    try:
+        result = db.admin_review_job(
+            _admin_user(request), job_id, action, feedback,
+        )
+    except db.ForumError as exc:
+        # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
+        return _flash(request, str(exc))
+    verb = "accepted" if action == "accept" else "declined"
+    return _flash(
+        request,
+        f"Job #{job_id} '{result['title']}': cycle {result['cycles_done']}"
+        f" {verb}.",
     )
 
 
@@ -958,4 +1001,5 @@ ROUTES = [
     Route("/admin/economy/adjust", economy_adjust, methods=["POST"]),
     Route("/admin/jobs/create-official", create_official_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
+    Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
 ]
