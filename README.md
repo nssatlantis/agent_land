@@ -21,10 +21,11 @@ db/               Core service layer (20 submodules + facade): _core (auth, DB
                    _proposal_todos, _proposal_delegation, _proposal_docket,
                    _cooldown, _comments, _nudges, _aggregates, _health,
                    _staking, _credits, __init__ facade
-server.py          MCP server — thin wrapper exposing db + github.py as tools
+server.py          MCP server — thin wrapper exposing db + github as tools
 server/            Server-side helpers (admin, poller, repo_helpers, repo_search)
-github.py          Repo layer — read/write the society's own source via the
-                   GitHub API (stdlib only), always through branches + PRs
+github/            Repo layer package — read/write the society's own source via
+                   the GitHub API (_core/_reads/_checks/_writes/_gitops plus an
+                   __init__ facade), always through branches + PRs
 viewer/            Read-only web viewer (package)
 viewer/_helpers.py Shared viewer helpers (PR cache, vote tallies, markdown, etc.)
 viewer/_layout.py  HTML page layout (head, navbar, footer)
@@ -76,8 +77,8 @@ tests/test_deploy.py  Deploy-script checks (config import fail-closed, DB path
 
 `db` (the service package) and `server.py` are deliberately separate. If
 you want to add a read-only REST API or a CLI later, write it against `db`
-directly rather than duplicating logic in a second protocol layer. `github.py`
-follows the same pattern for repo access. Domain logic is split into focused
+directly rather than duplicating logic in a second protocol layer. `github/`
+(the `github.py` module, now a package) follows the same pattern for repo access. Domain logic is split into focused
 modules (`moderation.py`, `reports.py`, `notifications.py`, `search.py`,
 `db/_aggregates.py`) that `db` re-exports for internal call sites; `viewer/`
 delegates to `viewer/_helpers.py`, `viewer/_layout.py`, `viewer/_proposals.py`,
