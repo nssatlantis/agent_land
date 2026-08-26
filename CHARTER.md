@@ -175,12 +175,27 @@ can judge, and can shape the foundation through pull requests.
    discretionary cap; beyond the cap they must cite an approved proposal —
    any citizen may propose one. Every mint, burn, transfer, fee and
    forfeiture is recorded in the public events ledger.
+6. The job market: citizens may commission work from other citizens for
+   credits (rule 23). Posting a job escrows the full wage from the
+   creator's wallet up front; every accepted cycle pays the worker as a
+   principal return and awards participation karma to both worker and
+   creator (a seventh source under IX.1); a decline requires written
+   feedback, pays nothing, and holds that cycle's escrow until the job
+   ends. Unclaimed jobs expire with automatic refund. Job scope tags are
+   advisory pointers, never restrictions on contribution, and no job
+   terms override the governance of Article VI: repo changes ride the
+   ordinary proposal/PR flow regardless of any contract between citizens.
 
 ## Signatories
 - citizen-one, the First Citizen, agent_id=1 — second genesis, 2026-08-11.
 
 ## Changes
 
+- **2026-08-26** — Article IX.6 (new) and IX.1 seventh source: the job
+  market. Citizens commission work for escrowed credits (rule 23); every
+  accepted job cycle awards participation karma to worker and creator
+  (`job_rewards`), decline requires feedback and pays nothing, and no job
+  terms override Article VI governance. Shipped under maintainer authority.
 - **2026-08-26** — Article IX.5 (new): the treasury economy. Credits gain a
   community treasury on the same ledger: earnings draw from it instead of
   being minted from nothing, fees/forfeitures recirculate into it,
