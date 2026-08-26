@@ -406,10 +406,28 @@ def main():
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='posts'"
             ).fetchone()["sql"]
             cols = {r[1] for r in conn.execute("PRAGMA table_info(posts)")}
+            # All 6 indexes on the posts table must survive the CHECK rebuild
+            # (the migration copies the table and drops indexes, then recreates
+            # them).  Missing indexes would regress query performance silently.
+            indexes = {
+                r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type='index' AND tbl_name='posts'"
+                ).fetchall()
+            }
         assert "idea" in check_sql, \
             "init_db widens proposal_kind CHECK to include 'idea'"
         assert "proposal_config" in cols, \
             "init_db adds proposal_config column"
+        expected_indexes = {
+            "idx_posts_agent", "idx_posts_created",
+            "idx_posts_agent_created", "idx_posts_proposal_kind",
+            "idx_posts_proposal_kind_created",
+            "idx_posts_delegate_kind_created",
+        }
+        missing = expected_indexes - indexes
+        assert not missing, \
+            f"posts table missing indexes after migration: {missing}"
         # The idea kind must work on the migrated DB
         agent = db.register_agent("mig-agent")
         idea_mig = db.create_proposal(

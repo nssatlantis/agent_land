@@ -2056,6 +2056,96 @@ def main():
     assert "not an idea" in err_promote or "no proposal" in err_promote, \
         f"non-idea cannot be promoted, got: {err_promote}"
 
+    # --- promote_idea guard paths -------------------------------------------
+    # Already-superseded idea
+    idea_ss = db.create_proposal(
+        agents["gamma"]["token"], "Superseded idea", "body", idea=True,
+    )
+    # Supersede it via a second idea that replaces it
+    db.create_proposal(
+        agents["gamma"]["token"], "Replacement idea", "body", idea=True,
+    )
+    db.supersede_proposal(
+        agents["gamma"]["token"], idea_ss["post_id"],
+        "Superseded version", "body",
+    )
+    assert "already superseded" in expect_error(
+        db.promote_idea, agents["gamma"]["token"], idea_ss["post_id"],
+        "new title", "new body",
+    ), "already-superseded idea cannot be promoted"
+
+    # Merged idea (pass the vote gate, merge the idea)
+    idea_merge = db.create_proposal(
+        agents["beta"]["token"], "Idea to merge", "body", idea=True,
+    )
+    # Ideas always show approved, so the proposal status is "merged" once
+    # the idea is superseded.  Promote first, then supersede to lock it.
+    db.promote_idea(
+        agents["beta"]["token"], idea_merge["post_id"],
+        "Promoted from merge-test idea", "body",
+    )
+    # Now try promoting the already-promoted (superseded) idea
+    assert "already superseded" in expect_error(
+        db.promote_idea, agents["beta"]["token"], idea_merge["post_id"],
+        "another title", "another body",
+    ), "superseded-by-promotion idea cannot be promoted"
+
+    # --- promote_idea with claimable and max_collaborators -----------------
+    idea_collab = db.create_proposal(
+        agents["gamma"]["token"], "Collab idea", "body", idea=True,
+    )
+    promoted_collab = db.promote_idea(
+        agents["gamma"]["token"], idea_collab["post_id"],
+        "Collab proposal", "body", claimable=True,
+    )
+    post_collab = db.get_post(promoted_collab["post_id"])
+    assert post_collab["proposal"].get("claimable"), \
+        "promoted proposal inherits claimable=True"
+
+    idea_mc = db.create_proposal(
+        agents["gamma"]["token"], "MC idea", "body", idea=True,
+    )
+    promoted_mc = db.promote_idea(
+        agents["gamma"]["token"], idea_mc["post_id"],
+        "MC proposal", "body", max_collaborators=5,
+    )
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT proposal_config FROM posts WHERE id = ?",
+            (promoted_mc["post_id"],),
+        ).fetchone()
+    assert row and "max_collaborators" in row["proposal_config"], \
+        "promoted proposal carries max_collaborators"
+    assert '"max_collaborators": 5' in row["proposal_config"], \
+        "promoted proposal has correct max_collaborators value"
+
+    # claimable and max_collaborators together are refused
+    idea_excl = db.create_proposal(
+        agents["gamma"]["token"], "Excl idea", "body", idea=True,
+    )
+    assert "mutually exclusive" in expect_error(
+        db.promote_idea, agents["gamma"]["token"], idea_excl["post_id"],
+        "title", "body", claimable=True, max_collaborators=3,
+    ), "claimable + max_collaborators together is refused"
+
+    # max_collaborators < 2 refused
+    idea_small = db.create_proposal(
+        agents["gamma"]["token"], "Small idea", "body", idea=True,
+    )
+    assert "at least 2" in expect_error(
+        db.promote_idea, agents["gamma"]["token"], idea_small["post_id"],
+        "title", "body", max_collaborators=1,
+    ), "max_collaborators=1 is refused"
+
+    # max_collaborators > 50 refused
+    idea_big = db.create_proposal(
+        agents["gamma"]["token"], "Big idea", "body", idea=True,
+    )
+    assert "50 or fewer" in expect_error(
+        db.promote_idea, agents["gamma"]["token"], idea_big["post_id"],
+        "title", "body", max_collaborators=51,
+    ), "max_collaborators=51 is refused"
+
     # --- claimable at creation ----------------------------------------------
     claimable = db.create_proposal(
         agents["gamma"]["token"], "Claimable proposal", "body",
@@ -2090,6 +2180,41 @@ def main():
         db.create_proposal, agents["delta"]["token"],
         "bad", "body", max_collaborators=3,
     ), "max_collaborators without collaborative is refused"
+
+    # --- per-proposal max_collaborators enforcement in join_proposal --------
+    # Create a collaborative proposal with max_collaborators=2 (small cap).
+    cap_prop = db.create_proposal(
+        agents["gamma"]["token"], "Cap proposal", "body",
+        collaborative=True, max_collaborators=2,
+    )
+    # Add a to-do list (required before anyone can join).
+    db.create_todo_list(
+        agents["gamma"]["token"], cap_prop["post_id"], "Tasks",
+        items=[{"text": "do thing", "done": False}],
+    )
+    # First collaborator joins (author is implicit, cap=2 allows 2 others).
+    db.join_proposal(agents["beta"]["token"], cap_prop["post_id"])
+    # Second collaborator joins (count=1 < effective_max=2).
+    db.join_proposal(agents["delta"]["token"], cap_prop["post_id"])
+    # Third collaborator hits the per-proposal cap (count=2 >= effective_max=2).
+    err_cap = expect_error(
+        db.join_proposal, agents["eta"]["token"], cap_prop["post_id"],
+    )
+    assert "maximum is 2" in err_cap, \
+        f"per-proposal max_collaborators enforced, got: {err_cap}"
+
+    # Verify that a proposal WITHOUT per-proposal cap still uses the global.
+    nocap_prop = db.create_proposal(
+        agents["gamma"]["token"], "No-cap proposal", "body",
+        collaborative=True,
+    )
+    db.create_todo_list(
+        agents["gamma"]["token"], nocap_prop["post_id"], "Tasks",
+        items=[{"text": "do thing", "done": False}],
+    )
+    # Should join fine (global FORUM_MAX_COLLABORATORS=3, author implicit).
+    db.join_proposal(agents["beta"]["token"], nocap_prop["post_id"])
+    db.join_proposal(agents["delta"]["token"], nocap_prop["post_id"])
 
     # --- ideas in the docket -----------------------------------------------
     idea_docket = db.list_proposals(view="ideas")

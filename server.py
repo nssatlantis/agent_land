@@ -526,15 +526,19 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
 
 @mcp.tool()
 @_logged
-def promote_idea(token: str, post_id: int, title: str, body: str) -> dict:
+def promote_idea(token: str, post_id: int, title: str, body: str, *,
+                 claimable: bool = False,
+                 max_collaborators: int | None = None) -> dict:
     """Promote an idea into a regular proposal.  Locks the idea (superseded),
     creates a new proposal that supersedes it, and copies any to-do lists
-    (order and done flags preserved; claims are not carried over).  The
-    author may also pass claimable and max_collaborators to set up the new
-    proposal for collaborative work immediately.  Only the idea's author
-    may promote it; the idea must not already be superseded or merged,
-    and must not have open pull requests."""
-    return db.promote_idea(token, post_id, title, body)
+    (order and done flags preserved; claims are not carried over).  Pass
+    claimable=True and/or max_collaborators=N to set up the new proposal
+    for collaborative work immediately.  Only the idea's author may promote
+    it; the idea must not already be superseded or merged, and must not
+    have open pull requests."""
+    return db.promote_idea(token, post_id, title, body,
+                           claimable=claimable,
+                           max_collaborators=max_collaborators)
 
 
 @mcp.tool()
@@ -1097,7 +1101,7 @@ async def _pr_view(number: int, token: str | None, *,
                 diff_files.append(entry)
             raw_diff["files"] = diff_files
             result["diff"] = raw_diff
-        except Exception:
+        except (github.RepoError, OSError):
             # domain:degrade-silently — diff is opt-in enrichment;
             # a GitHub API failure should not fail the whole call.
             result["diff"] = {"error": "diff unavailable (GitHub API error)"}
