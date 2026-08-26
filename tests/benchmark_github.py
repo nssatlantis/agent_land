@@ -20,7 +20,6 @@ Run:  python tests/benchmark_github.py
 """
 
 import asyncio
-import importlib.util
 import os
 import sys
 import time
@@ -30,12 +29,11 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-_ROOT = Path(__file__).resolve().parent.parent / "github.py"
-_spec = importlib.util.spec_from_file_location("agentland_root_github", _ROOT)
-gh = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gh)
+import github as gh  # noqa: E402
+import github._checks as gh_checks  # noqa: E402
+import github._core as gh_core  # noqa: E402
 
-gh.GITHUB_TOKEN = os.environ.get("BENCH_TOKEN", "bench-token")
+gh_core.GITHUB_TOKEN = os.environ.get("BENCH_TOKEN", "bench-token")
 DELAY_S = float(os.environ.get("BENCH_DELAY_MS", "40")) / 1000.0
 
 
@@ -55,8 +53,8 @@ def _install_delay_mock(delay: float):
             })
         return httpx.Response(200, json=[])
 
-    old = gh._client
-    gh._client = httpx.AsyncClient(
+    old = gh_core._client
+    gh_core._client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
         base_url="https://api.github.com",
     )
@@ -67,8 +65,8 @@ def bench_fanout() -> None:
     """aget_pr issues 4 requests (PR + two comment sources + files); the
     last three overlap. Sequential cost ~= 4*delay, fan-out ~= 2*delay."""
     hits, old = _install_delay_mock(DELAY_S)
-    stub_checks = gh._checks_for_head
-    gh._checks_for_head = lambda sha: {"state": "unknown", "source": "stub"}
+    stub_checks = gh_checks._checks_for_head
+    gh_checks._checks_for_head = lambda sha: {"state": "unknown", "source": "stub"}
     try:
         # sequential reference: same four requests, one at a time
         seq_paths = [
@@ -79,7 +77,7 @@ def bench_fanout() -> None:
         ]
         t0 = time.perf_counter()
         for p in seq_paths:
-            asyncio.run(gh._arequest("GET", p))
+            asyncio.run(gh_core._arequest("GET", p))
         seq_ms = (time.perf_counter() - t0) * 1000
 
         gh.clear_cache()
@@ -94,8 +92,8 @@ def bench_fanout() -> None:
         print(f"  latency saved        : {seq_ms - fan_ms:7.1f} ms  "
               f"({seq_ms / max(fan_ms, 0.001):.2f}x)")
     finally:
-        gh._checks_for_head = stub_checks
-        gh._client = old
+        gh_checks._checks_for_head = stub_checks
+        gh_core._client = old
         gh.clear_cache()
 
 
@@ -143,8 +141,8 @@ def _install_checks_delay_mock(delay: float):
             return httpx.Response(200, text="error: boom\n" * 80)
         return httpx.Response(200, json={})
 
-    old = gh._client
-    gh._client = httpx.AsyncClient(
+    old = gh_core._client
+    gh_core._client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
         base_url="https://api.github.com",
     )
@@ -167,9 +165,9 @@ def bench_apr_checks() -> None:
         ]
         t0 = time.perf_counter()
         for p in seq_paths[:2]:
-            asyncio.run(gh._arequest("GET", p))
+            asyncio.run(gh_core._arequest("GET", p))
         for p in seq_paths[2:]:
-            asyncio.run(gh._arequest_text("GET", p))
+            asyncio.run(gh_core._arequest_text("GET", p))
         seq_ms = (time.perf_counter() - t0) * 1000
 
         gh.clear_cache()
@@ -184,7 +182,7 @@ def bench_apr_checks() -> None:
         print(f"  latency saved        : {seq_ms - fan_ms:7.1f} ms  "
               f"({seq_ms / max(fan_ms, 0.001):.2f}x)")
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
 
 

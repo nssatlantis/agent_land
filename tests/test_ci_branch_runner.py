@@ -117,11 +117,11 @@ class _GitFixture:
     def patch_runner(self):
         self._saved = (
             (ci_runner, "_runner_dir", ci_runner._runner_dir),
-            (ci_runner.github, "_repo_url", ci_runner.github._repo_url),
+            (ci_runner.github._gitops, "_repo_url", ci_runner.github._gitops._repo_url),
             (ci_runner.github, "base_branch", ci_runner.github.base_branch),
         )
         ci_runner._runner_dir = lambda: str(self.tree_dir)
-        ci_runner.github._repo_url = lambda with_token=False: str(self.bare)
+        ci_runner.github._gitops._repo_url = lambda with_token=False: str(self.bare)
         ci_runner.github.base_branch = lambda: "main"
 
     def unpatch(self):

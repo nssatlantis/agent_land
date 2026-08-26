@@ -1,4 +1,4 @@
-"""Regression guards for github.py's pooled httpx client (proposal #179,
+"""Regression guards for the github package's pooled httpx client (proposal #179,
 extended across the async migration): transport-level failures retry
 exactly once while the poisoned connection is discarded inside httpx,
 ok_404 misses keep the stream in sync (httpx drains every body fully -
@@ -8,7 +8,6 @@ background loop transparently, native-await twins work standalone, and
 concurrent sync callers share the one client safely."""
 
 import asyncio
-import importlib.util
 import re
 import sys
 import threading
@@ -18,19 +17,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-_ROOT = Path(__file__).resolve().parent.parent / "github.py"
-_spec = importlib.util.spec_from_file_location("agentland_root_github", _ROOT)
-gh = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gh)
+import github as gh  # noqa: E402
+import github._checks as gh_checks  # noqa: E402
+import github._core as gh_core  # noqa: E402
+import github._reads as gh_reads  # noqa: E402
 
-gh.GITHUB_TOKEN = "test-token"  # satisfies _ensure_token(); no network touched
+gh_core.GITHUB_TOKEN = "test-token"  # satisfies _ensure_token(); no network touched
 
 
 def _install_mock(handler):
     """Point the module's shared client at an httpx.MockTransport-backed
     client. Returns the previous client for restoration."""
-    old = gh._client
-    gh._client = httpx.AsyncClient(
+    old = gh_core._client
+    gh_core._client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
         base_url="https://api.github.com",
     )
@@ -48,10 +47,10 @@ def test_transport_error_retries_once():
 
     old = _install_mock(handler)
     try:
-        assert gh._request("GET", "pulls/1") == {"value": 7}
+        assert gh_core._request("GET", "pulls/1") == {"value": 7}
         assert len(calls) == 2, f"exactly one retry expected, saw {len(calls)}"
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  ConnectError heals via one retry: ok")
 
 
@@ -68,10 +67,10 @@ def test_remote_protocol_error_heals():
 
     old = _install_mock(handler)
     try:
-        assert gh._request("GET", "pulls/2") == {"ok": True}
+        assert gh_core._request("GET", "pulls/2") == {"ok": True}
         assert len(calls) == 2
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  RemoteProtocolError (Request-sent class) heals: ok")
 
 
@@ -86,13 +85,13 @@ def test_ok_404_returns_none_and_stream_stays_in_sync():
 
     old = _install_mock(handler)
     try:
-        assert gh._request("GET", "contents/gone.md", ok_404=True) is None
+        assert gh_core._request("GET", "contents/gone.md", ok_404=True) is None
         # The next request on the SAME shared client must parse cleanly -
         # no leftover body bytes corrupting the stream.
-        assert gh._request("GET", "contents/here.md") == {"after": True}
+        assert gh_core._request("GET", "contents/here.md") == {"after": True}
         assert hits == ["/repos/x/gone.md", "/repos/x/here.md"] or len(hits) == 2
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  ok_404 miss keeps the shared stream in sync: ok")
 
 
@@ -104,12 +103,12 @@ def test_non_ok_error_surfaces_body_message():
     try:
         raised = None
         try:
-            gh._request("GET", "pulls/3")
+            gh_core._request("GET", "pulls/3")
         except gh.RepoError as exc:
             raised = str(exc)
         assert raised is not None and "500" in raised and "boom" in raised, raised
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  non-OK path raises RepoError with the body message: ok")
 
 
@@ -121,11 +120,11 @@ def test_request_text_paths():
 
     old = _install_mock(handler)
     try:
-        text = gh._request_text("GET", "actions/jobs/1/logs")
+        text = gh_core._request_text("GET", "actions/jobs/1/logs")
         assert text == "line1\nerror: failed\n", repr(text)
-        assert gh._request_text("GET", "actions/jobs/9/logs", ok_404=True) is None
+        assert gh_core._request_text("GET", "actions/jobs/9/logs", ok_404=True) is None
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  _request_text reads text and honours ok_404: ok")
 
 
@@ -149,7 +148,7 @@ def test_native_twin_alist_tree():
         assert result["branch"] == "main"
         assert [f["path"] for f in result["files"]] == ["a.py", "b.md"]
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  native await twin alist_tree works standalone: ok")
 
@@ -167,15 +166,15 @@ def test_sync_bridge_shares_one_client_across_threads():
     try:
         threads_before = threading.active_count()
         with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(gh._request, "GET", f"items/{i}") for i in range(16)]
+            futures = [pool.submit(gh_core._request, "GET", f"items/{i}") for i in range(16)]
             results = [f.result() for f in futures]
         assert results == [{"n": i} for i in range(16)]
         assert len(seen) == 16
         # One background loop serves everyone; no thread-per-call growth.
         assert threading.active_count() <= threads_before + 2
-        assert gh._loop is not None and gh._loop.is_running()
+        assert gh_core._loop is not None and gh_core._loop.is_running()
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  concurrent sync callers share the background loop: ok")
 
 
@@ -186,12 +185,12 @@ def test_background_loop_is_reused_not_respawned():
     old = _install_mock(handler)
     try:
         first_loop = None
-        gh._request("GET", "warmup")
-        first_loop = gh._loop
-        gh._request("GET", "warmup2")
-        assert gh._loop is first_loop
+        gh_core._request("GET", "warmup")
+        first_loop = gh_core._loop
+        gh_core._request("GET", "warmup2")
+        assert gh_core._loop is first_loop
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  background loop reused across calls: ok")
 
 
@@ -209,11 +208,11 @@ def test_client_stays_single_owner_across_loops():
 
     old = _install_mock(handler)
     try:
-        assert gh._request("GET", "warmup") == {}   # first use: background loop
+        assert gh_core._request("GET", "warmup") == {}   # first use: background loop
         result = asyncio.run(gh.alist_tree())       # foreign loop awaits
         assert result["files"] == [{"path": "a", "size": 0}]
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  client stays single-owner across loops: ok")
 
@@ -265,8 +264,8 @@ def test_aget_pr_fans_out_concurrently():
         return httpx.Response(200, json=[])
 
     old = _install_mock(handler)
-    stub_checks = gh._checks_for_head
-    gh._checks_for_head = lambda sha: {"state": "unknown", "source": "stub", "runs": []}
+    stub_checks = gh_checks._checks_for_head
+    gh_checks._checks_for_head = lambda sha: {"state": "unknown", "source": "stub", "runs": []}
     try:
         result = asyncio.run(gh.aget_pr(4242))
         assert result["number"] == 4242 and result["head"] == "probe"
@@ -274,8 +273,8 @@ def test_aget_pr_fans_out_concurrently():
         assert result["checks"]["source"] == "stub"
         assert all(p in arrived for p in expected), arrived
     finally:
-        gh._checks_for_head = stub_checks
-        gh._client = old
+        gh_checks._checks_for_head = stub_checks
+        gh_core._client = old
         gh.clear_cache()
     print("  get_pr fans checks/comments/files out concurrently: ok")
 
@@ -312,8 +311,8 @@ def test_aget_pr_cache_and_subcache_parity():
         return httpx.Response(200, json=[])
 
     old = _install_mock(handler)
-    stub_checks = gh._checks_for_head
-    gh._checks_for_head = lambda sha: {"state": "unknown", "source": "stub"}
+    stub_checks = gh_checks._checks_for_head
+    gh_checks._checks_for_head = lambda sha: {"state": "unknown", "source": "stub"}
     try:
         first = asyncio.run(gh.aget_pr(4242))
         n_after_first = len(hits)
@@ -332,8 +331,8 @@ def test_aget_pr_cache_and_subcache_parity():
         assert gh.pr_files(4242) == [expected_file]
         assert len(hits) == n_after_first
     finally:
-        gh._checks_for_head = stub_checks
-        gh._client = old
+        gh_checks._checks_for_head = stub_checks
+        gh_core._client = old
         gh.clear_cache()
     print("  aget_pr cache + sub-cache parity with sync path: ok")
 
@@ -350,8 +349,8 @@ def test_gather_error_propagates_as_repo_error():
         return httpx.Response(200, json=[])
 
     old = _install_mock(handler)
-    stub_checks = gh._checks_for_head
-    gh._checks_for_head = lambda sha: None
+    stub_checks = gh_checks._checks_for_head
+    gh_checks._checks_for_head = lambda sha: None
     try:
         raised = None
         try:
@@ -360,8 +359,8 @@ def test_gather_error_propagates_as_repo_error():
             raised = str(exc)
         assert raised is not None and "boom" in raised, raised
     finally:
-        gh._checks_for_head = stub_checks
-        gh._client = old
+        gh_checks._checks_for_head = stub_checks
+        gh_core._client = old
         gh.clear_cache()
     print("  gather failure surfaces as RepoError with body message: ok")
 
@@ -409,7 +408,7 @@ def test_apr_diff_overlaps_payload_with_first_page():
         assert diff["files"] == [{"path": "f.py", "status": None, "additions": 3,
                                   "deletions": 0, "changes": 0, "patch": None}]
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  apr_diff overlaps payload with first files page: ok")
 
@@ -434,7 +433,7 @@ def test_apr_commits_overlaps_payload_with_first_page():
             "author_name": "n", "author_date": "2026-08-24T00:00:00Z",
         }]
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  apr_commits overlaps payload with first commits page: ok")
 
@@ -513,7 +512,7 @@ def test_pr_files_paginates_past_the_default_page():
         native = asyncio.run(gh.apr_files(4245))
         assert len(native) == 101 and native[-1]["filename"] == "b7.py"
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  pr_files paginates past the default 30/100-item page: ok")
 
@@ -532,7 +531,7 @@ def test_short_first_page_costs_one_request():
         assert len([u for u in hits if "issues/4246" in u]) == 1
         assert not any("page=2" in u for u in hits), hits
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  short first page terminates pagination after one request: ok")
 
@@ -543,16 +542,16 @@ def test_pagination_cap_bounds_runaway_servers():
         hits, "/files",
         [[{"filename": "x.py", "status": "modified"}] * 100] * 500,
     )
-    saved_cap = gh._PR_PAGE_CAP
-    gh._PR_PAGE_CAP = 3
+    saved_cap = gh_reads._PR_PAGE_CAP
+    gh_reads._PR_PAGE_CAP = 3
     old = _install_mock(handler)
     try:
         got = gh.pr_files(4247)
         assert len(got) == 300, len(got)
         assert len([u for u in hits if "pr_files" in u or "/files" in u]) == 3
     finally:
-        gh._PR_PAGE_CAP = saved_cap
-        gh._client = old
+        gh_reads._PR_PAGE_CAP = saved_cap
+        gh_core._client = old
         gh.clear_cache()
     print("  page cap bounds a server that never sends a short page: ok")
 
@@ -573,10 +572,10 @@ def test_request_text_follows_redirect_to_blob():
 
     old = _install_mock(handler)
     try:
-        text = gh._request_text("GET", "actions/jobs/777/logs")
+        text = gh_core._request_text("GET", "actions/jobs/777/logs")
         assert text is not None and "boom" in text, text
     finally:
-        gh._client = old
+        gh_core._client = old
     print("  _request_text follows the log redirect: ok")
 
 
@@ -621,14 +620,14 @@ def test_supplement_enriches_thin_exit_code_annotations():
     }
     old = _install_mock(handler)
     try:
-        gh._supplement_check_run_failures(result, "deadsha")
+        gh_checks._supplement_check_run_failures(result, "deadsha")
         msgs = [f["message"] for f in result["failures"]]
         assert any("AssertionError" in m for m in msgs), msgs
         # Log lines were merged IN FRONT of the thin annotation.
         assert any("AssertionError" in m for m in msgs[:2]), msgs
         assert msgs[-1] == "exit code 1", msgs
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  thin 'exit code' annotations get enriched from logs: ok")
 
@@ -706,7 +705,7 @@ def test_apr_checks_fans_out_job_logs():
         ends = [i for i, ev in enumerate(order) if ev[0] == "end"]
         assert max(starts) < min(ends), order
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  apr_checks fans job logs out concurrently: ok")
 
@@ -731,7 +730,7 @@ def test_apr_checks_cache_parity_with_sync():
         assert len(hits) == n_hits + 5, (n_hits, len(hits))
         assert native2 == gh.pr_checks(4245, _head_sha="deadsha")
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  apr_checks shares the pr_checks cache byte-for-byte: ok")
 
@@ -754,7 +753,7 @@ def test_apr_checks_falls_through_to_actions_tier():
         assert result["source"] == "actions", result["source"]
         assert any("check-runs" in u for u in hits), hits
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  check-run failures fall through to the actions tier: ok")
 
@@ -767,7 +766,7 @@ def test_apr_checks_head_sha_shortcut_skips_pr_fetch():
         asyncio.run(gh.apr_checks(4244, _head_sha="deadsha"))
         assert not any("/pulls/" in u for u in hits), hits
     finally:
-        gh._client = old
+        gh_core._client = old
         gh.clear_cache()
     print("  _head_sha shortcut skips the PR fetch: ok")
 

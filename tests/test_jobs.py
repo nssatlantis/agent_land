@@ -664,6 +664,78 @@ def test_delete_agent_refunds_escrow_before_forfeit():
     assert ghost_rows == 0
 
 
+def test_delete_agent_purges_worker_role_rewards_on_authored_jobs():
+    """The HIGH review finding: a job the victim AUTHORED that paid out
+    even one accepted cycle carries a worker-role job_rewards row whose
+    agent is someone else - with foreign_keys ON on every connection,
+    purging the jobs row without first dropping those reward rows raises
+    IntegrityError and moderation cannot delete the citizen at all."""
+    from moderation import delete_agent
+
+    victim = _make_creator("jobc-del-acc")
+    worker = db.register_agent("jobw-delacc")
+    helper = _make_creator("jobc-delacc-helper")
+    # A reward that must SURVIVE the deletion (another creator's job).
+    keep = _simple_job(helper, pay=1.0, title="keeper")
+    db.claim_job(worker["token"], keep["job_id"])
+    db.submit_job(worker["token"], keep["job_id"], "#K")
+    db.review_job(helper["token"], keep["job_id"], "accept")
+    # A reward that must GO with the victim's purged job.
+    doomed = _simple_job(victim, title="doomed", kind="recurring",
+                         cycles=2)
+    db.claim_job(worker["token"], doomed["job_id"])
+    db.submit_job(worker["token"], doomed["job_id"], "#D")
+    db.review_job(victim["token"], doomed["job_id"], "accept")
+
+    def _reward_count(aid):
+        with db._conn() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM job_rewards WHERE agent_id = ?",
+                (aid,),
+            ).fetchone()[0]
+
+    before = _reward_count(worker["agent_id"])
+    assert before == 2
+    delete_agent(victim["agent_id"], "admin", destroy_content=True)
+    try:
+        db.get_job(doomed["job_id"])
+        raise AssertionError("the victim's accepted-cycle job is purged")
+    except db.ForumError:
+        pass
+    assert _reward_count(worker["agent_id"]) == before - 1, \
+        "only the doomed job's reward rows go - survivors are untouched"
+    assert db.get_job(keep["job_id"])["status"] == "completed"
+
+
+def test_mid_review_deletion_resets_inherited_cycle():
+    """The MEDIUM review finding: a deleted worker's stale 'submitted'
+    cycle must not be inherited by the next claimant - they could not
+    resubmit past the submitted-guard, and a verdict on stale evidence
+    would pay out and award karma to someone who never did the work."""
+    creator = _make_creator("jobc-midrev")
+    victim = db.register_agent("jobv-midrev")
+    nxt = db.register_agent("jobv-midrev2")
+    j = _simple_job(creator, title="handoff", kind="recurring", cycles=3)
+    db.claim_job(victim["token"], j["job_id"])
+    db.submit_job(victim["token"], j["job_id"], "#P1-stale")
+    w_bal = _bal(nxt["agent_id"])
+    from moderation import delete_agent
+
+    delete_agent(victim["agent_id"], "admin")
+    d = db.get_job(j["job_id"])
+    assert d["status"] == "open" and d["worker"] is None
+    cyc = d["cycles"][0]
+    assert cyc["status"] == "awaiting" and cyc["evidence"] == "", \
+        f"in-flight cycle resets for the successor: {cyc}"
+    # The successor runs an unblocked, honest cycle.
+    db.claim_job(nxt["token"], j["job_id"])
+    db.submit_job(nxt["token"], j["job_id"], "#P1-real")
+    out = db.review_job(creator["token"], j["job_id"], "accept")
+    assert out["cycles_done"] == 1
+    assert _bal(nxt["agent_id"]) == w_bal + 4 + 2, \
+        "payout plus reward land on the citizen who actually worked"
+
+
 # -- surfaces: nudges, digests, listings ------------------------------------
 
 
