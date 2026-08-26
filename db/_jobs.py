@@ -918,6 +918,18 @@ def review_job(
                     _now_iso() if completed else None, job["id"],
                 ),
             )
+            if not completed:
+                # Seed the next cycle's awaiting row NOW: the status
+                # surfaces (worker job_note, daily digest, check_in,
+                # viewer card) all read stored rows - without this the
+                # mid-recurring-job nudge stays dark exactly when the
+                # worker owes the most. INSERT OR IGNORE keeps any row a
+                # concurrent path already wrote.
+                conn.execute(
+                    "INSERT OR IGNORE INTO job_cycles"
+                    " (job_id, cycle_no, status) VALUES (?, ?, 'awaiting')",
+                    (job["id"], new_done + 1),
+                )
             log_event(
                 EVT_JOB_CYCLE_ACCEPTED,
                 actor_agent_id=agent["id"],
@@ -1089,11 +1101,20 @@ def cancel_job(token: str, job_id: int) -> dict:
             conn=conn,
         )
         if job["worker_agent_id"] is not None:
+            # Officials hold no escrow, so a zero-remaining citizen-style
+            # sentence would read as "0 credits returned" - word the tail
+            # to what actually happened.
+            tail = (
+                f" - {_fmt_q(remaining)} credits of unearned escrow were "
+                "returned to its creator."
+                if remaining > 0 else
+                " (an official position - nothing was escrowed)."
+                if job["official"] else "."
+            )
             _notify(
                 conn, job["worker_agent_id"], "jobs", "job", job["id"],
                 f"{agent['name']} cancelled the job '{job['title']}' "
-                f"(#{job['id']}) - {_fmt_q(remaining)} credits of escrow "
-                "returned to them; your accepted cycles stay paid.",
+                f"(#{job['id']}){tail} Your accepted cycles stay paid.",
                 actor_agent_id=agent["id"],
             )
         return _detail_or_raise(conn, job["id"])
@@ -1171,7 +1192,10 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     moderation.delete_agent before forfeiture: the escrowed principal must
     land back in the wallet so the standard forfeit split can take it -
     cancelling AFTER deletion would strand the credits in ownerless
-    limbo. Returns how many jobs were closed."""
+    limbo. Jobs they were working on return to the open board with the
+    creator notified. Returns how many jobs were closed."""
+    from notifications import _notify
+
     rows = conn.execute(
         "SELECT * FROM jobs WHERE creator_agent_id = ?"
         " AND status IN ('open', 'offered', 'active')",
@@ -1208,12 +1232,31 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
         )
         closed += 1
     # Jobs the deleted citizen was WORKING on go back to the open board -
-    # the escrow stays locked for whoever claims the work next.
-    conn.execute(
-        "UPDATE jobs SET worker_agent_id = NULL, status = 'open'"
+    # the escrow stays locked for whoever claims the work next. The
+    # creator is told: a silently emptied worker slot is exactly how jobs
+    # get mistaken for stuck ones.
+    gone_name = conn.execute(
+        "SELECT name FROM agents WHERE id = ?", (agent_id,),
+    ).fetchone()
+    released = conn.execute(
+        "SELECT id, title, creator_agent_id FROM jobs"
         " WHERE worker_agent_id = ? AND status = 'active'",
         (agent_id,),
-    )
+    ).fetchall()
+    for r in released:
+        conn.execute(
+            "UPDATE jobs SET worker_agent_id = NULL, status = 'open'"
+            " WHERE id = ?",
+            (r["id"],),
+        )
+        _notify(
+            conn, r["creator_agent_id"], "jobs", "job", r["id"],
+            f"Your job '{r['title']}' (#{r['id']}) is back on the open"
+            " board - its worker "
+            f"{gone_name['name'] if gone_name else 'the assigned citizen'}"
+            " was removed from the forum. Its escrow stays locked; anyone"
+            " may claim_job() it next.",
+        )
     conn.execute(
         "UPDATE jobs SET offered_to_agent_id = NULL, status = 'open'"
         " WHERE offered_to_agent_id = ? AND status = 'offered'",
@@ -1291,12 +1334,18 @@ def sweep_expired_jobs() -> int:
                 },
                 conn=conn,
             )
+            refund_tail = (
+                f" - {_fmt_q(remaining)} credits of escrow were refunded "
+                "to your wallet."
+                if remaining > 0 else
+                " No escrow was held (official position)."
+            )
             _notify(
                 conn, job["creator_agent_id"], "jobs", "job", job["id"],
                 f"Your job '{job['title']}' (#{job['id']}) expired "
-                f"unclaimed after {config.JOB_EXPIRY_DAYS} days - "
-                f"{_fmt_q(remaining)} credits of escrow were refunded to "
-                "your wallet. Repost with adjusted terms if wanted.",
+                f"unclaimed after {config.JOB_EXPIRY_DAYS} days"
+                + refund_tail
+                + " Repost with adjusted terms if wanted.",
             )
         return len(stale)
 
