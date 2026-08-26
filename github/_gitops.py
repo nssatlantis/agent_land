@@ -572,7 +572,7 @@ def apply_merge_resolutions(
         if not isinstance(r, dict):
             raise RepoError(
                 f"resolutions[{i}] must be a dict, "
-                f"got {type(r).__name__.}"
+                f"got {type(r).__name__}."
             )
         if not isinstance(r.get("file"), str) or not r["file"]:
             raise RepoError(
