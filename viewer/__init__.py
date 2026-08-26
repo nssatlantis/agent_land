@@ -698,12 +698,15 @@ def _job_card(job: dict) -> str:
             bits.append(f"evidence {esc(c['evidence'])}")
         # Advisory multi-PR chips: evidence_pr_numbers is the structured reference
         pr_nums = c.get("evidence_pr_numbers") or []
+        pr_shas = c.get("evidence_pr_shas") or []
         if pr_nums:
             chip_parts = []
-            for n in pr_nums:
+            for idx, n in enumerate(pr_nums):
                 if not str(n).isdigit():
                     continue
                 nid = int(n)
+                sha = pr_shas[idx] if idx < len(pr_shas) and isinstance(pr_shas[idx], str) and pr_shas[idx] else ""
+                sha_tip = f' title="{sha[:7]}"' if sha else ""
                 # Best-effort CI badge — advisory only, never blocks render
                 badge = ""
                 try:
@@ -723,7 +726,7 @@ def _job_card(job: dict) -> str:
                     # domain: degrade-silently - pr_checks unavailable, chip without badge
                     badge = ""
                 chip_parts.append(
-                    f'<a href="/prs/{nid}" style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
+                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
                 )
             if chip_parts:
                 bits.append(f"PRs {' '.join(chip_parts)}")
