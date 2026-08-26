@@ -428,6 +428,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
     "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1.5, float),
     "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 768, int),
+    "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
     # Hybrid CI: local fallback when GitHub Actions is down. Concurrency

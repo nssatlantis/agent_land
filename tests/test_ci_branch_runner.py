@@ -134,6 +134,7 @@ def test_knob_defaults():
     assert config.CI_RUN_IMAGE_BASE == "agentland-ci"
     assert float(config.CI_RUN_SANDBOX_CPUS) == 1.5
     assert config.CI_RUN_SANDBOX_MEMORY_MB == 768
+    assert config.CI_RUN_SANDBOX_SWAP_MB == 256
     assert config.CI_RUN_SANDBOX_PIDS == 128
     assert config.CI_RUN_SANDBOX_TMP_SIZE_MB == 256
 
@@ -202,6 +203,7 @@ def test_gate_bucket_is_branch_kind():
 def test_sandbox_argv_shape():
     _shadow("CI_RUN_SANDBOX_CPUS", 2.0)
     _shadow("CI_RUN_SANDBOX_MEMORY_MB", 777)
+    _shadow("CI_RUN_SANDBOX_SWAP_MB", 123)
     _shadow("CI_RUN_SANDBOX_PIDS", 64)
     _shadow("CI_RUN_SANDBOX_TMP_SIZE_MB", 32)
     try:
@@ -214,9 +216,9 @@ def test_sandbox_argv_shape():
         assert "--user" in argv and "1000:1000" in argv
         assert "--cpus" in argv and "2.0" in argv
         assert "--memory" in argv and "777m" in argv
-        # memory-swap pinned to memory => no swap on any host.
+        # memory-swap = memory + swap extra (256 default) => brief spill instead of OOM
         assert "--memory-swap" in argv
-        assert argv[argv.index("--memory-swap") + 1] == "777m"
+        assert argv[argv.index("--memory-swap") + 1] == "900m"  # 777+123
         assert "--pids-limit" in argv and "64" in argv
         assert "--tmpfs" in argv
         assert argv[argv.index("--tmpfs") + 1] == f"/tmp:rw,size={32 * 1024 * 1024}"

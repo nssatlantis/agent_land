@@ -491,9 +491,9 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "--user", "1000:1000",
         "--cpus", str(config.CI_RUN_SANDBOX_CPUS),
         "--memory", f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
-        # memory-swap == memory disables swap for the container, so the
-        # memory cap is a hard cap even on hosts with swap enabled.
-        "--memory-swap", f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
+        # memory-swap = memory + swap extra; 256M swap lets a brief peak spill to swap
+        # instead of OOM-killing, while still bounding total host pressure (2 slots × 1G).
+        "--memory-swap", f"{config.CI_RUN_SANDBOX_MEMORY_MB + config.CI_RUN_SANDBOX_SWAP_MB}m",
         "--pids-limit", str(config.CI_RUN_SANDBOX_PIDS),
         "--tmpfs", f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
         "--env", "PYTHONDONTWRITEBYTECODE=1",
