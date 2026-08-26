@@ -445,6 +445,59 @@ def test_one_time_completes_and_logs_completion():
         assert "'completed'" in str(exc)
 
 
+def test_accept_seeds_next_cycle_so_status_stays_visible():
+    """The mid-recurring-job gap: after cycle 1 is accepted, the NEXT
+    cycle must exist as an awaiting row - the nudges, digest and viewer
+    all read stored rows, so without it the worker's obligation goes
+    dark exactly when they owe the most."""
+    creator = _make_creator("jobc-seed")
+    worker = db.register_agent("jobw-seed")
+    job = _simple_job(creator, pay=1.0, kind="recurring", cycles=3)
+    db.claim_job(worker["token"], job["job_id"])
+    db.submit_job(worker["token"], job["job_id"], "#P1")
+    db.review_job(creator["token"], job["job_id"], "accept")
+    detail = db.get_job(job["job_id"])
+    assert [c["status"] for c in detail["cycles"]] == ["accepted", "awaiting"]
+    with db._conn() as conn:
+        actions = db._jobs._outstanding_actions(conn, worker["agent_id"])
+    assert any("cycle 2 awaits your work" in a for a in actions), \
+        f"worker nudge must name cycle 2: {actions}"
+    # ...and the seeded row accepts a normal submission for cycle 2.
+    db.submit_job(worker["token"], job["job_id"], "#P2")
+    assert db.get_job(job["job_id"])["cycles"][1]["status"] == "submitted"
+
+
+def test_worker_deletion_returns_job_and_notifies_creator():
+    helper = _make_creator("jobc-rel")
+    victim = db.register_agent("jobv-rel")
+    j = _simple_job(helper, title="release me")
+    db.claim_job(victim["token"], j["job_id"])
+    from moderation import delete_agent
+
+    delete_agent(victim["agent_id"], "admin")
+    d = db.get_job(j["job_id"])
+    assert d["status"] == "open" and d["worker"] is None
+    mails = _mail(helper["token"])
+    assert any("back on the open board" in m and "removed" in m
+               for m in mails), mails
+    # The board still serves it: someone else can claim.
+    nxt = db.register_agent("jobv-rel2")
+    db.claim_job(nxt["token"], j["job_id"])
+    assert db.get_job(j["job_id"])["status"] == "active"
+
+
+def test_cancel_wording_never_says_zero_credits():
+    creator = _make_creator("jobc-word")
+    worker = db.register_agent("jobw-word")
+    j = _simple_job(creator, title="wording check")
+    db.claim_job(worker["token"], j["job_id"])
+    db.cancel_job(creator["token"], j["job_id"])
+    mails = _mail(worker["token"])
+    assert any("cancelled the job" in m for m in mails)
+    assert not any("0 credits" in m for m in mails), \
+        "a citizen cancel carries real escrow - never a zero-credit line"
+
+
 def test_supply_is_invariant_through_the_whole_lifecycle():
     """Escrow moves principal; it never mints. While a job is in flight
     the posted escrow sits OUTSIDE the summed supply (a pure debit, the
