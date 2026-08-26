@@ -14,7 +14,6 @@ calls. These tests pin the contract with local bare remotes (no network):
 - the default temp mode keeps the legacy clone-per-call contract.
 """
 
-import importlib.util
 import os
 import shutil
 import subprocess
@@ -25,12 +24,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-_ROOT = Path(__file__).resolve().parent.parent / "github.py"
-_spec = importlib.util.spec_from_file_location("agentland_root_github", _ROOT)
-gh = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gh)
+import config  # noqa: E402
+import github._core as gh_core  # noqa: E402
+import github._gitops as gh  # noqa: E402 - the workspace pool under test
 
-gh.GITHUB_TOKEN = "test-token"  # push auth is never exercised here
+gh_core.GITHUB_TOKEN = "test-token"  # push auth is never exercised here
 
 
 def _git(*args, cwd=None):
@@ -66,18 +64,18 @@ class _PoolSandbox:
         self.tmp = tempfile.mkdtemp(prefix="agentland_ws_test_")
         self.bare = _mk_remote(self.tmp)
         self._orig = {
-            "mode": gh.config.GIT_WORKSPACE_MODE,
-            "pool": gh.config.GIT_WORKSPACE_POOL,
-            "ttl": gh.config.GIT_WORKSPACE_FETCH_TTL,
-            "lock": gh.config.GIT_WORKSPACE_LOCK_TIMEOUT,
+            "mode": config.GIT_WORKSPACE_MODE,
+            "pool": config.GIT_WORKSPACE_POOL,
+            "ttl": config.GIT_WORKSPACE_FETCH_TTL,
+            "lock": config.GIT_WORKSPACE_LOCK_TIMEOUT,
             "repo_url": gh._repo_url,
             "ws_root": gh._ws_root,
             "git": gh._git,
         }
-        gh.config.GIT_WORKSPACE_MODE = "persistent"
-        gh.config.GIT_WORKSPACE_POOL = pool
-        gh.config.GIT_WORKSPACE_FETCH_TTL = ttl
-        gh.config.GIT_WORKSPACE_LOCK_TIMEOUT = lock_timeout
+        config.GIT_WORKSPACE_MODE = "persistent"
+        config.GIT_WORKSPACE_POOL = pool
+        config.GIT_WORKSPACE_FETCH_TTL = ttl
+        config.GIT_WORKSPACE_LOCK_TIMEOUT = lock_timeout
         gh._repo_url = lambda with_token=False: self.bare
         gh._ws_root = lambda: os.path.join(self.tmp, "slots")
         self.verbs: list[str] = []
@@ -95,10 +93,10 @@ class _PoolSandbox:
         gh._ws_slots = []
 
     def close(self):
-        gh.config.GIT_WORKSPACE_MODE = self._orig["mode"]
-        gh.config.GIT_WORKSPACE_POOL = self._orig["pool"]
-        gh.config.GIT_WORKSPACE_FETCH_TTL = self._orig["ttl"]
-        gh.config.GIT_WORKSPACE_LOCK_TIMEOUT = self._orig["lock"]
+        config.GIT_WORKSPACE_MODE = self._orig["mode"]
+        config.GIT_WORKSPACE_POOL = self._orig["pool"]
+        config.GIT_WORKSPACE_FETCH_TTL = self._orig["ttl"]
+        config.GIT_WORKSPACE_LOCK_TIMEOUT = self._orig["lock"]
         gh._repo_url = self._orig["repo_url"]
         gh._ws_root = self._orig["ws_root"]
         gh._git = self._orig["git"]
@@ -110,7 +108,7 @@ class _PoolSandbox:
 def test_temp_mode_keeps_legacy_contract():
     sb = _PoolSandbox()
     sb.reset()
-    gh.config.GIT_WORKSPACE_MODE = "temp"
+    config.GIT_WORKSPACE_MODE = "temp"
     cleaned: list[str] = []
     orig_cleanup = gh._cleanup
 
@@ -168,7 +166,7 @@ def test_ttl_expiry_triggers_refetch():
         # Force staleness deterministically - relying on TTL=0 races the
         # monotonic clock (two calls inside one tick compare equal).
         gh._ws_slots[0]["last_fetch"] -= (
-            gh.config.GIT_WORKSPACE_FETCH_TTL + 1
+            config.GIT_WORKSPACE_FETCH_TTL + 1
         )
         with gh._workspace():
             pass
@@ -278,8 +276,8 @@ def test_push_auth_restores_anonymous_remote():
     afterwards - even when the push raises."""
     sb = _PoolSandbox()
     gh._repo_url = lambda with_token=False: sb.bare + ("-auth" if with_token else "")
-    saved_token_fn = gh._ensure_token
-    gh._ensure_token = lambda: None
+    saved_token_fn = gh_core._ensure_token
+    gh_core._ensure_token = lambda: None
     try:
         def url(d):
             return gh._git(d, "config", "--get", "remote.origin.url").stdout.strip()
@@ -300,7 +298,7 @@ def test_push_auth_restores_anonymous_remote():
             assert url(d) == sb.bare, "push auth not restored on failure"
         print("  push auth restores the anonymous remote: ok")
     finally:
-        gh._ensure_token = saved_token_fn
+        gh_core._ensure_token = saved_token_fn
         sb.close()
 
 
@@ -314,7 +312,7 @@ def test_pool_size_follows_config_changes():
             pass
         assert os.path.dirname(first) == gh._ws_root()
 
-        gh.config.GIT_WORKSPACE_POOL = 2  # grow without restart
+        config.GIT_WORKSPACE_POOL = 2  # grow without restart
         gh._ws_ensure_pool()
         assert len(gh._ws_slots) == 2, gh._ws_slots
         # FIFO re-issues slot0 first, so HOLD slot0's token to force the
@@ -329,13 +327,13 @@ def test_pool_size_follows_config_changes():
             if held < len(gh._ws_slots):
                 q.put(held)
 
-        gh.config.GIT_WORKSPACE_POOL = 1  # shrink retires the surplus slot
+        config.GIT_WORKSPACE_POOL = 1  # shrink retires the surplus slot
         gh._ws_ensure_pool()
         assert len(gh._ws_slots) == 1, gh._ws_slots
         with gh._workspace() as third:
             assert third == first, f"expected surviving slot0: {third}"
 
-        gh.config.GIT_WORKSPACE_POOL = 2  # regrow reuses the orphaned dir
+        config.GIT_WORKSPACE_POOL = 2  # regrow reuses the orphaned dir
         gh._ws_ensure_pool()
         with gh._workspace() as fourth:
             assert fourth in (first, second), fourth

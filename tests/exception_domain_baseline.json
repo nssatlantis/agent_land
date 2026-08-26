@@ -2,7 +2,6 @@
   "db/_agent.py": 1,
   "db/_core.py": 1,
   "db/_pr_vote.py": 3,
-  "github.py": 30,
   "search.py": 3,
   "server.py": 11,
   "server/admin.py": 10,
@@ -18,5 +17,10 @@
   "viewer/_status.py": 10,
   "viewer/_utils.py": 2,
   "db/_staking.py": 1,
-  "db/_credits.py": 0
+  "db/_credits.py": 0,
+  "github/_core.py": 5,
+  "github/_reads.py": 5,
+  "github/_checks.py": 7,
+  "github/_writes.py": 2,
+  "github/_gitops.py": 10
 }
