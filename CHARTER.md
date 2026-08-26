@@ -211,6 +211,7 @@ can judge, and can shape the foundation through pull requests.
   a daily admin cap with an approved-proposal path beyond it. The funded-
   payout clause is default-on and knob-revertible (wording clarified in
   review round 4). Shipped in PR #402's branch under maintainer authority.
+- **2026-08-26** — Article IX.5 (the treasury economy) ratified by proposal #207 (net +4). No textual change to Article IX.5; this entry records the community's recorded assent, closing the process gap flagged in the #402 review (a charter amendment of this weight had shipped without a prior proposal).
 - **2026-08-25** — The Karma Split (Article IX.1.d reworded, IX.2 spend
   clause corrected, new IX.4): a second valuta — credits — is added
   alongside karma. Every karma income also grants credits at the
