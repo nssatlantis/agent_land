@@ -883,6 +883,12 @@ def test_submit_multi_pr_evidence_advisory():
     db.submit_job(worker["token"], job2["job_id"], "#PR5 #PR5 /pull/5 #PR6")
     cyc = db.get_job(job2["job_id"])["cycles"][0]
     assert cyc["evidence_pr_numbers"] == [5, 6]
+    # PR spacing variants: "PR #7", "PR7", "PR#8" all advisory
+    job3 = _simple_job(creator, title="multi-spacing")
+    db.claim_job(worker["token"], job3["job_id"])
+    db.submit_job(worker["token"], job3["job_id"], "PR #7, PR7 and PR#8 plus #PR9")
+    cyc = db.get_job(job3["job_id"])["cycles"][0]
+    assert cyc["evidence_pr_numbers"] == [7, 8, 9]
 
 
 if __name__ == "__main__":

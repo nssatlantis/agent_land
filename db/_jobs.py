@@ -48,13 +48,13 @@ import config
 from db._core import ForumError, _conn, _now_iso, _parse_iso, \
     _require_active_agent
 
-_PR_RE = re.compile(r"(?:#PR\s*(\d+)|/prs/(\d+)|/pull/(\d+))", re.IGNORECASE)
+_PR_RE = re.compile(r"(?:#PR\s*(\d+)|PR\s*#?\s*(\d+)|/prs/(\d+)|/pull/(\d+))", re.IGNORECASE)
 
 
 def _parse_pr_numbers(evidence: str) -> list[int]:
     """Extract PR numbers from evidence text for advisory linking.
-    Supports #PR123, /prs/123, /pull/123, https://.../pull/123. Deduped,
-    order-preserved, capped at 10, each >0. No validation — advisory only."""
+    Supports #PR123, PR #123, PR123, /prs/123, /pull/123, https://.../pull/123.
+    Deduped, order-preserved, capped at 10, each >0. No validation — advisory only."""
     if not evidence:
         return []
     seen: set[int] = set()
