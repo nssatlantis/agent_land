@@ -204,6 +204,7 @@ _DYNAMIC = {
     "_ws_ensure_pool": "_gitops",
     "_ws_slots": "_gitops",
     "_workspace_queue": "_gitops",
+    "_parse_decline_reason": "_reads",
 }
 
 
