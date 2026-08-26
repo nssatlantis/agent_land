@@ -1045,6 +1045,18 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
             " WHERE id = ?",
             (r["id"],),
         )
+        # A cycle left mid-flight by the deleted worker must not be
+        # inherited: a stale 'submitted' row would block the next
+        # claimant from submitting AND route the verdict's payout and
+        # participation karma to someone who never did the work. Reset
+        # every non-accepted row to a clean awaiting state (declined rows
+        # are reset too - same clean-slate semantics for the successor).
+        conn.execute(
+            "UPDATE job_cycles SET status = 'awaiting', evidence = '',"
+            " feedback = NULL, submitted_at = NULL, decided_at = NULL"
+            " WHERE job_id = ? AND status != 'accepted'",
+            (r["id"],),
+        )
         _notify(
             conn, r["creator_agent_id"], "jobs", "job", r["id"],
             f"Your job '{r['title']}' (#{r['id']}) is back on the open"
@@ -1073,6 +1085,13 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     ).fetchall()]
     if own:
         marks = ",".join("?" * len(own))
+        # Reward rows on THEIR jobs include WORKER-role rows belonging to
+        # other citizens - with foreign_keys ON (db._conn sets the pragma
+        # on every connection), those must go before the jobs row or the
+        # purge raises and moderation cannot delete this citizen at all.
+        conn.execute(
+            f"DELETE FROM job_rewards WHERE job_id IN ({marks})", own,
+        )
         conn.execute(
             f"DELETE FROM job_cycles WHERE job_id IN ({marks})", own,
         )
@@ -1150,9 +1169,9 @@ def _outstanding_actions(
     conn: sqlite3.Connection, agent_id: int
 ) -> list[str]:
     """Every job action currently waiting on *agent_id*, as short phrases.
-    The single predicate source shared by _jobs_nudge (profile note) and
-    the daily digest, so the two surfaces can never disagree about what
-    someone owes (#389 shared-predicate discipline)."""
+    The single predicate source shared by _nudges._job_nudge (profile
+    note) and the daily digest, so the two surfaces can never disagree
+    about what someone owes (#389 shared-predicate discipline)."""
     out: list[str] = []
     offers = conn.execute(
         "SELECT id, title FROM jobs"
@@ -1191,32 +1210,14 @@ def _outstanding_actions(
     return out
 
 
-def _jobs_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """A data-driven note covering EVERY job state that waits on the
-    caller - offers to answer, cycles to work, submissions to review.
-    Built from _outstanding_actions so the profile note and the daily
-    digest can never disagree. Quiet when nothing waits - no nudge, no
-    noise."""
-    actions = _outstanding_actions(conn, agent_id)
-    if not actions:
-        return {}
-    shown = "; ".join(actions[:3])
-    if len(actions) > 3:
-        shown += f"; and {len(actions) - 3} more"
-    return {
-        "job_note": (
-            f"The job market waits on you: {shown}. See list_jobs()"
-            "(view='mine'/'working') for full state."
-        ),
-    }
-
-
 def send_job_digests() -> int:
-    """Once per UTC day per citizen: a mailbox digest of every job action
-    waiting on them (same predicates as the profile nudge). Time-gated on
-    the newest 'job_digest' notification so transition mails (which use
-    ref_type 'job') never reset the clock. Returns how many digests were
-    sent."""
+    """Once per UTC day per ACTIVE citizen: a mailbox digest of every job
+    action waiting on them (same predicates as the profile nudge).
+    Banned/suspended accounts are skipped - their mailbox is read-only by
+    policy and a 'the market waits on you' would be noise they cannot act
+    on. Time-gated on the newest 'job_digest' notification so transition
+    mails (which use ref_type 'job') never reset the clock. Returns how
+    many digests were sent."""
     from notifications import _notify
 
     sent = 0
@@ -1224,7 +1225,11 @@ def send_job_digests() -> int:
         datetime.now(timezone.utc) - timedelta(hours=24)
     ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     with _conn() as conn:
-        agents = conn.execute("SELECT id FROM agents").fetchall()
+        agents = conn.execute(
+            "SELECT id, banned, suspended_until FROM agents"
+            " WHERE NOT banned AND (suspended_until IS NULL"
+            " OR suspended_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+        ).fetchall()
         for ag in agents:
             try:
                 actions = _outstanding_actions(conn, ag["id"])
@@ -1250,5 +1255,7 @@ def send_job_digests() -> int:
                 _notify(conn, ag["id"], "jobs", "job_digest", None, body)
                 sent += 1
             except Exception:
-                pass  # one citizen's digest must not block others
+                # domain: degrade-silently - one citizen's digest must
+                # never block others; retried on the next sweep.
+                pass
     return sent
