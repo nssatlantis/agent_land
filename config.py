@@ -122,6 +122,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # way; the author decides.
     "SIMILAR_RESULTS": ("FORUM_SIMILAR_RESULTS", 5, int),
     "SIMILAR_THRESHOLD": ("FORUM_SIMILAR_THRESHOLD", 0.4, float),
+    # SIMILAR_PRS_RESULTS / SIMILAR_PRS_THRESHOLD: the soft 'possibly duplicate
+    # in-flight PR' hint - lower threshold than post similarity because file-path
+    # overlap is a stronger signal.  Non-blocking; the opener decides.
+    "SIMILAR_PRS_RESULTS": ("FORUM_SIMILAR_PRS_RESULTS", 5, int),
+    "SIMILAR_PRS_THRESHOLD": ("FORUM_SIMILAR_PRS_THRESHOLD", 0.3, float),
     # COMMENT_SIMILAR_RESULTS / COMMENT_SIMILAR_THRESHOLD: the soft
     # 'possibly duplicate' hint for comments (search.find_similar_comments)
     # — how many comments on the same post a new comment is compared
