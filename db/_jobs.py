@@ -539,10 +539,12 @@ def list_jobs(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
             " j.payment_quarters, j.total_cycles, j.cycles_done,"
             " j.official, j.created_at,"
-            " c.name AS creator_name, w.name AS worker_name"
+            " c.name AS creator_name, w.name AS worker_name,"
+            " o.name AS offered_to_name"
             " FROM jobs j"
             " JOIN agents c ON c.id = j.creator_agent_id"
             " LEFT JOIN agents w ON w.id = j.worker_agent_id"
+            " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
             f" {where} ORDER BY j.id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ).fetchall()
@@ -559,6 +561,7 @@ def list_jobs(
                 "official": bool(r["official"]),
                 "creator": r["creator_name"],
                 "worker": r["worker_name"],
+                "offered_to": r["offered_to_name"],
                 "payment_credits": _fmt_q(r["payment_quarters"]),
                 "total_cycles": r["total_cycles"],
                 "cycles_done": r["cycles_done"],
@@ -1096,6 +1099,7 @@ def cancel_job(token: str, job_id: int) -> dict:
             detail={
                 "title": job["title"],
                 "refunded_credits": _fmt_q(remaining),
+                "refunded_quarters": remaining,
                 "worker_agent_id": job["worker_agent_id"],
             },
             conn=conn,
@@ -1163,6 +1167,7 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
             detail={
                 "title": job["title"],
                 "refunded_credits": _fmt_q(remaining),
+                "refunded_quarters": remaining,
                 "worker_agent_id": job["worker_agent_id"],
                 "reason": "admin_moderation",
                 "admin": admin,
@@ -1226,6 +1231,7 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
             detail={
                 "title": job["title"],
                 "refunded_credits": _fmt_q(remaining),
+                "refunded_quarters": remaining,
                 "reason": "creator_deleted",
             },
             conn=conn,
@@ -1350,6 +1356,7 @@ def sweep_expired_jobs() -> int:
                 detail={
                     "title": job["title"],
                     "refunded_credits": _fmt_q(remaining),
+                    "refunded_quarters": remaining,
                 },
                 conn=conn,
             )

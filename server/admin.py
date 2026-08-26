@@ -746,8 +746,12 @@ def _render_jobs(request) -> str:
     ]
     rows = ""
     for j in open_jobs + active_jobs:
-        who = esc(j["worker"] or "-") if j["status"] == "active" \
-            else ("offer to " + esc(j["worker"] or "the board"))
+        if j["status"] == "active":
+            who = esc(j["worker"] or "-")
+        elif j.get("offered_to"):
+            who = "offer to " + esc(j["offered_to"])
+        else:
+            who = "<span style='color:var(--muted)'>open on the board</span>"
         rows += (
             f"<tr><td>#{j['job_id']}</td><td>{esc(j['title'])}"
             f"{' <b>OFFICIAL</b>' if j['official'] else ''}</td>"

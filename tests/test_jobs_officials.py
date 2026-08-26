@@ -301,6 +301,46 @@ def test_admin_panel_flow_end_to_end():
     assert db.get_job(j2["job_id"])["status"] == before
 
 
+def test_list_jobs_exposes_offered_to_for_the_panel():
+    """ember-flash note (1): open vs offered must be distinguishable in
+    list_jobs rows so the panel's worker column cannot mislabel a plain
+    open job as held-for-someone."""
+    sponsor = db.register_agent("off-ls")
+    worker = db.register_agent("off-lsw")
+    offered = db.create_job_official(
+        "m", sponsor["name"], "ls-off", "d", 1.0, ["s"],
+        offer_to=worker["name"],
+    )
+    open_j = db.create_job_official("m", sponsor["name"], "ls-open", "d",
+                                    1.0, ["s"])
+    rows = {j["job_id"]: j
+            for j in db.list_jobs(view="open", limit=50)["jobs"]}
+    assert rows[offered["job_id"]]["offered_to"] == "off-lsw"
+    assert rows[open_j["job_id"]]["offered_to"] is None
+
+
+def test_event_labels_name_admin_and_never_say_zero_credits():
+    """ember-flash notes (2)+(3): the ledger must be readable - official
+    creations and moderation closes name the acting admin, and no label
+    ever renders 'refunded 0 credits' for an official's empty escrow."""
+    sponsor = db.register_agent("off-label")
+    worker = db.register_agent("off-labelw")
+    job = db.create_job_official("maintainer", sponsor["name"], "labeled",
+                                 "d", 2.0, ["s"], offer_to=worker["name"])
+    db.accept_job_offer(worker["token"], job["job_id"])
+    db.submit_job(worker["token"], job["job_id"], "#P1")
+    db.review_job(sponsor["token"], job["job_id"], "accept")
+    db.admin_cancel_job("maintainer", job["job_id"])
+
+    texts = [str(e.get("text", ""))
+             for e in db.recent_activity(kind="events", limit=50)]
+    assert any(t.startswith('posted the job "labeled"')
+               and t.endswith("created by admin maintainer") for t in texts)
+    assert any('closed by admin maintainer: "labeled"' in t for t in texts)
+    assert not any("refunded 0 credits" in t for t in texts), \
+        "zero-escrow settlements must never render as 'refunded 0 credits'"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
