@@ -38,6 +38,8 @@ JOB_EXPIRY_DAYS with an automatic full refund.
 
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -45,6 +47,29 @@ import config
 
 from db._core import ForumError, _conn, _now_iso, _parse_iso, \
     _require_active_agent
+
+_PR_RE = re.compile(r"(?:#PR\s*(\d+)|/prs/(\d+)|/pull/(\d+))", re.IGNORECASE)
+
+
+def _parse_pr_numbers(evidence: str) -> list[int]:
+    """Extract PR numbers from evidence text for advisory linking.
+    Supports #PR123, /prs/123, /pull/123, https://.../pull/123. Deduped,
+    order-preserved, capped at 10, each >0. No validation — advisory only."""
+    if not evidence:
+        return []
+    seen: set[int] = set()
+    out: list[int] = []
+    for m in _PR_RE.finditer(evidence):
+        for g in m.groups():
+            if g and g.isdigit():
+                n = int(g)
+                if n > 0 and n not in seen:
+                    seen.add(n)
+                    out.append(n)
+                    if len(out) >= 10:
+                        return out
+                break
+    return out
 
 _JOB_VIEWS = ("open", "mine", "working", "all")
 
@@ -178,17 +203,34 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
             (job_id,),
         ).fetchall()
     ]
-    cycles = [
-        {"cycle_no": r["cycle_no"], "status": r["status"],
-         "evidence": r["evidence"], "feedback": r["feedback"],
-         "submitted_at": r["submitted_at"], "decided_at": r["decided_at"]}
-        for r in conn.execute(
-            "SELECT cycle_no, status, evidence, feedback, submitted_at,"
-            " decided_at FROM job_cycles WHERE job_id = ?"
-            " ORDER BY cycle_no",
-            (job_id,),
-        ).fetchall()
-    ]
+    cycles = []
+    for r in conn.execute(
+        "SELECT cycle_no, status, evidence, evidence_pr_numbers,"
+        " evidence_pr_shas, feedback, submitted_at, decided_at"
+        " FROM job_cycles WHERE job_id = ? ORDER BY cycle_no",
+        (job_id,),
+    ).fetchall():
+        # evidence_pr_numbers is JSON array or NULL; stay advisory, no FK
+        try:
+            pr_numbers = json.loads(r["evidence_pr_numbers"]) if r["evidence_pr_numbers"] else []
+            if not isinstance(pr_numbers, list):
+                pr_numbers = []
+        except Exception:
+            pr_numbers = []
+        try:
+            pr_shas = json.loads(r["evidence_pr_shas"]) if r["evidence_pr_shas"] else []
+            if not isinstance(pr_shas, list):
+                pr_shas = []
+        except Exception:
+            pr_shas = []
+        # Normalize to ints/strings
+        pr_numbers = [int(n) for n in pr_numbers if isinstance(n, int) or (isinstance(n, str) and str(n).isdigit())]
+        cycles.append({
+            "cycle_no": r["cycle_no"], "status": r["status"],
+            "evidence": r["evidence"], "evidence_pr_numbers": pr_numbers,
+            "evidence_pr_shas": pr_shas, "feedback": r["feedback"],
+            "submitted_at": r["submitted_at"], "decided_at": r["decided_at"],
+        })
     return {
         "job_id": job["id"],
         "title": job["title"],
@@ -834,14 +876,36 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
                 f"cycle {cycle_no} is already submitted - waiting on the "
                 "creator's review_job() verdict."
             )
+        # Advisory multi-PR parsing — keep evidence verbatim but also store
+        # structured PR references for viewer auto-link + API consumers.
+        pr_numbers = _parse_pr_numbers(evidence)
+        pr_shas: list[str | None] = []
+        if pr_numbers:
+            try:
+                import github  # local import to avoid cycle
+                for n in pr_numbers:
+                    try:
+                        pr = github.get_pr(n)
+                        pr_shas.append(pr.get("head", {}).get("sha") if isinstance(pr.get("head"), dict) else pr.get("head_sha"))
+                    except Exception:
+                        # domain: degrade-silently - PR lookup best-effort, advisory only
+                        pr_shas.append(None)
+                # Normalize Nones to None, keep length aligned
+                pr_shas = [s if isinstance(s, str) and s else None for s in pr_shas]
+            except Exception:
+                # domain: degrade-silently - github import failed, no shas
+                pr_shas = [None] * len(pr_numbers)
+        pr_numbers_json = json.dumps(pr_numbers) if pr_numbers else None
+        pr_shas_json = json.dumps(pr_shas) if pr_numbers else None
         conn.execute(
-            "INSERT INTO job_cycles (job_id, cycle_no, evidence, status,"
-            " submitted_at) VALUES (?, ?, ?, 'submitted', ?)"
+            "INSERT INTO job_cycles (job_id, cycle_no, evidence, evidence_pr_numbers,"
+            " evidence_pr_shas, status, submitted_at) VALUES (?, ?, ?, ?, ?, 'submitted', ?)"
             " ON CONFLICT(job_id, cycle_no) DO UPDATE SET"
-            " evidence = excluded.evidence, status = 'submitted',"
+            " evidence = excluded.evidence, evidence_pr_numbers = excluded.evidence_pr_numbers,"
+            " evidence_pr_shas = excluded.evidence_pr_shas, status = 'submitted',"
             " feedback = NULL, submitted_at = excluded.submitted_at,"
             " decided_at = NULL",
-            (job["id"], cycle_no, evidence, _now_iso()),
+            (job["id"], cycle_no, evidence, pr_numbers_json, pr_shas_json, _now_iso()),
         )
         log_event(
             EVT_JOB_SUBMITTED,
@@ -850,7 +914,7 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             target_type="job",
             target_id=job["id"],
             detail={"cycle_no": cycle_no, "evidence": evidence,
-                    "title": job["title"]},
+                    "evidence_pr_numbers": pr_numbers, "title": job["title"]},
             conn=conn,
         )
         if job["creator_agent_id"] is not None:
