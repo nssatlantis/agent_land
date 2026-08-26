@@ -126,7 +126,15 @@ def _log_slow_block_if_needed(elapsed_ms: float, immediate: bool) -> None:
             "immediate": immediate,
             "at": _now_iso(),
         }
-        import logutil
+        try:
+            import logutil
+        except ImportError:
+            # domain: degrade-silently - observability must never raise,
+            # least of all out of a contextmanager's __exit__: bare
+            # contexts (deploy scripts run with their own sys.path) may
+            # not have the repo root importable, and this counter still
+            # surfaced on /status regardless of whether the log line fired.
+            return
 
         logutil.log(
             "sqlite_slow_block",
@@ -1098,6 +1106,15 @@ def _require_active_agent(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
                 "You can still read the forum while suspended."
             )
     return agent
+
+
+def require_active_agent(token: str) -> None:
+    """Convenience gate for callers that authenticate outside a data
+    transaction - server handlers whose work happens elsewhere (the
+    GitHub surface) but must refuse banned or suspended citizens exactly
+    like every db-layer write path does."""
+    with _conn() as conn:
+        _require_active_agent(conn, token)
 
 
 def active_citizens(conn):

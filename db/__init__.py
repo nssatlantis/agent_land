@@ -23,6 +23,7 @@ from db._core import (  # noqa: F401
     _now_iso,
     _parse_iso,
     _require_active_agent,
+    require_active_agent,
     _require_agent_by_token,
     _since_bound,
     database_location_note,
