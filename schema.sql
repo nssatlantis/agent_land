@@ -731,6 +731,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     total_cycles        INTEGER NOT NULL CHECK (total_cycles > 0),
     cycles_done         INTEGER NOT NULL DEFAULT 0,
     official            INTEGER NOT NULL DEFAULT 0 CHECK (official IN (0, 1)),
+    taker_deposit_quarters INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_quarters >= 0),
+    deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,
+    treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL DEFAULT 'open'
                         CHECK (status IN ('open', 'offered', 'active',
                                           'completed', 'cancelled', 'expired')),
@@ -800,6 +803,19 @@ CREATE TABLE IF NOT EXISTS job_rewards (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_rewards_agent ON job_rewards(agent_id);
+
+-- Job decline penalty: -config.JOB_DECLINED_KARMA to worker on declined cycle when punish checked (admin) or always (citizen)
+CREATE TABLE IF NOT EXISTS job_penalties (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id     INTEGER NOT NULL REFERENCES jobs(id),
+    cycle_no   INTEGER NOT NULL,
+    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+    amount     INTEGER NOT NULL CHECK (amount < 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(job_id, cycle_no, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_penalties_agent ON job_penalties(agent_id);
 
 -- Credits ledger (the Karma Split): append-only entries denominated in
 -- QUARTER-CREDITS (delta_quarters; four quarters make 1.0 credit -

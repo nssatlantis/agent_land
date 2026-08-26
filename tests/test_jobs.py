@@ -14,6 +14,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 # Jobs need funded wallets and a low posting bar; this suite arms its own
 # economy knobs explicitly (same pattern as test_economy).
 os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = "1"
+os.environ["FORUM_JOB_TAKER_DEPOSIT_MIN_ONE_TIME"] = "0"
+os.environ["FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -361,6 +363,9 @@ def test_submit_gate_and_double_submit():
 def test_accept_pays_principal_and_rewards_both_sides():
     creator = _make_creator("jobc-acc")
     worker = db.register_agent("jobw-acc")
+    with db._conn() as conn:
+        from db._credits import grant
+        grant(worker["agent_id"], 8, "test_seed_deposit", conn=conn)
     job = _simple_job(creator, pay=2.0)
     cb, wb = _bal(creator["agent_id"]), _bal(worker["agent_id"])
     db.claim_job(worker["token"], job["job_id"])
