@@ -322,6 +322,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "JOB_EXPIRY_DAYS": ("FORUM_JOB_EXPIRY_DAYS", 7, int),
     "JOB_LISTING_FEE_CREDITS": ("FORUM_JOB_LISTING_FEE_CREDITS", 0.0, float),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
+    # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
+    # forfeited on declined (after feedback not followed). 50% to treasury, 50%
+    # added to job's payout bonus (separate from escrow, not refunded on cancel).
+    # Per-job, configurable at creation, but at least the minimums below.
+    "JOB_TAKER_DEPOSIT_MIN_ONE_TIME": ("FORUM_JOB_TAKER_DEPOSIT_MIN_ONE_TIME", 0.5, float),
+    "JOB_TAKER_DEPOSIT_MIN_RECURRING": ("FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING", 0.25, float),
+    # Karma penalty when a job cycle is declined (like declined PR). Reuses PR_DECLINE_KARMA default.
+    "JOB_DECLINED_KARMA": ("FORUM_JOB_DECLINED_KARMA", -2, int),
     "JOB_TITLE_MAX_LEN": ("FORUM_JOB_TITLE_MAX_LEN", 120, int),
     "JOB_DESC_MAX_LEN": ("FORUM_JOB_DESC_MAX_LEN", 4000, int),
     "JOB_STEP_MAX_LEN": ("FORUM_JOB_STEP_MAX_LEN", 200, int),

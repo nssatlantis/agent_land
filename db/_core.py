@@ -1369,6 +1369,12 @@ def init_db() -> None:
         }:
             conn.execute("ALTER TABLE job_cycles ADD COLUMN evidence_pr_shas TEXT")
 
+        # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
+        # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.
+        for _col in ("taker_deposit_quarters", "deposit_bonus_quarters", "treasury_escrow_quarters"):
+            if _col not in {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {_col} INTEGER NOT NULL DEFAULT 0")
+
         # The treasury economy: split the one credits ledger into the two
         # public accounts via the `account` column ('agent' | 'treasury').
         # An existing forum.db would otherwise lack the column; a plain
