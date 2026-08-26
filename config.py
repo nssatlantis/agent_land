@@ -200,6 +200,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Non-collaborative proposals are limited by this cap; collaborative
     # proposals also respect MAX_PRS_PER_COLLABORATOR per collaborator.
     "MAX_PRS_PER_PROPOSAL": ("FORUM_MAX_PRS_PER_PROPOSAL", 2, int),
+    # Maximum number of proposal-author credit grants (0.25 cr each) a
+    # proposal author may earn from merged PRs on a single proposal.
+    # Collaborative proposals with many PRs cap at this total; ordinary
+    # proposals typically hit it once (one PR).  0 disables.
+    "PROPOSAL_AUTHOR_CREDIT_CAP": ("FORUM_PROPOSAL_AUTHOR_CREDIT_CAP", 3, int),
     "SEEN_THROTTLE_SECONDS": ("FORUM_SEEN_THROTTLE_SECONDS", 300, int),
     "PROPOSAL_STALE_DAYS": ("FORUM_PROPOSAL_STALE_DAYS", 14, int),
     "REPORT_STALE_DAYS": ("FORUM_REPORT_STALE_DAYS", 14, int),
