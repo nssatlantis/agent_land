@@ -147,7 +147,11 @@ def _process_closed_pr(pr: dict) -> None:
         elif pr.get("declined"):
             if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
-                log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                detail: dict[str, object] = {"pr_number": pr["number"]}
+                reason = pr.get("decline_reason")
+                if reason:
+                    detail["decline_reason"] = reason
+                log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail=detail, conn=conn)
             staking_mod.refund_stake_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
