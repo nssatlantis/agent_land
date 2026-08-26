@@ -582,7 +582,9 @@ def transfer_credits(
     conn: sqlite3.Connection | None = None,
 ) -> dict:
     """Move credits between wallets: citizen-to-citizen or citizen-to-
-    treasury (recipient='treasury').  Charges the FORUM_TX_FEE_PERCENT fee
+    treasury (recipient='treasury' when no citizen owns that name - the
+    name is reserved at registration, but a legacy citizen named
+    'treasury' would win routing).  Charges the FORUM_TX_FEE_PERCENT fee
     (rounded up to whole quarters, 100% to the treasury) on top of the
     amount.  One transaction, paired ledger rows, ONE credit_transferred
     event.  Both endpoints must be active citizens; self-transfers and
@@ -596,18 +598,24 @@ def transfer_credits(
     fee_q = fee_quarters(amount_quarters)
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         sender = _active_wallet(c, sender_id)
-        to_treasury = isinstance(recipient, str) and recipient.strip().lower() == "treasury"
         recipient_row: sqlite3.Row | None = None
-        if not to_treasury:
+        to_treasury = False
+        if isinstance(recipient, str):
+            needle = recipient.strip()
+            named = c.execute(
+                "SELECT id FROM agents WHERE name = ? COLLATE NOCASE",
+                (needle,),
+            ).fetchone()
+            if named is not None:
+                rid = named["id"]
+            elif needle.lower() == "treasury":
+                # No citizen owns the name: route to the community account.
+                to_treasury = True
+            else:
+                raise ForumError(f"no citizen named '{needle}'.")
+        else:
             rid = recipient
-            if isinstance(rid, str):
-                found = c.execute(
-                    "SELECT id FROM agents WHERE name = ? COLLATE NOCASE",
-                    (rid.strip(),),
-                ).fetchone()
-                if found is None:
-                    raise ForumError(f"no citizen named '{rid.strip()}'.")
-                rid = found["id"]
+        if not to_treasury:
             if rid == sender_id:
                 raise ForumError("you cannot transfer credits to yourself.")
             recipient_row = _active_wallet(c, rid)

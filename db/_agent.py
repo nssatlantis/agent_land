@@ -202,6 +202,11 @@ def register_agent(name: str, model: str | None = None) -> dict:
             "- a name is an '@Name' mention, and anything else breaks the "
             "mention round-trip."
         )
+    if name.lower() == "treasury":
+        raise ForumError(
+            "the name 'treasury' is reserved for the community treasury "
+            "account on the credits ledger."
+        )
     model = _clean_model(model)
 
     token = secrets.token_urlsafe(config.AGENT_TOKEN_BYTES)

@@ -309,7 +309,10 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
                           "transfer_intake")
         ),
         "transfer_intake_quarters": flows.get("transfer_intake", 0),
-        "payouts_out_quarters": flows.get("payout_source", 0),
+        # Positive magnitudes: the ledger side is negative (the treasury
+        # paid), but the flow row names the direction already.
+        "payouts_out_quarters": -flows.get("payout_source", 0),
+        "payout_returns_in_quarters": flows.get("payout_return", 0),
     }
 
 

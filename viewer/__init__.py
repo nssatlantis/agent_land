@@ -682,7 +682,8 @@ _ECONOMY_FLOW_LABELS = (
     ("forfeit_intake_quarters", "forfeitures in"),
     ("spend_intake_quarters", "tag & stake fees in"),
     ("transfer_intake_quarters", "transfers in"),
-    ("payouts_out_quarters", "earnings paid out (-)"),
+    ("payout_returns_in_quarters", "clamped-earn returns in"),
+    ("payouts_out_quarters", "earnings paid out"),
 )
 
 

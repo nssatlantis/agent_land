@@ -500,8 +500,10 @@ config pointing at that URL. The server advertises these tools:
   linked to the proposal, oldest to newest — and `review_requested` (True
   while any linked PR is still in flight — the branch awaits the community's
   review; collaborative proposals are excluded — their authors run the
-  review), `stake_total` and `stake_count` (active stake value and number
-  of stakes on this proposal), plus the version-chain fields
+  review), `stake_total_karma` / `stake_total_credits_quarters` and
+  `stake_count` (active stake value per currency - karma in points,
+  credits in quarter-credits - and the number of stakes on this
+  proposal), plus the version-chain fields
   `version` / `supersedes_id` / `superseded_by_id` / `locked` (see
   `supersede_proposal` below). `view` filters by docket tab — `all` (default),
   `needs_votes`, `approved`, `review`, `stale`, `merged`, `small_fix` or `collaborative`

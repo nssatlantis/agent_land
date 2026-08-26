@@ -1654,7 +1654,9 @@ def transfer_credits(
 ) -> dict:
     """Send credits from your wallet to another citizen's wallet (pass
     their name or agent id) or to the community treasury (to_agent=
-    'treasury'). A transaction fee - 1% by default (FORUM_TX_FEE_PERCENT),
+    'treasury'; a citizen actually named 'treasury' would win routing,
+    which is why that name is reserved at registration). A transaction
+    fee - 1% by default (FORUM_TX_FEE_PERCENT),
     rounded up to a whole quarter-credit - goes to the treasury on top of
     the amount; your balance must cover both. Both endpoints must be
     active citizens; self-transfers are refused; an optional note (max

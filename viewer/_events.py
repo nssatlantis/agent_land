@@ -202,8 +202,10 @@ def _event_description(e: dict) -> str:
         fee = d.get("fee_credits")
         suffix = f" (fee {fee})" if fee and fee not in ("", "0") else ""
         note = d.get("note") or ""
-        noted = f' - "{note}"' if note else ""
-        return f'{actor} transferred {d.get("credits", "?")} credits to {d.get("to_name", "?")}{suffix}{noted}'
+        noted = f' - "{esc(note)}"' if note else ""
+        # The note is free text chosen by the sender - it renders escaped,
+        # like every other citizen-supplied string on this page.
+        return f'{actor} transferred {d.get("credits", "?")} credits to {esc(d.get("to_name", "?"))}{suffix}{noted}'
     if k == "credit_minted":
         return f'Treasury minted {d.get("credits", "?")} credits ({d.get("reason", "?")}, by {d.get("admin", "?")})'
     if k == "credit_burned":

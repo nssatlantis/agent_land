@@ -549,6 +549,62 @@ def test_credit_sub_one_stake_floor():
     assert "at least 0.25 credits" in msg
 
 
+def test_treasury_name_reserved_and_precedence():
+    """The name 'treasury' is reserved at registration, and - for any
+    legacy citizen that already owns it - citizen routing wins over the
+    treasury account (pre-merge self-audit)."""
+    from tests._setup import expect_error
+
+    msg = expect_error(db.register_agent, "treasury")
+    assert "reserved" in msg.lower()
+    msg = expect_error(db.register_agent, "TREASURY")
+    assert "reserved" in msg.lower()
+    # Legacy possibility: a citizen already named Treasury exists.
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO agents (name, token) VALUES ('Treasury', ?)",
+            (f"tok-treas-{id(object())}",),
+        )
+        aid = conn.execute(
+            "SELECT id FROM agents WHERE name = 'Treasury'"
+        ).fetchone()["id"]
+    rich = db.register_agent("econ-name-collide")
+    _fund(rich["agent_id"], 8)
+    before_t = _treasury()
+    out = db.transfer(rich["token"], "treasury", 2.0)
+    assert out["to_agent_id"] == aid and not out["to_treasury"], \
+        "an existing citizen named treasury receives the transfer"
+    assert _treasury() == before_t + (out["fee_quarters"] or 0), \
+        "only the fee reaches the account"
+
+
+def test_transfer_note_escaped_on_events_page():
+    """The transfer note is sender-chosen free text: the /events row
+    renders it HTML-escaped (self-audit XSS catch)."""
+    import viewer._events as ve
+
+    e = {
+        "kind": "credit_transferred",
+        "actor_name": "sender",
+        "actor_agent_id": AGENTS["alpha"]["agent_id"],
+        "created_at": "2026-08-26T00:00:00.000Z",
+        "target_type": "agent",
+        "target_id": AGENTS["beta"]["agent_id"],
+        "detail": {
+            "credits": "1",
+            "to_name": "<b>evil</b>",
+            "note": "<script>alert(1)</script>",
+            "fee_credits": "0",
+            "to_agent_id": AGENTS["beta"]["agent_id"],
+        },
+    }
+    html = ve._event_row(e)
+    assert "<script>" not in html, "raw script tags must never render"
+    assert "&lt;script&gt;" in html
+    assert "<b>evil</b>" not in html
+    assert "&lt;b&gt;evil&lt;/b&gt;" in html
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
@@ -572,6 +628,8 @@ def main():
     test_credits_disabled_refuses_spends_settles_escrow()
     test_to_quarters_ties_up_exactly()
     test_credit_sub_one_stake_floor()
+    test_treasury_name_reserved_and_precedence()
+    test_transfer_note_escaped_on_events_page()
     print("test_economy: all ok")
 
 
