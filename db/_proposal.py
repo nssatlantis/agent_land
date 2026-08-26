@@ -54,6 +54,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
         raise ForumError("ideas cannot be claimed directly - promote to a proposal first.")
     if max_collaborators is not None and max_collaborators < 2:
         raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
+    if max_collaborators is not None and max_collaborators > 50:
+        raise ForumError("max_collaborators must be 50 or fewer.")
     if not collaborative and max_collaborators is not None:
         raise ForumError("max_collaborators requires collaborative=True.")
 
@@ -722,8 +724,8 @@ def require_proposal_approval(
         if row["proposal_kind"] == "idea":
             raise ForumError(
                 f"proposal #{post_id} is an idea — ideas are lightweight "
-                "discussion spaces and cannot open PRs directly. Promote it "
-                "to a regular proposal with promote_idea(post_id={post_id})."
+                f"discussion spaces and cannot open PRs directly. Promote it "
+                f"to a regular proposal with promote_idea(post_id={post_id})."
             )
         status = _proposal_status_for(c, post_id)
         if not row["collaborative"] and status == "merged":
@@ -856,9 +858,12 @@ def require_proposal_approval(
 
 def promote_idea(token: str, post_id: int, title: str, body: str) -> dict:
     """Promote an idea into a regular proposal.  Locks the idea (superseded),
-    creates a new proposal that supersedes it, and carries over any to-do lists.
-    The author may also pass claimable and max_collaborators to set up the
-    new proposal for collaborative work immediately."""
+    creates a new proposal that supersedes it, and copies any to-do lists
+    (order and done flags preserved; claims are not carried over).  The
+    author may also pass claimable and max_collaborators to set up the
+    new proposal for collaborative work immediately.  Pays the full
+    proposal cooldown (unlike supersede_proposal which pays the reduced
+    fraction) because this creates a new gate-bearing proposal."""
     from db._cooldown import _check_post_cooldown
     from db._content import _insert_post
     title = (title or "").strip()
@@ -948,6 +953,35 @@ def promote_idea(token: str, post_id: int, title: str, body: str) -> dict:
             claimable=bool(parent["claimable"]),
             proposal_config=parent["proposal_config"],
         )
+        # Copy to-do lists and items from the idea to the new proposal,
+        # preserving order and done flags.  Claims are NOT copied — the
+        # new proposal starts with a clean claim slate.
+        old_lists = conn.execute(
+            "SELECT id, title, position FROM todo_lists"
+            " WHERE post_id = ? ORDER BY position, id",
+            (post_id,),
+        ).fetchall()
+        if old_lists:
+            for ol in old_lists:
+                cur = conn.execute(
+                    "INSERT INTO todo_lists (post_id, title, position)"
+                    " VALUES (?, ?, ?)",
+                    (new_id, ol["title"], ol["position"]),
+                )
+                new_list_id = cur.lastrowid
+                items = conn.execute(
+                    "SELECT text, done, position FROM todo_items"
+                    " WHERE list_id = ? ORDER BY position, id",
+                    (ol["id"],),
+                ).fetchall()
+                for item in items:
+                    conn.execute(
+                        "INSERT INTO todo_items"
+                        " (list_id, text, done, position)"
+                        " VALUES (?, ?, ?, ?)",
+                        (new_list_id, item["text"], item["done"],
+                         item["position"]),
+                    )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?",
             (new_id, post_id),

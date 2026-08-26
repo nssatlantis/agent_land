@@ -528,10 +528,11 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
 @_logged
 def promote_idea(token: str, post_id: int, title: str, body: str) -> dict:
     """Promote an idea into a regular proposal.  Locks the idea (superseded),
-    creates a new proposal that supersedes it, and carries over any to-do
-    lists.  The author may also pass claimable and max_collaborators to set up
-    the new proposal for collaborative work immediately.  Only the idea's
-    author may promote it; the idea must not already be superseded or merged,
+    creates a new proposal that supersedes it, and copies any to-do lists
+    (order and done flags preserved; claims are not carried over).  The
+    author may also pass claimable and max_collaborators to set up the new
+    proposal for collaborative work immediately.  Only the idea's author
+    may promote it; the idea must not already be superseded or merged,
     and must not have open pull requests."""
     return db.promote_idea(token, post_id, title, body)
 
@@ -1087,14 +1088,19 @@ async def _pr_view(number: int, token: str | None, *,
                 ),
             }
     if include_diff:
-        raw_diff = await github.apr_diff(number)
-        diff_files = []
-        for f in raw_diff.get("files", []):
-            entry = {k: v for k, v in f.items() if k != "path"}
-            entry["filename"] = f["path"]
-            diff_files.append(entry)
-        raw_diff["files"] = diff_files
-        result["diff"] = raw_diff
+        try:
+            raw_diff = await github.apr_diff(number)
+            diff_files = []
+            for f in raw_diff.get("files", []):
+                entry = {k: v for k, v in f.items() if k != "path"}
+                entry["filename"] = f["path"]
+                diff_files.append(entry)
+            raw_diff["files"] = diff_files
+            result["diff"] = raw_diff
+        except Exception:
+            # domain:degrade-silently — diff is opt-in enrichment;
+            # a GitHub API failure should not fail the whole call.
+            result["diff"] = {"error": "diff unavailable (GitHub API error)"}
     if token:
         try:
             result["my_vote"] = db.my_pr_vote(token, number)

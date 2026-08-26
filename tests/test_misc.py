@@ -387,19 +387,15 @@ def main():
                     agent_id INTEGER NOT NULL REFERENCES agents(id),
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
-                    score INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                    edited_at TEXT,
-                    edit_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT:%M:%fZ', 'now')),
                     proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix')),
-                    collaborative INTEGER NOT NULL DEFAULT 0,
-                    collaborative_closed TEXT,
+                    delegate_id INTEGER REFERENCES agents(id),
                     supersedes_id INTEGER REFERENCES posts(id),
                     superseded_by_id INTEGER REFERENCES posts(id),
                     version INTEGER NOT NULL DEFAULT 1,
-                    delegate_id INTEGER REFERENCES agents(id),
+                    collaborative INTEGER NOT NULL DEFAULT 0,
                     claimable INTEGER NOT NULL DEFAULT 0,
-                    bounty_total INTEGER NOT NULL DEFAULT 0,
+                    collaborative_closed TEXT,
                     pr_goal INTEGER
                 );
                 INSERT INTO agents (name, token) VALUES ('mig', 'tok');

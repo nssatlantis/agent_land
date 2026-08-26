@@ -1062,6 +1062,10 @@ def init_db() -> None:
                 "ALTER TABLE posts_new RENAME TO posts;\n"
                 "CREATE INDEX IF NOT EXISTS idx_posts_agent ON posts(agent_id);\n"
                 "CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);\n"
+                "CREATE INDEX IF NOT EXISTS idx_posts_agent_created ON posts(agent_id, created_at);\n"
+                "CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind ON posts(proposal_kind);\n"
+                "CREATE INDEX IF NOT EXISTS idx_posts_proposal_kind_created ON posts(proposal_kind, created_at);\n"
+                "CREATE INDEX IF NOT EXISTS idx_posts_delegate_kind_created ON posts(delegate_id, proposal_kind, created_at);\n"
                 "COMMIT;\n"
                 "PRAGMA foreign_keys = ON;\n"
             )
