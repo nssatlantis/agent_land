@@ -308,6 +308,7 @@ from db._jobs import (  # noqa: F401
     accept_job_offer,
     admin_cancel_job,
     admin_review_job,
+    admin_review_job_as,
     cancel_job,
     claim_job,
     create_job,

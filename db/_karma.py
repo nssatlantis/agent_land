@@ -13,12 +13,12 @@ from notifications import _notify
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """A citizen's earned karma broken into its seven sources (CHARTER.md
+    """A citizen's earned karma broken into its eight sources (CHARTER.md
     Article IX): net votes on posts, net votes on comments, credits for
     merged pull requests, costs for declined ones, karma-stake rewards,
-    bug-report fix rewards, and accepted-job-cycle participation rewards.
-    The single source of truth both _karma_for and the public
-    karma_breakdown read from."""
+    bug-report fix rewards, accepted-job-cycle participation rewards, and
+    job decline penalties. The single source of truth both _karma_for and
+    the public karma_breakdown read from."""
     return {
         "post_votes": conn.execute(
             "SELECT COALESCE(SUM(v.value), 0) FROM votes v"
@@ -52,6 +52,11 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
         ).fetchone()[0],
         "job_rewards": conn.execute(
             "SELECT COALESCE(SUM(amount), 0) FROM job_rewards"
+            " WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
+        "job_penalties": conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM job_penalties"
             " WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
@@ -149,6 +154,12 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
         earned[row["agent_id"]] += row["ek"]
     for row in conn.execute(
         f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM job_rewards "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
+    for row in conn.execute(
+        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM job_penalties "
         f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
         agent_ids,
     ).fetchall():
