@@ -785,15 +785,15 @@ def init_db() -> None:
                 (_evt.EVT_PR_DECLINED,),
             ).fetchall()
             for row in rows:
-                detail = json.loads(row["detail"]) if row["detail"] else {}
+                detail = json.loads(row[1]) if row[1] else {}
                 if "decline_reason" not in detail:
-                    pr_num = row["target_id"]
+                    pr_num = row[2]
                     detail["decline_reason"] = (
                         "proof" if pr_num == _BACKFILL_PR338 else "unspecified"
                     )
                     conn.execute(
                         "UPDATE events SET detail = ? WHERE id = ?",
-                        (json.dumps(detail), row["id"]),
+                        (json.dumps(detail), row[0]),
                     )
             conn.execute("PRAGMA user_version = 3")
         # Collaborative proposals: the 'collaborative' flag on posts and
