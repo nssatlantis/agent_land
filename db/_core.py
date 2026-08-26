@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import functools
 import time
@@ -771,6 +772,34 @@ def init_db() -> None:
                 "WHERE decided_at IS NOT NULL AND length(decided_at) > 24"
             )
             conn.execute("PRAGMA user_version = 2")
+        # Retroactive decline_reason backfill: the poller now records a
+        # structured decline reason ('fault', 'infra', 'proof', or
+        # 'unspecified') in pr_declined event details, but historical
+        # events have no reason. Backfill once so the public ledger is
+        # complete. Guarded by PRAGMA user_version so it runs exactly once.
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 3:
+            import events as _evt
+            _BACKFILL_PR338 = 338  # deliberate proof decline
+            rows = conn.execute(
+                "SELECT id, detail FROM events WHERE kind = ?",
+                (_evt.EVT_PR_DECLINED,),
+            ).fetchall()
+            for row in rows:
+                detail = json.loads(row["detail"]) if row["detail"] else {}
+                if "decline_reason" not in detail:
+                    target_id = conn.execute(
+                        "SELECT target_id FROM events WHERE id = ?",
+                        (row["id"],),
+                    ).fetchone()
+                    pr_num = (target_id["target_id"] if target_id else None)
+                    detail["decline_reason"] = (
+                        "proof" if pr_num == _BACKFILL_PR338 else "unspecified"
+                    )
+                    conn.execute(
+                        "UPDATE events SET detail = ? WHERE id = ?",
+                        (json.dumps(detail), row["id"]),
+                    )
+            conn.execute("PRAGMA user_version = 3")
         # Collaborative proposals: the 'collaborative' flag on posts and
         # the proposal_collaborators table. An existing forum.db would
         # otherwise lack the column and the table. Fresh databases already
