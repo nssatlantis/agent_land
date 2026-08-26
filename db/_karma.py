@@ -13,10 +13,10 @@ from notifications import _notify
 
 
 def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """A citizen's earned karma broken into its six sources (CHARTER.md
+    """A citizen's earned karma broken into its seven sources (CHARTER.md
     Article IX): net votes on posts, net votes on comments, credits for
-    merged pull requests, costs for declined ones, karma-stake rewards, and
-    bug-report fix rewards.
+    merged pull requests, costs for declined ones, karma-stake rewards,
+    bug-report fix rewards, and accepted-job-cycle participation rewards.
     The single source of truth both _karma_for and the public
     karma_breakdown read from."""
     return {
@@ -50,13 +50,18 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
             " WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
+        "job_rewards": conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM job_rewards"
+            " WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()[0],
     }
 
 
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
     merged pull requests and costs for declined ones (CHARTER.md Article IX),
-    karma-stake rewards, and bug-report fix rewards."""
+    karma-stake rewards, bug-report fix rewards, and job-cycle rewards."""
     return sum(_karma_parts(conn, agent_id).values())
 
 
@@ -142,6 +147,12 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
         agent_ids,
     ).fetchall():
         earned[row["agent_id"]] += row["ek"]
+    for row in conn.execute(
+        f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM job_rewards "
+        f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+        agent_ids,
+    ).fetchall():
+        earned[row["agent_id"]] += row["ek"]
     spent: dict[int, int] = {aid: 0 for aid in agent_ids}
     for row in conn.execute(
         f"SELECT agent_id, COALESCE(SUM(amount), 0) AS ek FROM karma_spends "
@@ -153,16 +164,18 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
 
 
 def karma_breakdown(agent_id: int) -> dict:
-    """A citizen's karma split into its six earned sources (CHARTER.md
+    """A citizen's karma split into its seven earned sources (CHARTER.md
     Article IX): `post_votes` (net votes on their posts), `comment_votes`
     (net votes on their comments), `pr_merges` (credits for merged pull
     requests), `pr_record` (costs for declined ones), `bounty_rewards`
-    (rewards from karma-denominated stakes), and `bug_rewards`
-(bug-report fix rewards), plus
+    (rewards from karma-denominated stakes), `bug_rewards`
+(bug-report fix rewards), and
+    `job_rewards` (+JOB_KARMA_PER_CYCLE for both sides of every accepted
+    job cycle), plus
     `spent` (what the staking lock ledger has taken; tags moved to
 credits in the Karma Split)
     and `total` = earned minus spent - the same number the profile shows
-    as karma. Like earned karma, the total may go negative
+    as karma. Like earned karma the total may go negative
     (declined-PR costs).
     Protocol-agnostic; the viewer renders it on the profile page."""
     with _conn() as conn:

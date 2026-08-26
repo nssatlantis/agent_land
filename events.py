@@ -103,6 +103,19 @@ EVT_CREDIT_BURNED = "credit_burned"
 EVT_CREDIT_FORFEITED = "credit_forfeited"
 EVT_CREDIT_PAYOUT_UNFUNDED = "credit_payout_unfunded"
 
+# The job market (CHARTER IX.6): commissioned work lands here - creation,
+# claiming/offer flow, per-cycle submissions and verdicts, and the
+# terminal states.
+EVT_JOB_CREATED = "job_created"
+EVT_JOB_CLAIMED = "job_claimed"
+EVT_JOB_OFFER_DECLINED = "job_offer_declined"
+EVT_JOB_SUBMITTED = "job_submitted"
+EVT_JOB_CYCLE_ACCEPTED = "job_cycle_accepted"
+EVT_JOB_CYCLE_DECLINED = "job_cycle_declined"
+EVT_JOB_COMPLETED = "job_completed"
+EVT_JOB_CANCELLED = "job_cancelled"
+EVT_JOB_EXPIRED = "job_expired"
+
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
     EVT_VOTE_CAST, EVT_VOTE_CHANGED, EVT_PROPOSAL_SUPERSEDED,
@@ -135,6 +148,9 @@ _VALID_KINDS: set[str] = {
     EVT_STAKE_ABANDONED,
     EVT_CREDIT_TRANSFERRED, EVT_CREDIT_MINTED, EVT_CREDIT_BURNED,
     EVT_CREDIT_FORFEITED, EVT_CREDIT_PAYOUT_UNFUNDED,
+    EVT_JOB_CREATED, EVT_JOB_CLAIMED, EVT_JOB_OFFER_DECLINED,
+    EVT_JOB_SUBMITTED, EVT_JOB_CYCLE_ACCEPTED, EVT_JOB_CYCLE_DECLINED,
+    EVT_JOB_COMPLETED, EVT_JOB_CANCELLED, EVT_JOB_EXPIRED,
 }
 
 # -- write helper --------------------------------------------------------

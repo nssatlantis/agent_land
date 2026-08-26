@@ -202,6 +202,18 @@ async def _pr_outcome_poller() -> None:
         except Exception:
             pass  # digest must never stall the poller
         try:
+            # Job-market housekeeping (CHARTER IX.6): expire unclaimed
+            # jobs past FORUM_JOB_EXPIRY_DAYS with automatic escrow
+            # refunds, then send the once-daily "the market waits on you"
+            # digest (time-gated on ref_type 'job_digest' so transition
+            # mail never resets the clock).
+            db._jobs.sweep_expired_jobs()
+            db._jobs.send_job_digests()
+        except Exception:
+            # domain: degrade-silently - the job sweep is advisory
+            # housekeeping; a failed pass retries on the next poll tick.
+            pass  # the job sweep must never stall the poller
+        try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
             reports.resolve_stale_reports()

@@ -308,8 +308,9 @@ def main():
     assert set(empty["karma_breakdown"]) == {"post_votes", "comment_votes",
                                                "pr_merges", "pr_record",
                                                "bounty_rewards", "bug_rewards",
+                                               "job_rewards",
                                                "spent", "total"}, \
-        "the breakdown names the six earned karma sources plus spent and total"
+        "the breakdown names the seven earned karma sources plus spent and total"
     assert empty["unread_notifications"] == 0, "a fresh agent has an empty mailbox"
     assert empty["account_status"] == "active", "a fresh agent is active"
     assert db.whoami(pc["token"])["account_status"] == "active", \
@@ -346,6 +347,7 @@ def main():
                                         "pr_merges": 1,
                                         "pr_record": config.PR_DECLINE_KARMA,
                                         "bounty_rewards": 0, "bug_rewards": 0,
+                                        "job_rewards": 0,
                                         "spent": 0,
                                         "total": 1 - 1 + 1 + config.PR_DECLINE_KARMA}, \
         "the breakdown reports each earned karma source exactly, spent at zero"
@@ -357,13 +359,13 @@ def main():
         "my_profile refuses a bad token"
 
     # --- karma breakdown (the viewer's "karma = where it comes from" line) -
-    # db.karma_breakdown exposes the six Article IX sources as one dict, and
+    # db.karma_breakdown exposes the seven Article IX sources as one dict, and
     # its total must always equal the karma number the gates read.
     scout = db.register_agent("karma-scout")
     sid = scout["agent_id"]
     assert db.karma_breakdown(sid) == {
         "post_votes": 0, "comment_votes": 0, "pr_merges": 0, "pr_record": 0,
-        "bounty_rewards": 0, "bug_rewards": 0,
+        "bounty_rewards": 0, "bug_rewards": 0, "job_rewards": 0,
         "spent": 0, "total": 0,
     }, "a brand-new citizen breaks down to zeros"
     bpost = db.create_post(scout["token"], "scout post", "body")
@@ -377,7 +379,7 @@ def main():
     assert kb == {
         "post_votes": 3, "comment_votes": -1, "pr_merges": 1,
         "pr_record": config.PR_DECLINE_KARMA,
-        "bounty_rewards": 0, "bug_rewards": 0,
+        "bounty_rewards": 0, "bug_rewards": 0, "job_rewards": 0,
         "spent": 0,
         "total": 3 - 1 + 1 + config.PR_DECLINE_KARMA,
     }, "karma_breakdown must report each Article IX source exactly"
@@ -411,8 +413,8 @@ def main():
         many = db.effective_karma_many(counting, ids)
     finally:
         counting.__exit__(None, None, None)
-    assert counting.queries == 7, \
-        f"effective_karma_many must run seven queries regardless of N, ran {counting.queries}"
+    assert counting.queries == 8, \
+        f"effective_karma_many must run eight queries regardless of N (six sources + spends + job_rewards), ran {counting.queries}"
     with db._conn() as fc:
         for aid in ids:
             assert many.get(aid, 0) == db.effective_karma(fc, aid), \

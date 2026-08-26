@@ -250,6 +250,14 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # delegate_id FK would otherwise reject the agent delete, and an
         # assignment to a deleted citizen is meaningless anyway.
         conn.execute("UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,))
+        # Job market: cancel + refund their unfinished posted jobs BEFORE
+        # the forfeit (escrowed principal returns to the wallet so the
+        # standard split can take it), release jobs they were working,
+        # and purge their contract rows (NOT NULL creator FK). Runs before
+        # the events cleanup below so its own events are anonymized too.
+        from db._jobs import cancel_jobs_of_agent
+
+        cancel_jobs_of_agent(conn, agent_id)
         conn.execute("DELETE FROM votes WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM report_votes WHERE voter_agent_id = ?", (agent_id,))
         # Reports they filed are expunged like any other thing they own, and
@@ -342,7 +350,7 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # auditable even though the author is gone. Any remaining balance
         # is first forfeited exactly like a suspension (half to the
         # treasury, half burned), so deletion cannot strand supply in a
-        # wallet no one owns.
+        # wallet no one owns. (The job-market hook above already ran.)
         from db._credits import forfeit_agent
 
         forfeit_agent(agent_id, conn=conn)

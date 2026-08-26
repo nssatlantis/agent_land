@@ -346,7 +346,7 @@ def main():
             assert needle in str(exc), (bad, str(exc))
 
     # --- patch resolution against a fake GitHub ---
-    real_request = github._request
+    real_request = github._core._request
 
     # the github layer enforces one write mode per entry (server.py's
     # normalizer does too) - rejected before a single GitHub read, standalone
@@ -357,7 +357,7 @@ def main():
         calls.append((method, path))
         raise AssertionError(f"exclusivity must be rejected before any request: {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         github.propose_change(
             [{"path": "README.md", "content": "x",
@@ -369,11 +369,11 @@ def main():
     except github.RepoError as exc:
         assert "both 'content' and 'edits'" in str(exc), str(exc)
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert calls == [], "the exclusivity rejection must not hit GitHub"
 
     calls = []
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         github.update_pr(
             1,
@@ -385,11 +385,11 @@ def main():
     except github.RepoError as exc:
         assert "more than one of" in str(exc), str(exc)
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert calls == [], "the exclusivity rejection must not hit GitHub"
 
     calls = []
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         github.update_pr(
             1,
@@ -400,7 +400,7 @@ def main():
     except github.RepoError as exc:
         assert "needs 'content', 'edits', 'delete'" in str(exc), str(exc)
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert calls == [], "the no-mode rejection must not hit GitHub"
 
     # content-mode entries must carry a real non-empty string: null (the key
@@ -444,7 +444,7 @@ def main():
             return {"content": base_b64, "sha": "base-sha"}
         raise AssertionError(f"dry-run patch must only fetch the base, got {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         plan = github.propose_change(
             [{"path": "README.md", "edits": [{"find": "middle", "replace": "patched"}]}],
@@ -452,7 +452,7 @@ def main():
             citizen="curious-alpha (agent_id=3)", dry_run=True,
         )
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert calls == [("GET", "contents/README.md?ref=main")], calls
     assert plan["changes"] == ["README.md"]
     assert plan["content_manifest"] == [{
@@ -475,14 +475,14 @@ def main():
             return {"state": "open", "head": {"ref": "feature/x"}, "title": "T"}
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         plan = github.update_pr(
             9, [{"path": "db.py", "content": "x"}],
             citizen="curious-alpha (agent_id=3)", dry_run=True,
         )
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert plan["content_manifest"] == [{
         "path": "db.py", "content_bytes": 1,
         "content_sha256": hashlib.sha256(b"x").hexdigest(),
@@ -506,7 +506,7 @@ def main():
         calls.append((method, path))
         raise AssertionError("content-mode dry-run must not touch GitHub")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         plan = github.propose_change(
             [{"path": "docs/new.md", "content": "hello"}],
@@ -514,7 +514,7 @@ def main():
             citizen="curious-alpha (agent_id=3)", dry_run=True,
         )
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert calls == [], f"content-mode dry-run made {len(calls)} GitHub request(s)"
     assert plan["patch_log"] == []
 
@@ -523,7 +523,7 @@ def main():
         assert method == "GET"
         return None
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         github.propose_change(
             [{"path": "nope.md", "edits": [{"find": "x", "replace": "y"}]}],
@@ -534,14 +534,14 @@ def main():
     except github.RepoError as exc:
         assert "use 'content' to create" in str(exc), str(exc)
     finally:
-        github._request = real_request
+        github._core._request = real_request
 
     # a binary file (non-UTF-8) can't be patched
     def fake_request(method, path, body=None, ok_404=False):
         assert method == "GET"
         return {"content": base64.b64encode(b"\xff\xfe\x00binary").decode("ascii"), "sha": "s"}
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         github.propose_change(
             [{"path": "logo.png", "edits": [{"find": "x", "replace": "y"}]}],
@@ -552,7 +552,7 @@ def main():
     except github.RepoError as exc:
         assert "not UTF-8" in str(exc), str(exc)
     finally:
-        github._request = real_request
+        github._core._request = real_request
 
     # a real (non-dry-run) patch PUT carries the applied content and the base
     # sha, sharing the resolution GET - no extra round-trips.
@@ -575,7 +575,7 @@ def main():
             return {"number": 7, "html_url": "https://github.com/x/y/pull/7"}
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         plan = github.propose_change(
             [{"path": "README.md", "edits": [{"find": "v1", "replace": "v2"}]}],
@@ -583,7 +583,7 @@ def main():
             citizen="curious-alpha (agent_id=3)", dry_run=False,
         )
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert plan["pr_number"] == 7
     assert plan["content_manifest"][0]["content_sha256"] == \
         hashlib.sha256(b"v2\nkeep\n").hexdigest(), "real-path manifest is the applied result"
@@ -607,7 +607,7 @@ def main():
             return {"content": {"sha": "x"}}
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         plan = github.update_pr(
             9,
@@ -615,7 +615,7 @@ def main():
             citizen="curious-alpha (agent_id=3)", dry_run=False,
         )
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert plan["patch_log"] == [{
         "path": "app.py",
         "edits": [{"find": "orig", "replace": "new", "occurrence": 1, "matched": 1}],
@@ -633,7 +633,7 @@ def main():
         calls.append((method, path))
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         plan = github.update_pr(
             9,
@@ -643,7 +643,7 @@ def main():
             _pr={"state": "open", "head": "feature/x", "title": "T"},
         )
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert plan["dry_run"] is True
     assert plan["branch"] == "feature/x"
     assert plan["changes"] == ["app.py"]
@@ -677,15 +677,15 @@ def main():
             return "ok\n== GET /api/posts -> 200 ==\nFAILED test_thing\nError: mypy found 2 errors\n"
         raise AssertionError(f"unexpected request {method} {path}")
 
-    real_request_text = github._request_text
-    github._request = fake_request
-    github._request_text = fake_request
+    real_request_text = github._core._request_text
+    github._core._request = fake_request
+    github._core._request_text = fake_request
     github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
-        github._request = real_request
-        github._request_text = real_request_text
+        github._core._request = real_request
+        github._core._request_text = real_request_text
     assert checks["source"] == "actions", checks
     assert checks["state"] == "failure", checks
     assert [r["name"] for r in checks["runs"]] == ["CI", "static"], checks["runs"]
@@ -731,15 +731,15 @@ def main():
                     "FAILED tests/test_db.py::test_y - AssertionError: expected 3 but got 4\n")
         raise AssertionError(f"unexpected request {method} {path}")
 
-    real_request_text = github._request_text
-    github._request = fake_request
-    github._request_text = fake_request
+    real_request_text = github._core._request_text
+    github._core._request = fake_request
+    github._core._request_text = fake_request
     github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
-        github._request = real_request
-        github._request_text = real_request_text
+        github._core._request = real_request
+        github._core._request_text = real_request_text
     assert checks["source"] == "check_runs", checks
     assert checks["state"] == "failure", checks
     # log lines come first (supplement), distinct failures preserved
@@ -771,14 +771,14 @@ def main():
             return [{"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}]
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
-    github._request_text = fake_request
+    github._core._request = fake_request
+    github._core._request_text = fake_request
     github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
-        github._request = real_request
-        github._request_text = real_request_text
+        github._core._request = real_request
+        github._core._request_text = real_request_text
     assert checks["source"] == "check_runs", checks
     assert checks["state"] == "failure", checks
     # no supplement: annotation with path is already informative
@@ -807,12 +807,12 @@ def main():
             ]}
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert checks["source"] == "statuses", checks
     assert checks["state"] == "failure", checks
     assert checks["failures"][0]["message"] == "The CI build failed", checks["failures"]
@@ -827,12 +827,12 @@ def main():
             return {"head": {"sha": "jkl999"}, "state": "open"}
         raise github.RepoError("GitHub API 500 on everything")
 
-    github._request = fake_request
+    github._core._request = fake_request
     github.clear_cache()
     try:
         checks = github.pr_checks(9)
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert checks["state"] == "unknown" and checks["source"] is None, checks
     assert checks["runs"] == [] and checks["failures"] == [], checks
 
@@ -851,12 +851,12 @@ def main():
                     "author": {"name": "a", "date": "d"}}}]
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     github.clear_cache()
     try:
         commits = github.pr_commits(9)
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert len(commits["commits"]) == 101, commits
     assert commits["commits"][-1]["sha"] == "s100", commits
     assert commits["head"] == "feature/x" and commits["base"] == "main", commits
@@ -872,11 +872,11 @@ def main():
             return {"content": base64.b64encode(b"# hi\n").decode("ascii"), "size": 5}
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         got = github.read_file("README.md", ref="deadbeef")
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert got["ref"] == "deadbeef", got
     assert got["content"] == "# hi\n", got
 
@@ -886,14 +886,14 @@ def main():
         calls.append((method, path))
         return None
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         github.read_file("nope.py", ref="noref")
         raise AssertionError("reading a missing file at a ref must error")
     except github.RepoError as exc:
         assert "noref" in str(exc), str(exc)
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert calls == [("GET", "contents/nope.py?ref=noref")], calls
 
     calls = []
@@ -904,11 +904,11 @@ def main():
             return {"content": base64.b64encode(b"x\n").decode("ascii"), "size": 2}
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         got = github.read_file("README.md")
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert got["ref"] == "main", got
 
     # list_prs: closed/all rows carry the lifecycle, `since` filters on
@@ -932,11 +932,11 @@ def main():
             ]
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_request
+    github._core._request = fake_request
     try:
         closed = github.list_prs(state="closed", since="2026-08-01T00:00:00Z")
     finally:
-        github._request = real_request
+        github._core._request = real_request
     assert [r["number"] for r in closed] == [1], closed
     assert closed[0]["outcome"] == "merged" and closed[0]["merged_at"], closed
     assert ("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=50") in calls
@@ -977,12 +977,12 @@ def main():
             ]
         raise AssertionError(f"unexpected request {method} {path}")
 
-    github._request = fake_open_request
+    github._core._request = fake_open_request
     try:
         github.clear_cache()
         opened = github.list_prs(state="open", since="2026-08-01T00:00:00Z")
     finally:
-        github._request = real_request
+        github._core._request = real_request
         github.clear_cache()
     assert [r["number"] for r in opened] == [10], opened
 
@@ -1064,25 +1064,25 @@ def main():
     # green/red shape (source='statuses'), and never raises when GitHub is
     # unreachable (a failure -> None, so the PR view degrades instead of
     # erroring).
-    real_request = github._request
+    real_request = github._core._request
     try:
         calls = []
-        github._request = lambda method, path, body=None, ok_404=False: (
+        github._core._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "failure", "total_count": 1}
         )
-        checks = github._checks_for_head("abc123")
+        checks = github._checks._checks_for_head("abc123")
         assert checks["source"] == "statuses" and checks["state"] == "failure", checks
-        github._request = lambda method, path, body=None, ok_404=False: (
+        github._core._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or {"state": "success", "total_count": 0}
         )
-        assert github._checks_for_head("abc123")["state"] == "success"
-        github._request = lambda method, path, body=None, ok_404=False: (
+        assert github._checks._checks_for_head("abc123")["state"] == "success"
+        github._core._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or (_ for _ in ()).throw(github.RepoError("down"))
         )
-        assert github._checks_for_head("abc123") is None, \
+        assert github._checks._checks_for_head("abc123") is None, \
             "an unreachable GitHub must degrade to None, not raise"
     finally:
-        github._request = real_request
+        github._core._request = real_request
     tier_probe = [("GET", "commits/abc123/check-runs?per_page=50"),
                   ("GET", "actions/runs?head_sha=abc123&per_page=50"),
                   ("GET", "commits/abc123/status")]
@@ -1094,10 +1094,10 @@ def main():
     # The outcome poller reads closed PRs and classifies each one. The parse
     # runs through the same fake _request as open_prs; assert the mapping
     # (citizen trailer, proposal stamp, labels) reaches the returned rows.
-    real_request = github._request
+    real_request = github._core._request
     try:
         calls = []
-        github._request = lambda method, path, body=None, ok_404=False: (
+        github._core._request = lambda method, path, body=None, ok_404=False: (
             calls.append((method, path)) or [
                 {"number": 5, "title": "t", "user": {"login": "bob"},
                  "merged_at": "2026-08-11T00:00:00Z", "closed_at": "2026-08-11T01:00:00Z",
@@ -1118,7 +1118,7 @@ def main():
         assert closed[1]["citizen"] is None and closed[1]["proposal_post_id"] is None, \
             "a PR without a Citizen trailer maps to no citizen / proposal"
     finally:
-        github._request = real_request
+        github._core._request = real_request
     print("  github.recently_closed_prs: ok")
 
     # --- repo_spec / base_branch: the wired identity ------------------------

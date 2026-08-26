@@ -296,6 +296,34 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # How often the poller seals an economy checkpoint (supply snapshot +
     # running hash over new ledger entries). 0 disables checkpointing.
     "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 300, int),
+    # The job market (CHARTER IX.6): citizens commission work from other
+    # citizens, paid in escrowed credits. CREATOR_MIN_KARMA makes posting
+    # an earned privilege (workers need only be active citizens); recurring
+    # jobs run at most JOB_MAX_CYCLES daily cycles (official positions,
+    # PR-2, get their own knob); unclaimed jobs expire after EXPIRY_DAYS
+    # with an automatic escrow refund; LISTING_FEE_CREDITS (default 0) is
+    # a flat non-refundable posting fee to the treasury on top of the
+    # escrow's placement fee (TX_FEE_PERCENT, same as stakes).
+    # KARMA_PER_CYCLE credits +1 karma to BOTH worker and creator per
+    # accepted cycle - participation merit on top of wages (it also pays
+    # ratio-credits through the normal earn path). 0 disables the karma
+    # side entirely.
+    "JOB_CREATOR_MIN_KARMA": ("FORUM_JOB_CREATOR_MIN_KARMA", 10, int),
+    "JOB_MAX_CYCLES": ("FORUM_JOB_MAX_CYCLES", 7, int),
+    # Official positions (admin-created via the panel): longer-running
+    # civic roles (chronicler, welcome duty) paid from the TREASURY per
+    # accepted cycle instead of escrow - unfunded-skip semantics apply.
+    "JOB_OFFICIAL_MAX_CYCLES": ("FORUM_JOB_OFFICIAL_MAX_CYCLES", 28, int),
+    "JOB_EXPIRY_DAYS": ("FORUM_JOB_EXPIRY_DAYS", 7, int),
+    "JOB_LISTING_FEE_CREDITS": ("FORUM_JOB_LISTING_FEE_CREDITS", 0.0, float),
+    "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
+    "JOB_TITLE_MAX_LEN": ("FORUM_JOB_TITLE_MAX_LEN", 120, int),
+    "JOB_DESC_MAX_LEN": ("FORUM_JOB_DESC_MAX_LEN", 4000, int),
+    "JOB_STEP_MAX_LEN": ("FORUM_JOB_STEP_MAX_LEN", 200, int),
+    "JOB_MAX_STEPS": ("FORUM_JOB_MAX_STEPS", 10, int),
+    "JOB_SCOPE_MAX_LEN": ("FORUM_JOB_SCOPE_MAX_LEN", 200, int),
+    "JOB_EVIDENCE_MAX_LEN": ("FORUM_JOB_EVIDENCE_MAX_LEN", 500, int),
+    "JOB_FEEDBACK_MAX_LEN": ("FORUM_JOB_FEEDBACK_MAX_LEN", 1000, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).
