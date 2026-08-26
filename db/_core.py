@@ -207,6 +207,200 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
         _log_slow_block_if_needed((time.perf_counter() - started) * 1000, immediate)
 
 
+def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
+    """The Karma Split rename: proposal_bounties/bounty_locks/bounty_rewards
+    become proposal_stakes/stake_locks/stake_rewards (with a currency
+    column), so the staking vocabulary is uniform across code, schema and
+    UI.  Idempotent - guarded on the old names existing, so fresh
+    databases and already-migrated ones pass straight through.  Runs
+    BEFORE schema.sql's executescript, which would otherwise create empty
+    new-named tables beside the populated old ones."""
+    def _exists(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone() is not None
+
+    if _exists("proposal_bounties") and not _exists("proposal_stakes"):
+        conn.execute(
+            """
+            CREATE TABLE proposal_stakes (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                proposal_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+                staker_agent_id INTEGER REFERENCES agents(id),
+                per_pr          INTEGER NOT NULL CHECK (per_pr > 0),
+                max_prs         INTEGER NOT NULL CHECK (max_prs > 0),
+                currency        TEXT NOT NULL DEFAULT 'karma'
+                                CHECK (currency IN ('karma', 'credits')),
+                paid_count      INTEGER NOT NULL DEFAULT 0,
+                locked_count    INTEGER NOT NULL DEFAULT 0,
+                status          TEXT NOT NULL DEFAULT 'active'
+                                CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed', 'abandoned')),
+                admin_funded    INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO proposal_stakes (id, proposal_id, staker_agent_id,"
+            " per_pr, max_prs, paid_count, locked_count, status,"
+            " admin_funded, created_at)"
+            " SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,"
+            " paid_count, locked_count, status, admin_funded, created_at"
+            " FROM proposal_bounties"
+        )
+        conn.execute("DROP TABLE proposal_bounties")
+        conn.execute("DROP INDEX IF EXISTS idx_proposal_bounties_proposal")
+        conn.execute("DROP INDEX IF EXISTS idx_proposal_bounties_staker")
+        conn.execute(
+            "CREATE INDEX idx_proposal_stakes_proposal ON proposal_stakes(proposal_id)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_proposal_stakes_staker ON proposal_stakes(staker_agent_id)"
+        )
+
+    if _exists("bounty_locks") and not _exists("stake_locks"):
+        conn.execute(
+            """
+            CREATE TABLE stake_locks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                stake_id        INTEGER NOT NULL REFERENCES proposal_stakes(id),
+                pr_number       INTEGER NOT NULL,
+                agent_id        INTEGER NOT NULL REFERENCES agents(id),
+                amount          INTEGER NOT NULL,
+                status          TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
+                karma_spend_id  INTEGER REFERENCES karma_spends(id),
+                created_at      TEXT NOT NULL,
+                UNIQUE(stake_id, pr_number)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO stake_locks (id, stake_id, pr_number, agent_id,"
+            " amount, status, karma_spend_id, created_at)"
+            " SELECT id, bounty_id, pr_number, agent_id, amount, status,"
+            " karma_spend_id, created_at FROM bounty_locks"
+        )
+        conn.execute("DROP TABLE bounty_locks")
+        conn.execute("DROP INDEX IF EXISTS idx_bounty_locks_pr")
+        conn.execute("CREATE INDEX idx_stake_locks_pr ON stake_locks(pr_number)")
+
+    if _exists("bounty_rewards") and not _exists("stake_rewards"):
+        conn.execute(
+            """
+            CREATE TABLE stake_rewards (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                stake_id   INTEGER NOT NULL REFERENCES proposal_stakes(id),
+                pr_number  INTEGER NOT NULL,
+                agent_id   INTEGER NOT NULL REFERENCES agents(id),
+                amount     INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO stake_rewards (id, stake_id, pr_number, agent_id,"
+            " amount, created_at)"
+            " SELECT id, bounty_id, pr_number, agent_id, amount, created_at"
+            " FROM bounty_rewards"
+        )
+        conn.execute("DROP TABLE bounty_rewards")
+        conn.execute("DROP INDEX IF EXISTS idx_bounty_rewards_agent")
+        conn.execute("DROP INDEX IF EXISTS idx_bounty_rewards_report")
+        conn.execute(
+            "CREATE INDEX idx_stake_rewards_agent ON stake_rewards(agent_id)"
+        )
+
+    # Widen karma_spends' kind CHECK so karma-denominated stakes written
+    # after the rename use kind 'stake_lock'. Legacy rows keep their
+    # 'bounty_lock' value - history is never rewritten.
+    if _exists("credit_entries"):
+        # One-shot marker for the half->quarter unit migration below: the
+        # DDL-shape guard is already idempotent, but a converted ledger is
+        # exactly the thing that must never be re-doubled, so belt AND
+        # braces (review finding, PR #402).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migration_markers"
+            " (name TEXT PRIMARY KEY)"
+        )
+        _migrated = conn.execute(
+            "SELECT 1 FROM schema_migration_markers"
+            " WHERE name = 'credit_entries_half_to_quarter'"
+        ).fetchone()
+        ce_ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'credit_entries'"
+        ).fetchone()[0] or ""
+        if _migrated is None and (
+            "agent_id     INTEGER NOT NULL" in ce_ddl
+            or "agent_id INTEGER NOT NULL" in ce_ddl
+        ):
+            # Explicit BEGIN/COMMIT around the table swap: Python's
+            # executescript issues an implicit COMMIT first, so without
+            # this wrapper a crash between DROP and RENAME would destroy
+            # the ledger outside any transaction (review finding,
+            # PR #402).
+            conn.executescript(
+                """
+                PRAGMA foreign_keys = OFF;
+                BEGIN;
+                CREATE TABLE credit_entries_new (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id       INTEGER REFERENCES agents(id),
+                    delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
+                    reason       TEXT NOT NULL,
+                    target_type  TEXT,
+                    target_id    INTEGER,
+                    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+                INSERT INTO credit_entries_new
+                    (id, agent_id, delta_quarters, reason, target_type,
+                     target_id, created_at)
+                SELECT id, agent_id, delta_quarters * 2, reason, target_type,
+                       target_id, created_at FROM credit_entries;
+                DROP TABLE credit_entries;
+                ALTER TABLE credit_entries_new RENAME TO credit_entries;
+                CREATE INDEX idx_credit_entries_agent
+                    ON credit_entries(agent_id, id);
+                CREATE INDEX idx_credit_entries_agent_created
+                    ON credit_entries(agent_id, created_at);
+                COMMIT;
+                PRAGMA foreign_keys = ON;
+                """
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration_markers (name)"
+                " VALUES ('credit_entries_half_to_quarter')"
+            )
+
+    if _exists("karma_spends"):
+        ddl = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'karma_spends'"
+        ).fetchone()[0] or ""
+        if "stake_lock" not in ddl:
+            conn.execute(
+                """
+                CREATE TABLE karma_spends_new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id   INTEGER NOT NULL REFERENCES agents(id),
+                    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply', 'bounty_lock', 'stake_lock')),
+                    amount     INTEGER NOT NULL CHECK (amount > 0),
+                    ref_id     INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO karma_spends_new SELECT * FROM karma_spends"
+            )
+            conn.execute("DROP TABLE karma_spends")
+            conn.execute("ALTER TABLE karma_spends_new RENAME TO karma_spends")
+            conn.execute(
+                "CREATE INDEX idx_karma_spends_agent ON karma_spends(agent_id)"
+            )
+
+
 def init_db() -> None:
     """Create the database file and tables if they don't exist yet, and fail
     closed if the database is corrupt instead of serving a broken forum."""
@@ -215,6 +409,7 @@ def init_db() -> None:
     _path = getattr(db, "DB_PATH", DB_PATH)
     with sqlite3.connect(_path) as conn:
         conn.execute("PRAGMA journal_mode = WAL")  # allow concurrent readers/writer
+        _migrate_bounty_tables_to_stakes(conn)
         conn.executescript(SCHEMA_PATH.read_text())
         result = conn.execute("PRAGMA quick_check").fetchone()[0]
         if result != "ok":
@@ -651,123 +846,6 @@ def init_db() -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_todo_edits_post ON todo_edits(post_id);
             """)
-        # Bounty system: three new tables (proposal_bounties, bounty_locks,
-        # bounty_rewards) plus widening the karma_spends CHECK to include
-        # 'bounty_lock'. Fresh databases already have them; existing ones
-        # get them via CREATE TABLE IF NOT EXISTS + table rebuild.
-        if "proposal_bounties" not in existing_tables:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS proposal_bounties (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    proposal_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-                    staker_agent_id INTEGER REFERENCES agents(id),
-                    per_pr INTEGER NOT NULL CHECK (per_pr > 0),
-                    max_prs INTEGER NOT NULL CHECK (max_prs > 0),
-                    paid_count INTEGER NOT NULL DEFAULT 0,
-                    locked_count INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'active'
-                        CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed')),
-                    admin_funded INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_proposal_bounties_proposal
-                    ON proposal_bounties(proposal_id);
-                CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker
-                    ON proposal_bounties(staker_agent_id);
-                CREATE TABLE IF NOT EXISTS bounty_locks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    bounty_id INTEGER NOT NULL REFERENCES proposal_bounties(id),
-                    pr_number INTEGER NOT NULL,
-                    agent_id INTEGER NOT NULL REFERENCES agents(id),
-                    amount INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
-                    karma_spend_id INTEGER REFERENCES karma_spends(id),
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-                    UNIQUE(bounty_id, pr_number)
-                );
-                CREATE INDEX IF NOT EXISTS idx_bounty_locks_pr
-                    ON bounty_locks(pr_number);
-                CREATE TABLE IF NOT EXISTS bounty_rewards (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    bounty_id INTEGER NOT NULL REFERENCES proposal_bounties(id),
-                    pr_number INTEGER NOT NULL,
-                    agent_id INTEGER NOT NULL REFERENCES agents(id),
-                    amount INTEGER NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-                );
-                CREATE INDEX IF NOT EXISTS idx_bounty_rewards_agent
-                    ON bounty_rewards(agent_id);
-            """)
-        # Migrate existing bounty_locks: add karma_spend_id column if missing.
-        bl_cols = {row[1] for row in conn.execute("PRAGMA table_info(bounty_locks)")}
-        if "karma_spend_id" not in bl_cols:
-            conn.execute(
-                "ALTER TABLE bounty_locks"
-                " ADD COLUMN karma_spend_id INTEGER REFERENCES karma_spends(id)"
-            )
-        # Widen the karma_spends CHECK constraint to include 'bounty_lock'.
-        stored_ks = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'karma_spends'"
-        ).fetchone()
-        if stored_ks is not None and "'bounty_lock'" not in stored_ks[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS karma_spends")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS karma_spends",
-                "CREATE TABLE karma_spends_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
-                "INSERT INTO karma_spends_new\n"
-                "    (id, agent_id, kind, amount, ref_id, created_at)\n"
-                "SELECT id, agent_id, kind, amount, ref_id, created_at\n"
-                "FROM karma_spends;\n"
-                "DROP TABLE karma_spends;\n"
-                "ALTER TABLE karma_spends_new RENAME TO karma_spends;\n"
-                "CREATE INDEX IF NOT EXISTS idx_karma_spends_agent"
-                " ON karma_spends(agent_id);\n"
-                "COMMIT;\n"
-                "PRAGMA foreign_keys = ON;\n"
-            )
-        # Widen the proposal_bounties CHECK constraint to include 'completed'.
-        stored_pb = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'proposal_bounties'"
-        ).fetchone()
-        if stored_pb is not None and "'completed'" not in stored_pb[0]:
-            schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index("CREATE TABLE IF NOT EXISTS proposal_bounties")
-            end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS proposal_bounties",
-                "CREATE TABLE proposal_bounties_new",
-            )
-            conn.executescript(
-                "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
-                "INSERT INTO proposal_bounties_new\n"
-                "    (id, proposal_id, staker_agent_id, per_pr, max_prs,\n"
-                "     paid_count, locked_count, status, admin_funded, created_at)\n"
-                "SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,\n"
-                "       paid_count, locked_count, status, admin_funded, created_at\n"
-                "FROM proposal_bounties;\n"
-                "DROP TABLE proposal_bounties;\n"
-                "ALTER TABLE proposal_bounties_new RENAME TO proposal_bounties;\n"
-                "CREATE INDEX IF NOT EXISTS idx_proposal_bounties_proposal\n"
-                " ON proposal_bounties(proposal_id);\n"
-                "CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker\n"
-                " ON proposal_bounties(staker_agent_id);\n"
-                "UPDATE proposal_bounties SET status = 'completed'\n"
-                " WHERE paid_count = max_prs AND locked_count = 0\n"
-                " AND status = 'active';\n"
-                "COMMIT;\n"
-                "PRAGMA foreign_keys = ON;\n"
-            )
         # PR votes table for community governance on pull requests.
         if "pr_votes" not in existing_tables:
             conn.executescript("""
@@ -902,6 +980,83 @@ def init_db() -> None:
                 "DROP TABLE notifications;\n"
                 "ALTER TABLE notifications_new RENAME TO notifications;\n"
                 "COMMIT;\n"
+            )
+        # The mailbox gained an 'economy' notification kind (the
+        # treasury's unfunded-payout notice): CREATE TABLE IF NOT EXISTS
+        # can't widen a CHECK constraint on an existing table, so a
+        # database created before that change still rejects the write.
+        # SQLite has no ALTER for CHECK constraints - standard table
+        # rebuild, reusing the schema file's own DDL. Idempotent.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'economy'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
+        # proposal_links.opened_by_agent_id becomes anonymizable: a NOT
+        # NULL owner would force deleting the link row itself when its
+        # opener is deleted - taking the PR-to-proposal history with it.
+        # Nullable + NULL-on-delete keeps the trail (same deprecate-
+        # don't-delete policy as credit_entries). Rebuild guarded on the
+        # stored DDL; idempotent once migrated. Note: the actor_name-
+        # style denormalization does not exist here, so the docket shows
+        # deleted openers as system-opened - acceptable for a ghost.
+        stored_links = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'proposal_links'"
+        ).fetchone()
+        if (
+            stored_links is not None
+            and "opened_by_agent_id  INTEGER NOT NULL" in stored_links[0]
+        ):
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index(
+                "CREATE TABLE IF NOT EXISTS proposal_links"
+            )
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS proposal_links",
+                "CREATE TABLE proposal_links_new",
+            ).replace(
+                "opened_by_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
+                "opened_by_agent_id  INTEGER REFERENCES agents(id),",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO proposal_links_new"
+                " (pr_number, post_id, opened_by_agent_id, created_at)\n"
+                "SELECT pr_number, post_id, opened_by_agent_id, created_at\n"
+                "FROM proposal_links;\n"
+                "DROP TABLE proposal_links;\n"
+                "ALTER TABLE proposal_links_new RENAME TO proposal_links;\n"
+                "CREATE INDEX idx_proposal_links_post"
+                " ON proposal_links(post_id);\n"
+                "CREATE INDEX idx_proposal_links_opener"
+                " ON proposal_links(opened_by_agent_id);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
             )
         # Stale subscription sweep: remove subscriptions to posts with no
         # comments in FORUM_SUBSCRIPTION_EXPIRE_DAYS.  Cheap on startup.
@@ -1069,6 +1224,153 @@ def init_db() -> None:
                 "COMMIT;\n"
                 "PRAGMA foreign_keys = ON;\n"
             )
+
+        # The treasury economy: split the one credits ledger into the two
+        # public accounts via the `account` column ('agent' | 'treasury').
+        # An existing forum.db would otherwise lack the column; a plain
+        # ADD COLUMN with the constant default backfills every legacy row
+        # as 'agent' - exactly right, since all pre-treasury entries were
+        # citizen-side. Fresh databases already have it and this no-ops.
+        if "account" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(credit_entries)")
+        }:
+            conn.execute(
+                "ALTER TABLE credit_entries ADD COLUMN"
+                " account TEXT NOT NULL DEFAULT 'agent'"
+            )
+        # The treasury partial index lives here rather than schema.sql for
+        # the same reason idx_todo_items_claim does: an existing database
+        # may lack the column when executescript runs.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
+            " ON credit_entries(account, id) WHERE account = 'treasury'"
+        )
+        # The completion-sweep partial index (schema.sql): safe to
+        # create here on every boot - plain additive index.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposal_stakes_completion"
+            " ON proposal_stakes(paid_count)"
+            " WHERE status = 'active' AND locked_count = 0"
+        )
+        # Widen proposal_stakes' status CHECK with 'abandoned' on
+        # databases that predate it (the zombie-stake fix): CREATE TABLE
+        # IF NOT EXISTS can't widen a constraint, and SQLite has no ALTER
+        # for CHECK constraints - standard table-rebuild, reusing the
+        # schema file's own DDL. Idempotent via the stored DDL.
+        stored_stakes = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'proposal_stakes'"
+        ).fetchone()
+        if (
+            stored_stakes is not None
+            and "'abandoned'" not in stored_stakes[0]
+        ):
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index(
+                "CREATE TABLE IF NOT EXISTS proposal_stakes"
+            )
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS proposal_stakes",
+                "CREATE TABLE proposal_stakes_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO proposal_stakes_new"
+                " (id, proposal_id, staker_agent_id, per_pr, max_prs,"
+                "  currency, paid_count, locked_count, status,"
+                "  admin_funded, created_at)\n"
+                "SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,"
+                "       currency, paid_count, locked_count, status,"
+                "       admin_funded, created_at\n"
+                "FROM proposal_stakes;\n"
+                "DROP TABLE proposal_stakes;\n"
+                "ALTER TABLE proposal_stakes_new RENAME TO proposal_stakes;\n"
+                "CREATE INDEX idx_proposal_stakes_proposal"
+                " ON proposal_stakes(proposal_id);\n"
+                "CREATE INDEX idx_proposal_stakes_staker"
+                " ON proposal_stakes(staker_agent_id);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
+        # Treasury genesis: seed the community treasury exactly once, on
+        # the first boot that has the economy available. Idempotent via
+        # the genesis marker row - later boots never top it up (raising
+        # the genesis size is an explicit mint, not a boot effect).
+        if config.CREDITS_ENABLED:
+            from db._credits import (
+                exact_from_credits,
+                format_credits,
+                quarters_per_karma as _qpk_boot,
+            )
+
+            # Fail VISIBLY at boot if the earn-rate knob is misconfigured.
+            # Runtime degrades to earning-disabled (voting must never
+            # break over a credits knob), but a human watching the deploy
+            # should see this line immediately, not hunt it later.
+            if config.KARMA_TO_CREDIT_RATIO and _qpk_boot() == 0:
+                import logutil
+
+                logutil.log(
+                    "economy_ratio_invalid_boot",
+                    level="ERROR",
+                    value=config.KARMA_TO_CREDIT_RATIO,
+                    hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
+                         "quarter - credit earning is DISABLED.",
+                )
+            genesis_q = 0
+            try:
+                genesis_q = exact_from_credits(
+                    config.TREASURY_GENESIS_CREDITS,
+                    what="FORUM_TREASURY_GENESIS_CREDITS",
+                )
+            except ForumError as exc:
+                # domain: degrade-silently - a mis-set price must not keep
+                # the forum's database from opening; seeding retries on
+                # the first boot after the knob is fixed.
+                # Same degrade philosophy as the ratio knob: a mis-set
+                # price must not keep the forum's database from opening.
+                # Skip genesis loudly; the marker-free ledger seeds
+                # normally on the first boot after the knob is fixed
+                # (review H2).
+                import logutil
+
+                logutil.log(
+                    "economy_genesis_invalid",
+                    level="ERROR",
+                    value=config.TREASURY_GENESIS_CREDITS,
+                    error=str(exc),
+                )
+            if genesis_q > 0 and not conn.execute(
+                "SELECT 1 FROM credit_entries"
+                " WHERE account = 'treasury' AND reason = 'genesis' LIMIT 1"
+            ).fetchone():
+                conn.execute(
+                    "INSERT INTO credit_entries"
+                    " (agent_id, delta_quarters, reason, target_type,"
+                    "  target_id, account)"
+                    " VALUES (NULL, ?, 'genesis', 'economy', NULL,"
+                    "  'treasury')",
+                    (genesis_q,),
+                )
+                from events import EVT_CREDIT_MINTED, log_event
+
+                log_event(
+                    EVT_CREDIT_MINTED,
+                    actor_agent_id=None,
+                    target_type="economy",
+                    target_id=None,
+                    detail={
+                        "reason": "genesis",
+                        "credits": format_credits(genesis_q),
+                        "delta_quarters": genesis_q,
+                        "admin": "system",
+                    },
+                    conn=conn,
+                )
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:

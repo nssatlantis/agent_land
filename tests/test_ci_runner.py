@@ -3,6 +3,7 @@ main-only tree refresh seams, sanitized child environments, timeout kill,
 output tailing, and the events-ledger audit trail."""
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -319,6 +320,102 @@ def test_suspended_citizen_cannot_run_ci():
         assert "banned" in str(exc)
 
 
+def test_env_keep_carries_docker_daemon_config():
+    """Branch mode sanitizes the docker client env; daemon discovery vars
+    must survive it or non-default daemons fail misleadingly."""
+    for var in ("DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        assert var in ci_runner._ENV_KEEP
+
+
+def test_prune_filter_is_docker_glob_not_regex():
+    """docker image ls --filter reference= takes a glob - re.escape would
+    inject backslashes and silently match nothing."""
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured["cmd"] = list(cmd)
+
+        class _R:
+            returncode = 1
+            stdout = ""
+        return _R()
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(ci_runner.subprocess, "run", side_effect=fake_run) \
+            as _called:
+        ci_runner._prune_stale_images("agentland-ci:deadbeef")
+    assert _called.called
+    flt = [a for a in captured["cmd"] if a.startswith("reference=")]
+    assert flt == [f"reference={config.CI_RUN_IMAGE_BASE}:*"], flt
+    assert "\\" not in flt[0]
+
+
+class _FakePipe:
+    def __init__(self, chunks):
+        self._iter = iter(chunks)
+
+    def read(self, n):
+        try:
+            return next(self._iter)[:n]
+        except StopIteration:
+            return b""
+
+
+def test_drain_bounded_and_tail_contiguous():
+    """Regression for the O(N^2) bytearray-prefix-shift drain: memory stays
+    bounded by retain (+one chunk), the tail stays contiguous and correct,
+    and total counts every byte that flowed."""
+    import random
+    rng = random.Random(1234)
+    stream = [bytes([65 + (i % 26)]) * rng.randint(200, 900)
+              for i in range(400)]
+    retain = 8192
+    chunks: list = []
+    state: dict = {}
+    ci_runner._drain(_FakePipe(stream), chunks,
+                     {"start": 0}, retain, state)
+    assert state["total"] == sum(len(c) for c in stream)
+    start = state["start"]
+    parts = [c[start:] if i == 0 else c for i, c in enumerate(chunks)]
+    joined = b"".join(parts)
+    assert len(joined) <= retain + 900, \
+        f"retained {len(joined)} exceeds budget+chunk"
+    expected_tail = b"".join(stream)[-retain:]
+    assert joined.endswith(expected_tail[-64:]), \
+        "retained tail diverged from the true stream tail"
+    assert joined == expected_tail or len(expected_tail) < retain
+
+
+def test_gc_sweep_survives_timeout_exception():
+    """/gc runs best-effort AFTER the audit row is written - its own
+    timeout raises TimeoutExpired rather than returning a code, so only an
+    exception guard honors the never-fail-a-passed-run contract."""
+    db.register_agent(f"gcfail_{_uid()}")
+    stub = _StubTree("tests", """
+        import sys
+        print("all 1 test files passed")
+        sys.exit(0)
+    """)
+    saved_prepare = ci_runner._prepare_tree
+    real_git = ci_runner._git
+
+    def raising_git(tree, *args):
+        if args and args[0] == "gc":
+            raise subprocess.TimeoutExpired(cmd="git gc", timeout=180)
+        return real_git(tree, *args)
+
+    ci_runner._prepare_tree = lambda: (str(stub.dir), "f" * 40)
+    ci_runner._git = raising_git
+    try:
+        result = ci_runner.run_checks(_uid(), "t", "tests")
+        assert result["ok"] is True, "gc failure must not fail the run"
+    finally:
+        ci_runner._prepare_tree = saved_prepare
+        ci_runner._git = real_git
+        stub.cleanup()
+
+
 
 def main():
     test_knob_defaults()
@@ -334,6 +431,10 @@ def main():
     test_output_tail_truncation()
     test_output_retained_bytes_capped_against_host_memory()
     test_multibyte_tail_is_byte_exact()
+    test_env_keep_carries_docker_daemon_config()
+    test_prune_filter_is_docker_glob_not_regex()
+    test_drain_bounded_and_tail_contiguous()
+    test_gc_sweep_survives_timeout_exception()
     test_suspended_citizen_cannot_run_ci()
     print("test_ci_runner: all ok")
 

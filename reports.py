@@ -391,6 +391,12 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     "UPDATE agents SET suspended_until = ? WHERE id = ?",
                     (_now_iso(until), row["agent_id"]),
                 )
+                # The treasury economy: suspension forfeits the citizen's
+                # entire credit balance - half to the community treasury,
+                # half burned - inside this same transaction.
+                from db._credits import forfeit_agent
+
+                forfeit_agent(row["agent_id"], conn=conn)
                 # Every open report on the target is decided by this verdict
                 # (the tally is per-target); their votes are archived before
                 # the live tally resets, so the verdict stays public.

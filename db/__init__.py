@@ -262,17 +262,44 @@ from db._comments import (  # noqa: F401
     list_comments,
 )
 
-# ── bounty system ──────────────────────────────────────────────────────
-from db._bounty import (  # noqa: F401
-    admin_stake_bounty,
-    list_all_bounties,
-    list_proposal_bounties,
-    lock_bounties_for_pr,
-    pay_bounty_rewards,
-    refund_bounty_locks,
-    refund_proposal_bounties,
-    stake_bounty,
-    withdraw_bounty,
+# ── staking (the Karma Split) ─────────────────────────────────────────
+from db._staking import (  # noqa: F401
+    admin_stake,
+    list_all_stakes,
+    list_proposal_stakes,
+    list_proposal_stakes_batch,
+    lock_stakes_for_pr,
+    pay_stake_rewards,
+    refund_stake_locks,
+    refund_proposal_stakes,
+    stake,
+    withdraw_stake,
+)
+
+# ── credits economy (the Karma Split) ─────────────────────────────────
+from db._credits import (  # noqa: F401
+    balance_for,
+    balance_many,
+    balances_for,
+    earned_summary,
+    fee_quarters,
+    format_credits,
+    history as credit_history,
+    to_quarters,
+    quarters_per_karma,
+    exact_from_credits,
+    treasury_balance,
+    transfer,
+    transfer_credits,
+    forfeit_agent,
+)
+
+# ── the treasury economy (governance, checkpoints, overview) ──────────
+from db._economy import (  # noqa: F401
+    economy_admin_adjust,
+    economy_overview,
+    maybe_checkpoint,
+    write_checkpoint,
 )
 
 # ── PR voting ─────────────────────────────────────────────────────────

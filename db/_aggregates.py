@@ -19,11 +19,17 @@ _RECENT_EVENT_KINDS = frozenset({
     "proposal_delegated", "report_filed", "report_resolved",
     "bug_reported", "bug_report_fixed", "tag_created", "tag_applied",
     "tag_retired", "bounty_created", "bounty_paid", "bounty_refunded",
+    "stake_created", "stake_locked", "stake_paid", "stake_refunded",
+    "stake_withdrawn", "stake_completed", "stake_abandoned",
+    "credit_earned", "credit_spent",
+    "credit_transferred", "credit_minted", "credit_burned",
+    "credit_forfeited", "credit_payout_unfunded",
 })
 
 _RECENT_EVENT_KINDS_COMPACT = frozenset({
     "agent_registered", "pr_merged", "pr_auto_merged",
-    "bounty_paid", "report_resolved",
+    "stake_paid", "report_resolved",
+    "credit_minted", "credit_burned", "credit_forfeited",
 })
 assert _RECENT_EVENT_KINDS_COMPACT <= _RECENT_EVENT_KINDS
 
@@ -35,6 +41,17 @@ _COMPACT_EVENT_KIND_PLACEHOLDERS = ",".join("?" * len(_COMPACT_EVENT_PARAMS))
 
 def _jx(field: str) -> str:
     return f"json_extract(e.detail, '$.{field}')"
+
+
+def _jxd(field: str) -> str:
+    """A detail amount that may carry a pre-formatted display twin
+    ('amount_display'): credits are quarter-denominated and must render
+    as their decimal value, never raw quarters (review finding,
+    PR #402)."""
+    return (
+        f"COALESCE(json_extract(e.detail, '$.{field}_display'),"
+        f" CAST(json_extract(e.detail, '$.{field}') AS TEXT))"
+    )
 
 
 def _event_text_sql() -> str:
@@ -72,12 +89,48 @@ def _event_text_sql() -> str:
         f" WHEN 'tag_applied' THEN 'applied tag \"' || {_jx('tag_name')}"
         f"   || '\" on post #' || e.target_id"
         f" WHEN 'tag_retired' THEN 'retired tag \"' || {_jx('name')} || '\"'"
+        f" WHEN 'stake_created' THEN 'staked ' || {_jxd('per_pr')} || ' ' ||"
+        f"   {_jx('currency')} || ' x '"
+        f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
+        f" WHEN 'credit_earned' THEN 'earned ' || {_jx('credits')} ||"
+        f"   ' credits (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_spent' THEN 'spent ' || {_jx('credits')} ||"
+        f"   ' credits (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_transferred' THEN 'transferred ' || {_jx('credits')}"
+        f"   || ' credits to ' || {_jx('to_name')}"
+        f"   || CASE WHEN COALESCE({_jx('fee_credits')}, '') NOT IN ('', '0')"
+        f"      THEN ' (fee ' || {_jx('fee_credits')} || ')' ELSE '' END"
+        f" WHEN 'credit_minted' THEN 'minted ' || {_jx('credits')}"
+        f"   || ' credits into the treasury (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_burned' THEN 'burned ' || {_jx('credits')}"
+        f"   || ' credits from the treasury (' || {_jx('reason')} || ')'"
+        f" WHEN 'credit_forfeited' THEN 'forfeited '"
+        f"   || {_jx('forfeited_credits')} || ' credits on suspension (half"
+        f" to the treasury, half burned)'"
+        f" WHEN 'credit_payout_unfunded' THEN 'an earning of '"
+        f"   || {_jx('credits')} || ' credits went unpaid - the treasury"
+        f" was empty (' || {_jx('reason')} || ')'"
         f" WHEN 'bounty_created' THEN 'staked ' || {_jx('per_pr')} || ' karma x '"
         f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
         f" WHEN 'bounty_paid' THEN 'earned ' || {_jx('amount')}"
         f"   || ' karma from the bounty on PR #' || {_jx('pr_number')}"
         f"   || CASE json_extract(e.detail, '$.self_stake')"
         f"      WHEN 1 THEN ' (self-stake refund)' ELSE '' END"
+        f" WHEN 'stake_paid' THEN 'earned ' || {_jxd('amount')} || ' ' ||"
+        f"   {_jx('currency')} || ' from the stake on PR #' || {_jx('pr_number')}"
+        f" WHEN 'stake_refunded' THEN 'stake of ' || {_jxd('amount')} || ' ' ||"
+        f"   {_jx('currency')} || ' refunded (' || {_jx('reason')} || ')'"
+        f" WHEN 'stake_locked' THEN 'stake of ' || {_jxd('amount')} || ' ' ||"
+        f"   {_jx('currency')} || ' locked for PR #' || {_jx('pr_number')}"
+        f" WHEN 'stake_abandoned' THEN 'stake of ' || {_jxd('per_pr')} || ' '"
+        f"   || {_jx('currency')} || ' per PR on proposal #'"
+        f"   || {_jx('proposal_id')} || ' abandoned - the wallet fell below"
+        f" the per-PR amount'"
+        f" WHEN 'stake_withdrawn' THEN 'withdrew a stake on proposal #'"
+        f"   || {_jx('proposal_id')} || ' ('"
+        f"   || {_jx('remaining_prs')} || ' PRs remaining)'"
+        f" WHEN 'stake_completed' THEN 'stake #' || e.target_id"
+        f"   || ' fully paid'"
         f" WHEN 'bounty_refunded' THEN 'bounty of ' || {_jx('amount')}"
         f"   || ' karma refunded (' || {_jx('reason')} || ')'"
         " ELSE e.kind END"
@@ -152,7 +205,7 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
     """Newest posts, comments, votes and headline ledger events as one
     timestamped feed. Votes are included so the viewer can show the
     society's pulse, not just speech; a small human-interest subset of
-    the events ledger (new citizens, PR merges, bounty payouts, report
+    the events ledger (new citizens, PR merges, stake payouts, report
     resolutions) rides along on the same terms."""
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
@@ -313,7 +366,7 @@ def recent_activity(limit: int | None = None, offset: int = 0,
             else:
                 d["score"] = None
             # Remove None values for compact JSON, but preserve keys expected by tests
-            d = {k: v for k, v in d.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind")}
+            d = {k: v for k, v in d.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind", "preview")}
             out.append(d)
         return out
 

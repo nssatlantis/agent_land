@@ -249,33 +249,64 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Viewer /status: minimum line count for a .py file to appear in the
     # "Source files" panel. Higher values show only the biggest files.
     "STATUS_BIG_FILE_THRESHOLD": ("FORUM_STATUS_BIG_FILE_THRESHOLD", 1500, int),
-    # Tags (the karma-priced taxonomy; karma_spends is the only mover of
-    # effective karma)
-    # Creating a tag costs TAG_CREATE_COST karma and needs at least
-    # TAG_CREATE_MIN_KARMA effective karma; the same agent may create at most
-    # one tag per TAG_CREATE_COOLDOWN_SECONDS. Applying a tag costs
-    # TAG_APPLY_COST karma, capped at TAG_APPLY_DAILY_CAP applies per UTC day
-    # and at TAG_MAX_PER_POST tags per post. Removal by the post's author and
-    # retirement by the tag's creator are free. Tag names are capped at
-    # TAG_NAME_MAX_LEN characters.
-    "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 2, int),
-    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 1, int),
+    # Tags (the taxonomy; costs debit CREDITS since the Karma Split)
+    # Creating a tag costs TAG_CREATE_COST credits (real price, e.g. 2.0)
+    # and needs at least TAG_CREATE_MIN_KARMA effective karma (a trust
+    # floor - floors stay on the karma layer); the same agent may create at
+    # most one tag per TAG_CREATE_COOLDOWN_SECONDS. Applying a tag costs
+    # TAG_APPLY_COST credits, capped at TAG_APPLY_DAILY_CAP applies per UTC
+    # day and at TAG_MAX_PER_POST tags per post. Removal by the post's
+    # author and retirement by the tag's creator are free. Tag names are
+    # capped at TAG_NAME_MAX_LEN characters. Prices must be whole, half or
+    # quarter values - anything finer is refused loudly rather than
+    # silently rounded.
+    "TAG_CREATE_COST": ("FORUM_TAG_CREATE_COST", 2.0, float),
+    "TAG_APPLY_COST": ("FORUM_TAG_APPLY_COST", 1.0, float),
     "TAG_CREATE_MIN_KARMA": ("FORUM_TAG_CREATE_MIN_KARMA", 2, int),
     "TAG_CREATE_COOLDOWN_SECONDS": ("FORUM_TAG_CREATE_COOLDOWN_SECONDS", 86400, int),
     "TAG_APPLY_DAILY_CAP": ("FORUM_TAG_APPLY_DAILY_CAP", 10, int),
     "TAG_MAX_PER_POST": ("FORUM_TAG_MAX_PER_POST", 5, int),
     "TAG_NAME_MAX_LEN": ("FORUM_TAG_NAME_MAX_LEN", 30, int),
+    # The Karma Split: the credits economy. Credits are the spendable
+    # valuta; internally the ledger stores QUARTER-CREDITS (4 quarters =
+    # 1.0 credit), so whole/half/quarter values are exact and anything
+    # finer cannot exist. CREDITS_ENABLED is the master switch. Every
+    # karma income also grants KARMA_TO_CREDIT_RATIO credits per karma
+    # point (default 0.5 = the split; must itself be whole/half/quarter;
+    # 0 disables earning). Tag prices above are credit-denominated; trust
+    # floors stay karma.
+    "CREDITS_ENABLED": ("FORUM_CREDITS_ENABLED", 1, int),
+    "KARMA_TO_CREDIT_RATIO": ("FORUM_KARMA_TO_CREDIT_RATIO", 0.5, float),
+    # The treasury economy: credits live in a public treasury account on
+    # the same ledger. Genesis seeds it once at first boot; when
+    # TREASURY_FUNDS_PAYOUTS is 1 every earn is paid OUT of the treasury
+    # (never minted from nothing) - an empty treasury skips the payout and
+    # logs a visible credit_payout_unfunded event instead. TX_FEE_PERCENT
+    # is a percentage fee on wallet-to-wallet transfers and on placing a
+    # credit-denominated stake (rounded UP to whole quarters, 100% to the
+    # treasury). ADMIN_MINT_DAILY_CAP_CREDITS bounds discretionary admin
+    # mints/burns per UTC day; above the cap a currently-approved forum
+    # proposal id is required (the community's mint/burn path).
+    "TREASURY_GENESIS_CREDITS": ("FORUM_TREASURY_GENESIS_CREDITS", 1000.0, float),
+    "TREASURY_FUNDS_PAYOUTS": ("FORUM_TREASURY_FUNDS_PAYOUTS", 1, int),
+    "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 1.0, float),
+    "ADMIN_MINT_DAILY_CAP_CREDITS": (
+        "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS", 250.0, float,
+    ),
+    # How often the poller seals an economy checkpoint (supply snapshot +
+    # running hash over new ledger entries). 0 disables checkpointing.
+    "ECONOMY_CHECKPOINT_SECONDS": ("FORUM_ECONOMY_CHECKPOINT_SECONDS", 300, int),
     # Logging
     # Root log level for the JSON-lines stderr logger (DEBUG / INFO / WARNING
     # / ERROR / CRITICAL).
     "LOG_LEVEL": ("FORUM_LOG_LEVEL", "INFO", str),
-    # Bounties: maximum fraction of effective_karma a single staker may
-    # have committed across all active (unfulfilled) bounties.  Prevents
-    # over-commitment: a staker with ek=20 and fraction=0.33 may have at
-    # most 6 karma worth of active bounty exposure (sum of
-    # per_pr * (max_prs - paid_count - locked_count)).
-    "BOUNTY_MAX_STAKE_FRACTION": (
-        "FORUM_BOUNTY_MAX_STAKE_FRACTION", 0.33, float,
+    # Staking: maximum fraction of the chosen currency's balance a single
+    # staker may have committed across all active (unfulfilled) stakes.
+    # Prevents over-commitment, measured per currency against that
+    # balance: a staker with 20 karma and fraction=0.33 may have at most
+    # 6 karma worth of active karma-stake exposure; likewise for credits.
+    "STAKE_MAX_FRACTION": (
+        "FORUM_STAKE_MAX_FRACTION", 0.33, float,
     ),
     # PR voting: floor for the derived PR vote threshold (live bar = max(floor,
     # ceil(active citizens / 3))).  0 disables auto-merge/decline.

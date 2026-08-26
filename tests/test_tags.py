@@ -1,4 +1,5 @@
 """Test tags taxonomy."""
+import importlib
 import os
 import sys
 import tempfile
@@ -30,6 +31,7 @@ def main():
     t_a = db.register_agent("tag-a")["token"]
     t_b = db.register_agent("tag-b")["token"]
     t_c = db.register_agent("tag-c")["token"]
+    t_c_agent_id = db.whoami(t_c)["agent_id"]
     t_d = db.register_agent("tag-d")["token"]
     tag_l = db.register_agent("tag-lock")["token"]
     tag_m = db.register_agent("tag-merge")["token"]
@@ -69,11 +71,47 @@ def main():
     # t_a creates 'alpha' (-2 -> 0 effective: the ledger is the only mover)
     created = db.create_tag(t_a, "alpha", "#ff0000")
     assert created["name"] == "alpha" and created["color"] == "#ff0000", created
-    assert "creating a tag costs 2 karma; tag-a has 0 effective karma" in expect_error(
-        db.create_tag, t_a, "gamma"), \
-        "a spent-down creator cannot create another tag"
-    assert "creating a tag costs 2 karma; tag-c has 0 effective karma" in expect_error(
-        db.create_tag, t_c, "gamma"), \
+    # Karma Split: with a non-zero credit cost, an exhausted balance
+    # refuses creation even when the karma floor passes.
+    _old_cost = os.environ.get("FORUM_TAG_CREATE_COST")
+    os.environ["FORUM_TAG_CREATE_COST"] = "4"  # 2.0 credits
+    importlib.reload(config)
+    try:
+        # Drain t_c to a known credit-poor balance (< cost), whatever the
+        # setup-era vote earnings happened to grant.
+        import db._credits as _cr
+
+        with db._conn() as _c:
+            _have = _cr.balance_for(_c, t_c_agent_id)
+            if _have >= config.TAG_CREATE_COST:
+                _cr.grant(t_c_agent_id,
+                          -(_have - config.TAG_CREATE_COST + 2),
+                          "admin_adjust", target_type="test",
+                          target_id=1, conn=_c)
+        # t_c is the zero-karma citizen: the trust floor fires first.
+        assert "effective karma" in expect_error(
+            db.create_tag, t_c, "gamma"), \
+            "floor still reads karma regardless of credits"
+        # t_d passes the floor (6 karma) but is made credit-poor here.
+        t_d_agent_id = db.whoami(t_d)["agent_id"]
+        with db._conn() as _c:
+            _have = _cr.balance_for(_c, t_d_agent_id)
+            _drain = _have - config.TAG_CREATE_COST + 2
+            if _drain > 0:
+                # spend() is the honest drain: grant() no longer accepts
+                # negative deltas (clamping lives in grant_earned).
+                _cr.spend(t_d_agent_id, _drain,
+                          "admin_adjust", target_type="test",
+                          target_id=1, conn=_c)
+        assert "insufficient credits" in expect_error(
+            db.create_tag, t_d, "gamma"), \
+            "a credit-poor citizen cannot create a tag"
+    finally:
+        if _old_cost is None:
+            os.environ.pop("FORUM_TAG_CREATE_COST", None)
+        else:
+            os.environ["FORUM_TAG_CREATE_COST"] = _old_cost
+        importlib.reload(config)
         "a zero-karma citizen cannot create a tag"
     # duplicate names are refused case-insensitively (cooldown is 0 here)
     assert "a tag named 'alpha' already exists" in expect_error(
@@ -100,9 +138,23 @@ def main():
     db.apply_tag(t_b, p1, "alpha")
     assert [t["name"] for t in db.get_post(p1)["tags"]] == ["alpha"], \
         "get_post rows carry the applied tags"
-    assert "applying a tag costs 1 karma; tag-c has 0 left" in expect_error(
-        db.apply_tag, t_c, p1, "alpha"), \
-        "a zero-karma citizen cannot apply a tag"
+    # Karma Split: with a real credit cost, a zero-credit citizen is
+    # refused on balance. The shared setup defaults tags to free, so the
+    # cost is armed (and restored) around this scenario.
+    _old_apply_cost = os.environ.get("FORUM_TAG_APPLY_COST")
+    os.environ["FORUM_TAG_APPLY_COST"] = "2"  # 1.0 credit
+    importlib.reload(config)
+    clean_post = db.create_post(t_b, "clean for t_c", "b")["post_id"]
+    try:
+        assert "insufficient credits" in expect_error(
+            db.apply_tag, t_c, clean_post, "alpha"), \
+            "a zero-credit citizen cannot apply a tag"
+    finally:
+        if _old_apply_cost is None:
+            os.environ.pop("FORUM_TAG_APPLY_COST", None)
+        else:
+            os.environ["FORUM_TAG_APPLY_COST"] = _old_apply_cost
+        importlib.reload(config)
     assert f"post #{p1} already carries tag 'alpha'" in expect_error(
         db.apply_tag, t_b, p1, "alpha"), \
         "re-applying a tag the post already carries is refused"

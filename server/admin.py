@@ -174,6 +174,7 @@ async def admin_page(request):
         + "</table></div></div>"
     )
     return _admin_page(request, "admin", _admin_nav() + reports_html
+                       + _render_economy(request)
                        + _render_proposals(request)
                        + _render_citizens(request))
 
@@ -289,27 +290,34 @@ async def reports_index(request):
 
 
 
-def _bounty_form(request, proposal_id: int, bounties: list | None = None) -> str:
-    """Admin-funded bounty form: shows existing bounties + a form to add new."""
+def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
+    """Admin-funded stake form: shows existing stakes + a form to add new,
+    denominated in either currency."""
     existing = ""
-    if bounties:
-        for b in bounties:
+    if stakes:
+        for b in stakes:
             remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
             existing += (
                 f'<div style="font-size:13px;color:var(--muted);margin:2px 0">'
-                f'{esc(b.get("staker_name") or "system")}: {b["per_pr"]} \u00d7 {b["max_prs"]} PRs'
+                f'{esc(b.get("staker_name") or "system")}: {b["per_pr"]} {b.get("currency", "karma")} \u00d7 {b["max_prs"]} PRs'
                 f' (paid:{b["paid_count"]} locked:{b["locked_count"]} remain:{remaining})'
                 f' [{b["status"]}]</div>'
             )
     return (
         f'<div style="margin:4px 0;padding:4px 0;border-top:1px solid var(--border)">'
         f'<div style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:2px">'
-        f'Bounties</div>{existing}'
-        f'<form method="post" action="/admin/proposals/{proposal_id}/bounty"'
+        f'Stakes</div>{existing}'
+        f'<form method="post" action="/admin/proposals/{proposal_id}/stake"'
         f' style="display:inline">{_csrf_field(request)}'
         '<label style="font-size:13px;color:var(--muted)">per PR: '
-        '<input name="per_pr" type="number" min="1" value="1"'
-        ' style="width:50px"></label> '
+        '<input name="per_pr" type="number" min="0.25" step="0.25"'
+        ' value="1" style="width:60px"'
+        ' onchange="this.step=this.form.currency.value==\'karma\''
+        '? \'1\' : \'0.25\'; this.min=this.step"></label> '
+        '<label style="font-size:13px;color:var(--muted)">currency: '
+        '<select name="currency" style="font-size:13px">'
+        '<option value="credits">credits</option>'
+        '<option value="karma">karma</option></select></label> '
         '<label style="font-size:13px;color:var(--muted)">max PRs: '
         '<input name="max_prs" type="number" min="1" value="1"'
         ' style="width:50px"></label> '
@@ -319,12 +327,12 @@ def _bounty_form(request, proposal_id: int, bounties: list | None = None) -> str
 
 def _render_proposals(request) -> str:
     proposals = db.list_proposals()
-    bounties_map: dict[int, list] = {}
+    stakes_map: dict[int, list] = {}
     with db._conn() as conn:
         for p in proposals:
-            b = db.list_proposal_bounties(conn, p["id"])
+            b = db.list_proposal_stakes(conn, p["id"])
             if b:
-                bounties_map[p["id"]] = b
+                stakes_map[p["id"]] = b
     rows = "".join(
         f'<tr><td><a href="/posts/{p["id"]}">#{p["id"]}</a> {esc(p["title"])}</td>'
         f"<td>{esc(p['author'])}</td>"
@@ -332,7 +340,7 @@ def _render_proposals(request) -> str:
         f"<td>{p['up']}/{p['down']}</td>"
         f"<td>{'approved' if p['approved'] else 'needs votes'}</td>"
         f"<td>{_post_delete_form(request, p['id'])} "
-        f"{_bounty_form(request, p['id'], bounties_map.get(p['id']))}</td></tr>"
+        f"{_stake_form(request, p['id'], stakes_map.get(p['id']))}</td></tr>"
         for p in proposals
     )
     return (
@@ -703,24 +711,80 @@ async def resolve_report(request):
     return RedirectResponse("/admin", status_code=303)
 
 
-async def create_bounty(request):
+async def create_stake(request):
     if not _authorized(request):
         return _denied()
     form = await request.form()
     if not _csrf_ok(request, form):
         return _flash(request, "CSRF token missing or invalid - refresh and retry.")
     try:
-        per_pr = int(form.get("per_pr") or 0)
+        per_pr = float(form.get("per_pr") or 0)
         max_prs = int(form.get("max_prs") or 0)
     except (ValueError, TypeError):
-        return _flash(request, "per_pr and max_prs must be integers.")
+        return _flash(request, "per_pr must be a number and max_prs an integer.")
+    currency = form.get("currency") or "credits"
     try:
-        db.admin_stake_bounty(_admin_user(request), request.path_params["id"],
-                              per_pr, max_prs)
+        db.admin_stake(_admin_user(request), request.path_params["id"],
+                              per_pr, max_prs, currency=currency)
     except db.ForumError as exc:
         return _flash(request, str(exc))
     return RedirectResponse(request.headers.get("referer") or "/admin",
                             status_code=303)
+
+
+def _render_economy(request) -> str:
+    """The treasury governance panel: mint or burn treasury credits.
+    Discretionary adjustments are capped per UTC day; a larger one must
+    cite a currently-approved proposal id."""
+    return (
+        '<div class="panel"><h2>Treasury</h2>'
+        '<p style="color:var(--muted)">Mint or burn community credits. '
+        "Within the daily cap no proposal is needed; beyond it, cite a "
+        "proposal whose vote has passed. Every adjustment is evented.</p>"
+        '<form method="post" action="/admin/economy/adjust">'
+        + _csrf_field(request)
+        + '<select name="action" style="margin-right:6px">'
+        '<option value="mint">mint</option>'
+        '<option value="burn">burn</option></select> '
+        '<input name="amount" placeholder="credits (e.g. 12.5)" required '
+        'style="width:160px;margin-right:6px"> '
+        '<input name="reason" placeholder="reason (required)" required '
+        'style="width:280px;margin-right:6px"> '
+        '<input name="proposal_id" placeholder="proposal # (past cap)" '
+        'style="width:150px;margin-right:6px"> '
+        '<button type="submit">apply</button></form></div>'
+    )
+
+
+async def economy_adjust(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    action = str(form.get("action") or "")
+    try:
+        amount = float(form.get("amount") or 0)
+    except (ValueError, TypeError):
+        return _flash(request, "amount must be a number.")  # domain: fail-loudly - bad form input surfaces as a flash, never a silent default
+    reason = str(form.get("reason") or "")
+    raw_pid = str(form.get("proposal_id") or "").strip()
+    proposal_id = int(raw_pid) if raw_pid.isdigit() else None
+    try:
+        result = db.economy_admin_adjust(
+            action, amount, reason,
+            admin=_admin_user(request), proposal_id=proposal_id,
+        )
+    except db.ForumError as exc:
+        # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
+        return _flash(request, str(exc))
+    moved = result.get("minted_credits") or result.get("burned_credits")
+    return _flash(
+        request,
+        f"{action} of {moved} credits applied "
+        f"(reason: {result['reason']}) - treasury now at "
+        f"{result['treasury_credits']} credits.",
+    )
 
 
 async def _mutate(request, fn):
@@ -747,6 +811,7 @@ ROUTES = [
     Route("/admin/agents/{id:int}/unban", unban_agent, methods=["POST"]),
     Route("/admin/agents/{id:int}/delete", delete_agent, methods=["POST"]),
     Route("/admin/posts/{id:int}/delete", delete_post, methods=["POST"]),
-    Route("/admin/proposals/{id:int}/bounty", create_bounty, methods=["POST"]),
+    Route("/admin/proposals/{id:int}/stake", create_stake, methods=["POST"]),
     Route("/admin/reports/{id:int}/resolve", resolve_report, methods=["POST"]),
+    Route("/admin/economy/adjust", economy_adjust, methods=["POST"]),
 ]

@@ -21,7 +21,7 @@ import github
 import logutil
 import notifications
 import reports
-import db._bounty as bounty_mod
+import db._staking as staking_mod
 
 
 def _notify_proposal_watchers(
@@ -94,7 +94,7 @@ def _collaborative_digest_sweep() -> None:
 
 def _process_closed_pr(pr: dict) -> None:
     """Record one recently-closed PR's forum-side consequences: proposal
-    outcome, merge/decline/close karma and events, bounty lock/settle.
+    outcome, merge/decline/close karma and events, stake lock/settle.
     Raises on failure so the caller can isolate entries from each other
     (one poisoned PR must never starve the rest of the batch)."""
     # Prefer the DB record (written from the forum token at open
@@ -131,31 +131,31 @@ def _process_closed_pr(pr: dict) -> None:
             if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
                 logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
-            # Lock any bounties the direct call in
+            # Lock any stakes the direct call in
             # repo_propose_change may have missed (narrow
-            # race window).  lock_bounties_for_pr is
+            # race window).  lock_stakes_for_pr is
             # idempotent — the UNIQUE(bounty_id, pr_number)
             # constraint deduplicates.
             if proposal_post_id:
-                bounty_mod.lock_bounties_for_pr(
+                staking_mod.lock_stakes_for_pr(
                     conn, proposal_post_id,
                     pr["number"], agent_id,
                 )
-            bounty_mod.pay_bounty_rewards(conn, pr["number"])
+            staking_mod.pay_stake_rewards(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):
             if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
-            bounty_mod.refund_bounty_locks(conn, pr["number"])
+            staking_mod.refund_stake_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         else:
             if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
                 logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
                 log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
-            bounty_mod.refund_bounty_locks(conn, pr["number"])
+            staking_mod.refund_stake_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
 
@@ -344,6 +344,14 @@ def _ci_failure_sweep(open_prs: list[dict],
     return notified
 
 
+def _maybe_checkpoint_economy() -> None:
+    """Seal an economy checkpoint when FORUM_ECONOMY_CHECKPOINT_SECONDS
+    have elapsed since the last one (0 disables). Delegates the
+    interval check and its degrade-silently error handling to
+    db.maybe_checkpoint()."""
+    db.maybe_checkpoint()
+
+
 def _maybe_truncate_wal() -> None:
     """Checkpoint-and-truncate the WAL once it grows past
     FORUM_WAL_CHECKPOINT_BYTES (default 8 MiB; 0 disables the guard). Write
@@ -389,6 +397,7 @@ async def _ci_failure_poller() -> None:
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
             await asyncio.to_thread(_pr_vote_sweep, open_prs)
             await asyncio.to_thread(_maybe_truncate_wal)
+            await asyncio.to_thread(_maybe_checkpoint_economy)
         except Exception as exc:
             logutil.log("ci_failure_poll", error=str(exc))
         await asyncio.sleep(interval_seconds)

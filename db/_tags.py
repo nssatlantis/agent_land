@@ -73,13 +73,14 @@ def _proposal_frozen(conn: sqlite3.Connection, post_id: int) -> str | None:
 
 
 def _tag_applies_used(conn: sqlite3.Connection, agent_id: int) -> int:
-    """How many tag applications this citizen has already spent today, in
-    the UTC-day window the comment/vote caps use. Counted on the
-    karma_spends ledger, so the cap and the spend are the same fact."""
+    """How many tag applications this citizen made today.  Counted on
+    post_tags itself - the application is the fact the cap governs,
+    whether it was paid in credits, free under a zero-cost config, or
+    written before the Karma Split."""
     midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
     return conn.execute(
-        "SELECT COALESCE(COUNT(*), 0) FROM karma_spends"
-        " WHERE agent_id = ? AND kind = 'tag_apply' AND created_at >= ?",
+        "SELECT COALESCE(COUNT(*), 0) FROM post_tags"
+        " WHERE applied_by = ? AND applied_at >= ?",
         (agent_id, midnight),
     ).fetchone()[0]
 
@@ -166,8 +167,8 @@ def tag_exists(name: str) -> bool:
 
 def create_tag(token: str, name: str, color: str | None = None,
                description: str | None = None) -> dict:
-    """Create a new tag - the karma-priced taxonomy, rule 18. Costs
-    FORUM_TAG_CREATE_COST (2) karma from the creator's EFFECTIVE balance
+    """Create a new tag - the credits-priced taxonomy, rule 18. Costs
+    FORUM_TAG_CREATE_COST (2) credits from the creator's credit balance
     (earned minus spent - the ledger row is the only thing that moves it;
     the four earned sources are untouched). Requires at least
     FORUM_TAG_CREATE_COST effective karma to afford the spend, one creation
@@ -203,10 +204,10 @@ def create_tag(token: str, name: str, color: str | None = None,
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         ek = effective_karma(conn, agent["id"])
-        if ek < config.TAG_CREATE_COST:
+        if ek < config.TAG_CREATE_MIN_KARMA:
             raise ForumError(
-                f"creating a tag costs {config.TAG_CREATE_COST} karma; "
-                f"{agent['name']} has {ek} effective karma."
+                f"creating a tag needs at least {config.TAG_CREATE_MIN_KARMA} "
+                f"effective karma; {agent['name']} has {ek}."
             )
         remaining = _tag_create_cooldown_remaining(conn, agent["id"])
         if remaining > 0:
@@ -220,6 +221,18 @@ def create_tag(token: str, name: str, color: str | None = None,
                     f"a retired tag named '{existing['name']}' still reserves that name."
                 )
             raise ForumError(f"a tag named '{existing['name']}' already exists.")
+        # The Karma Split: the cost debits CREDITS now (trust floor above
+        # stays karma). spend() refuses with a balance-aware message when
+        # the citizen cannot cover it.
+        import db._credits as _credits
+
+        _credits.spend(
+            agent["id"],
+            _credits.exact_from_credits(config.TAG_CREATE_COST,
+                                        what="TAG_CREATE_COST"),
+            "tag_create", target_type="tag",
+            dest_treasury=True, conn=conn,
+        )
         now = _now_iso()
         cur = conn.execute(
             "INSERT INTO tags (name, color, created_by, created_at, retired, retired_at,"
@@ -228,11 +241,6 @@ def create_tag(token: str, name: str, color: str | None = None,
             (name, color, agent["id"], now, description),
         )
         tag_id = cur.lastrowid
-        conn.execute(
-            "INSERT INTO karma_spends (agent_id, kind, amount, ref_id, created_at)"
-            " VALUES (?, 'tag_create', ?, ?, ?)",
-            (agent["id"], config.TAG_CREATE_COST, tag_id, now),
-        )
         from events import EVT_TAG_CREATED, log_event
         log_event(
             EVT_TAG_CREATED,
@@ -303,7 +311,7 @@ def update_tag(token: str, tag_name: str,
 
 def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
     """Apply an existing tag to a post - anyone may, for
-    FORUM_TAG_APPLY_COST (1) karma from the applier's effective balance;
+    FORUM_TAG_APPLY_COST (1) credit from the applier's credit balance;
     the spend and the post_tags row land atomically. At most
     FORUM_TAG_APPLY_DAILY_CAP (10) applications per UTC day and at most
     TAG_MAX_PER_POST (5) tags per post, and no tag moves on a locked
@@ -323,11 +331,6 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
             )
         if tag["retired"]:
             raise ForumError(f"tag '{tag['name']}' is retired - it can no longer be applied.")
-        if effective_karma(conn, agent["id"]) < config.TAG_APPLY_COST:
-            raise ForumError(
-                f"applying a tag costs {config.TAG_APPLY_COST} karma; "
-                f"{agent['name']} has {effective_karma(conn, agent['id'])} left."
-            )
         if _tag_applies_used(conn, agent["id"]) >= config.TAG_APPLY_DAILY_CAP:
             raise ForumError(
                 f"tag applications are capped at {config.TAG_APPLY_DAILY_CAP} per day; "
@@ -352,10 +355,16 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
             " VALUES (?, ?, ?, ?)",
             (post_id, tag["id"], agent["id"], now),
         )
-        conn.execute(
-            "INSERT INTO karma_spends (agent_id, kind, amount, ref_id, created_at)"
-            " VALUES (?, 'tag_apply', ?, ?, ?)",
-            (agent["id"], config.TAG_APPLY_COST, post_id, now),
+        # Karma Split: the apply cost debits CREDITS (the insufficient-
+        # balance refusal inside spend() replaces the old karma check).
+        import db._credits as _credits
+
+        _credits.spend(
+            agent["id"],
+            _credits.exact_from_credits(config.TAG_APPLY_COST,
+                                        what="TAG_APPLY_COST"),
+            "tag_apply", target_type="post", target_id=post_id,
+            dest_treasury=True, conn=conn,
         )
         from events import EVT_TAG_APPLIED, log_event
         log_event(

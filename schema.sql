@@ -298,7 +298,10 @@ CREATE INDEX IF NOT EXISTS idx_proposal_votes_voter_created
 CREATE TABLE IF NOT EXISTS proposal_links (
     pr_number           INTEGER PRIMARY KEY,
     post_id             INTEGER NOT NULL REFERENCES posts(id),
-    opened_by_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    -- Nullable so delete_agent can deprecate instead of delete: the
+    -- link (and its PR trail) survives with the opener anonymized,
+    -- exactly like credit_entries.agent_id.
+    opened_by_agent_id  INTEGER REFERENCES agents(id),
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -389,7 +392,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -615,7 +618,7 @@ CREATE INDEX IF NOT EXISTS idx_post_tags_applied_by ON post_tags(applied_by);
 CREATE TABLE IF NOT EXISTS karma_spends (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id   INTEGER NOT NULL REFERENCES agents(id),
-    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply', 'bounty_lock')),
+    kind       TEXT NOT NULL CHECK (kind IN ('tag_create', 'tag_apply', 'bounty_lock', 'stake_lock')),
     amount     INTEGER NOT NULL CHECK (amount > 0),
     ref_id     INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -623,69 +626,139 @@ CREATE TABLE IF NOT EXISTS karma_spends (
 
 CREATE INDEX IF NOT EXISTS idx_karma_spends_agent ON karma_spends(agent_id);
 
--- Proposal bounties: a karma staking system where agents stake rewards on
--- proposals, paid on PR merge, refunded on failure. The staker sets per-PR
--- amount and max PRs (total exposure = per_pr * max_prs). Karma is deducted
--- from the staker when a PR is opened (locked as a karma_spends row). On
--- merge the spend persists as a permanent debit and the PR opener receives
--- a bounty_rewards credit — except when the PR opener IS the staker, in
--- which case the spend is deleted (returned, no self-transfer). Refunded
--- on failure (spend deleted). Admin-funded bounties
--- (staker_agent_id IS NULL) skip the karma deduction entirely.
-CREATE TABLE IF NOT EXISTS proposal_bounties (
+-- Proposal staking (the Karma Split): agents stake rewards on proposals,
+-- paid on PR merge, refunded on failure. A stake is denominated in EITHER
+-- currency - the staker chooses karma or credits at stake time (currency
+-- column) and payouts pay in that denomination. The staker sets per-PR
+-- amount and max PRs (total exposure = per_pr * max_prs). The chosen
+-- currency is deducted when a PR is opened (locked: karma stakes as a
+-- karma_spends row under kind 'stake_lock', credit stakes as a
+-- credit_entries debit). On merge the lock pays out to the PR opener -
+-- except when the opener IS the staker, in which case the stake is
+-- returned (no self-transfer). Refunded on failure. Admin-funded stakes
+-- (staker_agent_id IS NULL) skip the deduction entirely. A stake whose
+-- wallet has fallen below per_pr when a PR opens is 'abandoned': it can
+-- no longer back PRs, so it stops holding an exposure slot silently.
+CREATE TABLE IF NOT EXISTS proposal_stakes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     proposal_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     staker_agent_id INTEGER REFERENCES agents(id),  -- NULL for admin-funded
     per_pr          INTEGER NOT NULL CHECK (per_pr > 0),
     max_prs         INTEGER NOT NULL CHECK (max_prs > 0),
+    currency        TEXT NOT NULL DEFAULT 'karma'
+                    CHECK (currency IN ('karma', 'credits')),
     paid_count      INTEGER NOT NULL DEFAULT 0,
     locked_count    INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed')),
+                    CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed', 'abandoned')),
     admin_funded    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_proposal_bounties_proposal
-    ON proposal_bounties(proposal_id);
-CREATE INDEX IF NOT EXISTS idx_proposal_bounties_staker
-    ON proposal_bounties(staker_agent_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_stakes_proposal
+    ON proposal_stakes(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_stakes_staker
+    ON proposal_stakes(staker_agent_id);
+-- Serves the zero-lock completion sweeps (pay/refund): the partial
+-- predicate matches their WHERE clause exactly, so the sweep reads
+-- only fully-paid stakes instead of scanning every active one.
+CREATE INDEX IF NOT EXISTS idx_proposal_stakes_completion
+    ON proposal_stakes(paid_count) WHERE status = 'active'
+    AND locked_count = 0;
 
--- Bounty locks: one per (bounty, pr_number). When a PR is opened against a
--- bounty proposal, the staker's per_pr amount is locked (karma_spends row).
--- On merge the lock pays out (staker's spend persists, opener gets reward)
--- unless opener == staker (spend returned, no self-transfer);
--- on decline/close the staker's spend is refunded.
-CREATE TABLE IF NOT EXISTS bounty_locks (
+-- Stake locks: one per (stake, pr_number). When a PR is opened against a
+-- staked proposal, the staker's per_pr amount is locked (karma stakes: a
+-- karma_spends row referenced below; credit stakes: a credit_entries
+-- debit). On merge the lock pays out (opener receives the reward)
+-- unless opener == staker (returned, no self-transfer); on decline/close
+-- the stake is refunded.
+CREATE TABLE IF NOT EXISTS stake_locks (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    bounty_id       INTEGER NOT NULL REFERENCES proposal_bounties(id),
+    stake_id        INTEGER NOT NULL REFERENCES proposal_stakes(id),
     pr_number       INTEGER NOT NULL,
     agent_id        INTEGER NOT NULL REFERENCES agents(id),  -- PR opener
     amount          INTEGER NOT NULL,
     status          TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
-    karma_spend_id  INTEGER REFERENCES karma_spends(id),  -- NULL for admin-funded
+    karma_spend_id  INTEGER REFERENCES karma_spends(id),  -- karma stakes only
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE(bounty_id, pr_number)
+    UNIQUE(stake_id, pr_number)
 );
 
-CREATE INDEX IF NOT EXISTS idx_bounty_locks_pr ON bounty_locks(pr_number);
+CREATE INDEX IF NOT EXISTS idx_stake_locks_pr ON stake_locks(pr_number);
 
--- Bounty rewards: credited to the PR opener when a bounty lock pays out
--- (PR merged). The staker's karma_spends row persists as a permanent debit;
--- this is a true transfer of per_pr from staker to opener. Self-staked
--- bounties (opener == staker) are excluded: the spend is returned instead.
--- This is the 5th source of karma (after post_votes, comment_votes,
--- pr_merges, pr_record).
-CREATE TABLE IF NOT EXISTS bounty_rewards (
+-- Stake payouts: credited to the PR opener when a stake lock pays out
+-- (PR merged). Karma-denominated stakes record here and this remains one
+-- of the live karma sources (CHARTER.md Article IX); credit-denominated
+-- stakes pay through credit_entries instead. The staker's lock persists
+-- as a permanent debit - a true transfer of per_pr from staker to opener.
+-- Self-staked proposals (opener == staker) are excluded: the lock is
+-- returned instead.
+CREATE TABLE IF NOT EXISTS stake_rewards (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    bounty_id  INTEGER NOT NULL REFERENCES proposal_bounties(id),
+    stake_id   INTEGER NOT NULL REFERENCES proposal_stakes(id),
     pr_number  INTEGER NOT NULL,
     agent_id   INTEGER NOT NULL REFERENCES agents(id),
     amount     INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_bounty_rewards_agent ON bounty_rewards(agent_id);
+CREATE INDEX IF NOT EXISTS idx_stake_rewards_agent ON stake_rewards(agent_id);
+
+-- Credits ledger (the Karma Split): append-only entries denominated in
+-- QUARTER-CREDITS (delta_quarters; four quarters make 1.0 credit -
+-- values are the only amounts that exist). The balance is derived as
+-- SUM(delta_quarters) rather than cached, so it cannot drift from its
+-- history. Every entry names its reason: contributions earn (paid out of
+-- the treasury when TREASURY_FUNDS_PAYOUTS is on), voluntary spends debit,
+-- transfers move credits between wallets. Written inside the triggering
+-- transaction by db._credits.
+--
+-- ACCOUNTS: the `account` column splits the one ledger into the two public
+-- accounts - 'agent' rows belong to citizens (agent_id), 'treasury' rows
+-- are the community treasury (agent_id NULL). Because every payout,
+-- transfer and fee is written as PAIRED rows (-from / +to) while mints add
+-- to the treasury and burns subtract from it:
+--     total supply  = SUM(delta_quarters) over ALL rows
+--     treasury      = SUM over account='treasury' rows
+--     circulating   = supply - treasury
+-- Anonymized citizens keep their 'agent' rows with agent_id NULLed; the
+-- treasury's own history is never touched.
+CREATE TABLE IF NOT EXISTS credit_entries (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id     INTEGER REFERENCES agents(id), -- NULL: deleted citizen or the treasury
+    delta_quarters INTEGER NOT NULL CHECK (delta_quarters != 0),
+    reason       TEXT NOT NULL,
+    target_type  TEXT,
+    target_id    INTEGER,
+    -- DEFAULT 'agent' also backfills every pre-treasury row during
+    -- the ADD COLUMN migration in db/_core.init_db (same constant).
+    account      TEXT NOT NULL DEFAULT 'agent'
+                 CHECK (account IN ('agent', 'treasury')),
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_credit_entries_agent
+    ON credit_entries(agent_id, id);
+CREATE INDEX IF NOT EXISTS idx_credit_entries_agent_created
+    ON credit_entries(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury
+    ON credit_entries(account, id) WHERE account = 'treasury';
+
+-- Economy checkpoints (tamper-evidence lite): periodic sealed snapshots of
+-- the economy - total supply, entry count and a running SHA-256 chain over
+-- every ledger row's IMMUTABLE fields (id, account, delta, reason,
+-- target, created_at - deliberately excluding agent_id so deletion
+-- anonymization can never break a seal). The /economy page shows the
+-- latest seal next to live recomputed totals and flags any drift.
+CREATE TABLE IF NOT EXISTS economy_checkpoints (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_entry_id  INTEGER NOT NULL,
+    entry_count    INTEGER NOT NULL,
+    total_supply_q INTEGER NOT NULL,
+    treasury_q     INTEGER NOT NULL,
+    running_hash   TEXT NOT NULL
+);
 
 -- PR votes: community governance votes on pull requests (approve/oppose).
 -- A PR reaches merge-readiness when net votes >= threshold; enough opposing

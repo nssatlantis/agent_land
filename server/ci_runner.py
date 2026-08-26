@@ -21,13 +21,22 @@ Security posture (deliberate - do not loosen casually):
   would run unsandboxed.  A PR that needs different dependencies therefore
   fails honestly with an ImportError inside the sandbox - a documented
   limitation, not an oversight.  Repository code never enters an image.
-- Child processes receive an allowlisted environment in BOTH modes -
-  native suites and even the branch-mode docker client: GITHUB_TOKEN and
-  forum secrets are physically absent from every spawned process, and
+- Child processes that matter receive an allowlisted environment -
+  native suites AND the branch-mode docker run/build clients:
+  GITHUB_TOKEN and forum secrets are absent from both, and
   AGENTLAND_DATA_DIR points at a throwaway temp dir so even a stray
-  default-path write lands in /tmp and vanishes afterwards.  With no
-  token in the env the benchmark harness's live mode cannot activate
-  either - runs are mocked-only by construction.
+  default-path write lands in /tmp and vanishes afterwards.  Short-lived
+  host-side git/docker plumbing (_git helpers, image inspect/prune)
+  inherits the server's own environment by design - trusted context,
+  no untrusted input reaches them.  With no token in any child env the
+  benchmark harness's live mode cannot activate either - runs are
+  mocked-only by construction.
+- Residual (documented): fetching an unmerged PR head happens host-side
+  before containment applies.  Git transport bounds each call
+  (_git timeout 180s) but does not cap blob size; disk/bandwidth from an
+  oversized commit is bounded only by cooldown/cap/lock.  Execution
+  stays containerized regardless - this affects host resources between
+  runs, not what executes.
 - Gate: suspended and banned citizens are refused exactly like every
   other write path (db.require_active_agent) - suspension is
   read-only by charter, and running CI or touching PRs is not
@@ -82,6 +91,10 @@ _CHECKS: dict[str, tuple[str, str]] = {
 _ENV_KEEP = {
     "PATH", "PATHEXT", "LANG", "LC_ALL", "SYSTEMROOT", "COMSPEC",
     "TMPDIR", "TEMP", "TMP",
+    # Docker daemon discovery for the branch-mode client - without these
+    # a non-default daemon (remote/TLS) fails with a misleading build
+    # error instead of connecting.  No secrets: paths and an endpoint.
+    "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
 }
 
 
@@ -338,7 +351,7 @@ def _prune_stale_images(keep_tag: str) -> None:
         ls = subprocess.run(
             ["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}",
              "--filter",
-             f"reference={re.escape(config.CI_RUN_IMAGE_BASE)}:*"],
+             f"reference={config.CI_RUN_IMAGE_BASE}:*"],
             capture_output=True, text=True, timeout=60,
         )
         if ls.returncode != 0:
@@ -432,12 +445,21 @@ def _stop_sandbox(name: str) -> None:
     )
 
 
-def _drain(pipe, sink: bytearray, retain: int, state: dict) -> None:
+def _drain(pipe, chunks: list, start_holder: dict, retain: int,
+           state: dict) -> None:
     """Read the child's merged stdout/stderr in chunks so a hostile suite
-    cannot balloon host memory through the pipe buffer: at most *retain*
-    bytes are kept (contiguous tail - the prefix is dropped as needed),
-    while state['total'] counts everything that ever flowed."""
+    cannot balloon host memory through the pipe buffer.  At most *retain*
+    bytes are retained (the contiguous tail), while state['total'] counts
+    everything that ever flowed.
+
+    Storage is a list of byte chunks plus a front offset - appending is
+    O(chunk) and eviction moves list pointers only, never payload bytes.
+    A bytearray with prefix deletion would memmove the whole retained
+    window on every chunk (for a 1GB stream at 64KB reads that is ~1TB of
+    memory copying); this shape does not."""
     total = 0
+    kept = 0
+    start = 0  # bytes already logically dropped from chunks[0]
     while True:
         try:
             chunk = pipe.read(65536)
@@ -446,10 +468,20 @@ def _drain(pipe, sink: bytearray, retain: int, state: dict) -> None:
         if not chunk:
             break
         total += len(chunk)
-        sink.extend(chunk)
-        if len(sink) > retain:
-            del sink[: len(sink) - retain]
+        chunks.append(chunk)
+        kept += len(chunk)
+        # Trim from the front once over budget; the partial cut lands
+        # inside chunks[0], so the tail stays contiguous.
+        while kept > retain and len(chunks) > 1:
+            avail = len(chunks[0]) - start
+            cut = min(avail, kept - retain)
+            start += cut
+            kept -= cut
+            if start == len(chunks[0]):
+                chunks.pop(0)
+                start = 0
     state["total"] = total
+    state["start"] = start
 
 
 def _execute(
@@ -466,10 +498,11 @@ def _execute(
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         **popen_kwargs,
     )
-    sink = bytearray()
-    state: dict = {"total": 0}
+    chunks: list = []
+    state: dict = {"total": 0, "start": 0}
     reader = threading.Thread(
-        target=_drain, args=(proc.stdout, sink, max_retained, state), daemon=True,
+        target=_drain, args=(proc.stdout, chunks, state, max_retained, state),
+        daemon=True,
     )
     reader.start()
     timed_out = False
@@ -507,16 +540,22 @@ def _execute(
         # bookkeeping; nothing downstream depends on it succeeding.
         pass
     duration = round(time.monotonic() - started, 2)
-    total = state.get("total", len(sink))
+    total = state.get("total", 0)
     truncated = total > tail_cap
     # Summary patterns are parsed over everything retained (a huge failing
     # run can scroll its "FAILED:" headers past a 16KB window); the tail
     # handed back to the caller is byte-exact against tail_cap.  Newlines
     # are normalized so CRLF-streaming children parse identically to LF.
-    retained_text = bytes(sink).decode("utf-8", errors="replace")
+    start = state.get("start", 0)
+    parts = []
+    for i, c in enumerate(chunks):
+        parts.append(c[start:] if i == 0 else c)
+        start = 0
+    retained_bytes = b"".join(parts)
+    retained_text = retained_bytes.decode("utf-8", errors="replace")
     retained_text = retained_text.replace("\r\n", "\n").replace("\r", "\n")
-    tail = bytes(sink[-tail_cap:]).decode("utf-8", errors="replace") if truncated \
-        else retained_text
+    tail = retained_bytes[-tail_cap:].decode("utf-8", errors="replace") \
+        if truncated else retained_text
     summary, failed_files = _parse_summary(retained_text)
     result: dict = {
         "ok": proc.returncode == 0 and not timed_out,
@@ -629,12 +668,15 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
         if branch_mode:
             # Blob hygiene: fetched PR heads linger as unreachable objects
             # after the next reset; prune them so the shared tree does not
-            # accumulate every citizen's history.  Best-effort - a busy
-            # gc just means retention until a later run.
-            sweep = _git(tree, "gc", "--prune=now", "--quiet")
-            if sweep.returncode != 0:
-                # domain: degrade-silently - retention hygiene, not a run
-                # outcome; nothing serves stale content because of it.
+            # accumulate every citizen's history.  Best-effort in the full
+            # sense: _git's timeout raises rather than returning a code,
+            # so only an exception guard honors the contract.
+            try:
+                _git(tree, "gc", "--prune=now", "--quiet")
+            except Exception:
+                # domain: degrade-silently - retention hygiene is not a run
+                # outcome; the audit row already reflects the suite result
+                # and nothing serves stale content because of it.
                 pass
         return result
     finally:
