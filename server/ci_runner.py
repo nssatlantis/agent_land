@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import queue
 import re
 import shutil
 import signal
@@ -76,9 +77,56 @@ import db
 import events
 import github
 
-# One CI run at a time across the whole server - the runner tree is shared
-# state and the point of the cap set is bounded load, not throughput.
-_RUN_LOCK = threading.Lock()
+# Concurrency for CI runner trees — up to CI_RUN_CONCURRENCY sandboxed
+# runs may overlap on the single forum host (each slot has its own -ci
+# tree under DATA_DIR/agentland_ws). The semaphore is a bounded queue of
+# slot tokens, so a long suite never starves a second caller — the third
+# caller gets the familiar "already in progress" error. Single-process
+# deployment invariant: the queue is in-memory, reset on restart.
+_RUN_LOCK = threading.Lock()  # legacy single-slot — kept for tests that patch it
+_CI_QUEUE: queue.Queue[int] | None = None
+_CI_SLOTS: list[str] = []
+_CI_LOCK = threading.Lock()
+
+
+def _ci_ensure_pool() -> queue.Queue[int]:
+    """Ensure the CI runner slot pool matches CI_RUN_CONCURRENCY live."""
+    global _CI_QUEUE, _CI_SLOTS
+    with _CI_LOCK:
+        desired = max(1, int(config.CI_RUN_CONCURRENCY))
+        if _CI_QUEUE is None:
+            _CI_SLOTS = [f"slot{i}" for i in range(desired)]
+            q: queue.Queue[int] = queue.Queue()
+            for i in range(desired):
+                q.put(i)
+            _CI_QUEUE = q
+        elif desired != len(_CI_SLOTS):
+            if desired > len(_CI_SLOTS):
+                for i in range(len(_CI_SLOTS), desired):
+                    _CI_SLOTS.append(f"slot{i}")
+            else:
+                del _CI_SLOTS[desired:]
+            rebuilt: queue.Queue[int] = queue.Queue()
+            for i in range(len(_CI_SLOTS)):
+                rebuilt.put(i)
+            _CI_QUEUE = rebuilt
+    return _CI_QUEUE
+
+
+def _ci_acquire_slot() -> int:
+    """Acquire a CI slot token without blocking; raises ForumError if saturated."""
+    q = _ci_ensure_pool()
+    try:
+        return q.get(block=False)
+    except queue.Empty as exc:
+        raise db.ForumError("a CI run is already in progress; try again when it finishes") from exc
+
+
+def _ci_release_slot(idx: int) -> None:
+    """Return a slot token; drops retired indices when pool shrank."""
+    q = _ci_ensure_pool()
+    if 0 <= idx < max(1, int(config.CI_RUN_CONCURRENCY)):
+        q.put(idx)
 
 # checks value -> (native event kind, suite script path relative to the tree)
 _CHECKS: dict[str, tuple[str, str]] = {
@@ -102,14 +150,35 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _runner_dir() -> str:
-    """Dedicated runner checkout beside the rebase pool slots - same
-    durable home (AGENTLAND_DATA_DIR/agentland_ws) but never a pool slot,
-    so a long suite can never starve conflict/rebase flows."""
+def _runner_dir_impl(slot: int) -> str:
+    """Core path construction for runner trees — slot 0 is the historic
+    base, slot N is sharded. Never patched directly; tests patch _runner_dir."""
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", github.GITHUB_REPO)
-    d = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-ci")
+    base = os.path.join(config.DATA_DIR, "agentland_ws", slug + "-ci")
+    d = f"{base}-{slot}" if slot != 0 else base
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _runner_dir() -> str:
+    """Legacy single runner checkout — kept for backwards compatibility in
+    tests that import it directly. New code uses _runner_dir_for_slot()."""
+    return _runner_dir_impl(0)
+
+
+_ORIG_RUNNER_DIR = _runner_dir  # for mock detection
+
+
+def _runner_dir_for_slot(slot: int) -> str:
+    """Dedicated runner checkout for *slot* beside the rebase pool slots —
+    same durable home (AGENTLAND_DATA_DIR/agentland_ws) but never a pool
+    slot, so a long suite can never starve conflict/rebase flows. Two
+    slots (CI_RUN_CONCURRENCY=2) give two independent -ci trees."""
+    # If tests have monkeypatched _runner_dir to a stub, respect it for any
+    # slot — the fixture's tree is the same temp dir for all slots in that test.
+    if _runner_dir is not _ORIG_RUNNER_DIR:
+        return _runner_dir()
+    return _runner_dir_impl(slot)
 
 
 def _git(tree: str, *args: str) -> subprocess.CompletedProcess:
@@ -118,9 +187,55 @@ def _git(tree: str, *args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _local_seed_available() -> bool:
+    try:
+        return os.path.isdir(os.path.join(str(config.REPO_DIR), ".git"))
+    except Exception:
+        # domain: degrade-silently - REPO_DIR unreadable, no local seed
+        return False
+
+
+def _try_clone_from_local(tree: str, base: str) -> bool:
+    """Attempt to clone the CI runner tree from the local REPO_DIR seed.
+    Returns True on success, False to fall back to origin. The seed is the
+    auto-update checkout (always up-to-date); we rewire origin afterwards."""
+    if not _local_seed_available():
+        return False
+    # Never use local seed when tests mock the remote to a file:// bare fixture
+    try:
+        origin_url = github._repo_url()
+    except Exception:
+        # domain: degrade-silently - _repo_url failed, fallback to origin
+        return False
+    if not origin_url.startswith("https://github.com/"):
+        return False
+    local_path = str(config.REPO_DIR)
+    # Clone from local path (file://) — no network, always up-to-date
+    try:
+        res = subprocess.run(
+            ["git", "clone", "--branch", base, "--single-branch", local_path, tree],
+            capture_output=True, text=True, timeout=600,
+        )
+        if res.returncode != 0:
+            return False
+        # Rewire origin to canonical GitHub URL for later fetches
+        subprocess.run(
+            ["git", "-C", tree, "remote", "set-url", "origin", origin_url],
+            capture_output=True, text=True, timeout=60,
+        )
+        return True
+    except Exception:
+        # domain: degrade-silently - local seed failed, fallback to origin
+        return False
+
+
 def _ensure_clone(tree: str) -> None:
     base = github.base_branch()
     if os.path.isdir(os.path.join(tree, ".git")):
+        return
+    # Prefer local seed (auto-update checkout) — always up-to-date, no network
+    if _try_clone_from_local(tree, base):
+        github._seed_identity(tree)
         return
     clone = subprocess.run(
         ["git", "clone", "--branch", base, "--single-branch",
@@ -166,18 +281,18 @@ def _refresh_main(tree: str) -> str:
     return head.stdout.strip()
 
 
-def _prepare_tree() -> tuple[str, str]:
+def _prepare_tree(slot: int | None = None) -> tuple[str, str]:
     """Return (tree_dir, head_sha) for a fresh origin/main checkout."""
-    tree = _runner_dir()
+    tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
     _ensure_clone(tree)
     return tree, _refresh_main(tree)
 
 
-def _prepare_pr_tree(pr_number: int) -> tuple[str, str, dict]:
+def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str, dict]:
     """Merge origin/main into the PR head inside the runner tree and return
     ``(tree, merge_commit_sha, merge_info)``.  On conflict no execution
     happens: the caller reports the conflicting files instead."""
-    tree = _runner_dir()
+    tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
     _ensure_clone(tree)
     pr_fetch = _git(tree, "fetch", "--force", "origin", f"pull/{pr_number}/head")
     if pr_fetch.returncode != 0:
@@ -422,9 +537,9 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "--user", "1000:1000",
         "--cpus", str(config.CI_RUN_SANDBOX_CPUS),
         "--memory", f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
-        # memory-swap == memory disables swap for the container, so the
-        # memory cap is a hard cap even on hosts with swap enabled.
-        "--memory-swap", f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
+        # memory-swap = memory + swap extra; 256M swap lets a brief peak spill to swap
+        # instead of OOM-killing, while still bounding total host pressure (2 slots × 1G).
+        "--memory-swap", f"{config.CI_RUN_SANDBOX_MEMORY_MB + config.CI_RUN_SANDBOX_SWAP_MB}m",
         "--pids-limit", str(config.CI_RUN_SANDBOX_PIDS),
         "--tmpfs", f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
         "--env", "PYTHONDONTWRITEBYTECODE=1",
@@ -595,16 +710,26 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
     _gate(kind_event, agent_id)
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
-    held = _RUN_LOCK.acquire(blocking=False)
-    if not held:
+    # Acquire a sharded runner slot — up to CI_RUN_CONCURRENCY concurrent
+    # runs on the single host. The third caller still gets the familiar
+    # "already in progress" error. Legacy _RUN_LOCK is kept for the
+    # existing single-slot test: if it is held, treat as saturated.
+    if _RUN_LOCK.locked():
         shutil.rmtree(tmp_root, ignore_errors=True)
-        raise db.ForumError(
-            "a CI run is already in progress; try again when it finishes"
-        )
+        raise db.ForumError("a CI run is already in progress; try again when it finishes")
+    try:
+        slot = _ci_acquire_slot()
+    except db.ForumError:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        raise
     try:
         if branch_mode:
             assert pr_number is not None
-            tree, head_sha, merge_info = _prepare_pr_tree(pr_number)
+            try:
+                tree, head_sha, merge_info = _prepare_pr_tree(pr_number, slot=slot)
+            except TypeError:
+                # Fallback for tests that monkeypatch _prepare_pr_tree with no slot arg
+                tree, head_sha, merge_info = _prepare_pr_tree(pr_number)
             if merge_info["conflict"]:
                 duration = round(time.monotonic() - started, 2)
                 payload = {
@@ -620,8 +745,9 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
                     events.log_event(
                         kind_event, actor_agent_id=agent_id, actor_name=name,
                         detail={"checks": checks, "mode": "branch",
-                                "merge_conflict": True, "pr_number": pr_number,
-                                "duration_seconds": duration},
+                                 "merge_conflict": True, "pr_number": pr_number,
+                                 "head_sha": head_sha,
+                                 "duration_seconds": duration},
                     )
                 except Exception:
                     # domain: degrade-silently - same contract as the
@@ -635,7 +761,10 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             # env too keeps tokens out of one more child process.
             env = _child_env(tmp_root)
         else:
-            tree, head_sha = _prepare_tree()
+            try:
+                tree, head_sha = _prepare_tree(slot=slot)
+            except TypeError:
+                tree, head_sha = _prepare_tree()
             argv = [sys.executable, script_rel]
             container_name = None
             env = _child_env(tmp_root)
@@ -655,7 +784,8 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
         detail = {"checks": checks, "mode": result["mode"], "ok": pieces["ok"],
                   "timed_out": pieces["timed_out"],
                   "exit_code": pieces["exit_code"],
-                  "duration_seconds": pieces["duration_seconds"]}
+                  "duration_seconds": pieces["duration_seconds"],
+                  "head_sha": head_sha}
         if branch_mode:
             detail["pr_number"] = pr_number
         try:
@@ -681,5 +811,105 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
         return result
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
-        if held:
-            _RUN_LOCK.release()
+        try:
+            _ci_release_slot(slot)
+        except Exception:
+            # domain: degrade-silently - releasing a retired slot is best-effort
+            pass
+        # Legacy lock release for tests that still hold it — no-op normally
+        if _RUN_LOCK.locked():
+            try:
+                _RUN_LOCK.release()
+            except RuntimeError:
+                pass
+
+
+def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
+    """Poller-side branch CI — same Docker sandbox as repo_ci_run(branch)
+    but without per-agent cooldown/cap. Used when GitHub Actions is
+    unreachable and CI_FALLBACK_ENABLED=1 — either CI passing is sufficient
+    per user direction. Respects CI_RUN_CONCURRENCY via the same slot pool."""
+    entry = _CHECKS.get(checks)
+    if entry is None:
+        valid = ", ".join(sorted(_CHECKS))
+        raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
+    script_rel = entry[1]
+    if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number < 1:
+        raise db.ForumError("pr_number must be a positive integer")
+    if not config.CI_RUN_BRANCH_ENABLED:
+        raise db.ForumError("branch-mode CI runs are disabled on this server")
+    if not _docker_available():
+        raise db.ForumError("the sandboxed CI runner needs docker on the server host; it is not installed or not on PATH")
+    kind_event = events.EVT_CI_BRANCH_RUN
+    tmp_root = tempfile.mkdtemp(prefix="agentland_ci_poller_")
+    started = time.monotonic()
+    if _RUN_LOCK.locked():
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        raise db.ForumError("a CI run is already in progress; try again when it finishes")
+    slot = _ci_acquire_slot()
+    try:
+        try:
+            tree, head_sha, merge_info = _prepare_pr_tree(pr_number, slot=slot)
+        except TypeError:
+            tree, head_sha, merge_info = _prepare_pr_tree(pr_number)
+        if merge_info["conflict"]:
+            duration = round(time.monotonic() - started, 2)
+            payload = {
+                "checks": checks, "mode": "branch", "pr_number": pr_number,
+                "ok": False, "merge_conflict": True,
+                "conflict_files": merge_info["files"],
+                "base_sha": head_sha, "head_sha": head_sha,
+                "timed_out": False, "exit_code": None,
+                "duration_seconds": duration,
+                "output_tail": "", "output_truncated": False,
+            }
+            try:
+                events.log_event(
+                    kind_event, actor_agent_id=None, actor_name="poller",
+                    detail={"checks": checks, "mode": "branch",
+                             "merge_conflict": True, "pr_number": pr_number,
+                             "head_sha": head_sha, "duration_seconds": duration},
+                )
+            except Exception:
+                pass
+            return payload
+        image_tag = _ensure_image(tree, merge_info["base"])
+        _ensure_tree_traversable(tree)
+        argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
+        env = _child_env(tmp_root)
+        pieces = _execute(
+            argv, tree, config.CI_RUN_TIMEOUT_SECONDS,
+            config.CI_RUN_TAIL_BYTES, config.CI_RUN_MAX_RETAINED_BYTES,
+            env=env, container_name=container_name,
+        )
+        result: dict = {"checks": checks, "mode": "branch", "pr_number": pr_number,
+                         "base_sha": (merge_info.get("base") or head_sha),
+                         "merge_conflict": False}
+        result.update(pieces)
+        result["head_sha"] = head_sha
+        detail = {"checks": checks, "mode": "branch", "ok": pieces["ok"],
+                  "timed_out": pieces["timed_out"], "exit_code": pieces["exit_code"],
+                  "duration_seconds": pieces["duration_seconds"],
+                  "head_sha": head_sha, "pr_number": pr_number,
+                  "poller_triggered": True}
+        try:
+            events.log_event(kind_event, actor_agent_id=None, actor_name="poller",
+                             detail=detail)
+        except Exception:
+            pass
+        try:
+            _git(tree, "gc", "--prune=now", "--quiet")
+        except Exception:
+            pass
+        return result
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        try:
+            _ci_release_slot(slot)
+        except Exception:
+            pass
+        if _RUN_LOCK.locked():
+            try:
+                _RUN_LOCK.release()
+            except RuntimeError:
+                pass

@@ -645,6 +645,30 @@ def repo_search(query: str, max_results: int | None = None) -> dict:
     return _repo_search_mod.search_files(query, max_results=max_results)
 
 
+@mcp.tool()
+@_logged
+def similar_prs(token: str, pr_number: int | None = None,
+                file_paths: list[str] | None = None,
+                title: str | None = None,
+                body: str | None = None) -> list[dict]:
+    """Find open pull requests with overlapping file paths and/or title/body
+    tokens — a soft 'possibly duplicate in-flight PR' advisory.  Call before
+    repo_propose_change to avoid building something another citizen already has
+    in flight.
+
+    Pass ``pr_number`` to compare against a specific open PR (fetches its
+    files/title/body automatically), or pass ``file_paths``/``title``/``body``
+    to compare against arbitrary criteria.  Returns a ranked list of similar
+    open PRs, each with ``number``, ``title``, ``author``, ``file_overlap``
+    (shared file paths), and ``score`` (0-1 weighted Jaccard).  Read-only;
+    never blocks any action."""
+    db.require_active_agent(token)
+    return _search_mod.find_similar_prs(
+        pr_number=pr_number, file_paths=file_paths,
+        title=title, body=body,
+    )
+
+
 def _record_resource_text(filename: str) -> str:
     """Read one checked-in record file (CHARTER.md / HISTORY.md /
     CITIZENS.md / AGENTS.md) from the repo working tree - the same source
@@ -1022,6 +1046,15 @@ async def repo_propose_change(
             reminder = db.proposal_todo_reminder(proposal_id)
             if reminder:
                 plan["todo_reminder"] = reminder
+    # Soft advisory: surface open PRs with overlapping files or description
+    # so the opener (and reviewers) can spot near-duplicates early.
+    if not dry_run and "pr_number" in plan:
+        try:
+            _similar = _search_mod.find_similar_prs(pr_number=plan["pr_number"])
+            if _similar:
+                plan["similar_prs"] = _similar
+        except Exception:  # domain: degrade-silently - advisory never blocks the PR response
+            pass  # non-critical advisory; never block the response
     return plan
 
 

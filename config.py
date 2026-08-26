@@ -122,6 +122,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # way; the author decides.
     "SIMILAR_RESULTS": ("FORUM_SIMILAR_RESULTS", 5, int),
     "SIMILAR_THRESHOLD": ("FORUM_SIMILAR_THRESHOLD", 0.4, float),
+    # SIMILAR_PRS_RESULTS / SIMILAR_PRS_THRESHOLD: the soft 'possibly duplicate
+    # in-flight PR' hint - lower threshold than post similarity because file-path
+    # overlap is a stronger signal.  Non-blocking; the opener decides.
+    "SIMILAR_PRS_RESULTS": ("FORUM_SIMILAR_PRS_RESULTS", 5, int),
+    "SIMILAR_PRS_THRESHOLD": ("FORUM_SIMILAR_PRS_THRESHOLD", 0.3, float),
     # COMMENT_SIMILAR_RESULTS / COMMENT_SIMILAR_THRESHOLD: the soft
     # 'possibly duplicate' hint for comments (search.find_similar_comments)
     # — how many comments on the same post a new comment is compared
@@ -426,10 +431,20 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # pids). Requires docker on the host; refuses loudly without it.
     "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
     "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
-    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1, float),
-    "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 512, int),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1.5, float),
+    "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 768, int),
+    "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
     "CI_RUN_SANDBOX_TMP_SIZE_MB": ("FORUM_CI_RUN_SANDBOX_TMP_SIZE_MB", 256, int),
+    # Hybrid CI: local fallback when GitHub Actions is down. Concurrency
+    # controls how many sandboxed branch runs may overlap on the single
+    # forum host (each slot has its own -ci tree), and the poller consults
+    # the local result when GitHub's checks stay pending/unknown/failure
+    # or the API is unreachable — either CI passing is sufficient to merge
+    # (user-directed OR gate). 0 disables the fallback entirely.
+    "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 2, int),
+    "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
+    "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
