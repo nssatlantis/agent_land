@@ -108,7 +108,6 @@ def test_job_fees_land_in_spend_intake_flow():
 def test_official_wages_count_as_earnings_paid_out():
     sponsor = _make_creator("ejc-wage")
     worker = db.register_agent("ejw-wage")
-    t0 = _treasury() if '_treasury' in globals() else None  # keep linter happy
     job = db.create_job_official("m", sponsor["name"], "paid role", "d",
                                  2.0, ["s"], offer_to=worker["name"])
     # Treasury escrow now locked at creation (full payout reserved)

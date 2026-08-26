@@ -929,6 +929,7 @@ def _render_jobs_manager(request) -> str:
                     f"{_csrf_field(request)}"
                     f'<select name="action" style="font-size:13px"><option value="accept">accept — pay + karma</option><option value="decline">decline — feedback required</option></select>'
                     f'<input name="feedback" placeholder="feedback if decline" style="width:220px;font-size:13px">'
+                    f'<label style="font-size:12px"><input type="checkbox" name="punish" value="1"> punish -2 karma</label> '
                     f'<button type="submit" style="background:var(--ok);color:white">review</button>'
                     f"</form></div>"
                 )
@@ -983,6 +984,79 @@ def _render_jobs_manager(request) -> str:
         '<p style="color:var(--muted)">Moderate any job (close → refund) and review/process <b>official</b> positions — sponsorless as admin, sponsored on behalf of sponsor (audit +1 karma to sponsor). Citizen jobs are not reviewable here.</p>'
         + stats + tabs + search + cards + "</div>" + create_form
     )
+
+
+async def jobs_detail_page(request):
+    if not _authorized(request):
+        return _denied()
+    job_id = int(request.path_params["id"])
+    try:
+        detail = db.get_job(job_id)
+    except db.ForumError as exc:
+        # domain: fail-loudly - get_job failure surfaces as flash, never silent
+        return _flash(request, str(exc))
+    # Reuse manager card styling but full page
+    col = {"open": "#2563eb", "offered": "#b45309", "active": "#0ea5e9", "completed": "#15803d", "cancelled": "var(--muted)", "expired": "var(--muted)"}.get(detail["status"], "var(--muted)")
+    steps_html = "".join(
+        f"<li style='margin:2px 0;{'color:var(--muted);text-decoration:line-through' if s['done'] else ''}'>{esc(s['text'])}</li>"
+        for s in detail["steps"]
+    )
+    cycles_html = ""
+    for c in detail["cycles"]:
+        bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
+        if c["evidence"]:
+            bits.append(f"evidence {esc(c['evidence'])}")
+        pr_nums = c.get("evidence_pr_numbers") or []
+        if pr_nums:
+            chips = " ".join(f'<a href="/prs/{int(n)}">#PR{int(n)}</a>' for n in pr_nums if str(n).isdigit())
+            if chips:
+                bits.append(f"PRs {chips}")
+        if c["feedback"]:
+            bits.append(f"feedback: {esc(c['feedback'])}")
+        cycles_html += f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>{' &middot; '.join(bits)}</div>"
+    # Review form if official + submitted
+    review_html = ""
+    if detail["status"] == "active" and detail["official"]:
+        sub = next((c for c in detail["cycles"] if c["status"] == "submitted"), None)
+        if sub:
+            is_sponsored = detail["creator"] is not None
+            sponsor = esc(detail["creator"]["name"]) if detail["creator"] else "admin"
+            audit_note = f"on behalf of sponsor <b>{sponsor}</b>" if is_sponsored else "as pure admin"
+            review_html = (
+                f'<div class="panel" style="background:var(--accent-bg)"><h3>Review cycle {sub["cycle_no"]}</h3>'
+                f'<p style="font-size:13px">{audit_note} · evidence: {esc(sub["evidence"] or "-")}</p>'
+                f'<form method="post" action="/admin/jobs/{job_id}/review" style="display:flex;gap:6px">'
+                f"{_csrf_field(request)}"
+                f'<select name="action"><option value="accept">accept</option><option value="decline">decline</option></select>'
+                f'<input name="feedback" placeholder="feedback if decline" style="width:260px">'
+                f'<label style="font-size:12px"><input type="checkbox" name="punish" value="1"> punish -2 karma</label> '
+                f'<button type="submit" style="background:var(--ok);color:white">review</button></form></div>'
+            )
+    close_html = ""
+    if detail["status"] in ("open", "offered", "active"):
+        close_html = (
+            f'<div class="panel"><h3>Moderate</h3><form method="post" action="/admin/jobs/{job_id}/close">'
+            f"{_csrf_field(request)}"
+            f'<label><input type="checkbox" name="confirm" required> confirm close (refund escrow if any)</label> '
+            f'<button type="submit" style="color:#c53030">close job</button></form></div>'
+        )
+    body = (
+        _admin_nav()
+        + f'<div class="panel" style="border-left:4px solid {col}"><h2>{esc(detail["title"])} <span style="color:var(--muted)">#{detail["job_id"]}</span> '
+        + ('<span style="background:#7c3aed;color:white;padding:1px 6px;border-radius:999px;font-size:11px">OFFICIAL</span> ' if detail["official"] else "")
+        + f'<span style="background:{col};color:white;padding:1px 6px;border-radius:999px;font-size:11px">{esc(detail["status"])}</span></h2>'
+        + f'<p style="color:var(--muted)">{esc(detail["payment_credits"])} cr × {detail["cycles_done"]}/{detail["total_cycles"]} · scope: {esc(detail["scope"] or "-")} · kind: {esc(detail["kind"])}</p>'
+        + f'<p>by {esc(detail["creator"]["name"]) if detail["creator"] else "admin"} &middot; '
+        + (f'worked by {esc(detail["worker"]["name"])}' if detail["worker"] else 'open')
+        + '</p>'
+        + f'<p>{esc(detail["description"] or "")}</p>'
+        + f'<ol style="margin:6px 0 0 18px">{steps_html}</ol>'
+        + cycles_html
+        + '</div>'
+        + review_html
+        + close_html
+    )
+    return _admin_page(request, f"admin - job #{job_id}", body)
 
 
 def _render_economy(request) -> str:
@@ -1079,16 +1153,17 @@ async def admin_review_job(request):
     job_id = int(request.path_params["id"])
     action = str(form.get("action") or "")
     feedback = str(form.get("feedback") or "")
+    punish = bool(form.get("punish"))
     try:
         result = db.admin_review_job(
-            _admin_user(request), job_id, action, feedback,
+            _admin_user(request), job_id, action, feedback, punish=punish,
         )
     except db.ForumError as exc:
         # Sponsored officials fall through to on_behalf_of path — same audit, creator karma preserved
         if "sponsorless" in str(exc) or "sponsorless official" in str(exc):
             try:
                 result = db.admin_review_job_as(
-                    _admin_user(request), job_id, action, feedback,
+                    _admin_user(request), job_id, action, feedback, punish=punish,
                 )
             except db.ForumError as exc2:
                 # domain: fail-loudly - gate refusal is the feature

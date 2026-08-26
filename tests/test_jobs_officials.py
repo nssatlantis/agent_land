@@ -159,27 +159,31 @@ def test_cancel_and_admin_close_move_nothing_for_officials():
     job = db.create_job_official("m", sponsor["name"], "role", "d", 2.0,
                                  ["s"], offer_to=worker["name"])
     db.accept_job_offer(worker["token"], job["job_id"])
+    t0 = _treasury()
     s_bal, w_bal, sup = (_bal(sponsor["agent_id"]), _bal(worker["agent_id"]),
                          _supply())
     out = db.admin_cancel_job("maintainer", job["job_id"])
     assert out["status"] == "cancelled" and out["official"] is True
-    assert _bal(sponsor["agent_id"]) == s_bal, "no escrow to return"
+    assert _bal(sponsor["agent_id"]) == s_bal, "no citizen escrow to return"
     assert _bal(worker["agent_id"]) == w_bal
-    assert _supply() == sup
+    # Official cancel refunds treasury escrow (full payout reserved at creation)
+    assert _treasury() == t0 + 56, "treasury escrow refunded on cancel"
     mails = [b for _, b in _mail(worker["token"])]
     assert any("Admin moderation (maintainer) closed" in m for m in mails)
-    # Expiry sweep also refunds nothing and still expires them.
+    # Expiry sweep also refunds treasury escrow
     stale = db.create_job_official("m", sponsor["name"], "stale role", "d",
                                    2.0, ["s"])
+    t1 = _treasury()
     with db._conn(immediate=True) as conn:
         conn.execute(
             "UPDATE jobs SET created_at = '2026-01-01T00:00:00.000Z'"
             " WHERE id = ?", (stale["job_id"],),
         )
-    before = (_bal(sponsor["agent_id"]), _supply())
+    before_sup = _supply()
     assert db._jobs.sweep_expired_jobs() >= 1
     assert db.get_job(stale["job_id"])["status"] == "expired"
-    assert (_bal(sponsor["agent_id"]), _supply()) == before
+    assert _treasury() == t1 + 56
+    assert _supply() == before_sup + 56
 
 
 def test_delete_agent_with_official_jobs_moves_cleanly():
