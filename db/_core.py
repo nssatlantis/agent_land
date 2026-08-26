@@ -211,19 +211,49 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
     """The Karma Split rename: proposal_bounties/bounty_locks/bounty_rewards
     become proposal_stakes/stake_locks/stake_rewards (with a currency
     column), so the staking vocabulary is uniform across code, schema and
-    UI.  Idempotent - guarded on the old names existing, so fresh
-    databases and already-migrated ones pass straight through.  Runs
-    BEFORE schema.sql's executescript, which would otherwise create empty
-    new-named tables beside the populated old ones."""
+    UI.  Idempotent - guarded on the old names existing (and, for the
+    karma_spends widen, on the CHECK shape), so fresh databases and
+    already-migrated ones pass straight through.  Runs BEFORE schema.sql's
+    executescript, which would otherwise create empty new-named tables
+    beside the populated old ones.
+
+    Every swap runs inside ONE transaction with FK enforcement off, and is
+    self-healing: the old table is the source of truth until its DROP
+    commits, so a stray final-name or scratch table left behind by a crash
+    mid-swap is dropped and the copy redone instead of wedging every later
+    boot.  Prod incident 2026-08-26: an unwrapped CREATE persisted its
+    scratch table under Python's autocommit DDL, and init_db then died on
+    "table karma_spends_new already exists" at startup, taking the forum
+    down until this fix landed.
+    """
     def _exists(name: str) -> bool:
         return conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
             (name,),
         ).fetchone() is not None
 
-    if _exists("proposal_bounties") and not _exists("proposal_stakes"):
-        conn.execute(
+    def _swap(script: str) -> None:
+        # Python's sqlite3 runs DDL in autocommit, so an unwrapped
+        # multi-statement swap persists its tables one statement at a
+        # time; a crash between statements leaves half a migration that
+        # the guards below can never finish.  One transaction per swap
+        # makes each all-or-nothing (see docstring for the incident).
+        # FK state is restored afterwards: init_db's connection keeps
+        # enforcement OFF (runtime doctrine), and turning it on here
+        # could trip schema.sql backfills over legacy dangling refs.
+        fk_was_on = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        conn.executescript(
+            "PRAGMA foreign_keys = OFF;\n"
+            "BEGIN;\n"
+            f"{script}\n"
+            "COMMIT;\n"
+            f"PRAGMA foreign_keys = {'ON' if fk_was_on else 'OFF'};\n"
+        )
+
+    if _exists("proposal_bounties"):
+        _swap(
             """
+            DROP TABLE IF EXISTS proposal_stakes;
             CREATE TABLE proposal_stakes (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 proposal_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -238,30 +268,28 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                                 CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed', 'abandoned')),
                 admin_funded    INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL
-            )
+            );
+            INSERT INTO proposal_stakes (id, proposal_id, staker_agent_id,
+                per_pr, max_prs, paid_count, locked_count, status,
+                admin_funded, created_at)
+            SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,
+                   paid_count, locked_count, status, admin_funded,
+                   created_at
+            FROM proposal_bounties;
+            DROP TABLE proposal_bounties;
+            DROP INDEX IF EXISTS idx_proposal_bounties_proposal;
+            DROP INDEX IF EXISTS idx_proposal_bounties_staker;
+            CREATE INDEX idx_proposal_stakes_proposal
+                ON proposal_stakes(proposal_id);
+            CREATE INDEX idx_proposal_stakes_staker
+                ON proposal_stakes(staker_agent_id);
             """
-        )
-        conn.execute(
-            "INSERT INTO proposal_stakes (id, proposal_id, staker_agent_id,"
-            " per_pr, max_prs, paid_count, locked_count, status,"
-            " admin_funded, created_at)"
-            " SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,"
-            " paid_count, locked_count, status, admin_funded, created_at"
-            " FROM proposal_bounties"
-        )
-        conn.execute("DROP TABLE proposal_bounties")
-        conn.execute("DROP INDEX IF EXISTS idx_proposal_bounties_proposal")
-        conn.execute("DROP INDEX IF EXISTS idx_proposal_bounties_staker")
-        conn.execute(
-            "CREATE INDEX idx_proposal_stakes_proposal ON proposal_stakes(proposal_id)"
-        )
-        conn.execute(
-            "CREATE INDEX idx_proposal_stakes_staker ON proposal_stakes(staker_agent_id)"
         )
 
-    if _exists("bounty_locks") and not _exists("stake_locks"):
-        conn.execute(
+    if _exists("bounty_locks"):
+        _swap(
             """
+            DROP TABLE IF EXISTS stake_locks;
             CREATE TABLE stake_locks (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 stake_id        INTEGER NOT NULL REFERENCES proposal_stakes(id),
@@ -272,22 +300,22 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                 karma_spend_id  INTEGER REFERENCES karma_spends(id),
                 created_at      TEXT NOT NULL,
                 UNIQUE(stake_id, pr_number)
-            )
+            );
+            INSERT INTO stake_locks (id, stake_id, pr_number, agent_id,
+                amount, status, karma_spend_id, created_at)
+            SELECT id, bounty_id, pr_number, agent_id, amount, status,
+                   karma_spend_id, created_at
+            FROM bounty_locks;
+            DROP TABLE bounty_locks;
+            DROP INDEX IF EXISTS idx_bounty_locks_pr;
+            CREATE INDEX idx_stake_locks_pr ON stake_locks(pr_number);
             """
         )
-        conn.execute(
-            "INSERT INTO stake_locks (id, stake_id, pr_number, agent_id,"
-            " amount, status, karma_spend_id, created_at)"
-            " SELECT id, bounty_id, pr_number, agent_id, amount, status,"
-            " karma_spend_id, created_at FROM bounty_locks"
-        )
-        conn.execute("DROP TABLE bounty_locks")
-        conn.execute("DROP INDEX IF EXISTS idx_bounty_locks_pr")
-        conn.execute("CREATE INDEX idx_stake_locks_pr ON stake_locks(pr_number)")
 
-    if _exists("bounty_rewards") and not _exists("stake_rewards"):
-        conn.execute(
+    if _exists("bounty_rewards"):
+        _swap(
             """
+            DROP TABLE IF EXISTS stake_rewards;
             CREATE TABLE stake_rewards (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 stake_id   INTEGER NOT NULL REFERENCES proposal_stakes(id),
@@ -295,20 +323,16 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                 agent_id   INTEGER NOT NULL REFERENCES agents(id),
                 amount     INTEGER NOT NULL,
                 created_at TEXT NOT NULL
-            )
+            );
+            INSERT INTO stake_rewards (id, stake_id, pr_number, agent_id,
+                amount, created_at)
+            SELECT id, bounty_id, pr_number, agent_id, amount, created_at
+            FROM bounty_rewards;
+            DROP TABLE bounty_rewards;
+            DROP INDEX IF EXISTS idx_bounty_rewards_agent;
+            DROP INDEX IF EXISTS idx_bounty_rewards_report;
+            CREATE INDEX idx_stake_rewards_agent ON stake_rewards(agent_id);
             """
-        )
-        conn.execute(
-            "INSERT INTO stake_rewards (id, stake_id, pr_number, agent_id,"
-            " amount, created_at)"
-            " SELECT id, bounty_id, pr_number, agent_id, amount, created_at"
-            " FROM bounty_rewards"
-        )
-        conn.execute("DROP TABLE bounty_rewards")
-        conn.execute("DROP INDEX IF EXISTS idx_bounty_rewards_agent")
-        conn.execute("DROP INDEX IF EXISTS idx_bounty_rewards_report")
-        conn.execute(
-            "CREATE INDEX idx_stake_rewards_agent ON stake_rewards(agent_id)"
         )
 
     # Widen karma_spends' kind CHECK so karma-denominated stakes written
@@ -379,8 +403,13 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             " AND name = 'karma_spends'"
         ).fetchone()[0] or ""
         if "stake_lock" not in ddl:
-            conn.execute(
+            # The leading DROP heals databases already wedged by the
+            # pre-hotfix shape of this migration (prod 2026-08-26): their
+            # karma_spends_new scratch table survived an interrupted run
+            # and made every later boot die right here.
+            _swap(
                 """
+                DROP TABLE IF EXISTS karma_spends_new;
                 CREATE TABLE karma_spends_new (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     agent_id   INTEGER NOT NULL REFERENCES agents(id),
@@ -388,16 +417,13 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                     amount     INTEGER NOT NULL CHECK (amount > 0),
                     ref_id     INTEGER NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-                )
+                );
+                INSERT INTO karma_spends_new SELECT * FROM karma_spends;
+                DROP TABLE karma_spends;
+                ALTER TABLE karma_spends_new RENAME TO karma_spends;
+                DROP INDEX IF EXISTS idx_karma_spends_agent;
+                CREATE INDEX idx_karma_spends_agent ON karma_spends(agent_id);
                 """
-            )
-            conn.execute(
-                "INSERT INTO karma_spends_new SELECT * FROM karma_spends"
-            )
-            conn.execute("DROP TABLE karma_spends")
-            conn.execute("ALTER TABLE karma_spends_new RENAME TO karma_spends")
-            conn.execute(
-                "CREATE INDEX idx_karma_spends_agent ON karma_spends(agent_id)"
             )
 
 
