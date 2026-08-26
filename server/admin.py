@@ -891,7 +891,8 @@ async def create_official_job(request):
         request,
         f"OFFICIAL position #{result['job_id']} '{result['title']}' "
         f"created ({result['payment_credits']} credits/cycle x "
-        f"{result['total_cycles']}, sponsor {result['creator']['name']}) "
+        f"{result['total_cycles']}, sponsor "
+        f"{result['creator']['name'] if result['creator'] else 'admin'}) "
         "- it is on the /jobs board.",
     )
 
