@@ -1326,11 +1326,9 @@ def review_job(
                 # Apply -2 karma to worker for declined cycle (strict feedback not followed)
                 penalty = int(config.JOB_DECLINED_KARMA)  # -2
                 if penalty < 0:
-                    # Use the same path as PR decline: direct karma adjustment via _karma_for
-                    # We insert a negative karma entry via the karma table
                     conn.execute(
-                        "INSERT INTO karma (agent_id, delta, reason, target_type, target_id) VALUES (?, ?, ?, ?, ?)",
-                        (worker_id, penalty, "job_declined", "job", job["id"]),
+                        "INSERT OR IGNORE INTO job_penalties (job_id, cycle_no, agent_id, amount) VALUES (?, ?, ?, ?)",
+                        (job["id"], cycle_no, worker_id, penalty),
                     )
             except Exception:
                 # domain: degrade-silently - karma penalty best-effort
@@ -1620,8 +1618,8 @@ def admin_review_job(
                     penalty = int(config.JOB_DECLINED_KARMA)  # -2
                     if penalty < 0:
                         conn.execute(
-                            "INSERT INTO karma (agent_id, delta, reason, target_type, target_id) VALUES (?, ?, ?, ?, ?)",
-                            (worker_id, penalty, "job_declined", "job", job["id"]),
+                            "INSERT OR IGNORE INTO job_penalties (job_id, cycle_no, agent_id, amount) VALUES (?, ?, ?, ?)",
+                            (job["id"], cycle_no, worker_id, penalty),
                         )
                 except Exception:
                     # domain: degrade-silently - karma penalty best-effort
@@ -1876,8 +1874,8 @@ def admin_review_job_as(
                     penalty = int(config.JOB_DECLINED_KARMA)
                     if penalty < 0:
                         conn.execute(
-                            "INSERT INTO karma (agent_id, delta, reason, target_type, target_id) VALUES (?, ?, ?, ?, ?)",
-                            (worker_id, penalty, "job_declined", "job", job["id"]),
+                            "INSERT OR IGNORE INTO job_penalties (job_id, cycle_no, agent_id, amount) VALUES (?, ?, ?, ?)",
+                            (job["id"], cycle_no, worker_id, penalty),
                         )
                 except Exception:
                     # domain: degrade-silently - karma penalty best-effort

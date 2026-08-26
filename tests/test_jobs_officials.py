@@ -160,8 +160,7 @@ def test_cancel_and_admin_close_move_nothing_for_officials():
                                  ["s"], offer_to=worker["name"])
     db.accept_job_offer(worker["token"], job["job_id"])
     t0 = _treasury()
-    s_bal, w_bal, sup = (_bal(sponsor["agent_id"]), _bal(worker["agent_id"]),
-                         _supply())
+    s_bal, w_bal = (_bal(sponsor["agent_id"]), _bal(worker["agent_id"]))
     out = db.admin_cancel_job("maintainer", job["job_id"])
     assert out["status"] == "cancelled" and out["official"] is True
     assert _bal(sponsor["agent_id"]) == s_bal, "no citizen escrow to return"
