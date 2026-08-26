@@ -420,7 +420,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # child streams - a hostile/noisy suite cannot balloon server RAM past
     # this no matter how long it runs.
     "CI_RUN_MAX_RETAINED_BYTES": ("FORUM_CI_RUN_MAX_RETAINED_BYTES",
-                                   64 * 1024 * 1024, int),
+                                  64 * 1024 * 1024, int),
     # Branch mode: sandboxed runs of a PR's merge-with-main commit inside
     # a Docker container (network-off, read-only root fs, capped cpu/mem/
     # pids). Requires docker on the host; refuses loudly without it.
@@ -440,3 +440,266 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
 }
+
+# Reverse lookup for reload validation: env key -> converter. Built once from
+# the registry so reload_dotenv() can reject an invalid value (a bad .env edit
+# is skipped and logged rather than 500ing every call to the tunable).
+_ENV_CONVERTERS = {env_key: convert for _attr, (env_key, _default, convert) in _TUNING.items()}
+
+# Startup-bound env keys config.py reads directly (not through the registry):
+# the two path keys, the four bind addresses, and the watcher interval. The
+# config-drift test asserts every direct os.environ read in this module is one
+# of these, so a knob can't be read one way here and listed another way below.
+_STARTUP_KNOBS = {
+    "AGENTLAND_DATA_DIR": "DATA_DIR",
+    "FORUM_DB_PATH": "DB_PATH",
+    "FORUM_HOST": "FORUM_HOST",
+    "FORUM_PORT": "FORUM_PORT",
+    "VIEWER_HOST": "VIEWER_HOST",
+    "VIEWER_PORT": "VIEWER_PORT",
+    "FORUM_ENV_POLL_SECONDS": "ENV_POLL_SECONDS",
+}
+
+# Every tunable this module knows, in the order the viewer's "Effective
+# configuration" panel lists them: (env name, config attribute name). Derived
+# once from the registry (call-time knobs) plus the startup-bound keys above,
+# so a knob can't be forgotten twice. The env names double as the
+# .env.example documentation keys.
+CONFIG_KNOBS: list[tuple[str, str]] = [
+    (env_key, attr) for attr, (env_key, _default, _convert) in _TUNING.items()
+] + list(_STARTUP_KNOBS.items())
+
+# Startup-bound keys never re-applied on reload. The path keys decide where
+# .env and the database live (a change warns for a restart); FORUM_ENV_POLL_SECONDS
+# governs the watcher that would reload it, so it cannot be live either. The
+# bind addresses bind their sockets once at boot, so they are startup-bound too.
+_PATH_KEYS = ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH")
+_BIND_KEYS = ("FORUM_HOST", "FORUM_PORT", "VIEWER_HOST", "VIEWER_PORT")
+_SKIP_KEYS = _PATH_KEYS + ("FORUM_ENV_POLL_SECONDS",) + _BIND_KEYS
+
+
+def _valid_reload_value(key: str, value: str) -> bool:
+    """True if a .env value converts for a known tunable env key, else False.
+    Invalid values are skipped (logged) so a bad .env edit - at boot or on
+    reload - doesn't 500 every call to that tunable; the key keeps its
+    prior/default value instead."""
+    convert = _ENV_CONVERTERS.get(key)
+    if convert is None:
+        return True
+    try:
+        convert(value)
+        return True
+    except (ValueError, TypeError):
+        logger.warning(
+            "ignoring invalid %s=%r in .env; keeping the prior/default value",
+            key,
+            value,
+        )
+        return False
+
+
+def _load_dotenv(path: Path) -> None:
+    """Initial load: parse KEY=VALUE entries into the environment without
+    overriding keys that are already set (process env always wins). Values
+    this module sets from a file are remembered in _file_sources so
+    reload_dotenv() can tell a file edit from a process override. A value
+    that fails its tunable's converter is skipped (logged) at boot too, so
+    a bad .env never 500s every call to that knob."""
+    for key, value in _parse_dotenv(path).items():
+        if key not in os.environ and _valid_reload_value(key, value):
+            os.environ[key] = value
+            _file_sources[key] = value
+
+
+# --- Paths / data ---
+# Persistent data (the SQLite db, .env, logs) lives outside the git checkout
+# so the repo can be reset without losing the instance. Default: a sibling of
+# the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
+# with AGENTLAND_DATA_DIR (process env, or a loaded .env via the re-resolve
+# below; it decides where .env is found).
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
+
+# Load .env files - data-dir .env first so it outranks the repo .env fallback.
+# Existing setups with only a repo .env keep working unchanged.
+_load_dotenv(Path(DATA_DIR) / ".env")
+_load_dotenv(REPO_DIR / ".env")
+
+# Re-resolve in case the loaded .env supplied AGENTLAND_DATA_DIR.
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or DATA_DIR
+
+DB_PATH = os.environ.get("FORUM_DB_PATH") or os.path.join(DATA_DIR, "forum.db")
+SCHEMA_PATH = REPO_DIR / "schema.sql"
+
+# A DB path inside the checkout is a data-loss trap: update.sh runs
+# `git clean -xdf` on every deploy, which deletes gitignored files (forum.db
+# is gitignored). Warn loudly so the misconfiguration is visible, not silent.
+if Path(DB_PATH).resolve().is_relative_to(REPO_DIR):
+    print(
+        f"WARNING: DB_PATH ({DB_PATH}) is inside the repo ({REPO_DIR}). "
+        "update.sh's `git clean -xdf` deletes gitignored files like forum.db "
+        "on every deploy, so this database will be wiped. Move it to the data "
+        f"dir (e.g. {DATA_DIR}/forum.db) and fix FORUM_DB_PATH / "
+        "AGENTLAND_DATA_DIR.",
+        file=sys.stderr,
+    )
+
+# --- Network (bind addresses) ---
+# Where the MCP + admin server (server.py) and the read-only viewer
+# (viewer/) listen. Deployment values, but they live here so the same .env
+# that carries the FORUM_* overrides sets them too. Override with
+# FORUM_HOST / FORUM_PORT / VIEWER_HOST / VIEWER_PORT. (Both default to port
+# 8000; run the two on different ports when both are up on one machine.)
+FORUM_HOST = os.environ.get("FORUM_HOST", "127.0.0.1")
+FORUM_PORT = int(os.environ.get("FORUM_PORT", "8000"))
+VIEWER_HOST = os.environ.get("VIEWER_HOST", "127.0.0.1")
+VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "8000"))
+
+# --- Comment threading ---
+# Separator concatenated between two comments that get auto-merged into one.
+REPLY_SEPARATOR = "\n\n"
+
+# --- Live reload ---
+# How often the background env watcher re-reads the .env files (seconds). The
+# FORUM_* tunables below resolve at call time, so an edit to <data dir>/.env
+# applies within this window without a restart. Paths stay startup-bound.
+ENV_POLL_SECONDS = int(os.environ.get("FORUM_ENV_POLL_SECONDS", "60"))
+
+_env_generation = 0
+_env_reloaded_at: str | None = None
+_env_last_changed: tuple[str, ...] = ()
+_watcher_task: asyncio.Task[None] | None = None
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve a tunable against the environment at call time - every
+    config.X read is live, so an .env edit (or reload_dotenv()) is reflected
+    on the next call. Unknown names raise AttributeError like a normal module
+    attribute. Returns Any so the static gate types call-time config reads
+    loosely; every tunable is int-converted at the registry."""
+    spec = _TUNING.get(name)
+    if spec is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    env_key, default, convert = spec
+    raw = os.environ.get(env_key)
+    return convert(raw) if raw is not None else default
+
+
+def reload_dotenv() -> list[str]:
+    """Re-read both .env files (data dir outranks the repo) and apply file
+    edits to the environment, returning the keys that changed.
+
+    Process env always wins: a key is applied only when os.environ still
+    holds the value this module last set from a file - a process-level
+    override is never touched. A key the process removed reverts to the file
+    value. A value that fails its converter is skipped (logged), not applied.
+    Startup-bound keys (the two path keys and FORUM_ENV_POLL_SECONDS) are
+    never re-applied; a change to a path key on disk is reported with a
+    restart warning."""
+    global _env_generation, _env_reloaded_at, _env_last_changed
+    data = _parse_dotenv(Path(DATA_DIR) / ".env")
+    repo = _parse_dotenv(REPO_DIR / ".env")
+    merged = dict(data)
+    for key, value in repo.items():
+        merged.setdefault(key, value)
+    changed: list[str] = []
+    for key, value in merged.items():
+        if key in _SKIP_KEYS:
+            continue
+        if not _valid_reload_value(key, value):
+            continue
+        current = os.environ.get(key)
+        prev = _file_sources.get(key)
+        if current == prev:
+            if current == value:
+                continue
+            os.environ[key] = value
+            _file_sources[key] = value
+            changed.append(key)
+        elif current is None:
+            os.environ[key] = value
+            _file_sources[key] = value
+            changed.append(key)
+    for key, prev in list(_file_sources.items()):
+        if key in _SKIP_KEYS:
+            continue
+        if key not in merged:
+            current = os.environ.get(key)
+            if current == prev or current is None:
+                os.environ.pop(key, None)
+                del _file_sources[key]
+                changed.append(key)
+    if changed:
+        _env_generation += 1
+    _env_reloaded_at = datetime.now(timezone.utc).isoformat()
+    _env_last_changed = tuple(changed)
+    for path_key in _PATH_KEYS:
+        if path_key in merged and merged[path_key] != os.environ.get(path_key):
+            print(
+                "WARNING: AGENTLAND_DATA_DIR / FORUM_DB_PATH changed on disk - these "
+                "are bound at startup (they decide where .env and the database "
+                "live); restart the service to apply.",
+                file=sys.stderr,
+            )
+            break
+    return changed
+
+
+def dotenv_fingerprint() -> tuple[tuple[str, int, int], ...]:
+    """(path, mtime_ns, size) for both .env files - a cheap change detector
+    for the background watcher (an unchanged file never touches the
+    environment)."""
+    out: list[tuple[str, int, int]] = []
+    for path in (Path(DATA_DIR) / ".env", REPO_DIR / ".env"):
+        try:
+            st = path.stat()
+            out.append((str(path), st.st_mtime_ns, st.st_size))
+        except OSError:
+            out.append((str(path), 0, 0))
+    return tuple(out)
+
+
+async def env_watcher(interval_seconds: int | None = None) -> None:
+    """Background loop: poll both .env files for a change and reload them,
+    so tuning edits apply within FORUM_ENV_POLL_SECONDS without a restart.
+    A failed iteration is logged and retried - the watcher must never die."""
+    interval = ENV_POLL_SECONDS if interval_seconds is None else interval_seconds
+    seen = dotenv_fingerprint()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            now = dotenv_fingerprint()
+            if now != seen:
+                changed = reload_dotenv()
+                seen = now
+                if changed:
+                    logger.info(
+                        "config reloaded from .env (generation %d): %s",
+                        _env_generation,
+                        ", ".join(changed),
+                    )
+        except Exception:
+            logger.exception("env watcher iteration failed; retrying next interval")
+
+
+def spawn_env_watcher(interval_seconds: int | None = None) -> asyncio.Task[None]:
+    """Start the .env watcher on the running event loop; cancel the returned
+    task to stop it (the server's lifespan cancels it on shutdown). Idempotent:
+    a second call while one is running returns the same task rather than
+    spawning a duplicate watcher."""
+    global _watcher_task
+    if _watcher_task is not None and not _watcher_task.done():
+        return _watcher_task
+    _watcher_task = asyncio.get_running_loop().create_task(env_watcher(interval_seconds))
+    return _watcher_task
+
+
+def status_info() -> dict:
+    """Observability for the viewer's status page: when the environment was
+    last reloaded, how many reloads applied changes, which keys changed, and
+    the watcher interval."""
+    return {
+        "env_reloaded_at": _env_reloaded_at,
+        "env_generation": _env_generation,
+        "env_last_changed": list(_env_last_changed),
+        "env_poll_seconds": ENV_POLL_SECONDS,
+    }
