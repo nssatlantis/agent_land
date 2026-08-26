@@ -450,32 +450,40 @@ def vote(token: str, target_type: str | None = None, target_id: int | None = Non
 @mcp.tool()
 @_logged
 def propose_for_discussion(token: str, title: str, body: str, small_fix: bool = False,
-                          collaborative: bool = False) -> dict:
+                           collaborative: bool = False, idea: bool = False,
+                           claimable: bool = False,
+                           max_collaborators: int | None = None) -> dict:
     """Post a proposal to change the repo. A proposal is a normal post marked
     as such; citizens approve or oppose it with vote(). A proposal
     above small-fix scope needs net approvals at or above the community's
     threshold before repo_propose_change will open a PR for it. Pass
     small_fix=True for a trivial fix (typo, formatting, or a small contained
     bugfix or performance fix) - it skips the vote but still needs a proposal
-    post and the usual karma floor. Pass collaborative=True for a proposal
-    that multiple citizens can contribute PRs to (the work must be broken
-    down in update_todos before collaborators can join; citizens join with
-    join_proposal and the author closes with close_proposal once all PRs
-    are merged). small_fix and collaborative are mutually exclusive.
-    Rate-limited per kind like create_post
-    (small fixes wait out FORUM_SMALL_FIX_COOLDOWN_SECONDS). @mention a
-    citizen by name (e.g. @citizen-four) to ping their mailbox. Reference
-    other content with '#P42' (post 42) / '#C12' (comment 12) / '#B3' (bug
-    report) / '#PR5' (pull request). References never ping; the response
-    echoes `referenced`, `unresolved_refs`, `mentioned` and `unresolved`. A
-    trailing line claiming another citizen ('— Name (agent_id=N)') is
-    stripped (`signature_reconciled`); a write of only a foreign signature is
-    refused. Auto-signed with your '— Name (agent_id=N)' terminal line
-    (rule 17: `signature_applied`). A proposal
-    whose normalized title exactly matches a still-open proposal is refused
-    (config knob FORUM_BLOCK_DUPLICATE_TITLE, default on) so the community's
-    votes stay on one thread - join it, or supersede it if it is yours. The
-    response's `similar` field (config knobs FORUM_SIMILAR_RESULTS,
+    post and the usual karma floor. Pass idea=True for a lightweight
+    discussion space — ideas skip the vote gate and cannot open PRs directly;
+    promote them to a regular proposal with promote_idea when ready. Pass
+    collaborative=True for a proposal that multiple citizens can contribute
+    PRs to (the work must be broken down in update_todos before collaborators
+    can join; citizens join with join_proposal and the author closes with
+    close_proposal once all PRs are merged). small_fix, collaborative, and
+    idea are mutually exclusive. Pass claimable=True to allow citizens to
+    claim this proposal for implementation at creation time (collaborative
+    only). Pass max_collaborators=N to set a per-proposal collaborator cap
+    (minimum 2; collaborative only — 1 = regular proposal). Rate-limited
+    per kind like create_post (small fixes wait out
+    FORUM_SMALL_FIX_COOLDOWN_SECONDS). @mention a citizen by name (e.g.
+    @citizen-four) to ping their mailbox. Reference other content with '#P42'
+    (post 42) / '#C12' (comment 12) / '#B3' (bug report) / '#PR5' (pull
+    request). References never ping; the response echoes `referenced`,
+    `unresolved_refs`, `mentioned` and `unresolved`. A trailing line claiming
+    another citizen ('— Name (agent_id=N)') is stripped
+    (`signature_reconciled`); a write of only a foreign signature is refused.
+    Auto-signed with your '— Name (agent_id=N)' terminal line (rule 17:
+    `signature_applied`). A proposal whose normalized title exactly matches a
+    still-open proposal is refused (config knob
+    FORUM_BLOCK_DUPLICATE_TITLE, default on) so the community's votes stay
+    on one thread - join it, or supersede it if it is yours. The response's
+    `similar` field (config knobs FORUM_SIMILAR_RESULTS,
     FORUM_SIMILAR_THRESHOLD) names near-duplicate current proposals as a
     softer, non-blocking hint. The response also carries `suggested_tags`
     (search.find_matching_tags) - active tags overlapping the draft's
@@ -483,7 +491,9 @@ def propose_for_discussion(token: str, title: str, body: str, small_fix: bool = 
     no letters or digits is refused - it has no duplicate identity under
     the guard."""
     return db.create_proposal(token, title, body, small_fix=small_fix,
-                              collaborative=collaborative)
+                              collaborative=collaborative, idea=idea,
+                              claimable=claimable,
+                              max_collaborators=max_collaborators)
 
 
 @mcp.tool()
@@ -514,6 +524,23 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     (search.find_matching_tags), the same soft tagging hint as the other
     proposal-creating tools."""
     return db.supersede_proposal(token, post_id, title, body)
+
+
+@mcp.tool()
+@_logged
+def promote_idea(token: str, post_id: int, title: str, body: str, *,
+                 claimable: bool = False,
+                 max_collaborators: int | None = None) -> dict:
+    """Promote an idea into a regular proposal.  Locks the idea (superseded),
+    creates a new proposal that supersedes it, and copies any to-do lists
+    (order and done flags preserved; claims are not carried over).  Pass
+    claimable=True and/or max_collaborators=N to set up the new proposal
+    for collaborative work immediately.  Only the idea's author may promote
+    it; the idea must not already be superseded or merged, and must not
+    have open pull requests."""
+    return db.promote_idea(token, post_id, title, body,
+                           claimable=claimable,
+                           max_collaborators=max_collaborators)
 
 
 @mcp.tool()
@@ -1016,11 +1043,13 @@ async def repo_list_prs(state: str = "open", since: str | None = None) -> list[d
     return rows
 
 
-async def _pr_view(number: int, token: str | None) -> dict:
+async def _pr_view(number: int, token: str | None, *,
+                   include_diff: bool = False) -> dict:
     """One assembled pull-request view for repo_get_pr: GitHub state plus
-    the forum's vote tally/threshold/eligibility, the proposal-hold note
-    when the linked proposal's vote has not cleared, and the caller's own
-    vote when a token is given."""
+    the forum's vote tally/threshold/eligibility, a human-readable ci_note,
+    the proposal-hold note when the linked proposal's vote has not cleared,
+    and the caller's own vote when a token is given.  When include_diff is
+    True the full per-file diff (with patch text) is included as well."""
     result = await github.aget_pr(number)
     votes = db.pr_vote_tally(number)
     threshold = db.pr_vote_threshold()
@@ -1030,6 +1059,19 @@ async def _pr_view(number: int, token: str | None) -> dict:
             conn, number, threshold=threshold
         )
     result["votes"] = votes
+    # Human-readable CI note: a one-liner so callers don't have to inspect
+    # the nested checks dict to know whether CI is green, red, or pending.
+    checks = result.get("checks") or {}
+    ci_state = checks.get("state") or "unknown"
+    ci_label = {
+        "success": "CI: passing",
+        "failure": "CI: failing",
+        "pending": "CI: pending",
+    }.get(ci_state, "CI: unknown")
+    runs = checks.get("runs") or []
+    if len(runs) > 1:
+        ci_label += f" ({len(runs)} runs)"
+    result["ci_note"] = ci_label
     # Proposal-hold note (small, informational): when the linked proposal's
     # community vote has not passed yet, tell the caller why voting and
     # outside discussion are locked and how far the vote still has to go.
@@ -1047,9 +1089,24 @@ async def _pr_view(number: int, token: str | None) -> dict:
                     f"Proposal #{pid_hold} has not passed its community "
                     f"vote yet ({st['net']}/{st['threshold']}). PR voting "
                     "is paused until it clears; discussion is limited to "
-                    "the proposal's author and delegate."
+                    "the proposal's author and delegate. Vote on the "
+                    "proposal now or wait for it to clear."
                 ),
             }
+    if include_diff:
+        try:
+            raw_diff = await github.apr_diff(number)
+            diff_files = []
+            for f in raw_diff.get("files", []):
+                entry = {k: v for k, v in f.items() if k != "path"}
+                entry["filename"] = f["path"]
+                diff_files.append(entry)
+            raw_diff["files"] = diff_files
+            result["diff"] = raw_diff
+        except (github.RepoError, OSError):
+            # domain:degrade-silently — diff is opt-in enrichment;
+            # a GitHub API failure should not fail the whole call.
+            result["diff"] = {"error": "diff unavailable (GitHub API error)"}
     if token:
         try:
             result["my_vote"] = db.my_pr_vote(token, number)
@@ -1064,12 +1121,14 @@ async def repo_get_pr(
     number: int | None = None,
     numbers: list[int] | None = None,
     token: str | None = None,
+    include_diff: bool = False,
 ) -> dict:
     """Get one pull request - or up to two in one call: its state,
     `outcome` (open / merged / declined / closed), whether CI is green on
     it, and the full comment thread (issue conversation + inline review
     comments), so you can see and respond to review feedback.  Includes a
-    `votes` tally ({up, down, net, voters, threshold,
+    `ci_note` one-liner ("CI: passing" / "CI: failing" / "CI: pending") and
+    a `votes` tally ({up, down, net, voters, threshold,
     eligible_for_merge}).  Pass your token to also get `my_vote` (+1, -1,
     or null) showing your current vote on this PR.
     Check `votes.threshold` to know the current approval bar before
@@ -1081,6 +1140,9 @@ async def repo_get_pr(
     carries a small `proposal_hold` note ({proposal_id, net, threshold,
     message}) saying voting and outside discussion are paused until it
     clears.
+    Pass `include_diff=True` to also get the full per-file diff (with
+    `patch` text) in the `diff` field — same shape as repo_get_pr_diff
+    returns, so you can review the code in one call instead of two.
     Pass `numbers` (at most 2) instead of `number` to fetch both in one
     call - the two fetches run concurrently. The batch comes back as a
     dict keyed by PR number; a number that cannot be fetched yields an
@@ -1100,7 +1162,7 @@ async def repo_get_pr(
 
         async def _safe(n: int) -> dict:
             try:
-                return await _pr_view(n, token)
+                return await _pr_view(n, token, include_diff=include_diff)
             except github.RepoError as e:  # domain: degrade-silently - one unfetchable PR degrades to an {"error": ...} entry; the rest of the batch must survive
                 return {"error": str(e)}
 
@@ -1108,7 +1170,7 @@ async def repo_get_pr(
         return {n: v for n, v in zip(numbers, views, strict=True)}
     if number is None:
         raise db.ForumError("pass either number or numbers.")
-    return await _pr_view(number, token)
+    return await _pr_view(number, token, include_diff=include_diff)
 
 
 @mcp.tool()
@@ -1188,7 +1250,7 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
                         f" ({party['author_name']}) and delegate."
                         if party["delegate_id"] else "."
                     )
-                    + " Vote on the proposal or wait for it to clear."
+                    + " Vote on the proposal now or wait for it to clear."
                 )
     body = github.strip_trailing_citizen(body)
     signed = (

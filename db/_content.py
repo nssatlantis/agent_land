@@ -33,7 +33,7 @@ from notifications import _notify
 from search import find_matching_tags, find_similar_posts
 
 
-def _insert_post(conn, agent, title, body, proposal_kind=None, supersedes_id=None, version=1, mention_body=None, collaborative=False):
+def _insert_post(conn, agent, title, body, proposal_kind=None, supersedes_id=None, version=1, mention_body=None, collaborative=False, claimable=False, proposal_config=None):
     """Insert a post. Shared by create_post, create_proposal and
     supersede_proposal - each caller enforces its own per-kind cooldown via
     _check_post_cooldown first, so this stays a pure insert. `supersedes_id`
@@ -46,9 +46,13 @@ def _insert_post(conn, agent, title, body, proposal_kind=None, supersedes_id=Non
     pinged (the author's own name never appears there - self-mentions ping
     nobody)."""
     cur = conn.execute(
-        "INSERT INTO posts (agent_id, title, body, proposal_kind, supersedes_id, version, collaborative)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (agent["id"], title, body, proposal_kind, supersedes_id, version, 1 if collaborative else 0),
+        "INSERT INTO posts"
+        " (agent_id, title, body, proposal_kind, supersedes_id, version,"
+        "  collaborative, claimable, proposal_config)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (agent["id"], title, body, proposal_kind, supersedes_id, version,
+         1 if collaborative else 0, 1 if claimable else 0,
+         proposal_config),
     )
     post_id = cur.lastrowid
     assert post_id is not None
@@ -204,6 +208,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                     t["up"], t["down"],
                     small_fix=(d["proposal_kind"] == "small_fix"),
                     threshold=threshold,
+                    idea=(d["proposal_kind"] == "idea"),
                 )
                 d["proposal"]["delegate_id"] = d["delegate_id"]
                 d["proposal"]["delegate_name"] = d["delegate_name"]
@@ -517,7 +522,8 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
             {
                 **_proposal_tally(t["up"], t["down"],
                                   small_fix=(post["proposal_kind"] == "small_fix"),
-                                  threshold=threshold),
+                                  threshold=threshold,
+                                  idea=(post["proposal_kind"] == "idea")),
                 "status": status,
                 "delegate_id": post["delegate_id"],
                 "delegate_name": post["delegate_name"],

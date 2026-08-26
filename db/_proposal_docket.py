@@ -40,18 +40,20 @@ def _batch_pr_vote_tallies(
 
 def _proposal_kind_clause(kind: str) -> dict:
     """SQL fragment filtering posts by proposal_kind. Returns {"sql", "params"}.
-    'proposal' and 'small_fix' match exactly; 'any' matches every proposal;
+    'proposal', 'small_fix' and 'idea' match exactly; 'any' matches every proposal;
     'none' matches ordinary posts. Raises ForumError on anything else."""
     kind = (kind or "").strip().lower()
     if kind == "proposal":
         return {"sql": "p.proposal_kind = 'proposal'", "params": []}
     if kind == "small_fix":
         return {"sql": "p.proposal_kind = 'small_fix'", "params": []}
+    if kind == "idea":
+        return {"sql": "p.proposal_kind = 'idea'", "params": []}
     if kind == "any":
         return {"sql": "p.proposal_kind IS NOT NULL", "params": []}
     if kind == "none":
         return {"sql": "p.proposal_kind IS NULL", "params": []}
-    raise ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
+    raise ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
 
 
 def _proposal_list_sql(where_sql: str = "") -> str:
@@ -117,10 +119,11 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     for r in rows:
         d = dict(r)
         d["small_fix"] = d["proposal_kind"] == "small_fix"
+        d["is_idea"] = d["proposal_kind"] == "idea"
         d["collaborative"] = bool(d.get("collaborative", 0))
         d["claimable"] = bool(d.get("claimable", 0))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
-        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"], threshold))
+        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]))
         decisive = _decisive_pr(prs_by_post.get(d["id"], []))
         d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
         d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
@@ -156,8 +159,9 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
                 if d["status"] != "open"
                 else ("review_requested" if d["review_requested"]
                       else ("small_fix" if d["small_fix"]
-                            else ("approved" if d["approved"]
-                                  else "needs_votes")))
+                            else ("idea" if d["is_idea"]
+                                  else ("approved" if d["approved"]
+                                        else "needs_votes"))))
             )
         )
         if d["status"] != "open":
@@ -180,6 +184,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
 _PROPOSAL_VIEWS = (
     "all", "needs_votes", "approved", "review", "stale",
     "merged", "small_fix", "collaborative", "unclaimed", "staking",
+    "ideas",
 )
 _PROPOSAL_SORTS = ("newest", "top")
 
@@ -214,6 +219,8 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
             p["status"] == "open" and not p["locked"]
             and p["claimable"] and not p.get("claim_agent_id")
         )
+    if view == "ideas":
+        return p.get("proposal_kind") == "idea"
     if view == "staking":
         return (
             p.get("stake_total_karma", 0) > 0
@@ -288,9 +295,10 @@ def my_proposals(token: str) -> dict:
         for r in rows:
             d = dict(r)
             d["small_fix"] = d["proposal_kind"] == "small_fix"
+            d["is_idea"] = d["proposal_kind"] == "idea"
             d["claimable"] = bool(d.get("claimable", 0))
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold)
+            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"])
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
@@ -321,8 +329,9 @@ def my_proposals(token: str) -> dict:
                     else (d["status"] if d["status"] != "open"
                           else ("review_requested" if d["review_requested"]
                                 else ("small_fix" if d["small_fix"]
-                                      else ("approved" if tally["approved"]
-                                            else "needs_votes"))))
+                                      else ("idea" if d["is_idea"]
+                                            else ("approved" if tally["approved"]
+                                                  else "needs_votes")))))
                 )
             else:
                 d["decision"] = (
@@ -333,7 +342,9 @@ def my_proposals(token: str) -> dict:
                         if lifecycle != "open"
                         else ("review_requested" if d["review_requested"]
                               else ("small_fix" if d["small_fix"]
-                                    else ("approved" if tally["approved"] else "needs_votes")))
+                                    else ("idea" if d["is_idea"]
+                                          else ("approved" if tally["approved"]
+                                                else "needs_votes"))))
                     )
                 )
             d["phase"] = (
@@ -407,8 +418,9 @@ def assigned_proposals(token: str) -> dict:
             d = dict(r)
             d["author_id"] = d.pop("agent_id")
             d["small_fix"] = d["proposal_kind"] == "small_fix"
+            d["is_idea"] = d["proposal_kind"] == "idea"
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold)
+            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"])
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
             d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
@@ -439,8 +451,9 @@ def assigned_proposals(token: str) -> dict:
                     else (d["status"] if d["status"] != "open"
                           else ("review_requested" if d["review_requested"]
                                 else ("small_fix" if d["small_fix"]
-                                      else ("approved" if tally["approved"]
-                                            else "needs_votes"))))
+                                      else ("idea" if d["is_idea"]
+                                            else ("approved" if tally["approved"]
+                                                  else "needs_votes")))))
                 )
             else:
                 d["decision"] = (
@@ -451,7 +464,9 @@ def assigned_proposals(token: str) -> dict:
                         if lifecycle != "open"
                         else ("review_requested" if d["review_requested"]
                               else ("small_fix" if d["small_fix"]
-                                    else ("approved" if tally["approved"] else "needs_votes")))
+                                    else ("idea" if d["is_idea"]
+                                          else ("approved" if tally["approved"]
+                                                else "needs_votes"))))
                     )
                 )
             d["phase"] = (
@@ -517,7 +532,7 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     if view not in _PROPOSAL_VIEWS:
         raise ForumError(
             "view must be one of: all, needs_votes, approved, review, stale, "
-            "merged, small_fix, collaborative, unclaimed, staking."
+            "merged, small_fix, collaborative, unclaimed, staking, ideas."
         )
     if sort is None:
         sort = "newest"

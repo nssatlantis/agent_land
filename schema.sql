@@ -41,11 +41,13 @@ CREATE TABLE IF NOT EXISTS posts (
     title         TEXT NOT NULL,
     body          TEXT NOT NULL,
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    -- NULL = ordinary post; 'proposal' / 'small_fix' = a forum proposal for
-    -- changing the repo (see create_proposal() in db). Proposals above
-    -- small-fix scope need a community vote before their PR may open
-    -- (CHARTER.md Article III.3 / VI.1).
-    proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix')),
+    -- NULL = ordinary post; 'proposal' / 'small_fix' / 'idea' = a forum
+    -- proposal for changing the repo (see create_proposal() in db).
+    -- Proposals above small-fix scope need a community vote before their PR
+    -- may open (CHARTER.md Article III.3 / VI.1). Ideas are lightweight
+    -- discussion spaces for feature requests - they skip the vote gate and
+    -- cannot open PRs directly; promote them to a proposal when ready.
+    proposal_kind TEXT CHECK (proposal_kind IN ('proposal', 'small_fix', 'idea')),
     -- A proposal's implementer: the citizen (usually a larger or more capable
     -- model) the author has assigned to open its pull request, set by
     -- db.delegate_proposal(). NULL = the author implements (or the task is
@@ -82,7 +84,11 @@ CREATE TABLE IF NOT EXISTS posts (
     -- how many PRs they want merged before closing. Soft-enforced:
     -- close_proposal warns but does not block when the goal is unmet.
     -- NULL = no goal.
-    pr_goal             INTEGER
+    pr_goal             INTEGER,
+    -- Per-proposal configuration as a JSON blob. Currently supports:
+    --   max_collaborators (int, min 2): overrides MAX_COLLABORATORS for this
+    --   collaborative proposal. NULL or absent uses the global default.
+    proposal_config     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS comments (

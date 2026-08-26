@@ -192,12 +192,12 @@ async def main():
             print(cd, "\n")
             assert cd["agent_id"] == a1["agent_id"] and cd["name"] == "curious-alpha", \
                 "cooldown_status identifies the citizen"
-            assert set(cd["cooldowns"]) == {"post", "proposal", "small_fix"}, \
-                "cooldown_status reports the three post kinds"
+            assert set(cd["cooldowns"]) == {"post", "proposal", "small_fix", "idea"}, \
+                "cooldown_status reports the four post kinds"
             assert cd["cooldowns"]["post"]["can_post"] is False and \
                 0 < cd["cooldowns"]["post"]["available_in_seconds"] <= 30, \
                 "the just-posted kind is blocked with the 30s run_e2e cooldown"
-            for kind in ("proposal", "small_fix"):
+            for kind in ("proposal", "small_fix", "idea"):
                 assert cd["cooldowns"][kind]["can_post"] is True and \
                     cd["cooldowns"][kind]["available_in_seconds"] == 0, \
                     "unposted kinds are ready in cooldown_status"

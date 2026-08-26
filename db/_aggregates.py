@@ -249,9 +249,11 @@ def _activity_proposal_kind_suffix(proposal_kind: str | None) -> str:
         return " WHERE proposal_kind = 'proposal'"
     if pk == "small_fix":
         return " WHERE proposal_kind = 'small_fix'"
+    if pk == "idea":
+        return " WHERE proposal_kind = 'idea'"
     if pk == "any":
         return " WHERE proposal_kind IS NOT NULL"
-    raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
+    raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
 
 
 def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
@@ -337,9 +339,9 @@ def recent_activity(limit: int | None = None, offset: int = 0,
     if kind not in (None, "posts", "comments", "votes", "events"):
         raise db.ForumError("kind must be one of: posts, comments, votes, events")
     if proposal_kind is not None and proposal_kind not in (
-        None, "none", "proposal", "small_fix", "any"
+        None, "none", "proposal", "small_fix", "idea", "any"
     ):
-        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
+        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     offset = max(0, int(offset))
@@ -377,9 +379,9 @@ def recent_activity_total(kind: str | None = None,
     if kind not in (None, "posts", "comments", "votes", "events"):
         raise db.ForumError("kind must be one of: posts, comments, votes, events")
     if proposal_kind is not None and proposal_kind not in (
-        None, "none", "proposal", "small_fix", "any"
+        None, "none", "proposal", "small_fix", "idea", "any"
     ):
-        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'.")
+        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
     suffix = _activity_proposal_kind_suffix(proposal_kind)
     with db._conn() as conn:
         if kind == "posts":

@@ -55,6 +55,7 @@ def main() -> int:
             # author) can be exercised without waiting out the 24h default.
             "FORUM_PROPOSAL_COOLDOWN_SECONDS": "0",
             "FORUM_SMALL_FIX_COOLDOWN_SECONDS": "0",
+            "FORUM_IDEA_COOLDOWN_SECONDS": "0",
             "FORUM_PR_MERGE_POLL_SECONDS": "60",
             # Small docket page so the smoke test can assert the per-page cap
             # renders (the docket holds a handful of proposals by then).

@@ -227,6 +227,7 @@ from db._proposal_docket import (  # noqa: F401
 from db._proposal import (  # noqa: F401
     create_proposal,
     edit_proposal,
+    promote_idea,
     proposal_vote_state,
     require_proposal_approval,
     supersede_proposal,

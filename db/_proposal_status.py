@@ -418,15 +418,16 @@ def _proposal_vote_threshold(conn: sqlite3.Connection) -> int:
     return max(floor, (active + 2) // 3)
 
 
-def _proposal_tally(up: int, down: int, small_fix: bool, threshold: int = 0) -> dict:
+def _proposal_tally(up: int, down: int, small_fix: bool, threshold: int = 0,
+                    idea: bool = False) -> dict:
     """The approve/oppose tally of one proposal and the community's verdict.
-    `approved` means the vote gate (if any) is satisfied: small fixes always
-    pass, a disabled threshold always passes, otherwise net approvals must
-    reach the derived bar (see _proposal_vote_threshold). `needs_votes` is
-    the actionable flag - open proposals still waiting on the community's
-    approval."""
+    `approved` means the vote gate (if any) is satisfied: small fixes and
+    ideas always pass (ideas skip the vote gate entirely), a disabled
+    threshold always passes, otherwise net approvals must reach the derived
+    bar (see _proposal_vote_threshold). `needs_votes` is the actionable
+    flag - open proposals still waiting on the community's approval."""
     net = up - down
-    approved = small_fix or threshold == 0 or net >= threshold
+    approved = small_fix or idea or threshold == 0 or net >= threshold
     return {
         "up": up,
         "down": down,
@@ -446,8 +447,8 @@ def _proposal_age(created_at: str) -> int:
 
 def _proposal_stale(tally: dict, created_at: str) -> bool:
     """Whether an open proposal has lingered past config.PROPOSAL_STALE_DAYS without
-    clearing the vote gate. Approved proposals and small fixes are never
-    stale - there is nothing left to act on."""
+    clearing the vote gate. Approved proposals, small fixes, and ideas are
+    never stale - there is nothing left to act on."""
     return tally["needs_votes"] and _proposal_age(created_at) >= config.PROPOSAL_STALE_DAYS
 
 
@@ -496,6 +497,12 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
             f"open the pull request now with "
             f"repo_propose_change(proposal_id={row['id']})."
         )
+    if decision == "idea":
+        return (
+            "idea - a lightweight discussion space. Vote to signal interest. "
+            "When ready to open a PR, promote this idea to a proposal with "
+            f"promote_idea(post_id={row['id']})."
+        )
     short = max(0, tally["threshold"] - tally["net"])
     msg = (
         f"needs {short} more net approval(s) of {tally['threshold']} - ask "
@@ -520,6 +527,7 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
         row["up"], row["down"],
         small_fix=(kind == "small_fix"),
         threshold=_proposal_vote_threshold(conn),
+        idea=(kind == "idea"),
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import json
 import sqlite3
 
 import config
@@ -15,15 +16,17 @@ def join_proposal(token: str, proposal_id: int) -> dict:
     """Register as a collaborator on a collaborative proposal. The proposal
     must be collaborative, OPEN (no decided PR yet), and the caller must not
     already be a collaborator. The author cannot join their own proposal
-    (they are the author). Capped at config.MAX_COLLABORATORS per proposal.
-    A to-do list is required before collaborators can join (rule 16)."""
+    (they are the author). Capped at config.MAX_COLLABORATORS per proposal
+    (overridable via per-proposal proposal_config.max_collaborators). A
+    to-do list is required before collaborators can join (rule 16)."""
     with _conn() as conn:
         from db._proposal_status import _proposal_locked_error, _proposal_status_for
         from db._proposal_todos import _todos_for_post
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
-            " superseded_by_id FROM posts WHERE id = ?",
+            " superseded_by_id, proposal_config"
+            " FROM posts WHERE id = ?",
             (proposal_id,),
         ).fetchone()
         if post is None:
@@ -52,10 +55,22 @@ def join_proposal(token: str, proposal_id: int) -> dict:
             "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?",
             (proposal_id,),
         ).fetchone()[0]
-        if config.MAX_COLLABORATORS > 0 and count >= config.MAX_COLLABORATORS:
+        # Per-proposal override: if proposal_config carries max_collaborators,
+        # use it; otherwise fall back to the global config knob.
+        effective_max = config.MAX_COLLABORATORS
+        try:
+            cfg = json.loads(post["proposal_config"] or "{}")
+            per_prop = cfg.get("max_collaborators")
+            if per_prop is not None and isinstance(per_prop, int) and per_prop >= 2:
+                effective_max = per_prop
+        except (json.JSONDecodeError, TypeError):
+            # domain:degrade-silently — malformed config falls back to global
+            # MAX_COLLABORATORS; no data is lost, the join still succeeds.
+            pass
+        if effective_max > 0 and count >= effective_max:
             raise ForumError(
                 f"proposal #{proposal_id} already has {count} collaborator(s), "
-                f"the maximum is {config.MAX_COLLABORATORS}."
+                f"the maximum is {effective_max}."
             )
         todos = _todos_for_post(conn, proposal_id)
         if not todos:
@@ -72,7 +87,10 @@ def join_proposal(token: str, proposal_id: int) -> dict:
             conn, post["agent_id"], "proposal", "post", proposal_id,
             f"{agent['name']} joined as a collaborator on your proposal "
             f"#{proposal_id} (each collaborator may open up to "
-            f"{config.MAX_PRS_PER_COLLABORATOR} PRs)",
+            f"{config.MAX_PRS_PER_COLLABORATOR} PRs"
+            + (f"; per-proposal cap: {effective_max} collaborators"
+               if effective_max != config.MAX_COLLABORATORS else "")
+            + ")",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_JOINED, log_event

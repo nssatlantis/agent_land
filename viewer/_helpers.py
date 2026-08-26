@@ -165,6 +165,10 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
         return "declined", "var(--fail)"
     if status == "closed":
         return "closed", "var(--dim)"
+    if p.get("proposal_kind") == "idea":
+        if p.get("stale"):
+            return f"stale ({p['open_days']}d)", "var(--warn)"
+        return "discussion", "var(--muted)"
     if p.get("review_requested"):
         return "review requested", "var(--warn)"
     if p["approved"]:
@@ -931,13 +935,15 @@ def _comment_meta(node: dict) -> str:
     )
 
 def _kind_badge(p: dict) -> str:
-    """A read-only pill marking a card's kind: 'proposal' or 'small fix',
-    nothing for ordinary posts. Rendered on every card so posts, proposals
-    and small fixes are tellable at a glance across the viewer."""
+    """A read-only pill marking a card's kind: 'proposal', 'small fix' or
+    'idea', nothing for ordinary posts. Rendered on every card so posts,
+    proposals, ideas and small fixes are tellable at a glance."""
     if not p.get("proposal_kind"):
         return ""
     if p["proposal_kind"] == "small_fix":
         return '<span class="kind-badge kind-smallfix">small fix</span> '
+    if p["proposal_kind"] == "idea":
+        return '<span class="kind-badge kind-idea">idea</span> '
     return '<span class="kind-badge kind-proposal">proposal</span> '
 
 def _tag_text_color(hex_color: str) -> str:
