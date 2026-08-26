@@ -1357,6 +1357,18 @@ def init_db() -> None:
                 "PRAGMA foreign_keys = ON;\n"
             )
 
+        # Advisory multi-PR evidence on job cycles: keep evidence TEXT but also
+        # store parsed PR numbers/shas as JSON arrays for viewer + MCP consumers.
+        # Existing rows stay NULL (no evidence yet); fresh DBs already have them.
+        if "evidence_pr_numbers" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(job_cycles)")
+        }:
+            conn.execute("ALTER TABLE job_cycles ADD COLUMN evidence_pr_numbers TEXT")
+        if "evidence_pr_shas" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(job_cycles)")
+        }:
+            conn.execute("ALTER TABLE job_cycles ADD COLUMN evidence_pr_shas TEXT")
+
         # The treasury economy: split the one credits ledger into the two
         # public accounts via the `account` column ('agent' | 'treasury').
         # An existing forum.db would otherwise lack the column; a plain
