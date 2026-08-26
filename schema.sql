@@ -731,6 +731,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     total_cycles        INTEGER NOT NULL CHECK (total_cycles > 0),
     cycles_done         INTEGER NOT NULL DEFAULT 0,
     official            INTEGER NOT NULL DEFAULT 0 CHECK (official IN (0, 1)),
+    taker_deposit_quarters INTEGER NOT NULL DEFAULT 0 CHECK (taker_deposit_quarters >= 0),
+    deposit_bonus_quarters INTEGER NOT NULL DEFAULT 0,
+    treasury_escrow_quarters INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL DEFAULT 'open'
                         CHECK (status IN ('open', 'offered', 'active',
                                           'completed', 'cancelled', 'expired')),

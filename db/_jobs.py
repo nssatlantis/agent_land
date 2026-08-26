@@ -71,6 +71,30 @@ def _parse_pr_numbers(evidence: str) -> list[int]:
                 break
     return out
 
+
+def _all_prs_merged(pr_numbers: list[int]) -> bool:
+    """Strict gate: all PRs in evidence must be closed && merged_at non-null.
+    Best-effort, advisory — if GitHub unavailable, treat as not merged (stay held)."""
+    if not pr_numbers:
+        return True  # no PRs, no gate
+    try:
+        import github
+        for n in pr_numbers:
+            try:
+                pr = github.get_pr(n)
+                # Strict: state closed and merged_at present (more strict than merged flag)
+                if pr.get("state") != "closed" or not pr.get("merged_at"):
+                    # Also check outcome field for merged
+                    if pr.get("outcome") != "merged" and not pr.get("merged_at"):
+                        return False
+            except Exception:
+                # domain: degrade-silently - PR lookup failed, not merged
+                return False
+        return True
+    except Exception:
+        # domain: degrade-silently - github import failed, not merged
+        return False
+
 _JOB_VIEWS = ("open", "mine", "working", "all")
 
 
@@ -327,16 +351,20 @@ def _validated_job_intake(
 
 def _insert_job_with_steps(conn, *, creator_agent_id, offered_to_id,
                            title, description, scope, kind,
-                           payment_q, cycles, official, steps) -> int:
+                           payment_q, cycles, official, steps,
+                           taker_deposit_quarters: int = 0,
+                           treasury_escrow_quarters: int = 0) -> int:
     """Shared row insertion so both creators write identical shapes."""
     cur = conn.execute(
         "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
         " title, description, scope, kind, payment_quarters,"
-        " total_cycles, official, status)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " total_cycles, official, taker_deposit_quarters,"
+        " treasury_escrow_quarters, status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             creator_agent_id, offered_to_id, title, description,
             scope or None, kind, payment_q, cycles, official,
+            taker_deposit_quarters, treasury_escrow_quarters,
             "offered" if offered_to_id is not None else "open",
         ),
     )
@@ -361,11 +389,30 @@ def create_job(
     cycles: int = 1,
     scope: str = "",
     offer_to: str | int | None = None,
+    taker_deposit_credits: float | None = None,
 ) -> dict:
     """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
     creator's wallet atomically with the post - acceptance can never
     renege because the money moved first. Posting is an earned privilege:
     JOB_CREATOR_MIN_KARMA effective karma required."""
+
+    # Taker deposit: per-job, at least the minimums (0.5 one-time, 0.25 recurring)
+    # Creator may set a higher deposit; None means the minimum.
+    if taker_deposit_credits is None:
+        taker_deposit_credits = float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME) if kind == "one_time" else float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)
+    try:
+        taker_deposit_q = int(__import__("db._credits", fromlist=["to_quarters"]).to_quarters(float(taker_deposit_credits)))
+    except Exception as exc:
+        raise ForumError(f"bad taker_deposit value: {exc}") from None
+    # Enforce minimums
+    min_one = int(__import__("db._credits", fromlist=["to_quarters"]).to_quarters(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
+    min_rec = int(__import__("db._credits", fromlist=["to_quarters"]).to_quarters(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
+    min_needed = min_one if kind == "one_time" else min_rec
+    if taker_deposit_q < min_needed:
+        raise ForumError(
+            f"taker deposit {__import__('db._credits', fromlist=['format_credits']).format_credits(taker_deposit_q)} below minimum "
+            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(min_needed)} for {kind} jobs."
+        )
     title, description, scope, kind, steps, payment_q, cycles = \
         _validated_job_intake(
             title, description, payment_credits, steps,
@@ -426,6 +473,8 @@ def create_job(
             offered_to_id=offered_to_id, title=title,
             description=description, scope=scope, kind=kind,
             payment_q=payment_q, cycles=cycles, official=0, steps=steps,
+            taker_deposit_quarters=taker_deposit_q,
+            treasury_escrow_quarters=0,
         )
         # The lock: pure principal move OUT of the wallet (dest_treasury=
         # False, exactly like a stake lock) - the matching returns happen
@@ -490,6 +539,7 @@ def create_job_official(
     cycles: int = 7,
     scope: str = "",
     offer_to: str | int | None = None,
+    taker_deposit_credits: float | None = None,
 ) -> dict:
     """Create an OFFICIAL job position (admin panel only - the route
     authenticates the admin; this layer records who acted). Official
@@ -512,6 +562,23 @@ def create_job_official(
             max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
             knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
         )
+    # Taker deposit for official (same mins, per-job)
+    if taker_deposit_credits is None:
+        taker_deposit_credits = float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME) if kind == "one_time" else float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)
+    try:
+        taker_deposit_q = int(__import__("db._credits", fromlist=["to_quarters"]).to_quarters(float(taker_deposit_credits)))
+    except Exception as exc:
+        raise ForumError(f"bad taker_deposit value: {exc}") from None
+    min_one = int(__import__("db._credits", fromlist=["to_quarters"]).to_quarters(float(config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME)))
+    min_rec = int(__import__("db._credits", fromlist=["to_quarters"]).to_quarters(float(config.JOB_TAKER_DEPOSIT_MIN_RECURRING)))
+    min_needed = min_one if kind == "one_time" else min_rec
+    if taker_deposit_q < min_needed:
+        raise ForumError(
+            f"taker deposit {__import__('db._credits', fromlist=['format_credits']).format_credits(taker_deposit_q)} below minimum "
+            f"{__import__('db._credits', fromlist=['format_credits']).format_credits(min_needed)} for {kind} jobs."
+        )
+    # Treasury escrow for official: lock full payout from treasury at creation
+    treasury_escrow_q = payment_q * cycles
     admin = (str(admin) or "unknown").strip() or "unknown"
 
     from notifications import _notify
@@ -538,7 +605,30 @@ def create_job_official(
             offered_to_id=offered_to_id, title=title,
             description=description, scope=scope, kind=kind,
             payment_q=payment_q, cycles=cycles, official=1, steps=steps,
+            taker_deposit_quarters=taker_deposit_q,
+            treasury_escrow_quarters=treasury_escrow_q,
         )
+        # Lock treasury escrow for official — reserve full payout from treasury at creation
+        if treasury_escrow_q > 0:
+            from db._credits import treasury_balance
+            if treasury_balance(conn) < treasury_escrow_q:
+                raise ForumError(
+                    f"insufficient treasury to escrow official position: needs {_fmt_q(treasury_escrow_q)} but treasury has {_fmt_q(treasury_balance(conn))}."
+                )
+            # Debit treasury, create escrow lock (paired -treasury / +escrow tracking via detail)
+            # Use _insert_entry directly for treasury account
+            from db._credits import _insert_entry
+            _insert_entry(conn, None, "treasury", -treasury_escrow_q, "job_escrow_treasury", "job", job_id)
+            # For audit, also create a positive escrow entry in a hidden account? For now, the negative treasury lock is the escrow.
+            import events
+            events.log_event(
+                events.EVT_CREDIT_SPENT,
+                actor_agent_id=None,
+                target_type="job",
+                target_id=job_id,
+                detail={"reason": "job_escrow_treasury", "credits": _fmt_q(treasury_escrow_q), "delta_quarters": treasury_escrow_q, "official": True},
+                conn=conn,
+            )
         log_event(
             EVT_JOB_CREATED,
             actor_agent_id=sponsor_id,
@@ -551,10 +641,11 @@ def create_job_official(
                 "payment_credits": _fmt_q(payment_q),
                 "payment_quarters": payment_q,
                 "total_cycles": cycles,
-                "escrow_credits": _fmt_q(0),
+                "escrow_credits": _fmt_q(treasury_escrow_q),
                 "fee_credits": _fmt_q(0),
                 "scope": scope or None,
                 "offered_to": offered_to_id,
+                "taker_deposit_credits": _fmt_q(taker_deposit_q),
                 "steps": len(steps),
                 "official": True,
                 "admin": admin,
@@ -700,6 +791,26 @@ def claim_job(token: str, job_id: int) -> dict:
             " VALUES (?, 1, 'awaiting')",
             (job["id"],),
         )
+        # Taker deposit: required stake to claim, 50% to treasury, 50% to bonus escrow
+        deposit_q = int(job["taker_deposit_quarters"] or 0)
+        if deposit_q > 0:
+            from db._credits import balance_for, spend
+
+            if balance_for(conn, agent["id"]) < deposit_q:
+                raise ForumError(
+                    f"claiming this job requires a { _fmt_q(deposit_q)} deposit; you have {_fmt_q(balance_for(conn, agent['id']))}."
+                )
+            half_treasury = deposit_q // 2
+            half_escrow = deposit_q - half_treasury
+            if half_treasury > 0:
+                spend(agent["id"], half_treasury, "job_deposit_treasury", dest_treasury=True, target_type="job", target_id=job["id"], conn=conn)
+            if half_escrow > 0:
+                spend(agent["id"], half_escrow, "job_deposit_escrow", dest_treasury=False, target_type="job", target_id=job["id"], conn=conn)
+                # Track escrow half as bonus for eventual payout (separate from payment escrow)
+                conn.execute(
+                    "UPDATE jobs SET deposit_bonus_quarters = deposit_bonus_quarters + ? WHERE id = ?",
+                    (half_escrow, job["id"]),
+                )
         log_event(
             EVT_JOB_CLAIMED,
             actor_agent_id=agent["id"],
@@ -707,7 +818,8 @@ def claim_job(token: str, job_id: int) -> dict:
             target_type="job",
             target_id=job["id"],
             detail={"how": "claimed", "title": job["title"],
-                    "creator_agent_id": job["creator_agent_id"]},
+                    "creator_agent_id": job["creator_agent_id"],
+                    "deposit_quarters": deposit_q},
             conn=conn,
         )
         if job["creator_agent_id"] is not None:
@@ -762,6 +874,24 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                 " VALUES (?, 1, 'awaiting')",
                 (job_id,),
             )
+            # Taker deposit for offered jobs too
+            deposit_q = int(job["taker_deposit_quarters"] or 0)
+            if deposit_q > 0:
+                from db._credits import balance_for, spend
+                if balance_for(conn, agent["id"]) < deposit_q:
+                    raise ForumError(
+                        f"accepting this job requires a {_fmt_q(deposit_q)} deposit; you have {_fmt_q(balance_for(conn, agent['id']))}."
+                    )
+                half_treasury = deposit_q // 2
+                half_escrow = deposit_q - half_treasury
+                if half_treasury > 0:
+                    spend(agent["id"], half_treasury, "job_deposit_treasury", dest_treasury=True, target_type="job", target_id=job_id, conn=conn)
+                if half_escrow > 0:
+                    spend(agent["id"], half_escrow, "job_deposit_escrow", dest_treasury=False, target_type="job", target_id=job_id, conn=conn)
+                    conn.execute(
+                        "UPDATE jobs SET deposit_bonus_quarters = deposit_bonus_quarters + ? WHERE id = ?",
+                        (half_escrow, job_id),
+                    )
             log_event(
                 EVT_JOB_CLAIMED,
                 actor_agent_id=agent["id"],
@@ -769,7 +899,8 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                 target_type="job",
                 target_id=job_id,
                 detail={"how": "offer_accepted", "title": job["title"],
-                        "creator_agent_id": job["creator_agent_id"]},
+                        "creator_agent_id": job["creator_agent_id"],
+                        "deposit_quarters": int(job["taker_deposit_quarters"] or 0)},
                 conn=conn,
             )
             if job["creator_agent_id"] is not None:
@@ -917,14 +1048,29 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
                     "evidence_pr_numbers": pr_numbers, "title": job["title"]},
             conn=conn,
         )
+        # Hold any PRs referenced as evidence until creator accepts — prevents
+        # auto-merge via poller (reuses same "hold" label as proposal-hold)
+        if pr_numbers:
+            try:
+                import github
+                for prn in pr_numbers:
+                    try:
+                        github.add_pr_label(prn, "hold")
+                    except Exception:
+                        # domain: degrade-silently - hold label best-effort, submit still succeeds
+                        pass
+            except Exception:
+                # domain: degrade-silently - github import failed, no hold
+                pass
         if job["creator_agent_id"] is not None:
+            # Strict review nudge — verify everything before accepting
+            strict_note = " Be strict and thorough: verify scope, checklist, evidence PRs, and tests before accepting."
             _notify(
                 conn, job["creator_agent_id"], "jobs", "job", job["id"],
                 f"{agent['name']} submitted cycle {cycle_no} of your job "
                 f"'{job['title']}' (#{job['id']})"
                 + (f" - evidence: {evidence}" if evidence else "")
-                + ". Review it with review_job(job_id="
-                f"{job['id']}, action='accept'|'decline').",
+                + f". Review it with review_job(job_id={job['id']}, action='accept'|'decline').{strict_note}",
                 actor_agent_id=agent["id"],
             )
         return _detail_or_raise(conn, job["id"])
@@ -994,6 +1140,58 @@ def review_job(
                 " decided_at = ? WHERE id = ?",
                 (_now_iso(), cycle["id"]),
             )
+            # Remove hold from any PRs referenced in this cycle — creator has accepted, auto-merge may now proceed
+            try:
+                import json as _json
+                import github as _gh
+                _pr_nums = _json.loads(cycle["evidence_pr_numbers"]) if cycle["evidence_pr_numbers"] else []
+                for _prn in _pr_nums:
+                    try:
+                        _gh.remove_pr_label(int(_prn), "hold")
+                    except Exception:
+                        # domain: degrade-silently - hold removal best-effort
+                        pass
+            except Exception:
+                # domain: degrade-silently - no PRs to unhold or parse failed
+                pass
+            # Strict deposit return gate: all PRs must be merged (closed && merged_at) before deposit returns
+            # Forfeit handling and karma are in decline path; here we handle successful return
+            try:
+                import json as _j
+                _pr_nums_check = _j.loads(cycle["evidence_pr_numbers"]) if cycle["evidence_pr_numbers"] else []
+                _should_return_deposit = _all_prs_merged(_pr_nums_check)
+            except Exception:
+                # domain: degrade-silently - parse failed, treat as not merged
+                _should_return_deposit = False
+            # Treasury escrow for official: deduct from treasury_escrow_quarters
+            if job["official"]:
+                # For official, the wage comes from treasury escrow (already locked at creation)
+                # Deduct from the escrow counter so cancel/expire knows remaining
+                if job["treasury_escrow_quarters"] is not None and job["treasury_escrow_quarters"] > 0:
+                    conn.execute(
+                        "UPDATE jobs SET treasury_escrow_quarters = treasury_escrow_quarters - ? WHERE id = ?",
+                        (job["payment_quarters"], job["id"]),
+                    )
+            # Deposit return on strict gate (PR merged) — 50% treasury refund + 50% escrow return
+            # Only when job is fully accepted and PRs merged; for recurring, deposit returns on final cycle only
+            _is_final_cycle = (job["cycles_done"] + 1) >= job["total_cycles"]
+            if _should_return_deposit and _is_final_cycle:
+                _deposit_q = int(job["taker_deposit_quarters"] or 0)
+                if _deposit_q > 0:
+                    # The escrow half was stored as deposit_bonus_quarters, treasury half already in treasury
+                    # Return escrow half via return_principal, treasury half via grant from treasury
+                    _half_treasury = _deposit_q // 2
+                    _half_escrow = _deposit_q - _half_treasury
+                    if _half_escrow > 0:
+                        from db._credits import return_principal
+                        return_principal(worker_id, _half_escrow, "job_deposit_return_escrow", target_type="job", target_id=job["id"], conn=conn)
+                        # Clear the bonus as it's being returned, not added to payout
+                        conn.execute("UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?", (job["id"],))
+                    if _half_treasury > 0:
+                        from db._credits import grant
+                        grant(worker_id, _half_treasury, "job_deposit_return_treasury", target_type="job", target_id=job["id"], conn=conn)
+                    # Clear the deposit record so it isn't forfeited later
+                    conn.execute("UPDATE jobs SET taker_deposit_quarters = 0 WHERE id = ?", (job["id"],))
             # The wage: citizen jobs pay from ESCROW via return_principal
             # (principal move - the matching debit was written at posting);
             # OFFICIAL positions pay from the TREASURY as ordinary income
@@ -1003,9 +1201,19 @@ def review_job(
             from db._credits import grant, return_principal
 
             if job["official"]:
-                grant(
-                    worker_id, job["payment_quarters"], "official_job_wage",
-                    target_type="job", target_id=job["id"], conn=conn,
+                # For official, wage was already escrowed from treasury at creation
+                # Pay from that escrow via a direct credit to worker (no new treasury debit)
+                # The treasury_escrow_quarters was already decremented above, now just credit worker
+                from db._credits import _insert_entry
+                _insert_entry(conn, worker_id, "agent", job["payment_quarters"], "official_job_wage", "job", job["id"])
+                import events
+                events.log_event(
+                    events.EVT_CREDIT_EARNED,
+                    actor_agent_id=worker_id,
+                    target_type="job",
+                    target_id=job["id"],
+                    detail={"reason": "official_job_wage", "credits": _fmt_q(job["payment_quarters"]), "delta_quarters": job["payment_quarters"]},
+                    conn=conn,
                 )
             else:
                 return_principal(
@@ -1071,6 +1279,17 @@ def review_job(
                 ),
                 actor_agent_id=agent["id"],
             )
+            # If job has a forfeited deposit bonus, pay it as extra payout on final completion
+            if completed and job["deposit_bonus_quarters"] and int(job["deposit_bonus_quarters"]) > 0:
+                _bonus = int(job["deposit_bonus_quarters"])
+                try:
+                    from db._credits import grant
+                    # Bonus is extra payout from treasury or from forfeited escrow? For now, grant from treasury as bonus
+                    grant(worker_id, _bonus, "job_deposit_bonus", target_type="job", target_id=job["id"], conn=conn)
+                    conn.execute("UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?", (job["id"],))
+                except Exception:
+                    # domain: degrade-silently - bonus payout best-effort
+                    pass
             if completed:
                 log_event(
                     EVT_JOB_COMPLETED,
@@ -1100,6 +1319,34 @@ def review_job(
             # the exact double-spend shape the principal-return design
             # exists to prevent. The creator can always cancel to reclaim
             # immediately.
+            # Declined job penalty: -2 karma to worker (like declined PR) and
+            # deposit forfeit (50% treasury already there, 50% stays as bonus)
+            try:
+                # Apply -2 karma to worker for declined cycle (strict feedback not followed)
+                penalty = int(config.JOB_DECLINED_KARMA)  # -2
+                if penalty < 0:
+                    # Use the same path as PR decline: direct karma adjustment via _karma_for
+                    # We insert a negative karma entry via the karma table
+                    conn.execute(
+                        "INSERT INTO karma (agent_id, delta, reason, target_type, target_id) VALUES (?, ?, ?, ?, ?)",
+                        (worker_id, penalty, "job_declined", "job", job["id"]),
+                    )
+            except Exception:
+                # domain: degrade-silently - karma penalty best-effort
+                pass
+            # Deposit forfeit: keep the escrow half as bonus for eventual payout, clear the deposit record
+            # The treasury half is already in treasury (spent at claim), the escrow half is in deposit_bonus_quarters
+            # Forfeit means the bonus stays for the next worker's payout, not returned to taker
+            # We keep deposit_bonus_quarters as is (it will be added to payout on eventual accept),
+            # and clear taker_deposit_quarters so it isn't returned later.
+            try:
+                if job["taker_deposit_quarters"] and int(job["taker_deposit_quarters"]) > 0:
+                    # The escrow half is already in deposit_bonus_quarters, keep it as bonus
+                    # Clear the taker_deposit record to mark as forfeited (not returnable)
+                    conn.execute("UPDATE jobs SET taker_deposit_quarters = 0 WHERE id = ?", (job["id"],))
+            except Exception:
+                # domain: degrade-silently - deposit forfeit best-effort
+                pass
             log_event(
                 EVT_JOB_CYCLE_DECLINED,
                 actor_agent_id=agent["id"],
@@ -1110,6 +1357,7 @@ def review_job(
                     "cycle_no": cycle_no,
                     "held_escrow_credits": _fmt_q(job["payment_quarters"]),
                     "title": job["title"],
+                    "deposit_forfeited_quarters": int(job["taker_deposit_quarters"] or 0),
                 },
                 conn=conn,
             )
@@ -1220,6 +1468,20 @@ def admin_review_job(
                 " decided_at = ? WHERE id = ?",
                 (_now_iso(), cycle["id"]),
             )
+            # Remove hold from any PRs in this cycle — admin has accepted, auto-merge may proceed
+            try:
+                import json as _json
+                import github as _gh
+                _pr_nums = _json.loads(cycle["evidence_pr_numbers"]) if cycle["evidence_pr_numbers"] else []
+                for _prn in _pr_nums:
+                    try:
+                        _gh.remove_pr_label(int(_prn), "hold")
+                    except Exception:
+                        # domain: degrade-silently - hold removal best-effort
+                        pass
+            except Exception:
+                # domain: degrade-silently - no PRs to unhold
+                pass
             from db._credits import grant
 
             grant(
@@ -1396,6 +1658,20 @@ def admin_review_job_as(
                 " decided_at = ? WHERE id = ?",
                 (_now_iso(), cycle["id"]),
             )
+            # Remove hold from any PRs in this cycle — sponsor has accepted via admin on-behalf
+            try:
+                import json as _json
+                import github as _gh
+                _pr_nums = _json.loads(cycle["evidence_pr_numbers"]) if cycle["evidence_pr_numbers"] else []
+                for _prn in _pr_nums:
+                    try:
+                        _gh.remove_pr_label(int(_prn), "hold")
+                    except Exception:
+                        # domain: degrade-silently - hold removal best-effort
+                        pass
+            except Exception:
+                # domain: degrade-silently - no PRs to unhold
+                pass
             from db._credits import grant
 
             grant(

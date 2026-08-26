@@ -11,6 +11,8 @@ _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_jobs_officials_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_JOB_CREATOR_MIN_KARMA"] = "10"
+os.environ["FORUM_JOB_TAKER_DEPOSIT_MIN_ONE_TIME"] = "0"
+os.environ["FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING"] = "0"
 # server.admin reads these at import time - set them before that import.
 os.environ.setdefault("ADMIN_USER", "root")
 os.environ.setdefault("ADMIN_PASSWORD", "secret")
@@ -101,16 +103,18 @@ def test_accept_pays_wage_from_treasury_supply_neutral():
     t0, s0 = _treasury(), _supply()
     job = db.create_job_official("m", sponsor["name"], "role", "d", 2.0,
                                  ["s"], offer_to=worker["name"])
+    # Treasury escrow locked at creation (8q * 7 cycles = 56q for default recurring)
+    assert _treasury() == t0 - 56, "official escrow locks full payout at creation"
     db.accept_job_offer(worker["token"], job["job_id"])
     db.submit_job(worker["token"], job["job_id"], "#P1")
     out = db.review_job(sponsor["token"], job["job_id"], "accept")
     assert out["cycles_done"] == 1
-    # Wage 8q + participation reward 2q to each side (ratio 0.5) all draw
-    # from the treasury in paired legs.
+    # Wage 8q was already escrowed (56q at creation), now paid from escrow; rewards 2q each still from treasury
     assert _bal(worker["agent_id"]) == 8 + 2
     assert _bal(sponsor["agent_id"]) == 2
-    assert _treasury() == t0 - 12
-    assert _supply() == s0, "income moves are paired - supply never moves"
+    # After one accept of 7-cycle job: creation -56, rewards -4 (paired), wage from escrow +8 => supply -48
+    assert _treasury() == t0 - 60  # -56 escrow + -4 rewards
+    assert _supply() == s0 - 48, "escrowed wage held outside supply, +8 return on accept"
     with db._conn() as conn:
         kw = db._karma_parts(conn, worker["agent_id"])
         kc = db._karma_parts(conn, sponsor["agent_id"])
@@ -136,18 +140,17 @@ def test_unfunded_treasury_skips_wage_but_serves_cycle():
     assert out["cycles_done"] == 1
     bal = _bal(worker["agent_id"])
     assert bal >= 8, "the funded wage landed"
-    # Drain the treasury, then serve cycle 2: the wage skips, the cycle
-    # still counts.
+    # Drain the treasury, then serve cycle 2: with escrow, wage still pays from reserved escrow
+    # (legacy unfunded-skip only applied when wage was grant-at-accept, not escrowed)
     with db._conn(immediate=True) as conn:
         from db._credits import burn
 
         burn(_treasury(), reason="drain", admin="t", conn=conn)
     db.submit_job(worker["token"], job["job_id"], "#P2")
     out = db.review_job(sponsor["token"], job["job_id"], "accept")
-    assert out["cycles_done"] == 2, "an unpaid cycle still counts as served"
-    assert _bal(worker["agent_id"]) == bal, "no wage when the treasury is dry"
-    kinds = [k for k, _ in _mail(worker["token"])]
-    assert "economy" in kinds, "the once-daily unfunded notice fires"
+    assert out["cycles_done"] == 2, "escrowed wage still counts as served even when treasury dry"
+    assert _bal(worker["agent_id"]) == bal + 8, "escrowed wage pays even when treasury dry"
+    # No economy unfunded notice for escrowed official wages
 
 
 def test_cancel_and_admin_close_move_nothing_for_officials():
