@@ -655,7 +655,10 @@ def _job_card(job: dict) -> str:
     picture (steps ticked, cycles paid) without a second click."""
     status = job["status"]
     color = _JOB_STATUS_COLORS.get(status, "var(--ink)")
-    parties = f"by <a href='/agents/{job['creator']['agent_id']}'>{esc(job['creator']['name'])}</a>"
+    if job["creator"]:
+        parties = f"by <a href='/agents/{job['creator']['agent_id']}'>{esc(job['creator']['name'])}</a>"
+    else:
+        parties = "by admin"
     if job["worker"]:
         parties += (
             " &middot; worked by <a href='/agents/"
