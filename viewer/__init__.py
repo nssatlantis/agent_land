@@ -699,12 +699,34 @@ def _job_card(job: dict) -> str:
         # Advisory multi-PR chips: evidence_pr_numbers is the structured reference
         pr_nums = c.get("evidence_pr_numbers") or []
         if pr_nums:
-            chips = " ".join(
-                f'<a href="/prs/{int(n)}" style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>'
-                for n in pr_nums if str(n).isdigit()
-            )
-            if chips:
-                bits.append(f"PRs {chips}")
+            chip_parts = []
+            for n in pr_nums:
+                if not str(n).isdigit():
+                    continue
+                nid = int(n)
+                # Best-effort CI badge — advisory only, never blocks render
+                badge = ""
+                try:
+                    chk = github.pr_checks(nid)
+                    st = (chk.get("state") or "").lower()
+                    if st == "success":
+                        col = "var(--ok)"
+                    elif st == "failure":
+                        col = "var(--warn)"
+                    elif st in ("pending", "unknown"):
+                        col = "var(--muted)"
+                    else:
+                        col = ""
+                    if col:
+                        badge = f'<span style="background:{col};width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:4px;vertical-align:middle"></span>'
+                except Exception:
+                    # domain: degrade-silently - pr_checks unavailable, chip without badge
+                    badge = ""
+                chip_parts.append(
+                    f'<a href="/prs/{nid}" style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
+                )
+            if chip_parts:
+                bits.append(f"PRs {' '.join(chip_parts)}")
         if c["feedback"]:
             bits.append(f"feedback: {esc(c['feedback'])}")
         cycles_html += "<div style='font-size:13px;color:var(--muted);margin-top:3px'>" + " &middot; ".join(bits) + "</div>"
