@@ -5,7 +5,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Isolate DB before importing db (same pattern as every test file).
 _TMP = Path(tempfile.mkdtemp(prefix="test_similar_prs_"))
@@ -24,7 +24,7 @@ os.environ["FORUM_SIMILAR_PRS_THRESHOLD"] = "0.3"
 os.environ["FORUM_SIMILAR_PRS_RESULTS"] = "5"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import db  # noqa: E402
+import db  # noqa: E402, F401 - imported to break circular import (search↔db)
 import config  # noqa: E402
 import search  # noqa: E402
 
