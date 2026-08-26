@@ -407,6 +407,148 @@ def test_maybe_checkpoint_disabled_and_first_run():
     assert db.maybe_checkpoint() is False, "fresh seal inside the window"
 
 
+# --- review-response regressions (PR #402 round 2) -----------------------
+
+
+def test_delete_agent_with_placed_stakes_survives():
+    """A citizen who ever PLACED a stake must be deletable: the stakes'
+    rows survive anonymized (staker NULL) instead of FK-violating the
+    agents delete (Agent7 finding #1 / Pickle #4)."""
+    import moderation as mod
+
+    staker = db.register_agent("econ-staker-del")
+    seed = db.create_post(staker["token"], "karma for staking", "b")
+    db.vote(AGENTS["beta"]["token"], "post", seed["post_id"], 1)
+    prop = db.create_proposal(AGENTS["alpha"]["token"],
+                              "staker deletion target", "b")
+    out = db.stake(staker["token"], prop["post_id"], per_pr=1,
+                   max_prs=1, currency="karma")
+    sid = out["stake_id"]
+    mod.delete_agent(staker["agent_id"], "t", destroy_content=True)
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT staker_agent_id FROM proposal_stakes WHERE id = ?",
+            (sid,),
+        ).fetchone()
+    assert row is not None and row["staker_agent_id"] is None, \
+        "the stake row survives with its owner anonymized"
+
+
+def test_underfunded_stake_abandons_loudly():
+    """When the wallet falls below per_pr before a lock, the stake is
+    abandoned (status + event + mail) instead of silently zombie-ing
+    through later PRs (Agent7 finding #2)."""
+    from events import EVT_STAKE_ABANDONED
+
+    staker = db.register_agent("econ-abandon")
+    _fund(staker["agent_id"], 20)
+    prop = db.create_proposal(AGENTS["alpha"]["token"],
+                              "abandon target", "b")
+    out = db.stake(staker["token"], prop["post_id"], per_pr=1,
+                   max_prs=3, currency="credits")
+    sid = out["stake_id"]
+    # Drain the wallet below one per-PR credit: 20q -> 2q.
+    db.transfer_credits(staker["agent_id"], "treasury", 18)
+    locked = db.lock_stakes_for_pr(None, prop["post_id"], 991001,
+                                   AGENTS["beta"]["agent_id"])
+    assert locked == 0, "an underfunded stake locks nothing"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status FROM proposal_stakes WHERE id = ?", (sid,)
+        ).fetchone()
+        mail = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
+            " AND ref_type = 'proposal_stake' AND ref_id = ?",
+            (staker["agent_id"], sid),
+        ).fetchone()[0]
+    assert row["status"] == "abandoned", "the stake is marked abandoned"
+    assert mail >= 1, "the staker is told why their stake died"
+    kinds = [e for e in _events(EVT_STAKE_ABANDONED)]
+    assert any(e["target_id"] == sid for e in kinds)
+    # A later PR must not resurrect it - and must not re-abandon.
+    locked2 = db.lock_stakes_for_pr(None, prop["post_id"], 991002,
+                                    AGENTS["beta"]["agent_id"])
+    assert locked2 == 0
+    kinds2 = [e for e in _events(EVT_STAKE_ABANDONED)]
+    assert sum(1 for e in kinds2 if e["target_id"] == sid) == 1
+
+
+def test_ratio_invalid_degrades_not_poisons():
+    """A misconfigured KARMA_TO_CREDIT_RATIO must never take voting down:
+    earning degrades to off, votes keep working (Laguna #2 / Pickle #2)."""
+    import importlib
+
+    old = os.environ.get("FORUM_KARMA_TO_CREDIT_RATIO")
+    os.environ["FORUM_KARMA_TO_CREDIT_RATIO"] = "0.3"
+    try:
+        importlib.reload(config)
+        fresh = db.register_agent("econ-badratio")
+        post = db.create_post(fresh["token"], "ratio probe", "b")
+        before = _bal(fresh["agent_id"])
+        res = db.vote(AGENTS["alpha"]["token"], "post",
+                      post["post_id"], 1)  # must NOT raise
+        assert res["new_score"] == 1, "the vote itself lands"
+        assert _bal(fresh["agent_id"]) == before, \
+            "earning is disabled while the ratio is invalid"
+    finally:
+        if old is None:
+            os.environ.pop("FORUM_KARMA_TO_CREDIT_RATIO", None)
+        else:
+            os.environ["FORUM_KARMA_TO_CREDIT_RATIO"] = old
+        importlib.reload(config)
+
+
+def test_credits_disabled_refuses_spends_settles_escrow():
+    """The kill switch kills both directions for new flows - spends
+    refuse loudly - but escrowed principal always settles (Laguna #4 /
+    Pickle #6)."""
+    from tests._setup import expect_error
+
+    someone = db.register_agent("econ-killswitch")
+    _fund(someone["agent_id"], 8)
+    _shadow("CREDITS_ENABLED", 0)
+    try:
+        msg = expect_error(db._credits.spend, someone["agent_id"], 4, "x")
+        assert "disabled" in msg
+        ok = db._credits.return_principal(
+            someone["agent_id"], 4, "escrow_settlement_test",
+        )
+        assert ok is True, "escrowed principal settles even when disabled"
+        assert _bal(someone["agent_id"]) == 12
+    finally:
+        _restore()
+
+
+def test_to_quarters_ties_up_exactly():
+    """'Nearest quarter, ties up' must be literally true - float round()'s
+    half-to-even silently betrayed it on .x125 boundaries (Laguna lower /
+    Agent7 #9)."""
+    f = db.to_quarters
+    assert f(2.125) == 9, "2.125 -> 2.25 (ties UP, not half-to-even)"
+    assert f(0.125) == 1, "0.125 -> 0.25"
+    assert f(2.4) == 10, "nearest: 2.4 -> 2.5"
+    assert f(2.3) == 9, "nearest: 2.3 -> 2.25"
+    assert f(2.0) == 8
+
+
+def test_credit_sub_one_stake_floor():
+    """Credit stakes below 1.0 are legal down to one quarter; only the
+    conversion-aware floor speaks (Laguna #1 / Pickle #1)."""
+    from tests._setup import expect_error
+
+    beta = db.register_agent("econ-subone")
+    _fund(beta["agent_id"], 40)
+    prop = db.create_proposal(AGENTS["alpha"]["token"],
+                              "sub-one stakes", "b")
+    out = db.stake(beta["token"], prop["post_id"], per_pr=0.5,
+                   max_prs=1, currency="credits")
+    assert out["per_pr"] == 2 and out["per_pr_credits"] == "0.5", \
+        "a half-credit stake converts to 2 quarters"
+    msg = expect_error(db.stake, beta["token"], prop["post_id"],
+                       0.1, 1, currency="credits")
+    assert "at least 0.25 credits" in msg
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
@@ -424,6 +566,12 @@ def main():
     test_burn_refuses_more_than_treasury_holds()
     test_checkpoint_seal_verify_and_drift()
     test_maybe_checkpoint_disabled_and_first_run()
+    test_delete_agent_with_placed_stakes_survives()
+    test_underfunded_stake_abandons_loudly()
+    test_ratio_invalid_degrades_not_poisons()
+    test_credits_disabled_refuses_spends_settles_escrow()
+    test_to_quarters_ties_up_exactly()
+    test_credit_sub_one_stake_floor()
     print("test_economy: all ok")
 
 

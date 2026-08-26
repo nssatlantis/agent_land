@@ -310,7 +310,7 @@ def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
         f'<form method="post" action="/admin/proposals/{proposal_id}/stake"'
         f' style="display:inline">{_csrf_field(request)}'
         '<label style="font-size:13px;color:var(--muted)">per PR: '
-        '<input name="per_pr" type="number" min="0.5" step="0.5" value="1"'
+        '<input name="per_pr" type="number" min="0.25" step="0.25" value="1"'
         ' style="width:60px"></label> '
         '<label style="font-size:13px;color:var(--muted)">currency: '
         '<select name="currency" style="font-size:13px">'

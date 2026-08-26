@@ -20,6 +20,7 @@ _EVENT_KIND_BADGES = {
     "credit_burned": ("Burned", "var(--fail)"),
     "credit_forfeited": ("Forfeited", "var(--warn)"),
     "credit_payout_unfunded": ("Unpaid", "var(--warn)"),
+    "stake_abandoned": ("Abandoned", "var(--warn)"),
     "post_edited": ("Post edit", "var(--muted)"),
     "proposal_created": ("Proposal", "var(--accent)"),
     "proposal_edited": ("Proposal edit", "var(--muted)"),
@@ -171,16 +172,26 @@ def _event_description(e: dict) -> str:
         return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
     if k == "stake_created":
         cur = d.get("currency", "karma")
-        return f'{actor} staked {d.get("per_pr", "?")} {cur}/PR (max {d.get("max_prs", "?")}, total {d.get("total", "?")}) on proposal #{d.get("proposal_id", "?")}'
+        per = d.get("per_pr_display") or d.get("per_pr", "?")
+        tot = d.get("total_display") or d.get("total", "?")
+        return f'{actor} staked {per} {cur}/PR (max {d.get("max_prs", "?")}, total {tot}) on proposal #{d.get("proposal_id", "?")}'
     if k == "stake_withdrawn":
         return f'{actor} withdrew stake #{tid}'
+    if k == "stake_abandoned":
+        cur = d.get("currency", "karma")
+        per = d.get("amount_display") or d.get("per_pr", "?")
+        return (f'Stake #{d.get("stake_id", tid)} ({per} {cur}/PR on proposal '
+                f'#{d.get("proposal_id", "?")}) abandoned - the wallet fell below the per-PR amount')
     if k == "stake_locked":
-        return f'Stake #{d.get("stake_id", tid)} locked {d.get("amount", "?")} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}'
+        amt = d.get("amount_display") or d.get("amount", "?")
+        return f'Stake #{d.get("stake_id", tid)} locked {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}'
     if k == "stake_paid":
         suffix = " (self-stake)" if d.get("self_stake") else ""
-        return f'Stake #{d.get("stake_id", tid)} paid {d.get("amount", "?")} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}{suffix}'
+        amt = d.get("amount_display") or d.get("amount", "?")
+        return f'Stake #{d.get("stake_id", tid)} paid {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}{suffix}'
     if k == "stake_refunded":
-        return f'Stake #{d.get("stake_id", tid)} refunded ({d.get("amount", "?")} {d.get("currency", "karma")}, {d.get("reason", "pr outcome")})'
+        amt = d.get("amount_display") or d.get("amount", "?")
+        return f'Stake #{d.get("stake_id", tid)} refunded ({amt} {d.get("currency", "karma")}, {d.get("reason", "pr outcome")})'
     if k == "stake_completed":
         return f'Stake #{tid} completed (all PRs paid)'
     if k == "credit_earned":
@@ -267,6 +278,7 @@ def events_page(request: Request) -> HTMLResponse:
         ("bounty_created", "Bounties"), ("bounty_paid", "Bounty paid"),
     ("stake_created", "Stakes"), ("stake_paid", "Stake paid"),
     ("stake_locked", "Stakes locked"), ("stake_refunded", "Stakes refunded"),
+    ("stake_abandoned", "Stakes abandoned"),
     ("credit_earned", "Credits earned"), ("credit_spent", "Credits spent"),
     ("credit_transferred", "Transfers"), ("credit_minted", "Minted"),
     ("credit_burned", "Burned"), ("credit_forfeited", "Forfeits"),

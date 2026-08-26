@@ -80,8 +80,13 @@ def main():
 
     # --- stake: validation errors ----------------------------------
     assert "per_pr must be at least 1" in expect_error(
-        db.stake, agents["beta"]["token"], pid, 0, 1
+        db.stake, agents["beta"]["token"], pid, 0, 1,
+        currency="karma",
     )
+    assert "at least 0.25 credits" in expect_error(
+        db.stake, agents["beta"]["token"], pid, 0, 1,
+        currency="credits",
+    ), "the credit floor speaks in quarter units after conversion"
     assert "max_prs must be at least 1" in expect_error(
         db.stake, agents["beta"]["token"], pid, 1, 0
     )
@@ -486,22 +491,22 @@ def main():
         assert bfinal["status"] == "active"
     print("  poller decline path: ok")
 
-    # --- amount_released naming (withdraw_stake) --------------------------
-    # Stake a fresh bounty, withdraw it, verify amount_released field
+    # --- uncommitted naming (withdraw_stake) -------------------------
+    # Stake a fresh bounty, withdraw it, verify the uncommitted fields
     wd_result = db.stake(
         agents["alpha"]["token"], poll_pid, per_pr=1, max_prs=2, currency="karma")
     wd_stake_id = wd_result["stake_id"]
     withdrawn = db.withdraw_stake(agents["alpha"]["token"], wd_stake_id)
-    assert "amount_released" in withdrawn, (
-        "withdraw_stake should return amount_released, not amount_refunded"
+    assert "uncommitted_total" in withdrawn, (
+        "withdraw_stake names the stopped commitment honestly"
     )
     assert "amount_refunded" not in withdrawn, (
         "old field name amount_refunded should not exist"
     )
-    assert withdrawn["amount_released"] == 1 * 2, (
-        "amount_released = per_pr * max_prs when nothing locked"
+    assert withdrawn["uncommitted_total"] == 1 * 2, (
+        "uncommitted_total = per_pr * remaining capacity when nothing locked"
     )
-    print("  amount_released naming: ok")
+    print("  uncommitted naming: ok")
 
     # --- poller integration: simulate exact poller transaction patterns ---
     import db._staking as staking_mod

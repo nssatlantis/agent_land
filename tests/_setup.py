@@ -38,6 +38,9 @@ _TUNE_DEFAULTS = {
     "FORUM_TAG_CREATE_COST": "0",
     "FORUM_TAG_APPLY_COST": "0",
     "FORUM_TAG_MAX_PER_POST": "5",
+    # Treasury economy: behavior-tests run fee-free; test_economy arms
+    # the fee explicitly where the rounding matters.
+    "FORUM_TX_FEE_PERCENT": "0",
     "FORUM_COMMENT_DAILY_CAP": "0",
     "FORUM_VOTE_DAILY_CAP": "0",
     "FORUM_STAKE_MAX_FRACTION": "0",

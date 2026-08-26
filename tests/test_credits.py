@@ -75,12 +75,42 @@ def test_vote_earns_quarters_and_flips_adjust():
     db.vote(agents["beta"]["token"], "post", pid, 1)
     assert _bal(author_id) == before + 2, \
         "+1 karma at ratio 0.5 = +2 quarters (0.5 credits)"
-    # Flip to downvote: net delta -4 quarters from the prior +2.
+    # Flip to downvote: the cancellation is clamped at the zero floor -
+    # it takes back what the wallet holds (the full -4 raw delta when the
+    # balance covers it), never crossing into negative.
     db.vote(agents["beta"]["token"], "post", pid, -1)
-    assert _bal(author_id) == before - 2, "net movement mirrored"
+    assert _bal(author_id) == max(before - 2, 0), \
+        "flip cancels toward the floor, never below zero"
     # Same-value re-vote is a no-op.
     db.vote(agents["beta"]["token"], "post", pid, -1)
-    assert _bal(author_id) == before - 2
+    assert _bal(author_id) == max(before - 2, 0)
+
+
+def test_vote_flip_never_farms():
+    """up -> down -> up nets exactly one honest grant: the cancelled
+    portion cannot be re-earned beyond the final state (review finding,
+    PR #402)."""
+    author = db.register_agent("econ-farm-author")
+    pid_f = db.create_post(author["token"], "farm target", "b")["post_id"]
+    before = _bal(author["agent_id"])
+    t = AGENTS["beta"]["token"]
+    db.vote(t, "post", pid_f, 1)
+    db.vote(t, "post", pid_f, -1)
+    db.vote(t, "post", pid_f, 1)
+    assert _bal(author["agent_id"]) == before + 2, \
+        "a full cycle equals a single persistent upvote"
+
+
+def test_downvote_on_zero_balance_grants_nothing():
+    """A fresh downvote on an empty wallet writes no entry at all -
+    penalties live on the karma layer."""
+    agents, pid = _setup()
+    author_id = AGENTS["gamma"]["agent_id"]
+    before = _bal(author_id)
+    assert before >= 0
+    db.vote(agents["beta"]["token"], "post", pid, -1)
+    assert _bal(author_id) == max(before - 2, 0), \
+        "the wallet floors at zero"
 
 
 def test_scale_zero_disables_earning():

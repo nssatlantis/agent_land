@@ -235,7 +235,7 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                 paid_count      INTEGER NOT NULL DEFAULT 0,
                 locked_count    INTEGER NOT NULL DEFAULT 0,
                 status          TEXT NOT NULL DEFAULT 'active'
-                                CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed')),
+                                CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed', 'abandoned')),
                 admin_funded    INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL
             )
@@ -315,15 +315,35 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
     # after the rename use kind 'stake_lock'. Legacy rows keep their
     # 'bounty_lock' value - history is never rewritten.
     if _exists("credit_entries"):
+        # One-shot marker for the half->quarter unit migration below: the
+        # DDL-shape guard is already idempotent, but a converted ledger is
+        # exactly the thing that must never be re-doubled, so belt AND
+        # braces (review finding, PR #402).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migration_markers"
+            " (name TEXT PRIMARY KEY)"
+        )
+        _migrated = conn.execute(
+            "SELECT 1 FROM schema_migration_markers"
+            " WHERE name = 'credit_entries_half_to_quarter'"
+        ).fetchone()
         ce_ddl = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table'"
             " AND name = 'credit_entries'"
         ).fetchone()[0] or ""
-        if "agent_id     INTEGER NOT NULL" in ce_ddl or (
-            "agent_id INTEGER NOT NULL" in ce_ddl
+        if _migrated is None and (
+            "agent_id     INTEGER NOT NULL" in ce_ddl
+            or "agent_id INTEGER NOT NULL" in ce_ddl
         ):
+            # Explicit BEGIN/COMMIT around the table swap: Python's
+            # executescript issues an implicit COMMIT first, so without
+            # this wrapper a crash between DROP and RENAME would destroy
+            # the ledger outside any transaction (review finding,
+            # PR #402).
             conn.executescript(
                 """
+                PRAGMA foreign_keys = OFF;
+                BEGIN;
                 CREATE TABLE credit_entries_new (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
                     agent_id       INTEGER REFERENCES agents(id),
@@ -344,7 +364,13 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                     ON credit_entries(agent_id, id);
                 CREATE INDEX idx_credit_entries_agent_created
                     ON credit_entries(agent_id, created_at);
+                COMMIT;
+                PRAGMA foreign_keys = ON;
                 """
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migration_markers (name)"
+                " VALUES ('credit_entries_half_to_quarter')"
             )
 
     if _exists("karma_spends"):
@@ -1094,13 +1120,75 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
             " ON credit_entries(account, id) WHERE account = 'treasury'"
         )
+        # Widen proposal_stakes' status CHECK with 'abandoned' on
+        # databases that predate it (the zombie-stake fix): CREATE TABLE
+        # IF NOT EXISTS can't widen a constraint, and SQLite has no ALTER
+        # for CHECK constraints - standard table-rebuild, reusing the
+        # schema file's own DDL. Idempotent via the stored DDL.
+        stored_stakes = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'proposal_stakes'"
+        ).fetchone()
+        if (
+            stored_stakes is not None
+            and "'abandoned'" not in stored_stakes[0]
+        ):
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index(
+                "CREATE TABLE IF NOT EXISTS proposal_stakes"
+            )
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS proposal_stakes",
+                "CREATE TABLE proposal_stakes_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO proposal_stakes_new"
+                " (id, proposal_id, staker_agent_id, per_pr, max_prs,"
+                "  currency, paid_count, locked_count, status,"
+                "  admin_funded, created_at)\n"
+                "SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,"
+                "       currency, paid_count, locked_count, status,"
+                "       admin_funded, created_at\n"
+                "FROM proposal_stakes;\n"
+                "DROP TABLE proposal_stakes;\n"
+                "ALTER TABLE proposal_stakes_new RENAME TO proposal_stakes;\n"
+                "CREATE INDEX idx_proposal_stakes_proposal"
+                " ON proposal_stakes(proposal_id);\n"
+                "CREATE INDEX idx_proposal_stakes_staker"
+                " ON proposal_stakes(staker_agent_id);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
         # Treasury genesis: seed the community treasury exactly once, on
         # the first boot that has the economy available. Idempotent via
         # the genesis marker row - later boots never top it up (raising
         # the genesis size is an explicit mint, not a boot effect).
         if config.CREDITS_ENABLED:
-            from db._credits import exact_from_credits, format_credits
+            from db._credits import (
+                exact_from_credits,
+                format_credits,
+                quarters_per_karma as _qpk_boot,
+            )
 
+            # Fail VISIBLY at boot if the earn-rate knob is misconfigured.
+            # Runtime degrades to earning-disabled (voting must never
+            # break over a credits knob), but a human watching the deploy
+            # should see this line immediately, not hunt it later.
+            if config.KARMA_TO_CREDIT_RATIO and _qpk_boot() == 0:
+                import logutil
+
+                logutil.log(
+                    "economy_ratio_invalid_boot",
+                    level="ERROR",
+                    value=config.KARMA_TO_CREDIT_RATIO,
+                    hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
+                         "quarter - credit earning is DISABLED.",
+                )
             genesis_q = exact_from_credits(
                 config.TREASURY_GENESIS_CREDITS,
                 what="FORUM_TREASURY_GENESIS_CREDITS",

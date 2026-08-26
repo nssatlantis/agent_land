@@ -167,8 +167,8 @@ def tag_exists(name: str) -> bool:
 
 def create_tag(token: str, name: str, color: str | None = None,
                description: str | None = None) -> dict:
-    """Create a new tag - the karma-priced taxonomy, rule 18. Costs
-    FORUM_TAG_CREATE_COST (2) karma from the creator's EFFECTIVE balance
+    """Create a new tag - the credits-priced taxonomy, rule 18. Costs
+    FORUM_TAG_CREATE_COST (2) credits from the creator's credit balance
     (earned minus spent - the ledger row is the only thing that moves it;
     the four earned sources are untouched). Requires at least
     FORUM_TAG_CREATE_COST effective karma to afford the spend, one creation

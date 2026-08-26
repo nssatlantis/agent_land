@@ -85,26 +85,26 @@ def stake(
     opener in the staked denomination (true transfer); on decline/close it
     is refunded."""
     currency = _validate_currency(currency)
-    if per_pr < 1:
-        raise ForumError("per_pr must be at least 1.")
     if max_prs < 1:
         raise ForumError("max_prs must be at least 1.")
     import config
 
-    if currency == "karma":
-        if per_pr != int(per_pr):
-            raise ForumError("karma stakes must be whole numbers.")
-        per_pr = int(per_pr)
     if currency == "credits":
-        # Intake boundary: snap to whole/half/quarter values (nearest,
-        # ties up).
+        # Convert FIRST, floor second: the credit minimum is 0.25 credits
+        # (one quarter), so checking `per_pr < 1` before conversion would
+        # refuse every legal sub-1.0 stake and leave this branch dead
+        # (review finding, PR #402).
         from db._credits import to_quarters
 
         per_pr = int(to_quarters(per_pr))
         if per_pr < 1:
             raise ForumError("per_pr must be at least 0.25 credits.")
     else:
+        if per_pr != int(per_pr):
+            raise ForumError("karma stakes must be whole numbers.")
         per_pr = int(per_pr)
+        if per_pr < 1:
+            raise ForumError("per_pr must be at least 1 karma point.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -127,12 +127,18 @@ def stake(
             )
         total = per_pr * max_prs
         balance = _balance_of(conn, agent["id"], currency)
-        unit = "half-credits" if currency == "credits" else "karma"
         if balance < total:
+            # Currency-aware amounts: karma counts points, credits are
+            # quarter-denominated and must render formatted (the stale
+            # 'half-credits' wording predated the quarters switch).
+            need = _fmt(total, currency)
+            have = _fmt(balance, currency)
+            unit = "karma" if currency == "karma" else "credits"
             raise ForumError(
-                f"staking {per_pr} {unit} per PR x {max_prs} PRs = "
-                f"{total} total requires a {currency} balance of {total}; "
-                f"{agent['name']} has {balance}."
+                f"staking {_fmt(per_pr, currency)} {unit} per PR x "
+                f"{max_prs} PRs = {need} {unit} total requires a "
+                f"{currency} balance of {need}; {agent['name']} has "
+                f"{have}."
             )
         max_frac = config.STAKE_MAX_FRACTION
         placement_fee_q = 0
@@ -195,6 +201,8 @@ def stake(
                 "staker_name": agent["name"],
                 "admin_funded": False,
                 "placement_fee_credits": placement_fee_q,
+                "per_pr_display": _fmt(per_pr, currency),
+                "total_display": _fmt(total, currency),
             },
             conn=conn,
         )
@@ -231,18 +239,22 @@ def admin_stake(
     """Create an admin-funded stake. No deduction - staker_agent_id is
     NULL and no lock debits are created."""
     currency = _validate_currency(currency)
-    if per_pr < 1:
-        raise ForumError("per_pr must be at least 1.")
     if max_prs < 1:
         raise ForumError("max_prs must be at least 1.")
     if currency == "credits":
+        # Convert first, floor second - see stake() (review finding,
+        # PR #402).
         from db._credits import to_quarters
 
-        per_pr = to_quarters(per_pr)
+        per_pr = int(to_quarters(per_pr))
         if per_pr < 1:
             raise ForumError("per_pr must be at least 0.25 credits.")
     else:
+        if per_pr != int(per_pr):
+            raise ForumError("karma stakes must be whole numbers.")
         per_pr = int(per_pr)
+        if per_pr < 1:
+            raise ForumError("per_pr must be at least 1 karma point.")
     with _conn(immediate=True) as conn:
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, superseded_by_id"
@@ -285,6 +297,8 @@ def admin_stake(
                 "currency": currency,
                 "staker_name": admin_user,
                 "admin_funded": True,
+                "per_pr_display": _fmt(per_pr, currency),
+                "total_display": _fmt(total, currency),
             },
             conn=conn,
         )
@@ -357,6 +371,7 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
                 "remaining_prs": (
                     stake_row["max_prs"] - stake_row["paid_count"]
                 ),
+                "per_pr_display": _fmt(stake_row["per_pr"], currency),
             },
             conn=conn,
         )
@@ -371,10 +386,15 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
         new_balance = _balance_of(
             conn, agent["id"], currency
         ) if stake_row["staker_agent_id"] is not None else None
+    # Nothing was escrowed at withdraw time (locks must be zero), so no
+    # money moves here - what ends is the per-PR *commitment* on the
+    # remaining capacity. Name the fields for what they are (review
+    # finding, PR #402).
     out = {
         "stake_id": stake_id,
         "currency": currency,
-        "amount_released": stake_row["per_pr"] * (
+        "uncommitted_per_pr": stake_row["per_pr"],
+        "uncommitted_total": stake_row["per_pr"] * (
             stake_row["max_prs"] - stake_row["paid_count"]
             - stake_row["locked_count"]
         ),
@@ -456,7 +476,7 @@ def lock_stakes_for_pr(
             (proposal_id,),
         ).fetchall()
         locked = 0
-        from events import EVT_STAKE_LOCKED, log_event
+        from events import EVT_STAKE_ABANDONED, EVT_STAKE_LOCKED, log_event
         # Batch balance checks: one grouped query per currency instead of
         # N individual calls.
         non_admin = [b for b in stakes if not b["admin_funded"]]
@@ -491,6 +511,42 @@ def lock_stakes_for_pr(
             if not b["admin_funded"]:
                 bal = balances[currency].get(b["staker_agent_id"], 0)
                 if bal < b["per_pr"]:
+                    # The wallet fell below the per-PR amount (tags spend
+                    # credits now, so this is reachable): abandon the
+                    # stake loudly instead of skipping silently - a
+                    # silent skip let a zombie stake keep its exposure
+                    # slot while never paying for merged PRs (review
+                    # finding, PR #402).
+                    c.execute(
+                        "UPDATE proposal_stakes SET status = 'abandoned'"
+                        " WHERE id = ? AND status = 'active'",
+                        (b["id"],),
+                    )
+                    log_event(
+                        EVT_STAKE_ABANDONED,
+                        actor_agent_id=b["staker_agent_id"],
+                        target_type="proposal_stake",
+                        target_id=b["id"],
+                        detail={
+                            "stake_id": b["id"],
+                            "proposal_id": proposal_id,
+                            "per_pr": b["per_pr"],
+                            "currency": currency,
+                            "reason": "insufficient_balance",
+                            "balance": bal,
+                            "amount_display": _fmt(b["per_pr"], currency),
+                        },
+                        conn=c,
+                    )
+                    _notify(
+                        c, b["staker_agent_id"], "proposal",
+                        "proposal_stake", b["id"],
+                        f"Your stake #{b['id']} on proposal #{proposal_id} "
+                        "was abandoned: your balance fell below the "
+                        f"{_fmt(b['per_pr'], currency)} {currency} per-PR "
+                        "amount, so it could no longer back PRs.",
+                        actor_agent_id=None,
+                    )
                     continue
                 if currency == "karma":
                     spend_cur = c.execute(
@@ -573,6 +629,7 @@ def lock_stakes_for_pr(
                     "amount": b["per_pr"],
                     "currency": currency,
                     "admin_funded": bool(b["admin_funded"]),
+                    "amount_display": _fmt(b["per_pr"], currency),
                 },
                 conn=c,
             )
@@ -674,6 +731,7 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                         "amount": lk["amount"],
                         "currency": currency,
                         "self_stake": True,
+                        "amount_display": _fmt(lk["amount"], currency),
                     },
                     conn=c,
                 )
@@ -711,6 +769,7 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                         "pr_number": pr_number,
                         "amount": lk["amount"],
                         "currency": currency,
+                        "amount_display": _fmt(lk["amount"], currency),
                     },
                     conn=c,
                 )
@@ -799,6 +858,7 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     "amount": lk["amount"],
                     "currency": currency,
                     "reason": "pr_declined_or_closed",
+                    "amount_display": _fmt(lk["amount"], currency),
                 },
                 conn=c,
             )
@@ -852,6 +912,11 @@ def refund_proposal_stakes(
                     "currency": b["currency"],
                     "amount": b["per_pr"] * (b["max_prs"] - b["paid_count"]),
                     "reason": "proposal_superseded",
+                    "per_pr_display": _fmt(b["per_pr"], b["currency"]),
+                    "amount_display": _fmt(
+                        b["per_pr"] * (b["max_prs"] - b["paid_count"]),
+                        b["currency"],
+                    ),
                 },
                 conn=c,
             )
@@ -906,8 +971,12 @@ def list_proposal_stakes_batch(
 def _stake_totals_batch(
     conn: sqlite3.Connection, proposal_ids: list[int],
 ) -> dict[int, dict]:
-    """Batch version of stake_total_for_proposal: {proposal_id: {total,
-    count, available, locked, paid}} for all given proposal IDs at once."""
+    """Batch stake totals per proposal, SPLIT BY CURRENCY:
+    {proposal_id: {'karma': points, 'credits': quarter-credits, 'count':
+    stakes}} over active stakes only.  Summing raw units across
+    currencies produced 4x-skewed numbers wherever credits were involved
+    (review finding, PR #402) - callers render each currency in its own
+    unit instead."""
     if not proposal_ids:
         return {}
     out: dict[int, dict] = {}
@@ -915,62 +984,45 @@ def _stake_totals_batch(
         marks = ",".join("?" * len(chunk))
         rows = conn.execute(
             f"""
-            SELECT proposal_id,
+            SELECT proposal_id, currency,
                    COALESCE(SUM(
                      per_pr * (max_prs - paid_count - locked_count)
-                   ), 0) AS available,
-                   COALESCE(SUM(per_pr * locked_count), 0) AS locked,
-                   COALESCE(SUM(per_pr * paid_count), 0) AS paid,
+                   ), 0) + COALESCE(SUM(per_pr * locked_count), 0)
+                     + COALESCE(SUM(per_pr * paid_count), 0) AS total,
                    COUNT(*) AS count
             FROM proposal_stakes
             WHERE proposal_id IN ({marks}) AND status = 'active'
-            GROUP BY proposal_id
+            GROUP BY proposal_id, currency
             """,
             chunk,
         ).fetchall()
         for r in rows:
-            out[r["proposal_id"]] = {
-                "total": r["available"] + r["locked"] + r["paid"],
-                "count": r["count"],
-                "available": r["available"],
-                "locked": r["locked"],
-                "paid": r["paid"],
-            }
+            entry = out.setdefault(
+                r["proposal_id"], {"karma": 0, "credits": 0, "count": 0},
+            )
+            entry["karma" if r["currency"] == "karma" else "credits"] = (
+                r["total"]
+            )
+            entry["count"] += r["count"]
     return out
 
 
 def stake_total_for_proposal(
     conn: sqlite3.Connection, proposal_id: int,
 ) -> dict:
-    """Aggregate stake data for a proposal: total stake value (active
-    per_pr x remaining capacity + locked amounts) and stake count. Mixed-
-    currency proposals sum raw units (documented; the per-stake currency
-    rides each listed row)."""
-    active_row = conn.execute(
-        "SELECT COALESCE(SUM("
-        "  per_pr * (max_prs - paid_count - locked_count)"
-        "), 0) AS available,"
-        " COALESCE(SUM(per_pr * locked_count), 0) AS locked,"
-        " COALESCE(SUM(per_pr * paid_count), 0) AS paid,"
-        " COUNT(*) AS count"
-        " FROM proposal_stakes"
-        " WHERE proposal_id = ? AND status = 'active'",
-        (proposal_id,),
-    ).fetchone()
-    return {
-        "total": active_row["available"] + active_row["locked"] + active_row["paid"],
-        "count": active_row["count"],
-        "available": active_row["available"],
-        "locked": active_row["locked"],
-        "paid": active_row["paid"],
-    }
+    """Single-proposal form of _stake_totals_batch (same split-by-
+    currency shape)."""
+    return _stake_totals_batch(conn, [proposal_id]).get(
+        proposal_id, {"karma": 0, "credits": 0, "count": 0},
+    )
 
 
 def list_all_stakes(
     status: str | None = None,
 ) -> list[dict]:
     """All stakes across all proposals, newest first. For the /staking
-    viewer page. Optionally filter by status (active, withdrawn, refunded)."""
+    viewer page. Optionally filter by status (active, withdrawn,
+    refunded, abandoned)."""
     sql = (
         "SELECT b.id, b.proposal_id, b.staker_agent_id, a.name AS staker_name,"
         " b.per_pr, b.max_prs, b.currency, b.paid_count, b.locked_count,"

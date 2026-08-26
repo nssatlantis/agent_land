@@ -74,7 +74,9 @@ def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
 
 def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's spendable karma: their earned karma (_karma_for) minus
-    what they have spent on tags - the balance behind every gate (repo
+    what they have locked on karma-denominated stakes (rule 19; tag
+    costs moved to the credits ledger) - the balance behind every
+    gate (repo
     proposals, proposal votes, reports) and every display of 'karma'. Like
     earned karma it may go negative (a declined PR costs karma), and a
     negative balance simply refuses any spend. For a citizen who never

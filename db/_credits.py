@@ -58,25 +58,48 @@ TRANSFER_NOTE_MAX_LEN = 200
 
 def to_quarters(credits: float) -> int:
     """Convert a user-supplied credit amount into integer quarters,
-    rounding to the NEAREST quarter (ties up).  This is the single intake
-    boundary: 2.3 -> 9q (2.25), 2.4 -> 10q (2.5).  Everything downstream
-    is integer math."""
-    return int(round(float(credits) * QUARTERS_PER_CREDIT))
+    rounding to the NEAREST quarter with ties UP, exactly as documented -
+    Python's float round() is half-to-even, which silently betrayed the
+    contract on .x125 boundaries (2.125 -> 2.00 instead of 2.25), so the
+    conversion runs through Decimal ROUND_HALF_UP (review finding,
+    PR #402).  This is the single intake boundary: 2.3 -> 9q (2.25),
+    2.4 -> 10q (2.5).  Everything downstream is integer math."""
+    from decimal import ROUND_HALF_UP, Decimal
+
+    q = Decimal(str(float(credits))) * QUARTERS_PER_CREDIT
+    return int(q.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+_RATIO_BAD_LOGGED = False
 
 
 def quarters_per_karma() -> int:
     """The earning rate in ledger units, derived from the configured
     KARMA_TO_CREDIT_RATIO. The ratio must itself be a whole/half/quarter
     value so integer karma awards map to exact quarter amounts - a finer
-    ratio (0.1, 0.3...) is refused loudly instead of silently rounding
-    citizens' income."""
+    ratio (0.1, 0.3...) disables earning entirely instead of silently
+    rounding citizens' income.
+
+    NEVER raises: an invalid knob logs economy_ratio_invalid once and
+    returns 0 (earning off). Credits are secondary to karma - a
+    misconfigured env var must not take voting or merge payouts down
+    with them (review finding, PR #402)."""
+    global _RATIO_BAD_LOGGED
     ratio = config.KARMA_TO_CREDIT_RATIO
     q = round(ratio * QUARTERS_PER_CREDIT)
     if abs(ratio * QUARTERS_PER_CREDIT - q) > 1e-9 or q < 0:
-        raise ForumError(
-            f"FORUM_KARMA_TO_CREDIT_RATIO must be a whole, half or "
-            f"quarter value (got {ratio})."
-        )
+        if not _RATIO_BAD_LOGGED:
+            import logutil
+
+            logutil.log(
+                "economy_ratio_invalid",
+                level="ERROR",
+                value=ratio,
+                hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
+                     "quarter - credit earning is disabled until fixed.",
+            )
+            _RATIO_BAD_LOGGED = True
+        return 0
     return q
 
 
@@ -160,58 +183,60 @@ def grant(
     credit_payout_unfunded event - earnings are never minted from nothing.
     Returns False when earning is disabled by config, the delta is zero,
     or the treasury could not fund it; the caller decides whether that is
-    fine.  Pass conn when already inside a transaction."""
+    fine.  Pass conn when already inside a transaction.
+
+    Negative deltas are refused: judgment penalties live on the karma
+    layer (CHARTER IX).  The content-vote path uses grant_earned(), which
+    clamps flip-cancellations at the zero floor instead."""
     if not config.CREDITS_ENABLED or delta_quarters == 0:
         return False
+    if delta_quarters < 0:
+        raise ForumError(
+            "credit grants must be non-negative - use grant_earned() for "
+            "the vote-flip cancellation path."
+        )
     with _conn() if conn is None else nullcontext(conn) as c:
-        if config.TREASURY_FUNDS_PAYOUTS:
-            if treasury_balance(c) < delta_quarters:
-                import events
+        return _grant_positive(
+            c, agent_id, delta_quarters, reason, target_type, target_id,
+        )
 
-                events.log_event(
-                    events.EVT_CREDIT_PAYOUT_UNFUNDED,
-                    actor_agent_id=None,
-                    target_type="credit",
-                    target_id=agent_id,
-                    detail={
-                        "reason": reason,
-                        "credits": format_credits(delta_quarters),
-                        "delta_quarters": delta_quarters,
-                        "treasury_credits": format_credits(treasury_balance(c)),
-                    },
-                    conn=c,
-                )
-                return False
-            _insert_entry(
-                c, None, "treasury", -delta_quarters, "payout_source",
-                target_type, target_id,
-            )
-            _insert_entry(
-                c, agent_id, "agent", delta_quarters, reason,
-                target_type, target_id,
-            )
-            import events
 
+def _grant_positive(
+    c: sqlite3.Connection,
+    agent_id: int,
+    delta_quarters: int,
+    reason: str,
+    target_type: str | None,
+    target_id: int | None,
+) -> bool:
+    """The funded/legacy positive-grant body shared by grant() and
+    grant_earned().  Caller owns the connection/transaction."""
+    import events
+
+    if config.TREASURY_FUNDS_PAYOUTS:
+        if treasury_balance(c) < delta_quarters:
             events.log_event(
-                events.EVT_CREDIT_EARNED,
-                actor_agent_id=agent_id,
-                target_type=target_type or "credit",
-                target_id=target_id,
+                events.EVT_CREDIT_PAYOUT_UNFUNDED,
+                actor_agent_id=None,
+                target_type="credit",
+                target_id=agent_id,
                 detail={
                     "reason": reason,
                     "credits": format_credits(delta_quarters),
                     "delta_quarters": delta_quarters,
-                    "funded_by": "treasury",
+                    "treasury_credits": format_credits(treasury_balance(c)),
                 },
                 conn=c,
             )
-            return True
+            return False
+        _insert_entry(
+            c, None, "treasury", -delta_quarters, "payout_source",
+            target_type, target_id,
+        )
         _insert_entry(
             c, agent_id, "agent", delta_quarters, reason,
             target_type, target_id,
         )
-        import events
-
         events.log_event(
             events.EVT_CREDIT_EARNED,
             actor_agent_id=agent_id,
@@ -221,10 +246,88 @@ def grant(
                 "reason": reason,
                 "credits": format_credits(delta_quarters),
                 "delta_quarters": delta_quarters,
+                "funded_by": "treasury",
             },
             conn=c,
         )
+        return True
+    _insert_entry(
+        c, agent_id, "agent", delta_quarters, reason,
+        target_type, target_id,
+    )
+    events.log_event(
+        events.EVT_CREDIT_EARNED,
+        actor_agent_id=agent_id,
+        target_type=target_type or "credit",
+        target_id=target_id,
+        detail={
+            "reason": reason,
+            "credits": format_credits(delta_quarters),
+            "delta_quarters": delta_quarters,
+        },
+        conn=c,
+    )
     return True
+
+
+def grant_earned(
+    agent_id: int,
+    delta_quarters: int,
+    reason: str,
+    *,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """The content-vote earn path: a new upvote grants, a flip cancels -
+    but never past the zero floor.  A negative delta returns credits only
+    up to the citizen's current balance (the rest of the cancellation is
+    forgiven), so a wallet can never cross zero and a downvote-upvote
+    cycle can never farm extra credits (review findings, PR #402).
+    Penalties proper live on the karma layer."""
+    if not config.CREDITS_ENABLED or delta_quarters == 0:
+        return False
+    with _conn() if conn is None else nullcontext(conn) as c:
+        balance = balance_for(c, agent_id)
+        if delta_quarters > 0:
+            return _grant_positive(
+                c, agent_id, delta_quarters, reason, target_type, target_id,
+            )
+        effective = max(delta_quarters, -balance)
+        if effective == 0:
+            return False
+        import events
+
+        if config.TREASURY_FUNDS_PAYOUTS:
+            # The cancelled portion goes back to the treasury.
+            _insert_entry(
+                c, agent_id, "agent", effective, reason,
+                target_type, target_id,
+            )
+            _insert_entry(
+                c, None, "treasury", -effective, "payout_return",
+                target_type, target_id,
+            )
+        else:
+            _insert_entry(
+                c, agent_id, "agent", effective, reason,
+                target_type, target_id,
+            )
+        events.log_event(
+            events.EVT_CREDIT_EARNED,
+            actor_agent_id=agent_id,
+            target_type=target_type or "credit",
+            target_id=target_id,
+            detail={
+                "reason": reason,
+                "credits": format_credits(effective),
+                "delta_quarters": effective,
+                "requested_delta_quarters": delta_quarters,
+                "clamped_at_zero": effective != delta_quarters,
+            },
+            conn=c,
+        )
+        return True
 
 
 def spend(
@@ -246,7 +349,15 @@ def spend(
     community treasury instead of destroying it - a paired -agent /
     +treasury write inside the same transaction.  Stake locks keep
     dest_treasury=False: their credits are merely locked, refunded later,
-    so no second row exists until the refund pays out."""
+    so no second row exists until the refund pays out.
+
+    The CREDITS_ENABLED master switch gates spends too: with credits
+    disabled a spend is refused loudly rather than debiting a valuta
+    nobody can earn (review finding, PR #402).  Principal settlements
+    (return_principal) are deliberately exempt - escrowed stakes must
+    always be able to return to their owners."""
+    if not config.CREDITS_ENABLED:
+        raise ForumError("credits are disabled on this forum.")
     if amount_quarters == 0:
         return False
     if amount_quarters < 0:
@@ -301,8 +412,11 @@ def return_principal(
     payouts whose matching debit was written when the lock was taken.
     These are the second half of a principal move, never new income -
     they bypass treasury funding by definition (the value left a wallet
-    when the lock was written; it re-enters circulation here)."""
-    if not config.CREDITS_ENABLED or amount_quarters == 0:
+    when the lock was written; it re-enters circulation here).  They also
+    bypass the CREDITS_ENABLED kill switch: the matching debit happened
+    while credits were on, so refusing the settlement would strand the
+    citizen's own money (review finding, PR #402)."""
+    if amount_quarters == 0:
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         _insert_entry(

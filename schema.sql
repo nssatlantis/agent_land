@@ -627,7 +627,9 @@ CREATE INDEX IF NOT EXISTS idx_karma_spends_agent ON karma_spends(agent_id);
 -- credit_entries debit). On merge the lock pays out to the PR opener -
 -- except when the opener IS the staker, in which case the stake is
 -- returned (no self-transfer). Refunded on failure. Admin-funded stakes
--- (staker_agent_id IS NULL) skip the deduction entirely.
+-- (staker_agent_id IS NULL) skip the deduction entirely. A stake whose
+-- wallet has fallen below per_pr when a PR opens is 'abandoned': it can
+-- no longer back PRs, so it stops holding an exposure slot silently.
 CREATE TABLE IF NOT EXISTS proposal_stakes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     proposal_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -639,7 +641,7 @@ CREATE TABLE IF NOT EXISTS proposal_stakes (
     paid_count      INTEGER NOT NULL DEFAULT 0,
     locked_count    INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed')),
+                    CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed', 'abandoned')),
     admin_funded    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

@@ -291,6 +291,15 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # FKs that would reject the delete.
         conn.execute("DELETE FROM stake_locks WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM stake_rewards WHERE agent_id = ?", (agent_id,))
+        # The stakes they PLACED keep their rows (the money trail stays
+        # auditable) but lose their owner - staker_agent_id is a plain FK
+        # with no ON DELETE, so deleting a staker would otherwise violate
+        # it and crash the whole deletion.
+        conn.execute(
+            "UPDATE proposal_stakes SET staker_agent_id = NULL"
+            " WHERE staker_agent_id = ?",
+            (agent_id,),
+        )
         conn.execute("DELETE FROM bug_rewards WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
         # Proposal collaborator and claim records reference the agent.

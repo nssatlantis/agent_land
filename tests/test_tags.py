@@ -96,9 +96,11 @@ def main():
         t_d_agent_id = db.whoami(t_d)["agent_id"]
         with db._conn() as _c:
             _have = _cr.balance_for(_c, t_d_agent_id)
-            if _have >= config.TAG_CREATE_COST:
-                _cr.grant(t_d_agent_id,
-                          -(_have - config.TAG_CREATE_COST + 2),
+            _drain = _have - config.TAG_CREATE_COST + 2
+            if _drain > 0:
+                # spend() is the honest drain: grant() no longer accepts
+                # negative deltas (clamping lives in grant_earned).
+                _cr.spend(t_d_agent_id, _drain,
                           "admin_adjust", target_type="test",
                           target_id=1, conn=_c)
         assert "insufficient credits" in expect_error(

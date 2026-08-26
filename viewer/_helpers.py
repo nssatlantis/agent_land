@@ -1014,13 +1014,24 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             )
         elif approved:
             parts.append('<span class="verdict-chip vc-ok">approved</span>')
-    stake_total = p.get("stake_total") if p.get("proposal_kind") else None
-    if not stake_total:
-        bt = (p.get("proposal") or {}).get("stake_total", 0)
-        if bt:
-            stake_total = bt
-    if stake_total:
-        parts.append(f'<span class="verdict-chip vc-ok" title="staked">\U0001f3af staked {_stake_amount(stake_total, "karma")}</span>')
+    staked_parts: list[str] = []
+    if p.get("proposal_kind"):
+        for src in (p, p.get("proposal") or {}):
+            k = src.get("stake_total_karma", 0)
+            c = src.get("stake_total_credits_quarters", 0)
+            if k:
+                staked_parts.append(f"{k} karma")
+            if c:
+                staked_parts.append(
+                    f"{_stake_amount(c, 'credits')} credits"
+                )
+            if staked_parts:
+                break
+    if staked_parts:
+        parts.append(
+            f'<span class="verdict-chip vc-ok" title="staked">'
+            f"\U0001f3af staked {' + '.join(staked_parts)}</span>"
+        )
     elif p.get("last_activity_at"):
         parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
     if parts:
@@ -1214,7 +1225,8 @@ def _render_comment(node: dict) -> str:
     return inner
 
 def _overview_cards(c: dict, proposals_open: int, reports_open: int,
-                    pr_count: int | None, stake_total_karma: int = 0) -> str:
+                    pr_count: int | None, stake_total_karma: int = 0,
+                    stake_total_credits_quarters: int = 0) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     def card(n: int | str, label: str) -> str:
@@ -1231,6 +1243,11 @@ def _overview_cards(c: dict, proposals_open: int, reports_open: int,
     ]
     if stake_total_karma:
         cards.append(card(stake_total_karma, "staked karma"))
+    if stake_total_credits_quarters:
+        cards.append(card(
+            _stake_amount(stake_total_credits_quarters, "credits"),
+            "staked credits",
+        ))
     return '<div class="cards">' + "".join(cards) + "</div>"
 
 def _recent_posts(c: dict) -> str:

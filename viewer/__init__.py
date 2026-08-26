@@ -129,12 +129,20 @@ async def render_overview() -> str:
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
         for b in active_stakes if b.get("currency", "karma") == "karma"
     )
+    stake_total_credits_q = sum(
+        b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
+        for b in active_stakes if b.get("currency") == "credits"
+    )
 
     repo_extra = ""
 
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
-        _overview_cards(c, proposals_open, reports_open, pr_count, stake_total_karma)
+        _overview_cards(
+            c, proposals_open, reports_open, pr_count,
+            stake_total_karma,
+            stake_total_credits_quarters=stake_total_credits_q,
+        )
         + repo_extra
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
@@ -628,13 +636,16 @@ def staking_page(request: Request) -> HTMLResponse:
     """All stakes across proposals, newest first, filterable by status.
     Read-only, like every route here."""
     status = request.query_params.get("status")
-    if status not in (None, "active", "completed", "withdrawn", "refunded"):
+    if status not in (
+        None, "active", "completed", "withdrawn", "refunded", "abandoned",
+    ):
         status = None
     stakes = db.list_all_stakes(status=status)
     tabs = '<div class="tabs">'
     for key, label in ((None, "All"), ("active", "Active"),
                        ("completed", "Completed"),
-                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded")):
+                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded"),
+                       ("abandoned", "Abandoned")):
         href = "/staking" if key is None else f"/staking?status={key}"
         cls = ' class="active" aria-current="page"' if key == status else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'

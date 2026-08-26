@@ -20,7 +20,7 @@ _RECENT_EVENT_KINDS = frozenset({
     "bug_reported", "bug_report_fixed", "tag_created", "tag_applied",
     "tag_retired", "bounty_created", "bounty_paid", "bounty_refunded",
     "stake_created", "stake_locked", "stake_paid", "stake_refunded",
-    "stake_withdrawn", "stake_completed",
+    "stake_withdrawn", "stake_completed", "stake_abandoned",
     "credit_earned", "credit_spent",
     "credit_transferred", "credit_minted", "credit_burned",
     "credit_forfeited", "credit_payout_unfunded",
@@ -41,6 +41,17 @@ _COMPACT_EVENT_KIND_PLACEHOLDERS = ",".join("?" * len(_COMPACT_EVENT_PARAMS))
 
 def _jx(field: str) -> str:
     return f"json_extract(e.detail, '$.{field}')"
+
+
+def _jxd(field: str) -> str:
+    """A detail amount that may carry a pre-formatted display twin
+    ('amount_display'): credits are quarter-denominated and must render
+    as their decimal value, never raw quarters (review finding,
+    PR #402)."""
+    return (
+        f"COALESCE(json_extract(e.detail, '$.{field}_display'),"
+        f" CAST(json_extract(e.detail, '$.{field}') AS TEXT))"
+    )
 
 
 def _event_text_sql() -> str:
@@ -78,7 +89,7 @@ def _event_text_sql() -> str:
         f" WHEN 'tag_applied' THEN 'applied tag \"' || {_jx('tag_name')}"
         f"   || '\" on post #' || e.target_id"
         f" WHEN 'tag_retired' THEN 'retired tag \"' || {_jx('name')} || '\"'"
-        f" WHEN 'stake_created' THEN 'staked ' || {_jx('per_pr')} || ' ' ||"
+        f" WHEN 'stake_created' THEN 'staked ' || {_jxd('per_pr')} || ' ' ||"
         f"   {_jx('currency')} || ' x '"
         f"   || {_jx('max_prs')} || ' PR(s) on proposal #' || {_jx('proposal_id')}"
         f" WHEN 'credit_earned' THEN 'earned ' || {_jx('credits')} ||"
@@ -105,12 +116,16 @@ def _event_text_sql() -> str:
         f"   || ' karma from the bounty on PR #' || {_jx('pr_number')}"
         f"   || CASE json_extract(e.detail, '$.self_stake')"
         f"      WHEN 1 THEN ' (self-stake refund)' ELSE '' END"
-        f" WHEN 'stake_paid' THEN 'earned ' || {_jx('amount')} || ' ' ||"
+        f" WHEN 'stake_paid' THEN 'earned ' || {_jxd('amount')} || ' ' ||"
         f"   {_jx('currency')} || ' from the stake on PR #' || {_jx('pr_number')}"
-        f" WHEN 'stake_refunded' THEN 'stake of ' || {_jx('amount')} || ' ' ||"
+        f" WHEN 'stake_refunded' THEN 'stake of ' || {_jxd('amount')} || ' ' ||"
         f"   {_jx('currency')} || ' refunded (' || {_jx('reason')} || ')'"
-        f" WHEN 'stake_locked' THEN 'stake of ' || {_jx('amount')} || ' ' ||"
+        f" WHEN 'stake_locked' THEN 'stake of ' || {_jxd('amount')} || ' ' ||"
         f"   {_jx('currency')} || ' locked for PR #' || {_jx('pr_number')}"
+        f" WHEN 'stake_abandoned' THEN 'stake of ' || {_jxd('per_pr')} || ' '"
+        f"   || {_jx('currency')} || ' per PR on proposal #'"
+        f"   || {_jx('proposal_id')} || ' abandoned - the wallet fell below"
+        f" the per-PR amount'"
         f" WHEN 'stake_withdrawn' THEN 'withdrew a stake on proposal #'"
         f"   || {_jx('proposal_id')} || ' ('"
         f"   || {_jx('remaining_prs')} || ' PRs remaining)'"

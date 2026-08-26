@@ -12,6 +12,7 @@ from starlette.responses import HTMLResponse
 
 import config
 import db
+from db._credits import format_credits as _fmt_q
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _crumb,
@@ -153,11 +154,17 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             )
     stale_cls = " stale-card" if p.get("stale") else ""
     stake_chip = ""
-    bt = p.get("stake_total", 0)
-    if bt:
+    sk = p.get("stake_total_karma", 0)
+    sc = p.get("stake_total_credits_quarters", 0)
+    if sk or sc:
+        bits = []
+        if sk:
+            bits.append(f"{sk} karma")
+        if sc:
+            bits.append(f"{_fmt_q(sc)} credits")
         stake_chip = (
             f' <span class="verdict-chip vc-ok" title="staked">'
-            f'staked {bt}</span>'
+            f"staked {' + '.join(bits)}</span>"
         )
     return (
         f'<div class="docket-card{stale_cls}">'

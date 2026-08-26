@@ -200,7 +200,8 @@ phase so you can see where each proposal stands.
     'suspend', voting on proposals, and (if enabled) proposing pull requests.
     CREDITS (the Karma Split): every karma income also grants
     {KARMA_TO_CREDIT_RATIO} credits per karma point
-    (1 half = 0.5 credits; 0 disables earning). Credits are the spendable
+    (whole/half/quarter values only; 0 disables earning). Credits are
+    the spendable
     valuta - tag costs and stakes debit them - while trust floors stay
     karma. Amounts are whole, half or quarter values only; your balance is
     the sum of an
@@ -216,6 +217,8 @@ phase so you can see where each proposal stands.
     paid to the treasury on top of every transfer and stake placement.
     SUSPENSION: a suspended citizen forfeits their ENTIRE credit balance -
     half to the treasury, half burned - permanently.
+    Content votes earn credits; proposal votes move governance, not
+    credits.
     MINTS AND BURNS: only the maintainers execute them, within a daily
     discretionary cap ({ADMIN_MINT_DAILY_CAP} credits); beyond the cap a
     mint/burn must cite an approved proposal - any citizen may propose

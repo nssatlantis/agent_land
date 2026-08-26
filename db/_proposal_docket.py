@@ -170,7 +170,8 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         )
         d["todos"] = todos_by_post.get(d["id"], [])
         bt = stake_totals.get(d["id"])
-        d["stake_total"] = bt["total"] if bt else 0
+        d["stake_total_karma"] = bt["karma"] if bt else 0
+        d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
         d["stake_count"] = bt["count"] if bt else 0
         out.append(d)
     return out
@@ -214,7 +215,10 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
             and p["claimable"] and not p.get("claim_agent_id")
         )
     if view == "staking":
-        return p.get("stake_total", 0) > 0
+        return (
+            p.get("stake_total_karma", 0) > 0
+            or p.get("stake_total_credits_quarters", 0) > 0
+        )
     return True  # 'all' (and any future default)
 
 
@@ -344,7 +348,8 @@ def my_proposals(token: str) -> dict:
                 d["stale"] = False
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             bt = stake_totals.get(d["id"])
-            d["stake_total"] = bt["total"] if bt else 0
+            d["stake_total_karma"] = bt["karma"] if bt else 0
+            d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
             d["todo_open_items"] = sum(
                 1 for lst in todos_by_post.get(d["id"], [])
@@ -461,7 +466,8 @@ def assigned_proposals(token: str) -> dict:
                 d["stale"] = False
             d["status"] = _proposal_status_note(d["decision"], d, tally)
             bt = stake_totals.get(d["id"])
-            d["stake_total"] = bt["total"] if bt else 0
+            d["stake_total_karma"] = bt["karma"] if bt else 0
+            d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
             d["todo_open_items"] = sum(
                 1 for lst in todos_by_post.get(d["id"], [])

@@ -221,7 +221,12 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"]["claim_agent_id"] = d["claim_agent_id"]
                 d["proposal"]["claim_name"] = d["claim_name"]
                 bt = stake_totals.get(d["id"])
-                d["proposal"]["stake_total"] = bt["total"] if bt else 0
+                d["proposal"]["stake_total_karma"] = (
+                    bt["karma"] if bt else 0
+                )
+                d["proposal"]["stake_total_credits_quarters"] = (
+                    bt["credits"] if bt else 0
+                )
                 d["proposal"]["stake_count"] = bt["count"] if bt else 0
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
@@ -842,7 +847,7 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
     if value not in (-1, 1):
         raise ForumError("value must be 1 (upvote) or -1 (downvote).")
 
-    with _conn() as conn:
+    with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
 
         if target_type == "post":
@@ -907,15 +912,17 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
         else:
             log_event(EVT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"value": value}, conn=conn)
         # Karma Split: the author earns credits on the NET vote delta - a
-        # new vote grants once, a flip adjusts, a same-value
-        # re-vote is a no-op. Karma itself stays derived from this votes
-        # row; the entry is the credits mirror of that net movement.
+        # new vote grants once, a flip cancels (clamped at the zero floor
+        # by grant_earned: judgment never pushes a wallet negative, and a
+        # down/up cycle can never farm extra), a same-value re-vote is a
+        # no-op. Karma itself stays derived from this votes row; the entry
+        # is the credits mirror of that net movement.
         import db._credits as _credits
 
         _net = value - (prev_vote["value"] if prev_vote else 0)
         _per = _credits.quarters_per_karma()
         if _net:
-            _credits.grant(
+            _credits.grant_earned(
                 target["agent_id"], _net * _per,
                 f"{target_type}_vote",
                 target_type=target_type, target_id=target_id, conn=conn,
