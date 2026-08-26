@@ -131,7 +131,15 @@ def _process_closed_pr(pr: dict) -> None:
         if pr.get("merged_at"):
             if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
                 logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
-                log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                # Skip the pr_merged event when the vote sweep already
+                # logged pr_auto_merged — one event per merge on the board.
+                already_auto = conn.execute(
+                    "SELECT 1 FROM events WHERE kind = ?"
+                    " AND target_type = 'pr' AND target_id = ?",
+                    (EVT_PR_AUTO_MERGED, pr["number"]),
+                ).fetchone()
+                if not already_auto:
+                    log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
                 # Reward the proposal author when a linked PR merges --
                 # 0.25 credits (1 quarter) per merged PR for the
                 # proposal owner who designed the work.
