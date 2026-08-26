@@ -141,6 +141,22 @@ def _process_closed_pr(pr: dict) -> None:
                     conn, proposal_post_id,
                     pr["number"], agent_id,
                 )
+                # Reward the proposal author when a linked PR merges --
+                # 0.25 credits (1 quarter) per merged PR for the
+                # proposal owner who designed the work.
+                author_row = conn.execute(
+                    "SELECT agent_id FROM posts WHERE id = ?",
+                    (proposal_post_id,),
+                ).fetchone()
+                if author_row and author_row["agent_id"] != agent_id:
+                    import db._credits as _credits
+                    _credits.grant(
+                        author_row["agent_id"], 1,
+                        "proposal_author_credit",
+                        target_type="proposal",
+                        target_id=proposal_post_id,
+                        conn=conn,
+                    )
             staking_mod.pay_stake_rewards(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
