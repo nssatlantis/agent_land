@@ -15,6 +15,7 @@ from events import (
     EVT_PR_MERGED, EVT_PR_DECLINED, EVT_PR_CLOSED,
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
     EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED,
+    EVT_CI_BRANCH_RUN,
     log_event,
 )
 import github
@@ -575,6 +576,63 @@ def _pr_conflict_notice(pr: dict, opener: dict) -> None:
         )
 
 
+def _local_branch_cached_ok(pr_number: int, head_sha: str) -> bool | None:
+    """Check ledger cache for a recent branch-mode CI run for this head.
+
+    Returns True if the most recent ci_branch_run for this (pr, head) was
+    ok/success, False if it was a failure/conflict/timeout, None if no
+    record yet. Only 'tests' checks are considered; caller checks
+    CI_FALLBACK_ENABLED before consulting."""
+    if not head_sha:
+        return None
+    try:
+        # Scan recent branch runs — newest first, limit 100 to bound
+        # work; filter in Python because detail is JSON.
+        rows = __import__("events").query_events(kind=EVT_CI_BRANCH_RUN, limit=100)
+    except Exception:
+        # domain: degrade-silently - ledger unavailable, treat as no cache
+        return None
+    for r in rows:
+        d = r.get("detail") or {}
+        if d.get("pr_number") != pr_number:
+            continue
+        if d.get("head_sha") != head_sha:
+            continue
+        if d.get("checks") != "tests":
+            continue
+        # merge_conflict counts as failure for merge gate
+        if d.get("merge_conflict"):
+            return False
+        if "ok" in d:
+            return bool(d["ok"])
+    return None
+
+
+def _ensure_local_branch_ok(pr_number: int, head_sha: str) -> bool:
+    """Run local branch CI on demand for fallback, caching via ledger.
+
+    If a recent ledger entry for this head already exists, reuse it.
+    Otherwise run the sandboxed branch suite headlessly (no cooldown) and
+    return its ok. Any error is a soft failure (local not ok)."""
+    if not config.CI_FALLBACK_ENABLED or not config.CI_RUN_BRANCH_ENABLED:
+        return False
+    cached = _local_branch_cached_ok(pr_number, head_sha)
+    if cached is not None:
+        return cached
+    # No cache — run the suite now (respects CI_RUN_CONCURRENCY via slot pool).
+    try:
+        import server.ci_runner as ci_runner
+        res = ci_runner.run_branch_ci_for_poller(pr_number, checks="tests")
+        # res carries ok/merge_conflict; treat conflict as not ok for gate
+        if res.get("merge_conflict"):
+            return False
+        return bool(res.get("ok"))
+    except Exception as exc:
+        # domain: degrade-silently - poller fallback local CI failure skips merge gate
+        logutil.log("local_branch_ci_failed", pr_number=pr_number, error=str(exc))
+        return False
+
+
 def _pr_vote_sweep(
     open_prs: list[dict] | None = None,
 ) -> list[dict]:
@@ -793,6 +851,63 @@ def _pr_vote_sweep(
             conn, numbers, eligible_decline,
             config.PR_DECLINE_GRACE_SECONDS,
         )
+    # Pre-fetch GH checks for all candidates in parallel — both CI systems run
+    # concurrently: GitHub Actions on the cloud and local Docker on the host.
+    # Either success is sufficient (OR gate), so a burst of PRs gets CI from
+    # whichever finishes first, halving wall time for the poller.
+    gh_results: dict[int, dict] = {}
+    gh_errors: dict[int, Exception] = {}
+    if candidates:
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+            fut_to_num = {
+                pool.submit(github.pr_checks, pr["number"]): pr["number"]
+                for pr, _, _ in candidates
+            }
+            for fut in as_completed(fut_to_num):
+                num = fut_to_num[fut]
+                try:
+                    gh_results[num] = fut.result()
+                except Exception as exc:
+                    # domain: degrade-silently - per-PR GH failure isolated, local may still pass
+                    gh_errors[num] = exc
+                    logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
+    # For any PR where GH is not green, run local branch CI in parallel
+    # on the 2-slot host pool — both CIs truly at the same time, not just
+    # as fallback. This speeds up bursts: GH cloud (2 jobs) + local host
+    # (2 slots) run concurrently, whichever finishes first satisfies the OR
+    # gate. Speculative locals for non-eligible PRs warm the cache so that
+    # when votes later pass the PR is already CI-green.
+    local_results: dict[int, bool] = {}
+    if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
+        pending_locals: list[tuple[int, str]] = []
+        for pr, _, _ in candidates:
+            num = pr["number"]
+            gh = gh_results.get(num)
+            gh_ok = gh is not None and gh.get("state") == "success"
+            if gh_ok:
+                continue
+            head_sha = (gh.get("head_sha") if gh else None) or pr.get("head_sha") or ""
+            cached = _local_branch_cached_ok(num, head_sha)
+            if cached is not None:
+                local_results[num] = cached
+            else:
+                pending_locals.append((num, head_sha))
+        if pending_locals:
+            # Respect 2-slot concurrency — at most 2 locals in parallel
+            with ThreadPoolExecutor(max_workers=min(2, len(pending_locals))) as pool:
+                fut_to_num = {
+                    pool.submit(_ensure_local_branch_ok, num, sha): num  # type: ignore[arg-type]
+                    for num, sha in pending_locals
+                }
+                for fut in as_completed(fut_to_num):
+                    num = fut_to_num[fut]
+                    try:
+                        local_results[num] = bool(fut.result())
+                    except Exception as exc:
+                        # domain: degrade-silently - local run failed, treat as not ok
+                        logutil.log("local_branch_ci_failed", pr_number=num, error=str(exc))
+                        local_results[num] = False
+
     merge_candidates: list[tuple] = []
     for pr, opener, proposal_post_id in candidates:
         number = pr["number"]
@@ -812,12 +927,40 @@ def _pr_vote_sweep(
                 continue
         except Exception:
             continue  # if we can't check labels, skip
-        # Check CI status
-        try:
-            checks = github.pr_checks(number)
-            ci_ok = checks.get("state") in ("success", "unknown")
-        except Exception:
-            ci_ok = False
+        # Check CI status — hybrid OR: either GitHub Actions or local branch CI passing is sufficient
+        head_sha = pr.get("head_sha") or ""
+        gh = gh_results.get(number)
+        gh_err = gh_errors.get(number)
+        if gh is not None:
+            gh_state = gh.get("state")
+            head_sha = gh.get("head_sha") or head_sha
+            gh_ok = gh_state == "success"
+            if not config.CI_FALLBACK_ENABLED:
+                ci_ok = gh_state in ("success", "unknown")
+            else:
+                if gh_ok:
+                    ci_ok = True
+                else:
+                    # Prefer parallel local result if we ran it (both for eligible and speculative)
+                    if number in local_results:
+                        ci_ok = bool(local_results[number])
+                    elif number in eligible_merge:
+                        ci_ok = bool(_local_branch_cached_ok(number, head_sha))
+                    else:
+                        cached = _local_branch_cached_ok(number, head_sha)
+                        ci_ok = bool(cached)
+        elif gh_err is not None:
+            # domain: degrade-silently - GitHub checks unavailable, fallback to local
+            if config.CI_FALLBACK_ENABLED:
+                ci_ok = bool(local_results.get(number, False))
+            else:
+                ci_ok = False
+        else:
+            # No GH result (should not happen) — try local cache only
+            if config.CI_FALLBACK_ENABLED:
+                ci_ok = bool(local_results.get(number, _local_branch_cached_ok(number, head_sha)))
+            else:
+                ci_ok = False
         # Auto-merge eligibility check: collect every candidate; Phase 2
         # runs each through rebase -> CI -> merge in candidate order.
         if ci_ok and number in eligible_merge:
@@ -904,11 +1047,48 @@ def _pr_vote_sweep(
                 number, sha=rebase_result["new_sha"],
             )
             if ci_state != "success":
-                logutil.log(
-                    "pr_vote_ci_after_rebase",
-                    pr_number=number, state=ci_state,
-                )
-                continue
+                # Hybrid fallback: GH Actions may be down (Actions-only outage)
+                # — either CI passing is sufficient per user direction.
+                if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
+                    try:
+                        import server.ci_runner as ci_runner
+                        # Run local branch suite on the same PR; its internal
+                        # merge preview is equivalent to the rebased commit.
+                        local_res = ci_runner.run_branch_ci_for_poller(number, checks="tests")
+                        if local_res.get("merge_conflict"):
+                            logutil.log(
+                                "pr_vote_ci_after_rebase",
+                                pr_number=number, state=ci_state,
+                                local_state="merge_conflict",
+                            )
+                            continue
+                        if not local_res.get("ok"):
+                            logutil.log(
+                                "pr_vote_ci_after_rebase",
+                                pr_number=number, state=ci_state,
+                                local_state="failed",
+                            )
+                            continue
+                        # local passed — fall through to merge (OR gate)
+                        logutil.log(
+                            "pr_vote_local_fallback_merge",
+                            pr_number=number, gh_state=ci_state,
+                            local_duration=local_res.get("duration_seconds"),
+                        )
+                    except Exception as exc:
+                        # domain: degrade-silently - local fallback CI failed, skip merge
+                        logutil.log(
+                            "pr_vote_ci_after_rebase",
+                            pr_number=number, state=ci_state,
+                            local_error=str(exc),
+                        )
+                        continue
+                else:
+                    logutil.log(
+                        "pr_vote_ci_after_rebase",
+                        pr_number=number, state=ci_state,
+                    )
+                    continue
             github.merge_pr(number)
             actions.append({"action": "auto_merge", "pr_number": number})
             with db._conn() as conn:

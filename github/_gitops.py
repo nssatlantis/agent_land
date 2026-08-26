@@ -211,6 +211,55 @@ def _rm_readonly(func, path, _exc):
         pass
 
 
+def _local_seed_available() -> bool:
+    """True if the auto-update checkout (REPO_DIR) is a usable seed."""
+    try:
+        return os.path.isdir(os.path.join(str(config.REPO_DIR), ".git"))
+    except Exception:
+        # domain: degrade-silently - REPO_DIR unreadable, no local seed
+        return False
+
+
+def _try_clone_from_local(parent: str, dest_name: str) -> bool:
+    """Attempt to clone from the local REPO_DIR seed (the auto-update checkout).
+    Returns True on success, False on any failure — caller falls back to
+    origin. The clone is from the local path, then origin is rewired to the
+    canonical GitHub URL so later fetches still hit origin."""
+    if not _local_seed_available():
+        return False
+    # Never use local seed when tests have mocked _repo_url to a bare fixture
+    # (file path) — the fixture's branches are not in REPO_DIR, and cloning
+    # REPO_DIR would give a warm slot with the wrong history, breaking the
+    # pool's no-refetch assertion.
+    try:
+        origin_url = _repo_url(with_token=False)
+    except Exception:
+        # domain: degrade-silently - _repo_url failed, fallback to origin
+        return False
+    if not origin_url.startswith("https://github.com/"):
+        return False
+    local_path = str(config.REPO_DIR)
+    # Never seed from a workspace that is currently checked out as REPO_DIR
+    # itself is the running checkout — cloning it is safe, but only when not
+    # mid-update (update.sh holds a lock; we fail fast and fall back).
+    try:
+        res = _git(parent, "clone", local_path, dest_name, check=False)
+        if res.returncode != 0:
+            return False
+        dest = os.path.join(parent, dest_name)
+        # Rewire origin to the canonical GitHub URL; the local path was just a seed
+        _git(dest, "remote", "set-url", "origin", origin_url, check=False)
+        # Ensure we have the origin/main ref locally — the seed may be on a
+        # different branch if update.sh is mid-checkout; fetch origin/main explicitly
+        # is cheap when already up-to-date and heals a stale seed.
+        _git(dest, "fetch", "--prune", "origin",
+             "+refs/heads/*:refs/remotes/origin/*", check=False)
+        return True
+    except Exception:
+        # domain: degrade-silently - local seed failed, fallback to origin clone
+        return False
+
+
 def _ws_fresh_clone(slot: dict) -> None:
     """Rebuild a slot from scratch - the self-heal path; worst case equals
     today's per-call clone cost."""
@@ -218,6 +267,13 @@ def _ws_fresh_clone(slot: dict) -> None:
     if os.path.isdir(slot["dir"]):
         shutil.rmtree(slot["dir"], onerror=_rm_readonly)
     os.makedirs(parent, exist_ok=True)
+    # Prefer the auto-update checkout as seed (always up-to-date, no network)
+    # — fallback to origin on any failure, never mutate a running workspace.
+    if _try_clone_from_local(parent, os.path.basename(slot["dir"])):
+        _seed_identity(slot["dir"])
+        slot["last_fetch"] = time.monotonic()
+        slot["dirty"] = False
+        return
     _git(parent, "clone", _repo_url(with_token=False),
          os.path.basename(slot["dir"]))
     _seed_identity(slot["dir"])
@@ -353,6 +409,12 @@ def _clone_repo() -> str:
     The clone is anonymous (no auth) since the repo is public; push auth
     is applied push-scoped by ``_push_auth``."""
     tmp = tempfile.mkdtemp(prefix="agentland_merge_")
+    # Prefer local seed (auto-update checkout) for temp clones too — always
+    # up-to-date and no network when REPO_DIR is available.
+    if _try_clone_from_local(tmp, "repo"):
+        repo_dir = os.path.join(tmp, "repo")
+        _seed_identity(repo_dir)
+        return repo_dir
     try:
         _git(tmp, "clone", _repo_url(with_token=False), "repo")
     except RepoError:

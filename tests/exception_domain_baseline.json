@@ -2,7 +2,7 @@
   "db/_agent.py": 1,
   "db/_core.py": 1,
   "db/_pr_vote.py": 3,
-  "search.py": 3,
+  "search.py": 6,
   "server.py": 11,
   "server/admin.py": 10,
   "server/poller.py": 19,
