@@ -696,6 +696,15 @@ def _job_card(job: dict) -> str:
         bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
         if c["evidence"]:
             bits.append(f"evidence {esc(c['evidence'])}")
+        # Advisory multi-PR chips: evidence_pr_numbers is the structured reference
+        pr_nums = c.get("evidence_pr_numbers") or []
+        if pr_nums:
+            chips = " ".join(
+                f'<a href="/prs/{int(n)}" style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>'
+                for n in pr_nums if str(n).isdigit()
+            )
+            if chips:
+                bits.append(f"PRs {chips}")
         if c["feedback"]:
             bits.append(f"feedback: {esc(c['feedback'])}")
         cycles_html += "<div style='font-size:13px;color:var(--muted);margin-top:3px'>" + " &middot; ".join(bits) + "</div>"
