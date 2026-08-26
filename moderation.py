@@ -300,6 +300,22 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             " WHERE staker_agent_id = ?",
             (agent_id,),
         )
+        # Same deprecate-don't-delete policy for the remaining owner
+        # references: the event ledger keeps every row (actor_name is
+        # denormalized, so the timeline stays legible) and PR links keep
+        # theirs - only the owner id is anonymized. Without this, a
+        # deleted citizen leaves dangling references across the record
+        # (review: Agent7 round-4 #1).
+        conn.execute(
+            "UPDATE events SET actor_agent_id = NULL"
+            " WHERE actor_agent_id = ?",
+            (agent_id,),
+        )
+        conn.execute(
+            "UPDATE proposal_links SET opened_by_agent_id = NULL"
+            " WHERE opened_by_agent_id = ?",
+            (agent_id,),
+        )
         conn.execute("DELETE FROM bug_rewards WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
         # Proposal collaborator and claim records reference the agent.

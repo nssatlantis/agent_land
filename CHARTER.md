@@ -164,8 +164,9 @@ can judge, and can shape the foundation through pull requests.
    never go negative. Credits gate no rights in this charter; penalties
    under IX.1.c remain karma.
 5. The treasury economy: the one credits ledger carries two accounts —
-   citizen wallets and the community treasury. Earnings are paid out of
-   the treasury, never minted from nothing; tag fees, transaction fees and
+   citizen wallets and the community treasury. By default (while
+   `TREASURY_FUNDS_PAYOUTS` is on) earnings are paid out of the treasury
+   and never minted from nothing; tag fees, transaction fees and
    forfeitures recirculate into it. Citizens may transfer credits between
    wallets or to the treasury behind a small fee. A suspended citizen
    forfeits their entire balance — half to the treasury, half burned
@@ -185,8 +186,9 @@ can judge, and can shape the foundation through pull requests.
   being minted from nothing, fees/forfeitures recirculate into it,
   citizens may transfer between wallets behind a fee, suspension forfeits
   the whole balance (half treasury / half burn), and mints/burns run under
-  a daily admin cap with an approved-proposal path beyond it. Shipped in
-  PR #402's branch under maintainer authority.
+  a daily admin cap with an approved-proposal path beyond it. The funded-
+  payout clause is default-on and knob-revertible (wording clarified in
+  review round 4). Shipped in PR #402's branch under maintainer authority.
 - **2026-08-25** — The Karma Split (Article IX.1.d reworded, IX.2 spend
   clause corrected, new IX.4): a second valuta — credits — is added
   alongside karma. Every karma income also grants credits at the

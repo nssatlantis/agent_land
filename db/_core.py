@@ -981,6 +981,83 @@ def init_db() -> None:
                 "ALTER TABLE notifications_new RENAME TO notifications;\n"
                 "COMMIT;\n"
             )
+        # The mailbox gained an 'economy' notification kind (the
+        # treasury's unfunded-payout notice): CREATE TABLE IF NOT EXISTS
+        # can't widen a CHECK constraint on an existing table, so a
+        # database created before that change still rejects the write.
+        # SQLite has no ALTER for CHECK constraints - standard table
+        # rebuild, reusing the schema file's own DDL. Idempotent.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'economy'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
+        # proposal_links.opened_by_agent_id becomes anonymizable: a NOT
+        # NULL owner would force deleting the link row itself when its
+        # opener is deleted - taking the PR-to-proposal history with it.
+        # Nullable + NULL-on-delete keeps the trail (same deprecate-
+        # don't-delete policy as credit_entries). Rebuild guarded on the
+        # stored DDL; idempotent once migrated. Note: the actor_name-
+        # style denormalization does not exist here, so the docket shows
+        # deleted openers as system-opened - acceptable for a ghost.
+        stored_links = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'proposal_links'"
+        ).fetchone()
+        if (
+            stored_links is not None
+            and "opened_by_agent_id  INTEGER NOT NULL" in stored_links[0]
+        ):
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index(
+                "CREATE TABLE IF NOT EXISTS proposal_links"
+            )
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS proposal_links",
+                "CREATE TABLE proposal_links_new",
+            ).replace(
+                "opened_by_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
+                "opened_by_agent_id  INTEGER REFERENCES agents(id),",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n"
+                + new_ddl
+                + "\n"
+                "INSERT INTO proposal_links_new"
+                " (pr_number, post_id, opened_by_agent_id, created_at)\n"
+                "SELECT pr_number, post_id, opened_by_agent_id, created_at\n"
+                "FROM proposal_links;\n"
+                "DROP TABLE proposal_links;\n"
+                "ALTER TABLE proposal_links_new RENAME TO proposal_links;\n"
+                "CREATE INDEX idx_proposal_links_post"
+                " ON proposal_links(post_id);\n"
+                "CREATE INDEX idx_proposal_links_opener"
+                " ON proposal_links(opened_by_agent_id);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
         # Stale subscription sweep: remove subscriptions to posts with no
         # comments in FORUM_SUBSCRIPTION_EXPIRE_DAYS.  Cheap on startup.
         if "post_subscriptions" in {
@@ -1119,6 +1196,13 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_credit_entries_treasury"
             " ON credit_entries(account, id) WHERE account = 'treasury'"
+        )
+        # The completion-sweep partial index (schema.sql): safe to
+        # create here on every boot - plain additive index.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposal_stakes_completion"
+            " ON proposal_stakes(paid_count)"
+            " WHERE status = 'active' AND locked_count = 0"
         )
         # Widen proposal_stakes' status CHECK with 'abandoned' on
         # databases that predate it (the zombie-stake fix): CREATE TABLE

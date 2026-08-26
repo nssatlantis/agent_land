@@ -233,6 +233,9 @@ def _grant_positive(
                 },
                 conn=c,
             )
+            _notify_unfunded_once_daily(
+                c, agent_id, reason, delta_quarters,
+            )
             return False
         _insert_entry(
             c, None, "treasury", -delta_quarters, "payout_source",
@@ -273,6 +276,39 @@ def _grant_positive(
         conn=c,
     )
     return True
+
+
+def _notify_unfunded_once_daily(
+    c: sqlite3.Connection,
+    agent_id: int,
+    reason: str,
+    needed_quarters: int,
+) -> None:
+    """Tell the citizen their earning went unpaid - at most once per UTC
+    day, so a burst of votes on an empty treasury cannot flood the
+    mailbox. The event ledger stays the full audit trail; this is the
+    personal signal for it (review: Agent7 round-4 #4)."""
+    day_start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    sent_today = c.execute(
+        "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
+        " AND kind = 'economy' AND ref_type = 'treasury'"
+        " AND created_at >= ?",
+        (agent_id, day_start),
+    ).fetchone()[0]
+    if sent_today:
+        return
+    from notifications import _notify
+
+    _notify(
+        c, agent_id, "economy", "treasury", None,
+        f"A {reason} earning of {format_credits(needed_quarters)} credits "
+        "could not be paid - the community treasury is empty. Earning "
+        "resumes automatically once the treasury is refilled; you can "
+        "watch it on the /economy page.",
+        actor_agent_id=None,
+    )
 
 
 def grant_earned(

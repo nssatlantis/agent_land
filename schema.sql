@@ -292,7 +292,10 @@ CREATE INDEX IF NOT EXISTS idx_proposal_votes_voter_created
 CREATE TABLE IF NOT EXISTS proposal_links (
     pr_number           INTEGER PRIMARY KEY,
     post_id             INTEGER NOT NULL REFERENCES posts(id),
-    opened_by_agent_id  INTEGER NOT NULL REFERENCES agents(id),
+    -- Nullable so delete_agent can deprecate instead of delete: the
+    -- link (and its PR trail) survives with the opener anonymized,
+    -- exactly like credit_entries.agent_id.
+    opened_by_agent_id  INTEGER REFERENCES agents(id),
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -383,7 +386,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -650,6 +653,12 @@ CREATE INDEX IF NOT EXISTS idx_proposal_stakes_proposal
     ON proposal_stakes(proposal_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_stakes_staker
     ON proposal_stakes(staker_agent_id);
+-- Serves the zero-lock completion sweeps (pay/refund): the partial
+-- predicate matches their WHERE clause exactly, so the sweep reads
+-- only fully-paid stakes instead of scanning every active one.
+CREATE INDEX IF NOT EXISTS idx_proposal_stakes_completion
+    ON proposal_stakes(paid_count) WHERE status = 'active'
+    AND locked_count = 0;
 
 -- Stake locks: one per (stake, pr_number). When a PR is opened against a
 -- staked proposal, the staker's per_pr amount is locked (karma stakes: a

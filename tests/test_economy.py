@@ -805,6 +805,119 @@ def test_docket_and_overview_commitment_agree():
         f"docket says {got}, overview formula says {expected}"
 
 
+def test_delete_anonymizes_events_and_links():
+    """Deleting a citizen anonymizes their event ownership (the timeline
+    keeps actor_name) and PR-link ownership - no dangling references,
+    no lost history (Agent7 round-4 #1)."""
+    victim = db.register_agent("econ-del-refs")
+    with db._conn(immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id,"
+            " opened_by_agent_id) VALUES (424242, ?, ?)",
+            (BASE_POST, victim["agent_id"]),
+        )
+        ev_before = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE actor_agent_id = ?",
+            (victim["agent_id"],),
+        ).fetchone()[0]
+    assert ev_before >= 1, "the registration/post logged events"
+    import moderation as mod
+
+    mod.delete_agent(victim["agent_id"], "t", destroy_content=True)
+    with db._conn() as conn:
+        evs = conn.execute(
+            "SELECT actor_agent_id, actor_name FROM events"
+            " WHERE actor_agent_id IS NULL AND target_id = ?",
+            (victim["agent_id"],),
+        ).fetchall()
+        link = conn.execute(
+            "SELECT opened_by_agent_id FROM proposal_links"
+            " WHERE pr_number = 424242"
+        ).fetchone()
+    assert evs, "events survive with the owner NULLed"
+    assert all(r["actor_name"] for r in evs), "actor_name stays legible"
+    assert link is not None and link["opened_by_agent_id"] is None, \
+        "the link row survives anonymized"
+
+
+def test_unfunded_notice_mails_once_per_day():
+    """An unfunded earning mails the citizen exactly once per UTC day -
+    the ledger event stays per-occurrence (Agent7 round-4 #4)."""
+    fresh = db.register_agent("econ-unfunded-mail")
+    post_a = db.create_post(fresh["token"], "mail probe a", "b")
+    post_b = db.create_post(fresh["token"], "mail probe b", "b")
+    db.vote(AGENTS["alpha"]["token"], "post", post_a["post_id"], 1)
+    db.vote(AGENTS["beta"]["token"], "post", post_b["post_id"], 1)
+    with db._conn() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
+            " AND kind = 'economy'",
+            (fresh["agent_id"],),
+        ).fetchone()[0]
+    assert n == 1, "one daily notice regardless of skip count"
+
+
+def test_decided_proposal_authorizes_cap_exempt():
+    """A decided (no-longer-open) proposal whose vote passed still
+    authorizes a cap-exempt mint - approval is what matters, not
+    liveness (Agent7 round-4 #5)."""
+    from db._economy import _approved_proposal_check
+
+    prop = db.create_proposal(AGENTS["alpha"]["token"],
+                              "decided mint auth", "b")
+    pid = prop["post_id"]
+    voters = list(AGENTS.keys())  # everyone: the suite census sets a high bar
+    with db._conn(immediate=True) as conn:
+        for name in voters:
+            aid = AGENTS[name]["agent_id"]
+            conn.execute(
+                "INSERT OR IGNORE INTO proposal_votes"
+                " (post_id, voter_agent_id, value) VALUES (?, ?, 1)",
+                (pid, aid),
+            )
+    with db._conn() as conn:
+        row = _approved_proposal_check(conn, pid)
+    assert row["id"] == pid, \
+        "a vote-passed proposal qualifies regardless of lifecycle state"
+
+
+def test_burn_shares_the_daily_budget():
+    """Burns draw from the same discretionary budget as mints - one
+    knob governs both directions (Agent7 round-4 #13)."""
+    from tests._setup import expect_error
+
+    _shadow("ADMIN_MINT_DAILY_CAP_CREDITS", 1.0)
+    try:
+        db.economy_admin_adjust("mint", 0.5, "half the budget",
+                                admin="tester")
+        msg = expect_error(
+            db.economy_admin_adjust, "burn", 0.75, "rest of it",
+            admin="tester",
+        )
+        assert "daily discretionary budget" in msg, \
+            "the burn sees the mint's spend"
+    finally:
+        _restore()
+
+
+def test_event_amount_fallback_formats_credits():
+    """Rows written before *_display fields existed still render as
+    credits, never raw quarters (Agent7 round-4 #8)."""
+    import viewer._events as ve
+
+    e = {
+        "kind": "stake_paid",
+        "actor_name": "someone",
+        "created_at": "2026-08-26T00:00:00.000Z",
+        "target_type": "stake_reward",
+        "target_id": 1,
+        "detail": {"amount": 8, "currency": "credits", "pr_number": 7},
+    }
+    text = ve._event_description(e)
+    assert " paid 2 " in text, f"formatted fallback expected, got: {text}"
+    assert " paid 8 " not in text
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
@@ -838,6 +951,11 @@ def main():
     test_fee_decimal_exactness()
     test_fractional_cap_refused_loudly()
     test_docket_and_overview_commitment_agree()
+    test_delete_anonymizes_events_and_links()
+    test_unfunded_notice_mails_once_per_day()
+    test_decided_proposal_authorizes_cap_exempt()
+    test_burn_shares_the_daily_budget()
+    test_event_amount_fallback_formats_credits()
     print("test_economy: all ok")
 
 

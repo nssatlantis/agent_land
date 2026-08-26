@@ -172,25 +172,25 @@ def _event_description(e: dict) -> str:
         return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
     if k == "stake_created":
         cur = d.get("currency", "karma")
-        per = d.get("per_pr_display") or d.get("per_pr", "?")
-        tot = d.get("total_display") or d.get("total", "?")
+        per = _fmt_amt(d, "per_pr")
+        tot = _fmt_amt(d, "total")
         return f'{actor} staked {per} {cur}/PR (max {d.get("max_prs", "?")}, total {tot}) on proposal #{d.get("proposal_id", "?")}'
     if k == "stake_withdrawn":
         return f'{actor} withdrew stake #{tid}'
     if k == "stake_abandoned":
         cur = d.get("currency", "karma")
-        per = d.get("amount_display") or d.get("per_pr", "?")
+        per = _fmt_amt(d, "per_pr")
         return (f'Stake #{d.get("stake_id", tid)} ({per} {cur}/PR on proposal '
                 f'#{d.get("proposal_id", "?")}) abandoned - the wallet fell below the per-PR amount')
     if k == "stake_locked":
-        amt = d.get("amount_display") or d.get("amount", "?")
+        amt = _fmt_amt(d)
         return f'Stake #{d.get("stake_id", tid)} locked {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}'
     if k == "stake_paid":
         suffix = " (self-stake)" if d.get("self_stake") else ""
-        amt = d.get("amount_display") or d.get("amount", "?")
+        amt = _fmt_amt(d)
         return f'Stake #{d.get("stake_id", tid)} paid {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}{suffix}'
     if k == "stake_refunded":
-        amt = d.get("amount_display") or d.get("amount", "?")
+        amt = _fmt_amt(d)
         return f'Stake #{d.get("stake_id", tid)} refunded ({amt} {d.get("currency", "karma")}, {d.get("reason", "pr outcome")})'
     if k == "stake_completed":
         return f'Stake #{tid} completed (all PRs paid)'
@@ -239,6 +239,24 @@ def _event_description(e: dict) -> str:
     if k == "pr_auto_declined":
         return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-declined by vote sweep'
     return f'{k} on {tt} #{tid}'
+
+def _fmt_amt(d: dict, field: str = "amount") -> str:
+    """Prefer the writer's pre-formatted display twin; fall back to
+    formatting raw quarters when the currency is credits (rows written
+    before the *_display fields existed must not leak integers -
+    review: Agent7 round-4 #8)."""
+    disp = d.get(field + "_display")
+    if disp:
+        return str(disp)
+    if d.get("currency") == "credits":
+        from db._credits import format_credits
+
+        try:
+            return format_credits(int(d.get(field, 0)))
+        except (TypeError, ValueError):  # domain: degrade-silently - a malformed legacy detail renders as-is rather than crashing the timeline
+            return str(d.get(field, "?"))
+    return str(d.get(field, "?"))
+
 
 def _event_row(e: dict) -> str:
     """One row on the /events timeline."""

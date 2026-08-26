@@ -56,11 +56,13 @@ def day_dt_to_iso(d: datetime) -> str:
 def _approved_proposal_check(
     conn: sqlite3.Connection, proposal_id: int
 ) -> dict:
-    """Validate that `proposal_id` is an OPEN proposal whose vote has
-    passed (net >= the live threshold) - the cap-exempt community path.
-    Returns the post row on success."""
+    """Validate that `proposal_id` is a non-superseded proposal whose
+    vote has passed (net >= the live threshold) - the cap-exempt
+    community path. Decided proposals qualify too: an approved mint is
+    most useful AFTER its implementing PR has landed, and requiring
+    'open' would make the path unusable exactly then (review: Agent7
+    round-4 #5). Returns the post row on success."""
     from db._proposal_status import (
-        _proposal_status_for,
         _proposal_tally_for,
     )
 
@@ -75,11 +77,6 @@ def _approved_proposal_check(
         raise ForumError(
             f"proposal #{proposal_id} was superseded by proposal "
             f"#{row['superseded_by_id']} and is locked - it cannot "
-            "authorize a mint/burn."
-        )
-    if _proposal_status_for(conn, proposal_id) != "open":
-        raise ForumError(
-            f"proposal #{proposal_id} is no longer open - it cannot "
             "authorize a mint/burn."
         )
     tally = _proposal_tally_for(conn, proposal_id, row["proposal_kind"])
@@ -383,6 +380,10 @@ def economy_overview() -> dict:
             "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
             " WHERE account = 'treasury'"
         ).fetchone()[0]
+        # Remaining commitment per active credit stake: everything not
+        # yet paid out, escrowed locks INCLUDED (they can still pay a
+        # future merge) and already-paid capacity excluded. Same formula
+        # as the docket's stake_total_* keys.
         committed = conn.execute(
             "SELECT COALESCE(SUM(per_pr * (max_prs - paid_count)), 0)"
             " FROM proposal_stakes"

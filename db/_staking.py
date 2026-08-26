@@ -162,13 +162,15 @@ def stake(
                     f"({balance}, cap {cap})."
                 )
         if balance < total + placement_fee_q:
-            from db._credits import format_credits as _fc
 
             raise ForumError(
-                f"staking {per_pr} quarters per PR x {max_prs} PRs = "
-                f"{total} plus a {_fc(placement_fee_q)} placement fee "
-                f"requires {_fc(total + placement_fee_q)} credits; "
-                f"{agent['name']} has {_fc(balance)}."
+                f"staking {_fmt_amount(per_pr, 'credits')} credits per "
+                f"PR x {max_prs} PRs = {_fmt_amount(total, 'credits')} "
+                f"credits plus a {_fmt_amount(placement_fee_q, 'credits')}"
+                f" placement fee requires "
+                f"{_fmt_amount(total + placement_fee_q, 'credits')} "
+                f"credits; {agent['name']} has "
+                f"{_fmt_amount(balance, 'credits')}."
             )
         from events import EVT_STAKE_CREATED, log_event
         cur = conn.execute(
