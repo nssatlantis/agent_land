@@ -704,7 +704,7 @@ def main():
                      "idx_posts_proposal_kind_created", "idx_proposal_votes_post_value",
                      "idx_proposal_votes_voter_created", "idx_reports_status",
                      "idx_reports_reporter", "idx_reports_target", "idx_todo_lists_post", "idx_todo_items_list", "idx_posts_delegate_kind_created",
-                     "idx_events_kind_target", "idx_events_kind_created",
+                     "idx_events_kind_created",
                      "idx_events_target", "idx_reports_target_status",
                      "idx_notifications_agent_read_created", "idx_proposal_links_opener")
     _perf_in_list = "('" + "', '".join(_perf_indexes) + "')"

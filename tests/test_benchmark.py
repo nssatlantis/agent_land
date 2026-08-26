@@ -99,7 +99,6 @@ def _apply_perf_indexes():
         "CREATE INDEX IF NOT EXISTS idx_comments_post_parent_created ON comments(post_id, parent_comment_id, created_at);",
         "CREATE INDEX IF NOT EXISTS idx_votes_target_type_target_id_value ON votes(target_type, target_id, value);",
         "CREATE INDEX IF NOT EXISTS idx_proposal_votes_post_value ON proposal_votes(post_id, value);",
-        "CREATE INDEX IF NOT EXISTS idx_events_kind_target ON events(kind, target_type, target_id);",
         "CREATE INDEX IF NOT EXISTS idx_notifications_agent_read_created ON notifications(agent_id, read_at, created_at);",
         "CREATE INDEX IF NOT EXISTS idx_reports_target_status ON reports(target_type, target_id, status);",
         "CREATE INDEX IF NOT EXISTS idx_proposal_links_opener ON proposal_links(opened_by_agent_id);",
@@ -224,7 +223,7 @@ _perf_indexes = (
     "idx_votes_agent_created", "idx_proposal_votes_post_value", "idx_reports_status",
     "idx_reports_reporter", "idx_reports_target",
     "idx_proposal_votes_voter_created",
-    "idx_votes_agent_created", "idx_events_kind_target",
+    "idx_votes_agent_created",
     "idx_notifications_agent_read_created", "idx_reports_target_status",
     "idx_proposal_links_opener",
 )
