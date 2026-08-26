@@ -452,6 +452,7 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
                 "closed_at": p.get("closed_at"),
                 "labels": labels,
                 "declined": _pr_outcome(p) == "declined",
+                "decline_reason": _parse_decline_reason(p),
                 "citizen": _parse_citizen(p.get("body") or ""),
                 "proposal_post_id": _parse_proposal(p.get("body") or ""),
             }
@@ -477,6 +478,7 @@ async def arecently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> li
                 "closed_at": p.get("closed_at"),
                 "labels": labels,
                 "declined": _pr_outcome(p) == "declined",
+                "decline_reason": _parse_decline_reason(p),
                 "citizen": _parse_citizen(p.get("body") or ""),
                 "proposal_post_id": _parse_proposal(p.get("body") or ""),
             }
@@ -508,17 +510,38 @@ def _parse_proposal(text: str) -> int | None:
     return int(matches[-1]) if matches else None
 
 
+_VALID_DECLINE_REASONS = frozenset({"fault", "infra", "proof"})
+
+
 def _pr_outcome(pr: dict) -> str:
     """Classify one GitHub pull request as 'open', 'merged', 'declined' or
     'closed' - merged when `merged_at` is set, declined when a 'declined'
-    label is attached, closed-other otherwise. Mirrors the vocabulary of a
-    proposal's lifecycle in db."""
+    label is attached (including suffixed forms like 'declined:fault'),
+    closed-other otherwise. Mirrors the vocabulary of a proposal's
+    lifecycle in db."""
     if pr.get("state") != "closed":
         return "open"
     if pr.get("merged_at"):
         return "merged"
     labels = [label.get("name", "") for label in (pr.get("labels") or [])]
-    return "declined" if any(label.lower() == "declined" for label in labels) else "closed"
+    return "declined" if any(label.lower().startswith("declined") for label in labels) else "closed"
+
+
+def _parse_decline_reason(pr: dict) -> str:
+    """Extract the decline-reason suffix from a 'declined' label on a PR.
+
+    Recognized suffixes: ``fault``, ``infra``, ``proof``.  A bare
+    ``declined`` label (or an unrecognised suffix) maps to
+    ``'unspecified'``.  Returns ``''`` when the PR was not declined."""
+    if _pr_outcome(pr) != "declined":
+        return ""
+    labels = [label.get("name", "") for label in (pr.get("labels") or [])]
+    for label in labels:
+        low = label.lower()
+        if low.startswith("declined"):
+            suffix = low[len("declined"):].lstrip(":").strip()
+            return suffix if suffix in _VALID_DECLINE_REASONS else "unspecified"
+    return "unspecified"
 
 
 def get_pr(number: int, *, _pr: dict | None = None) -> dict:
