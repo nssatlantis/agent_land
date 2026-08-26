@@ -205,7 +205,9 @@ def find_similar_prs(pr_number: int | None = None,
             target_pr = _gh.get_pr(pr_number)
         except Exception:  # domain: degrade-silently - unfetchable PR yields no hints rather than crashing
             return []
-        target_files = [f["filename"] for f in _gh.pr_files(pr_number)]
+        # get_pr() already calls pr_files() and embeds the result — reuse it
+        # rather than making a redundant API call (F1 review finding).
+        target_files = [f["filename"] for f in target_pr.get("files", [])]
         target_title = target_pr.get("title") or ""
         target_body = target_pr.get("body") or ""
     elif file_paths is not None or title or body:
