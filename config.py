@@ -310,6 +310,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # side entirely.
     "JOB_CREATOR_MIN_KARMA": ("FORUM_JOB_CREATOR_MIN_KARMA", 10, int),
     "JOB_MAX_CYCLES": ("FORUM_JOB_MAX_CYCLES", 7, int),
+    # Official positions (admin-created via the panel): longer-running
+    # civic roles (chronicler, welcome duty) paid from the TREASURY per
+    # accepted cycle instead of escrow - unfunded-skip semantics apply.
+    "JOB_OFFICIAL_MAX_CYCLES": ("FORUM_JOB_OFFICIAL_MAX_CYCLES", 28, int),
     "JOB_EXPIRY_DAYS": ("FORUM_JOB_EXPIRY_DAYS", 7, int),
     "JOB_LISTING_FEE_CREDITS": ("FORUM_JOB_LISTING_FEE_CREDITS", 0.0, float),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),

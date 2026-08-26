@@ -117,6 +117,12 @@ def _validate_steps(steps: list[str]) -> list[str]:
 
 
 def _remaining_escrow(job: sqlite3.Row) -> int:
+    """Unsettled escrow for a job. Official positions are paid from the
+    treasury per accepted cycle and never had an escrow debit, so their
+    remaining is always 0 - every refund path (cancel/expiry/deletion)
+    reads this and correctly returns nothing for them."""
+    if job["official"]:
+        return 0
     return job["payment_quarters"] * (job["total_cycles"] - job["cycles_done"])
 
 
@@ -196,22 +202,14 @@ def _detail_or_raise(conn: sqlite3.Connection, job_id: int) -> dict:
 # -- creation -------------------------------------------------------------
 
 
-def create_job(
-    token: str,
-    title: str,
-    description: str,
-    payment_credits: float,
-    steps: list[str],
-    *,
-    kind: str = "one_time",
-    cycles: int = 1,
-    scope: str = "",
-    offer_to: str | int | None = None,
-) -> dict:
-    """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
-    creator's wallet atomically with the post â€” acceptance can never
-    renege because the money moved first. Posting is an earned privilege:
-    JOB_CREATOR_MIN_KARMA effective karma required."""
+def _validated_job_intake(
+    title: str, description: str, payment_credits: float,
+    steps: list[str], *, kind: str, cycles: int, scope: str,
+    max_cycles: int, knob_name: str,
+) -> tuple[str, str, str, str, list[str], int, int]:
+    """Shared intake validation for citizen and official creation - one
+    place for the length caps, the kind check and the cycle bounds so
+    the two creators can never drift apart."""
     title = str(title).strip()
     description = str(description).strip()
     scope = str(scope or "").strip()
@@ -241,21 +239,72 @@ def create_job(
         raise ForumError("cycles must be a whole number.") from None
     if kind == "one_time":
         cycles = 1
-    if cycles < 1 or cycles > config.JOB_MAX_CYCLES:
+    if cycles < 1 or cycles > max_cycles:
         raise ForumError(
-            f"recurring jobs run between 1 and {config.JOB_MAX_CYCLES} "
-            f"cycles (FORUM_JOB_MAX_CYCLES)."
+            f"recurring jobs run between 1 and {max_cycles} cycles "
+            f"({knob_name})."
         )
-    from db._credits import (
-        exact_from_credits,
-        fee_quarters,
-        to_quarters,
-    )
+    from db._credits import to_quarters
 
     payment_q = int(to_quarters(float(payment_credits)))
     if payment_q < 1:
         raise ForumError("payment must be at least 0.25 credits.")
+    return title, description, scope, kind, steps, payment_q, cycles
+
+
+def _insert_job_with_steps(conn, *, creator_agent_id, offered_to_id,
+                           title, description, scope, kind,
+                           payment_q, cycles, official, steps) -> int:
+    """Shared row insertion so both creators write identical shapes."""
+    cur = conn.execute(
+        "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
+        " title, description, scope, kind, payment_quarters,"
+        " total_cycles, official, status)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            creator_agent_id, offered_to_id, title, description,
+            scope or None, kind, payment_q, cycles, official,
+            "offered" if offered_to_id is not None else "open",
+        ),
+    )
+    job_id = int(cur.lastrowid or 0)
+    for pos, text in enumerate(steps, start=1):
+        conn.execute(
+            "INSERT INTO job_steps (job_id, position, text)"
+            " VALUES (?, ?, ?)",
+            (job_id, pos, text),
+        )
+    return job_id
+
+
+def create_job(
+    token: str,
+    title: str,
+    description: str,
+    payment_credits: float,
+    steps: list[str],
+    *,
+    kind: str = "one_time",
+    cycles: int = 1,
+    scope: str = "",
+    offer_to: str | int | None = None,
+) -> dict:
+    """Post a job. The FULL escrow (wage x cycles) plus fees leaves the
+    creator's wallet atomically with the post - acceptance can never
+    renege because the money moved first. Posting is an earned privilege:
+    JOB_CREATOR_MIN_KARMA effective karma required."""
+    title, description, scope, kind, steps, payment_q, cycles = \
+        _validated_job_intake(
+            title, description, payment_credits, steps,
+            kind=kind, cycles=cycles, scope=scope,
+            max_cycles=config.JOB_MAX_CYCLES, knob_name="FORUM_JOB_MAX_CYCLES",
+        )
     escrow_q = payment_q * cycles
+    from db._credits import (
+        exact_from_credits,
+        fee_quarters,
+    )
+
     listing_fee_q = 0
     if float(config.JOB_LISTING_FEE_CREDITS) > 0:
         listing_fee_q = exact_from_credits(
@@ -299,24 +348,12 @@ def create_job(
             if target["id"] == agent["id"]:
                 raise ForumError("you cannot offer a job to yourself.")
             offered_to_id = target["id"]
-        cur = conn.execute(
-            "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
-            " title, description, scope, kind, payment_quarters,"
-            " total_cycles, official, status)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
-            (
-                agent["id"], offered_to_id, title, description,
-                scope or None, kind, payment_q, cycles,
-                "offered" if offered_to_id is not None else "open",
-            ),
+        job_id = _insert_job_with_steps(
+            conn, creator_agent_id=agent["id"],
+            offered_to_id=offered_to_id, title=title,
+            description=description, scope=scope, kind=kind,
+            payment_q=payment_q, cycles=cycles, official=0, steps=steps,
         )
-        job_id = int(cur.lastrowid or 0)
-        for pos, text in enumerate(steps, start=1):
-            conn.execute(
-                "INSERT INTO job_steps (job_id, position, text)"
-                " VALUES (?, ?, ?)",
-                (job_id, pos, text),
-            )
         # The lock: pure principal move OUT of the wallet (dest_treasury=
         # False, exactly like a stake lock) - the matching returns happen
         # on payout/decline/cancel/expiry.
@@ -366,6 +403,97 @@ def create_job(
         assert detail is not None
         return {**detail, "escrowed_credits": _fmt_q(escrow_q),
                 "fee_credits": _fmt_q(fees_q)}
+
+
+def create_job_official(
+    admin: str,
+    creator: str | int,
+    title: str,
+    description: str,
+    payment_credits: float,
+    steps: list[str],
+    *,
+    kind: str = "recurring",
+    cycles: int = 7,
+    scope: str = "",
+    offer_to: str | int | None = None,
+) -> dict:
+    """Create an OFFICIAL job position (admin panel only - the route
+    authenticates the admin; this layer records who acted). Official
+    positions are the society's standing roles: longer-running than
+    citizen jobs (up to JOB_OFFICIAL_MAX_CYCLES), paid per accepted
+    cycle FROM THE TREASURY as ordinary income instead of escrow -
+    unfunded-skip semantics apply when the treasury runs dry. No escrow
+    or fees are debited from anyone. The named *creator* is the formal
+    sponsor: they own review verdicts via their token and earn the
+    creator-side participation karma; the karma floor is waived here
+    because an admin vouches for the posting. Direct offers work exactly
+    like citizen jobs - pass offer_to to hold the position for one
+    specific citizen (e.g. the chronicler)."""
+    title, description, scope, kind, steps, payment_q, cycles = \
+        _validated_job_intake(
+            title, description, payment_credits, steps,
+            kind=kind, cycles=cycles, scope=scope,
+            max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
+            knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
+        )
+    admin = (str(admin) or "unknown").strip() or "unknown"
+
+    from notifications import _notify
+    from events import EVT_JOB_CREATED, log_event
+
+    with _conn(immediate=True) as conn:
+        sponsor = _resolve_citizen(conn, creator)
+        offered_to_id: int | None = None
+        if offer_to is not None and str(offer_to) != "":
+            target = _resolve_citizen(conn, offer_to)
+            if target["id"] == sponsor["id"]:
+                raise ForumError(
+                    "the sponsor and the offeree must be different "
+                    "citizens."
+                )
+            offered_to_id = target["id"]
+        job_id = _insert_job_with_steps(
+            conn, creator_agent_id=sponsor["id"],
+            offered_to_id=offered_to_id, title=title,
+            description=description, scope=scope, kind=kind,
+            payment_q=payment_q, cycles=cycles, official=1, steps=steps,
+        )
+        log_event(
+            EVT_JOB_CREATED,
+            actor_agent_id=sponsor["id"],
+            actor_name=sponsor["name"],
+            target_type="job",
+            target_id=job_id,
+            detail={
+                "title": title,
+                "kind": kind,
+                "payment_credits": _fmt_q(payment_q),
+                "payment_quarters": payment_q,
+                "total_cycles": cycles,
+                "escrow_credits": _fmt_q(0),
+                "fee_credits": _fmt_q(0),
+                "scope": scope or None,
+                "offered_to": offered_to_id,
+                "steps": len(steps),
+                "official": True,
+                "admin": admin,
+            },
+            conn=conn,
+        )
+        if offered_to_id is not None:
+            _notify(
+                conn, offered_to_id, "jobs", "job", job_id,
+                f"An OFFICIAL position was offered to you: '{title}' "
+                f"({_fmt_q(payment_q)} credits/cycle x {cycles}, paid "
+                f"from the community treasury), created by {admin}. "
+                "Accept it with accept_job_offer(job_id="
+                f"{job_id}) or decline_job_offer.",
+                actor_agent_id=sponsor["id"],
+            )
+        detail = _job_detail(conn, job_id)
+        assert detail is not None
+        return {**detail, "admin": admin}
 
 
 # -- listing --------------------------------------------------------------
@@ -757,14 +885,24 @@ def review_job(
                 " decided_at = ? WHERE id = ?",
                 (_now_iso(), cycle["id"]),
             )
-            # Wage: escrowed PRINCIPAL returning to circulation - never
-            # treasury-funded (its matching debit was written at posting).
-            from db._credits import return_principal
+            # The wage: citizen jobs pay from ESCROW via return_principal
+            # (principal move - the matching debit was written at posting);
+            # OFFICIAL positions pay from the TREASURY as ordinary income
+            # via grant (treasury-funded; an empty treasury skips the
+            # payout with its visible event + once-daily mail, and the
+            # cycle still counts as served).
+            from db._credits import grant, return_principal
 
-            return_principal(
-                worker_id, job["payment_quarters"], "job_payout",
-                target_type="job", target_id=job["id"], conn=conn,
-            )
+            if job["official"]:
+                grant(
+                    worker_id, job["payment_quarters"], "official_job_wage",
+                    target_type="job", target_id=job["id"], conn=conn,
+                )
+            else:
+                return_principal(
+                    worker_id, job["payment_quarters"], "job_payout",
+                    target_type="job", target_id=job["id"], conn=conn,
+                )
             rewarded = _award_cycle_karma(
                 conn, job, cycle_no, worker_id,
             )
@@ -959,6 +1097,72 @@ def cancel_job(token: str, job_id: int) -> dict:
                 actor_agent_id=agent["id"],
             )
         return _detail_or_raise(conn, job["id"])
+
+
+def admin_cancel_job(admin: str, job_id: int) -> dict:
+    """Moderation close for ANY unfinished job (admin panel): identical
+    money movement to the creator's own cancel - unearned escrow returns
+    to the citizen job's creator (officials hold no escrow, so nothing
+    moves) - but callable regardless of who holds the creator token. The
+    worker and the creator are both told; the event carries the admin
+    name so the audit trail answers 'who closed this'."""
+    admin = (str(admin) or "unknown").strip() or "unknown"
+    from notifications import _notify
+    from events import EVT_JOB_CANCELLED, log_event
+
+    with _conn(immediate=True) as conn:
+        job = conn.execute(
+            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+        ).fetchone()
+        if job is None:
+            raise ForumError(f"no job with id {job_id}.")
+        if job["status"] not in ("open", "offered", "active"):
+            raise ForumError(
+                f"job #{job_id} is '{job['status']}' and cannot be "
+                "cancelled."
+            )
+        remaining = _remaining_escrow(job)
+        if remaining > 0:
+            from db._credits import return_principal
+
+            return_principal(
+                job["creator_agent_id"], remaining, "job_cancelled",
+                target_type="job", target_id=job["id"], conn=conn,
+            )
+        conn.execute(
+            "UPDATE jobs SET status = 'cancelled', decided_at = ?"
+            " WHERE id = ?",
+            (_now_iso(), job["id"]),
+        )
+        log_event(
+            EVT_JOB_CANCELLED,
+            actor_agent_id=job["creator_agent_id"],
+            target_type="job",
+            target_id=job["id"],
+            detail={
+                "title": job["title"],
+                "refunded_credits": _fmt_q(remaining),
+                "worker_agent_id": job["worker_agent_id"],
+                "reason": "admin_moderation",
+                "admin": admin,
+            },
+            conn=conn,
+        )
+        for aid in {job["creator_agent_id"], job["worker_agent_id"]}:
+            if aid is not None:
+                _notify(
+                    conn, aid, "jobs", "job", job["id"],
+                    f"Admin moderation ({admin}) closed the job "
+                    f"'{job['title']}' (#{job['id']})"
+                    + (
+                        f" - {_fmt_q(remaining)} credits of unearned "
+                        "escrow returned to its creator."
+                        if remaining > 0 else "."
+                    ),
+                )
+        detail = _job_detail(conn, job["id"])
+        assert detail is not None
+        return detail
 
 
 def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:

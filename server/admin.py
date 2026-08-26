@@ -175,6 +175,7 @@ async def admin_page(request):
     )
     return _admin_page(request, "admin", _admin_nav() + reports_html
                        + _render_economy(request)
+                       + _render_jobs(request)
                        + _render_proposals(request)
                        + _render_citizens(request))
 
@@ -732,6 +733,83 @@ async def create_stake(request):
                             status_code=303)
 
 
+def _render_jobs(request) -> str:
+    """The job-market governance panel: create OFFICIAL positions
+    (treasury-paid, longer cycles, karma floor waived for the sponsor)
+    and close any unfinished job - the money path is the shared one, so
+    a citizen job closed here refunds its unearned escrow exactly like a
+    creator-initiated cancel."""
+    open_jobs = db.list_jobs(view="open", limit=100)["jobs"]
+    active_jobs = [
+        j for j in db.list_jobs(view="all", limit=200)["jobs"]
+        if j["status"] == "active"
+    ]
+    rows = ""
+    for j in open_jobs + active_jobs:
+        who = esc(j["worker"] or "-") if j["status"] == "active" \
+            else ("offer to " + esc(j["worker"] or "the board"))
+        rows += (
+            f"<tr><td>#{j['job_id']}</td><td>{esc(j['title'])}"
+            f"{' <b>OFFICIAL</b>' if j['official'] else ''}</td>"
+            f"<td>{esc(j['status'])}</td><td>{esc(j['creator'])}</td>"
+            f"<td>{who}</td><td>{esc(j['payment_credits'])} cr x "
+            f"{j['cycles_done']}/{j['total_cycles']}</td>"
+            f"<td><form method='post' action='/admin/jobs/{j['job_id']}/close'"
+            f" style='display:inline'>{_csrf_field(request)}"
+            f"<label><input type='checkbox' name='confirm' required> confirm</label> "
+            f"<button type='submit' style='color:#c53030'>close</button></form></td></tr>"
+        )
+    jobs_table = (
+        '<div class="table-wrap"><table>'
+        "<tr><th>id</th><th>title</th><th>status</th><th>creator</th>"
+        "<th>worker</th><th>wage/cycles</th><th>close</th></tr>"
+        + (rows or '<tr><td colspan=7 style="color:var(--muted)">'
+           "No open or in-progress jobs.</td></tr>")
+        + "</table></div>"
+    )
+    create_form = (
+        '<div class="panel"><h2>Create official position</h2>'
+        '<p style="color:var(--muted)">Standing civic roles paid from '
+        "the community treasury per accepted cycle - no escrow is taken. "
+        "The named creator is the formal sponsor: they review the work "
+        "with their token and earn creator-side participation karma; the "
+        "karma floor is waived because an admin vouches. Use offer_to to "
+        "hold the position for one specific citizen (they must still "
+        "accept). Steps go one per line.</p>"
+        '<form method="post" action="/admin/jobs/create-official">'
+        + _csrf_field(request)
+        + '<input name="title" placeholder="title (e.g. Chronicler)" required '
+        'style="width:300px;margin-right:6px">'
+        '<input name="creator" placeholder="creator (name or id)" required '
+        'style="width:170px;margin-right:6px"><br>'
+        '<textarea name="description" placeholder="description" rows="2" '
+        'style="width:640px;margin-top:8px"></textarea><br>'
+        '<textarea name="steps" placeholder="checklist steps - one per line"'
+        ' rows="4" required style="width:640px;margin-top:8px"></textarea><br>'
+        '<input name="payment_credits" placeholder="credits/cycle (e.g. 2)"'
+        ' required style="width:180px;margin-right:6px;margin-top:8px">'
+        '<select name="kind" style="margin-right:6px">'
+        '<option value="recurring">recurring</option>'
+        '<option value="one_time">one_time</option></select> '
+        '<input name="cycles" placeholder="cycles" value="7" '
+        'style="width:80px;margin-right:6px">'
+        '<input name="scope" placeholder="scope hint (e.g. HISTORY.md)" '
+        'style="width:220px;margin-right:6px">'
+        '<input name="offer_to" placeholder="offer to (optional)" '
+        'style="width:190px;margin-right:6px">'
+        '<button type="submit" style="margin-top:8px">create position</button>'
+        "</form></div>"
+    )
+    return (
+        '<div class="panel"><h2>Jobs</h2>'
+        '<p style="color:var(--muted)">Open and in-progress jobs on the '
+        "/jobs board. Closing one returns any unearned escrow to its "
+        "creator and notifies both parties - officials hold no escrow, "
+        "so closing them moves nothing.</p>"
+        + jobs_table + "</div>" + create_form
+    )
+
+
 def _render_economy(request) -> str:
     """The treasury governance panel: mint or burn treasury credits.
     Discretionary adjustments are capped per UTC day; a larger one must
@@ -753,6 +831,66 @@ def _render_economy(request) -> str:
         '<input name="proposal_id" placeholder="proposal # (past cap)" '
         'style="width:150px;margin-right:6px"> '
         '<button type="submit">apply</button></form></div>'
+    )
+
+
+async def create_official_job(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    steps = [
+        s.strip() for s in str(form.get("steps") or "").splitlines()
+        if s.strip()
+    ]
+    try:
+        result = db.create_job_official(
+            _admin_user(request),
+            str(form.get("creator") or ""),
+            str(form.get("title") or ""),
+            str(form.get("description") or ""),
+            float(form.get("payment_credits") or 0),
+            steps,
+            kind=str(form.get("kind") or "recurring"),
+            cycles=int(form.get("cycles") or 1),
+            scope=str(form.get("scope") or ""),
+            offer_to=str(form.get("offer_to") or "") or None,
+        )
+    except (ValueError, TypeError) as exc:
+        # domain: fail-loudly - bad form input surfaces as a flash, never
+        # a silent default.
+        return _flash(request, f"bad form input: {exc}")
+    except db.ForumError as exc:
+        # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
+        return _flash(request, str(exc))
+    return _flash(
+        request,
+        f"OFFICIAL position #{result['job_id']} '{result['title']}' "
+        f"created ({result['payment_credits']} credits/cycle x "
+        f"{result['total_cycles']}, sponsor {result['creator']['name']}) "
+        "- it is on the /jobs board.",
+    )
+
+
+async def admin_close_job(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    job_id = int(request.path_params["id"])
+    try:
+        result = db.admin_cancel_job(_admin_user(request), job_id)
+    except db.ForumError as exc:
+        # domain: fail-loudly - the gate's refusal is the feature; surface it verbatim
+        return _flash(request, str(exc))
+    return _flash(
+        request,
+        f"Job #{job_id} '{result['title']}' closed"
+        + (" (no escrow moved - official position)."
+           if result["official"] else
+           " - unearned escrow returned to its creator."),
     )
 
 
@@ -814,4 +952,6 @@ ROUTES = [
     Route("/admin/proposals/{id:int}/stake", create_stake, methods=["POST"]),
     Route("/admin/reports/{id:int}/resolve", resolve_report, methods=["POST"]),
     Route("/admin/economy/adjust", economy_adjust, methods=["POST"]),
+    Route("/admin/jobs/create-official", create_official_job, methods=["POST"]),
+    Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
 ]

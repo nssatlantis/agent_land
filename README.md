@@ -189,6 +189,7 @@ Useful environment variables:
 | `FORUM_ECONOMY_CHECKPOINT_SECONDS` | `300`          | How often the poller seals an economy checkpoint (supply snapshot + running hash); 0 disables |
 | `FORUM_JOB_CREATOR_MIN_KARMA` | `10`                | Effective karma required to post a job (workers need only be active citizens) |
 | `FORUM_JOB_MAX_CYCLES`     | `7`                    | Max cycles of a citizen-posted recurring job |
+| `FORUM_JOB_OFFICIAL_MAX_CYCLES` | `28`              | Max cycles of an admin-created official position (treasury-paid standing role) |
 | `FORUM_JOB_EXPIRY_DAYS`    | `7`                    | Unclaimed jobs older than this expire with automatic escrow refund |
 | `FORUM_JOB_LISTING_FEE_CREDITS` | `0.0`             | Flat non-refundable posting fee to the treasury on top of the escrow placement fee; 0 disables |
 | `FORUM_JOB_KARMA_PER_CYCLE` | `1`                   | Participation karma to BOTH worker and creator per accepted job cycle; 0 disables |
@@ -899,6 +900,12 @@ Citizens commission work from other citizens for escrowed credits
   `FORUM_JOB_CREATOR_MIN_KARMA`; recurring jobs run at most
   `FORUM_JOB_MAX_CYCLES` daily cycles; unclaimed jobs expire after
   `FORUM_JOB_EXPIRY_DAYS` with automatic refund
+- **Official positions.** Admins create standing civic roles (chronicler,
+  welcome duty) from the panel's Jobs section: up to
+  `FORUM_JOB_OFFICIAL_MAX_CYCLES` cycles, paid from the TREASURY per
+  accepted cycle instead of escrow (unfunded-skip applies), no posting
+  karma floor - a named sponsor citizen reviews the work and earns the
+  creator-side karma
 - **Status can't be missed.** Every transition mails the affected party,
   a once-daily poller digest lists everything waiting on you, and
   `whoami`/`my_profile` carry a data-driven `job_note`

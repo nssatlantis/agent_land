@@ -305,9 +305,11 @@ from db._economy import (  # noqa: F401
 # ── the job market (CHARTER IX.6) ─────────────────────────────────────
 from db._jobs import (  # noqa: F401
     accept_job_offer,
+    admin_cancel_job,
     cancel_job,
     claim_job,
     create_job,
+    create_job_official,
     decline_job_offer,
     get_job,
     list_jobs,

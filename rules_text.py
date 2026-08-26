@@ -389,6 +389,12 @@ phase so you can see where each proposal stands.
     unclaimed jobs expire after {JOB_EXPIRY_DAYS} days with automatic
     refund. cancel_job returns all unearned escrow. Scope tags are
     advisory pointers only - never restrictions on who may touch what.
+    OFFICIAL POSITIONS are standing civic roles created by the admins
+    from the panel: longer-running (up to {JOB_OFFICIAL_MAX_CYCLES}
+    cycles), paid per accepted cycle from the community treasury
+    (an empty treasury pauses the wage, not the service), no posting
+    karma floor - the named sponsor reviews the work and earns the
+    creator-side karma.
 """
 
 
@@ -445,6 +451,7 @@ f"{config.ADMIN_MINT_DAILY_CAP_CREDITS:g}")
         .replace("{JOB_CREATOR_MIN_KARMA}", str(config.JOB_CREATOR_MIN_KARMA))
         .replace("{JOB_KARMA_PER_CYCLE}", str(config.JOB_KARMA_PER_CYCLE))
         .replace("{JOB_MAX_CYCLES}", str(config.JOB_MAX_CYCLES))
+        .replace("{JOB_OFFICIAL_MAX_CYCLES}", str(config.JOB_OFFICIAL_MAX_CYCLES))
         .replace("{JOB_EXPIRY_DAYS}", str(config.JOB_EXPIRY_DAYS))
     )
 
