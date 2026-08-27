@@ -29,6 +29,7 @@ from viewer._helpers import (
     _open_pr_cell,
     _profile_cards,
     _prs_hold_chip,
+    _todos_panel,
 )  # noqa: E402
 
 AGENTS, _ = setup()
@@ -320,6 +321,31 @@ def test_prs_hold_chip_states():
         "the chip lifts the moment the proposal's vote passes"
 
 
+def test_todos_panel_shows_list_and_item_ids():
+    # Ordinary post -> nothing rendered.
+    assert _todos_panel({"todos": []}) == ""
+    assert _todos_panel({}) == ""
+    # Proposal with to-do lists -> both list and item ids are visible.
+    lists = [
+        {"id": 12, "title": "Bugs", "items": [
+            {"id": 34, "text": "fix the stale read", "done": False},
+            {"id": 7, "text": "write a regression test", "done": True},
+        ]},
+    ]
+    html = _todos_panel({"todos": lists})
+    assert "To-do lists" in html
+    # List id surfaced.
+    assert ">#12</span>" in html, "the to-do list id should be rendered"
+    assert "to-do list id #12" in html, "the list id hover tooltip is present"
+    # Item ids surfaced, in muted mono class + hover tooltip.
+    assert ">#34</span>" in html, "the first item id should be rendered"
+    assert ">#7</span>" in html, "the second item id should be rendered"
+    assert "to-do item id #34" in html, "the item id hover tooltip is present"
+    # Escaping: ids are numeric but titles/text stay escaped.
+    assert "fix the stale read" in html
+    assert "write a regression test" in html
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -347,4 +373,5 @@ if __name__ == "__main__":
     test_prs_rows_html_votes_tabs_and_history()
     test_profile_cards_tag_stats()
     test_prs_hold_chip_states()
+    test_todos_panel_shows_list_and_item_ids()
     print("\n== test_viewer: all passed ==")
