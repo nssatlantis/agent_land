@@ -753,6 +753,103 @@ def main():
     )
     print("  leave_proposal on decided proposal refused: ok")
 
+    # 53. supersede_proposal flag overrides (collaborative/claimable/max_collaborators)
+    # 53a. collab -> regular (collaborative=False): chain not copied
+    ca_flags = db.register_agent("flags-author")
+    auth_flags = ca_flags["token"]
+    p_flags = db.create_proposal(auth_flags, "Flags Collab", "body",
+                                 collaborative=True, claimable=True)
+    db.set_todos_for_post(auth_flags, p_flags["post_id"],
+                          [{"title": "W", "items": [{"text": "t1"}]}])
+    c_flags = db.register_agent("flags-collab")
+    db.join_proposal(c_flags["token"], p_flags["post_id"])
+    sup_reg = db.supersede_proposal(
+        auth_flags, p_flags["post_id"],
+        "Flags Regular v2", "revised", collaborative=False,
+    )
+    reg_pid = sup_reg["post_id"]
+    reg_post = db.get_post(reg_pid)
+    assert not reg_post["proposal"]["collaborative"], (
+        "collaborative=False override should produce a regular proposal"
+    )
+    assert reg_post["proposal"].get("claimable", False) is True, (
+        "claimable is independent of the collaborative override - it inherits"
+    )
+    assert db.list_proposal_collaborators(reg_pid) == [], (
+        "collab chain must not copy onto a regular successor"
+    )
+    assert db.get_todos_for_post(reg_pid) == [], (
+        "collab chain lists must not copy onto a regular successor"
+    )
+    print("  supersede collab->regular override drops the chain: ok")
+
+    # 53b. regular -> collab (collaborative=True): opened without collabs
+    p_reg_src = db.create_proposal(auth_flags, "Regular Source", "body")
+    db.set_todos_for_post(auth_flags, p_reg_src["post_id"],
+                          [{"title": "R", "items": [{"text": "r1"}]}])
+    sup_collab = db.supersede_proposal(
+        auth_flags, p_reg_src["post_id"],
+        "Collab From Regular v2", "revised", collaborative=True,
+    )
+    col_pid = sup_collab["post_id"]
+    col_post = db.get_post(col_pid)
+    assert col_post["proposal"]["collaborative"], (
+        "collaborative=True override should produce a collaborative proposal"
+    )
+    assert db.list_proposal_collaborators(col_pid) == [], (
+        "a fresh collaborative successor starts with no collaborators"
+    )
+    new_todos = db.get_todos_for_post(col_pid)
+    assert len(new_todos) == 1 and new_todos[0]["items"][0]["text"] == "r1", (
+        "to-do lists should carry onto a collaborative successor"
+    )
+    print("  supersede regular->collab override opens collaborative: ok")
+
+    # 53c. max_collaborators override on a collab parent
+    p_cap = db.create_proposal(auth_flags, "Cap Source", "body",
+                               collaborative=True)
+    sup_cap = db.supersede_proposal(
+        auth_flags, p_cap["post_id"],
+        "Capped v2", "revised", max_collaborators=4,
+    )
+    with db._conn() as conn:
+        cap_row = conn.execute(
+            "SELECT proposal_config, collaborative FROM posts WHERE id = ?",
+            (sup_cap["post_id"],),
+        ).fetchone()
+    assert cap_row["collaborative"], "max_collaborators implies collaborative"
+    assert '"max_collaborators": 4' in cap_row["proposal_config"], (
+        f"max_collaborators override should re-cap the successor, got {cap_row['proposal_config']}"
+    )
+    print("  supersede max_collaborators override re-caps: ok")
+
+    # 53d. max_collaborators without a collaborative resolution refused
+    p_reg2 = db.create_proposal(auth_flags, "Regular Source 2", "body")
+    err_mc = expect_error(
+        db.supersede_proposal, auth_flags, p_reg2["post_id"],
+        "Bad mc v2", "revised", max_collaborators=3,
+    )
+    assert "requires collaborative" in err_mc, (
+        f"max_collaborators without collaborative should be refused, got: {err_mc}"
+    )
+    print("  supersede max_collaborators without collaborative refused: ok")
+
+    # 53e. inherited collab supersede keeps claimable and mode/goal (regression guard)
+    p_keep = db.create_proposal(auth_flags, "Keep State", "body",
+                                collaborative=True, claimable=True)
+    db.set_proposal_goal(auth_flags, p_keep["post_id"], pr_goal=2)
+    sup_keep = db.supersede_proposal(
+        auth_flags, p_keep["post_id"], "Keep State v2", "revised",
+    )
+    keep_post = db.get_post(sup_keep["post_id"])
+    assert keep_post["proposal"].get("claimable"), (
+        "inherited supersede should keep claimable=True"
+    )
+    assert keep_post["proposal"]["pr_goal"] == 2, (
+        f"inherited supersede should keep pr_goal, got {keep_post['proposal'].get('pr_goal')}"
+    )
+    print("  supersede inherited flag/goal preserved: ok")
+
     print("test_collaborative: all assertions passed")
     import shutil
     shutil.rmtree(_TMP, ignore_errors=True)
