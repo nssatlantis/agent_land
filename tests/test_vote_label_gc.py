@@ -10,6 +10,7 @@ helpers (no GitHub calls), and unit-test the delete-label URL encoding.
 import os
 import sys
 import tempfile
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -208,7 +209,8 @@ def test_maybe_gc_vote_labels_is_time_gated():
 
     real_sweep = poller._sweep_orphan_vote_labels
     poller._sweep_orphan_vote_labels = fake_sweep
-    poller._last_vote_label_gc = 0.0
+    interval = (poller.config.PR_MERGE_POLL_SECONDS or 300) * poller._VOTE_LABEL_GC_MULTIPLIER
+    poller._last_vote_label_gc = time.monotonic() - interval
     try:
         poller._maybe_gc_vote_labels()
         poller._maybe_gc_vote_labels()   # still inside the window -> no-op
