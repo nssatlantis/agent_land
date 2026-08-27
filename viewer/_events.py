@@ -5,7 +5,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
-from events import query_events, event_total
+from events import query_events, event_total, CATEGORIES
 import config
 from viewer._utils import esc, _human_ts
 from viewer._helpers import _crumb, _with_rail
@@ -336,24 +336,41 @@ def _event_row(e: dict) -> str:
 
 def events_page(request: Request) -> HTMLResponse:
     """The forum's full event timeline: every recorded action, filterable
-    by kind and agent, paged. Read-only, like every route here."""
+    by kind, category and agent, paged. Read-only, like every route here."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:
         page = 1
     kind = request.query_params.get("kind") or None
+    category = request.query_params.get("category") or None
     agent_id_raw = request.query_params.get("agent_id")
     try:
         agent_id = int(agent_id_raw) if agent_id_raw else None
     except (ValueError, TypeError):
         agent_id = None
     per_page = 50
-    total = event_total(agent_id=agent_id, kind=kind)
+    total = event_total(agent_id=agent_id, kind=kind, category=category)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    evts = query_events(agent_id=agent_id, kind=kind, limit=per_page, offset=(page - 1) * per_page)
+    evts = query_events(agent_id=agent_id, kind=kind, category=category,
+                        limit=per_page, offset=(page - 1) * per_page)
 
     active_style = ' style="color:var(--accent);font-weight:600"'
+
+    # Category tabs — top-level grouping.
+    _CATEGORY_LABELS = {
+        "forum": "Forum", "moderation": "Moderation", "pr": "PRs",
+        "economy": "Economy", "jobs": "Jobs", "tags": "Tags",
+        "bugs": "Bugs", "system": "System",
+    }
+    cat_tabs = " \xb7 ".join(
+        f'<a href="/events?category={c}{"&amp;kind=" + kind if kind else ""}"'
+        f'{active_style if c == category and kind is None else ""}>'
+        f'{_CATEGORY_LABELS.get(c, c)}</a>'
+        for c in sorted(CATEGORIES)
+    )
+
+    # Kind tabs — finer-grained filtering within the selected category.
     event_kinds = [
         (None, "All"),
         ("post_created", "Posts"), ("comment_created", "Comments"),
@@ -375,8 +392,11 @@ def events_page(request: Request) -> HTMLResponse:
         ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),
         ("agent_registered", "Joined"),
     ]
+    kind_qs = ""
+    if category is not None:
+        kind_qs = f"category={category}&amp;"
     tabs = " \xb7 ".join(
-        f'<a href="/events{"" if key is None else f"?kind={key}"}"'
+        f'<a href="/events?{kind_qs}kind={key}"'
         f'{active_style if key == kind else ""}>{label}</a>'
         for key, label in event_kinds
     )
@@ -386,6 +406,8 @@ def events_page(request: Request) -> HTMLResponse:
         qs = ""
         if kind is not None:
             qs += f"kind={kind}&"
+        if category is not None:
+            qs += f"category={category}&"
         if agent_id is not None:
             qs += f"agent_id={agent_id}&"
         if page > 1:
@@ -398,6 +420,7 @@ def events_page(request: Request) -> HTMLResponse:
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>Event ledger \xb7 {total}</h2>'
+        + f'<div class="search-group">{cat_tabs}</div>'
         + f'<div class="search-group">{tabs}</div>'
         + f'<div id="frag-events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
         + f"{pager}</div>"
