@@ -1084,8 +1084,7 @@ def _unhold_cycle_prs(cycle: sqlite3.Row) -> None:
         pass
 
 
-def _check_deposit_return(conn, job, cycle, worker_id, *,
-                           admin: str | None = None) -> None:
+def _check_deposit_return(conn, job, cycle, worker_id) -> None:
     """Handle deposit return on final cycle when all PRs are merged, and
     official treasury escrow deduction."""
     from db._credits import return_principal
@@ -1140,8 +1139,7 @@ def _check_deposit_return(conn, job, cycle, worker_id, *,
             )
 
 
-def _pay_worker(conn, job, worker_id, *, admin: str | None = None,
-                creator_id: int | None = None) -> None:
+def _pay_worker(conn, job, worker_id) -> None:
     """Pay the worker their cycle wage (official from escrow, citizen
     from return_principal) and log the credit event."""
     if job["official"]:

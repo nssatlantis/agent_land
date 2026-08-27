@@ -39,6 +39,7 @@ def admin_review_job(
     token.  Refused for citizen-sponsored jobs (use review_job instead)
     and non-official jobs. When punish is True on decline, -2 karma is
     deducted from the worker (like declined PR)."""
+    admin = (str(admin) or "unknown").strip() or "unknown"
     feedback = str(feedback or "").strip()
     if action not in ("accept", "decline"):
         raise ForumError("action must be 'accept' or 'decline'.")
@@ -316,9 +317,7 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
                         if remaining > 0 else "."
                     ),
                 )
-        detail = _job_detail(conn, job["id"])
-        assert detail is not None
-        return detail
+        return _detail_or_raise(conn, job["id"])
 
 
 def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
@@ -330,6 +329,7 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     limbo. Jobs they were working on return to the open board with the
     creator notified. Returns how many jobs were closed."""
     from notifications import _notify
+    from events import EVT_JOB_CANCELLED, log_event
 
     rows = conn.execute(
         "SELECT * FROM jobs WHERE creator_agent_id = ?"
@@ -356,8 +356,6 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
             " WHERE id = ?",
             (_now_iso(), job["id"]),
         )
-        from events import EVT_JOB_CANCELLED, log_event
-
         log_event(
             EVT_JOB_CANCELLED,
             actor_agent_id=agent_id,
