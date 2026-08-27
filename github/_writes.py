@@ -468,6 +468,16 @@ def remove_pr_label(number: int, label: str) -> None:
     _core._request("DELETE", f"issues/{number}/labels/{encoded}", ok_404=True)
 
 
+def delete_pr_label_definition(label: str) -> None:
+    """Delete a repo-level label *definition* (not just its association with
+    one PR - that is remove_pr_label).  Each distinct vote tally creates a
+    permanent definition via add_pr_label's POST; this removes the stale
+    definition so the repo's label list does not accumulate them forever.
+    Ignores 404 (label already gone)."""
+    encoded = urllib.parse.quote(label, safe="")
+    _core._request("DELETE", f"labels/{encoded}", ok_404=True)
+
+
 def update_pr_title(number: int, title: str) -> None:
     """Rename a pull request (PATCH /pulls/{n}, title only).  Used by the
     poller to strip the 'WIP: ' prefix when a proposal hold lifts."""
