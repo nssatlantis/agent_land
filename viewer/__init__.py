@@ -867,6 +867,9 @@ def jobs_page(request: Request) -> HTMLResponse:
         f"{counts['completed']} completed"
         f"</p>"
     )
+    pager_top = _jobs_pager(tab, page, total_pages, top=True)
+    pager_bot = _jobs_pager(tab, page, total_pages)
+    meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \xb7 {total} jobs</p>" if total else ""
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Jobs</h2>'
@@ -877,8 +880,11 @@ def jobs_page(request: Request) -> HTMLResponse:
         "nothing (their escrow stays held until the job ends). Scope "
         "tags are advisory pointers, never restrictions.</p>"
         + strip
+        + meta
         + tabs
+        + pager_top
         + cards
+        + pager_bot
         + "</div>"
     )
     return _page("jobs", _with_rail(body), section="jobs")
