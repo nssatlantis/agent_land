@@ -364,7 +364,10 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
     Used by local rehearsal (repo_ci_run(files=...)) so an agent can test
     an unpushed diff without a PR."""
     for c in changes:
-        path = c["path"]
+        # Host-side write — must be gated like every other write path.
+        # _changes_for_repo_propose is shape-only (see its docstring), so
+        # validate here before any os.path.join / open.
+        path = github._core._validate_path(c["path"])
         full = os.path.join(tree, path)
         # Content write — create/overwrite.
         if "content" in c:
@@ -404,7 +407,9 @@ def _prepare_local_tree(changes: list[dict], slot: int | None = None) -> tuple[s
     tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
     _ensure_clone(tree)
     main_sha = _refresh_main(tree)
-    # Overlay the draft changes — each validated via repo_helpers before arrival.
+    # Overlay the draft changes — each path is gated by
+    # github._core._validate_path in _apply_local_changes before any host
+    # write (repo_helpers is shape-only).
     _apply_local_changes(tree, changes)
     # Head is main plus overlay; hash the overlay for an auditable sha.
     overlay_hash = hashlib.sha256(
