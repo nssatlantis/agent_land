@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -476,6 +477,494 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
         from events import EVT_REPORT_RESOLVED, log_event
         log_event(EVT_REPORT_RESOLVED, target_type=report["target_type"], target_id=report["target_id"], detail={"status": status}, conn=conn)
         return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
+
+
+def admin_set_collaborative(admin: str, post_id: int, collaborative: bool) -> dict:
+    """Admin toggle for a proposal's collaborative flag.
+
+    Bypasses the author check of the user-facing flow but keeps every
+    invariant: the post must be a proposal, not superseded/locked, and not
+    already collaboratively closed. Turning collaborative *off* refuses while
+    collaborators remain or live PRs are in flight (otherwise their branches
+    would outlive the mode). Turning it *on* refuses when the proposal is no
+    longer open (merged/declined/closed)."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, proposal_kind, collaborative, superseded_by_id, collaborative_closed"
+            " FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if row["superseded_by_id"] is not None:
+            from db._proposal_status import _proposal_locked_error
+
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "change collaborative on")
+            )
+        if row["collaborative_closed"]:
+            raise ForumError(
+                f"proposal #{post_id} is already {row['collaborative_closed']} - cannot change collaborative on a closed proposal."
+            )
+        new_val = 1 if collaborative else 0
+        if row["collaborative"] == new_val:
+            return {"post_id": post_id, "collaborative": bool(new_val), "note": "already set"}
+        if not collaborative:
+            cnt = conn.execute(
+                "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?",
+                (post_id,),
+            ).fetchone()[0]
+            if cnt > 0:
+                raise ForumError(
+                    f"proposal #{post_id} has {cnt} collaborator(s); remove them before disabling collaborative."
+                )
+            from db._proposal_status import _live_pr_numbers
+
+            live = _live_pr_numbers(conn, post_id)
+            if live:
+                raise ForumError(
+                    f"proposal #{post_id} has {len(live)} open PR(s) ({', '.join(f'#{n}' for n in live)}) - close them before disabling collaborative."
+                )
+            # Clearing collaborative also clears pr_goal and releases todo claims
+            conn.execute("UPDATE posts SET collaborative = 0, pr_goal = NULL WHERE id = ?", (post_id,))
+            # best-effort: release any todo claims (proposal #140) — not required but keeps board clean
+            try:
+                from db._proposal_todos import release_claims_for_proposal
+
+                release_claims_for_proposal(post_id, conn=conn)
+            except Exception:
+                # domain:degrade-silently — claim release is advisory; collaborative flag already cleared
+                pass
+        else:
+            from db._proposal_status import _proposal_status_for
+
+            status = _proposal_status_for(conn, post_id)
+            if status != "open":
+                raise ForumError(
+                    f"proposal #{post_id} is {status}; only open proposals can be made collaborative."
+                )
+            conn.execute("UPDATE posts SET collaborative = 1 WHERE id = ?", (post_id,))
+        _audit(conn, admin, "admin_set_collaborative", "post", post_id, f"collaborative={'on' if collaborative else 'off'}")
+        from events import EVT_PROPOSAL_EDITED, log_event
+
+        log_event(
+            EVT_PROPOSAL_EDITED,
+            target_type="post",
+            target_id=post_id,
+            detail={"admin": admin, "collaborative": bool(new_val)},
+            conn=conn,
+        )
+        return {"post_id": post_id, "collaborative": bool(new_val)}
+
+
+def admin_set_claimable(admin: str, post_id: int, claimable: bool) -> dict:
+    """Admin toggle for a proposal's claimable flag — same invariants as
+    db.set_claimable but without the author check. Turning off while claimed
+    clears the claim and delegate_id, mirroring the user flow."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT p.id, p.proposal_kind, p.title, p.superseded_by_id, p.delegate_id, p.claimable"
+            " FROM posts p WHERE p.id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if row["superseded_by_id"] is not None:
+            from db._proposal_status import _proposal_locked_error
+
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "change claimable on")
+            )
+        from db._proposal_status import _proposal_status_for
+
+        status = _proposal_status_for(conn, post_id)
+        if status == "merged":
+            raise ForumError(f"proposal #{post_id} is already merged - no changes allowed.")
+        new_val = 1 if claimable else 0
+        if row["claimable"] == new_val:
+            return {"post_id": post_id, "claimable": bool(new_val), "note": "already set"}
+        conn.execute("UPDATE posts SET claimable = ? WHERE id = ?", (new_val, post_id))
+        note = None
+        if not claimable and row["delegate_id"] is not None:
+            claim = conn.execute(
+                "SELECT agent_id FROM proposal_claims WHERE proposal_id = ?", (post_id,)
+            ).fetchone()
+            if claim is not None:
+                conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
+                conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (post_id,))
+                from db._agent import _agent_row
+                from notifications import _notify
+
+                claimer = _agent_row(conn, claim["agent_id"])
+                _notify(
+                    conn,
+                    claim["agent_id"],
+                    "delegation",
+                    "post",
+                    post_id,
+                    f"admin {admin} turned off claiming on proposal #{post_id} ({row['title']}) - your claim has been cleared.",
+                    actor_agent_id=None,
+                )
+                note = f"claim cleared - {claimer['name']} was unclaimed and proposal #{post_id} is unassigned."
+        _audit(conn, admin, "admin_set_claimable", "post", post_id, f"claimable={'on' if claimable else 'off'}")
+        from events import EVT_PROPOSAL_CLAIMABLE_CHANGED, log_event
+
+        log_event(
+            EVT_PROPOSAL_CLAIMABLE_CHANGED,
+            target_type="post",
+            target_id=post_id,
+            detail={"claimable": bool(new_val), "admin": admin},
+            conn=conn,
+        )
+        return {"post_id": post_id, "claimable": bool(new_val), "note": note or f"claimable={'on' if claimable else 'off'}"}
+
+
+def admin_set_max_collaborators(admin: str, post_id: int, max_collaborators: int | None) -> dict:
+    """Admin per-proposal collaborator cap — stored in posts.proposal_config JSON.
+
+    Requires collaborative=1, not superseded/closed, 2..50 when set, None/0 clears
+    to the global default. Refuses when the new cap would be below the current
+    collaborator count (would otherwise orphan members)."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, proposal_kind, collaborative, superseded_by_id, collaborative_closed, proposal_config"
+            " FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if row["superseded_by_id"] is not None:
+            from db._proposal_status import _proposal_locked_error
+
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "change max_collaborators on")
+            )
+        if row["collaborative_closed"]:
+            raise ForumError(
+                f"proposal #{post_id} is already {row['collaborative_closed']} - cannot change cap on a closed proposal."
+            )
+        if not row["collaborative"]:
+            raise ForumError(f"proposal #{post_id} is not collaborative - max_collaborators applies only there.")
+        # Normalise: 0/None clears to default
+        if max_collaborators is not None:
+            try:
+                max_collaborators = int(max_collaborators)
+            except (TypeError, ValueError) as exc:
+                # domain:fail-loudly - bad cap input surfaces as ForumError
+                raise ForumError("max_collaborators must be an integer 2..50 or empty to clear.") from exc
+            if max_collaborators == 0:
+                max_collaborators = None
+            elif not (2 <= max_collaborators <= 50):
+                raise ForumError("max_collaborators must be between 2 and 50 (or empty to clear).")
+        if max_collaborators is not None:
+            cnt = conn.execute(
+                "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?", (post_id,)
+            ).fetchone()[0]
+            if cnt > max_collaborators:
+                raise ForumError(
+                    f"proposal #{post_id} already has {cnt} collaborator(s); cannot set cap to {max_collaborators}."
+                )
+        # Read-modify-write proposal_config JSON
+        cfg: dict = {}
+        if row["proposal_config"]:
+            try:
+                cfg = json.loads(row["proposal_config"])
+                if not isinstance(cfg, dict):
+                    cfg = {}
+            except (json.JSONDecodeError, TypeError):
+                # domain:degrade-silently - malformed config falls back to empty dict, no data lost
+                cfg = {}
+        if max_collaborators is None:
+            cfg.pop("max_collaborators", None)
+        else:
+            cfg["max_collaborators"] = max_collaborators
+        new_config = json.dumps(cfg) if cfg else None
+        conn.execute("UPDATE posts SET proposal_config = ? WHERE id = ?", (new_config, post_id))
+        _audit(
+            conn,
+            admin,
+            "admin_set_max_collaborators",
+            "post",
+            post_id,
+            f"max_collaborators={max_collaborators if max_collaborators is not None else 'default'}",
+        )
+        from events import EVT_PROPOSAL_EDITED, log_event
+
+        log_event(
+            EVT_PROPOSAL_EDITED,
+            target_type="post",
+            target_id=post_id,
+            detail={"admin": admin, "max_collaborators": max_collaborators},
+            conn=conn,
+        )
+        return {"post_id": post_id, "max_collaborators": max_collaborators}
+
+
+def admin_set_pr_goal(admin: str, post_id: int, pr_goal: int | None) -> dict:
+    """Admin PR goal — same invariants as db.set_proposal_goal but admin-bypass."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, proposal_kind, collaborative, collaborative_closed, superseded_by_id"
+            " FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if not row["collaborative"]:
+            raise ForumError(f"proposal #{post_id} is not collaborative.")
+        if row["superseded_by_id"] is not None:
+            from db._proposal_status import _proposal_locked_error
+
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "set the goal on")
+            )
+        if row["collaborative_closed"]:
+            raise ForumError(
+                f"proposal #{post_id} is already {row['collaborative_closed']} - cannot set a goal on a closed proposal."
+            )
+        # Normalise: 0/None/"" clears
+        pr_goal_int: int | None = None
+        if pr_goal is not None and str(pr_goal).strip() != "":
+            try:
+                pr_goal_int = int(pr_goal)
+            except (TypeError, ValueError) as exc:
+                # domain:fail-loudly - bad pr_goal input surfaces as ForumError
+                raise ForumError("pr_goal must be a non-negative integer or empty to clear.") from exc
+            if pr_goal_int is not None and pr_goal_int < 0:
+                raise ForumError("pr_goal must be a non-negative integer.")
+            if pr_goal_int == 0:
+                pr_goal_int = None
+        conn.execute("UPDATE posts SET pr_goal = ? WHERE id = ?", (pr_goal_int, post_id))
+        _audit(conn, admin, "admin_set_pr_goal", "post", post_id, f"pr_goal={pr_goal_int}")
+        from events import EVT_PROPOSAL_GOAL_SET, log_event
+
+        log_event(
+            EVT_PROPOSAL_GOAL_SET,
+            target_type="post",
+            target_id=post_id,
+            detail={"pr_goal": pr_goal_int, "admin": admin},
+            conn=conn,
+        )
+        return {"post_id": post_id, "pr_goal": pr_goal_int}
+
+
+def admin_set_delegate(admin: str, post_id: int, delegate: str | None) -> dict:
+    """Admin delegate — assign or clear the proposal's implementer.
+
+    Empty/None clears the assignment (and any claim). Otherwise resolves the
+    citizen by name or id and sets delegate_id, clearing any prior claim and
+    inserting a matching proposal_claims row when the target differs (so
+    claiming invariants stay consistent). Bypasses author/delegate guards but
+    keeps locked/status checks."""
+    admin = (admin or "unknown").strip() or "unknown"
+    target = (delegate or "").strip()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT p.id, p.proposal_kind, p.title, p.superseded_by_id, p.delegate_id, p.claimable"
+            " FROM posts p WHERE p.id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if row["superseded_by_id"] is not None:
+            from db._proposal_status import _proposal_locked_error
+
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "reassign")
+            )
+        from db._proposal_status import _proposal_status_for
+
+        status = _proposal_status_for(conn, post_id)
+        if status in ("merged", "closed"):
+            raise ForumError(f"proposal #{post_id} is {status} - its delegation cannot be changed.")
+        if not target:
+            if row["delegate_id"] is None:
+                # also clear any stray claim row
+                conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
+                return {"post_id": post_id, "delegate": None, "note": "already unassigned"}
+            conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (post_id,))
+            conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
+            # notify former delegate if known
+            try:
+                from notifications import _notify
+
+                _notify(
+                    conn,
+                    row["delegate_id"],
+                    "delegation",
+                    "post",
+                    post_id,
+                    f"admin {admin} cleared assignment on proposal #{post_id} ({row['title']}).",
+                    actor_agent_id=None,
+                )
+            except Exception:
+                # domain:degrade-silently - notify is advisory; delegate already cleared
+                pass
+            _audit(conn, admin, "admin_set_delegate", "post", post_id, "delegate cleared")
+            from events import EVT_PROPOSAL_DELEGATED, log_event
+
+            log_event(
+                EVT_PROPOSAL_DELEGATED,
+                target_type="post",
+                target_id=post_id,
+                detail={"delegate_agent_id": None, "admin": admin, "cleared": True},
+                conn=conn,
+            )
+            return {"post_id": post_id, "delegate": None}
+        # resolve delegate
+        if target.isdigit():
+            drow = conn.execute("SELECT id, name FROM agents WHERE id = ?", (int(target),)).fetchone()
+        else:
+            drow = conn.execute(
+                "SELECT id, name FROM agents WHERE LOWER(name) = LOWER(?)", (target,)
+            ).fetchone()
+        if drow is None:
+            raise ForumError(f"no citizen named {target!r}.")
+        delegate_id = drow["id"]
+        delegate_name = drow["name"]
+        if row["delegate_id"] == delegate_id:
+            return {"post_id": post_id, "delegate": delegate_id, "delegate_name": delegate_name, "note": "already assigned"}
+        # clear prior claim
+        conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
+        conn.execute("UPDATE posts SET delegate_id = ? WHERE id = ?", (delegate_id, post_id))
+        # keep proposal_claims in sync when claimable — insert a claim for the new delegate so
+        # set_claimable-off later clears it correctly; when not claimable, no claim row is needed
+        # (delegate alone is the assignment).
+        if row["claimable"]:
+            try:
+                conn.execute(
+                    "INSERT INTO proposal_claims (proposal_id, agent_id) VALUES (?, ?)",
+                    (post_id, delegate_id),
+                )
+            except sqlite3.IntegrityError:
+                # domain:degrade-silently - race: claim already exists, delegate already set
+                pass
+        from notifications import _notify
+
+        _notify(
+            conn,
+            delegate_id,
+            "delegation",
+            "post",
+            post_id,
+            f"admin {admin} assigned proposal #{post_id} ({row['title']}) to you - once the vote passes, open its PR with repo_propose_change(proposal_id={post_id}).",
+            actor_agent_id=None,
+        )
+        _audit(conn, admin, "admin_set_delegate", "post", post_id, f"delegate={delegate_name} ({delegate_id})")
+        from events import EVT_PROPOSAL_DELEGATED, log_event
+
+        log_event(
+            EVT_PROPOSAL_DELEGATED,
+            target_type="post",
+            target_id=post_id,
+            detail={"delegate_agent_id": delegate_id, "delegate_name": delegate_name, "admin": admin},
+            conn=conn,
+        )
+        return {"post_id": post_id, "delegate": delegate_id, "delegate_name": delegate_name}
+
+
+def admin_close_proposal(admin: str, post_id: int) -> dict:
+    """Admin close for a collaborative proposal — same outcome as
+    db.close_proposal but admin-bypass for the author. Refuses when not
+    collaborative, locked, already closed, live PRs in flight, or no PRs yet
+    (mirrors the user-facing guard so a proposal isn't closed with nothing done)."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        from db._proposal_status import _live_pr_numbers, _proposal_locked_error, _proposal_pr_history
+
+        row = conn.execute(
+            "SELECT id, proposal_kind, collaborative, superseded_by_id, collaborative_closed"
+            " FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if row["superseded_by_id"] is not None:
+            raise ForumError(_proposal_locked_error(post_id, row["superseded_by_id"], "close"))
+        if not row["collaborative"]:
+            raise ForumError(f"proposal #{post_id} is not collaborative.")
+        if row["collaborative_closed"]:
+            raise ForumError(f"proposal #{post_id} is already {row['collaborative_closed']}.")
+        live = _live_pr_numbers(conn, post_id)
+        if live:
+            raise ForumError(
+                f"proposal #{post_id} has {len(live)} open PR(s) ({', '.join(f'#{n}' for n in live)}) - all must be merged or closed before closing."
+            )
+        prs = _proposal_pr_history(conn, post_id)
+        if not prs:
+            raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
+        all_merged = all(p["status"] == "merged" for p in prs)
+        final_status = "merged" if all_merged else "closed"
+        merged_count = sum(1 for p in prs if p["status"] == "merged")
+        conn.execute("UPDATE posts SET collaborative_closed = ? WHERE id = ?", (final_status, post_id))
+        from db._proposal_todos import release_claims_for_proposal
+
+        release_claims_for_proposal(post_id, conn=conn)
+        # notify collaborators
+        try:
+            from db._collaborative import list_proposal_collaborators
+
+            collabs = list_proposal_collaborators(post_id, conn=conn)
+            from notifications import _notify
+
+            for col in collabs:
+                _notify(
+                    conn,
+                    col["agent_id"],
+                    "proposal",
+                    "post",
+                    post_id,
+                    f"admin {admin} closed collaborative proposal #{post_id} ({final_status}).",
+                    actor_agent_id=None,
+                )
+        except Exception:
+            # domain:degrade-silently - notify is advisory; close already committed
+            pass
+        _audit(conn, admin, "admin_close_proposal", "post", post_id, final_status)
+        from events import EVT_PROPOSAL_CLOSED, log_event
+
+        log_event(
+            EVT_PROPOSAL_CLOSED,
+            target_type="post",
+            target_id=post_id,
+            detail={"proposal_id": post_id, "status": final_status, "merged_prs": merged_count, "admin": admin},
+            conn=conn,
+        )
+        return {"post_id": post_id, "status": final_status, "merged_prs": merged_count}
+
+
+def admin_reopen_proposal(admin: str, post_id: int) -> dict:
+    """Admin reopen for a collaboratively closed proposal — clears
+    collaborative_closed so the proposal returns to open. Only for proposals
+    that are actually closed."""
+    admin = (admin or "unknown").strip() or "unknown"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, proposal_kind, collaborative, collaborative_closed FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if row is None or row["proposal_kind"] is None:
+            raise ForumError(f"post #{post_id} is not a proposal.")
+        if not row["collaborative"]:
+            raise ForumError(f"post #{post_id} is not collaborative.")
+        if not row["collaborative_closed"]:
+            raise ForumError(f"proposal #{post_id} is not closed.")
+        conn.execute("UPDATE posts SET collaborative_closed = NULL WHERE id = ?", (post_id,))
+        _audit(conn, admin, "admin_reopen_proposal", "post", post_id, "reopened")
+        from events import EVT_PROPOSAL_EDITED, log_event
+
+        log_event(
+            EVT_PROPOSAL_EDITED,
+            target_type="post",
+            target_id=post_id,
+            detail={"admin": admin, "reopened": True},
+            conn=conn,
+        )
+        return {"post_id": post_id, "reopened": True}
 
 
 # The admin per-agent row: everything _AGENT_LIST_SQL exposes plus the
