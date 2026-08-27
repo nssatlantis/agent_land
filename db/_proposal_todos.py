@@ -744,21 +744,17 @@ def create_todo_list(token: str, post_id: int, title: str,
             post_id, {it["text"] for it in item_entries}, agent["id"], conn,
         )
         _record_todo_edit(conn, post_id, agent["id"])
-        return {"id": list_id, "title": title, "items": [
-            {"id": it_id, "text": it["text"], "done": it["done"]}
-            for it_id, it in _list_items(conn, list_id)
-        ]}
+        return _todo_list_for(conn, post_id, list_id)
 
 
-def _list_items(conn: sqlite3.Connection,
-                list_id: int) -> list[tuple[int, dict]]:
-    """Return [(item_id, {text, done})] for a single list, ordered."""
-    rows = conn.execute(
-        "SELECT id, text, done FROM todo_items"
-        " WHERE list_id = ? ORDER BY position, id",
-        (list_id,),
-    ).fetchall()
-    return [(r["id"], {"text": r["text"], "done": bool(r["done"])}) for r in rows]
+def _todo_list_for(conn: sqlite3.Connection, post_id: int, list_id: int) -> dict:
+    """Return one list in the same canonical shape _todos_for_post emits
+    (id, title, claim_mode, items, plus claim keys when applicable), so a
+    writer's echo matches get_todos exactly. The list must exist."""
+    for lst in _todos_for_post(conn, post_id):
+        if lst["id"] == list_id:
+            return lst
+    raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
 
 
 def update_todo_list(token: str, post_id: int, list_id: int, title: str,
@@ -845,10 +841,7 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
             post_id, {it["text"] for it in item_entries}, agent["id"], conn,
         )
         _record_todo_edit(conn, post_id, agent["id"])
-        return {"id": list_id, "title": title, "items": [
-            {"id": it_id, "text": it["text"], "done": it["done"]}
-            for it_id, it in _list_items(conn, list_id)
-        ]}
+        return _todo_list_for(conn, post_id, list_id)
 
 
 def rename_todo_list(token: str, post_id: int, list_id: int, title: str) -> dict:
@@ -880,10 +873,7 @@ def rename_todo_list(token: str, post_id: int, list_id: int, title: str) -> dict
             (title, list_id),
         )
         _record_todo_edit(conn, post_id, agent["id"])
-        return {"id": list_id, "title": title, "items": [
-            {"id": it_id, "text": it["text"], "done": it["done"]}
-            for it_id, it in _list_items(conn, list_id)
-        ]}
+        return _todo_list_for(conn, post_id, list_id)
 
 
 def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
