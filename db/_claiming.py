@@ -36,36 +36,43 @@ def require_claim_for_todo(
         return
 
     row = conn.execute(
-        "SELECT collaborative FROM posts WHERE id = ?", (post_id,)
+        "SELECT collaborative, todo_claim_mode FROM posts WHERE id = ?",
+        (post_id,),
     ).fetchone()
     if row is None or not row["collaborative"]:
         return
 
     from db._proposal_todos import _sweep_expired_claims
 
-    list_ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM todo_lists WHERE post_id = ?", (post_id,)
-        ).fetchall()
-    ]
-    _sweep_expired_claims(conn, list_ids)
+    _sweep_expired_claims(conn, [post_id])
 
-    held = conn.execute(
-        "SELECT COUNT(*) FROM todo_items ti"
-        " JOIN todo_lists tl ON tl.id = ti.list_id"
-        " WHERE tl.post_id = ?"
-        " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
-        (post_id, agent_id),
-    ).fetchone()[0]
+    if row["todo_claim_mode"]:
+        # Whole-list claiming: the opener must hold an active list claim.
+        held = conn.execute(
+            "SELECT COUNT(*) FROM todo_lists"
+            " WHERE post_id = ? AND claimed_by_agent_id = ?",
+            (post_id, agent_id),
+        ).fetchone()[0]
+        claim_verb = "claiming a whole to-do list"
+        claim_tool = f"claim_todo_list(token, {post_id}, list_id)"
+    else:
+        held = conn.execute(
+            "SELECT COUNT(*) FROM todo_items ti"
+            " JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE tl.post_id = ?"
+            " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
+            (post_id, agent_id),
+        ).fetchone()[0]
+        claim_verb = "claiming a to-do item"
+        claim_tool = (
+            f"claim_todo_item(token, {post_id}, item_id)"
+        )
     if held == 0:
         raise ForumError(
-            f"proposal #{post_id} requires claiming a to-do"
-            " item before contributing: get_todos("
-            f"{post_id}) to see the board, then"
-            " claim_todo_item(token, "
-            f"{post_id}, item_id) on an unclaimed item you"
-            " will implement."
+            f"proposal #{post_id} requires {claim_verb}"
+            " before contributing: get_todos("
+            f"{post_id}) to see the board, then {claim_tool} "
+            "on an item you will implement."
         )
 
 

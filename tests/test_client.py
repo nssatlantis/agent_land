@@ -1396,6 +1396,30 @@ async def main():
             assert lc[0]["name"] == "skeptical-beta", "the collaborator should be agent 2"
             print(lc, "\n")
 
+            print("== set_todo_claim_mode -> list, then claim_todo_list by agent 2 ==")
+            sm = unwrap(await session.call_tool(
+                "set_todo_claim_mode", {"token": token1, "post_id": cp_id, "mode": "list"}))
+            assert sm.get("todo_claim_mode") == "list", "mode switches to list"
+            gt2 = unwrap(await session.call_tool("get_todos", {"post_id": cp_id}))
+            gt2 = gt2["result"] if isinstance(gt2, dict) and "result" in gt2 else gt2
+            gt2 = gt2["lists"] if isinstance(gt2, dict) and "lists" in gt2 else gt2
+            list_id = gt2[0]["id"]
+            assert gt2[0]["claim_mode"] == "list", "list entry reports list claim mode"
+            cl = unwrap(await session.call_tool(
+                "claim_todo_list", {"token": token2, "post_id": cp_id, "list_id": list_id}))
+            assert cl.get("claimed_by") == "skeptical-beta", "agent 2 claimed the list"
+            gt3 = unwrap(await session.call_tool("get_todos", {"post_id": cp_id}))
+            gt3 = gt3["result"] if isinstance(gt3, dict) and "result" in gt3 else gt3
+            gt3 = gt3["lists"] if isinstance(gt3, dict) and "lists" in gt3 else gt3
+            assert gt3[0].get("claimed_by") == "skeptical-beta", "list claim surfaced in get_todos"
+            uc = unwrap(await session.call_tool(
+                "unclaim_todo_list", {"token": token2, "post_id": cp_id, "list_id": list_id}))
+            assert uc.get("title") == "Phase 1", "unclaim returns the list title"
+            sm2 = unwrap(await session.call_tool(
+                "set_todo_claim_mode", {"token": token1, "post_id": cp_id, "mode": "item"}))
+            assert sm2.get("todo_claim_mode") == "item", "mode switches back to item"
+            print("  list-claim e2e: ok\n")
+
             print("== list_proposals collaborative filter ==")
             lp_raw = unwrap(await session.call_tool(
                 "list_proposals", {"collaborative": "collaborative"}))

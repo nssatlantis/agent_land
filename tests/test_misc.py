@@ -854,6 +854,69 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: todo_lists whole-list claiming + posts.claim mode ------
+    # Whole-list claiming (claim_todo_list/set_todo_claim_mode) added
+    # claimed_by_agent_id and claimed_at to todo_lists (mirroring the
+    # todo_items claim) plus the idx_todo_lists_claim partial index, and
+    # todo_claim_mode to posts. A pre-feature database must gain all of them
+    # via init_db() without crashing (the index must exist before it is used).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "list_claim_migration.db")
+        db.init_db()
+        claim_agent = db.register_agent("list-claim-mig")
+        # Downgrade: strip the new columns from posts and todo_lists.
+        with db._conn() as conn:
+            conn.execute("DROP TABLE IF EXISTS todo_lists")
+            conn.execute(
+                "CREATE TABLE todo_lists ("
+                " id        INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " post_id   INTEGER NOT NULL REFERENCES posts(id)"
+                "   ON DELETE CASCADE,"
+                " title     TEXT NOT NULL,"
+                " position  INTEGER NOT NULL DEFAULT 0)"
+            )
+            conn.execute(
+                "ALTER TABLE posts DROP COLUMN todo_claim_mode"
+            )
+        db.init_db()
+        with db._conn() as conn:
+            post_cols = {r["name"] for r in conn.execute("PRAGMA table_info(posts)")}
+            list_cols = {r["name"] for r in conn.execute("PRAGMA table_info(todo_lists)")}
+            list_idx = conn.execute(
+                "SELECT name FROM sqlite_master"
+                " WHERE type='index' AND name='idx_todo_lists_claim'"
+            ).fetchone()
+        assert "todo_claim_mode" in post_cols, \
+            "init_db() re-adds posts.todo_claim_mode on a pre-feature database"
+        assert {"claimed_by_agent_id", "claimed_at"} <= list_cols, \
+            "init_db() adds the list-claim columns to a pre-feature todo_lists"
+        assert list_idx is not None, \
+            "init_db() creates idx_todo_lists_claim on a migrated database"
+        # The feature must work against the migrated tables: set mode, claim.
+        post = db.create_proposal(claim_agent["token"], "List mig", "body",
+                                  collaborative=True)
+        pid = post["post_id"]
+        db.set_todos_for_post(
+            claim_agent["token"], pid,
+            lists=[{"title": "L", "items": [{"text": "item1"}]}],
+        )
+        db.set_todo_claim_mode(claim_agent["token"], pid, "list")
+        list_id = db.get_todos_for_post(pid)[0]["id"]
+        db.claim_todo_list(claim_agent["token"], pid, list_id)
+        claimed = db.get_todos_for_post(pid)
+        assert claimed[0].get("claim_mode") == "list", \
+            "claim_mode is 'list' after the migration toggle"
+        assert claimed[0].get("claimed_by_id") == claim_agent["agent_id"], \
+            "whole-list claiming works on the migrated database"
+        # Idempotent second boot: no crash, no column drift.
+        db.init_db()
+        with db._conn() as conn:
+            list_cols2 = {r["name"] for r in conn.execute("PRAGMA table_info(todo_lists)")}
+        assert list_cols2 == list_cols, "the list-claim migration is idempotent"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- events category column migration --------------------------------
     # A pre-category database carries events without the `category` column.
     # init_db() must ADD the column, backfill existing rows from kind, and
