@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS posts (
     -- close_proposal warns but does not block when the goal is unmet.
     -- NULL = no goal.
     pr_goal             INTEGER,
+    -- To-do claiming granularity on collaborative proposals (db._proposal_todos):
+    -- 0 = claim individual to-do items (claim_todo_item, the default), 1 = claim
+    -- whole to-do lists (claim_todo_list). Author-toggled via set_todo_claim_mode.
+    -- Only meaningful while collaborative; ignored otherwise.
+    todo_claim_mode     INTEGER NOT NULL DEFAULT 0,
     -- Per-proposal configuration as a JSON blob. Currently supports:
     --   max_collaborators (int, min 2): overrides MAX_COLLABORATORS for this
     --   collaborative proposal. NULL or absent uses the global default.
@@ -484,6 +489,12 @@ CREATE TABLE IF NOT EXISTS todo_lists (
     post_id    INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     title      TEXT NOT NULL,
     position   INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+    -- Whole-list claiming on collaborative proposals with todo_claim_mode=1
+    -- (db.claim_todo_list): one active list claim per todo_lists row. Empty
+    -- while the proposal claims per-item (mode 0). Claims auto-release like
+    -- per-item ones (timeout, leaver, PR verdict, author close).
+    claimed_by_agent_id INTEGER REFERENCES agents(id),
+    claimed_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
