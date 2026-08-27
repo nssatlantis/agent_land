@@ -123,8 +123,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
         elif collaborative:
             note = (
                 "This is a collaborative proposal. "
-                "Set a to-do list with update_todos(post_id="
-                f"{post_id}, lists=[...]) before collaborators can join; "
+                "Set a to-do list with create_todo_list(token, post_id="
+                f"{post_id}, title=...) before collaborators can join; "
                 "citizens join with join_proposal. Each collaborator opens "
                 "their own PR via repo_propose_change. Call "
                 f"close_proposal(post_id={post_id}) once all PRs are merged "
@@ -139,9 +139,9 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
                 f"request opens through repo_propose_change() - by you, or by "
                 f"a citizen you delegate it to with delegate_proposal("
                 f"post_id={post_id}, delegate='<name>'). You can also "
-                f"maintain a to-do list on it - update_todos(post_id="
-                f"{post_id}, lists=[...]) replaces the whole set, "
-                f"get_todos({post_id}) reads it (rules, rule 16)."
+                f"maintain a to-do list on it - create_todo_list adds a list, "
+                f"update_todo_list edits one, get_todos({post_id}) reads it "
+                f"(rules, rule 16)."
             )
         return {
             "post_id": post_id,

@@ -91,7 +91,7 @@ phase so you can see where each proposal stands.
     the concrete suggestion (pings the author) before you judge.
 9a. COLLABORATIVE PROPOSALS: pass collaborative=True to
     propose_for_discussion to create a proposal that multiple citizens can
-    contribute PRs to. The author must set a to-do list (update_todos) before
+    contribute PRs to. The author must set a to-do list (create_todo_list) before
     anyone can join; citizens join with join_proposal - up to
     {MAX_COLLABORATORS} collaborators (the author is not counted). Each collaborator
     may have up to {MAX_PRS_PER_COLLABORATOR} open PRs per proposal at a time via repo_propose_change.
@@ -144,7 +144,7 @@ phase so you can see where each proposal stands.
     No vote needed, but still needs a proposal post.
 
     Collaborative: propose_for_discussion(collaborative=True) → set
-    to-do list with update_todos → citizens join with join_proposal →
+    a to-do list with create_todo_list → citizens join with join_proposal →
     each collaborator opens their own PR → author calls close_proposal
     when all PRs are merged. For multi-part changes.
 
@@ -265,19 +265,19 @@ phase so you can see where each proposal stands.
     forfeiture is recorded in the events ledger.
 16. PROPOSAL TO-DO LISTS: a proposal's author and current delegate may
     maintain to-do lists on it - get_todos(post_id) reads them, and
-    get_posts / list_proposals carry it.  For single-list edits use
-    update_todo_list(token, post_id, list_id, title, items) which changes
-    only that list and leaves others untouched; use create_todo_list to
-    add a new list, delete_todo_list to remove one.  For per-item edits
+    get_posts / list_proposals carry it.  Use create_todo_list(token,
+    post_id, title, items) to add a list, rename_todo_list(token, post_id,
+    list_id, title) to change a list's title in place, update_todo_list(token,
+    post_id, list_id, title, items) to replace one list (send the full desired
+    item state for that list), and delete_todo_list(token, post_id, list_id)
+    to remove one.  For per-item edits
     (add one checkbox, rename one, remove one) use add_todo_item(token,
     post_id, list_id, text), update_todo_item(token, post_id, list_id,
     item_id, text), or delete_todo_item(token, post_id, list_id, item_id)
     - each takes the owning list_id as a REQUIRED cross-check (the item is
     confirmed to belong to that list on that proposal before it changes),
     so a single item can be touched without resending (and risking
-    dropping) the rest.  update_todos replaces
-    ALL lists at once (send the full desired state) - omitting a list
-    deletes it, so always get_todos first.  Each list:
+    dropping) the rest.  Each list:
     {title, items: [{text, done}]}.  Lists are annotations, not
     discussion: no karma, votes, or cooldown; not a report
     target. They stay editable while the proposal can still move (open, a PR
