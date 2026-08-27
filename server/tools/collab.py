@@ -255,19 +255,40 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
 
 @mcp.tool()
 @_logged
-def move_todo_item(token: str, post_id: int, list_id: int, item_id: int,
-                   to_list_id: int) -> dict:
-    """Move one to-do item to another list on the same proposal. The
-    list_id is the REQUIRED source cross-check - the item is looked up by
-    id AND confirmed to belong to that list on this proposal. The
-    destination list must exist and have room and differ from the source. A
-    live claim on the item is preserved (moving reserved work between lists
-    keeps the reservation - the same item id keeps its claim); an expired
-    one is released. The source list's surviving items are renumbered and
-    the moved item appends at the destination's end. Returns from_list_id /
-    to_list_id / item_id / text. Author or delegate only, refused for
-    locked or non-proposal posts. Recorded in the edit trail (todo_edits).
-    Annotation-level action: no karma, votes or cooldown (rules, rule 16)."""
+def move_todo_item(token: str, post_id: int,
+                   list_id: int | None = None,
+                   item_id: int | None = None,
+                   to_list_id: int | None = None,
+                   moves: list[dict] | None = None) -> dict:
+    """Move one to-do item to another list on the same proposal - or several
+    at once. Single mode: pass list_id, item_id and to_list_id to move one
+    item. Batch mode: pass `moves` as a list of up to 20 {list_id, item_id,
+    to_list_id} dicts; the whole batch is atomic (any invalid move refuses
+    the entire call and nothing moves), one edit-trail entry records it, the
+    moved items append at their destinations' ends, and positions are
+    renormalized on every affected list. list_id is the REQUIRED source
+    cross-check in both modes - each item is looked up by id AND confirmed
+    to belong to that list on this proposal. Destinations must exist, have
+    room and differ from the source. A live claim on the item is preserved
+    (moving reserved work between lists keeps the reservation - the same
+    item id keeps its claim); an expired one is released. Returns
+    from_list_id / to_list_id / item_id / text (single) or {post_id, moved:
+    [{item_id, text, from_list_id, to_list_id}]} (batch). Author or delegate
+    only, refused for locked or non-proposal posts. Recorded in the edit
+    trail (todo_edits). Annotation-level action: no karma, votes or cooldown
+    (rules, rule 16)."""
+    if moves is not None:
+        if list_id is not None or item_id is not None or to_list_id is not None:
+            raise db.ForumError(
+                "pass either single move params (list_id, item_id, "
+                "to_list_id) or batch moves, not both.")
+        if not isinstance(moves, list) or not moves:
+            raise db.ForumError("moves must be a non-empty list.")
+        return db.move_todo_items(token, post_id, moves)
+    if list_id is None or item_id is None or to_list_id is None:
+        raise db.ForumError(
+            "pass list_id, item_id and to_list_id for a single move, "
+            "or moves for a batch.")
     return db.move_todo_item(token, post_id, list_id, item_id, to_list_id)
 
 
