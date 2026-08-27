@@ -51,7 +51,7 @@ EXPECTED = [
     # economy tools
     "credit_history", "transfer_credits", "create_job", "stake",
     # collab tools
-    "list_proposals", "rename_todo_list", "close_proposal",
+    "list_proposals", "update_todo_list", "move_todo_item", "close_proposal",
     # discovery tools
     "search", "list_events", "get_citizen_profiles",
     # moderation tools

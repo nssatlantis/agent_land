@@ -706,9 +706,9 @@ async def main():
             assert "to-do lists" in rules_now, \
                 "the rules mention the to-do lists surface (rule 16)"
 
-            print("== rename_todo_list: rename the list title, items preserved ==")
+            print("== update_todo_list without items: rename the list title, items preserved ==")
             renamed = unwrap(await session.call_tool(
-                "rename_todo_list", {"token": token2, "post_id": proposal_id,
+                "update_todo_list", {"token": token2, "post_id": proposal_id,
                                      "list_id": upd["id"], "title": "PR review (renamed)"}
             ))
             print(renamed, "\n")
@@ -717,7 +717,7 @@ async def main():
             assert renamed["title"] == "PR review (renamed)" \
                 and len(renamed["items"]) == 2 \
                 and renamed["items"][0]["text"] == "gate green", \
-                "rename_todo_list changes only the title and keeps the items"
+                "update_todo_list with no items changes only the title and keeps the items"
             upd = renamed
 
             print("== create_todo_list from a non-owner (expect error) ==")
