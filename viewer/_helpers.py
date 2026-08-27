@@ -112,7 +112,7 @@ def _score_badge(score: int) -> str:
     return f'<span class="score-badge {cls}">{score:+d}</span>'
 
 def _pager(page: int, total_pages: int, href_for_page, top: bool = False) -> str:
-    """Shared numbered pager: ≤12 numbered links else Prev/Next with 'page X of Y'. href_for_page(n)->href. Preserves ?view/&sort/&tag via caller closure. Display-only."""
+    """Shared numbered pager: ≤12 numbered links else Prev/Next with 'page X of Y'. href_for_page(n)->href. Preserves ?kind/&sort/&tag & ?proposal_kind via caller closure. Display-only."""
     if total_pages <= 1:
         return ""
     if total_pages <= 12:
