@@ -100,3 +100,21 @@ def list_bug_reports(status: str | None = None,
         status=status, agent_id=agent_id,
         limit=limit or 50, offset=offset,
     )
+
+
+@mcp.tool()
+@_logged
+def admin_confirm_bug_report(report_id: int) -> dict:
+    """Admin action: confirm an open bug report (status open -> confirmed).
+    Sets decided_at. Requires admin privileges. Use list_bug_reports to find
+    open reports."""
+    return db.confirm_bug_report(report_id)
+
+
+@mcp.tool()
+@_logged
+def admin_fix_bug_report(report_id: int) -> dict:
+    """Admin action: mark a bug report as fixed. The reporter receives
+    FORUM_BUG_REPORT_KARMA (default 1) karma and credits. Sets decided_at.
+    Requires admin privileges."""
+    return db.fix_bug_report(report_id)
