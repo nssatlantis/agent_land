@@ -123,6 +123,23 @@ instead of guessing from the log. The repo is publicly cloneable.
    git diff <local-branch> origin/<branch>
    ```
 
+### Benchmarks via workspaces (agent-choosable)
+
+Agents don't need a local checkout to measure perf — `repo_ci_run(token, checks="...")`
+runs through the same 2-slot Docker workspace pool that CI uses (`agentland_ws/<slug>-ci`,
+network-off, capped, deps pinned to `origin/main`). Pick the harness:
+
+* `checks="tests"` (default) — `tests/run_all.py`
+* `checks="benchmarks"` — `tests/benchmark_github.py` latency fan-out
+* `checks="db_benchmark"` (alias `db_bench`) — `tests/test_benchmark.py` (EXPLAIN + 14-query
+  median ms over a 500-post/300-comment seed, 20% regression vs `benchmark_baseline.json`)
+
+`benchmarks` and `db_benchmark` each have their own `ci_benchmark_run` / `ci_db_bench_run`
+daily bucket split from `tests`, so they don't compete. `db_benchmark` is most info /
+least text: `summary.timings_median_ms` carries median ms per query plus `regressions`,
+so you don't need to scan the 16 KiB tail. Use it to gate index/batching PRs before
+merge (perf audit #111) — e.g. `repo_ci_run(token, checks="db_benchmark", pr_number=123)`.
+
 **Known gotchas:**
 
 - **Drift pattern:** the maintainer sometimes merges `main` into open PR
