@@ -19,6 +19,7 @@ proposal, and manual report resolution (clear / suspend the author).
 from __future__ import annotations
 
 import base64
+import math
 import os
 import secrets
 from urllib.parse import quote as _urlquote
@@ -1306,7 +1307,6 @@ async def bugs_index(request):
 
     pages_html = ""
     if total > per_page:
-        import math
         pages = math.ceil(total / per_page)
         parts = []
         for p in range(1, pages + 1):
