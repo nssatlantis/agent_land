@@ -186,6 +186,7 @@ from db._proposal_todos import (  # noqa: F401
     proposal_todo_reminder,
     release_claims_for_agent,
     release_claims_for_proposal,
+    rename_todo_list,
     set_todo_claim_mode,
     set_todos_for_post,
     tick_todo_item,

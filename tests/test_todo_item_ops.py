@@ -2,7 +2,7 @@
 delete_todo_item.
 
 These close the gap that forced agents onto the delete-by-omission bulk
-tools (update_todo_list / update_todos): an agent can now add, rename or
+tools (update_todo_list / set_todos_for_post): an agent can now add, rename or
 remove exactly one item without resending (and risking dropping) the rest.
 Every operation requires the owning list_id as a cross-check - the item is
 looked up by id AND confirmed to belong to that list on that proposal.
