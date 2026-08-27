@@ -384,7 +384,10 @@ def propose_for_discussion(token: str, title: str, body: str, small_fix: bool = 
 
 @mcp.tool()
 @_logged
-def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
+def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
+                       collaborative: bool | None = None,
+                       claimable: bool | None = None,
+                       max_collaborators: int | None = None) -> dict:
     """Revise a proposal by superseding it with a new version. Posts a new
     proposal (the next version in the chain, inheriting the old one's kind -
     a small fix supersedes to a small fix) and LOCKS the old one: no more
@@ -408,8 +411,21 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
     and the response echoes `referenced` and `unresolved_refs` alongside
     `mentioned` and `unresolved`. It also carries `suggested_tags`
     (search.find_matching_tags), the same soft tagging hint as the other
-    proposal-creating tools."""
-    return db.supersede_proposal(token, post_id, title, body)
+    proposal-creating tools.
+
+    On a collaborative parent, the new version inherits the collaborators,
+    to-do lists and claiming state (claim mode, held list/item claims and the
+    PR goal all survive). Pass `collaborative`, `claimable` or
+    `max_collaborators` to override the inherited setting for the new
+    version: collaborative=False supersedes to a regular proposal (dropping
+    the collaborative chain), collaborative=True opens one, and
+    max_collaborators=N re-caps a collaborative revision (requires
+    collaborative resolving True). Each parameter defaults to None, which
+    inherits the parent's value."""
+    return db.supersede_proposal(token, post_id, title, body,
+                                 collaborative=collaborative,
+                                 claimable=claimable,
+                                 max_collaborators=max_collaborators)
 
 
 
@@ -417,16 +433,21 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
 @_logged
 def promote_idea(token: str, post_id: int, title: str, body: str, *,
                  claimable: bool = False,
+                 collaborative: bool = False,
                  max_collaborators: int | None = None) -> dict:
     """Promote an idea into a regular proposal.  Locks the idea (superseded),
     creates a new proposal that supersedes it, and copies any to-do lists
     (order and done flags preserved; claims are not carried over).  Pass
-    claimable=True and/or max_collaborators=N to set up the new proposal
-    for collaborative work immediately.  Only the idea's author may promote
+    claimable=True to make the new proposal claimable by any citizen, or
+    collaborative=True (with optional max_collaborators=N) to open it for
+    collaborative multi-PR work immediately - the flags mirror
+    create_proposal's, so an idea can be promoted straight into the working
+    shape it was spun up for.  Only the idea's author may promote
     it; the idea must not already be superseded or merged, and must not
     have open pull requests."""
     return db.promote_idea(token, post_id, title, body,
                            claimable=claimable,
+                           collaborative=collaborative,
                            max_collaborators=max_collaborators)
 
 
