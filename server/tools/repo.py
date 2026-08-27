@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+
 import db
 import config
 import github
@@ -16,6 +19,102 @@ from server.repo_helpers import (
     _body_with_proposal_identity, _pr_body_with_identity,
     _open_pr_count_for,
 )
+
+# Debounced coalescing for file-at-a-time pushes: 15s quiet window,
+# GitHub runs every intermediate, host runs only the final head.
+_PENDING: dict[int, float] = {}
+# threading.Lock (not asyncio.Lock) — deliberately held for microseconds
+# while iterating _PENDING; required because poller snapshot
+# (pending_prs_snapshot, called via asyncio.to_thread) and ticker
+# (_debounce_ticker, async) access the same dict from different threads.
+# asyncio.Lock would not be safe across to_thread.
+_PENDING_LOCK = threading.Lock()
+_TICKER_TASK: asyncio.Task | None = None
+
+
+async def _debounce_ticker() -> None:
+    # Use live config so host pool size change applies without restart;
+    # falls back to 2 if config unreadable at import.
+    try:
+        _ticker_conc = max(1, int(config.CI_RUN_CONCURRENCY))
+    except Exception:
+        _ticker_conc = 2  # domain: degrade-silently - config read failure must not stall ticker
+    sem = asyncio.Semaphore(_ticker_conc)
+    while True:
+        await asyncio.sleep(5)
+        now = time.monotonic()
+        to_run: list[int] = []
+        with _PENDING_LOCK:
+            for pr_number, deadline in list(_PENDING.items()):
+                if now >= deadline:
+                    to_run.append(pr_number)
+                    del _PENDING[pr_number]
+        if not to_run:
+            continue
+        # Respect 2-slot host pool — at most 2 concurrent, true overlap
+
+        async def _run_one(pr_number: int) -> None:
+            async with sem:
+                try:
+                    import server.ci_runner as ci_runner  # noqa: WPS433
+
+                    await asyncio.to_thread(
+                        ci_runner.run_branch_ci_for_poller, pr_number, "tests"
+                    )
+                except Exception as exc:  # domain: degrade-silently - ticker must never crash; one head failure must not stall others
+                    # If the host slot pool was saturated (queue empty —
+                    # _RUN_LOCK is legacy, never acquired in prod, always
+                    # unlocked), the PR was already removed from _PENDING but
+                    # got no CI. Re-enqueue so the next ticker cycle (5s)
+                    # retries — otherwise file-at-a-time bursts lose the
+                    # "host runs final head" promise under load.
+                    # Check ForumError type first — string match is brittle if
+                    # message refactors; queue path and legacy lock path share
+                    # same message today but could diverge.
+                    if isinstance(exc, db.ForumError) and str(exc).startswith("a CI run is already"):
+                        try:
+                            debounced_enqueue(pr_number)
+                        except Exception:
+                            pass  # domain: degrade-silently - re-enqueue must not crash ticker
+                    pass
+
+        await asyncio.gather(*[_run_one(pr) for pr in to_run])
+
+
+def _cancel_ticker() -> None:
+    global _TICKER_TASK
+    if _TICKER_TASK is not None and not _TICKER_TASK.done():
+        _TICKER_TASK.cancel()
+        _TICKER_TASK = None
+
+
+def _ensure_ticker() -> None:
+    global _TICKER_TASK
+    with _PENDING_LOCK:
+        if _TICKER_TASK is not None and not _TICKER_TASK.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # domain: degrade-silently - no running loop during import/tests; enqueue still coalesced
+            return
+        _TICKER_TASK = loop.create_task(_debounce_ticker())
+
+
+def debounced_enqueue(pr_number: int) -> None:
+    with _PENDING_LOCK:
+        _PENDING[pr_number] = time.monotonic() + 15
+    _ensure_ticker()
+
+
+def pending_prs_snapshot() -> set[int]:
+    """Thread-safe snapshot of PRs currently debounced (ticker coalescing).
+
+    The ticker mutates _PENDING under _PENDING_LOCK; reading keys without
+    the lock can raise RuntimeError: dictionary changed size during
+    iteration. Snapshot under the lock so the poller dedup never defeats
+    itself silently."""
+    with _PENDING_LOCK:
+        return set(_PENDING.keys())
 
 @mcp.tool()
 @_logged
@@ -299,7 +398,7 @@ async def repo_propose_change(
             if pending_hold:
                 open_labels.append(config.PROPOSAL_HOLD_LABEL)
             await _apply_pr_labels(plan["pr_number"], proposal_id, open_labels)
-        except Exception as _exc:
+        except Exception as _exc:  # domain: degrade-silently - PR already open; poller backfills link, never fail response
             proposal_link_error = str(_exc) or type(_exc).__name__
             # The PR is already open on GitHub — log but don't re-raise so the
             # caller gets the plan back. The poller will pick up the PR via
@@ -329,6 +428,12 @@ async def repo_propose_change(
                 plan["similar_prs"] = _similar
         except Exception:  # domain: degrade-silently - advisory never blocks the PR response
             pass  # non-critical advisory; never block the response
+        # Debounced local CI: coalesce file-at-a-time pushes (15s quiet)
+        # GitHub runs every intermediate, host runs only the final head.
+        try:
+            debounced_enqueue(plan["pr_number"])
+        except Exception:
+            pass  # domain: degrade-silently - enqueue must not fail the PR response
     return plan
 
 
@@ -587,6 +692,12 @@ async def repo_update_pr(
             target_id=number,
             detail={"pr_number": number, "title_changed": title is not None, "body_changed": body is not None, "files_changed": bool(changes)},
         )
+        # Debounced local CI for file-at-a-time updates (15s coalesce)
+        if changes:
+            try:
+                debounced_enqueue(number)
+            except Exception:
+                pass  # domain: degrade-silently - enqueue must not fail the update response
     return result
 
 
