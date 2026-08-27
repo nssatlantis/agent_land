@@ -9,6 +9,7 @@ import time
 import db
 import config
 import github
+from github._core import _validate_path
 import search as _search_mod
 import server.repo_search as _repo_search_mod
 from server._mcp import mcp, _logged
@@ -880,7 +881,7 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
                 raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
-            github._core._validate_path(entry["path"])
+            _validate_path(entry["path"])
     return ci_runner.run_checks(who["agent_id"], who["name"], checks, pr_number=pr_number, files=normalized_files)
 
 
