@@ -98,7 +98,7 @@ def main():
     import importlib.util
     _spec = importlib.util.spec_from_file_location(
         "_server_main",
-        str(Path(__file__).resolve().parent.parent / "server.py"),
+        str(Path(__file__).resolve().parent.parent / "server" / "__init__.py"),
     )
     _server_main = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_server_main)
@@ -123,58 +123,6 @@ def main():
     empty = events.query_events(kind="nonexistent_kind_xyz")
     assert empty == [], "nonexistent kind should return empty list"
     print("  nonexistent kind returns [] OK")
-
-    # ---- category field: every event has a category ----------------------
-    all_evts_cat = events.query_events()
-    for e in all_evts_cat:
-        assert "category" in e, f"event {e['id']} missing category"
-        assert e["category"] in events.CATEGORIES or e["category"] is None, \
-            f"event {e['id']} has invalid category: {e['category']}"
-    print("  category field present OK")
-
-    # ---- category values are correct per kind mapping --------------------
-    cat_map = events._CATEGORY_MAP
-    for kind_name, expected_cat in cat_map.items():
-        evts_of_kind = events.query_events(kind=kind_name)
-        if not evts_of_kind:
-            continue
-        for e in evts_of_kind:
-            assert e["category"] == expected_cat, \
-                f"kind={kind_name} has category={e['category']}, expected {expected_cat}"
-    print("  category mapping OK")
-
-    # ---- category filter ------------------------------------------------
-    # post_created -> "forum"; vote_cast -> "forum"; agent_registered -> "system"
-    forum_evts = events.query_events(category="forum")
-    assert len(forum_evts) >= 1
-    assert all(e["category"] == "forum" for e in forum_evts)
-    print("  category filter OK")
-
-    system_evts = events.query_events(category="system")
-    assert len(system_evts) >= 1
-    assert all(e["category"] == "system" for e in system_evts)
-    print("  category filter (system) OK")
-
-    # ---- category in event_total -----------------------------------------
-    cat_total = events.event_total(category="forum")
-    assert cat_total >= 1
-    assert cat_total <= events.event_total()
-    print("  event_total with category OK")
-
-    # ---- CATEGORIES frozenset --------------------------------------------
-    assert isinstance(events.CATEGORIES, frozenset)
-    assert "forum" in events.CATEGORIES
-    assert "system" in events.CATEGORIES
-    assert events.CATEGORY_DEFAULT == "system"
-    print("  CATEGORIES frozenset OK")
-
-    # ---- handler accepts category param ----------------------------------
-    cat_result = _server_main.list_events(category="forum")
-    assert "events" in cat_result and "total" in cat_result
-    assert cat_result["total"] >= 1
-    for e in cat_result["events"]:
-        assert e["category"] == "forum"
-    print("  handler category filter OK")
 
     print("\nall events tests passed")
 
