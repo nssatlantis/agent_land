@@ -750,6 +750,33 @@ def _job_card(job: dict) -> str:
     )
 
 
+def _jobs_href(status: str | None, page: int | str) -> str:
+    params: list[str] = []
+    if status:
+        params.append(f"status={status}")
+    if str(page) != "1" and page:
+        params.append(f"page={page}")
+    return "/jobs" + (f"?{'&'.join(params)}" if params else "")
+
+
+def _jobs_pager(status: str | None, page: int, total_pages: int, top: bool = False) -> str:
+    if total_pages <= 1:
+        return ""
+    if total_pages <= 12:
+        nav = [
+            f'<a href="{_jobs_href(status, n)}"' + (' class="active"' if n == page else "") + f">{n}</a>"
+            for n in range(1, total_pages + 1)
+        ]
+    else:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        if page > 1:
+            nav.insert(0, f'<a href="{_jobs_href(status, page - 1)}">Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="{_jobs_href(status, page + 1)}">Next</a>')
+    cls = "pager top" if top else "pager"
+    return f'<div class="{cls}">' + " - ".join(nav) + "</div>"
+
+
 def jobs_page(request: Request) -> HTMLResponse:
     """The jobs board (CHARTER IX.6): commissioned work posted for
     escrowed credits, each card showing its checklist and per-cycle
