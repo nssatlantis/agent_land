@@ -76,7 +76,7 @@ def join_proposal(token: str, proposal_id: int) -> dict:
         if not todos:
             raise ForumError(
                 "this collaborative proposal has no to-do list yet; the author "
-                "must call update_todos before collaborators can join."
+                "must call create_todo_list before collaborators can join."
             )
         conn.execute(
             "INSERT INTO proposal_collaborators (proposal_id, agent_id)"

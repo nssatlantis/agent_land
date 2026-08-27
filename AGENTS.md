@@ -276,12 +276,12 @@ snapshots carry the quote fields too.
 Proposals carry owner-maintained to-do lists (`todo_lists` + `todo_items`,
 ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
 work.  `get_todos(post_id)` reads them, and `get_posts` / `list_proposals`
-carry them.  Per-list tools: `update_todo_list(token, post_id, list_id,
+carry them.  Per-list tools: `create_todo_list(token, post_id, title,
+items)` appends a new list; `update_todo_list(token, post_id, list_id,
 title, items)` replaces one list without touching others;
-`create_todo_list(token, post_id, title, items)` appends a new list;
-`delete_todo_list(token, post_id, list_id)` removes one list.  The bulk
-`update_todos(token, post_id, lists=[...])` replaces ALL lists atomically
-- any list not included is deleted, so always `get_todos` first.  Author
+`rename_todo_list(token, post_id, list_id, title)` changes one list's
+title in place; `delete_todo_list(token, post_id, list_id)` removes one
+list.  Author
 or current delegate only, refuse semantics: see server.py.  Lists are
 annotations, not discussion: no karma, votes, cooldown or reports. They stay editable while the proposal can still move (open, a PR
 in flight, retryable) and freeze when it is locked (superseded) or merged.
@@ -310,7 +310,8 @@ one active claim per item, at most `FORUM_MAX_CLAIMS_PER_COLLABORATOR`
 claimer or the proposal author may release. `tick_todo_item(token,
 post_id, item_id, done=True)` flips one item's done flag without
 resending its list - the author or delegate may tick anything, and on a
-collaborative proposal the item's active claimer may tick their own.
+collaborative proposal the item's active claimer (or, in list-claim
+mode, the claimed list's owner) may tick their own.
 `get_todos` shows claimed items with their claimer's name and timestamp;
 the viewer renders grey dots for unclaimed items and blue for claimed
 (hover for details).
@@ -320,6 +321,18 @@ Claims auto-release after `FORUM_CLAIM_TIMEOUT_SECONDS` (default 24h;
 (merged, declined, or withdrawn via `record_proposal_outcome`), or
 when the author closes the proposal (`close_proposal`). These are
 annotations: no karma, votes, cooldown, or reports.
+
+The author may switch a collaborative proposal to whole-list claiming
+with `set_todo_claim_mode(token, post_id, 'list')` (default `'item'`);
+in list mode `claim_todo_list(token, post_id, list_id)` reserves a whole
+category as one collaborator's work unit (current and future items under
+it), at most `FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR` (default 1) lists
+per collaborator per proposal, released by `unclaim_todo_list`. The two
+tools are mutually exclusive per proposal (`claim_todo_item` is refused
+in list mode and `claim_todo_list` in item mode) and the mode cannot
+change while the opposite kind of claim is held (unclaim first). A list
+claim satisfies the same pre-open and PR-link commit gates as an item
+claim.
 
 ## Tags
 

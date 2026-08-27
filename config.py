@@ -168,6 +168,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # A timeout of 0 disables staleness.
     "CLAIM_TIMEOUT_SECONDS": ("FORUM_CLAIM_TIMEOUT_SECONDS", 86400, int),
     "MAX_CLAIMS_PER_COLLABORATOR": ("FORUM_MAX_CLAIMS_PER_COLLABORATOR", 2, int),
+    # Whole-list claiming (todo_claim_mode=1, db.claim_todo_list): how many
+    # to-do lists one collaborator may hold at once per proposal. Separate
+    # from MAX_CLAIMS_PER_COLLABORATOR (which counts items in per-item mode)
+    # because a list is a whole category, not a single item - 0 disables.
+    "MAX_LIST_CLAIMS_PER_COLLABORATOR": (
+        "FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR", 1, int
+    ),
     # Require a claimed undone to-do item before repo_propose_change links
     # a NEW PR to a collaborative proposal (db.link_pr_to_proposal).
     # Default 0 = off; flip to 1 to make claiming binding. Expired claims
@@ -196,6 +203,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Collaborative proposals
     "MAX_COLLABORATORS": ("FORUM_MAX_COLLABORATORS", 3, int),
     "MAX_PRS_PER_COLLABORATOR": ("FORUM_MAX_PRS_PER_COLLABORATOR", 3, int),
+    # Settling window: when a collaborative proposal is fresh (created or
+    # promoted or superseded - per version, anchored on posts.created_at), its
+    # pull requests cannot open until BOTH the community's vote has passed AND
+    # this many seconds have elapsed, so citizens can join and claim their
+    # lists/items before anyone rushes a PR. 0 disables the window.
+    "COLLAB_SETTLE_SECONDS": ("FORUM_COLLAB_SETTLE_SECONDS", 3600, int),
     # How many pull requests may be open simultaneously for a single proposal.
     # Non-collaborative proposals are limited by this cap; collaborative
     # proposals also respect MAX_PRS_PER_COLLABORATOR per collaborator.

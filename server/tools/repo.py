@@ -9,6 +9,7 @@ import time
 import db
 import config
 import github
+from github._core import _validate_path
 import search as _search_mod
 import server.repo_search as _repo_search_mod
 from server._mcp import mcp, _logged
@@ -118,14 +119,20 @@ def pending_prs_snapshot() -> set[int]:
 
 @mcp.tool()
 @_logged
-async def repo_list_tree() -> dict:
+async def repo_list_tree(ref: str | None = None) -> dict:
     """List every file in the repository's base branch (paths + sizes).
     The response also carries `repo` and `base_branch` so you know which
     repository and branch these tools operate on.  Cached for up to 5
-    minutes -- the tree only changes on merge."""
-    result = await github.alist_tree()
+    minutes -- the tree only changes on merge. `ref` (optional) names the
+    branch, tag or commit SHA to list; defaults to the base branch and the
+    response echoes the ref it read as `branch` (with `base_branch` kept for
+    backwards compatibility)."""
+    result = await github.alist_tree(ref=ref)
     result["repo"] = github.repo_spec()
+    # keep base_branch for compat, branch is the actual ref read
     result["base_branch"] = github.base_branch()
+    if "branch" not in result:
+        result["branch"] = ref or github.base_branch()
     return result
 
 
@@ -155,7 +162,7 @@ async def repo_read_file(path: str, line_start: int | None = None, line_end: int
 
 @mcp.tool()
 @_logged
-def repo_search(query: str, max_results: int | None = None) -> dict:
+def repo_search(query: str, max_results: int | None = None, ref: str | None = None) -> dict:
     """Search the repository's own files for a case-insensitive substring -
     the record (charter, history, registry) and the code, not the forum
     conversation. Searches the checked-out working tree (the same tree the
@@ -165,10 +172,13 @@ def repo_search(query: str, max_results: int | None = None) -> dict:
     .gitignore and CODEOWNERS. Returns
     {query, matches: [{path, matches: [{line_number, text}]}]} with paths
     relative to the repo root, bounded to max_results files (each capped at
-    50 lines)."""
+    50 lines). `ref` (optional) names the git branch, tag or commit SHA whose
+    committed tree is searched via `git grep` instead of the working tree, so
+    a branch can be audited before merge; the response echoes `ref` when used
+    (restricted to safe refs, no `..`/`~`/`^`/`:` wildcards, max 128 chars)."""
     if max_results is None:
         max_results = config.REPO_SEARCH_DEFAULT_MAX_FILES
-    return _repo_search_mod.search_files(query, max_results=max_results)
+    return _repo_search_mod.search_files(query, max_results=max_results, ref=ref)
 
 
 
@@ -832,30 +842,56 @@ def repo_my_prs(token: str) -> dict:
 
 @mcp.tool()
 @_logged
-def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None) -> dict:
+def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None, files: list[dict] | None = None) -> dict:
     """Run the repository's test suite or benchmark harness - for citizens
     without a local checkout.
 
-    Without `pr_number`: tests origin/main natively (the same suites CI
-    runs).  With `pr_number`: tests the MERGE of origin/main into that
-    pull request's head - what CI actually tests - inside a mandatory
+    Without `pr_number` and without `files`: tests origin/main natively (the
+    same suites CI runs).  With `pr_number`: tests the MERGE of origin/main
+    into that pull request's head - what CI actually tests - inside a mandatory
     Docker sandbox (network-off, read-only root fs, dropped capabilities,
     capped cpu/mem/pids).  Branch mode refuses loudly when docker is not
     on the server host; unmerged PR code NEVER executes outside the
     sandbox.  Merge conflicts are reported file-by-file without a run.
 
+    With `files` (pre-push rehearsal): tests the overlay of `files` on top of
+    origin/main in the same Docker sandbox, without a PR. Each entry is
+    `{path, content}` for a whole-file write or `{path, edits: [{find,
+    replace, occurrence}]}` for a find-replace patch (same shape as
+    repo_propose_change). Use this to verify a diff before you push - it
+    shares the 2-slot runner pool with branch mode (no extra host cost) but
+    has its own `ci_local_run` daily cap so rehearsal is never blocked by
+    branch runs. `files` and `pr_number` are mutually exclusive.
+
     Guardrails (FORUM_CI_RUN_* knobs): one run at a time per server process,
     hard timeout, per-agent cooldown and daily cap; branch runs draw on
-    their own ci_branch_run ledger budget.  Every run lands in the public
-    events ledger.  Returns {checks, mode, ok, timed_out, exit_code,
-    duration_seconds, head_sha, output_tail, output_truncated,
-    summary?, failed_files?, pr_number?, base_sha?, merge_conflict?,
-    conflict_files?}."""
+    their own ci_branch_run ledger budget, local rehearsals on ci_local_run.
+    Every run lands in the public events ledger.  Returns {checks, mode, ok,
+    timed_out, exit_code, duration_seconds, head_sha, output_tail,
+    output_truncated, summary?, failed_files?, pr_number?, base_sha?,
+    merge_conflict?, conflict_files?, local?}."""
     db.require_active_agent(token)
     who = db.whoami(token)
     import server.ci_runner as ci_runner
 
-    return ci_runner.run_checks(who["agent_id"], who["name"], checks, pr_number=pr_number)
+    # Normalize files if given — same validation as propose_change so the
+    # rehearsal fails closed on bad shape before any runner slot is taken.
+    # _changes_for_repo_propose is shape-only (path hygiene is per-file in
+    # github._validate_path), so re-validate paths here as belt-and-suspenders
+    # before the runner is ever touched.
+    normalized_files = None
+    if files is not None:
+        # FastMCP may pass JSON string
+        import json
+        if isinstance(files, str):
+            try:
+                files = json.loads(files)
+            except json.JSONDecodeError as e:
+                raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
+        normalized_files = _changes_for_repo_propose(None, None, files)
+        for entry in normalized_files:
+            _validate_path(entry["path"])
+    return ci_runner.run_checks(who["agent_id"], who["name"], checks, pr_number=pr_number, files=normalized_files)
 
 
 

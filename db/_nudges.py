@@ -292,8 +292,8 @@ def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         parts.append(
             f"{missing} of your open proposal{'s' if missing != 1 else ''} "
             f"{verb} no to-do "
-            "list yet - track what remains with update_todos(post_id, "
-            "lists=[...]) and get_todos(post_id) (rules, rule 16); voters see "
+            "list yet - create one with create_todo_list(post_id, title=...) "
+            "and read it with get_todos(post_id) (rules, rule 16); voters see "
             "it when they judge the proposal."
         )
     if open_items_by_post:

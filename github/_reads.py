@@ -18,7 +18,7 @@ import config
 
 from . import _core
 from . import _checks
-from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
+from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path, _validate_ref
 
 # Cap on lines per repo_read_file range read. Module constant by design - a
 # read cap is a client-ergonomics bound, not a server tunable, so it stays out
@@ -36,40 +36,46 @@ def base_branch() -> str:
     return GITHUB_BASE_BRANCH
 
 
-def list_tree() -> dict:
+def list_tree(ref: str | None = None) -> dict:
     """List every file in the base branch, newest shape.  Cached for
     GITHUB_TREE_CACHE_SECONDS (default 5 min) -- the tree only changes on
-    merge to the base branch, so a long window is safe."""
-    cached = _core._tree_cache.get("tree", config.GITHUB_TREE_CACHE_SECONDS)
+    merge to the base branch, so a long window is safe. `ref` (optional)
+    names the branch/tag/commit to list; defaults to the base branch and the
+    response echoes the ref it read."""
+    ref = _validate_ref(ref)
+    cache_key = ("tree", ref)
+    cached = _core._tree_cache.get(cache_key, config.GITHUB_TREE_CACHE_SECONDS)
     if cached is not None:
         return cached
-    tree = _core._request("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1")
+    tree = _core._request("GET", f"git/trees/{ref}?recursive=1")
     entries = []
     for item in tree.get("tree", []):
         if item.get("type") == "blob":
             entries.append(
                 {"path": item["path"], "size": item.get("size", 0)}
             )
-    result = {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
-    _core._tree_cache.set("tree", result)
+    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    _core._tree_cache.set(cache_key, result)
     return result
 
 
-async def alist_tree() -> dict:
+async def alist_tree(ref: str | None = None) -> dict:
     """Native-await twin of list_tree - same cache, same shape, non-blocking
     I/O. The hot repo_list_tree tool path runs this directly on the event
     loop instead of occupying a worker thread."""
-    cached = _core._tree_cache.get("tree", config.GITHUB_TREE_CACHE_SECONDS)
+    ref = _validate_ref(ref)
+    cache_key = ("tree", ref)
+    cached = _core._tree_cache.get(cache_key, config.GITHUB_TREE_CACHE_SECONDS)
     if cached is not None:
         return cached
-    tree = await _core._on_bg(_core._arequest("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1"))
+    tree = await _core._on_bg(_core._arequest("GET", f"git/trees/{ref}?recursive=1"))
     entries = [
         {"path": item["path"], "size": item.get("size", 0)}
         for item in tree.get("tree", [])
         if item.get("type") == "blob"
     ]
-    result = {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
-    _core._tree_cache.set("tree", result)
+    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    _core._tree_cache.set(cache_key, result)
     return result
 
 
@@ -91,7 +97,7 @@ def read_file(path: str, line_start: int | None = None, line_end: int | None = N
     up to this long to appear -- agents should not panic if a just-pushed
     change is not immediately visible."""
     path = _validate_path(path)
-    ref = ref or GITHUB_BASE_BRANCH
+    ref = _validate_ref(ref)
     cache_key = ("read_file", path, ref)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
@@ -131,7 +137,7 @@ async def aread_file(path: str, line_start: int | None = None,
                      line_end: int | None = None, ref: str | None = None) -> dict:
     """Native-await twin of read_file - same contract, non-blocking I/O."""
     path = _validate_path(path)
-    ref = ref or GITHUB_BASE_BRANCH
+    ref = _validate_ref(ref)
     cache_key = ("read_file", path, ref)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
@@ -326,6 +332,34 @@ def open_prs() -> list[dict]:
         raise
     _core._open_prs_cache.set("open_prs", result)
     return result
+
+
+def list_repo_labels() -> list[str]:
+    """Every repo-level label *definition* (names only), paged.  Distinct
+    from the labels sitting on a given PR: definitions persist in the repo
+    even after they are unlinked from every issue, which is exactly why
+    the vote-label GC sweeps them (see server.poller._sweep_orphan_vote_labels)."""
+    return [l.get("name", "") for l in _paginated_get("labels")]
+
+
+def open_pr_labels() -> set[str]:
+    """Label names currently applied to ANY open pull request, as a set.
+    One open-PR listing carries every PR's labels, so the whole set is a
+    single paged fetch.  Used by cleanup sweeps to decide whether a
+    repo-level label definition is still 'live' (referenced by an open PR)
+    before deleting it."""
+    labels: set[str] = set()
+    page = 1
+    while True:
+        batch = _core._request(
+            "GET", f"pulls?state=open&per_page={_PR_PAGE_SIZE}&page={page}"
+        )
+        for p in batch:
+            for l in (p.get("labels") or []):
+                labels.add(l.get("name", ""))
+        if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
+            return labels
+        page += 1
 
 
 def list_prs(state: str = "open", since: str | None = None) -> list[dict]:

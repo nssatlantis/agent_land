@@ -31,6 +31,8 @@ from viewer._helpers import (
     _prs_hold_chip,
     _todos_panel,
 )  # noqa: E402
+from viewer._status import _process_rows  # noqa: E402
+from viewer._utils import _rows  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -346,6 +348,80 @@ def test_todos_panel_shows_list_and_item_ids():
     assert "write a regression test" in html
 
 
+def test_todos_panel_list_mode_suppresses_item_dots():
+    # List claim mode: ownership lives on the whole list, so per-item dots
+    # are noise - a claimed list shows the blue 'claimed' badge but no grey
+    # 'unclaimed' (or blue claimed) dots on its items.
+    lists_claimed = [
+        {"id": 1, "title": "Chores", "claim_mode": "list",
+         "claimed_by": "beta", "claimed_at": "2026-08-27T12:00:00.000Z",
+         "items": [
+             {"id": 2, "text": "mow", "done": False},
+             {"id": 3, "text": "water", "done": True},
+         ]},
+    ]
+    html = _todos_panel({"todos": lists_claimed})
+    assert "whole list claimed by beta" in html, "list-claim badge present"
+    assert "claimed" in html
+    assert "title='unclaimed'" not in html, \
+        "no grey per-item dot in list mode"
+    # An unclaimed list in list mode also suppresses the grey dots.
+    lists_unclaimed = [
+        {"id": 5, "title": "Backlog", "claim_mode": "list",
+         "items": [{"id": 6, "text": "later", "done": False}]},
+    ]
+    html2 = _todos_panel({"todos": lists_unclaimed})
+    assert "claimed" not in html2
+    assert "title='unclaimed'" not in html2, \
+        "grey per-item dots suppressed for unclaimed lists too"
+    # Item mode (default) keeps the grey unclaimed dots - unchanged.
+    lists_item = [
+        {"id": 7, "title": "Bugs", "items": [
+            {"id": 8, "text": "stale read", "done": False}]},
+    ]
+    html3 = _todos_panel({"todos": lists_item})
+    assert "title='unclaimed'" in html3, \
+        "item mode still shows the grey unclaimed dot"
+
+
+def test_process_rows_no_double_escape():
+    """Regression: the Process panel's timestamp cells must render as real
+    <span> markup, not literal escaped text. _ts_or_dash and
+    _human_ts_absolute already return escaped HTML - a re-esc() produced
+    '<span title=...>' on screen."""
+    proc = {
+        "python_version": "3.10",
+        "pid": 123,
+        "uptime_seconds": 3600,
+        "stats_refreshed_at": "2026-08-27T16:48:25.485Z",
+        "count": 0,
+        "last": None,
+    }
+    html = _rows(_process_rows(proc, 42))
+    # The planner-refresh cell is a real span, not its escaped markup.
+    assert '<span title="2026-08-27T16:48:25.485Z UTC">' in html, html
+    assert "&lt;span" not in html, "no double-escaped span should render"
+    assert "42" in html, "event ledger rows value is present"
+    assert "none since boot" in html, "slow db blocks falls back cleanly"
+
+
+def test_process_rows_slow_block_last_renders_span():
+    """With a recorded slow block, the 'slow db blocks' cell renders the
+    absolute-time span (not its escaped markup)."""
+    proc = {
+        "python_version": "3.10",
+        "pid": 123,
+        "uptime_seconds": 3600,
+        "stats_refreshed_at": None,
+        "count": 2,
+        "last": {"ms": 150.0, "immediate": True, "at": "2026-08-27T16:40:00.000Z"},
+    }
+    html = _rows(_process_rows(proc, 0))
+    assert "150 ms (immediate," in html, html
+    assert '<span title="2026-08-27T16:40:00.000Z UTC">' in html, html
+    assert "&lt;span" not in html, "no double-escaped span should render"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -374,4 +450,7 @@ if __name__ == "__main__":
     test_profile_cards_tag_stats()
     test_prs_hold_chip_states()
     test_todos_panel_shows_list_and_item_ids()
+    test_todos_panel_list_mode_suppresses_item_dots()
+    test_process_rows_no_double_escape()
+    test_process_rows_slow_block_last_renders_span()
     print("\n== test_viewer: all passed ==")

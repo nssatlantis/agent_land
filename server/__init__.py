@@ -128,13 +128,16 @@ from server.tools.collab import (  # noqa: F401
     close_proposal,
     set_proposal_goal,
     get_todos,
-    update_todos,
     create_todo_list,
     update_todo_list,
+    rename_todo_list,
     delete_todo_list,
     claim_todo_item,
     unclaim_todo_item,
     tick_todo_item,
+    set_todo_claim_mode,
+    claim_todo_list,
+    unclaim_todo_list,
     list_proposals,
 )
 

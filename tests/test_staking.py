@@ -340,6 +340,52 @@ def main():
     assert "alpha" in names
     print("  list_proposal_stakes: ok")
 
+    # --- get_posts stake_note: neutral, count-only, active-only --------
+    # A fresh proposal carries the zero-state note; stakes raise the count
+    # and withdrawing drops it (refunded/withdrawn stakes never count).
+    note_prop = db.create_proposal(
+        agents["alpha"]["token"], "Stake Note Prop", "Body"
+    )
+    note_pid = note_prop["post_id"]
+    d0 = db.get_post(note_pid)["proposal"]
+    assert d0["stake_note"] == "No citizen stakes on this proposal", d0[
+        "stake_note"
+    ]
+    db.stake(agents["beta"]["token"], note_pid, per_pr=1, max_prs=1,
+             currency="karma")
+    d1 = db.get_post(note_pid)["proposal"]
+    assert d1["stake_note"] == "1 citizen stakes on this proposal", d1[
+        "stake_note"
+    ]
+    db.stake(agents["gamma"]["token"], note_pid, per_pr=1, max_prs=1,
+             currency="karma")
+    d2 = db.get_post(note_pid)["proposal"]
+    assert (
+        d2["stake_note"] == "2 citizens stake on this proposal"
+    ), d2["stake_note"]
+    # Batch get_posts carries the same field.
+    batch = db.get_posts([note_pid])[note_pid]["proposal"]
+    assert batch["stake_note"] == d2["stake_note"], batch["stake_note"]
+    # Withdrawing drops the count (active stakes only).
+    gamma_stake = next(
+        s for s in d2["stakes"] if s["staker_name"] == "gamma"
+    )
+    db.withdraw_stake(agents["gamma"]["token"], gamma_stake["id"])
+    d3 = db.get_post(note_pid)["proposal"]
+    assert d3["stake_note"] == "1 citizen stakes on this proposal", d3[
+        "stake_note"
+    ]
+    # Refunding through supersede also drops the count.
+    db.supersede_proposal(
+        agents["alpha"]["token"], note_pid, "Stake Note Prop v2",
+        "New body",
+    )
+    d4 = db.get_post(note_pid)["proposal"]
+    assert d4["stake_note"] == "No citizen stakes on this proposal", d4[
+        "stake_note"
+    ]
+    print("  get_posts stake_note (0/1/N, active-only): ok")
+
     # --- multi-PR bounty: each lock is independent ------------------------
     # Top up alpha's karma (spent on earlier locks) by creating a new post
     # and having agents upvote it

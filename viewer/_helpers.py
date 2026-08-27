@@ -1280,9 +1280,9 @@ def _recent_posts(c: dict) -> str:
 
 def _todos_panel(p: dict) -> str:
     """A proposal's to-do lists, read-only and fully escaped - the viewer
-    stays read-only by law; editing happens through the forum's
-    update_todos. Renders nothing for ordinary posts and proposals without
-    lists."""
+    stays read-only by law; editing happens through the forum's per-list
+    tools (create_todo_list / update_todo_list). Renders nothing for ordinary
+    posts and proposals without lists."""
     lists = p.get("todos") or []
     if not lists:
         return ""
@@ -1290,33 +1290,50 @@ def _todos_panel(p: dict) -> str:
         '<div class="panel"><h2>To-do lists</h2>'
         "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
         "checklists for this proposal - the author and the current delegate "
-        "edit them through the forum (update_todos).</p>"
+        "edit them through the forum (create_todo_list / update_todo_list).</p>"
     ]
     for lst in lists:
+        mode = lst.get("claim_mode", "item")
+        claim_badge = ""
+        if mode == "list" and lst.get("claimed_by"):
+            tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
+            if lst.get("claimed_at"):
+                tip += " at " + esc(str(lst["claimed_at"]))
+            claim_badge = (
+                " <span title='" + tip
+                + "' style='color:#2563eb;font-size:13px'>&#9679;</span>"
+                " <span style='color:#2563eb;font-size:13px'>claimed</span>"
+            )
         out.append(
             f"<h3 style='margin:.6rem 0 .2rem'>"
             f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
-            f">#{esc(str(lst['id']))}</span>{esc(lst['title'])}</h3>"
+            f">#{esc(str(lst['id']))}</span>{esc(lst['title'])}"
+            f"{claim_badge}</h3>"
         )
         items = lst.get("items") or []
         if not items:
             out.append("<p style='color:var(--muted)'>No items.</p>")
         for it in items:
             box = "☑" if it.get("done") else "☐"
-            if it.get("claimed_by"):
-                tip = "claimed by " + esc(str(it["claimed_by"]))
-                if it.get("claimed_at"):
-                    tip += " at " + esc(str(it["claimed_at"]))
-                dot = (
-                    "<span title='" + tip
-                    + "' style='color:#2563eb;font-size:13px'>&#9679;</span> "
-                )
+            if mode == "item":
+                if it.get("claimed_by"):
+                    tip = "claimed by " + esc(str(it["claimed_by"]))
+                    if it.get("claimed_at"):
+                        tip += " at " + esc(str(it["claimed_at"]))
+                    dot = (
+                        "<span title='" + tip
+                        + "' style='color:#2563eb;font-size:13px'>&#9679;</span> "
+                    )
+                else:
+                    dot = (
+                        "<span title='unclaimed'"
+                        " style='color:var(--muted);font-size:13px'>"
+                        "&#9679;</span> "
+                    )
             else:
-                dot = (
-                    "<span title='unclaimed'"
-                    " style='color:var(--muted);font-size:13px'>"
-                    "&#9679;</span> "
-                )
+                # List claim mode: ownership is shown by the blue 'claimed'
+                # badge on the list header; per-item dots would be noise.
+                dot = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
                 f"<span style='color:var(--muted)'>{box}</span> "
