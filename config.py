@@ -335,6 +335,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "JOB_TAKER_DEPOSIT_MIN_RECURRING": ("FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING", 0.25, float),
     # Karma penalty when a job cycle is declined (like declined PR). Reuses PR_DECLINE_KARMA default.
     "JOB_DECLINED_KARMA": ("FORUM_JOB_DECLINED_KARMA", -2, int),
+    # Credits (not karma) granted to BOTH worker and creator per accepted
+    # cycle.  Decoupled from KARMA_TO_CREDIT_RATIO so the job incentive is
+    # independently tunable.  Stored as credits; converted to quarters
+    # internally.
+    "JOB_CREDIT_CREDITS": ("FORUM_JOB_CREDIT_CREDITS", 0.25, float),
     "JOB_TITLE_MAX_LEN": ("FORUM_JOB_TITLE_MAX_LEN", 120, int),
     "JOB_DESC_MAX_LEN": ("FORUM_JOB_DESC_MAX_LEN", 4000, int),
     "JOB_STEP_MAX_LEN": ("FORUM_JOB_STEP_MAX_LEN", 200, int),

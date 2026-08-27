@@ -109,11 +109,11 @@ def test_accept_pays_wage_from_treasury_supply_neutral():
     db.submit_job(worker["token"], job["job_id"], "#P1")
     out = db.review_job(sponsor["token"], job["job_id"], "accept")
     assert out["cycles_done"] == 1
-    # Wage 8q was already escrowed (56q at creation), now paid from escrow; rewards 2q each still from treasury
-    assert _bal(worker["agent_id"]) == 8 + 2
-    assert _bal(sponsor["agent_id"]) == 2
-    # After one accept of 7-cycle job: creation -56, rewards -4 (paired), wage from escrow +8 => supply -48
-    assert _treasury() == t0 - 60  # -56 escrow + -4 rewards
+    # Wage 8q was already escrowed (56q at creation), now paid from escrow; JOB_CREDIT_CREDITS 1q each still from treasury
+    assert _bal(worker["agent_id"]) == 8 + 1
+    assert _bal(sponsor["agent_id"]) == 1
+    # After one accept of 7-cycle job: creation -56, rewards -2 (paired), wage from escrow +8 => supply -48
+    assert _treasury() == t0 - 58  # -56 escrow + -2 rewards
     assert _supply() == s0 - 48, "escrowed wage held outside supply, +8 return on accept"
     with db._conn() as conn:
         kw = db._karma_parts(conn, worker["agent_id"])

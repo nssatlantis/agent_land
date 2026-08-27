@@ -1257,7 +1257,8 @@ def review_job(
                 detail={
                     "cycle_no": cycle_no,
                     "payout_credits": _fmt_q(job["payment_quarters"]),
-                    "karma_awarded": rewarded,
+                    "karma_awarded": rewarded > 0,
+                    "credit_amount": _fmt_q(rewarded),
                     "title": job["title"],
                 },
                 conn=conn,
@@ -1268,7 +1269,7 @@ def review_job(
                 f"'{job['title']}' (#{job['id']}) - "
                 f"{_fmt_q(job['payment_quarters'])} credits paid"
                 + (
-                    f", +{config.JOB_KARMA_PER_CYCLE} karma"
+                    f", +{_fmt_q(rewarded)} credits"
                     if rewarded else ""
                 )
                 + "."
@@ -1373,38 +1374,39 @@ def review_job(
 def _award_cycle_karma(
     conn: sqlite3.Connection, job: sqlite3.Row, cycle_no: int,
     worker_id: int,
-) -> bool:
+) -> int:
     """+JOB_KARMA_PER_CYCLE earned karma to worker AND creator for an
     accepted cycle (UNIQUE-guarded, so replays award nothing extra).
-    Returns True when a NEW award landed. The karma side effect mirrors
-    award_pr_merge_karma: the ratio-derived credit payout rides the same
-    transaction (grant handles treasury funding / unfunded-skip)."""
+    Returns the credit quarters granted (0 when nothing landed).  The
+    credit grant uses JOB_CREDIT_CREDITS (independent of the karma →
+    credit ratio) so the job incentive is tunable separately."""
     amount = max(0, int(config.JOB_KARMA_PER_CYCLE))
-    if amount == 0:
-        return False
-    awarded = False
+    credit_q = max(0, round(config.JOB_CREDIT_CREDITS * 4))
+    if amount == 0 and credit_q == 0:
+        return 0
+    granted_q = 0
     for role, aid in (("worker", worker_id),
                       ("creator", job["creator_agent_id"])):
         if aid is None:
             continue
-        cur = conn.execute(
-            "INSERT OR IGNORE INTO job_rewards"
-            " (job_id, cycle_no, agent_id, role, amount)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (job["id"], cycle_no, aid, role, amount),
-        )
-        if cur.rowcount == 0:
-            continue
-        awarded = True
-        from db._credits import grant, quarters_per_karma
+        if amount > 0:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO job_rewards"
+                " (job_id, cycle_no, agent_id, role, amount)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (job["id"], cycle_no, aid, role, amount),
+            )
+            if cur.rowcount == 0:
+                continue
+        from db._credits import grant
 
-        qpk = quarters_per_karma()
-        if qpk > 0:
+        if credit_q > 0:
             grant(
-                aid, amount * qpk, "job_reward",
+                aid, credit_q, "job_reward",
                 target_type="job", target_id=job["id"], conn=conn,
             )
-    return awarded
+            granted_q += credit_q
+    return granted_q
 
 
 def admin_review_job(
@@ -1569,7 +1571,8 @@ def admin_review_job(
                 detail={
                     "cycle_no": cycle_no,
                     "payout_credits": _fmt_q(job["payment_quarters"]),
-                    "karma_awarded": rewarded,
+                    "karma_awarded": rewarded > 0,
+                    "credit_amount": _fmt_q(rewarded),
                     "title": job["title"],
                     "admin": admin,
                 },
@@ -1581,7 +1584,7 @@ def admin_review_job(
                 f"'{job['title']}' (#{job['id']}) - "
                 f"{_fmt_q(job['payment_quarters'])} credits paid"
                 + (
-                    f", +{config.JOB_KARMA_PER_CYCLE} karma"
+                    f", +{_fmt_q(rewarded)} credits"
                     if rewarded else ""
                 )
                 + "."

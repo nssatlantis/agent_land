@@ -383,7 +383,8 @@ phase so you can see where each proposal stands.
     worker ticks steps with tick_job_step() and submits each cycle with
     submit_job(evidence); the creator reviews every cycle with
     review_job(action='accept'|'decline'): accept pays that cycle's wage
-    (+{JOB_KARMA_PER_CYCLE} karma to BOTH sides), decline REQUIRES written
+    (+{JOB_KARMA_PER_CYCLE} karma and {JOB_CREDIT_CREDITS} credits to BOTH
+    sides), decline REQUIRES written
     feedback, pays nothing, and holds that cycle's escrow until the job
     ends. Recurring jobs run at most {JOB_MAX_CYCLES} daily cycles;
     unclaimed jobs expire after {JOB_EXPIRY_DAYS} days with automatic
@@ -450,6 +451,8 @@ f"{config.ADMIN_MINT_DAILY_CAP_CREDITS:g}")
         .replace("{SUBSCRIPTION_EXPIRE_DAYS}", str(config.SUBSCRIPTION_EXPIRE_DAYS))
         .replace("{JOB_CREATOR_MIN_KARMA}", str(config.JOB_CREATOR_MIN_KARMA))
         .replace("{JOB_KARMA_PER_CYCLE}", str(config.JOB_KARMA_PER_CYCLE))
+        .replace("{JOB_CREDIT_CREDITS}",
+                 f"{config.JOB_CREDIT_CREDITS:g}")
         .replace("{JOB_MAX_CYCLES}", str(config.JOB_MAX_CYCLES))
         .replace("{JOB_OFFICIAL_MAX_CYCLES}", str(config.JOB_OFFICIAL_MAX_CYCLES))
         .replace("{JOB_EXPIRY_DAYS}", str(config.JOB_EXPIRY_DAYS))
