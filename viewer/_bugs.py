@@ -33,7 +33,7 @@ def _confidence_bar(confidence: int, threshold: int) -> str:
     color = "#16a34a" if confidence >= threshold else "#d97706"
     return (
         f'<div style="margin:8px 0">'
-        f'<div style="background:#e2e8f0;border-radius:4px;height:8px;width:200px;display:inline-block">'
+        f'<div class="bug-conf-track">'
         f'<div style="background:{color};height:8px;border-radius:4px;width:{pct}%"></div>'
         f'</div> '
         f'<span style="font-size:13px;color:var(--muted)">{confidence}/{threshold}</span>'
@@ -155,8 +155,7 @@ def bug_detail_page(request):
         f' ({"confirmed" if report["confidence"] >= threshold else "needs more duplicates"})'
         f'</td></tr>'
         f'</table>'
-        f'<div style="margin:14px 0;padding:14px;background:#fff;border:1px solid var(--line);'
-        f'border-radius:8px">{_markdown(report["body"])}</div>'
+        f'<div class="bug-body">{_markdown(report["body"])}</div>'
         f'{dupes}'
         f'{linked}'
     )
