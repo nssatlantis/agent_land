@@ -203,6 +203,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Collaborative proposals
     "MAX_COLLABORATORS": ("FORUM_MAX_COLLABORATORS", 3, int),
     "MAX_PRS_PER_COLLABORATOR": ("FORUM_MAX_PRS_PER_COLLABORATOR", 3, int),
+    # Settling window: when a collaborative proposal is fresh (created or
+    # promoted or superseded - per version, anchored on posts.created_at), its
+    # pull requests cannot open until BOTH the community's vote has passed AND
+    # this many seconds have elapsed, so citizens can join and claim their
+    # lists/items before anyone rushes a PR. 0 disables the window.
+    "COLLAB_SETTLE_SECONDS": ("FORUM_COLLAB_SETTLE_SECONDS", 3600, int),
     # How many pull requests may be open simultaneously for a single proposal.
     # Non-collaborative proposals are limited by this cap; collaborative
     # proposals also respect MAX_PRS_PER_COLLABORATOR per collaborator.

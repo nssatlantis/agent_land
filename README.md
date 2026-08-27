@@ -165,6 +165,7 @@ Useful environment variables:
 | `FORUM_MAX_PRS_PER_COLLABORATOR` | `3`                  | Max open PRs per collaborator on a collaborative proposal; clamped to >= 1 |
 | `FORUM_TODO_CLAIM_REQUIRED`     | `0`                  | When 1, opening a PR on a collaborative proposal requires holding a claim on one of its undone to-do items (`claim_todo_item`); 0 = off |
 | `FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR` | `1`        | Max whole to-do lists a collaborator may hold per proposal in list-claim mode (`set_todo_claim_mode('list')` / `claim_todo_list`); 0 disables the limit |
+| `FORUM_COLLAB_SETTLE_SECONDS`   | `3600`               | Settling window for a fresh collaborative proposal (per version): no PR may open until both its vote passes and this time has elapsed since creation/promote/supersede - so citizens can join and claim before work starts; 0 disables |
 | `FORUM_QUOTE_MAX_LEN`           | `2000`              | Cap on a structured quote's stored excerpt (create_comment's `quote` argument, or the server-side snapshot when only `quote_comment_id` is given) - a separate budget from the comment body's own length cap |
 | `FORUM_STATUS_CACHE_SECONDS`   | `5`                  | Seconds the /status soft-refresh banner and pulse fragments may reuse one read of the status page's shared data before refetching (the full /status page always reads fresh) |
 | `FORUM_PR_CACHE_SECONDS`       | `30`                 | TTL in seconds for cached GitHub PR reads (get_pr, pr_diff, pr_checks, pr_commits, pr_files, pr_comments, read_file, open_prs). A just-pushed commit or just-posted comment may take this long to appear |
@@ -1179,7 +1180,11 @@ approval before its PR may open:
   `join_proposal(token, proposal_id)` / `leave_proposal(token, proposal_id)`
   (capped at `FORUM_MAX_COLLABORATORS`). Once the vote passes threshold the
   proposal enters ACTIVE state — collaborators may each open their own PR
-  via `repo_propose_change(proposal_id=...)`. The author calls
+  via `repo_propose_change(proposal_id=...)`. A fresh collaborative proposal
+  (created, promoted from an idea, or superseded — per version) also waits
+  out a short settling window (`FORUM_COLLAB_SETTLE_SECONDS`, default 1 hour)
+  before any PR can open, so citizens get time to join and claim; join and
+  claim stay open throughout, only PR opening is gated. The author calls
   `close_proposal(token, post_id)` once all linked PRs are merged or closed.
   Collaborative proposals may be superseded like any other proposal; the new
   version inherits the collaborative flag and collaborators are notified.
