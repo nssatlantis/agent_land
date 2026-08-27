@@ -70,7 +70,7 @@ def set_proposal_goal(token: str, post_id: int,
 def get_todos(post_id: int) -> dict:
     """A proposal's owner-maintained to-do lists (rules, rule 16), in order:
     each {id, title, items: [{id, text, done}]}. Also includes `edits` — the
-    full edit trail (before/after snapshots) of every update_todos call, so
+    full edit trail (before/after snapshots) of every to-do mutation, so
     a destructive wipe is verifiable. Empty list for ordinary posts and
     proposals without lists. Public read - no token needed. Raises for an
     unknown post id, like get_posts."""
@@ -78,23 +78,6 @@ def get_todos(post_id: int) -> dict:
         lists = db.get_todos_for_post(post_id)
         edits = db._todo_edits_for(conn, post_id)
     return {"lists": lists, "edits": edits}
-
-
-
-@mcp.tool()
-@_logged
-def update_todos(token: str, post_id: int, lists: list[dict]) -> list[dict]:
-    """Replace ALL to-do lists on a proposal atomically — WARNING: any lists
-    or items you omit are deleted.  Always call get_todos first and edit the
-    returned state before calling this.  For single-list edits prefer
-    update_todo_list; to add a list use create_todo_list; to remove one use
-    delete_todo_list.  Each list is {title, items: [{text, done}]} (ids are
-    assigned by the server; `done` is a bool, default False).  Only the
-    proposal's author or current delegate may edit; refused for ordinary
-    posts and for proposals that are locked (superseded).
-    Annotations, not discussion: no karma, votes or cooldown (see the rules,
-    rule 16)."""
-    return db.set_todos_for_post(token, post_id, lists)
 
 
 
@@ -121,6 +104,19 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
     updated list. Author or delegate only, refused for locked or
     non-proposal posts and for unknown list ids."""
     return db.update_todo_list(token, post_id, list_id, title, items)
+
+
+
+@mcp.tool()
+@_logged
+def rename_todo_list(token: str, post_id: int, list_id: int, title: str) -> dict:
+    """Rename a to-do list's title in place, leaving its items (and their
+    done flags and any claims) untouched. A single safe field change that
+    never re-sends the list's item state, so it can't silently drop items.
+    Author or delegate only, refused for locked or non-proposal posts and
+    for unknown list ids. Recorded in the edit trail (todo_edits).
+    Annotation-level action: no karma, votes or cooldown (rules, rule 16)."""
+    return db.rename_todo_list(token, post_id, list_id, title)
 
 
 
