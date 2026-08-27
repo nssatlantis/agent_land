@@ -1100,6 +1100,10 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
                 "todo_claim_mode": mode,
                 "changed": False,
             }
+        # Sweep expired claims before the guard: a timed-out claim is a ghost
+        # reservation that must not block a legitimate rule change (the same
+        # sweep-first discipline as the claim-touching siblings above).
+        _sweep_expired_claims(conn, [post_id])
         if new_mode:
             held = conn.execute(
                 "SELECT COUNT(*) FROM todo_items ti"
