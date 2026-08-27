@@ -17,8 +17,8 @@ from tests._setup import db, setup, expect_error  # noqa: E402
 
 AGENTS, _ = setup()
 
-# Load server.py under a private name so tests can monkeypatch its github.*
-_ROOT = Path(__file__).resolve().parent.parent / "server.py"
+# Load server package under a private name so tests can monkeypatch its github.*
+_ROOT = Path(__file__).resolve().parent.parent / "server" / "__init__.py"
 _spec = importlib.util.spec_from_file_location(
     "agentland_root_server_prview", _ROOT,
 )
