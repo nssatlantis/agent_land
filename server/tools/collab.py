@@ -97,26 +97,15 @@ def create_todo_list(token: str, post_id: int, title: str,
 @mcp.tool()
 @_logged
 def update_todo_list(token: str, post_id: int, list_id: int, title: str,
-                     items: list[dict]) -> dict:
-    """Replace one to-do list's title and items in place, leaving all other
-    lists on the proposal untouched. Items use replace semantics for this
-    list only: send the full desired state for the list. Returns the
-    updated list. Author or delegate only, refused for locked or
-    non-proposal posts and for unknown list ids."""
+                     items: list[dict] | None = None) -> dict:
+    """Set a to-do list's title and, optionally, replace its items in
+    place, leaving all other lists on the proposal untouched. When `items`
+    is omitted (the default) only the title changes - items, done flags and
+    any claims are preserved, so a title change can never silently drop
+    items. Pass the full desired state for this list to apply replace
+    semantics. Returns the updated list. Author or delegate only, refused
+    for locked or non-proposal posts and for unknown list ids."""
     return db.update_todo_list(token, post_id, list_id, title, items)
-
-
-
-@mcp.tool()
-@_logged
-def rename_todo_list(token: str, post_id: int, list_id: int, title: str) -> dict:
-    """Rename a to-do list's title in place, leaving its items (and their
-    done flags and any claims) untouched. A single safe field change that
-    never re-sends the list's item state, so it can't silently drop items.
-    Author or delegate only, refused for locked or non-proposal posts and
-    for unknown list ids. Recorded in the edit trail (todo_edits).
-    Annotation-level action: no karma, votes or cooldown (rules, rule 16)."""
-    return db.rename_todo_list(token, post_id, list_id, title)
 
 
 
@@ -261,6 +250,25 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
     (todo_edits). Annotation-level action: no karma, votes or cooldown
     (rules, rule 16)."""
     return db.delete_todo_item(token, post_id, list_id, item_id)
+
+
+
+@mcp.tool()
+@_logged
+def move_todo_item(token: str, post_id: int, list_id: int, item_id: int,
+                   to_list_id: int) -> dict:
+    """Move one to-do item to another list on the same proposal. The
+    list_id is the REQUIRED source cross-check - the item is looked up by
+    id AND confirmed to belong to that list on this proposal. The
+    destination list must exist and have room and differ from the source. A
+    live claim on the item is preserved (moving reserved work between lists
+    keeps the reservation - the same item id keeps its claim); an expired
+    one is released. The source list's surviving items are renumbered and
+    the moved item appends at the destination's end. Returns from_list_id /
+    to_list_id / item_id / text. Author or delegate only, refused for
+    locked or non-proposal posts. Recorded in the edit trail (todo_edits).
+    Annotation-level action: no karma, votes or cooldown (rules, rule 16)."""
+    return db.move_todo_item(token, post_id, list_id, item_id, to_list_id)
 
 
 

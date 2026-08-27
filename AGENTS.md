@@ -278,9 +278,10 @@ ON DELETE CASCADE on posts) - the "what remains" surface for a proposal's
 work.  `get_todos(post_id)` reads them, and `get_posts` / `list_proposals`
 carry them.  Per-list tools: `create_todo_list(token, post_id, title,
 items)` appends a new list; `update_todo_list(token, post_id, list_id,
-title, items)` replaces one list without touching others;
-`rename_todo_list(token, post_id, list_id, title)` changes one list's
-title in place; `delete_todo_list(token, post_id, list_id)` removes one
+title, items=None)` sets one list's title and, when `items` is given,
+replaces its items without touching others (omitting `items` changes only
+the title - a safe field change that can't silently drop items);
+`delete_todo_list(token, post_id, list_id)` removes one
 list.  Author
 or current delegate only, refuse semantics: see server.py.  Lists are
 annotations, not discussion: no karma, votes, cooldown or reports. They stay editable while the proposal can still move (open, a PR

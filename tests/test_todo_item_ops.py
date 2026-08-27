@@ -18,6 +18,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import config  # noqa: E402
 from tests._setup import db, setup, init, expect_error  # noqa: E402
 
 
@@ -214,6 +215,82 @@ def main():
         db.add_todo_item, beta["token"], pid, build_id, "by beta"
     ), "non-delegate cannot add"
     print("  author-or-delegate gate holds: ok")
+
+    # -- 11. move_todo_item relocates an item to another list -------------
+    mv = db.create_proposal(alpha["token"], "Move across lists", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], mv, [
+        {"title": "Build", "items": [{"text": "A"}, {"text": "B"}, {"text": "C"}]},
+        {"title": "Polish", "items": []},
+    ])
+    mv_lists = db.get_todos_for_post(mv)
+    mv_build = [l for l in mv_lists if l["title"] == "Build"][0]
+    mv_polish = [l for l in mv_lists if l["title"] == "Polish"][0]
+    item_b = [i for i in mv_build["items"] if i["text"] == "B"][0]
+    moved = db.move_todo_item(alpha["token"], mv, mv_build["id"], item_b["id"],
+                              mv_polish["id"])
+    assert moved["text"] == "B"
+    assert moved["from_list_id"] == mv_build["id"]
+    assert moved["to_list_id"] == mv_polish["id"]
+    mvl = db.get_todos_for_post(mv)
+    after_build = [l for l in mvl if l["id"] == mv_build["id"]][0]
+    after_polish = [l for l in mvl if l["id"] == mv_polish["id"]][0]
+    assert [i["text"] for i in after_build["items"]] == ["A", "C"], \
+        "source list keeps the other items in order"
+    assert [i["text"] for i in after_polish["items"]] == ["B"], \
+        "moved item appends to the destination"
+    print("  move_todo_item relocates an item across lists: ok")
+
+    # -- 12. move_todo_item guards: same list / unknown list / full dest ---
+    b_now = [i for i in after_polish["items"] if i["text"] == "B"][0]
+    msg = expect_error(db.move_todo_item, alpha["token"], mv, mv_polish["id"],
+                       b_now["id"], mv_polish["id"])
+    assert "already on" in msg, f"same-list move refused: {msg}"
+    msg = expect_error(db.move_todo_item, alpha["token"], mv, mv_polish["id"],
+                       b_now["id"], 999999)
+    assert "no to-do list" in msg, f"unknown destination refused: {msg}"
+    # Wrong source list cross-check: item lives on Polish, pass Build as
+    # source -> the list_id cross-check refuses it.
+    msg = expect_error(db.move_todo_item, alpha["token"], mv, mv_build["id"],
+                       b_now["id"], mv_build["id"])
+    assert "not on to-do list" in msg, f"wrong-source move refused: {msg}"
+    print("  move_todo_item guards same-list/unknown-dest/wrong-source: ok")
+
+    # -- 13. move_todo_item carries a live claim with the item -------------
+    mvc = db.create_proposal(alpha["token"], "Move claim", "b",
+                             collaborative=True)["post_id"]
+    db.set_todos_for_post(alpha["token"], mvc, [
+        {"title": "S", "items": [{"text": "reserved"}]},
+        {"title": "D", "items": []},
+    ])
+    mvc_lists = db.get_todos_for_post(mvc)
+    mvc_s = [l for l in mvc_lists if l["title"] == "S"][0]
+    mvc_d = [l for l in mvc_lists if l["title"] == "D"][0]
+    res = [i for i in mvc_s["items"] if i["text"] == "reserved"][0]
+    db.join_proposal(beta["token"], mvc)
+    db.claim_todo_item(beta["token"], mvc, res["id"])
+    db.move_todo_item(alpha["token"], mvc, mvc_s["id"], res["id"], mvc_d["id"])
+    mvc_after = db.get_todos_for_post(mvc)
+    mvc_d2 = [l for l in mvc_after if l["id"] == mvc_d["id"]][0]
+    landed = [i for i in mvc_d2["items"] if i["text"] == "reserved"][0]
+    assert landed.get("claimed_by") == "beta", \
+        "claim rides along when the item moves lists"
+    print("  move_todo_item carries a live claim with the item: ok")
+
+    # -- 14. move_todo_item refuses a destination at the item cap ----------
+    cap = db.create_proposal(alpha["token"], "Cap", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], cap, [
+        {"title": "S", "items": [{"text": "only"}]},
+        {"title": "Full",
+         "items": [{"text": f"i{n}"} for n in range(config.TODO_MAX_ITEMS)]},
+    ])
+    cap_lists = db.get_todos_for_post(cap)
+    cap_s = [l for l in cap_lists if l["title"] == "S"][0]
+    cap_full = [l for l in cap_lists if l["title"] == "Full"][0]
+    only = [i for i in cap_s["items"] if i["text"] == "only"][0]
+    msg = expect_error(db.move_todo_item, alpha["token"], cap, cap_s["id"],
+                       only["id"], cap_full["id"])
+    assert "at most" in msg, f"full destination refused: {msg}"
+    print("  move_todo_item refuses a full destination: ok")
 
     print("\ntest_todo_item_ops: all assertions passed")
 
