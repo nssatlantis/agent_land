@@ -152,7 +152,64 @@ def main():
     assert last["editor"] == "alpha"
     print("  per-item mutations land in the edit trail: ok")
 
-    # -- 8. author-or-delegate gate ---------------------------------------
+    # -- 8. delete renormalizes positions so a later add stays collision-free
+    # Three items at positions 0,1,2; delete the middle one (position 1); the
+    # survivors must recompress to 0,1 and the next add must land at a fresh
+    # position (2) - not collide with a surviving position (a `count`-based
+    # append after a gappy delete would otherwise reuse a taken position).
+    renorm = db.create_proposal(alpha["token"], "Renorm", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], renorm,
+                          [{"title": "L", "items": [{"text": "A"},
+                                                    {"text": "B"},
+                                                    {"text": "C"}]}])
+    rlst = db.get_todos_for_post(renorm)[0]
+    rlst_id = rlst["id"]
+
+    def rpos():
+        with db._conn() as conn:
+            return [r["position"] for r in conn.execute(
+                "SELECT position FROM todo_items WHERE list_id = ?"
+                " ORDER BY position, id", (rlst_id,))]
+
+    assert rpos() == [0, 1, 2], f"baseline positions 0..n: {rpos()}"
+    mid = [i for i in rlst["items"] if i["text"] == "B"][0]
+    db.delete_todo_item(alpha["token"], renorm, rlst_id, mid["id"])
+    assert rpos() == [0, 1], \
+        f"middle delete renormalizes surviving positions: {rpos()}"
+    db.add_todo_item(alpha["token"], renorm, rlst_id, "D")
+    assert rpos() == [0, 1, 2], \
+        f"add after renormalize is collision-free: {rpos()}"
+    rlst2 = db.get_todos_for_post(renorm)[0]
+    assert [i["text"] for i in rlst2["items"]] == ["A", "C", "D"], \
+        "render order A,C,D after middle delete + add"
+    print("  delete renormalizes positions, add stays collision-free: ok")
+
+    # -- 9. an expired claim is swept before delete, not a hard block ------
+    # A stale (expired-but-unswept) claim must not spuriously block the
+    # delete: delete sweeps like tick/claim and only refuses a live claim.
+    exp = db.create_proposal(alpha["token"], "Exp", "b",
+                             collaborative=True)["post_id"]
+    db.set_todos_for_post(alpha["token"], exp,
+                          [{"title": "T", "items": [{"text": "stale"},
+                                                    {"text": "ok"}]}])
+    elst = db.get_todos_for_post(exp)[0]
+    elst_id = elst["id"]
+    stale = [i for i in elst["items"] if i["text"] == "stale"][0]
+    db.join_proposal(beta["token"], exp)
+    db.claim_todo_item(beta["token"], exp, stale["id"])
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE todo_items SET claimed_at = '2000-01-01T00:00:00.000Z'"
+            " WHERE id = ?", (stale["id"],)
+        )
+    gone = db.delete_todo_item(alpha["token"], exp, elst_id, stale["id"])
+    assert gone["text"] == "stale", \
+        "expired claim is swept so delete succeeds, not spuriously blocked"
+    rest = db.get_todos_for_post(exp)[0]
+    assert [i["text"] for i in rest["items"]] == ["ok"]
+    print("  expired claim swept before delete (no spurious block): ok")
+
+    # -- 10. author-or-delegate gate ---------------------------------------
     assert "only the author or the current delegate" in expect_error(
         db.add_todo_item, beta["token"], pid, build_id, "by beta"
     ), "non-delegate cannot add"
