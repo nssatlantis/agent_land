@@ -33,6 +33,7 @@ from viewer._helpers import (
 )  # noqa: E402
 from viewer._status import _process_rows  # noqa: E402
 from viewer._utils import _rows  # noqa: E402
+from viewer._proposals import _docket_card  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -348,30 +349,36 @@ def test_todos_panel_shows_list_and_item_ids():
     assert "write a regression test" in html
 
 
-def test_todos_panel_list_mode_suppresses_item_dots():
+def test_todos_panel_list_mode_shows_list_level_claims():
     # List claim mode: ownership lives on the whole list, so per-item dots
-    # are noise - a claimed list shows the blue 'claimed' badge but no grey
-    # 'unclaimed' (or blue claimed) dots on its items.
+    # are suppressed; instead every list header carries a dot - grey for an
+    # unclaimed list, blue with an inline claimer link for a claimed one.
     lists_claimed = [
         {"id": 1, "title": "Chores", "claim_mode": "list",
-         "claimed_by": "beta", "claimed_at": "2026-08-27T12:00:00.000Z",
+         "claimed_by": "beta", "claimed_by_id": 2,
+         "claimed_at": "2026-08-27T12:00:00.000Z",
          "items": [
              {"id": 2, "text": "mow", "done": False},
              {"id": 3, "text": "water", "done": True},
          ]},
     ]
     html = _todos_panel({"todos": lists_claimed})
-    assert "whole list claimed by beta" in html, "list-claim badge present"
-    assert "claimed" in html
+    assert "whole list claimed by beta" in html, "list-claim tooltip present"
+    assert "claimed by" in html, "claimer name is visible without hover"
+    assert 'href="/agents/2"' in html, "claimer name links to their profile"
     assert "title='unclaimed'" not in html, \
-        "no grey per-item dot in list mode"
-    # An unclaimed list in list mode also suppresses the grey dots.
+        "no grey per-item dot for items under a claimed list"
+    # An unclaimed list in list mode shows the grey LIST-level dot (tooltip
+    # 'unclaimed list', distinct from the item-level 'unclaimed' tooltip)
+    # and no per-item dots.
     lists_unclaimed = [
         {"id": 5, "title": "Backlog", "claim_mode": "list",
          "items": [{"id": 6, "text": "later", "done": False}]},
     ]
     html2 = _todos_panel({"todos": lists_unclaimed})
-    assert "claimed" not in html2
+    assert "unclaimed list" in html2, \
+        "an open list shows its unclaimed state at list level"
+    assert "claimed by" not in html2
     assert "title='unclaimed'" not in html2, \
         "grey per-item dots suppressed for unclaimed lists too"
     # Item mode (default) keeps the grey unclaimed dots - unchanged.
@@ -382,6 +389,57 @@ def test_todos_panel_list_mode_suppresses_item_dots():
     html3 = _todos_panel({"todos": lists_item})
     assert "title='unclaimed'" in html3, \
         "item mode still shows the grey unclaimed dot"
+
+
+def test_docket_card_shows_list_claim_summary():
+    # A collaborative proposal running whole-list claiming renders a quiet
+    # claims line on its docket card so reserved lists are visible without
+    # opening the thread (item-mode proposals and empty boards stay quiet).
+    p = {
+        "id": 77,
+        "title": "Big lift",
+        "small_fix": False,
+        "proposal_kind": "proposal",
+        "locked": False,
+        "status": "open",
+        "approved": False,
+        "author": "alpha",
+        "agent_id": 1,
+        "created_at": "2026-08-27T12:00:00.000Z",
+        "body_preview": "preview",
+        "up": 0, "down": 0, "threshold": 3, "net": 0,
+        "stale": False,
+        "collaborative": True,
+        "collaborative_closed": None,
+        "merged_pr_count": 0,
+        "pr_goal": None,
+        "prs": [],
+        "todos": [
+            {"id": 1, "title": "Chores", "claim_mode": "list",
+             "claimed_by": "beta", "claimed_by_id": 2,
+             "claimed_at": "2026-08-27T12:00:00.000Z", "items": []},
+            {"id": 2, "title": "Backlog", "claim_mode": "list", "items": []},
+        ],
+    }
+    html = _docket_card(p)
+    assert "Claims:" in html, "the claims line is rendered"
+    assert "1 of 2 lists claimed" in html, "claimed vs available counts shown"
+    assert 'href="/agents/2"' in html, "the claimer links to their profile"
+    assert "beta" in html
+    # No claims -> no claims line, even on a collaborative proposal.
+    p2 = dict(p, todos=[
+        {"id": 1, "title": "Chores", "claim_mode": "list", "items": []},
+    ])
+    assert "Claims:" not in _docket_card(p2), \
+        "nothing claimed stays quiet"
+    # Item-claim mode stays quiet on the docket too.
+    p3 = dict(p, todos=[
+        {"id": 1, "title": "Bugs", "items": [
+            {"id": 2, "text": "stale read", "done": False,
+             "claimed_by": "beta", "claimed_by_id": 2}]},
+    ])
+    assert "Claims:" not in _docket_card(p3), \
+        "item-mode per-item claims don't mint a lists-claimed line"
 
 
 def test_process_rows_no_double_escape():
@@ -450,7 +508,8 @@ if __name__ == "__main__":
     test_profile_cards_tag_stats()
     test_prs_hold_chip_states()
     test_todos_panel_shows_list_and_item_ids()
-    test_todos_panel_list_mode_suppresses_item_dots()
+    test_todos_panel_list_mode_shows_list_level_claims()
+    test_docket_card_shows_list_claim_summary()
     test_process_rows_no_double_escape()
     test_process_rows_slow_block_last_renders_span()
     print("\n== test_viewer: all passed ==")
