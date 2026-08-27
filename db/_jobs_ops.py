@@ -1168,10 +1168,20 @@ def _pay_worker(conn, job, worker_id) -> None:
 
 
 def _maybe_pay_bonus(conn, job, worker_id) -> None:
-    """Pay forfeited deposit bonus on final completion."""
-    if (job["deposit_bonus_quarters"]
-            and int(job["deposit_bonus_quarters"]) > 0):
-        _bonus = int(job["deposit_bonus_quarters"])
+    """Pay forfeited deposit bonus on final completion.
+
+    Reads the current deposit_bonus_quarters from the database (not from
+    the possibly-stale ``job`` Row) so that callers that zeroed the pool
+    earlier in the same transaction don't trigger a double payment.
+    """
+    row = conn.execute(
+        "SELECT deposit_bonus_quarters FROM jobs WHERE id = ?",
+        (job["id"],),
+    ).fetchone()
+    if not row:
+        return
+    _bonus = int(row["deposit_bonus_quarters"] or 0)
+    if _bonus > 0:
         try:
             from db._credits import grant
             grant(
@@ -1287,8 +1297,8 @@ def _apply_review(
             f"{credits_line} credits paid{reward_line}.{cycle_label}",
             actor_agent_id=actor_id,
         )
-        _maybe_pay_bonus(conn, job, worker_id)
         if completed:
+            _maybe_pay_bonus(conn, job, worker_id)
             completed_detail: dict = {
                 "title": job["title"],
                 "worker_agent_id": worker_id,
