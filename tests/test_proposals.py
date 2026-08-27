@@ -2107,26 +2107,29 @@ def main():
     )
     promoted_mc = db.promote_idea(
         agents["gamma"]["token"], idea_mc["post_id"],
-        "MC proposal", "body", max_collaborators=5,
+        "MC proposal", "body", collaborative=True, max_collaborators=5,
     )
     with db._conn() as conn:
         row = conn.execute(
-            "SELECT proposal_config FROM posts WHERE id = ?",
+            "SELECT proposal_config, collaborative FROM posts WHERE id = ?",
             (promoted_mc["post_id"],),
         ).fetchone()
     assert row and "max_collaborators" in row["proposal_config"], \
         "promoted proposal carries max_collaborators"
     assert '"max_collaborators": 5' in row["proposal_config"], \
         "promoted proposal has correct max_collaborators value"
+    assert row["collaborative"], \
+        "max_collaborators implies a collaborative promoted proposal"
 
-    # claimable and max_collaborators together are refused
+    # claimable and collaborative can be promoted together (mirrors
+    # create_proposal); only max_collaborators without collaborative is refused
     idea_excl = db.create_proposal(
         agents["gamma"]["token"], "Excl idea", "body", idea=True,
     )
-    assert "mutually exclusive" in expect_error(
+    assert "requires collaborative" in expect_error(
         db.promote_idea, agents["gamma"]["token"], idea_excl["post_id"],
         "title", "body", claimable=True, max_collaborators=3,
-    ), "claimable + max_collaborators together is refused"
+    ), "max_collaborators without collaborative is refused"
 
     # max_collaborators < 2 refused
     idea_small = db.create_proposal(
