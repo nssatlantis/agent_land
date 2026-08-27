@@ -882,8 +882,9 @@ def _pr_vote_sweep(
         )
     # Pre-fetch both CI systems concurrently — local Docker on the host
     # and GitHub Actions on the cloud run at the same time (GH pool up to
-    # 8, local pending list; GH and local overlap, but host locals serialize
-    # via single _RUN_LOCK so real speedup is GH||local, not 2×local).
+    # 8, local pending list; GH and local overlap, locals run in parallel
+    # up to CI_RUN_CONCURRENCY via slot pool — _RUN_LOCK is legacy, never
+    # acquired in production, only checked for tests).
     gh_results: dict[int, dict] = {}
     gh_errors: dict[int, Exception] = {}
     # Keyed by (pr_number, head_sha) to avoid stale-head reuse

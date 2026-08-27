@@ -51,10 +51,11 @@ async def _debounce_ticker() -> None:
                         ci_runner.run_branch_ci_for_poller, pr_number, "tests"
                     )
                 except Exception as exc:  # domain: degrade-silently - ticker must never crash; one head failure must not stall others
-                    # If the host slot pool was saturated (_RUN_LOCK / queue),
-                    # the PR was already removed from _PENDING but got no CI.
-                    # Re-enqueue so the next poll (30-180s) isn't the only
-                    # recovery — otherwise file-at-a-time bursts lose the
+                    # If the host slot pool was saturated (queue empty —
+                    # _RUN_LOCK is legacy, never acquired in prod, always
+                    # unlocked), the PR was already removed from _PENDING but
+                    # got no CI. Re-enqueue so the next ticker cycle (5s)
+                    # retries — otherwise file-at-a-time bursts lose the
                     # "host runs final head" promise under load.
                     if "already in progress" in str(exc):
                         try:
