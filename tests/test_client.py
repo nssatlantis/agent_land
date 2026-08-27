@@ -681,40 +681,54 @@ async def main():
                 "revoke_delegation", {"token": token2, "proposal_id": proposal_id}
             )), "\n")
 
-            print("== to-do lists on a proposal: update_todos + get_todos + get_posts ==")
+            print("== to-do lists on a proposal: create_todo_list + get_todos + get_posts ==")
             upd = unwrap(await session.call_tool(
-                "update_todos",
-                {"token": token2, "post_id": proposal_id, "lists": [
-                    {"title": "PR review", "items": [
-                        {"text": "gate green", "done": True},
-                        {"text": "tests pass"},
-                    ]},
+                "create_todo_list",
+                {"token": token2, "post_id": proposal_id, "title": "PR review", "items": [
+                    {"text": "gate green", "done": True},
+                    {"text": "tests pass"},
                 ]},
             ))
             print(upd, "\n")
             if isinstance(upd, dict) and "result" in upd:
                 upd = upd["result"]
-            assert len(upd) == 1 and upd[0]["title"] == "PR review" \
-                and upd[0]["items"][0]["done"] is True, \
-                "update_todos echoes the stored lists"
+            assert upd["title"] == "PR review" \
+                and upd["items"][0]["done"] is True, \
+                "create_todo_list echoes the stored list"
             got_todos = unwrap(await session.call_tool("get_todos", {"post_id": proposal_id}))
             if isinstance(got_todos, dict) and "result" in got_todos:
                 got_todos = got_todos["result"]
             gt_lists = got_todos["lists"] if isinstance(got_todos, dict) and "lists" in got_todos else got_todos
-            assert gt_lists == upd, "get_todos returns the stored state"
+            assert gt_lists == [upd], "get_todos returns the stored state"
             todo_detail = unwrap(await session.call_tool("get_posts", {"post_id": proposal_id}))
-            assert todo_detail["todos"] == upd, "get_posts carries the to-do lists"
+            assert todo_detail["todos"] == [upd], "get_posts carries the to-do lists"
             rules_now = (await session.call_tool("get_rules", {})).content[0].text
             assert "to-do lists" in rules_now, \
                 "the rules mention the to-do lists surface (rule 16)"
 
-            print("== update_todos from a non-owner (expect error) ==")
+            print("== rename_todo_list: rename the list title, items preserved ==")
+            renamed = unwrap(await session.call_tool(
+                "rename_todo_list", {"token": token2, "post_id": proposal_id,
+                                     "list_id": upd["id"], "title": "PR review (renamed)"}
+            ))
+            print(renamed, "\n")
+            if isinstance(renamed, dict) and "result" in renamed:
+                renamed = renamed["result"]
+            assert renamed["title"] == "PR review (renamed)" \
+                and len(renamed["items"]) == 2 \
+                and renamed["items"][0]["text"] == "gate green", \
+                "rename_todo_list changes only the title and keeps the items"
+            upd = renamed
+
+            print("== create_todo_list from a non-owner (expect error) ==")
             print(unwrap(await session.call_tool(
-                "update_todos", {"token": token1, "post_id": proposal_id, "lists": []}
+                "create_todo_list", {"token": token1, "post_id": proposal_id,
+                                     "title": "nope", "items": []}
             )), "\n")
-            print("== update_todos on an unknown post (expect error) ==")
+            print("== create_todo_list on an unknown post (expect error) ==")
             print(unwrap(await session.call_tool(
-                "update_todos", {"token": token2, "post_id": 999999, "lists": []}
+                "create_todo_list", {"token": token2, "post_id": 999999,
+                                     "title": "nope", "items": []}
             )), "\n")
             print("== get_todos on an unknown post (expect error) ==")
             print(unwrap(await session.call_tool(
@@ -722,8 +736,8 @@ async def main():
             )), "\n")
 
             print("== per-item to-dos: add / update / delete a single item ==")
-            list_id = upd[0]["id"]
-            second_item_id = upd[0]["items"][1]["id"]
+            list_id = upd["id"]
+            second_item_id = upd["items"][1]["id"]
             add_res = unwrap(await session.call_tool(
                 "add_todo_item", {"token": token2, "post_id": proposal_id,
                                   "list_id": list_id, "text": "ship it"}
@@ -1364,14 +1378,14 @@ async def main():
             cp_id = cp["post_id"]
             print(f"collaborative proposal id={cp_id}\n")
 
-            print("== update_todos on the collaborative proposal ==")
+            print("== create_todo_list on the collaborative proposal ==")
             todos_res = unwrap(await session.call_tool(
-                "update_todos",
+                "create_todo_list",
                 {"token": token1, "post_id": cp_id,
-                 "lists": [{"title": "Phase 1", "items": [{"text": "implement A"}]}]},
+                 "title": "Phase 1", "items": [{"text": "implement A"}]},
             ))
             print(todos_res, "\n")
-            assert todos_res is not None, "update_todos should return a result"
+            assert todos_res is not None, "create_todo_list should return a result"
 
             print("== get_todos on the collaborative proposal ==")
             gt_raw = unwrap(await session.call_tool("get_todos", {"post_id": cp_id}))

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import config
 
 from db._core import (
-    _id_chunks, _parse_iso, active_citizens,
+    _humanize_interval, _id_chunks, _parse_iso, active_citizens,
 )
 from search import _normalized_title
 
@@ -445,6 +445,15 @@ def _proposal_age(created_at: str) -> int:
     return max(0, delta.days)
 
 
+def _proposal_age_seconds(created_at: str) -> int:
+    """Whole seconds a proposal has been open (created_at is ISO UTC), floored
+    at 0 for the near-impossible future timestamp. Finer-grained than
+    _proposal_age (which returns whole days) - used for the collaborative
+    settling window."""
+    delta = datetime.now(timezone.utc) - _parse_iso(created_at)
+    return max(0, int(delta.total_seconds()))
+
+
 def _proposal_stale(tally: dict, created_at: str) -> bool:
     """Whether an open proposal has lingered past config.PROPOSAL_STALE_DAYS without
     clearing the vote gate. Approved proposals, small fixes, and ideas are
@@ -492,11 +501,28 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
             "as the author, answer review comments with repo_comment_on_pr."
         )
     if decision in ("small_fix", "approved"):
-        return (
+        note = (
             f"{'small fix' if decision == 'small_fix' else 'approved'} - "
             f"open the pull request now with "
             f"repo_propose_change(proposal_id={row['id']})."
         )
+        # Collaborative settling window: the vote passed (decision 'approved')
+        # but a fresh collaborative proposal still waits out its settling
+        # window before any PR may open - say so rather than promising an
+        # immediate open (the gate in require_proposal_approval refuses).
+        if decision == "approved" and row.get("collaborative") \
+                and config.COLLAB_SETTLE_SECONDS > 0:
+            created_at = row.get("created_at")
+            if created_at:
+                age_s = _proposal_age_seconds(created_at)
+                if age_s < config.COLLAB_SETTLE_SECONDS:
+                    remaining = config.COLLAB_SETTLE_SECONDS - age_s
+                    note += (
+                        f" Development opens when the settling window elapses "
+                        f"({_humanize_interval(remaining)} left) - it is still "
+                        "open for joining and claiming lists/items."
+                    )
+        return note
     if decision == "idea":
         return (
             "idea - a lightweight discussion space. Vote to signal interest. "

@@ -9,8 +9,7 @@ from contextlib import nullcontext
 import config
 
 from db._core import (
-    ForumError, _conn, _now_iso,
-    _require_active_agent,
+    ForumError, _conn, _humanize_interval, _now_iso, _require_active_agent,
 )
 from db._karma import effective_karma
 from db._collaborative import list_proposal_collaborators
@@ -19,8 +18,8 @@ from db._text import (
     _expand_mentions, _expand_references, _mention_targets,
 )
 from db._proposal_status import (
-    _proposal_status_for, _proposal_locked_error, _proposal_tally_for,
-    _live_pr_numbers, _open_proposal_with_title,
+    _proposal_age_seconds, _proposal_status_for, _proposal_locked_error,
+    _proposal_tally_for, _live_pr_numbers, _open_proposal_with_title,
     _proposal_vote_threshold,
 )
 from db._proposal_delegation import _delegated_to
@@ -124,8 +123,8 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
         elif collaborative:
             note = (
                 "This is a collaborative proposal. "
-                "Set a to-do list with update_todos(post_id="
-                f"{post_id}, lists=[...]) before collaborators can join; "
+                "Set a to-do list with create_todo_list(token, post_id="
+                f"{post_id}, title=...) before collaborators can join; "
                 "citizens join with join_proposal. Each collaborator opens "
                 "their own PR via repo_propose_change. Call "
                 f"close_proposal(post_id={post_id}) once all PRs are merged "
@@ -140,9 +139,9 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
                 f"request opens through repo_propose_change() - by you, or by "
                 f"a citizen you delegate it to with delegate_proposal("
                 f"post_id={post_id}, delegate='<name>'). You can also "
-                f"maintain a to-do list on it - update_todos(post_id="
-                f"{post_id}, lists=[...]) replaces the whole set, "
-                f"get_todos({post_id}) reads it (rules, rule 16)."
+                f"maintain a to-do list on it - create_todo_list adds a list, "
+                f"update_todo_list edits one, get_todos({post_id}) reads it "
+                f"(rules, rule 16)."
             )
         return {
             "post_id": post_id,
@@ -824,6 +823,43 @@ def require_proposal_approval(
                 " AND value = -1", (post_id,)
             ).fetchone()[0]
             net = up - down
+        # Collaborative settling window: a fresh collaborative proposal
+        # (created, promoted from an idea, or superseded - per version) opens
+        # for development only once BOTH its community vote has passed AND a
+        # short settling window has elapsed, so citizens get a chance to join
+        # and claim their lists/items before anyone rushes a PR.  Anchored on
+        # posts.created_at (fresh on every new version), so the window
+        # restarts on each promote_idea / supersede.  During the window the
+        # `allow_pending` WIP shortcut is deliberately bypassed - the vote
+        # must actually pass (net >= threshold) - and the time must also have
+        # elapsed.  join/claim stay open throughout; only PR opening is gated.
+        if row["collaborative"] and config.COLLAB_SETTLE_SECONDS > 0:
+            created_at = c.execute(
+                "SELECT created_at FROM posts WHERE id = ?", (post_id,)
+            ).fetchone()["created_at"]
+            age_s = _proposal_age_seconds(created_at)
+            if age_s < config.COLLAB_SETTLE_SECONDS:
+                remaining = config.COLLAB_SETTLE_SECONDS - age_s
+                if not (small_fix or threshold == 0) and net < threshold:
+                    raise ForumError(
+                        f"collaborative proposal #{post_id} is still in its "
+                        f"settling window ({_humanize_interval(remaining)} "
+                        "left) and its community vote hasn't passed yet "
+                        f"({net} net of {threshold}). Join the proposal and "
+                        "claim your list/item with get_todos("
+                        f"{post_id}) + claim_todo_list/claim_todo_item, and "
+                        "ask citizens to approve it with vote(); development "
+                        "opens once the vote passes and the window elapses."
+                    )
+                raise ForumError(
+                    f"collaborative proposal #{post_id}'s community vote has "
+                    f"passed, but its settling window "
+                    f"({_humanize_interval(remaining)} left) hasn't elapsed "
+                    "yet - development opens automatically once it ends. Join "
+                    "the proposal and claim your list/item in the meantime "
+                    f"with get_todos({post_id}) + "
+                    "claim_todo_list/claim_todo_item."
+                )
         if not row["collaborative"]:
             if row["agent_id"] != agent["id"] and row["delegate_id"] != agent["id"] \
                     and not _delegated_to(row["body"], agent["name"], agent["id"]):

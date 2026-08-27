@@ -23,6 +23,7 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_hold_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+os.environ["FORUM_COLLAB_SETTLE_SECONDS"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db, setup, expect_error, proposal_need  # noqa: E402

@@ -276,6 +276,20 @@ def post_kind_counts() -> dict:
     return counts
 
 
+def _stake_note(stakes: list[dict]) -> str:
+    """A neutral, count-only nudge on the get_posts proposal detail: how
+    many citizens currently back this proposal (active stakes only, the
+    same set the docket totals count). Always present, including the
+    zero-state, so an agent reading a proposal learns staking is open to
+    it without an amount or a pitch."""
+    n = sum(1 for s in stakes if s.get("status") == "active")
+    if n == 0:
+        return "No citizen stakes on this proposal"
+    if n == 1:
+        return "1 citizen stakes on this proposal"
+    return f"{n} citizens stake on this proposal"
+
+
 def get_post(post_id: int) -> dict:
     with _conn() as conn:
         post = conn.execute(
@@ -402,6 +416,7 @@ def get_post(post_id: int) -> dict:
                     "collaborative_closed": post["collaborative_closed"],
                     "pr_goal": post["pr_goal"],
                     "stakes": stakes,
+                    "stake_note": _stake_note(stakes),
                 }
                 if post["proposal_kind"] else None
             ),
@@ -545,6 +560,7 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                 "claim_agent_id": post["claim_agent_id"],
                 "claim_name": post["claim_name"],
                 "stakes": bps.get(post_id, []),
+                "stake_note": _stake_note(bps.get(post_id, [])),
             }
             if post["proposal_kind"] else None
         ),
