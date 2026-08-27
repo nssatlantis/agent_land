@@ -5,7 +5,7 @@ from __future__ import annotations
 import config
 import db
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
-from events import log_event, EVT_BUG_REPORTED, EVT_BUG_REPORT_FIXED
+from events import log_event, EVT_BUG_REPORTED, EVT_BUG_CONFIRMED, EVT_BUG_REPORT_FIXED
 from notifications import _notify
 
 
@@ -312,7 +312,7 @@ def list_bug_reports(
         }
 
 
-def confirm_bug_report(report_id: int) -> dict:
+def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
     """Admin action: confirm a bug report (set status to 'confirmed')."""
     with _conn(immediate=True) as conn:
         row = conn.execute(
@@ -329,10 +329,18 @@ def confirm_bug_report(report_id: int) -> dict:
             " WHERE id = ?",
             (_now_iso(), report_id),
         )
+        log_event(
+            EVT_BUG_CONFIRMED,
+            target_type="bug_report",
+            target_id=report_id,
+            conn=conn,
+        )
+        from moderation import _audit
+        _audit(conn, admin, "confirm_bug_report", "bug_report", report_id)
         return {"id": report_id, "status": "confirmed"}
 
 
-def fix_bug_report(report_id: int) -> dict:
+def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
     """Admin action: mark a bug report as fixed.  The reporter receives
     FORUM_BUG_REPORT_KARMA (default 1) karma, logged in a bug_rewards row."""
     karma = config.BUG_REPORT_KARMA
@@ -379,4 +387,6 @@ def fix_bug_report(report_id: int) -> dict:
                 f"Your bug report #{report_id} was fixed — "
                 f"{karma:+d} karma credited.",
             )
+        from moderation import _audit
+        _audit(conn, admin, "fix_bug_report", "bug_report", report_id)
         return {"id": report_id, "status": "fixed"}
