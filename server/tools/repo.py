@@ -50,7 +50,17 @@ async def _debounce_ticker() -> None:
                     await asyncio.to_thread(
                         ci_runner.run_branch_ci_for_poller, pr_number, "tests"
                     )
-                except Exception:  # domain: degrade-silently - ticker must never crash; one head failure must not stall others
+                except Exception as exc:  # domain: degrade-silently - ticker must never crash; one head failure must not stall others
+                    # If the host slot pool was saturated (_RUN_LOCK / queue),
+                    # the PR was already removed from _PENDING but got no CI.
+                    # Re-enqueue so the next poll (30-180s) isn't the only
+                    # recovery — otherwise file-at-a-time bursts lose the
+                    # "host runs final head" promise under load.
+                    if "already in progress" in str(exc):
+                        try:
+                            debounced_enqueue(pr_number)
+                        except Exception:
+                            pass  # domain: degrade-silently - re-enqueue must not crash ticker
                     pass
 
         await asyncio.gather(*[_run_one(pr) for pr in to_run])
@@ -79,6 +89,17 @@ def debounced_enqueue(pr_number: int) -> None:
     with _PENDING_LOCK:
         _PENDING[pr_number] = time.monotonic() + 15
     _ensure_ticker()
+
+
+def pending_prs_snapshot() -> set[int]:
+    """Thread-safe snapshot of PRs currently debounced (ticker coalescing).
+
+    The ticker mutates _PENDING under _PENDING_LOCK; reading keys without
+    the lock can raise RuntimeError: dictionary changed size during
+    iteration. Snapshot under the lock so the poller dedup never defeats
+    itself silently."""
+    with _PENDING_LOCK:
+        return set(_PENDING.keys())
 
 @mcp.tool()
 @_logged

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+import concurrent.futures as _cf  # for TimeoutError robustness across versions
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -880,26 +881,24 @@ def _pr_vote_sweep(
             config.PR_DECLINE_GRACE_SECONDS,
         )
     # Pre-fetch both CI systems concurrently — local Docker on the host
-    # and GitHub Actions on the cloud run at the same time (up to 8 GH +
-    # 2 local slots). Either success is sufficient (OR gate), but local
-    # is prioritized: ci_ok = local_ok or gh_ok, so a burst of PRs gets
-    # CI from the host first, with GitHub on the side.
+    # and GitHub Actions on the cloud run at the same time (GH pool up to
+    # 8, local pending list; GH and local overlap, but host locals serialize
+    # via single _RUN_LOCK so real speedup is GH||local, not 2×local).
     gh_results: dict[int, dict] = {}
     gh_errors: dict[int, Exception] = {}
     # Keyed by (pr_number, head_sha) to avoid stale-head reuse
     local_results: dict[tuple[int, str], bool] = {}
-    # Helper to get local_ok for a given pr+head
-    def _local_ok_for(num: int, head_sha: str) -> bool:
-        return bool(local_results.get((num, head_sha), False)) or bool(
-            local_results.get((num, ""), False)
-        )
 
     if candidates:
-        # Expose debounced pending to poller — skip host launch if already pending
+        # Expose debounced pending to poller — skip host launch if already pending.
+        # Reads via snapshot helper under _PENDING_LOCK; direct keys() without
+        # the lock can raise RuntimeError: dictionary changed size during
+        # iteration when the ticker mutates concurrently (caught but silently
+        # defeats dedup, launching duplicate host CI).
         try:
-            from server.tools.repo import _PENDING as _REPO_PENDING
+            from server.tools.repo import pending_prs_snapshot
 
-            pending_prs = set(_REPO_PENDING.keys())
+            pending_prs = pending_prs_snapshot()
         except Exception:
             pending_prs = set()  # domain: degrade-silently - import or lock failure must not stall poller
         # Prepare local cache checks upfront — head_sha from PR, not GH,
@@ -999,24 +998,37 @@ def _pr_vote_sweep(
         # Check CI status — hybrid OR, local prioritized, GitHub on the side
         # Both ran concurrently; either success is sufficient but local is
         # checked first so host 2-slot work is preferred over cloud.
-        head_sha = pr.get("head_sha") or ""
+        # Keep pr_head_sha for local lookup; gh_head_sha is GH's view which
+        # may be a fresher SHA if a push landed between open_prs and pr_checks.
+        pr_head_sha = pr.get("head_sha") or ""
         gh = gh_results.get(number)
         if gh is not None:
             gh_state = gh.get("state")
-            head_sha = gh.get("head_sha") or head_sha
+            gh_head_sha = gh.get("head_sha") or pr_head_sha
             gh_ok = gh_state == "success"
         else:
             gh_ok = False
             gh_state = "unknown"
-        local_ok = bool(local_results.get((number, head_sha), False))
-        if not local_ok and not head_sha:
+            gh_head_sha = pr_head_sha
+        # Local lookup keyed by (number, pr_head_sha); also check gh_head_sha
+        # when it differs so a locally-green head isn't missed after a push.
+        local_ok = bool(local_results.get((number, pr_head_sha), False))
+        if not local_ok and gh_head_sha != pr_head_sha:
+            local_ok = bool(local_results.get((number, gh_head_sha), False))
+        if not local_ok and not pr_head_sha:
             local_ok = bool(local_results.get((number, ""), False))
-        # Refresh from cache if we didn't run local for this head
+        # Refresh from cache if we didn't run local for this head — check
+        # pr_head_sha first, then gh_head_sha if different.
         if not local_ok and config.CI_FALLBACK_ENABLED:
-            cached = _local_branch_cached_ok(number, head_sha)
+            cached = _local_branch_cached_ok(number, pr_head_sha)
             if cached:
                 local_ok = True
-                local_results[(number, head_sha)] = True
+                local_results[(number, pr_head_sha)] = True
+            elif gh_head_sha != pr_head_sha:
+                cached2 = _local_branch_cached_ok(number, gh_head_sha)
+                if cached2:
+                    local_ok = True
+                    local_results[(number, gh_head_sha)] = True
         if not config.CI_FALLBACK_ENABLED:
             ci_ok = gh_state == "success"
         else:
@@ -1227,7 +1239,8 @@ def _pr_vote_sweep(
                             local_ok = bool(local_res.get("ok"))  # type: ignore[attr-defined]
                         except Exception as exc:  # domain: degrade-silently - local not ready or failed, GH decides
                             # Local not done in 5s or failed — proceed with GH state, local will be checked on next sweep
-                            if isinstance(exc, TimeoutError):
+                            # Robust across Python versions: concurrent.futures.TimeoutError is distinct from builtin on <3.11
+                            if isinstance(exc, (TimeoutError, _cf.TimeoutError)):
                                 logutil.log(
                                     "pr_vote_local_after_rebase_pending",
                                     pr_number=number, state=gh_state,
