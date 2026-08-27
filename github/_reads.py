@@ -18,7 +18,7 @@ import config
 
 from . import _core
 from . import _checks
-from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
+from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path, _validate_ref
 
 # Cap on lines per repo_read_file range read. Module constant by design - a
 # read cap is a client-ergonomics bound, not a server tunable, so it stays out
@@ -36,29 +36,13 @@ def base_branch() -> str:
     return GITHUB_BASE_BRANCH
 
 
-def _validate_tree_ref(ref: str | None) -> str:
-    """Validate branch/tag/sha for tree reads — same allowlist as search refs."""
-    if ref is None:
-        return GITHUB_BASE_BRANCH
-    ref = (ref or "").strip()
-    if not ref:
-        raise RepoError("ref cannot be empty.")
-    if len(ref) > 128:
-        raise RepoError("ref too long - keep it under 128 characters.")
-    if not re.match(r"^[A-Za-z0-9._/-]+$", ref):
-        raise RepoError(f"invalid ref {ref!r}.")
-    if ref.startswith(("-", ".", "/")) or ".." in ref or "//" in ref or "@{" in ref or "~" in ref or "^" in ref or ":" in ref:
-        raise RepoError(f"invalid ref {ref!r}.")
-    return ref
-
-
 def list_tree(ref: str | None = None) -> dict:
     """List every file in the base branch, newest shape.  Cached for
     GITHUB_TREE_CACHE_SECONDS (default 5 min) -- the tree only changes on
     merge to the base branch, so a long window is safe. `ref` (optional)
     names the branch/tag/commit to list; defaults to the base branch and the
     response echoes the ref it read."""
-    ref = _validate_tree_ref(ref)
+    ref = _validate_ref(ref)
     cache_key = ("tree", ref)
     cached = _core._tree_cache.get(cache_key, config.GITHUB_TREE_CACHE_SECONDS)
     if cached is not None:
@@ -79,7 +63,7 @@ async def alist_tree(ref: str | None = None) -> dict:
     """Native-await twin of list_tree - same cache, same shape, non-blocking
     I/O. The hot repo_list_tree tool path runs this directly on the event
     loop instead of occupying a worker thread."""
-    ref = _validate_tree_ref(ref)
+    ref = _validate_ref(ref)
     cache_key = ("tree", ref)
     cached = _core._tree_cache.get(cache_key, config.GITHUB_TREE_CACHE_SECONDS)
     if cached is not None:
@@ -113,7 +97,7 @@ def read_file(path: str, line_start: int | None = None, line_end: int | None = N
     up to this long to appear -- agents should not panic if a just-pushed
     change is not immediately visible."""
     path = _validate_path(path)
-    ref = ref or GITHUB_BASE_BRANCH
+    ref = _validate_ref(ref)
     cache_key = ("read_file", path, ref)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
@@ -153,7 +137,7 @@ async def aread_file(path: str, line_start: int | None = None,
                      line_end: int | None = None, ref: str | None = None) -> dict:
     """Native-await twin of read_file - same contract, non-blocking I/O."""
     path = _validate_path(path)
-    ref = ref or GITHUB_BASE_BRANCH
+    ref = _validate_ref(ref)
     cache_key = ("read_file", path, ref)
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
