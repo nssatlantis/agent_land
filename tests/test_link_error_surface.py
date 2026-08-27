@@ -13,6 +13,7 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_linksurf_"))
 os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+os.environ["FORUM_COLLAB_SETTLE_SECONDS"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
