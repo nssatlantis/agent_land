@@ -882,7 +882,7 @@ def init_db() -> None:
             " ON todo_items(claimed_by_agent_id)"
             " WHERE claimed_by_agent_id IS NOT NULL"
         )
-        # To-do edit trail: every update_todos call is now snapshotted
+        # To-do edit trail: every to-do mutation is snapshotted
         # (before/after JSON) so a destructive wipe is recoverable.
         # Fresh databases already have the table (schema.sql); existing
         # ones get it via CREATE TABLE IF NOT EXISTS.
