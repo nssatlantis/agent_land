@@ -199,6 +199,32 @@ def test_mode_switch_blocked_by_claims():
     print("  mode switch blocked by claims: ok")
 
 
+def test_mode_switch_sweeps_expired_claim():
+    """set_todo_claim_mode sweeps expired claims before its guard: an
+    expired-but-unswept list claim is a ghost reservation and must not
+    block a legitimate switch back to item mode."""
+    pid, list_ids, _ = _make_collab(mode="list", joiner="beta")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    _past = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    ) + "Z"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE todo_lists SET claimed_at = ? WHERE id = ?",
+            (_past, list_ids[0]),
+        )
+    old = _set_flag("FORUM_CLAIM_TIMEOUT_SECONDS", "1")
+    try:
+        res = db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "item")
+        assert res["changed"], "expired claim swept so mode switch succeeds"
+        todos = db.get_todos_for_post(pid)
+        assert not any("claimed_by" in l for l in todos), \
+            "the expired list claim is gone after the switch"
+    finally:
+        _restore_flag("FORUM_CLAIM_TIMEOUT_SECONDS", old)
+    print("  mode switch sweeps expired claim: ok")
+
+
 def test_list_claimer_ticks_own_item():
     pid, list_ids, item_ids = _make_collab(mode="list")
     db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
@@ -360,6 +386,7 @@ def main():
     test_claim_and_unclaim_list()
     test_cap_and_undone_requirement()
     test_mode_switch_blocked_by_claims()
+    test_mode_switch_sweeps_expired_claim()
     test_list_claimer_ticks_own_item()
     test_claim_gate_accepts_list_claim()
     test_sweep_releases_expired_list_claim()
