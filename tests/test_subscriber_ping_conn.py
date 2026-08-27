@@ -22,7 +22,7 @@ from tests._setup import db, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
-_ROOT = Path(__file__).resolve().parent.parent / "server.py"
+_ROOT = Path(__file__).resolve().parent.parent / "server" / "__init__.py"
 _spec = importlib.util.spec_from_file_location("agentland_root_server", _ROOT)
 root_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(root_server)
