@@ -7,6 +7,11 @@ for some unrelated module to import db and go red.
 
 Part of the #163 resilience ratchet applied to the source tree itself.
 """
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import db
 
 # A representative slice of the public facade. Every name is a real
