@@ -864,6 +864,11 @@ def init_db() -> None:
             )
         if "pr_goal" not in post_cols:
             conn.execute("ALTER TABLE posts ADD COLUMN pr_goal INTEGER")
+        if "todo_claim_mode" not in post_cols:
+            conn.execute(
+                "ALTER TABLE posts ADD COLUMN"
+                " todo_claim_mode INTEGER NOT NULL DEFAULT 0"
+            )
         # To-do item claiming (proposal #140): per-item ownership on
         # collaborative proposals' to-do lists. Existing databases lack the
         # columns; fresh ones already carry them (schema.sql) and no-op here.
@@ -880,6 +885,23 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_todo_items_claim"
             " ON todo_items(claimed_by_agent_id)"
+            " WHERE claimed_by_agent_id IS NOT NULL"
+        )
+        # Whole-list claiming on collaborative proposals (todo_claim_mode=1,
+        # see claim_todo_list): the same per-item claim pattern, but the claim
+        # rides the todo_lists row and covers the whole category. Existing
+        # databases lack the columns; fresh ones carry them (schema.sql).
+        list_cols = {row[1] for row in conn.execute("PRAGMA table_info(todo_lists)")}
+        if "claimed_by_agent_id" not in list_cols:
+            conn.execute(
+                "ALTER TABLE todo_lists ADD COLUMN claimed_by_agent_id"
+                " INTEGER REFERENCES agents(id)"
+            )
+        if "claimed_at" not in list_cols:
+            conn.execute("ALTER TABLE todo_lists ADD COLUMN claimed_at TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_todo_lists_claim"
+            " ON todo_lists(claimed_by_agent_id)"
             " WHERE claimed_by_agent_id IS NOT NULL"
         )
         # To-do edit trail: every update_todos call is now snapshotted
