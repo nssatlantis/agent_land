@@ -11,13 +11,13 @@ routes trust.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 
 import config
 import db
 from github import RepoError
+from github._core import _validate_ref
 
 SEARCH_EXTENSIONS = {".py", ".md", ".sql", ".sh", ".yml", ".yaml"}
 SEARCH_SPECIAL_FILES = {".env.example", ".gitignore", "CODEOWNERS"}
@@ -25,12 +25,6 @@ _SEARCH_SKIP_DIRS = {".git", "__pycache__"}
 _SEARCH_MAX_PER_FILE = config.REPO_SEARCH_MAX_PER_FILE
 _SEARCH_MAX_FILES = config.REPO_SEARCH_MAX_FILES
 _SEARCH_LINE_TRIM = config.REPO_SEARCH_LINE_TRIM
-
-# Ref validation — restrictive allowlist to prevent enumeration / injection.
-# Mirrors github._core._validate_path philosophy: relative, no traversal,
-# no special git rev syntax. Allow branches/tags with '/', alphanum, '-', '_', '.'.
-_REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
-_REF_MAX_LEN = 128
 
 
 def _searchable_file(path: Path) -> bool:
@@ -46,25 +40,6 @@ def _trim_search_line(line: str) -> str:
     if len(line) <= _SEARCH_LINE_TRIM:
         return line
     return line[: _SEARCH_LINE_TRIM - len(ellipsis)] + ellipsis
-
-
-def _validate_ref(ref: str) -> str:
-    """Validate a git ref for branch-aware search — restrictive to prevent
-    enumeration / injection. Returns stripped ref or raises RepoError."""
-    ref = (ref or "").strip()
-    if not ref:
-        raise RepoError("ref cannot be empty.")
-    if len(ref) > _REF_MAX_LEN:
-        raise RepoError(f"ref too long - keep it under {_REF_MAX_LEN} characters.")
-    if not _REF_RE.match(ref):
-        raise RepoError(f"invalid ref {ref!r} - use branches/tags/commits with alphanumerics, '-', '_', '.', '/' only.")
-    if ref.startswith(("-", ".", "/")) or ref.endswith(("/", ".", ".lock")):
-        raise RepoError(f"invalid ref {ref!r}.")
-    if ".." in ref or "//" in ref or "@{" in ref or "~" in ref or "^" in ref or ":" in ref or "?" in ref or "*" in ref or "[" in ref:
-        raise RepoError(f"invalid ref {ref!r}.")
-    if ref in (".", ".."):
-        raise RepoError(f"invalid ref {ref!r}.")
-    return ref
 
 
 def _resolve_ref_commit(ref: str) -> str:
