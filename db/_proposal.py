@@ -341,6 +341,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             """SELECT p.id, p.agent_id, p.proposal_kind, p.title, p.version,
                       p.supersedes_id, p.superseded_by_id, p.delegate_id,
                       p.collaborative, p.claimable, p.proposal_config,
+                      p.todo_claim_mode, p.pr_goal,
                       a.name AS author
                FROM posts p JOIN agents a ON a.id = p.agent_id
                WHERE p.id = ?""",
@@ -455,8 +456,12 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             collabs = list_proposal_collaborators(post_id, conn=conn)
             parent_lists = _todos_for_post(conn, post_id)
             # Snapshot claims before copying so they survive the rewrite.
-            from db._proposal_todos import _snapshot_claims, _restore_claims
+            from db._proposal_todos import (
+                _snapshot_claims, _restore_claims,
+                _snapshot_list_claims, _restore_list_claims,
+            )
             claim_snapshot = _snapshot_claims(conn, post_id)
+            list_claim_snapshot = _snapshot_list_claims(conn, post_id)
             if parent_lists:
                 list_positions = {
                     r["id"]: r["position"] for r in conn.execute(
@@ -492,6 +497,12 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                              item_positions.get(item["id"], 0)),
                         )
             _restore_claims(conn, new_id, claim_snapshot)
+            _restore_list_claims(conn, new_id, list_claim_snapshot)
+            conn.execute(
+                "UPDATE posts SET todo_claim_mode = ?, pr_goal = ?"
+                " WHERE id = ?",
+                (parent["todo_claim_mode"], parent["pr_goal"], new_id),
+            )
             for col in collabs:
                 conn.execute(
                     "INSERT INTO proposal_collaborators (proposal_id, agent_id)"

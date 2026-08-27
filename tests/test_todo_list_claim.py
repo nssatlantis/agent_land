@@ -377,6 +377,33 @@ def test_rewrite_preserves_list_claim():
     assert "claimed_by" not in lst, "renaming a category drops its list claim"
 
 
+def test_supersede_preserves_list_claim_and_goal():
+    """Superseding a collaborative proposal preserves the claiming state:
+    todo_claim_mode, held whole-list claims and the PR goal all survive
+    the rewrite that creates the locked successor."""
+    pid, list_ids, _ = _make_collab(mode="list", joiner="beta")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    db.set_proposal_goal(AGENTS["alpha"]["token"], pid, pr_goal=3)
+    res = db.supersede_proposal(
+        AGENTS["alpha"]["token"], pid,
+        title="List claim v2", body="revised body",
+    )
+    new_pid = res["post_id"]
+    # claim mode carried over
+    todos = db.get_todos_for_post(new_pid)
+    assert all(lst["claim_mode"] == "list" for lst in todos), \
+        "list claim mode survives supersede"
+    # whole-list claim restored by title
+    lst = [l for l in todos if l["title"] == "A"][0]
+    assert lst.get("claimed_by") == AGENTS["beta"]["name"], \
+        "a held list claim survives supersede"
+    new_l = db.list_proposal_collaborators(new_pid)
+    assert AGENTS["beta"]["agent_id"] in [c["agent_id"] for c in new_l]
+    # PR goal carried over
+    assert db.get_post(new_pid)["proposal"]["pr_goal"] == 3, \
+        "PR goal survives supersede"
+
+
 def main():
     test_migration_columns_present()
     test_mode_default_and_get_todos_shape()
@@ -394,6 +421,7 @@ def main():
     test_release_functions_clear_list_claims()
     test_rewrite_preserves_list_claim()
     test_close_proposal_releases_list_claims()
+    test_supersede_preserves_list_claim_and_goal()
     print("test_todo_list_claim: all assertions passed")
 
 
