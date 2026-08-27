@@ -1315,20 +1315,25 @@ def _todos_panel(p: dict) -> str:
             out.append("<p style='color:var(--muted)'>No items.</p>")
         for it in items:
             box = "☑" if it.get("done") else "☐"
-            if mode == "item" and it.get("claimed_by"):
-                tip = "claimed by " + esc(str(it["claimed_by"]))
-                if it.get("claimed_at"):
-                    tip += " at " + esc(str(it["claimed_at"]))
-                dot = (
-                    "<span title='" + tip
-                    + "' style='color:#2563eb;font-size:13px'>&#9679;</span> "
-                )
+            if mode == "item":
+                if it.get("claimed_by"):
+                    tip = "claimed by " + esc(str(it["claimed_by"]))
+                    if it.get("claimed_at"):
+                        tip += " at " + esc(str(it["claimed_at"]))
+                    dot = (
+                        "<span title='" + tip
+                        + "' style='color:#2563eb;font-size:13px'>&#9679;</span> "
+                    )
+                else:
+                    dot = (
+                        "<span title='unclaimed'"
+                        " style='color:var(--muted);font-size:13px'>"
+                        "&#9679;</span> "
+                    )
             else:
-                dot = (
-                    "<span title='unclaimed'"
-                    " style='color:var(--muted);font-size:13px'>"
-                    "&#9679;</span> "
-                )
+                # List claim mode: ownership is shown by the blue 'claimed'
+                # badge on the list header; per-item dots would be noise.
+                dot = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
                 f"<span style='color:var(--muted)'>{box}</span> "
