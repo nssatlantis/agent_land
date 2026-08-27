@@ -1884,8 +1884,9 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
 def review_job(token: str, job_id: int, action: str,
                feedback: str = "") -> dict:
     """The creator's verdict on a submitted cycle. action='accept': the
-    wage leaves escrow to the worker and +JOB_KARMA_PER_CYCLE karma goes
-    to BOTH of you; accepting the final cycle completes the job.
+    wage leaves escrow to the worker and +JOB_KARMA_PER_CYCLE karma plus
+    JOB_CREDIT_CREDITS credits go to BOTH of you; accepting the final
+    cycle completes the job.
     action='decline': feedback is REQUIRED (say what must change) and the
     worker can rework and resubmit - the declined cycle's escrow stays
     held until the job ends (accept drains it; cancel/expire refund it),

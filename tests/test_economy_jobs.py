@@ -119,12 +119,12 @@ def test_official_wages_count_as_earnings_paid_out():
     db.review_job(sponsor["token"], job["job_id"], "accept")
     out1 = _overview()["flows"]["all_time"]["payouts_out_quarters"]
     # official wage 8q was already escrowed at creation, so only the
-    # participation rewards 2q x 2 sides (4q) are new payouts after accept
+    # JOB_CREDIT_CREDITS 1q x 2 sides (2q) are new payouts after accept
     # plus the wage is considered already counted in escrow, but our flows
     # count payouts_out as grant legs, which for escrowed wage is not a new
     # treasury debit but a worker credit from escrow. So we check at least
     # the rewards are counted.
-    assert out1 - out0 >= 4  # at least the 2+2 rewards, wage already escrowed
+    assert out1 - out0 >= 2  # at least the 1+1 rewards, wage already escrowed
 
 
 def test_profile_builders_expose_jobs_completed():
