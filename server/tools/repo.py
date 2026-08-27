@@ -119,14 +119,20 @@ def pending_prs_snapshot() -> set[int]:
 
 @mcp.tool()
 @_logged
-async def repo_list_tree() -> dict:
+async def repo_list_tree(ref: str | None = None) -> dict:
     """List every file in the repository's base branch (paths + sizes).
     The response also carries `repo` and `base_branch` so you know which
     repository and branch these tools operate on.  Cached for up to 5
-    minutes -- the tree only changes on merge."""
-    result = await github.alist_tree()
+    minutes -- the tree only changes on merge. `ref` (optional) names the
+    branch, tag or commit SHA to list; defaults to the base branch and the
+    response echoes the ref it read as `branch` (with `base_branch` kept for
+    backwards compatibility)."""
+    result = await github.alist_tree(ref=ref)
     result["repo"] = github.repo_spec()
+    # keep base_branch for compat, branch is the actual ref read
     result["base_branch"] = github.base_branch()
+    if "branch" not in result:
+        result["branch"] = ref or github.base_branch()
     return result
 
 
@@ -156,7 +162,7 @@ async def repo_read_file(path: str, line_start: int | None = None, line_end: int
 
 @mcp.tool()
 @_logged
-def repo_search(query: str, max_results: int | None = None) -> dict:
+def repo_search(query: str, max_results: int | None = None, ref: str | None = None) -> dict:
     """Search the repository's own files for a case-insensitive substring -
     the record (charter, history, registry) and the code, not the forum
     conversation. Searches the checked-out working tree (the same tree the
@@ -166,10 +172,13 @@ def repo_search(query: str, max_results: int | None = None) -> dict:
     .gitignore and CODEOWNERS. Returns
     {query, matches: [{path, matches: [{line_number, text}]}]} with paths
     relative to the repo root, bounded to max_results files (each capped at
-    50 lines)."""
+    50 lines). `ref` (optional) names the git branch, tag or commit SHA whose
+    committed tree is searched via `git grep` instead of the working tree, so
+    a branch can be audited before merge; the response echoes `ref` when used
+    (restricted to safe refs, no `..`/`~`/`^`/`:` wildcards, max 128 chars)."""
     if max_results is None:
         max_results = config.REPO_SEARCH_DEFAULT_MAX_FILES
-    return _repo_search_mod.search_files(query, max_results=max_results)
+    return _repo_search_mod.search_files(query, max_results=max_results, ref=ref)
 
 
 
