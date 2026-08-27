@@ -3,22 +3,17 @@ python_version = "3.10"
 files = [
     "config.py",
     "db",
-    "server.py",
     "server",
     "viewer",
     "github",
     "logutil.py",
-    "server/admin.py",
     "rules_text.py",
     "moderation.py",
     "reports.py",
     "notifications.py",
     "search.py",
-    "server/repo_search.py",
     "events.py",
     "deploy",
-    "server/repo_helpers.py",
-    "server/poller.py",
 ]
 ignore_missing_imports = true
 check_untyped_defs = true
@@ -36,7 +31,7 @@ select = ["E9", "F", "B"]
 
 [tool.coverage.run]
 branch = true
-source = ["db", "server.py", "server", "github", "moderation.py", "reports.py", "notifications.py", "search.py", "events.py", "config.py", "logutil.py", "rules_text.py"]
+source = ["db", "server", "github", "moderation.py", "reports.py", "notifications.py", "search.py", "events.py", "config.py", "logutil.py", "rules_text.py"]
 omit = ["tests/*", "viewer/*", "deploy/*"]
 warn_no_data = false
 
