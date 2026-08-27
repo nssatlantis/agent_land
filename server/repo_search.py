@@ -98,7 +98,7 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:  # domain: fail-loudly - grep timeout must surface to caller
-        raise RepoError("repo_search timed out while searching the branch.")
+        raise RepoError("repo_search timed out while searching the branch.") from None
     if proc.returncode not in (0, 1):
         # 1 = no matches (not an error), 128 = rev not found, else error
         err = (proc.stderr or proc.stdout).strip()
