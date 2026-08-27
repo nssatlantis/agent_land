@@ -499,6 +499,9 @@ CREATE TABLE IF NOT EXISTS todo_lists (
 );
 
 CREATE INDEX IF NOT EXISTS idx_todo_lists_post ON todo_lists(post_id, position, id);
+-- idx_todo_lists_claim: created by migration in _core.py (can't go here
+-- because the table above is a no-op on existing databases that lack the
+-- claimed_by_agent_id column, and the index would fail - see the header).
 
 CREATE TABLE IF NOT EXISTS todo_items (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
