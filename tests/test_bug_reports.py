@@ -276,6 +276,20 @@ def test_confirm_and_fix_audit(helpers):
     print("  confirm and fix audit: ok")
 
 
+def test_mcp_admin_auth(helpers):
+    """MCP admin tools reject non-admin callers."""
+    from db._core import ForumError
+    from server.tools.moderation import _require_admin
+    alpha = helpers["alpha"]
+    # non-admin caller is refused
+    try:
+        _require_admin(alpha["token"])
+        assert False, "non-admin must be refused"
+    except ForumError as e:
+        assert "Admin privileges" in str(e)
+    print("  mcp admin auth: ok")
+
+
 if __name__ == "__main__":
     init()
     helpers, _post_id = setup()
@@ -292,4 +306,5 @@ if __name__ == "__main__":
     test_api_bugs(helpers)
     test_small_fix_gates_bug_confidence(helpers)
     test_confirm_and_fix_audit(helpers)
+    test_mcp_admin_auth(helpers)
     print("All bug report tests passed.")
