@@ -193,6 +193,68 @@ def main():
     assert current[0]["items"] == []
     print("  12. update_todo_list with empty items clears: ok")
 
+    # -- 13. rename_todo_list changes only the title, items preserved
+    pid_rn = db.create_proposal(alpha["token"], "Rename me", "Body.")["post_id"]
+    db.set_todos_for_post(alpha["token"], pid_rn, [
+        {"title": "Old name", "items": [{"text": "keep a", "done": True},
+                                        {"text": "keep b"}]},
+    ])
+    rn_list = db.get_todos_for_post(pid_rn)[0]
+    renamed = db.rename_todo_list(alpha["token"], pid_rn, rn_list["id"], "New name")
+    assert renamed["title"] == "New name"
+    assert renamed["id"] == rn_list["id"]
+    assert len(renamed["items"]) == 2
+    assert renamed["items"][0]["text"] == "keep a" and renamed["items"][0]["done"] is True
+    assert renamed["items"][1]["text"] == "keep b"
+    current = db.get_todos_for_post(pid_rn)
+    assert len(current) == 1 and current[0]["title"] == "New name"
+    print("  13. rename_todo_list changes title, keeps items: ok")
+
+    # -- 14. rename_todo_list refuses empty title / unknown list / non-author
+    try:
+        db.rename_todo_list(alpha["token"], pid_rn, rn_list["id"], "   ")
+        assert False, "should have raised"
+    except db.ForumError as e:
+        assert "cannot be empty" in str(e)
+    try:
+        db.rename_todo_list(alpha["token"], pid_rn, 999999, "X")
+        assert False, "should have raised"
+    except db.ForumError as e:
+        assert "no to-do list" in str(e)
+    try:
+        db.rename_todo_list(beta["token"], pid_rn, rn_list["id"], "X")
+        assert False, "should have raised"
+    except db.ForumError as e:
+        assert "only the author" in str(e)
+    print("  14. rename_todo_list refuses empty/unknown/non-author: ok")
+
+    # -- 15. rename_todo_list is recorded in the edit trail
+    with db._conn() as conn:
+        edits_before = len(db._todo_edits_for(conn, pid_rn))
+    db.rename_todo_list(alpha["token"], pid_rn, rn_list["id"], "Renamed again")
+    with db._conn() as conn:
+        edits_after = len(db._todo_edits_for(conn, pid_rn))
+    assert edits_after == edits_before + 1
+    current = db.get_todos_for_post(pid_rn)
+    assert current[0]["title"] == "Renamed again"
+    assert len(current[0]["items"]) == 2
+    print("  15. rename_todo_list recorded in edit trail: ok")
+
+    # -- 16. rename_todo_list refused on a locked proposal
+    pid_rnl = db.create_proposal(alpha["token"], "Lock rename", "Body.")["post_id"]
+    db.set_todos_for_post(alpha["token"], pid_rnl, [{"title": "X", "items": []}])
+    locked_v2 = db.supersede_proposal(alpha["token"], pid_rnl, "Lock rename v2", "Body.")
+    new_pid = locked_v2["post_id"]
+    new_list = db.create_todo_list(alpha["token"], new_pid, "OK", [])
+    try:
+        db.rename_todo_list(alpha["token"], pid_rnl, 1, "No")
+        assert False, "should have raised"
+    except db.ForumError:
+        pass
+    ok_rename = db.rename_todo_list(alpha["token"], new_pid, new_list["id"], "Yep")
+    assert ok_rename["title"] == "Yep"
+    print("  16. rename_todo_list refused on locked proposal: ok")
+
     print("\ntest_todo_per_list: all assertions passed")
 
 
