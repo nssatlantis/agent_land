@@ -10,6 +10,7 @@ import importlib
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_list_claim_"))
@@ -208,6 +209,9 @@ def test_list_claimer_ticks_own_item():
 
 
 def test_claim_gate_accepts_list_claim():
+    """PR-link gate in list mode: with FORUM_TODO_CLAIM_REQUIRED on, a held
+    whole-list claim satisfies link_pr_to_proposal (and none is refused,
+    naming claim_todo_list as the remedy)."""
     pid, list_ids, _ = _make_collab(mode="list", joiner="gamma")
     old = _set_flag("FORUM_TODO_CLAIM_REQUIRED", "1")
     try:
@@ -221,7 +225,87 @@ def test_claim_gate_accepts_list_claim():
         assert db.proposal_for_pr(93000 + pid) == pid
     finally:
         _restore_flag("FORUM_TODO_CLAIM_REQUIRED", old)
-    print("  claim gate accepts list claim: ok")
+    print("  PR-link gate accepts list claim: ok")
+
+
+def test_sweep_releases_expired_list_claim():
+    """Sweep timeout path for whole-list claims: reading the board frees a
+    list claim past CLAIM_TIMEOUT_SECONDS and tells the former claimer."""
+    pid, list_ids, _ = _make_collab(mode="list", joiner="beta")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    _past = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    ) + "Z"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE todo_lists SET claimed_at = ? WHERE id = ?",
+            (_past, list_ids[0]),
+        )
+    old = _set_flag("FORUM_CLAIM_TIMEOUT_SECONDS", "1")
+    try:
+        todos = db.get_todos_for_post(pid)
+        owned = [l for l in todos if l["id"] == list_ids[0]][0]
+        assert "claimed_by" not in owned, "timed-out list claim freed by sweep"
+        with db._conn() as conn:
+            notice = conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?"
+                " AND kind = 'delegation' AND body LIKE '%expired%'"
+                " ORDER BY id DESC LIMIT 1",
+                (AGENTS["beta"]["agent_id"],),
+            ).fetchone()
+        assert notice, "claimant told their list claim expired"
+        assert "list claim" in notice["body"]
+        assert "A" in notice["body"]
+    finally:
+        _restore_flag("FORUM_CLAIM_TIMEOUT_SECONDS", old)
+    print("  sweep releases expired list claim + notice: ok")
+
+
+def test_rewrite_drops_expired_list_claim():
+    """Snapshot/restore across set_todos_for_post: an expired list claim is
+    never resurrected by a rewrite - _snapshot_list_claims skips it, so the
+    re-created list comes back unclaimed even under its original title."""
+    pid, list_ids, _ = _make_collab(mode="list", joiner="beta")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    _past = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    ) + "Z"
+    with db._conn() as conn:
+        conn.execute(
+            "UPDATE todo_lists SET claimed_at = ? WHERE id = ?",
+            (_past, list_ids[0]),
+        )
+    old = _set_flag("FORUM_CLAIM_TIMEOUT_SECONDS", "1")
+    try:
+        db.set_todos_for_post(
+            AGENTS["alpha"]["token"], pid,
+            [{"title": "A", "items": [{"text": "a1"}]},
+             {"title": "B", "items": [{"text": "b1"}]}],
+        )
+        todos = db.get_todos_for_post(pid)
+        owned = [l for l in todos if l["title"] == "A"][0]
+        assert "claimed_by" not in owned, \
+            "an expired list claim is not restored by a rewrite"
+    finally:
+        _restore_flag("FORUM_CLAIM_TIMEOUT_SECONDS", old)
+    print("  rewrite does not restore expired list claim: ok")
+
+
+def test_close_proposal_releases_list_claims():
+    """Auto-release on proposal close: close_proposal clears any remaining
+    whole-list claims alongside per-item ones (release_claims_for_proposal)."""
+    pid, list_ids, _ = _make_collab(mode="list", joiner="beta")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    # Give the proposal a decided PR so it can close (all decided PRs).
+    _pr = 98000 + pid
+    db.link_pr_to_proposal(_pr, pid, AGENTS["alpha"]["agent_id"])
+    db.record_proposal_outcome(_pr, pid, "merged", "2026-08-27T12:00:00.000Z")
+    res = db.close_proposal(AGENTS["alpha"]["token"], pid)
+    assert res["status"] in ("merged", "closed")
+    todos = db.get_todos_for_post(pid)
+    assert not any("claimed_by" in l for l in todos), \
+        "closing the proposal releases its list claims"
+    print("  close_proposal releases list claims: ok")
 
 
 def test_release_functions_clear_list_claims():
@@ -278,8 +362,11 @@ def main():
     test_mode_switch_blocked_by_claims()
     test_list_claimer_ticks_own_item()
     test_claim_gate_accepts_list_claim()
+    test_sweep_releases_expired_list_claim()
+    test_rewrite_drops_expired_list_claim()
     test_release_functions_clear_list_claims()
     test_rewrite_preserves_list_claim()
+    test_close_proposal_releases_list_claims()
     print("test_todo_list_claim: all assertions passed")
 
 
