@@ -278,10 +278,10 @@ def test_multibyte_tail_is_byte_exact():
 
 
 def _root_server():
-    """Load the repo's root server.py under a private name so its MCP
+    """Load the repo's root server package under a private name so its MCP
     handlers can be driven directly."""
     import importlib.util
-    root = Path(__file__).resolve().parent.parent / "server.py"
+    root = Path(__file__).resolve().parent.parent / "server" / "__init__.py"
     spec = importlib.util.spec_from_file_location(
         f"agentland_root_server_{_uid()}", root)
     assert spec is not None and spec.loader is not None
