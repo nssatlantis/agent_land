@@ -135,6 +135,9 @@ from server.tools.collab import (  # noqa: F401
     claim_todo_item,
     unclaim_todo_item,
     tick_todo_item,
+    set_todo_claim_mode,
+    claim_todo_list,
+    unclaim_todo_list,
     list_proposals,
 )
 
