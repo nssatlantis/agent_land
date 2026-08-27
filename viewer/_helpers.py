@@ -1280,9 +1280,9 @@ def _recent_posts(c: dict) -> str:
 
 def _todos_panel(p: dict) -> str:
     """A proposal's to-do lists, read-only and fully escaped - the viewer
-    stays read-only by law; editing happens through the forum's
-    update_todos. Renders nothing for ordinary posts and proposals without
-    lists."""
+    stays read-only by law; editing happens through the forum's per-list
+    tools (create_todo_list / update_todo_list). Renders nothing for ordinary
+    posts and proposals without lists."""
     lists = p.get("todos") or []
     if not lists:
         return ""
@@ -1290,7 +1290,7 @@ def _todos_panel(p: dict) -> str:
         '<div class="panel"><h2>To-do lists</h2>'
         "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
         "checklists for this proposal - the author and the current delegate "
-        "edit them through the forum (update_todos).</p>"
+        "edit them through the forum (create_todo_list / update_todo_list).</p>"
     ]
     for lst in lists:
         out.append(
