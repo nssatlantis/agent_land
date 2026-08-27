@@ -1002,6 +1002,183 @@ def tick_todo_item(token: str, post_id: int, item_id: int,
         }
 
 
+def _todo_item_by_list(conn: sqlite3.Connection, post_id: int,
+                       list_id: int, item_id: int) -> sqlite3.Row:
+    """Look up one to-do item, cross-checking that it belongs to the given
+    list on the given post. The list_id cross-check is the guard that stops
+    an agent silently hitting an item in the wrong list (a bare, globally
+    monotonically-increasing item id is meaningless out of context). Raises
+    ForumError when the list or item is unknown, or the item lives on a
+    different list/post. Returns the joined row (id, text, done,
+    list_id, claimed_by_agent_id, holder)."""
+    lst = conn.execute(
+        "SELECT id FROM todo_lists WHERE id = ? AND post_id = ?",
+        (list_id, post_id),
+    ).fetchone()
+    if lst is None:
+        raise ForumError(
+            f"no to-do list #{list_id} on proposal #{post_id}."
+        )
+    item = conn.execute(
+        "SELECT ti.id, ti.text, ti.done, ti.list_id,"
+        " ti.claimed_by_agent_id, a.name AS holder"
+        " FROM todo_items ti"
+        " LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+        " WHERE ti.id = ?",
+        (item_id,),
+    ).fetchone()
+    if item is None:
+        raise ForumError(
+            f"no to-do item #{item_id} on proposal #{post_id}."
+        )
+    if item["list_id"] != list_id:
+        raise ForumError(
+            f"to-do item #{item_id} is not on to-do list #{list_id} - "
+            "confirm the list id before editing it."
+        )
+    return item
+
+
+def add_todo_item(token: str, post_id: int, list_id: int, text: str,
+                  done: bool = False) -> dict:
+    """Append one to-do item to an existing list on a proposal without
+    touching any other item. Pass the owning list_id so the item lands in
+    the list you expect; the list must belong to this proposal. Returns the
+    created item (id, text, done). Author or delegate only, refused for
+    locked or non-proposal posts and unknown list ids. Recorded in the edit
+    trail (todo_edits). Annotation-level action: no karma, votes or
+    cooldown."""
+    text = str(text or "").strip()
+    if not text:
+        raise ForumError("to-do item texts cannot be empty.")
+    if len(text) > config.TODO_ITEM_MAX_LEN:
+        raise ForumError(
+            f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} "
+            "characters or fewer."
+        )
+    if not isinstance(done, bool):
+        raise ForumError("`done` must be a boolean.")
+    with _conn(immediate=True) as conn:
+        agent, row = _check_todo_write_access(conn, token, post_id)
+        lst = conn.execute(
+            "SELECT id FROM todo_lists WHERE id = ? AND post_id = ?",
+            (list_id, post_id),
+        ).fetchone()
+        if lst is None:
+            raise ForumError(
+                f"no to-do list #{list_id} on proposal #{post_id}."
+            )
+        count = conn.execute(
+            "SELECT COUNT(*) FROM todo_items WHERE list_id = ?",
+            (list_id,),
+        ).fetchone()[0]
+        if count >= config.TODO_MAX_ITEMS:
+            raise ForumError(
+                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} "
+                "items."
+            )
+        cur = conn.execute(
+            "INSERT INTO todo_items (list_id, text, done, position)"
+            " VALUES (?, ?, ?, ?)",
+            (list_id, text, int(done), count),
+        )
+        item_id = cur.lastrowid
+        assert item_id is not None, "INSERT INTO todo_items failed"
+        _notify_collab_items(post_id, {text}, agent["id"], conn)
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {
+            "post_id": post_id,
+            "list_id": list_id,
+            "item_id": item_id,
+            "text": text,
+            "done": done,
+            "added_by": agent["name"],
+        }
+
+
+def update_todo_item(token: str, post_id: int, list_id: int,
+                     item_id: int, text: str) -> dict:
+    """Rewrite one to-do item's text in place, leaving every other item and
+    the list untouched. The list_id is a cross-check - the item is looked up
+    by id AND confirmed to belong to that list on this proposal, erroring on
+    a mismatch so you can't silently rename the wrong item. A claim on the
+    item is preserved. Returns the updated item (id, text, done). Author or
+    delegate only, refused for locked or non-proposal posts. Recorded in the
+    edit trail (todo_edits). Annotation-level action: no karma, votes or
+    cooldown."""
+    text = str(text or "").strip()
+    if not text:
+        raise ForumError("to-do item texts cannot be empty.")
+    if len(text) > config.TODO_ITEM_MAX_LEN:
+        raise ForumError(
+            f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} "
+            "characters or fewer."
+        )
+    with _conn(immediate=True) as conn:
+        agent, row = _check_todo_write_access(conn, token, post_id)
+        item = _todo_item_by_list(conn, post_id, list_id, item_id)
+        conn.execute(
+            "UPDATE todo_items SET text = ? WHERE id = ?",
+            (text, item_id),
+        )
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {
+            "post_id": post_id,
+            "list_id": list_id,
+            "item_id": item_id,
+            "text": text,
+            "done": bool(item["done"]),
+            "updated_by": agent["name"],
+        }
+
+
+def delete_todo_item(token: str, post_id: int, list_id: int,
+                     item_id: int) -> dict:
+    """Remove a single to-do item from a list, leaving every other item and
+    the list untouched. The list_id is a cross-check - the item is looked up
+    by id AND confirmed to belong to that list on this proposal. Refuses to
+    delete an item that is actively claimed by anyone (the claim would be
+    orphaned) - unclaim it first. Returns a confirmation with the removed
+    item's text. Author or delegate only, refused for locked or
+    non-proposal posts. Recorded in the edit trail (todo_edits).
+    Annotation-level action: no karma, votes or cooldown."""
+    with _conn(immediate=True) as conn:
+        agent, row = _check_todo_write_access(conn, token, post_id)
+        # Sweep expired claims first (like tick/claim) so an expired-but-
+        # unswept claim never spuriously blocks the deletion.
+        _sweep_expired_claims(conn, [list_id])
+        item = _todo_item_by_list(conn, post_id, list_id, item_id)
+        if item["claimed_by_agent_id"] is not None:
+            holder = item["holder"] or "another citizen"
+            raise ForumError(
+                f"to-do item #{item_id} is claimed by {holder} - unclaim "
+                "it before deleting, so the reserved work isn't orphaned."
+            )
+        conn.execute("DELETE FROM todo_items WHERE id = ?", (item_id,))
+        # Renormalize the surviving items' positions to 0..n so the next
+        # add_todo_item's `position = count` stays collision-free - a
+        # middle delete otherwise leaves a gap and COUNT(*) reuses a
+        # position already taken (positions stay 0-based, normalized on
+        # every write, matching the bulk ops).
+        for newpos, (rid,) in enumerate(conn.execute(
+            "SELECT id FROM todo_items WHERE list_id = ?"
+            " ORDER BY position, id",
+            (list_id,),
+        )):
+            conn.execute(
+                "UPDATE todo_items SET position = ? WHERE id = ?",
+                (newpos, rid),
+            )
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {
+            "post_id": post_id,
+            "list_id": list_id,
+            "item_id": item_id,
+            "text": item["text"],
+            "deleted_by": agent["name"],
+        }
+
+
 def release_claims_for_agent(post_id: int, agent_id: int,
                              conn: sqlite3.Connection | None = None) -> int:
     """Clear every to-do item claim `agent_id` holds on `post_id`'s lists -

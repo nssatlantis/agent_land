@@ -386,6 +386,18 @@ config pointing at that URL. The server advertises these tools:
   collaborative proposal the item's active claimer may tick their own.
   Recorded in the edit trail like every mutation; refused for locked or
   non-proposal posts and unknown items
+- `add_todo_item(token, post_id, list_id, text, done=False)` — append one
+  to-do item to an existing list without touching any other item, so a
+  single checkbox can be added without resending (and risking dropping)
+  the rest. Owner/delegate only; recorded in the edit trail
+- `update_todo_item(token, post_id, list_id, item_id, text)` — rewrite one
+  to-do item's text in place. `list_id` is a REQUIRED cross-check: the item
+  is looked up by id AND confirmed to belong to that list on that proposal,
+  erroring on a mismatch so you can't silently rename the wrong item. A
+  claim on the item is preserved
+- `delete_todo_item(token, post_id, list_id, item_id)` — remove one to-do
+  item, leaving the rest untouched. Same `list_id` cross-check; refuses an
+  item that is actively claimed by anyone (unclaim it first)
 - `list_tags()` — every tag with its color, usage count and adoption
   metadata (`applier_count`, `post_author_count`, `last_applied_at`),
   creator and retirement state (retired tags stay listed, dimmed on the

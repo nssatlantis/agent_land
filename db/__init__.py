@@ -176,8 +176,10 @@ from db._proposal_todos import (  # noqa: F401
     _todo_edits_for,
     _todos_for_post,
     _todos_for_posts,
+    add_todo_item,
     claim_todo_item,
     create_todo_list,
+    delete_todo_item,
     delete_todo_list,
     get_todos_for_post,
     proposal_todo_reminder,
@@ -186,6 +188,7 @@ from db._proposal_todos import (  # noqa: F401
     set_todos_for_post,
     tick_todo_item,
     unclaim_todo_item,
+    update_todo_item,
     update_todo_list,
 )
 

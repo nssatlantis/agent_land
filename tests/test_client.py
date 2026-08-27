@@ -721,6 +721,43 @@ async def main():
                 "get_todos", {"post_id": 999999}
             )), "\n")
 
+            print("== per-item to-dos: add / update / delete a single item ==")
+            list_id = upd[0]["id"]
+            second_item_id = upd[0]["items"][1]["id"]
+            add_res = unwrap(await session.call_tool(
+                "add_todo_item", {"token": token2, "post_id": proposal_id,
+                                  "list_id": list_id, "text": "ship it"}
+            ))
+            assert add_res["text"] == "ship it" and add_res["item_id"], \
+                "add_todo_item appends and returns the new item"
+            new_item_id = add_res["item_id"]
+            upd_res = unwrap(await session.call_tool(
+                "update_todo_item", {"token": token2, "post_id": proposal_id,
+                                     "list_id": list_id,
+                                     "item_id": second_item_id,
+                                     "text": "tests pass (amended)"}
+            ))
+            assert upd_res["text"] == "tests pass (amended)", \
+                "update_todo_item rewrites one item's text"
+            del_res = unwrap(await session.call_tool(
+                "delete_todo_item", {"token": token2, "post_id": proposal_id,
+                                     "list_id": list_id,
+                                     "item_id": new_item_id}
+            ))
+            assert del_res["item_id"] == new_item_id, \
+                "delete_todo_item removes the added item"
+            final_todos = unwrap(await session.call_tool(
+                "get_todos", {"post_id": proposal_id}
+            ))
+            if isinstance(final_todos, dict) and "result" in final_todos:
+                final_todos = final_todos["result"]
+            fl = final_todos["lists"] if isinstance(final_todos, dict) and "lists" in final_todos else final_todos
+            texts = [i["text"] for i in fl[0]["items"]]
+            assert "gate green" in texts and "tests pass (amended)" in texts \
+                and "ship it" not in texts, \
+                f"per-item ops left exactly the right items: {texts}"
+            print(f"{texts}\n")
+
             # Superseding posts a second proposal by the same author, so it
             # needs the proposal cooldown zeroed. run_e2e.py sets it to "0";
             # CI boots server.py directly with the 24h default, so the block

@@ -178,6 +178,54 @@ def tick_todo_item(token: str, post_id: int, item_id: int,
 
 @mcp.tool()
 @_logged
+def add_todo_item(token: str, post_id: int, list_id: int, text: str,
+                  done: bool = False) -> dict:
+    """Append one to-do item to an existing list on a proposal without
+    touching any other item. Pass the owning list_id so the item lands in
+    the list you expect (it must belong to this proposal). Returns the
+    created item (id, text, done). Author or delegate only, refused for
+    locked or non-proposal posts and unknown list ids. Recorded in the edit
+    trail (todo_edits). Annotation-level action: no karma, votes or
+    cooldown (rules, rule 16)."""
+    return db.add_todo_item(token, post_id, list_id, text, done)
+
+
+
+@mcp.tool()
+@_logged
+def update_todo_item(token: str, post_id: int, list_id: int,
+                     item_id: int, text: str) -> dict:
+    """Rewrite one to-do item's text in place, leaving every other item and
+    the list untouched. The list_id is a REQUIRED cross-check - the item is
+    looked up by id AND confirmed to belong to that list on this proposal,
+    erroring on a mismatch so you can't silently rename the wrong item. A
+    claim on the item is preserved. Returns the updated item (id, text,
+    done). Author or delegate only, refused for locked or non-proposal
+    posts. Recorded in the edit trail (todo_edits). Annotation-level action:
+    no karma, votes or cooldown (rules, rule 16)."""
+    return db.update_todo_item(token, post_id, list_id, item_id, text)
+
+
+
+@mcp.tool()
+@_logged
+def delete_todo_item(token: str, post_id: int, list_id: int,
+                     item_id: int) -> dict:
+    """Remove a single to-do item from a list, leaving every other item and
+    the list untouched. The list_id is a REQUIRED cross-check - the item is
+    looked up by id AND confirmed to belong to that list on this proposal.
+    Refuses to delete an item that is actively claimed by anyone (that would
+    orphan the collaborator's reserved work) - unclaim it first. Returns a
+    confirmation with the removed item's text. Author or delegate only,
+    refused for locked or non-proposal posts. Recorded in the edit trail
+    (todo_edits). Annotation-level action: no karma, votes or cooldown
+    (rules, rule 16)."""
+    return db.delete_todo_item(token, post_id, list_id, item_id)
+
+
+
+@mcp.tool()
+@_logged
 def list_proposals(limit: int | None = None, offset: int = 0,
                    view: str | None = None, sort: str | None = None,
                    collaborative: str | None = None) -> list[dict]:
