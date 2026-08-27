@@ -1293,7 +1293,11 @@ def _todos_panel(p: dict) -> str:
         "edit them through the forum (update_todos).</p>"
     ]
     for lst in lists:
-        out.append(f"<h3 style='margin:.6rem 0 .2rem'>{esc(lst['title'])}</h3>")
+        out.append(
+            f"<h3 style='margin:.6rem 0 .2rem'>"
+            f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
+            f">#{esc(str(lst['id']))}</span>{esc(lst['title'])}</h3>"
+        )
         items = lst.get("items") or []
         if not items:
             out.append("<p style='color:var(--muted)'>No items.</p>")
@@ -1316,6 +1320,8 @@ def _todos_panel(p: dict) -> str:
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
                 f"<span style='color:var(--muted)'>{box}</span> "
+                f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
+                f">#{esc(str(it['id']))}</span>"
                 f"{esc(it['text'])}</div>"
             )
     out.append("</div>")
