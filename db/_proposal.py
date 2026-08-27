@@ -321,7 +321,15 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
         }
 
 
-def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
+def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
+                       collaborative: bool | None = None,
+                       claimable: bool | None = None,
+                       max_collaborators: int | None = None) -> dict:
+    """Revise a proposal by superseding it with a new version. The new
+    version inherits the parent's kind and (for collaborative proposals) its
+    collaborators, to-do lists and claiming state. Passing `collaborative`,
+    `claimable` or `max_collaborators` overrides the inherited flag/config
+    for the new version - None (the default) inherits from the parent."""
     from db._cooldown import _check_post_cooldown
     from db._content import _insert_post
     title = (title or "").strip()
@@ -376,6 +384,29 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "the proposal retryable, so nothing is lost."
             )
 
+        resolved_collab = (
+            bool(collaborative) if collaborative is not None
+            else bool(parent["collaborative"])
+        )
+        resolved_claimable = (
+            bool(claimable) if claimable is not None
+            else bool(parent["claimable"])
+        )
+        if max_collaborators is not None and max_collaborators < 2:
+            raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
+        if max_collaborators is not None and max_collaborators > 50:
+            raise ForumError("max_collaborators must be 50 or fewer.")
+        if not resolved_collab and max_collaborators is not None:
+            raise ForumError("max_collaborators requires collaborative=True.")
+        if max_collaborators is not None:
+            resolved_config = json.dumps(
+                {"max_collaborators": max_collaborators}
+            )
+        elif resolved_collab:
+            resolved_config = parent["proposal_config"]
+        else:
+            resolved_config = None
+
         supersede_cooldown = int(
             config.PROPOSAL_COOLDOWN_SECONDS * config.SUPERSEDE_COOLDOWN_FRACTION
         )
@@ -425,9 +456,9 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
             conn, agent, title, stored, parent["proposal_kind"],
             supersedes_id=post_id, version=new_version,
             mention_body=mention_body,
-            collaborative=bool(parent["collaborative"]),
-            claimable=bool(parent["claimable"]),
-            proposal_config=parent["proposal_config"],
+            collaborative=resolved_collab,
+            claimable=resolved_claimable,
+            proposal_config=resolved_config,
         )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
@@ -452,7 +483,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str) -> dict:
                 "the old version is void; the new version is undelegated.",
                 actor_agent_id=agent["id"],
             )
-        if parent["collaborative"]:
+        if resolved_collab:
             collabs = list_proposal_collaborators(post_id, conn=conn)
             parent_lists = _todos_for_post(conn, post_id)
             # Snapshot claims before copying so they survive the rewrite.
@@ -906,12 +937,14 @@ def require_proposal_approval(
 
 def promote_idea(token: str, post_id: int, title: str, body: str, *,
                  claimable: bool = False,
+                 collaborative: bool = False,
                  max_collaborators: int | None = None) -> dict:
     """Promote an idea into a regular proposal.  Locks the idea (supersedes),
     creates a new proposal that supersedes it, and copies any to-do lists
     (order and done flags preserved; claims are not carried over).  Pass
-    claimable=True and/or max_collaborators=N to set up the new proposal
-    for collaborative work immediately.  Pays the full proposal cooldown
+    claimable=True to make the new proposal claimable by any citizen, or
+    collaborative=True (with optional max_collaborators=N) to open it for
+    collaborative multi-PR work immediately.  Pays the full proposal cooldown
     (unlike supersede_proposal which pays the reduced fraction) because
     this creates a new gate-bearing proposal."""
     from db._cooldown import _check_post_cooldown
@@ -926,15 +959,12 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
         raise ForumError("title must contain at least one letter or digit.")
     if len(body) > config.MAX_BODY_LEN:
         raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
-    if claimable and max_collaborators is not None:
-        raise ForumError(
-            "claimable and max_collaborators are mutually exclusive — "
-            "use max_collaborators (which implies claimable)."
-        )
     if max_collaborators is not None and max_collaborators < 2:
-        raise ForumError("max_collaborators must be at least 2.")
+        raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
     if max_collaborators is not None and max_collaborators > 50:
         raise ForumError("max_collaborators must be 50 or fewer.")
+    if not collaborative and max_collaborators is not None:
+        raise ForumError("max_collaborators requires collaborative=True.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         parent = conn.execute(
@@ -1009,6 +1039,7 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
             conn, agent, title, stored, "proposal",
             supersedes_id=post_id, version=new_version,
             mention_body=mention_body,
+            collaborative=collaborative,
             claimable=claimable or bool(parent["claimable"]),
             proposal_config=parent["proposal_config"] if (
                 max_collaborators is None
