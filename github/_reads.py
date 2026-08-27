@@ -334,6 +334,34 @@ def open_prs() -> list[dict]:
     return result
 
 
+def list_repo_labels() -> list[str]:
+    """Every repo-level label *definition* (names only), paged.  Distinct
+    from the labels sitting on a given PR: definitions persist in the repo
+    even after they are unlinked from every issue, which is exactly why
+    the vote-label GC sweeps them (see server.poller._sweep_orphan_vote_labels)."""
+    return [l.get("name", "") for l in _paginated_get("labels")]
+
+
+def open_pr_labels() -> set[str]:
+    """Label names currently applied to ANY open pull request, as a set.
+    One open-PR listing carries every PR's labels, so the whole set is a
+    single paged fetch.  Used by cleanup sweeps to decide whether a
+    repo-level label definition is still 'live' (referenced by an open PR)
+    before deleting it."""
+    labels: set[str] = set()
+    page = 1
+    while True:
+        batch = _core._request(
+            "GET", f"pulls?state=open&per_page={_PR_PAGE_SIZE}&page={page}"
+        )
+        for p in batch:
+            for l in (p.get("labels") or []):
+                labels.add(l.get("name", ""))
+        if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
+            return labels
+        page += 1
+
+
 def list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     """Pull requests, newest first. `state` is 'open' (the default - the same
     cached list repo_list_prs always returned), 'closed' or 'all'; the

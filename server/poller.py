@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import config
 import db
 from db._pr_vote import pr_decline_ready_batch, _pr_vote_threshold
+from db._pr_vote import _VOTES_LABEL_PREFIX, _VOTES_LABEL_SUFFIX
 from events import (
     EVT_PR_MERGED, EVT_PR_DECLINED, EVT_PR_CLOSED,
     EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
@@ -220,6 +221,77 @@ def _drain_closed(closed: list[dict]) -> None:
             )
 
 
+def _sweep_orphan_vote_labels() -> list[str]:
+    """Delete every repo-level 'votes: [...]' label definition that is not
+    currently applied to any open PR.  Each distinct vote tally creates a
+    permanent definition (add_pr_label POSTs it repo-wide), and remove_pr_label
+    only unlinks the label from that one PR - so absent this sweep the repo's
+    label list accumulates one definition per tally ever seen.  A 'votes:'
+    label still on an open PR is kept (that PR is live).  Best-effort and
+    self-healing: a per-label failure is logged and skipped, and the sweep
+    converges on the next pass.  Returns the deleted label names."""
+    try:
+        labels = github.list_repo_labels()
+    except Exception as exc:
+        # domain: degrade-silently - a label-list failure just skips this
+        # sweep pass, which retries on a later interval.
+        logutil.log("vote_label_gc", error=str(exc))
+        return []
+    votes = [
+        l for l in labels
+        if l.startswith(_VOTES_LABEL_PREFIX) and l.endswith(_VOTES_LABEL_SUFFIX)
+    ]
+    if not votes:
+        return []
+    try:
+        live = github.open_pr_labels()
+    except Exception as exc:
+        # domain: degrade-silently - we must never delete labels whose
+        # liveness we could not confirm; skip until the next pass.
+        logutil.log("vote_label_gc", error=str(exc))
+        return []
+    deleted = []
+    for name in votes:
+        if name in live:
+            continue
+        try:
+            github.delete_pr_label_definition(name)
+            deleted.append(name)
+        except Exception as exc:
+            # domain: per-label isolation - one failed delete must not stop
+            # the sweep clearing the rest; that label retries next pass.
+            logutil.log("vote_label_gc", label=name, error=str(exc))
+    if deleted:
+        logutil.log("vote_label_gc", deleted=len(deleted))
+    return deleted
+
+
+# Vote-label GC cadence: the sweep is cheap and self-healing, so it only
+# needs to run occasionally - once per 8 outcome-poll intervals, i.e.
+# FORUM_PR_MERGE_POLL_SECONDS * 8 by default (300s * 8 = 40 min).
+_VOTE_LABEL_GC_MULTIPLIER = 8
+_last_vote_label_gc = 0.0
+
+
+def _maybe_gc_vote_labels() -> None:
+    """Run _sweep_orphan_vote_labels at most once every
+    FORUM_PR_MERGE_POLL_SECONDS * _VOTE_LABEL_GC_MULTIPLIER seconds.  The
+    wall-clock gate is restart-safe: a freshly booted server clears any
+    accumulated orphan definitions on its first pass."""
+    global _last_vote_label_gc
+    interval = (config.PR_MERGE_POLL_SECONDS or 300) * _VOTE_LABEL_GC_MULTIPLIER
+    now = time.monotonic()
+    if now - _last_vote_label_gc < interval:
+        return
+    _last_vote_label_gc = now
+    try:
+        _sweep_orphan_vote_labels()
+    except Exception as exc:
+        # domain: degrade-silently - an unexpected sweep failure is logged
+        # and the whole pass retries on the next cadence.
+        logutil.log("vote_label_gc", error=str(exc))
+
+
 async def _pr_outcome_poller() -> None:
     """Record every closed pull request's outcome (CHARTER.md Article IX):
     merged PRs credit karma, PRs closed with a 'declined' label cost karma,
@@ -278,6 +350,16 @@ async def _pr_outcome_poller() -> None:
             # kill the poller for the rest of the process lifetime - log and
             # try again next interval.
             logutil.log("pr_outcome_poll", error=str(exc))
+        try:
+            # Occasional housekeeping: gc orphaned 'votes: [...]' label
+            # definitions that no open PR references (the per-vote removal
+            # only unlinks labels from their PR; definitions would otherwise
+            # accumulate forever).  Time-gated inside _maybe_gc_vote_labels.
+            _maybe_gc_vote_labels()
+        except Exception:
+            # domain: degrade-silently - label GC must never stall the
+            # poller; retry next interval
+            pass
         await asyncio.sleep(interval_seconds)
 
 
