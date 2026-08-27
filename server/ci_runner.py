@@ -71,6 +71,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import config
 import db
@@ -354,6 +355,63 @@ def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str,
         return tree, main_sha, {"conflict": True, "files": conflicted}
     head = _git(tree, "rev-parse", "HEAD")
     return tree, head.stdout.strip(), {"conflict": False, "base": main_sha}
+
+
+def _apply_local_changes(tree: str, changes: list[dict]) -> None:
+    """Apply a `files` change list onto `tree` — content writes and
+    find-replace edits resolved against the tree's current files. Mirrors
+    github._writes._apply_edits but reads from the filesystem, not the API.
+    Used by local rehearsal (repo_ci_run(files=...)) so an agent can test
+    an unpushed diff without a PR."""
+    for c in changes:
+        path = c["path"]
+        full = os.path.join(tree, path)
+        # Content write — create/overwrite.
+        if "content" in c:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(c["content"])
+            continue
+        # Patch write — find-replace against the file on disk.
+        if "edits" in c:
+            if not os.path.isfile(full):
+                raise db.ForumError(
+                    f"no file at {path!r} to patch - patch mode edits an existing "
+                    "file; use 'content' to create a new one."
+                )
+            try:
+                text = Path(full).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raise db.ForumError(
+                    f"cannot patch {path!r} - it is not UTF-8 text (binary file)."
+                ) from None
+            # Reuse the strict engine from github._writes — same errors.
+            import github._writes as _writes  # local import to avoid cycle
+            new_text, _log = _writes._apply_edits(path, text, c["edits"])
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(new_text)
+            continue
+        # Should not reach — validated earlier.
+        raise db.ForumError(f"change for {path!r} has no content or edits.")
+
+
+def _prepare_local_tree(changes: list[dict], slot: int | None = None) -> tuple[str, str, dict]:
+    """Refresh onto origin/main in `slot`'s runner tree, overlay `changes`,
+    and return (tree, head_sha, info). No merge, no fetch of a PR head —
+    this is the pre-push rehearsal path. The tree is left dirty with the
+    overlay; the next _refresh_main heals it."""
+    tree = _runner_dir_for_slot(slot) if slot is not None else _runner_dir()
+    _ensure_clone(tree)
+    main_sha = _refresh_main(tree)
+    # Overlay the draft changes — each validated via repo_helpers before arrival.
+    _apply_local_changes(tree, changes)
+    # Head is main plus overlay; hash the overlay for an auditable sha.
+    overlay_hash = hashlib.sha256(
+        "|".join(f"{c['path']}:{c.get('content','')[:64]}" for c in changes).encode()
+    ).hexdigest()[:12]
+    head_sha = f"{main_sha[:12]}+local-{overlay_hash}"
+    return tree, head_sha, {"conflict": False, "base": main_sha, "local": True}
 
 
 def _child_env(tmp_root: str) -> dict:
@@ -717,14 +775,31 @@ def _execute(
     return result
 
 
-def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = None) -> dict:
+def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = None, files: list[dict] | None = None) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
         valid = ", ".join(sorted(_CHECKS))
         raise db.ForumError(f"unknown checks kind {checks!r}; expected one of: {valid}")
     script_rel = entry[1]
+    # files=... is the pre-push rehearsal: test an unpushed diff (content/edits) on top of origin/main.
+    # Shares the 2-slot runner pool with branch/native, but has its own daily cap (ci_local_run) so a
+    # branch-mode budget exhaustion never blocks rehearsal, per user direction.
+    local_mode = files is not None
     branch_mode = pr_number is not None
-    if branch_mode:
+    if local_mode and branch_mode:
+        raise db.ForumError("repo_ci_run takes either pr_number or files, not both.")
+    if local_mode:
+        if not isinstance(files, list) or not files:
+            raise db.ForumError("files must be a non-empty list for local rehearsal.")
+        if not config.CI_RUN_BRANCH_ENABLED:
+            raise db.ForumError("branch-mode CI runs are disabled on this server")
+        if not _docker_available():
+            raise db.ForumError(
+                "the sandboxed CI runner needs docker on the server host; "
+                "it is not installed or not on PATH"
+            )
+        kind_event = events.EVT_CI_LOCAL_RUN
+    elif branch_mode:
         if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number < 1:
             raise db.ForumError("pr_number must be a positive integer")
         if not config.CI_RUN_BRANCH_ENABLED:
@@ -753,7 +828,18 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
     try:
-        if branch_mode:
+        if local_mode:
+            assert files is not None
+            try:
+                tree, head_sha, merge_info = _prepare_local_tree(files, slot=slot)
+            except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
+                tree, head_sha, merge_info = _prepare_local_tree(files)  # type: ignore[call-arg]
+            # Local rehearsal is the overlay on top of main — same sandbox as branch, never native.
+            image_tag = _ensure_image(tree, merge_info["base"])
+            _ensure_tree_traversable(tree)
+            argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
+            env = _child_env(tmp_root)
+        elif branch_mode:
             assert pr_number is not None
             try:
                 tree, head_sha, merge_info = _prepare_pr_tree(pr_number, slot=slot)
@@ -803,11 +889,21 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             config.CI_RUN_TAIL_BYTES, config.CI_RUN_MAX_RETAINED_BYTES,
             env=env, container_name=container_name,
         )
-        result: dict = {"checks": checks, "mode": "branch" if branch_mode else "native"}
-        if branch_mode:
+        if local_mode:
+            mode = "local"
+        elif branch_mode:
+            mode = "branch"
+        else:
+            mode = "native"
+        result: dict = {"checks": checks, "mode": mode}
+        if local_mode:
+            result["base_sha"] = (merge_info.get("base") or head_sha)  # type: ignore[possibly-undefined]
+            result["merge_conflict"] = False
+            result["local"] = True
+        elif branch_mode:
             assert pr_number is not None
             result["pr_number"] = pr_number
-            result["base_sha"] = (merge_info.get("base") or head_sha)
+            result["base_sha"] = (merge_info.get("base") or head_sha)  # type: ignore[possibly-undefined]
             result["merge_conflict"] = False
         result.update(pieces)
         result["head_sha"] = head_sha
@@ -816,7 +912,10 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
                   "exit_code": pieces["exit_code"],
                   "duration_seconds": pieces["duration_seconds"],
                   "head_sha": head_sha}
-        if branch_mode:
+        if local_mode:
+            detail["local"] = True
+            detail["base_sha"] = result.get("base_sha")
+        elif branch_mode:
             detail["pr_number"] = pr_number
         try:
             events.log_event(kind_event, actor_agent_id=agent_id, actor_name=name,
