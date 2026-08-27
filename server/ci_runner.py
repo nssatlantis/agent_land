@@ -47,9 +47,10 @@ Security posture (deliberate - do not loosen casually):
   streamed to a byte-capped buffer so a noisy suite cannot balloon host
   memory, and per-agent cooldown + daily cap enforced from the events
   ledger.  Every run is logged as a ``ci_run`` / ``ci_benchmark_run`` /
-  ``ci_branch_run`` event, so abuse is auditable for free and the caps
-  need no new tables.  Branch runs draw on their own ledger kind, giving
-  them an independent budget.
+  ``ci_db_bench_run`` / ``ci_branch_run`` event, so abuse is auditable
+  for free and the caps need no new tables.  Branch runs draw on their
+  own ledger kind, giving them an independent budget (benchmarks and
+  db_benchmark are split so they don't compete).
 
 The native suite runs under this process's interpreter (sys.executable),
 which is the deployment venv that already carries the dependencies; the
@@ -161,9 +162,14 @@ def _ci_release_slot(idx: int) -> None:
         q.put(idx)
 
 # checks value -> (native event kind, suite script path relative to the tree)
+# agents may choose which harness to run; each kind has its own daily bucket
+# when split (ci_benchmark_run vs ci_db_bench_run) so benchmarks don't
+# compete for quota. All three still share the 2-slot workspace pool.
 _CHECKS: dict[str, tuple[str, str]] = {
     "tests": ("ci_run", os.path.join("tests", "run_all.py")),
     "benchmarks": ("ci_benchmark_run", os.path.join("tests", "benchmark_github.py")),
+    "db_benchmark": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
+    "db_bench": ("ci_db_bench_run", os.path.join("tests", "test_benchmark.py")),
 }
 
 # Only these variables (matched case-insensitively) pass into native child
@@ -498,6 +504,37 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
     elif failed:
         summary = {"passed_files": int(failed.group(2)) - int(failed.group(1)),
                    "failed_files": int(failed.group(1))}
+    # db_benchmark (tests/test_benchmark.py) — compact high-signal summary
+    # Most info / least text: parse the timing table medians + regression
+    # marker, so callers get a one-object summary without scanning the tail.
+    if summary is None and "[Timing -" in output:
+        try:
+            timings: dict[str, float] = {}
+            for m in re.finditer(r"^\s{2}(\w+)\s+[\d.]+ / ([\d.]+) / [\d.]+", output, re.M):
+                label = m.group(1)
+                try:
+                    timings[label] = float(m.group(2))
+                except ValueError:
+                    pass  # domain:degrade-silently - malformed timing line, skip
+            reg_m = re.search(r"REGRESSIONS DETECTED:\s*(\d+)", output)
+            regressions = int(reg_m.group(1)) if reg_m else 0
+            ok_bench = "All checks passed." in output and regressions == 0 and "FAIL" not in output.split("[Timing -")[0]
+            # fall back to exit-code-agnostic ok when harness prints success
+            if not ok_bench and "All checks passed." in output and regressions == 0:
+                ok_bench = True
+            summary = {
+                "bench": "db_benchmark",
+                "regressions": regressions,
+                "timings_median_ms": timings,
+            }
+            # preserve failed_files shape for db_bench structural failures
+            if not ok_bench and not failed_files:
+                # surface structural FAIL lines as pseudo failed_files for visibility
+                struct_fails = re.findall(r"^\s{2}(.+?)\s+FAIL", output, re.M)
+                failed_files = sorted(set(s.strip() for s in struct_fails))[:5]
+        except Exception:
+            # domain:degrade-silently - bench summary parse is advisory; tail still carries raw
+            pass
     return summary, sorted(set(failed_files))
 
 

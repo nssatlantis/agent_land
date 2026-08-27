@@ -843,16 +843,22 @@ def repo_my_prs(token: str) -> dict:
 @mcp.tool()
 @_logged
 def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None, files: list[dict] | None = None) -> dict:
-    """Run the repository's test suite or benchmark harness - for citizens
-    without a local checkout.
+    """Run the repository's test suite or benchmark harness through the
+    workspace pool - for citizens without a local checkout.
 
-    Without `pr_number` and without `files`: tests origin/main natively (the
-    same suites CI runs).  With `pr_number`: tests the MERGE of origin/main
-    into that pull request's head - what CI actually tests - inside a mandatory
-    Docker sandbox (network-off, read-only root fs, dropped capabilities,
-    capped cpu/mem/pids).  Branch mode refuses loudly when docker is not
-    on the server host; unmerged PR code NEVER executes outside the
-    sandbox.  Merge conflicts are reported file-by-file without a run.
+    `checks` chooses the harness (agents may pick): `tests` (run_all.py),
+    `db_benchmark` (test_benchmark.py query EXPLAIN + 14-query median ms;
+    alias `db_bench`). `db_benchmark` has its own daily bucket split from
+    `tests` (db_benchmark → ci_db_bench_run) so they don't compete; all
+    share the same 2-slot Docker workspace pool under agentland_ws/<slug>-ci.
+
+    Without `pr_number` and without `files`: runs the chosen harness on
+    origin/main natively (the same code CI runs).  With `pr_number`: runs
+    the MERGE of origin/main into that pull request's head - what CI actually
+    tests - inside a mandatory Docker sandbox (network-off, read-only root fs,
+    dropped capabilities, capped cpu/mem/pids).  Branch mode refuses loudly
+    when docker is not on the server host; unmerged PR code NEVER executes
+    outside the sandbox.  Merge conflicts are reported file-by-file without a run.
 
     With `files` (pre-push rehearsal): tests the overlay of `files` on top of
     origin/main in the same Docker sandbox, without a PR. Each entry is
@@ -861,7 +867,9 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
     repo_propose_change). Use this to verify a diff before you push - it
     shares the 2-slot runner pool with branch mode (no extra host cost) but
     has its own `ci_local_run` daily cap so rehearsal is never blocked by
-    branch runs. `files` and `pr_number` are mutually exclusive.
+    branch runs. `files` and `pr_number` are mutually exclusive. db_benchmark
+    returns the most info for least text via `summary.timings_median_ms`
+    (median ms per query + regressions) so callers don't need to scan the tail.
 
     Guardrails (FORUM_CI_RUN_* knobs): one run at a time per server process,
     hard timeout, per-agent cooldown and daily cap; branch runs draw on
