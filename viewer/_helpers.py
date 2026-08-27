@@ -1295,15 +1295,32 @@ def _todos_panel(p: dict) -> str:
     for lst in lists:
         mode = lst.get("claim_mode", "item")
         claim_badge = ""
-        if mode == "list" and lst.get("claimed_by"):
-            tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
-            if lst.get("claimed_at"):
-                tip += " at " + esc(str(lst["claimed_at"]))
-            claim_badge = (
-                " <span title='" + tip
-                + "' style='color:#2563eb;font-size:13px'>&#9679;</span>"
-                " <span style='color:#2563eb;font-size:13px'>claimed</span>"
-            )
+        if mode == "list":
+            # Whole-list mode keeps item dots suppressed (the list is the unit
+            # of ownership) but mirrors the grey/blue dot grammar at list
+            # level, so what has been claimed is legible at a glance.
+            if lst.get("claimed_by"):
+                tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
+                if lst.get("claimed_at"):
+                    tip += " at " + esc(str(lst["claimed_at"]))
+                cid = lst.get("claimed_by_id")
+                claimer = (
+                    f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
+                    f'{esc(str(lst["claimed_by"]))}</a>'
+                    if cid is not None
+                    else esc(str(lst["claimed_by"]))
+                )
+                claim_badge = (
+                    " <span title='" + tip
+                    + "' style='color:#2563eb;font-size:13px'>&#9679;</span>"
+                    " <span style='color:#2563eb;font-size:13px'>claimed by "
+                    + claimer + "</span>"
+                )
+            else:
+                claim_badge = (
+                    " <span title='unclaimed list'"
+                    " style='color:var(--muted);font-size:13px'>&#9679;</span>"
+                )
         out.append(
             f"<h3 style='margin:.6rem 0 .2rem'>"
             f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
@@ -1331,8 +1348,9 @@ def _todos_panel(p: dict) -> str:
                         "&#9679;</span> "
                     )
             else:
-                # List claim mode: ownership is shown by the blue 'claimed'
-                # badge on the list header; per-item dots would be noise.
+                # List claim mode: ownership lives on the whole list - the
+                # header dot (grey open / blue claimed) carries it. Per-item
+                # dots would be noise.
                 dot = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"

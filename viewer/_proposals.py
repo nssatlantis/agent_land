@@ -158,6 +158,32 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'<span class="pr-label">Progress:</span> '
                 f'{merged} PR{"s" if merged != 1 else ""} merged</div>'
             )
+    # Whole-list claim visibility: a collaborative proposal running list
+    # claim mode (claim_todo_list) renders which lists are reserved and by
+    # whom, so the docket mirrors the badge on the proposal page - item
+    # dots aren't shown in list mode, the list is the unit of ownership.
+    todos = p.get("todos") or []
+    if p.get("collaborative") and not p.get("locked") and todos:
+        list_claims = [
+            lst for lst in todos
+            if lst.get("claim_mode") == "list" and lst.get("claimed_by")
+        ]
+        if list_claims:
+            claimers: dict[str, str] = {}
+            for lst in list_claims:
+                name = esc(str(lst["claimed_by"]))
+                if name not in claimers:
+                    cid = lst.get("claimed_by_id")
+                    claimers[name] = (
+                        f'<a class="userlink" href="/agents/{int(cid)}">{name}</a>'
+                        if cid is not None else name
+                    )
+            pr_trail += (
+                f'<div class="pr-trail" style="margin-top:4px">'
+                f'<span class="pr-label">Claims:</span> '
+                f'{len(list_claims)} of {len(todos)} lists claimed by '
+                f'{", ".join(claimers.values())}</div>'
+            )
     stale_cls = " stale-card" if p.get("stale") else ""
     stake_chip = ""
     sk = p.get("stake_total_karma", 0)
