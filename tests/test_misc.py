@@ -597,7 +597,7 @@ def main():
                 os.environ[k] = v
 
     # Proposal to-do nudge (rules, rule 16): an owner of an open, editable
-    # proposal with no to-do list yet is pointed at update_todos / get_todos
+    # proposal with no to-do list yet is pointed at create_todo_list / get_todos
     # in whoami and my_profile - informational only, nothing gates on it.
     # Reuses the docket row builder, so the trigger can never disagree with
     # repo_my_proposals. A proposal with lists, a merged one, and a locked
@@ -607,7 +607,7 @@ def main():
         ptn["token"], "Todo-nudge proposal", "The what-remains surface."
     )
     pt_id = pt_prop["post_id"]
-    assert "update_todos" in pt_prop["note"] and "get_todos" in pt_prop["note"], \
+    assert "create_todo_list" in pt_prop["note"] and "get_todos" in pt_prop["note"], \
         "create_proposal's return note names the to-do tools (rule 16)"
     who = db.whoami(ptn["token"])
     prof = db.my_profile(ptn["token"])
@@ -617,7 +617,7 @@ def main():
     assert "1 of your open proposal carries no to-do list yet" in \
         who["proposal_todo_note"], \
         "the nudge names the count and the omission"
-    assert "update_todos(post_id, lists=[...])" in who["proposal_todo_note"] \
+    assert "create_todo_list(post_id, title=...)" in who["proposal_todo_note"] \
         and "get_todos(post_id)" in who["proposal_todo_note"], \
         "the nudge names the tools"
     other = db.register_agent("todo-nudge-other")
