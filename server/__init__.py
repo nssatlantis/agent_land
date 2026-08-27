@@ -130,7 +130,6 @@ from server.tools.collab import (  # noqa: F401
     get_todos,
     create_todo_list,
     update_todo_list,
-    rename_todo_list,
     delete_todo_list,
     claim_todo_item,
     unclaim_todo_item,
@@ -138,6 +137,10 @@ from server.tools.collab import (  # noqa: F401
     set_todo_claim_mode,
     claim_todo_list,
     unclaim_todo_list,
+    add_todo_item,
+    update_todo_item,
+    delete_todo_item,
+    move_todo_item,
     list_proposals,
 )
 
