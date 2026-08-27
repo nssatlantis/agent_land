@@ -352,41 +352,50 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
         if existing is None:
             # New link — enforce the collaborative PR limit atomically.
             row = c.execute(
-                "SELECT collaborative FROM posts WHERE id = ?", (post_id,)
+                "SELECT collaborative, todo_claim_mode FROM posts WHERE id = ?", (post_id,)
             ).fetchone()
             if row is not None and row["collaborative"]:
                 # Proposal #141: when TODO_CLAIM_REQUIRED is on, a new
                 # collaborative PR needs the opener to hold a claim on an
-                # undone to-do item - the board's own advice made binding,
-                # so two collaborators cannot build the same thing. Claims
-                # are swept first so an expired one never satisfies the
-                # gate, and backfills above never reach this branch.
-                # Outcome-poller backfills of already-decided PRs pass
-                # enforce_claims=False: recording history for work the
-                # community already reviewed is bookkeeping, not a new
-                # contribution racing the board.
+                # undone to-do item (or, in list mode, a whole-list claim) -
+                # the board's own advice made binding, so two collaborators
+                # cannot build the same thing. Claims are swept first so an
+                # expired one never satisfies the gate, and backfills above
+                # never reach this branch. Outcome-poller backfills of
+                # already-decided PRs pass enforce_claims=False: recording
+                # history for work the community already reviewed is
+                # bookkeeping, not a new contribution racing the board.
                 if config.TODO_CLAIM_REQUIRED > 0 and enforce_claims:
                     from db._proposal_todos import _sweep_expired_claims
-                    _sweep_expired_claims(c, [
-                        r["id"] for r in c.execute(
-                            "SELECT id FROM todo_lists WHERE post_id = ?",
-                            (post_id,),
-                        ).fetchall()
-                    ])
-                    held = c.execute(
-                        "SELECT COUNT(*) FROM todo_items ti"
-                        " JOIN todo_lists tl ON tl.id = ti.list_id"
-                        " WHERE tl.post_id = ?"
-                        " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
-                        (post_id, agent_id),
-                    ).fetchone()[0]
+                    _sweep_expired_claims(c, [post_id])
+                    if row["todo_claim_mode"]:
+                        held = c.execute(
+                            "SELECT COUNT(*) FROM todo_lists"
+                            " WHERE post_id = ? AND claimed_by_agent_id = ?",
+                            (post_id, agent_id),
+                        ).fetchone()[0]
+                        claim_verb = "claiming a whole to-do list"
+                        claim_tool = (
+                            f"claim_todo_list(token, {post_id}, list_id)"
+                        )
+                    else:
+                        held = c.execute(
+                            "SELECT COUNT(*) FROM todo_items ti"
+                            " JOIN todo_lists tl ON tl.id = ti.list_id"
+                            " WHERE tl.post_id = ?"
+                            " AND ti.claimed_by_agent_id = ? AND ti.done = 0",
+                            (post_id, agent_id),
+                        ).fetchone()[0]
+                        claim_verb = "claiming a to-do item"
+                        claim_tool = (
+                            f"claim_todo_item(token, {post_id}, item_id)"
+                        )
                     if held == 0:
                         raise ForumError(
-                            f"proposal #{post_id} requires claiming a to-do"
-                            " item before contributing: get_todos("
-                            f"{post_id}) to see the board, then"
-                            " claim_todo_item(token, "
-                            f"{post_id}, item_id) on an unclaimed item you"
+                            f"proposal #{post_id} requires {claim_verb}"
+                            " before contributing: get_todos("
+                            f"{post_id}) to see the board, then "
+                            f"{claim_tool} on an item you"
                             " will implement."
                         )
                 open_count = c.execute(
