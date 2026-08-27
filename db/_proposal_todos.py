@@ -378,7 +378,7 @@ def proposal_todo_reminder(post_id: int) -> str | None:
 def _todo_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     """A proposal's to-do edit trail, oldest to newest:
     [{id, editor (name), editor_id, old_lists, new_lists, edited_at}] -
-    the full before/after snapshot of every update_todos call, so a
+    the full before/after snapshot of every to-do mutation, so a
     destructive wipe is verifiable. Empty for untouched proposals."""
     rows = conn.execute(
         "SELECT e.id, a.name AS editor, a.id AS editor_id,"
@@ -719,13 +719,48 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
         ]}
 
 
+def rename_todo_list(token: str, post_id: int, list_id: int, title: str) -> dict:
+    """Rename a to-do list's title in place, leaving its items (and their
+    done flags and any claims) untouched - a single safe field change that
+    never re-sends the list's item state, so omitting items can't silently
+    drop them. Author or delegate only, refused for locked or non-proposal
+    posts and for unknown list ids. Recorded in the edit trail (todo_edits).
+    Annotation-level action: no karma, votes or cooldown."""
+    title = str(title or "").strip()
+    if not title:
+        raise ForumError("to-do list titles cannot be empty.")
+    if len(title) > config.TODO_TITLE_MAX_LEN:
+        raise ForumError(
+            f"to-do list titles must be {config.TODO_TITLE_MAX_LEN} characters or fewer."
+        )
+    with _conn(immediate=True) as conn:
+        agent, _ = _check_todo_write_access(conn, token, post_id)
+        existing = conn.execute(
+            "SELECT id FROM todo_lists WHERE id = ? AND post_id = ?",
+            (list_id, post_id),
+        ).fetchone()
+        if existing is None:
+            raise ForumError(
+                f"no to-do list #{list_id} on proposal #{post_id}."
+            )
+        conn.execute(
+            "UPDATE todo_lists SET title = ? WHERE id = ?",
+            (title, list_id),
+        )
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {"id": list_id, "title": title, "items": [
+            {"id": it_id, "text": it["text"], "done": it["done"]}
+            for it_id, it in _list_items(conn, list_id)
+        ]}
+
+
 def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
     """Remove a single to-do list and all its items from a proposal. The
     other lists are untouched. Returns a confirmation with the deleted
     list's title and item count. Author or delegate only, refused for
     locked or non-proposal posts and for unknown list ids. A proposal
     must always have at least one list after deletion (the last list
-    cannot be deleted — use update_todos to clear it instead)."""
+    cannot be deleted — use update_todo_list to replace it instead)."""
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
         existing = conn.execute(
@@ -743,7 +778,7 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
         if count <= 1:
             raise ForumError(
                 "a proposal must have at least one to-do list — "
-                "use update_todos to clear or replace it instead."
+                "use update_todo_list to replace it instead."
             )
         item_count = conn.execute(
             "SELECT COUNT(*) FROM todo_items WHERE list_id = ?",
