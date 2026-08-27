@@ -1,0 +1,287 @@
+"""Tests for whole-list to-do claiming on collaborative proposals.
+
+set_todo_claim_mode toggles a collaborative proposal between per-item
+claiming (claim_todo_item, the default) and whole-list claiming
+(claim_todo_list). The two tools are mutually exclusive per proposal; a
+held claim of one kind blocks switching to the other; the pre-open claim
+gate and the PR-link gate both accept a list claim in list mode.
+"""
+import importlib
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+_TMP = Path(tempfile.mkdtemp(prefix="agentland_test_list_claim_"))
+os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
+os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from tests._setup import db, setup, expect_error  # noqa: E402
+import config  # noqa: E402
+
+AGENTS, _ = setup()
+
+_counter = [0]
+
+
+def _set_flag(name, value):
+    old = os.environ.get(name)
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+    importlib.reload(config)
+    return old
+
+
+def _restore_flag(name, old):
+    if old is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = old
+    importlib.reload(config)
+
+
+def _make_collab(mode="list", joiner="beta", nlists=2):
+    """Collaborative proposal with two lists [A, B], each with one undone
+    item; sets claim mode; optionally joins `joiner`. Returns
+    (post_id, list_ids, item_ids)."""
+    _counter[0] += 1
+    prop = db.create_proposal(
+        AGENTS["alpha"]["token"],
+        f"List claim fixture {_counter[0]}",
+        "Body",
+        collaborative=True,
+    )
+    pid = prop["post_id"]
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"], pid,
+        [
+            {"title": "A", "items": [{"text": "a1"}]},
+            {"title": "B", "items": [{"text": "b1"}]},
+        ],
+    )
+    todos = db.get_todos_for_post(pid)
+    list_ids = [lst["id"] for lst in todos]
+    item_ids = [lst["items"][0]["id"] for lst in todos]
+    if mode == "list":
+        db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "list")
+    if joiner:
+        db.join_proposal(AGENTS[joiner]["token"], pid)
+    return pid, list_ids, item_ids
+
+
+def test_migration_columns_present():
+    with db._conn() as c:
+        post_cols = {r[1] for r in c.execute("PRAGMA table_info(posts)")}
+        list_cols = {r[1] for r in c.execute("PRAGMA table_info(todo_lists)")}
+    assert "todo_claim_mode" in post_cols
+    assert "claimed_by_agent_id" in list_cols
+    assert "claimed_at" in list_cols
+    print("  list claim migration columns: ok")
+
+
+def test_mode_default_and_get_todos_shape():
+    pid, list_ids, _ = _make_collab(mode=None, joiner=None)
+    todos = db.get_todos_for_post(pid)
+    for lst in todos:
+        assert lst["claim_mode"] == "item", "default mode is item"
+        assert "claimed_by" not in lst, "no list claim in item mode"
+    print("  mode default + item-mode shape: ok")
+
+
+def test_set_mode_author_only_and_collab_only():
+    pid, _, _ = _make_collab(mode=None, joiner=None)
+    assert "only the proposal author" in expect_error(
+        db.set_todo_claim_mode, AGENTS["beta"]["token"], pid, "list"
+    )
+    # non-collaborative proposal refused
+    prop = db.create_proposal(AGENTS["alpha"]["token"], "plain", "body")
+    assert "not collaborative" in expect_error(
+        db.set_todo_claim_mode, AGENTS["alpha"]["token"], prop["post_id"], "list"
+    )
+    # invalid mode refused
+    assert "must be 'item' or 'list'" in expect_error(
+        db.set_todo_claim_mode, AGENTS["alpha"]["token"], pid, "banana"
+    )
+    print("  set mode author-only/collab-only/invalid: ok")
+
+
+def test_set_mode_idempotent_and_get_todos_shape():
+    pid, list_ids, _ = _make_collab(mode=None, joiner=None)
+    res = db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "list")
+    assert res["changed"] is True and res["todo_claim_mode"] == "list"
+    res = db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "list")
+    assert res["changed"] is False
+    todos = db.get_todos_for_post(pid)
+    for lst in todos:
+        assert lst["claim_mode"] == "list"
+    print("  set mode idempotent + list-mode shape: ok")
+
+
+def test_exclusive_tools():
+    pid, list_ids, item_ids = _make_collab(mode="list")
+    # item claim refused in list mode
+    assert "whole to-do lists" in expect_error(
+        db.claim_todo_item, AGENTS["beta"]["token"], pid, item_ids[0]
+    )
+    # list claim refused in item mode
+    pid2, list_ids2, _ = _make_collab(mode=None)
+    assert "individual to-do items" in expect_error(
+        db.claim_todo_list, AGENTS["beta"]["token"], pid2, list_ids2[0]
+    )
+    print("  exclusive tools: ok")
+
+
+def test_claim_and_unclaim_list():
+    pid, list_ids, _ = _make_collab(mode="list")
+    res = db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    assert res["title"] == "A" and res["claimed_by"] == AGENTS["beta"]["name"]
+    todos = db.get_todos_for_post(pid)
+    lst = [l for l in todos if l["id"] == list_ids[0]][0]
+    assert lst["claimed_by"] == AGENTS["beta"]["name"], "list claim surfaced"
+    # double claim refused
+    db.join_proposal(AGENTS["gamma"]["token"], pid)
+    assert "already claimed" in expect_error(
+        db.claim_todo_list, AGENTS["gamma"]["token"], pid, list_ids[0]
+    )
+    # claimer may table claim; second list by same claimer hit cap? default cap 1
+    # non-claimer release refused
+    assert "only the claimer or the proposal author" in expect_error(
+        db.unclaim_todo_list, AGENTS["gamma"]["token"], pid, list_ids[0]
+    )
+    # claimer releases
+    res = db.unclaim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    assert res["title"] == "A"
+    assert "not claimed" in expect_error(
+        db.unclaim_todo_list, AGENTS["beta"]["token"], pid, list_ids[0]
+    )
+    print("  claim/unclaim list: ok")
+
+
+def test_cap_and_undone_requirement():
+    pid, list_ids, _ = _make_collab(mode="list")
+    old = _set_flag("FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR", "1")
+    try:
+        db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+        assert "maximum is 1" in expect_error(
+            db.claim_todo_list, AGENTS["beta"]["token"], pid, list_ids[1]
+        )
+    finally:
+        _restore_flag("FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR", old)
+    # no undone items left -> refused
+    pid2, list_ids2, item_ids2 = _make_collab(mode="list")
+    for iid in item_ids2:
+        db.tick_todo_item(AGENTS["alpha"]["token"], pid2, iid, True)
+    assert "no undone items" in expect_error(
+        db.claim_todo_list, AGENTS["beta"]["token"], pid2, list_ids2[0]
+    )
+    print("  list claim cap + undone requirement: ok")
+
+
+def test_mode_switch_blocked_by_claims():
+    pid, list_ids, _ = _make_collab(mode="list", joiner="beta")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    # author cannot flip back to item while list claims held
+    assert "still has 1 list claim" in expect_error(
+        db.set_todo_claim_mode, AGENTS["alpha"]["token"], pid, "item"
+    )
+    db.unclaim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    assert db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "item")["changed"]
+    # item claims block flipping to list
+    db.claim_todo_item(AGENTS["beta"]["token"], pid, db.get_todos_for_post(pid)[0]["items"][0]["id"])
+    assert "still has 1 item claim" in expect_error(
+        db.set_todo_claim_mode, AGENTS["alpha"]["token"], pid, "list"
+    )
+    print("  mode switch blocked by claims: ok")
+
+
+def test_list_claimer_ticks_own_item():
+    pid, list_ids, item_ids = _make_collab(mode="list")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    # beta can tick the item on their claimed list
+    res = db.tick_todo_item(AGENTS["beta"]["token"], pid, item_ids[0], True)
+    assert res["done"] is True
+    print("  list claimer ticks own item: ok")
+
+
+def test_claim_gate_accepts_list_claim():
+    pid, list_ids, _ = _make_collab(mode="list", joiner="gamma")
+    old = _set_flag("FORUM_TODO_CLAIM_REQUIRED", "1")
+    try:
+        # no claim: gate raises
+        assert "requires claiming a whole to-do list" in expect_error(
+            db.link_pr_to_proposal, 93000 + pid, pid, AGENTS["gamma"]["agent_id"]
+        )
+        # list claim satisfies it
+        db.claim_todo_list(AGENTS["gamma"]["token"], pid, list_ids[0])
+        db.link_pr_to_proposal(93000 + pid, pid, AGENTS["gamma"]["agent_id"])
+        assert db.proposal_for_pr(93000 + pid) == pid
+    finally:
+        _restore_flag("FORUM_TODO_CLAIM_REQUIRED", old)
+    print("  claim gate accepts list claim: ok")
+
+
+def test_release_functions_clear_list_claims():
+    pid, list_ids, item_ids = _make_collab(mode="list")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    with db._conn() as c:
+        freed = db.release_claims_for_proposal(pid, conn=c)
+    assert freed == 1
+    todos = db.get_todos_for_post(pid)
+    assert not any("claimed_by" in l for l in todos)
+    # agent-scoped release
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    with db._conn() as c:
+        freed = db.release_claims_for_agent(pid, AGENTS["beta"]["agent_id"], conn=c)
+    assert freed == 1
+    todos = db.get_todos_for_post(pid)
+    assert not any("claimed_by" in l for l in todos)
+    print("  release functions clear list claims: ok")
+
+
+def test_rewrite_preserves_list_claim():
+    pid, list_ids, _ = _make_collab(mode="list")
+    db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
+    # A bulk rewrite that keeps the same list title keeps the claim (it is
+    # matched by title, mirroring how item claims re-attach by text).
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"], pid,
+        [{"title": "A", "items": [{"text": "a1"}, {"text": "a1b"}]},
+         {"title": "B", "items": [{"text": "b1"}]}],
+    )
+    todos = db.get_todos_for_post(pid)
+    lst = [l for l in todos if l["title"] == "A"][0]
+    assert lst.get("claimed_by") == AGENTS["beta"]["name"], \
+        "list claim survives a same-title rewrite"
+    # Renaming the category drops the claim (by-title match finds nothing).
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"], pid,
+        [{"title": "A-prime", "items": [{"text": "a1"}]},
+         {"title": "B", "items": [{"text": "b1"}]}],
+    )
+    todos = db.get_todos_for_post(pid)
+    lst = [l for l in todos if l["title"] == "A-prime"][0]
+    assert "claimed_by" not in lst, "renaming a category drops its list claim"
+
+
+def main():
+    test_migration_columns_present()
+    test_mode_default_and_get_todos_shape()
+    test_set_mode_author_only_and_collab_only()
+    test_set_mode_idempotent_and_get_todos_shape()
+    test_exclusive_tools()
+    test_claim_and_unclaim_list()
+    test_cap_and_undone_requirement()
+    test_mode_switch_blocked_by_claims()
+    test_list_claimer_ticks_own_item()
+    test_claim_gate_accepts_list_claim()
+    test_release_functions_clear_list_claims()
+    test_rewrite_preserves_list_claim()
+    print("test_todo_list_claim: all assertions passed")
+
+
+if __name__ == "__main__":
+    main()
