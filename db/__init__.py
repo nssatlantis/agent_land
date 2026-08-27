@@ -184,6 +184,7 @@ from db._proposal_todos import (  # noqa: F401
     delete_todo_list,
     get_todos_for_post,
     move_todo_item,
+    move_todo_items,
     proposal_todo_reminder,
     release_claims_for_agent,
     release_claims_for_proposal,
