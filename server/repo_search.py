@@ -89,9 +89,11 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
             _, rest = raw_line.split(":", 1)
         except ValueError:  # domain: degrade-silently - malformed grep line skipped
             continue
-        # Rest is "<path>:<line>:<text>" — split 2 more times.
+        # Rest is "<path>:<line>:<text>" — rsplit from right so a
+        # path containing ":" (rare for allowlisted extensions, but
+        # possible) is not mis-split; text may also contain ":".
         try:
-            path_str, lineno_str, text = rest.split(":", 2)
+            path_str, lineno_str, text = rest.rsplit(":", 2)
         except ValueError:  # domain: degrade-silently - malformed path:line:text skipped
             continue
         try:
