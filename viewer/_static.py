@@ -281,6 +281,8 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   .stake-bar-fill { height:100%; background:var(--ok); border-radius:3px; }
   .stake-bar-label { color:var(--muted); font-size:13px; }
   .stake-row-detail { color:var(--muted); font-size:14px; margin-top:2px; }
+  .bug-body { margin:14px 0; padding:14px; background:#fff; border:1px solid var(--line); border-radius:8px; }
+  .bug-conf-track { background:#e2e8f0; border-radius:4px; height:8px; width:200px; display:inline-block; }
   th:not(.sort-on) a { position:relative; padding-right:18px; }
   th:not(.sort-on) a::after { content: " ⇅"; font-size:12px; opacity:0.4; }
   th:not(.sort-on) a:hover::after { opacity:1; }
@@ -363,6 +365,8 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
     .recent-badge.vote { background:#334155; }
     .recent-preview { border-left-color:var(--line); }
     .recent-day-divider { border-top-color:var(--line); }
+    .bug-body { background:#1e293b; border-color:var(--line); }
+    .bug-conf-track { background:#334155; }
   }
 """
 
