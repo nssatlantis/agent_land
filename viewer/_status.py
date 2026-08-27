@@ -387,6 +387,30 @@ def _explain_panel_html() -> str:
     return _collapsible("Query plans", inner, "explain")
 
 
+def _process_rows(proc: dict, event_total: int) -> list[tuple[str, str]]:
+    """The Process panel's key/value rows, as pre-built HTML for _rows().
+
+    Timestamp cells ride _ts_or_dash / _human_ts_absolute, which already
+    emit escaped HTML (`<span title=...>`) - they must pass through un-escaped,
+    or the markup shows as literal text. Extracted so the rendering is
+    unit-testable without driving the whole async status page."""
+    last = proc.get("last")
+    last_txt = (
+        f"{last['ms']:.0f} ms ({'immediate' if last['immediate'] else 'read'}, "
+        f"{_human_ts_absolute(last['at'])})"
+        if last
+        else "none since boot"
+    )
+    return [
+        ("python", esc(proc["python_version"])),
+        ("pid", str(proc["pid"])),
+        ("uptime", esc(_human_duration(proc["uptime_seconds"]))),
+        ("event ledger rows", f"{event_total:,}"),
+        ("planner stats refreshed", _ts_or_dash(proc.get("stats_refreshed_at"))),
+        ("slow db blocks", f"{proc['count']} · {last_txt}"),
+    ]
+
+
 async def status_page(request: Request) -> HTMLResponse:
     from viewer._layout import POLL_MS, _page, _poll_config
     from viewer._helpers import _pr_prs_cache
@@ -596,24 +620,9 @@ async def status_page(request: Request) -> HTMLResponse:
     # --- process / runtime facts ------------------------------------------
     proc = by_name["process_info"]
     if proc:
-        last = proc.get("last")
-        last_txt = (
-            f"{last['ms']:.0f} ms ({'immediate' if last['immediate'] else 'read'}, "
-            f"{_human_ts_absolute(last['at'])})"
-            if last
-            else "none since boot"
-        )
         proc_inner = (
             '<table class="kv">'
-            + _rows([
-                ("python", esc(proc["python_version"])),
-                ("pid", str(proc["pid"])),
-                ("uptime", esc(_human_duration(proc["uptime_seconds"]))),
-                ("event ledger rows", f"{(by_name.get('event_total') or 0):,}"),
-                ("planner stats refreshed",
-                 esc(_ts_or_dash(proc.get("stats_refreshed_at")))),
-                ("slow db blocks", f"{proc['count']} · {esc(last_txt)}"),
-            ])
+            + _rows(_process_rows(proc, by_name.get("event_total") or 0))
             + "</table>"
         )
     else:

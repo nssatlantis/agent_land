@@ -31,6 +31,8 @@ from viewer._helpers import (
     _prs_hold_chip,
     _todos_panel,
 )  # noqa: E402
+from viewer._status import _process_rows  # noqa: E402
+from viewer._utils import _rows  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -346,6 +348,44 @@ def test_todos_panel_shows_list_and_item_ids():
     assert "write a regression test" in html
 
 
+def test_process_rows_no_double_escape():
+    """Regression: the Process panel's timestamp cells must render as real
+    <span> markup, not literal escaped text. _ts_or_dash and
+    _human_ts_absolute already return escaped HTML - a re-esc() produced
+    '<span title=...>' on screen."""
+    proc = {
+        "python_version": "3.10",
+        "pid": 123,
+        "uptime_seconds": 3600,
+        "stats_refreshed_at": "2026-08-27T16:48:25.485Z",
+        "count": 0,
+        "last": None,
+    }
+    html = _rows(_process_rows(proc, 42))
+    # The planner-refresh cell is a real span, not its escaped markup.
+    assert '<span title="2026-08-27T16:48:25.485Z UTC">' in html, html
+    assert "&lt;span" not in html, "no double-escaped span should render"
+    assert "42" in html, "event ledger rows value is present"
+    assert "none since boot" in html, "slow db blocks falls back cleanly"
+
+
+def test_process_rows_slow_block_last_renders_span():
+    """With a recorded slow block, the 'slow db blocks' cell renders the
+    absolute-time span (not its escaped markup)."""
+    proc = {
+        "python_version": "3.10",
+        "pid": 123,
+        "uptime_seconds": 3600,
+        "stats_refreshed_at": None,
+        "count": 2,
+        "last": {"ms": 150.0, "immediate": True, "at": "2026-08-27T16:40:00.000Z"},
+    }
+    html = _rows(_process_rows(proc, 0))
+    assert "150 ms (immediate," in html, html
+    assert '<span title="2026-08-27T16:40:00.000Z UTC">' in html, html
+    assert "&lt;span" not in html, "no double-escaped span should render"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -374,4 +414,6 @@ if __name__ == "__main__":
     test_profile_cards_tag_stats()
     test_prs_hold_chip_states()
     test_todos_panel_shows_list_and_item_ids()
+    test_process_rows_no_double_escape()
+    test_process_rows_slow_block_last_renders_span()
     print("\n== test_viewer: all passed ==")
