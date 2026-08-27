@@ -774,7 +774,7 @@ def _jobs_pager(status: str | None, page: int, total_pages: int, top: bool = Fal
         if page < total_pages:
             nav.append(f'<a href="{_jobs_href(status, page + 1)}">Next</a>')
     cls = "pager top" if top else "pager"
-    return f'<div class="{cls}">' + " - ".join(nav) + "</div>"
+    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
 def jobs_page(request: Request) -> HTMLResponse:
@@ -787,7 +787,7 @@ def jobs_page(request: Request) -> HTMLResponse:
     raw_page = request.query_params.get("page") or "1"
     try:
         page = int(raw_page)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
         page = 1
     if page < 1:
         page = 1
@@ -818,11 +818,11 @@ def jobs_page(request: Request) -> HTMLResponse:
                 page = total_pages
             offset = (page - 1) * per_page
             id_rows = conn.execute(
-                f"SELECT id FROM jobs {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+                f"SELECT id FROM jobs {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                 (per_page, offset),
             ).fetchall()
             job_ids = [r["id"] for r in id_rows]
-    except Exception:
+    except Exception:  # domain: degrade-silently - DB read failed, fallback to in-memory 300 slice (board still renders)
         all_jobs = db.list_jobs(view="all", limit=300)["jobs"]
         counts = {
             "open": sum(1 for j in all_jobs if j["status"] == "open"),
