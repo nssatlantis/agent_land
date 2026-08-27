@@ -446,9 +446,14 @@ async def _ci_failure_poller() -> None:
 
     Merged with the vote poller (proposal #111 audit item 2375):
     fetches open_prs once per interval and passes it to both the
-    CI-failure sweep and the vote sweep, halving GitHub API traffic."""
+    CI-failure sweep and the vote sweep, halving GitHub API traffic.
+    Fast 30s poll for CI (local-first) + debounced direct trigger from
+    repo_propose_change/repo_update_pr (15s coalesce) ensures host runs
+    once for the final head while GitHub runs every intermediate."""
     while True:
-        interval_seconds = config.CI_POLL_SECONDS
+        # 30s for CI (you approved, not overload: 120 GH GETs/hour vs 12 at 300s,
+        # still < GITHUB_MAX_CONNECTIONS=16), housekeeping inside still throttled
+        interval_seconds = min(30, config.CI_POLL_SECONDS) if config.CI_POLL_SECONDS else 30
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)

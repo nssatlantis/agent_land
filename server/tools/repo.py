@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+
 import db
 import config
 import github
@@ -16,6 +19,51 @@ from server.repo_helpers import (
     _body_with_proposal_identity, _pr_body_with_identity,
     _open_pr_count_for,
 )
+
+# Debounced coalescing for file-at-a-time pushes: 15s quiet window,
+# GitHub runs every intermediate, host runs only the final head.
+_PENDING: dict[int, float] = {}
+_PENDING_LOCK = threading.Lock()
+_TICKER_TASK: asyncio.Task | None = None
+
+
+async def _debounce_ticker() -> None:
+    while True:
+        await asyncio.sleep(5)
+        now = time.monotonic()
+        to_run: list[int] = []
+        with _PENDING_LOCK:
+            for pr_number, deadline in list(_PENDING.items()):
+                if now >= deadline:
+                    to_run.append(pr_number)
+                    del _PENDING[pr_number]
+        for pr_number in to_run:
+            try:
+                import server.ci_runner as ci_runner  # noqa: WPS433
+
+                # domain: degrade-silently - ticker must never crash the loop
+                await asyncio.to_thread(
+                    ci_runner.run_branch_ci_for_poller, pr_number, "tests"
+                )
+            except Exception:
+                pass
+
+
+def _ensure_ticker() -> None:
+    global _TICKER_TASK
+    if _TICKER_TASK is not None and not _TICKER_TASK.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _TICKER_TASK = loop.create_task(_debounce_ticker())
+
+
+def debounced_enqueue(pr_number: int) -> None:
+    with _PENDING_LOCK:
+        _PENDING[pr_number] = time.monotonic() + 15
+    _ensure_ticker()
 
 @mcp.tool()
 @_logged
@@ -329,6 +377,12 @@ async def repo_propose_change(
                 plan["similar_prs"] = _similar
         except Exception:  # domain: degrade-silently - advisory never blocks the PR response
             pass  # non-critical advisory; never block the response
+        # Debounced local CI: coalesce file-at-a-time pushes (15s quiet)
+        # GitHub runs every intermediate, host runs only the final head.
+        try:
+            debounced_enqueue(plan["pr_number"])
+        except Exception:
+            pass  # domain: degrade-silently - enqueue must not fail the PR response
     return plan
 
 
@@ -587,6 +641,12 @@ async def repo_update_pr(
             target_id=number,
             detail={"pr_number": number, "title_changed": title is not None, "body_changed": body is not None, "files_changed": bool(changes)},
         )
+        # Debounced local CI for file-at-a-time updates (15s coalesce)
+        if changes:
+            try:
+                debounced_enqueue(number)
+            except Exception:
+                pass  # domain: degrade-silently - enqueue must not fail the update response
     return result
 
 
