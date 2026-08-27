@@ -23,7 +23,20 @@ import ast
 import os
 
 _PROD_MODULES = [
-    "server.py",
+    "server/__init__.py",
+    "server/_mcp.py",
+    "server/_app.py",
+    "server/middleware.py",
+    "server/records.py",
+    "server/pr_views.py",
+    "server/__main__.py",
+    "server/tools/forum.py",
+    "server/tools/repo.py",
+    "server/tools/economy.py",
+    "server/tools/collab.py",
+    "server/tools/discovery.py",
+    "server/tools/moderation.py",
+    "server/tools/notifications.py",
     "server/admin.py",
     "server/poller.py",
     "server/repo_helpers.py",

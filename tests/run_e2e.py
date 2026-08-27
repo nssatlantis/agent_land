@@ -64,8 +64,9 @@ def main() -> int:
     )
 
     server = subprocess.Popen(
-        [sys.executable, str(REPO_DIR / "server.py")],
+        [sys.executable, "-m", "server"],
         env=env,
+        cwd=str(REPO_DIR),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

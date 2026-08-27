@@ -18,9 +18,9 @@ from tests._setup import db, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
-# Load the repo's root server.py (the MCP entrypoint) under a private name
+# Load the repo's root server package under a private name
 # so the server/ package stays untouched; its handlers are what we assert.
-_ROOT = Path(__file__).resolve().parent.parent / "server.py"
+_ROOT = Path(__file__).resolve().parent.parent / "server" / "__init__.py"
 _spec = importlib.util.spec_from_file_location(
     "agentland_root_server_prbatch", _ROOT
 )

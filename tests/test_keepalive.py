@@ -52,7 +52,7 @@ def test_installed_uvicorn_accepts_the_parameter():
 def test_all_three_launch_sites_pass_the_tunable():
     repo = Path(config.REPO_DIR)
     expected = "timeout_keep_alive=config.HTTP_KEEPALIVE_TIMEOUT_SECONDS"
-    for module in ("server.py", "viewer/__init__.py", "viewer/__main__.py"):
+    for module in ("server/__main__.py", "viewer/__init__.py", "viewer/__main__.py"):
         text = (repo / module).read_text(encoding="utf-8")
         assert expected in text, f"{module} does not pass the keep-alive tunable"
 
