@@ -101,25 +101,55 @@ def _ci_ensure_pool() -> queue.Queue[int]:
                 q.put(i)
             _CI_QUEUE = q
         elif desired != len(_CI_SLOTS):
-            if desired > len(_CI_SLOTS):
-                for i in range(len(_CI_SLOTS), desired):
+            old_len = len(_CI_SLOTS)
+            if desired > old_len:
+                for i in range(old_len, desired):
                     _CI_SLOTS.append(f"slot{i}")
+                # New slots are all available
+                assert _CI_QUEUE is not None
+                for i in range(old_len, desired):
+                    _CI_QUEUE.put(i)
             else:
+                # Shrink: keep only available indices < desired, held slots beyond remain held until release (dropped there)
                 del _CI_SLOTS[desired:]
-            rebuilt: queue.Queue[int] = queue.Queue()
-            for i in range(len(_CI_SLOTS)):
-                rebuilt.put(i)
-            _CI_QUEUE = rebuilt
+                # Drain old queue, filter, rebuild
+                assert _CI_QUEUE is not None
+                avail: list[int] = []
+                while not _CI_QUEUE.empty():
+                    try:
+                        idx = _CI_QUEUE.get_nowait()
+                        if idx < desired:
+                            avail.append(idx)
+                    except queue.Empty:
+                        break
+                rebuilt: queue.Queue[int] = queue.Queue()
+                for idx in avail:
+                    rebuilt.put(idx)
+                # If held > desired, some held slots are beyond new size and will be dropped on release (already handled)
+                _CI_QUEUE = rebuilt
     return _CI_QUEUE
 
 
 def _ci_acquire_slot() -> int:
     """Acquire a CI slot token without blocking; raises ForumError if saturated."""
     q = _ci_ensure_pool()
-    try:
-        return q.get(block=False)
-    except queue.Empty as exc:
-        raise db.ForumError("a CI run is already in progress; try again when it finishes") from exc
+    while True:
+        try:
+            idx = q.get(block=False)
+        except queue.Empty as exc:
+            raise db.ForumError("a CI run is already in progress; try again when it finishes") from exc
+        # Validate against current pool — handles race where caller held old
+        # queue ref across a shrink rebuild and got a retired index (>=live).
+        # _CI_SLOTS length is the live pool size; protect read with _CI_LOCK.
+        with _CI_LOCK:
+            live_len = len(_CI_SLOTS)
+        desired = max(1, int(config.CI_RUN_CONCURRENCY))
+        live = min(desired, live_len) if live_len else desired
+        if 0 <= idx < live:
+            return idx
+        # Retired idx from old queue — discard and try next; if now empty, saturated.
+        if q.empty():
+            raise db.ForumError("a CI run is already in progress; try again when it finishes") from None
 
 
 def _ci_release_slot(idx: int) -> None:
@@ -714,7 +744,7 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
     # runs on the single host. The third caller still gets the familiar
     # "already in progress" error. Legacy _RUN_LOCK is kept for the
     # existing single-slot test: if it is held, treat as saturated.
-    if _RUN_LOCK.locked():
+    if _RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod — real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError("a CI run is already in progress; try again when it finishes")
     try:
@@ -817,7 +847,7 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             # domain: degrade-silently - releasing a retired slot is best-effort
             pass
         # Legacy lock release for tests that still hold it — no-op normally
-        if _RUN_LOCK.locked():
+        if _RUN_LOCK.locked():  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
             except RuntimeError:
@@ -843,10 +873,14 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     kind_event = events.EVT_CI_BRANCH_RUN
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_poller_")
     started = time.monotonic()
-    if _RUN_LOCK.locked():
+    if _RUN_LOCK.locked():  # legacy: only set by tests; always False in prod — real gate is _ci_acquire_slot
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError("a CI run is already in progress; try again when it finishes")
-    slot = _ci_acquire_slot()
+    try:
+        slot = _ci_acquire_slot()
+    except db.ForumError:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        raise
     try:
         try:
             tree, head_sha, merge_info = _prepare_pr_tree(pr_number, slot=slot)
@@ -908,7 +942,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             _ci_release_slot(slot)
         except Exception:
             pass
-        if _RUN_LOCK.locked():
+        if _RUN_LOCK.locked():  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
             except RuntimeError:

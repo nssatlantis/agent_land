@@ -42,11 +42,28 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         watcher.cancel()
         poller.cancel()
         ci_poller.cancel()
+        # Debounced ticker from server/tools/repo.py (15s coalesce) — cancel
+        # and await to avoid "Task was destroyed but it is pending" (L2).
+        ticker_task = None
+        try:
+            from server.tools.repo import _TICKER_TASK, _cancel_ticker
+
+            ticker_task = _TICKER_TASK
+            _cancel_ticker()
+        except Exception:
+            pass  # domain: degrade-silently - ticker cancel must not stall shutdown
         try:
             await poller
             await ci_poller
         except asyncio.CancelledError:
             pass
+        if ticker_task is not None and not ticker_task.done():
+            try:
+                await ticker_task
+            except asyncio.CancelledError:
+                pass  # domain: degrade-silently - ticker cancel is expected
+            except Exception:
+                pass  # domain: degrade-silently - ticker must not stall shutdown
 
 
 app = Starlette(
