@@ -1165,6 +1165,11 @@ def _pr_vote_sweep(
                             local_ok = bool(local_res.get("ok"))  # type: ignore[attr-defined]
                             if local_ok:
                                 # Local success — cancel GH wait if still running
+                                # (gh_fut.cancel() only cancels pending, not
+                                # already-running poll thread — GH keeps
+                                # polling in background until timeout, result
+                                # discarded; harmless, real fix would be
+                                # cooperative Event in github.wait_for_ci)
                                 if gh_fut not in done:
                                     gh_fut.cancel()
                                 try:
@@ -1173,25 +1178,15 @@ def _pr_vote_sweep(
                                     gh_state = "unknown"
                                 # Fall through to local-first OR below
                             else:
-                                # Local failed, need GH result
-                                if gh_fut not in done:
-                                    try:
-                                        gh_state = gh_fut.result()
-                                    except Exception as exc:  # domain: degrade-silently - GH wait failed, local already failed
-                                        logutil.log(
-                                            "pr_vote_ci_wait_failed",
-                                            pr_number=number, error=str(exc),
-                                        )
-                                        gh_state = "failure"
-                                else:
-                                    try:
-                                        gh_state = gh_fut.result()
-                                    except Exception as exc:  # domain: degrade-silently - GH wait failed, local already failed
-                                        logutil.log(
-                                            "pr_vote_ci_wait_failed",
-                                            pr_number=number, error=str(exc),
-                                        )
-                                        gh_state = "failure"
+                                # Local failed, need GH result — gh_fut.result() blocks if not done, returns if done
+                                try:
+                                    gh_state = gh_fut.result()
+                                except Exception as exc:  # domain: degrade-silently - GH wait failed, local already failed
+                                    logutil.log(
+                                        "pr_vote_ci_wait_failed",
+                                        pr_number=number, error=str(exc),
+                                    )
+                                    gh_state = "failure"
                         except Exception as exc:  # domain: degrade-silently - local after rebase failed, GH may still pass
                             logutil.log(
                                 "pr_vote_local_after_rebase_failed",

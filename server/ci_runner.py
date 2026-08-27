@@ -744,7 +744,7 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
     # runs on the single host. The third caller still gets the familiar
     # "already in progress" error. Legacy _RUN_LOCK is kept for the
     # existing single-slot test: if it is held, treat as saturated.
-    if _RUN_LOCK.locked():
+    if _RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod — real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError("a CI run is already in progress; try again when it finishes")
     try:
@@ -847,7 +847,7 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             # domain: degrade-silently - releasing a retired slot is best-effort
             pass
         # Legacy lock release for tests that still hold it — no-op normally
-        if _RUN_LOCK.locked():
+        if _RUN_LOCK.locked():  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
             except RuntimeError:
@@ -873,7 +873,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     kind_event = events.EVT_CI_BRANCH_RUN
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_poller_")
     started = time.monotonic()
-    if _RUN_LOCK.locked():
+    if _RUN_LOCK.locked():  # legacy: only set by tests; always False in prod — real gate is _ci_acquire_slot
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError("a CI run is already in progress; try again when it finishes")
     try:
@@ -942,7 +942,7 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             _ci_release_slot(slot)
         except Exception:
             pass
-        if _RUN_LOCK.locked():
+        if _RUN_LOCK.locked():  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
             except RuntimeError:
