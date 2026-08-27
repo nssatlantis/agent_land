@@ -13,16 +13,10 @@ import config
 
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
 from db._jobs_ops import (
-    _all_prs_merged,
-    _award_cycle_karma,
-    _check_deposit_return,
+    _apply_review,
     _fmt_q,
     _job_detail,
-    _maybe_pay_bonus,
-    _pay_worker,
     _remaining_escrow,
-    _seed_next_cycle,
-    _unhold_cycle_prs,
 )
 
 
@@ -59,11 +53,6 @@ def admin_review_job(
                 f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
                 f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
             )
-    from notifications import _notify
-    from events import (
-        EVT_JOB_CYCLE_ACCEPTED, EVT_JOB_CYCLE_DECLINED,
-        EVT_JOB_COMPLETED, log_event,
-    )
 
     with _conn(immediate=True) as conn:
         job = conn.execute(
@@ -89,118 +78,17 @@ def admin_review_job(
             raise ForumError(
                 f"cycle {cycle_no} has no submission awaiting review."
             )
-        worker_id = job["worker_agent_id"]
-        assert worker_id is not None
-        if action == "accept":
-            conn.execute(
-                "UPDATE job_cycles SET status = 'accepted',"
-                " decided_at = ? WHERE id = ?",
-                (_now_iso(), cycle["id"]),
-            )
-            _unhold_cycle_prs(cycle)
-            _check_deposit_return(conn, job, cycle, worker_id)
-            _pay_worker(conn, job, worker_id, admin=admin)
-            rewarded = _award_cycle_karma(
-                conn, job, cycle_no, worker_id,
-            )
-            new_done = job["cycles_done"] + 1
-            completed = new_done >= job["total_cycles"]
-            conn.execute(
-                "UPDATE jobs SET cycles_done = ?, status = ?,"
-                " decided_at = CASE WHEN ? THEN ? ELSE decided_at END"
-                " WHERE id = ?",
-                (
-                    new_done,
-                    "completed" if completed else "active",
-                    1 if completed else 0,
-                    _now_iso() if completed else None, job["id"],
-                ),
-            )
-            _seed_next_cycle(conn, job, new_done)
-            _maybe_pay_bonus(conn, job, worker_id)
-            log_event(
-                EVT_JOB_CYCLE_ACCEPTED,
-                target_type="job",
-                target_id=job["id"],
-                detail={
-                    "cycle_no": cycle_no,
-                    "payout_credits": _fmt_q(job["payment_quarters"]),
-                    "karma_awarded": rewarded > 0,
-                    "credit_amount": _fmt_q(rewarded),
-                    "title": job["title"],
-                    "admin": admin,
-                },
-                conn=conn,
-            )
-            _notify(
-                conn, worker_id, "jobs", "job", job["id"],
-                f"Admin ({admin}) accepted cycle {cycle_no} of "
-                f"'{job['title']}' (#{job['id']}) - "
-                f"{_fmt_q(job['payment_quarters'])} credits paid"
-                + (
-                    f", +{_fmt_q(rewarded)} credits"
-                    if rewarded else ""
-                )
-                + "."
-                + (
-                    " The job is COMPLETE - thank you."
-                    if completed else
-                    f" Cycle {new_done + 1} of {job['total_cycles']} is "
-                    "now awaiting your work."
-                ),
-            )
-            if completed:
-                log_event(
-                    EVT_JOB_COMPLETED,
-                    target_type="job",
-                    target_id=job["id"],
-                    detail={
-                        "title": job["title"],
-                        "worker_agent_id": worker_id,
-                        "total_paid_credits": _fmt_q(
-                            job["payment_quarters"] * job["total_cycles"]
-                        ),
-                        "admin": admin,
-                    },
-                    conn=conn,
-                )
-        else:
-            conn.execute(
-                "UPDATE job_cycles SET status = 'declined',"
-                " feedback = ?, decided_at = ? WHERE id = ?",
-                (feedback, _now_iso(), cycle["id"]),
-            )
-            if punish:
-                try:
-                    penalty = int(config.JOB_DECLINED_KARMA)
-                    if penalty < 0:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO job_penalties"
-                            " (job_id, cycle_no, agent_id, amount)"
-                            " VALUES (?, ?, ?, ?)",
-                            (job["id"], cycle_no, worker_id, penalty),
-                        )
-                except Exception:
-                    # domain: degrade-silently - karma penalty best-effort
-                    pass
-            log_event(
-                EVT_JOB_CYCLE_DECLINED,
-                target_type="job",
-                target_id=job["id"],
-                detail={
-                    "cycle_no": cycle_no,
-                    "held_escrow_credits": _fmt_q(job["payment_quarters"]),
-                    "title": job["title"],
-                    "admin": admin,
-                },
-                conn=conn,
-            )
-            _notify(
-                conn, worker_id, "jobs", "job", job["id"],
-                f"Admin ({admin}) declined cycle {cycle_no} of "
-                f"'{job['title']}' (#{job['id']}): {feedback} Rework "
-                "and resubmit with submit_job().",
-            )
+        _apply_review(
+            conn, job, cycle, action, feedback,
+            actor_id=None,
+            actor_name=None,
+            admin_name=admin,
+            on_behalf_of=None,
+            forfeit_deposit=False,
+            punish=punish,
+            accept_msg_prefix=f"Admin ({admin})",
+            decline_msg_prefix=f"Admin ({admin})",
+        )
         return _detail_or_raise(conn, job["id"])
 
 
@@ -234,11 +122,6 @@ def admin_review_job_as(
                 f"feedback exceeds {config.JOB_FEEDBACK_MAX_LEN} chars "
                 f"(FORUM_JOB_FEEDBACK_MAX_LEN)."
             )
-    from notifications import _notify
-    from events import (
-        EVT_JOB_CYCLE_ACCEPTED, EVT_JOB_CYCLE_DECLINED,
-        EVT_JOB_COMPLETED, log_event,
-    )
 
     admin = (str(admin) or "unknown").strip() or "unknown"
     with _conn(immediate=True) as conn:
@@ -266,8 +149,8 @@ def admin_review_job_as(
             raise ForumError(
                 f"cycle {cycle_no} has no submission awaiting review."
             )
-        worker_id = job["worker_agent_id"]
         creator_id = job["creator_agent_id"]
+        worker_id = job["worker_agent_id"]
         assert worker_id is not None and creator_id is not None
         sponsor_row = conn.execute(
             "SELECT id, name, banned, suspended_until FROM agents WHERE id = ?",
@@ -277,164 +160,17 @@ def admin_review_job_as(
 
         if sponsor_row is None or _account_status_for(sponsor_row) != "active":
             raise ForumError("sponsor citizen is not active.")
-        if action == "accept":
-            conn.execute(
-                "UPDATE job_cycles SET status = 'accepted',"
-                " decided_at = ? WHERE id = ?",
-                (_now_iso(), cycle["id"]),
-            )
-            _unhold_cycle_prs(cycle)
-            if (job["treasury_escrow_quarters"] is not None
-                    and int(job["treasury_escrow_quarters"]) > 0):
-                conn.execute(
-                    "UPDATE jobs SET treasury_escrow_quarters ="
-                    " treasury_escrow_quarters - ? WHERE id = ?",
-                    (job["payment_quarters"], job["id"]),
-                )
-            try:
-                import json as _j
-                _pr_nums_check = _j.loads(cycle["evidence_pr_numbers"]) if cycle["evidence_pr_numbers"] else []
-                _should_return_deposit = _all_prs_merged(_pr_nums_check)
-            except Exception:
-                _should_return_deposit = False
-            _is_final_cycle = (job["cycles_done"] + 1) >= job["total_cycles"]
-            if _should_return_deposit and _is_final_cycle:
-                _deposit_q = int(job["taker_deposit_quarters"] or 0)
-                if _deposit_q > 0:
-                    _half_treasury = (_deposit_q + 1) // 2
-                    _half_escrow = _deposit_q // 2
-                    if _half_escrow > 0:
-                        from db._credits import return_principal
-                        return_principal(worker_id, _half_escrow, "job_deposit_return_escrow", target_type="job", target_id=job["id"], conn=conn)
-                        conn.execute("UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?", (job["id"],))
-                    if _half_treasury > 0:
-                        from db._credits import grant
-                        grant(worker_id, _half_treasury, "job_deposit_return_treasury", target_type="job", target_id=job["id"], conn=conn)
-                    conn.execute("UPDATE jobs SET taker_deposit_quarters = 0 WHERE id = ?", (job["id"],))
-            from db._credits import grant
-
-            if (job["treasury_escrow_quarters"] is not None
-                    and int(job["treasury_escrow_quarters"] or 0) >= 0
-                    and job["official"]):
-                from db._credits import _insert_entry
-                _insert_entry(conn, worker_id, "agent", job["payment_quarters"], "official_job_wage", "job", job["id"])
-                import events
-                events.log_event(
-                    events.EVT_CREDIT_EARNED,
-                    actor_agent_id=worker_id,
-                    target_type="job",
-                    target_id=job["id"],
-                    detail={"reason": "official_job_wage", "credits": _fmt_q(job["payment_quarters"]), "delta_quarters": job["payment_quarters"]},
-                    conn=conn,
-                )
-            else:
-                grant(
-                    worker_id, job["payment_quarters"], "official_job_wage",
-                    target_type="job", target_id=job["id"], conn=conn,
-                )
-            rewarded = _award_cycle_karma(conn, job, cycle_no, worker_id)
-            new_done = job["cycles_done"] + 1
-            completed = new_done >= job["total_cycles"]
-            conn.execute(
-                "UPDATE jobs SET cycles_done = ?, status = ?,"
-                " decided_at = CASE WHEN ? THEN ? ELSE decided_at END"
-                " WHERE id = ?",
-                (
-                    new_done,
-                    "completed" if completed else "active",
-                    1 if completed else 0,
-                    _now_iso() if completed else None, job["id"],
-                ),
-            )
-            _seed_next_cycle(conn, job, new_done)
-            _maybe_pay_bonus(conn, job, worker_id)
-            log_event(
-                EVT_JOB_CYCLE_ACCEPTED,
-                actor_agent_id=creator_id,
-                actor_name=None,
-                target_type="job",
-                target_id=job["id"],
-                detail={
-                    "cycle_no": cycle_no,
-                    "payout_credits": _fmt_q(job["payment_quarters"]),
-                    "karma_awarded": rewarded,
-                    "title": job["title"],
-                    "admin": admin,
-                    "on_behalf_of": creator_id,
-                },
-                conn=conn,
-            )
-            _notify(
-                conn, worker_id, "jobs", "job", job["id"],
-                f"Admin ({admin}) on behalf of sponsor accepted cycle"
-                f" {cycle_no} of '{job['title']}' (#{job['id']}) - "
-                f"{_fmt_q(job['payment_quarters'])} credits paid"
-                + (f", +{config.JOB_KARMA_PER_CYCLE} karma" if rewarded else "")
-                + "."
-                + (
-                    " The job is COMPLETE - thank you."
-                    if completed else
-                    f" Cycle {new_done + 1} of {job['total_cycles']} is "
-                    "now awaiting your work."
-                ),
-                actor_agent_id=creator_id,
-            )
-            if completed:
-                log_event(
-                    EVT_JOB_COMPLETED,
-                    actor_agent_id=creator_id,
-                    target_type="job",
-                    target_id=job["id"],
-                    detail={
-                        "title": job["title"],
-                        "worker_agent_id": worker_id,
-                        "total_paid_credits": _fmt_q(
-                            job["payment_quarters"] * job["total_cycles"]
-                        ),
-                        "admin": admin,
-                        "on_behalf_of": creator_id,
-                    },
-                    conn=conn,
-                )
-        else:
-            conn.execute(
-                "UPDATE job_cycles SET status = 'declined', feedback = ?,"
-                " decided_at = ? WHERE id = ?",
-                (feedback, _now_iso(), cycle["id"]),
-            )
-            if punish:
-                try:
-                    penalty = int(config.JOB_DECLINED_KARMA)
-                    if penalty < 0:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO job_penalties (job_id, cycle_no, agent_id, amount) VALUES (?, ?, ?, ?)",
-                            (job["id"], cycle_no, worker_id, penalty),
-                        )
-                except Exception:
-                    # domain: degrade-silently - karma penalty best-effort
-                    pass
-            log_event(
-                EVT_JOB_CYCLE_DECLINED,
-                actor_agent_id=creator_id,
-                target_type="job",
-                target_id=job["id"],
-                detail={
-                    "cycle_no": cycle_no,
-                    "held_escrow_credits": _fmt_q(job["payment_quarters"]),
-                    "title": job["title"],
-                    "admin": admin,
-                    "on_behalf_of": creator_id,
-                    "punish": bool(punish),
-                },
-                conn=conn,
-            )
-            _notify(
-                conn, worker_id, "jobs", "job", job["id"],
-                f"Admin ({admin}) on behalf of sponsor declined cycle"
-                f" {cycle_no} of '{job['title']}' (#{job['id']}):"
-                f" {feedback} Rework and resubmit with submit_job().",
-                actor_agent_id=creator_id,
-            )
+        _apply_review(
+            conn, job, cycle, action, feedback,
+            actor_id=creator_id,
+            actor_name=None,
+            admin_name=admin,
+            on_behalf_of=creator_id,
+            forfeit_deposit=False,
+            punish=punish,
+            accept_msg_prefix=f"Admin ({admin}) on behalf of sponsor",
+            decline_msg_prefix=f"Admin ({admin}) on behalf of sponsor",
+        )
         return _detail_or_raise(conn, job["id"])
 
 
