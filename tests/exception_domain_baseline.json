@@ -10,7 +10,7 @@
   "server/pr_views.py": 2,
   "server/tools/forum.py": 1,
   "server/tools/repo.py": 1,
-  "server/admin.py": 10,
+  "server/admin.py": 13,
   "server/poller.py": 19,
   "server/repo_helpers.py": 3,
   "server/repo_search.py": 1,

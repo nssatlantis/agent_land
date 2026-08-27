@@ -161,6 +161,8 @@ from server.tools.moderation import (  # noqa: F401
     file_bug_report,
     get_bug_report,
     list_bug_reports,
+    admin_confirm_bug_report,
+    admin_fix_bug_report,
 )
 
 from server.tools.notifications import (  # noqa: F401

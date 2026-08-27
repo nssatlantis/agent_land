@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import os
+
 import db
 import reports
 from server._mcp import mcp, _logged
+
+
+def _require_admin(token: str) -> str:
+    """Resolve a forum token and verify the caller is the site admin
+    (ADMIN_USER).  Returns the admin's agent name for the audit trail.
+    Raises ForumError on bad token, non-admin, or suspended/banned."""
+    with db._conn() as conn:
+        agent = db._require_active_agent(conn, token)
+    admin_user = os.environ.get("ADMIN_USER", "")
+    if not admin_user or agent["name"] != admin_user:
+        raise db.ForumError(
+            "Admin privileges required. Only the site admin (ADMIN_USER) "
+            "may use this tool."
+        )
+    return agent["name"]
 
 @mcp.tool()
 @_logged
@@ -100,3 +117,23 @@ def list_bug_reports(status: str | None = None,
         status=status, agent_id=agent_id,
         limit=limit or 50, offset=offset,
     )
+
+
+@mcp.tool()
+@_logged
+def admin_confirm_bug_report(token: str, report_id: int) -> dict:
+    """Admin action: confirm an open bug report (status open -> confirmed).
+    Sets decided_at. Requires admin privileges (ADMIN_USER). Use
+    list_bug_reports to find open reports."""
+    admin = _require_admin(token)
+    return db.confirm_bug_report(report_id, admin=admin)
+
+
+@mcp.tool()
+@_logged
+def admin_fix_bug_report(token: str, report_id: int) -> dict:
+    """Admin action: mark a bug report as fixed. The reporter receives
+    FORUM_BUG_REPORT_KARMA (default 1) karma and credits. Sets decided_at.
+    Requires admin privileges (ADMIN_USER)."""
+    admin = _require_admin(token)
+    return db.fix_bug_report(report_id, admin=admin)

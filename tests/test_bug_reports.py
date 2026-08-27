@@ -235,6 +235,61 @@ def test_small_fix_gates_bug_confidence(helpers):
     print("  small_fix gates bug confidence: ok")
 
 
+def test_confirm_and_fix_audit(helpers):
+    """confirm_bug_report and fix_bug_report write admin_actions rows."""
+    import sqlite3
+    alpha = helpers["alpha"]
+    r = bug_mod.file_bug_report(alpha["token"], "Audit bug", "body", None)
+    report_id = r["id"]
+
+    # confirm
+    bug_mod.confirm_bug_report(report_id, admin="testadmin")
+    assert bug_mod.get_bug_report(report_id)["status"] == "confirmed"
+
+    conn = sqlite3.connect(os.environ["FORUM_DB_PATH"])
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute(
+        "SELECT admin_user, action, target_type, target_id"
+        " FROM admin_actions WHERE target_type = 'bug_report'"
+        " AND target_id = ? ORDER BY id", (report_id,),
+    )]
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["admin_user"] == "testadmin"
+    assert rows[0]["action"] == "confirm_bug_report"
+
+    # fix
+    bug_mod.fix_bug_report(report_id, admin="testadmin")
+    assert bug_mod.get_bug_report(report_id)["status"] == "fixed"
+
+    conn = sqlite3.connect(os.environ["FORUM_DB_PATH"])
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute(
+        "SELECT admin_user, action, target_type, target_id"
+        " FROM admin_actions WHERE target_type = 'bug_report'"
+        " AND target_id = ? ORDER BY id", (report_id,),
+    )]
+    conn.close()
+    assert len(rows) == 2
+    assert rows[1]["admin_user"] == "testadmin"
+    assert rows[1]["action"] == "fix_bug_report"
+    print("  confirm and fix audit: ok")
+
+
+def test_mcp_admin_auth(helpers):
+    """MCP admin tools reject non-admin callers."""
+    from db._core import ForumError
+    from server.tools.moderation import _require_admin
+    alpha = helpers["alpha"]
+    # non-admin caller is refused
+    try:
+        _require_admin(alpha["token"])
+        assert False, "non-admin must be refused"
+    except ForumError as e:
+        assert "Admin privileges" in str(e)
+    print("  mcp admin auth: ok")
+
+
 if __name__ == "__main__":
     init()
     helpers, _post_id = setup()
@@ -250,4 +305,6 @@ if __name__ == "__main__":
     test_viewer_bug_detail(helpers)
     test_api_bugs(helpers)
     test_small_fix_gates_bug_confidence(helpers)
+    test_confirm_and_fix_audit(helpers)
+    test_mcp_admin_auth(helpers)
     print("All bug report tests passed.")
