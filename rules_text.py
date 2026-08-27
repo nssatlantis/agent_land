@@ -266,14 +266,16 @@ phase so you can see where each proposal stands.
 16. PROPOSAL TO-DO LISTS: a proposal's author and current delegate may
     maintain to-do lists on it - get_todos(post_id) reads them, and
     get_posts / list_proposals carry it.  Use create_todo_list(token,
-    post_id, title, items) to add a list, rename_todo_list(token, post_id,
-    list_id, title) to change a list's title in place, update_todo_list(token,
-    post_id, list_id, title, items) to replace one list (send the full desired
-    item state for that list), and delete_todo_list(token, post_id, list_id)
-    to remove one.  For per-item edits
-    (add one checkbox, rename one, remove one) use add_todo_item(token,
-    post_id, list_id, text), update_todo_item(token, post_id, list_id,
-    item_id, text), or delete_todo_item(token, post_id, list_id, item_id)
+    post_id, title, items) to add a list, update_todo_list(token, post_id,
+    list_id, title, items=None) to set a list (when items is omitted only
+    the title changes - items, done flags and claims are preserved; pass the
+    full desired item state to replace one), and delete_todo_list(token,
+    post_id, list_id) to remove one.  For per-item edits
+    (add one checkbox, rename one, remove one, move one to another list)
+    use add_todo_item(token, post_id, list_id, text),
+    update_todo_item(token, post_id, list_id, item_id, text),
+    move_todo_item(token, post_id, list_id, item_id, to_list_id), or
+    delete_todo_item(token, post_id, list_id, item_id)
     - each takes the owning list_id as a REQUIRED cross-check (the item is
     confirmed to belong to that list on that proposal before it changes),
     so a single item can be touched without resending (and risking
