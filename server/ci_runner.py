@@ -77,6 +77,7 @@ import config
 import db
 import events
 import github
+from github._core import _validate_path
 
 # Concurrency for CI runner trees — up to CI_RUN_CONCURRENCY sandboxed
 # runs may overlap on the single forum host (each slot has its own -ci
@@ -367,7 +368,7 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
         # Host-side write — must be gated like every other write path.
         # _changes_for_repo_propose is shape-only (see its docstring), so
         # validate here before any os.path.join / open.
-        path = github._core._validate_path(c["path"])
+        path = _validate_path(c["path"])
         full = os.path.join(tree, path)
         # Content write — create/overwrite.
         if "content" in c:
