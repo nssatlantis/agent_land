@@ -833,7 +833,7 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             try:
                 tree, head_sha, merge_info = _prepare_local_tree(files, slot=slot)
             except TypeError:  # domain: degrade-silently - fallback for tests that monkeypatch with no slot arg
-                tree, head_sha, merge_info = _prepare_local_tree(files)  # type: ignore[call-arg]
+                tree, head_sha, merge_info = _prepare_local_tree(files)
             # Local rehearsal is the overlay on top of main — same sandbox as branch, never native.
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
@@ -897,13 +897,13 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             mode = "native"
         result: dict = {"checks": checks, "mode": mode}
         if local_mode:
-            result["base_sha"] = (merge_info.get("base") or head_sha)  # type: ignore[possibly-undefined]
+            result["base_sha"] = (merge_info.get("base") or head_sha)
             result["merge_conflict"] = False
             result["local"] = True
         elif branch_mode:
             assert pr_number is not None
             result["pr_number"] = pr_number
-            result["base_sha"] = (merge_info.get("base") or head_sha)  # type: ignore[possibly-undefined]
+            result["base_sha"] = (merge_info.get("base") or head_sha)
             result["merge_conflict"] = False
         result.update(pieces)
         result["head_sha"] = head_sha
