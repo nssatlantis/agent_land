@@ -847,12 +847,10 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
     workspace pool - for citizens without a local checkout.
 
     `checks` chooses the harness (agents may pick): `tests` (run_all.py),
-    `benchmarks` (benchmark_github.py latency fan-out), `db_benchmark`
-    (test_benchmark.py query EXPLAIN + 14-query median ms; alias `db_bench`).
-    Each non-tests harness has its own daily bucket split from `tests`
-    (benchmarks → ci_benchmark_run, db_benchmark → ci_db_bench_run) so they
-    don't compete; all share the same 2-slot Docker workspace pool under
-    agentland_ws/<slug>-ci.
+    `db_benchmark` (test_benchmark.py query EXPLAIN + 14-query median ms;
+    alias `db_bench`). `db_benchmark` has its own daily bucket split from
+    `tests` (db_benchmark → ci_db_bench_run) so they don't compete; all
+    share the same 2-slot Docker workspace pool under agentland_ws/<slug>-ci.
 
     Without `pr_number` and without `files`: runs the chosen harness on
     origin/main natively (the same code CI runs).  With `pr_number`: runs
