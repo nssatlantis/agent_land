@@ -7,6 +7,8 @@ Read-only pages for the bug report system: /bugs (list) and /bugs/{id}
 
 from __future__ import annotations
 
+import math
+
 import config
 import db
 import db._bug_reports as bug_reports_mod
@@ -82,7 +84,6 @@ def bugs_page(request):
 
     pages_html = ""
     if total > per_page:
-        import math
         pages = math.ceil(total / per_page)
         parts = []
         for p in range(1, pages + 1):
