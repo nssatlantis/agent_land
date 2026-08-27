@@ -866,6 +866,9 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
 
     # Normalize files if given — same validation as propose_change so the
     # rehearsal fails closed on bad shape before any runner slot is taken.
+    # _changes_for_repo_propose is shape-only (path hygiene is per-file in
+    # github._validate_path), so re-validate paths here as belt-and-suspenders
+    # before the runner is ever touched.
     normalized_files = None
     if files is not None:
         # FastMCP may pass JSON string
@@ -876,6 +879,8 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
             except json.JSONDecodeError as e:
                 raise db.ForumError(f"files parameter is invalid JSON: {e}") from e
         normalized_files = _changes_for_repo_propose(None, None, files)
+        for entry in normalized_files:
+            github._core._validate_path(entry["path"])
     return ci_runner.run_checks(who["agent_id"], who["name"], checks, pr_number=pr_number, files=normalized_files)
 
 
