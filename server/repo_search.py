@@ -11,11 +11,13 @@ routes trust.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import config
 import db
 from github import RepoError
+from github._core import _validate_ref
 
 SEARCH_EXTENSIONS = {".py", ".md", ".sql", ".sh", ".yml", ".yaml"}
 SEARCH_SPECIAL_FILES = {".env.example", ".gitignore", "CODEOWNERS"}
@@ -40,14 +42,95 @@ def _trim_search_line(line: str) -> str:
     return line[: _SEARCH_LINE_TRIM - len(ellipsis)] + ellipsis
 
 
-def search_files(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_FILES, root=None) -> dict:
+def _resolve_ref_commit(ref: str) -> str:
+    """Resolve ref to a commit SHA via local git. Tries `ref` then `origin/<ref>`."""
+    repo_dir = str(Path(db.REPO_DIR).resolve())
+    for candidate in (ref, f"origin/{ref}"):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", repo_dir, "rev-parse", "--verify", f"{candidate}^{{commit}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except subprocess.TimeoutExpired:  # domain: degrade-silently - rev-parse timeout retries next candidate (origin/)
+            continue
+        if proc.returncode == 0:
+            sha = proc.stdout.strip()
+            if sha:
+                return sha
+    raise RepoError(f"unknown ref {ref!r} - no such branch, tag or commit in the local checkout.")
+
+
+def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
+    """Search the committed tree at `ref` via `git grep` — no checkout, no API."""
+    ref = _validate_ref(ref)
+    commit = _resolve_ref_commit(ref)
+    repo_dir = str(Path(db.REPO_DIR).resolve())
+    # Fixed-string, case-insensitive, no binary, line numbers.
+    # `git grep -n -i -F -I` at a rev outputs "<rev>:<path>:<line>:<text>".
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_dir, "grep", "-n", "-i", "-F", "-I", "-e", query, commit, "--"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except subprocess.TimeoutExpired:  # domain: fail-loudly - grep timeout must surface to caller
+        raise RepoError("repo_search timed out while searching the branch.") from None
+    if proc.returncode not in (0, 1):
+        # 1 = no matches (not an error), 128 = rev not found, else error
+        err = (proc.stderr or proc.stdout).strip()
+        raise RepoError(f"repo_search failed on ref {ref!r}: {err[:300]}")
+    if proc.returncode == 1 or not proc.stdout:
+        return {"query": query, "matches": [], "ref": ref}
+    # Parse git grep output: "<commit>:<path>:<line>:<text>"
+    by_file: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for raw_line in proc.stdout.splitlines():
+        # Split rev prefix off: first colon separates rev from path.
+        try:
+            _, rest = raw_line.split(":", 1)
+        except ValueError:  # domain: degrade-silently - malformed grep line skipped
+            continue
+        # Rest is "<path>:<line>:<text>" — rsplit from right so a
+        # path containing ":" (rare for allowlisted extensions, but
+        # possible) is not mis-split; text may also contain ":".
+        try:
+            path_str, lineno_str, text = rest.rsplit(":", 2)
+        except ValueError:  # domain: degrade-silently - malformed path:line:text skipped
+            continue
+        try:
+            lineno = int(lineno_str)
+        except ValueError:  # domain: degrade-silently - non-numeric line number skipped
+            continue
+        # Allowlist — same as walk path.
+        p = Path(path_str)
+        if p.name not in SEARCH_SPECIAL_FILES and p.suffix.lower() not in SEARCH_EXTENSIONS:
+            continue
+        # Per-file cap
+        lst = by_file.get(path_str)
+        if lst is None:
+            if len(order) >= max_results:
+                continue
+            lst = []
+            by_file[path_str] = lst
+            order.append(path_str)
+        if len(lst) >= _SEARCH_MAX_PER_FILE:
+            continue
+        lst.append({"line_number": lineno, "text": _trim_search_line(text)})
+    results = [{"path": p, "matches": by_file[p]} for p in order if by_file[p]]
+    return {"query": query, "matches": results, "ref": ref}
+
+
+def search_files(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_FILES, root=None, ref: str | None = None) -> dict:
     """Search the repo's checked-out working tree for a case-insensitive
     substring, restricted to the record and code files (SEARCH_EXTENSIONS +
     SEARCH_SPECIAL_FILES) so the database, secrets and manifests are never
     read. Returns {query, matches: [{path, matches: [{line_number, text}]}]}
     with paths relative to the repo root, bounded to max_results files (each
     capped at _SEARCH_MAX_PER_FILE lines). `root` is only for tests; it
-    defaults to the repository checkout."""
+    defaults to the repository checkout. `ref` (optional) names the git ref
+    to search — a branch, tag or commit SHA; when given, the committed tree
+    at that ref is searched via `git grep` instead of the working tree, so
+    a branch can be audited before it is merged. The response echoes the
+    ref it searched when provided."""
     query = (query or "").strip()
     if not query:
         raise RepoError("repo_search needs a non-empty query.")
@@ -58,6 +141,9 @@ def search_files(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_F
             f"repo_search query too long - keep it under {config.MAX_QUERY_LENGTH} characters."
         )
     max_results = max(1, min(int(max_results), _SEARCH_MAX_FILES))
+    if ref is not None:
+        # Branch-aware path — no root, no working-tree walk.
+        return _search_with_ref(query, max_results, ref)
     root = Path(root).resolve() if root else Path(db.REPO_DIR).resolve()
     needle = query.lower()
     db_path = Path(db.DB_PATH).resolve()
