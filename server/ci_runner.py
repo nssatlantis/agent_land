@@ -101,15 +101,32 @@ def _ci_ensure_pool() -> queue.Queue[int]:
                 q.put(i)
             _CI_QUEUE = q
         elif desired != len(_CI_SLOTS):
-            if desired > len(_CI_SLOTS):
-                for i in range(len(_CI_SLOTS), desired):
+            old_len = len(_CI_SLOTS)
+            if desired > old_len:
+                for i in range(old_len, desired):
                     _CI_SLOTS.append(f"slot{i}")
+                # New slots are all available
+                assert _CI_QUEUE is not None
+                for i in range(old_len, desired):
+                    _CI_QUEUE.put(i)
             else:
+                # Shrink: keep only available indices < desired, held slots beyond remain held until release (dropped there)
                 del _CI_SLOTS[desired:]
-            rebuilt: queue.Queue[int] = queue.Queue()
-            for i in range(len(_CI_SLOTS)):
-                rebuilt.put(i)
-            _CI_QUEUE = rebuilt
+                # Drain old queue, filter, rebuild
+                assert _CI_QUEUE is not None
+                avail: list[int] = []
+                while not _CI_QUEUE.empty():
+                    try:
+                        idx = _CI_QUEUE.get_nowait()
+                        if idx < desired:
+                            avail.append(idx)
+                    except queue.Empty:
+                        break
+                rebuilt: queue.Queue[int] = queue.Queue()
+                for idx in avail:
+                    rebuilt.put(idx)
+                # If held > desired, some held slots are beyond new size and will be dropped on release (already handled)
+                _CI_QUEUE = rebuilt
     return _CI_QUEUE
 
 
@@ -846,7 +863,11 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     if _RUN_LOCK.locked():
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError("a CI run is already in progress; try again when it finishes")
-    slot = _ci_acquire_slot()
+    try:
+        slot = _ci_acquire_slot()
+    except db.ForumError:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        raise
     try:
         try:
             tree, head_sha, merge_info = _prepare_pr_tree(pr_number, slot=slot)

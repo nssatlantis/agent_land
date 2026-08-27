@@ -28,6 +28,7 @@ _TICKER_TASK: asyncio.Task | None = None
 
 
 async def _debounce_ticker() -> None:
+    sem = asyncio.Semaphore(2)
     while True:
         await asyncio.sleep(5)
         now = time.monotonic()
@@ -37,26 +38,41 @@ async def _debounce_ticker() -> None:
                 if now >= deadline:
                     to_run.append(pr_number)
                     del _PENDING[pr_number]
-        for pr_number in to_run:
-            try:
-                import server.ci_runner as ci_runner  # noqa: WPS433
+        if not to_run:
+            continue
+        # Respect 2-slot host pool — at most 2 concurrent, true overlap
 
-                await asyncio.to_thread(
-                    ci_runner.run_branch_ci_for_poller, pr_number, "tests"
-                )
-            except Exception:  # domain: degrade-silently - ticker must never crash; one head failure must not stall others
-                pass
+        async def _run_one(pr_number: int) -> None:
+            async with sem:
+                try:
+                    import server.ci_runner as ci_runner  # noqa: WPS433
+
+                    await asyncio.to_thread(
+                        ci_runner.run_branch_ci_for_poller, pr_number, "tests"
+                    )
+                except Exception:  # domain: degrade-silently - ticker must never crash; one head failure must not stall others
+                    pass
+
+        await asyncio.gather(*[_run_one(pr) for pr in to_run])
+
+
+def _cancel_ticker() -> None:
+    global _TICKER_TASK
+    if _TICKER_TASK is not None and not _TICKER_TASK.done():
+        _TICKER_TASK.cancel()
+        _TICKER_TASK = None
 
 
 def _ensure_ticker() -> None:
     global _TICKER_TASK
-    if _TICKER_TASK is not None and not _TICKER_TASK.done():
-        return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:  # domain: degrade-silently - no running loop during import/tests; enqueue still coalesced
-        return
-    _TICKER_TASK = loop.create_task(_debounce_ticker())
+    with _PENDING_LOCK:
+        if _TICKER_TASK is not None and not _TICKER_TASK.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # domain: degrade-silently - no running loop during import/tests; enqueue still coalesced
+            return
+        _TICKER_TASK = loop.create_task(_debounce_ticker())
 
 
 def debounced_enqueue(pr_number: int) -> None:

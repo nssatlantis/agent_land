@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -878,8 +878,22 @@ def _pr_vote_sweep(
     # CI from the host first, with GitHub on the side.
     gh_results: dict[int, dict] = {}
     gh_errors: dict[int, Exception] = {}
-    local_results: dict[int, bool] = {}
+    # Keyed by (pr_number, head_sha) to avoid stale-head reuse
+    local_results: dict[tuple[int, str], bool] = {}
+    # Helper to get local_ok for a given pr+head
+    def _local_ok_for(num: int, head_sha: str) -> bool:
+        return bool(local_results.get((num, head_sha), False)) or bool(
+            local_results.get((num, ""), False)
+        )
+
     if candidates:
+        # Expose debounced pending to poller — skip host launch if already pending
+        try:
+            from server.tools.repo import _PENDING as _REPO_PENDING
+
+            pending_prs = set(_REPO_PENDING.keys())
+        except Exception:
+            pending_prs = set()  # domain: degrade-silently - import or lock failure must not stall poller
         # Prepare local cache checks upfront — head_sha from PR, not GH,
         # so local can start without waiting for GH.
         pending_locals: list[tuple[int, str]] = []
@@ -887,25 +901,27 @@ def _pr_vote_sweep(
             for pr, _, _ in candidates:
                 num = pr["number"]
                 head_sha = pr.get("head_sha") or ""
+                if num in pending_prs:
+                    continue  # already debounced, poller skips duplicate host run
                 cached = _local_branch_cached_ok(num, head_sha)
                 if cached is not None:
-                    local_results[num] = cached
+                    local_results[(num, head_sha)] = cached
+                    if not head_sha:
+                        local_results[(num, "")] = cached
                 else:
                     pending_locals.append((num, head_sha))
-        # Run both pools concurrently
-        from concurrent.futures import ThreadPoolExecutor as _TPE
-
+        # Run both pools concurrently — use top-level ThreadPoolExecutor
         gh_pool_size = min(8, len(candidates))
         local_pool_size = min(2, len(pending_locals)) if pending_locals else 0
         # Use two executors at once so GH and local truly overlap
-        with _TPE(max_workers=gh_pool_size) as gh_pool:
+        with ThreadPoolExecutor(max_workers=gh_pool_size) as gh_pool:
             gh_futures = {
                 gh_pool.submit(github.pr_checks, pr["number"]): pr["number"]
                 for pr, _, _ in candidates
             }
             # Start local pool while GH is still in flight
             if pending_locals and local_pool_size:
-                with _TPE(max_workers=local_pool_size) as local_pool:
+                with ThreadPoolExecutor(max_workers=local_pool_size) as local_pool:
                     local_futures = {
                         local_pool.submit(_ensure_local_branch_ok, num, sha): num
                         for num, sha in pending_locals
@@ -919,11 +935,13 @@ def _pr_vote_sweep(
                             logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
                     for local_fut in as_completed(local_futures):
                         num = local_futures[local_fut]
+                        # Find head_sha for this num to key correctly
+                        head_sha = next((sha for n, sha in pending_locals if n == num), "")
                         try:
-                            local_results[num] = bool(local_fut.result())
+                            local_results[(num, head_sha)] = bool(local_fut.result())
                         except Exception as exc:  # domain: degrade-silently - local run failed, treat as not ok
                             logutil.log("local_branch_ci_failed", pr_number=num, error=str(exc))
-                            local_results[num] = False
+                            local_results[(num, head_sha)] = False
             else:
                 for fut in as_completed(gh_futures):
                     num = gh_futures[fut]
@@ -936,15 +954,20 @@ def _pr_vote_sweep(
         if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
             for pr, _, _ in candidates:
                 num = pr["number"]
-                if num in local_results:
-                    continue
                 gh = gh_results.get(num)
+                gh_sha = gh.get("head_sha") if gh else None
+                # Already have result for this head (pr head or GH head) → skip
+                if gh_sha and (num, gh_sha) in local_results:
+                    continue
+                pr_sha = pr.get("head_sha") or ""
+                if (num, pr_sha) in local_results:
+                    continue
                 if gh is not None:
                     gh_sha = gh.get("head_sha") or ""
-                    if gh_sha and gh_sha != (pr.get("head_sha") or ""):
+                    if gh_sha and gh_sha != pr_sha:
                         cached = _local_branch_cached_ok(num, gh_sha)
                         if cached is not None:
-                            local_results[num] = cached
+                            local_results[(num, gh_sha)] = cached
 
     merge_candidates: list[tuple] = []
     for pr, opener, proposal_post_id in candidates:
@@ -970,7 +993,6 @@ def _pr_vote_sweep(
         # checked first so host 2-slot work is preferred over cloud.
         head_sha = pr.get("head_sha") or ""
         gh = gh_results.get(number)
-        gh_err = gh_errors.get(number)
         if gh is not None:
             gh_state = gh.get("state")
             head_sha = gh.get("head_sha") or head_sha
@@ -978,22 +1000,20 @@ def _pr_vote_sweep(
         else:
             gh_ok = False
             gh_state = "unknown"
-        local_ok = bool(local_results.get(number, False))
+        local_ok = bool(local_results.get((number, head_sha), False))
+        if not local_ok and not head_sha:
+            local_ok = bool(local_results.get((number, ""), False))
         # Refresh from cache if we didn't run local for this head
         if not local_ok and config.CI_FALLBACK_ENABLED:
             cached = _local_branch_cached_ok(number, head_sha)
             if cached:
                 local_ok = True
-                local_results[number] = True
+                local_results[(number, head_sha)] = True
         if not config.CI_FALLBACK_ENABLED:
-            ci_ok = gh_state in ("success", "unknown")
+            ci_ok = gh_state == "success"
         else:
             # Local-first OR: host 2c/1024M+256M is primary, GitHub is sidecar
-            ci_ok = local_ok or gh_ok or (gh_err is not None and local_ok)
-            # If GitHub errored, local already decided; if GH success but
-            # local not yet, local_ok is False so we still need GH success
-            if gh_err is not None and not ci_ok:
-                ci_ok = local_ok
+            ci_ok = local_ok or gh_ok
         # Auto-merge eligibility check: collect every candidate; Phase 2
         # runs each through rebase -> CI -> merge in candidate order.
         if ci_ok and number in eligible_merge:
@@ -1089,39 +1109,128 @@ def _pr_vote_sweep(
 
                 # Run both in parallel — GH wait (polls) and local Docker
                 # (build + run) truly overlap, halving wall time for the
-                # merge candidate.
+                # merge candidate. Local-first: cancel GH wait if local succeeds.
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)  # type: ignore[arg-type]
                     local_fut = pool.submit(
                         ci_runner.run_branch_ci_for_poller, number, checks="tests"  # type: ignore[arg-type]
                     )
-                    # Collect GH
-                    try:
-                        gh_state = gh_fut.result()
-                    except Exception as exc:  # domain: degrade-silently - GH wait failed, local may still pass
-                        logutil.log(
-                            "pr_vote_ci_wait_failed",
-                            pr_number=number, error=str(exc),
-                        )
-                        gh_state = "failure"
-                    # Collect local (prioritized)
-                    try:
-                        local_res = local_fut.result()
-                        if local_res.get("merge_conflict"):  # type: ignore[attr-defined]
+                    # Wait with local priority — if local finishes first and is ok,
+                    # we can merge without waiting for GH poll (up to 1800s)
+                    done, not_done = wait(
+                        [gh_fut, local_fut], return_when=FIRST_COMPLETED  # type: ignore[arg-type]
+                    )
+                    # Collect whichever finished first, but prefer local
+                    gh_state = "unknown"
+                    local_ok = False
+                    local_res = None
+                    # Check local first
+                    if local_fut in done:
+                        try:
+                            local_res = local_fut.result()
+                            if local_res.get("merge_conflict"):  # type: ignore[attr-defined]
+                                logutil.log(
+                                    "pr_vote_ci_after_rebase",
+                                    pr_number=number, state=gh_state,
+                                    local_state="merge_conflict",
+                                )
+                                # Cancel GH wait straggler
+                                gh_fut.cancel()
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                continue
+                            local_ok = bool(local_res.get("ok"))  # type: ignore[attr-defined]
+                            if local_ok:
+                                # Local success — cancel GH wait if still running
+                                if gh_fut not in done:
+                                    gh_fut.cancel()
+                                try:
+                                    gh_state = gh_fut.result(timeout=1) if gh_fut in done else "unknown"
+                                except Exception:
+                                    gh_state = "unknown"
+                                # Fall through to local-first OR below
+                            else:
+                                # Local failed, need GH result
+                                if gh_fut not in done:
+                                    try:
+                                        gh_state = gh_fut.result()
+                                    except Exception as exc:  # domain: degrade-silently - GH wait failed, local already failed
+                                        logutil.log(
+                                            "pr_vote_ci_wait_failed",
+                                            pr_number=number, error=str(exc),
+                                        )
+                                        gh_state = "failure"
+                                else:
+                                    try:
+                                        gh_state = gh_fut.result()
+                                    except Exception as exc:  # domain: degrade-silently - GH wait failed, local already failed
+                                        logutil.log(
+                                            "pr_vote_ci_wait_failed",
+                                            pr_number=number, error=str(exc),
+                                        )
+                                        gh_state = "failure"
+                        except Exception as exc:  # domain: degrade-silently - local after rebase failed, GH may still pass
                             logutil.log(
-                                "pr_vote_ci_after_rebase",
+                                "pr_vote_local_after_rebase_failed",
                                 pr_number=number, state=gh_state,
-                                local_state="merge_conflict",
+                                local_error=str(exc),
                             )
-                            continue
-                        local_ok = bool(local_res.get("ok"))  # type: ignore[attr-defined]
-                    except Exception as exc:  # domain: degrade-silently - local after rebase failed, GH may still pass
-                        logutil.log(
-                            "pr_vote_local_after_rebase_failed",
-                            pr_number=number, state=gh_state,
-                            local_error=str(exc),
-                        )
-                        local_ok = False
+                            local_ok = False
+                            # Need GH result if not already done
+                            if gh_fut not in done:
+                                try:
+                                    gh_state = gh_fut.result()
+                                except Exception as exc2:  # domain: degrade-silently - GH wait failed, local also failed
+                                    logutil.log(
+                                        "pr_vote_ci_wait_failed",
+                                        pr_number=number, error=str(exc2),
+                                    )
+                                    gh_state = "failure"
+                            else:
+                                try:
+                                    gh_state = gh_fut.result()
+                                except Exception as exc2:  # domain: degrade-silently - GH wait failed, local also failed
+                                    logutil.log(
+                                        "pr_vote_ci_wait_failed",
+                                        pr_number=number, error=str(exc2),
+                                    )
+                                    gh_state = "failure"
+                    else:
+                        # GH finished first, local still running — wait for local with timeout
+                        try:
+                            gh_state = gh_fut.result()
+                        except Exception as exc:  # domain: degrade-silently - GH wait failed, local may still pass
+                            logutil.log(
+                                "pr_vote_ci_wait_failed",
+                                pr_number=number, error=str(exc),
+                            )
+                            gh_state = "failure"
+                        # Give local a chance (up to remaining time)
+                        try:
+                            local_res = local_fut.result(timeout=5)
+                            if local_res.get("merge_conflict"):  # type: ignore[attr-defined]
+                                logutil.log(
+                                    "pr_vote_ci_after_rebase",
+                                    pr_number=number, state=gh_state,
+                                    local_state="merge_conflict",
+                                )
+                                gh_fut.cancel()
+                                pool.shutdown(wait=False, cancel_futures=True)
+                                continue
+                            local_ok = bool(local_res.get("ok"))  # type: ignore[attr-defined]
+                        except Exception as exc:  # domain: degrade-silently - local not ready or failed, GH decides
+                            # Local not done in 5s or failed — proceed with GH state, local will be checked on next sweep
+                            if isinstance(exc, TimeoutError):
+                                logutil.log(
+                                    "pr_vote_local_after_rebase_pending",
+                                    pr_number=number, state=gh_state,
+                                )
+                            else:
+                                logutil.log(
+                                    "pr_vote_local_after_rebase_failed",
+                                    pr_number=number, state=gh_state,
+                                    local_error=str(exc),
+                                )
+                            local_ok = False
                 # Local-first OR: host success is sufficient even if GH is pending
                 if local_ok:
                     logutil.log(

@@ -42,6 +42,13 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         watcher.cancel()
         poller.cancel()
         ci_poller.cancel()
+        # Debounced ticker from server/tools/repo.py (15s coalesce) — fire-and-forget
+        try:
+            from server.tools.repo import _cancel_ticker
+
+            _cancel_ticker()
+        except Exception:
+            pass  # domain: degrade-silently - ticker cancel must not stall shutdown
         try:
             await poller
             await ci_poller
