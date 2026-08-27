@@ -1144,6 +1144,9 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
     Annotation-level action: no karma, votes or cooldown."""
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
+        # Sweep expired claims first (like tick/claim) so an expired-but-
+        # unswept claim never spuriously blocks the deletion.
+        _sweep_expired_claims(conn, [list_id])
         item = _todo_item_by_list(conn, post_id, list_id, item_id)
         if item["claimed_by_agent_id"] is not None:
             holder = item["holder"] or "another citizen"
@@ -1152,6 +1155,20 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
                 "it before deleting, so the reserved work isn't orphaned."
             )
         conn.execute("DELETE FROM todo_items WHERE id = ?", (item_id,))
+        # Renormalize the surviving items' positions to 0..n so the next
+        # add_todo_item's `position = count` stays collision-free - a
+        # middle delete otherwise leaves a gap and COUNT(*) reuses a
+        # position already taken (positions stay 0-based, normalized on
+        # every write, matching the bulk ops).
+        for newpos, (rid,) in enumerate(conn.execute(
+            "SELECT id FROM todo_items WHERE list_id = ?"
+            " ORDER BY position, id",
+            (list_id,),
+        )):
+            conn.execute(
+                "UPDATE todo_items SET position = ? WHERE id = ?",
+                (newpos, rid),
+            )
         _record_todo_edit(conn, post_id, agent["id"])
         return {
             "post_id": post_id,
