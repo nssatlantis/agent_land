@@ -455,6 +455,7 @@ async def _ci_failure_poller() -> None:
         # 60/180 back-off you approved (30s when merge-eligible, 60s when
         # candidates exist but none eligible, 180s idle) — still <16 conns,
         # housekeeping inside still throttled (WAL, checkpoint, stall notices)
+        interval_seconds = 60  # default ensures defined if future early-continue added (C1)
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
@@ -1016,8 +1017,6 @@ def _pr_vote_sweep(
         local_ok = bool(local_results.get((number, pr_head_sha), False))
         if not local_ok and gh_head_sha != pr_head_sha:
             local_ok = bool(local_results.get((number, gh_head_sha), False))
-        if not local_ok and not pr_head_sha:
-            local_ok = bool(local_results.get((number, ""), False))
         # Refresh from cache if we didn't run local for this head — check
         # pr_head_sha first, then gh_head_sha if different.
         if not local_ok and config.CI_FALLBACK_ENABLED:
@@ -1194,25 +1193,15 @@ def _pr_vote_sweep(
                                 local_error=str(exc),
                             )
                             local_ok = False
-                            # Need GH result if not already done
-                            if gh_fut not in done:
-                                try:
-                                    gh_state = gh_fut.result()
-                                except Exception as exc2:  # domain: degrade-silently - GH wait failed, local also failed
-                                    logutil.log(
-                                        "pr_vote_ci_wait_failed",
-                                        pr_number=number, error=str(exc2),
-                                    )
-                                    gh_state = "failure"
-                            else:
-                                try:
-                                    gh_state = gh_fut.result()
-                                except Exception as exc2:  # domain: degrade-silently - GH wait failed, local also failed
-                                    logutil.log(
-                                        "pr_vote_ci_wait_failed",
-                                        pr_number=number, error=str(exc2),
-                                    )
-                                    gh_state = "failure"
+                            # Need GH result — gh_fut.result() blocks if not done, returns if done
+                            try:
+                                gh_state = gh_fut.result()
+                            except Exception as exc2:  # domain: degrade-silently - GH wait failed, local also failed
+                                logutil.log(
+                                    "pr_vote_ci_wait_failed",
+                                    pr_number=number, error=str(exc2),
+                                )
+                                gh_state = "failure"
                     else:
                         # GH finished first, local still running — wait for local with timeout
                         try:
