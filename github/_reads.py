@@ -36,40 +36,62 @@ def base_branch() -> str:
     return GITHUB_BASE_BRANCH
 
 
-def list_tree() -> dict:
+def _validate_tree_ref(ref: str | None) -> str:
+    """Validate branch/tag/sha for tree reads — same allowlist as search refs."""
+    if ref is None:
+        return GITHUB_BASE_BRANCH
+    ref = (ref or "").strip()
+    if not ref:
+        raise RepoError("ref cannot be empty.")
+    if len(ref) > 128:
+        raise RepoError("ref too long - keep it under 128 characters.")
+    if not re.match(r"^[A-Za-z0-9._/-]+$", ref):
+        raise RepoError(f"invalid ref {ref!r}.")
+    if ref.startswith(("-", ".", "/")) or ".." in ref or "//" in ref or "@{" in ref or "~" in ref or "^" in ref or ":" in ref:
+        raise RepoError(f"invalid ref {ref!r}.")
+    return ref
+
+
+def list_tree(ref: str | None = None) -> dict:
     """List every file in the base branch, newest shape.  Cached for
     GITHUB_TREE_CACHE_SECONDS (default 5 min) -- the tree only changes on
-    merge to the base branch, so a long window is safe."""
-    cached = _core._tree_cache.get("tree", config.GITHUB_TREE_CACHE_SECONDS)
+    merge to the base branch, so a long window is safe. `ref` (optional)
+    names the branch/tag/commit to list; defaults to the base branch and the
+    response echoes the ref it read."""
+    ref = _validate_tree_ref(ref)
+    cache_key = ("tree", ref)
+    cached = _core._tree_cache.get(cache_key, config.GITHUB_TREE_CACHE_SECONDS)
     if cached is not None:
         return cached
-    tree = _core._request("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1")
+    tree = _core._request("GET", f"git/trees/{ref}?recursive=1")
     entries = []
     for item in tree.get("tree", []):
         if item.get("type") == "blob":
             entries.append(
                 {"path": item["path"], "size": item.get("size", 0)}
             )
-    result = {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
-    _core._tree_cache.set("tree", result)
+    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    _core._tree_cache.set(cache_key, result)
     return result
 
 
-async def alist_tree() -> dict:
+async def alist_tree(ref: str | None = None) -> dict:
     """Native-await twin of list_tree - same cache, same shape, non-blocking
     I/O. The hot repo_list_tree tool path runs this directly on the event
     loop instead of occupying a worker thread."""
-    cached = _core._tree_cache.get("tree", config.GITHUB_TREE_CACHE_SECONDS)
+    ref = _validate_tree_ref(ref)
+    cache_key = ("tree", ref)
+    cached = _core._tree_cache.get(cache_key, config.GITHUB_TREE_CACHE_SECONDS)
     if cached is not None:
         return cached
-    tree = await _core._on_bg(_core._arequest("GET", f"git/trees/{GITHUB_BASE_BRANCH}?recursive=1"))
+    tree = await _core._on_bg(_core._arequest("GET", f"git/trees/{ref}?recursive=1"))
     entries = [
         {"path": item["path"], "size": item.get("size", 0)}
         for item in tree.get("tree", [])
         if item.get("type") == "blob"
     ]
-    result = {"repo": GITHUB_REPO, "branch": GITHUB_BASE_BRANCH, "files": entries}
-    _core._tree_cache.set("tree", result)
+    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    _core._tree_cache.set(cache_key, result)
     return result
 
 
