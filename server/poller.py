@@ -942,7 +942,7 @@ def _pr_vote_sweep(
                 continue
         except Exception:
             continue  # if we can't check labels, skip
-        # Check CI status — hybrid OR: either GitHub Actions or local branch CI passing is sufficient
+        # Check CI status — hybrid OR, local-first: local Docker (1.5c→2.0c/768M) is faster on this host than GH queue
         head_sha = pr.get("head_sha") or ""
         gh = gh_results.get(number)
         gh_err = gh_errors.get(number)
@@ -953,10 +953,12 @@ def _pr_vote_sweep(
             if not config.CI_FALLBACK_ENABLED:
                 ci_ok = gh_state in ("success", "unknown")
             else:
-                if gh_ok:
+                # Local-first: check local result first (host 2c/768M+256M, ~17s native vs GH 111s)
+                if number in local_results and local_results[number]:
+                    ci_ok = True
+                elif gh_ok:
                     ci_ok = True
                 else:
-                    # Prefer parallel local result if we ran it (both for eligible and speculative)
                     if number in local_results:
                         ci_ok = bool(local_results[number])
                     elif number in eligible_merge:
@@ -967,7 +969,7 @@ def _pr_vote_sweep(
         elif gh_err is not None:
             # domain: degrade-silently - GitHub checks unavailable, fallback to local
             if config.CI_FALLBACK_ENABLED:
-                ci_ok = bool(local_results.get(number, False))
+                ci_ok = bool(local_results.get(number, _local_branch_cached_ok(number, head_sha)))
             else:
                 ci_ok = False
         else:
@@ -1058,50 +1060,39 @@ def _pr_vote_sweep(
                         pr_number=number, error=str(exc),
                     )
                 continue
-            ci_state = github.wait_for_ci(
-                number, sha=rebase_result["new_sha"],
-            )
-            if ci_state != "success":
-                # Hybrid fallback: GH Actions may be down (Actions-only outage)
-                # — either CI passing is sufficient per user direction.
-                if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
-                    try:
-                        import server.ci_runner as ci_runner
-                        # Run local branch suite on the same PR; its internal
-                        # merge preview is equivalent to the rebased commit.
-                        local_res = ci_runner.run_branch_ci_for_poller(number, checks="tests")
-                        if local_res.get("merge_conflict"):
-                            logutil.log(
-                                "pr_vote_ci_after_rebase",
-                                pr_number=number, state=ci_state,
-                                local_state="merge_conflict",
-                            )
-                            continue
-                        if not local_res.get("ok"):
-                            logutil.log(
-                                "pr_vote_ci_after_rebase",
-                                pr_number=number, state=ci_state,
-                                local_state="failed",
-                            )
-                            continue
-                        # local passed — fall through to merge (OR gate)
-                        logutil.log(
-                            "pr_vote_local_fallback_merge",
-                            pr_number=number, gh_state=ci_state,
-                            local_duration=local_res.get("duration_seconds"),
-                        )
-                    except Exception as exc:
-                        # domain: degrade-silently - local fallback CI failed, skip merge
+            # Local-first: try local Docker (2c/768M) before GH (111s queue) — either success merges
+            local_ok = False
+            local_res = None
+            if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
+                try:
+                    import server.ci_runner as ci_runner
+                    local_res = ci_runner.run_branch_ci_for_poller(number, checks="tests")
+                    if local_res.get("merge_conflict"):
                         logutil.log(
                             "pr_vote_ci_after_rebase",
-                            pr_number=number, state=ci_state,
-                            local_error=str(exc),
+                            pr_number=number, state="local_conflict",
+                            local_state="merge_conflict",
                         )
+                        # Local conflict is real — don't fall back to GH, just skip
                         continue
-                else:
+                    if local_res.get("ok"):
+                        local_ok = True
+                        logutil.log(
+                            "pr_vote_local_primary_merge",
+                            pr_number=number, local_duration=local_res.get("duration_seconds"),
+                        )
+                except Exception as exc:
+                    # domain: degrade-silently - local primary failed, try GH
+                    logutil.log("pr_vote_local_primary_failed", pr_number=number, error=str(exc))
+            if not local_ok:
+                ci_state = github.wait_for_ci(
+                    number, sha=rebase_result["new_sha"],
+                )
+                if ci_state != "success":
                     logutil.log(
                         "pr_vote_ci_after_rebase",
                         pr_number=number, state=ci_state,
+                        local_state="failed" if local_res else "not_run",
                     )
                     continue
             github.merge_pr(number)
