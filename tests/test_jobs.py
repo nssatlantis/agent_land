@@ -378,9 +378,9 @@ def test_accept_pays_principal_and_rewards_both_sides():
     out = db.review_job(creator["token"], job["job_id"], "accept")
     assert out["cycles_done"] == 1
     # Wage: principal return of 8q from ESCROW (already debited when cb
-    # was taken); reward: +1 karma both sides pays 2q at ratio 0.5.
-    assert _bal(worker["agent_id"]) == wb + 8 + 2
-    assert _bal(creator["agent_id"]) == cb + 2
+    # was taken); reward: +1q at JOB_CREDIT_CREDITS=0.25 to both sides.
+    assert _bal(worker["agent_id"]) == wb + 8 + 1
+    assert _bal(creator["agent_id"]) == cb + 1
     with db._conn() as conn:
         parts_w = db._karma_parts(conn, worker["agent_id"])
         parts_c = db._karma_parts(conn, creator["agent_id"])
@@ -428,8 +428,8 @@ def test_decline_needs_feedback_returns_escrow_and_allows_resubmit():
     cb = _bal(creator["agent_id"])
     db.review_job(creator["token"], job["job_id"], "accept")
     assert db.get_job(job["job_id"])["cycles"][0]["status"] == "accepted"
-    assert _bal(worker["agent_id"]) == wb + 8 + 2
-    assert _bal(creator["agent_id"]) == cb + 2
+    assert _bal(worker["agent_id"]) == wb + 8 + 1
+    assert _bal(creator["agent_id"]) == cb + 1
 
 
 def test_one_time_completes_and_logs_completion():
@@ -737,7 +737,7 @@ def test_mid_review_deletion_resets_inherited_cycle():
     db.submit_job(nxt["token"], j["job_id"], "#P1-real")
     out = db.review_job(creator["token"], j["job_id"], "accept")
     assert out["cycles_done"] == 1
-    assert _bal(nxt["agent_id"]) == w_bal + 4 + 2, \
+    assert _bal(nxt["agent_id"]) == w_bal + 4 + 1, \
         "payout plus reward land on the citizen who actually worked"
 
 

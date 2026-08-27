@@ -254,11 +254,11 @@ def _event_description(e: dict) -> str:
             return (f'{actor} submitted cycle {d.get("cycle_no", "?")} of'
                     f' "{title}" for review{suffix}')
         if k == "job_cycle_accepted":
-            karma = (f', +{config.JOB_KARMA_PER_CYCLE} karma both sides'
-                     if d.get("karma_awarded") else "")
+            credit = d.get("credit_amount")
+            karma_text = f', +{credit} credits' if credit else ""
             return (f'{actor} accepted cycle {d.get("cycle_no", "?")} of'
                     f' "{title}" (paid {d.get("payout_credits", "?")}'
-                    f' credits{karma})')
+                    f' credits{karma_text})')
         if k == "job_cycle_declined":
             return (f'{actor} declined cycle {d.get("cycle_no", "?")} of'
                     f' "{title}" - escrow stays held until the job ends')
