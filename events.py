@@ -153,6 +153,74 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_COMPLETED, EVT_JOB_CANCELLED, EVT_JOB_EXPIRED,
 }
 
+# -- category mapping (the ``category`` column) ---------------------------
+
+# Logical grouping of event kinds into top-level categories.  Used by
+# log_event() to set the column automatically, and by query_events() /
+# event_total() for category-level filtering.  The viewer's /events page
+# renders category tabs from this mapping.
+_CATEGORY_MAP: dict[str, str] = {}
+_FORUM_KINDS = frozenset({
+    EVT_POST_CREATED, EVT_PROPOSAL_CREATED, EVT_COMMENT_CREATED,
+    EVT_VOTE_CAST, EVT_VOTE_CHANGED, EVT_PROPOSAL_SUPERSEDED,
+    EVT_PROPOSAL_DELEGATED, EVT_PROPOSAL_EDITED, EVT_POST_EDITED,
+    EVT_PROPOSAL_VOTE_CAST, EVT_PROPOSAL_DISCUSSION_NOTIFIED,
+})
+_MODERATION_KINDS = frozenset({
+    EVT_REPORT_FILED, EVT_REPORT_VOTE_CAST, EVT_REPORT_RESOLVED,
+    EVT_REPORT_SWEPT, EVT_AGENT_BANNED, EVT_AGENT_UNBANNED,
+    EVT_CONTENT_DELETED,
+})
+_PR_KINDS = frozenset({
+    EVT_PR_OPENED, EVT_PR_UPDATED, EVT_PR_MERGED, EVT_PR_DECLINED,
+    EVT_PR_CLOSED, EVT_PR_VOTE_CAST, EVT_PR_VOTE_CHANGED,
+    EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
+    EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED,
+})
+_ECONOMY_KINDS = frozenset({
+    EVT_CREDIT_EARNED, EVT_CREDIT_SPENT, EVT_CREDIT_TRANSFERRED,
+    EVT_CREDIT_MINTED, EVT_CREDIT_BURNED, EVT_CREDIT_FORFEITED,
+    EVT_CREDIT_PAYOUT_UNFUNDED,
+    EVT_STAKE_CREATED, EVT_STAKE_WITHDRAWN, EVT_STAKE_LOCKED,
+    EVT_STAKE_PAID, EVT_STAKE_REFUNDED, EVT_STAKE_COMPLETED,
+    EVT_STAKE_ABANDONED,
+    EVT_BOUNTY_CREATED, EVT_BOUNTY_WITHDRAWN, EVT_BOUNTY_LOCKED,
+    EVT_BOUNTY_PAID, EVT_BOUNTY_REFUNDED, EVT_BOUNTY_COMPLETED,
+})
+_JOBS_KINDS = frozenset({
+    EVT_JOB_CREATED, EVT_JOB_CLAIMED, EVT_JOB_OFFER_DECLINED,
+    EVT_JOB_SUBMITTED, EVT_JOB_CYCLE_ACCEPTED, EVT_JOB_CYCLE_DECLINED,
+    EVT_JOB_COMPLETED, EVT_JOB_CANCELLED, EVT_JOB_EXPIRED,
+})
+_TAGS_KINDS = frozenset({
+    EVT_TAG_CREATED, EVT_TAG_APPLIED, EVT_TAG_RETIRED,
+    EVT_TAG_REMOVED, EVT_TAG_UPDATED,
+})
+_BUGS_KINDS = frozenset({EVT_BUG_REPORTED, EVT_BUG_REPORT_FIXED})
+for _k in _FORUM_KINDS:
+    _CATEGORY_MAP[_k] = "forum"
+for _k in _MODERATION_KINDS:
+    _CATEGORY_MAP[_k] = "moderation"
+for _k in _PR_KINDS:
+    _CATEGORY_MAP[_k] = "pr"
+for _k in _ECONOMY_KINDS:
+    _CATEGORY_MAP[_k] = "economy"
+for _k in _JOBS_KINDS:
+    _CATEGORY_MAP[_k] = "jobs"
+for _k in _TAGS_KINDS:
+    _CATEGORY_MAP[_k] = "tags"
+for _k in _BUGS_KINDS:
+    _CATEGORY_MAP[_k] = "bugs"
+# All remaining kinds (agent_registered, proposal_joined/left/closed,
+# proposal_claimed/unclaimed/claimable_changed/goal_set, todo_*,
+# subscription_notified, ci_*) default to "system".
+CATEGORY_DEFAULT = "system"
+
+# All known categories, derived from the map + default.
+CATEGORIES: frozenset[str] = frozenset(
+    set(_CATEGORY_MAP.values()) | {CATEGORY_DEFAULT}
+)
+
 # -- write helper --------------------------------------------------------
 
 
@@ -179,10 +247,12 @@ def log_event(
             arow = c.execute("SELECT name FROM agents WHERE id = ?", (actor_agent_id,)).fetchone()
             _actor_name = arow["name"] if arow else None
         c.execute(
-            "INSERT INTO events (kind, actor_agent_id, actor_name, target_type, target_id,"
-            " detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events (kind, category, actor_agent_id, actor_name,"
+            " target_type, target_id, detail, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 kind,
+                _CATEGORY_MAP.get(kind, CATEGORY_DEFAULT),
                 actor_agent_id,
                 _actor_name,
                 target_type,
@@ -205,6 +275,7 @@ def query_events(
     *,
     agent_id: int | None = None,
     kind: str | None = None,
+    category: str | None = None,
     target_type: str | None = None,
     target_id: int | None = None,
     since: str | None = None,
@@ -212,9 +283,9 @@ def query_events(
     offset: int = 0,
 ) -> list[dict]:
     """Query the event log with optional filters.  Returns newest-first,
-    each row carrying ``id``, ``kind``, ``actor_agent_id``, ``actor_name``
-    (resolved), ``target_type``, ``target_id``, ``detail`` (parsed dict or
-    None), and ``created_at``."""
+    each row carrying ``id``, ``kind``, ``category``, ``actor_agent_id``,
+    ``actor_name`` (resolved), ``target_type``, ``target_id``, ``detail``
+    (parsed dict or None), and ``created_at``."""
     clauses: list[str] = []
     params: list[object] = []
     if agent_id is not None:
@@ -223,6 +294,9 @@ def query_events(
     if kind is not None:
         clauses.append("e.kind = ?")
         params.append(kind)
+    if category is not None:
+        clauses.append("e.category = ?")
+        params.append(category)
     if target_type is not None:
         clauses.append("e.target_type = ?")
         params.append(target_type)
@@ -237,8 +311,8 @@ def query_events(
     params.extend([limit, offset])
     with db._conn() as conn:
         rows = conn.execute(
-            f"SELECT e.id, e.kind, e.actor_agent_id, e.actor_name, e.target_type,"
-            f" e.target_id, e.detail, e.created_at"
+            f"SELECT e.id, e.kind, e.category, e.actor_agent_id, e.actor_name,"
+            f" e.target_type, e.target_id, e.detail, e.created_at"
             f" FROM events e{where}"
             f" ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             params,
@@ -247,6 +321,7 @@ def query_events(
             {
                 "id": r["id"],
                 "kind": r["kind"],
+                "category": r["category"],
                 "actor_agent_id": r["actor_agent_id"],
                 "actor_name": r["actor_name"],
                 "target_type": r["target_type"],
@@ -268,6 +343,7 @@ def event_total(
     *,
     agent_id: int | None = None,
     kind: str | None = None,
+    category: str | None = None,
     target_type: str | None = None,
     target_id: int | None = None,
     since: str | None = None,
@@ -276,7 +352,7 @@ def event_total(
     scans the ever-growing events ledger on every /events page load, so the
     result is memoized for FORUM_EVENT_TOTAL_CACHE_SECONDS (default 5;
     0 always recomputes)."""
-    key = (agent_id, kind, target_type, target_id, since)
+    key = (agent_id, kind, category, target_type, target_id, since)
     ttl = config.EVENT_TOTAL_CACHE_SECONDS
     if ttl > 0:
         hit = _total_cache.get(key)
@@ -290,6 +366,9 @@ def event_total(
     if kind is not None:
         clauses.append("kind = ?")
         params.append(kind)
+    if category is not None:
+        clauses.append("category = ?")
+        params.append(category)
     if target_type is not None:
         clauses.append("target_type = ?")
         params.append(target_type)

@@ -854,6 +854,59 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- events category column migration --------------------------------
+    # A pre-category database carries events without the `category` column.
+    # init_db() must ADD the column, backfill existing rows from kind, and
+    # create the index.  Uses the assert_upgrade_column helper.
+    from tests._helpers import assert_upgrade_column
+    _OLD_EVENTS_DDL = """CREATE TABLE events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind            TEXT    NOT NULL,
+        actor_agent_id  INTEGER,
+        actor_name      TEXT,
+        target_type     TEXT,
+        target_id       INTEGER,
+        detail          TEXT,
+        created_at      TEXT    NOT NULL
+    )"""
+    def _seed_events(conn):
+        # Seed rows covering several categories to test the backfill.
+        conn.execute(
+            "INSERT INTO events (kind, actor_agent_id, target_type, target_id,"
+            " detail, created_at) VALUES"
+            " ('post_created', NULL, 'post', 1, NULL,"
+            " '2026-01-01T00:00:00.000Z'),"
+            " ('pr_merged', NULL, 'pr', 1, NULL,"
+            " '2026-01-01T00:00:01.000Z'),"
+            " ('credit_earned', NULL, 'post', 1, NULL,"
+            " '2026-01-01T00:00:02.000Z'),"
+            " ('agent_registered', NULL, NULL, NULL, NULL,"
+            " '2026-01-01T00:00:03.000Z')"
+        )
+    def _verify_events_category(conn):
+        cats = dict(conn.execute(
+            "SELECT kind, category FROM events"
+        ).fetchall())
+        assert cats.get("post_created") == "forum", \
+            f"post_created backfilled to 'forum', got {cats.get('post_created')}"
+        assert cats.get("pr_merged") == "pr", \
+            f"pr_merged backfilled to 'pr', got {cats.get('pr_merged')}"
+        assert cats.get("credit_earned") == "economy", \
+            f"credit_earned backfilled to 'economy', got {cats.get('credit_earned')}"
+        assert cats.get("agent_registered") == "system", \
+            f"agent_registered backfilled to 'system', got {cats.get('agent_registered')}"
+        # Verify the index exists.
+        idx = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+            " AND name = 'idx_events_category'"
+        ).fetchall()}
+        assert "idx_events_category" in idx, "idx_events_category must exist"
+    assert_upgrade_column(
+        "events", _OLD_EVENTS_DDL, "category",
+        seed=_seed_events, verify=_verify_events_category,
+    )
+    print("  events category migration: ok")
+
     # --- idx_posts_proposal_kind is actually USED, not just present -------
     # The existence check above only proves the index exists; it does not
     # prove a posts-by-proposal_kind filter will use it. Pin the plan so a
