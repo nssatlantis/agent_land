@@ -436,6 +436,83 @@ def main():
     assert quoted_page.status_code == 200 and b"original words" in quoted_page.body, \
         "the report detail renders the flagged comment's quote"
 
+    # --- bug reports admin --------------------------------------------------
+    import db._bug_reports as bug_mod
+    bug_user = db.register_agent("bugreporter")
+    bug_token = bug_user["token"]
+    bug_r = bug_mod.file_bug_report(bug_token, "Admin test bug", "broken thing", None)
+    bug_id = bug_r["id"]
+
+    # /admin/bugs index page
+    bugs_page = _call(admin.bugs_index, _req(
+        "GET", "/admin/bugs",
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert bugs_page.status_code == 200 and b"Admin test bug" in bugs_page.body, \
+        "the bugs index renders with the new report"
+    assert b"bugs" in bugs_page.body.lower(), "the nav shows the bugs link"
+
+    # /admin/bugs/{id} detail page
+    bug_det = _call(admin.bug_detail, _req(
+        "GET", f"/admin/bugs/{bug_id}", params={"id": bug_id},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert bug_det.status_code == 200 and b"Admin test bug" in bug_det.body, \
+        "the bug detail page renders"
+    assert b"Confirm bug" in bug_det.body, "the confirm button shows for open bugs"
+    assert b"Mark fixed" in bug_det.body, "the fix button shows for non-fixed bugs"
+
+    # CSRF guard: POST without CSRF is refused
+    bad_csrf = _call(admin.admin_confirm_bug, _req(
+        "POST", f"/admin/bugs/{bug_id}/confirm", params={"id": bug_id},
+        cookies={_CSRF: "tok"}, body={"csrf": "WRONG"},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"CSRF" in bad_csrf.body, "bad CSRF is refused on confirm"
+
+    # confirm via POST
+    confirm_resp = _call(admin.admin_confirm_bug, _req(
+        "POST", f"/admin/bugs/{bug_id}/confirm", params={"id": bug_id},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert confirm_resp.status_code == 303, "confirm redirects after success"
+    assert bug_mod.get_bug_report(bug_id)["status"] == "confirmed"
+
+    # after confirm, the confirm button is gone
+    bug_det2 = _call(admin.bug_detail, _req(
+        "GET", f"/admin/bugs/{bug_id}", params={"id": bug_id},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"Confirm bug" not in bug_det2.body, \
+        "confirm button disappears after confirming"
+    assert b"Mark fixed" in bug_det2.body, "fix button still shows for confirmed bugs"
+
+    # fix via POST
+    fix_resp = _call(admin.admin_fix_bug, _req(
+        "POST", f"/admin/bugs/{bug_id}/fix", params={"id": bug_id},
+        cookies={_CSRF: cookie_token}, body={"csrf": cookie_token},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert fix_resp.status_code == 303, "fix redirects after success"
+    assert bug_mod.get_bug_report(bug_id)["status"] == "fixed"
+
+    # after fix, neither button shows
+    bug_det3 = _call(admin.bug_detail, _req(
+        "GET", f"/admin/bugs/{bug_id}", params={"id": bug_id},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert b"Confirm bug" not in bug_det3.body, "confirm button gone after fix"
+    assert b"Mark fixed" not in bug_det3.body, "fix button gone after fix"
+
+    # missing bug shows a flash error
+    missing = _call(admin.bug_detail, _req(
+        "GET", "/admin/bugs/99999", params={"id": 99999},
+        headers=[(b"authorization", _AUTH.encode())]))
+    assert missing.status_code == 200 and b"not found" in missing.body.lower(), \
+        "missing bug shows a flash error"
+
+    # audit trail for confirm and fix
+    bug_audit = [r for r in _audit_rows()
+                 if r["target_type"] == "bug_report" and r["target_id"] == bug_id]
+    assert any(r["action"] == "confirm_bug_report" and r["admin_user"] == "root"
+               for r in bug_audit), "confirm left a signed audit row"
+    assert any(r["action"] == "fix_bug_report" and r["admin_user"] == "root"
+               for r in bug_audit), "fix left a signed audit row"
+
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
     by_action = {}
