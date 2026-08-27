@@ -907,20 +907,20 @@ def _pr_vote_sweep(
             if pending_locals and local_pool_size:
                 with _TPE(max_workers=local_pool_size) as local_pool:
                     local_futures = {
-                        local_pool.submit(_ensure_local_branch_ok, num, sha): num  # type: ignore[arg-type]
+                        local_pool.submit(_ensure_local_branch_ok, num, sha): num
                         for num, sha in pending_locals
                     }
-                    for fut in as_completed(gh_futures):
-                        num = gh_futures[fut]
+                    for gh_fut in as_completed(gh_futures):
+                        num = gh_futures[gh_fut]
                         try:
-                            gh_results[num] = fut.result()
+                            gh_results[num] = gh_fut.result()
                         except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
                             gh_errors[num] = exc
                             logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
-                    for fut in as_completed(local_futures):
-                        num = local_futures[fut]
+                    for local_fut in as_completed(local_futures):
+                        num = local_futures[local_fut]
                         try:
-                            local_results[num] = bool(fut.result())
+                            local_results[num] = bool(local_fut.result())
                         except Exception as exc:  # domain: degrade-silently - local run failed, treat as not ok
                             logutil.log("local_branch_ci_failed", pr_number=num, error=str(exc))
                             local_results[num] = False
@@ -1091,9 +1091,9 @@ def _pr_vote_sweep(
                 # (build + run) truly overlap, halving wall time for the
                 # merge candidate.
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)
+                    gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)  # type: ignore[arg-type]
                     local_fut = pool.submit(
-                        ci_runner.run_branch_ci_for_poller, number, checks="tests"
+                        ci_runner.run_branch_ci_for_poller, number, checks="tests"  # type: ignore[arg-type]
                     )
                     # Collect GH
                     try:
@@ -1107,14 +1107,14 @@ def _pr_vote_sweep(
                     # Collect local (prioritized)
                     try:
                         local_res = local_fut.result()
-                        if local_res.get("merge_conflict"):
+                        if local_res.get("merge_conflict"):  # type: ignore[attr-defined]
                             logutil.log(
                                 "pr_vote_ci_after_rebase",
                                 pr_number=number, state=gh_state,
                                 local_state="merge_conflict",
                             )
                             continue
-                        local_ok = bool(local_res.get("ok"))
+                        local_ok = bool(local_res.get("ok"))  # type: ignore[attr-defined]
                     except Exception as exc:  # domain: degrade-silently - local after rebase failed, GH may still pass
                         logutil.log(
                             "pr_vote_local_after_rebase_failed",
@@ -1127,7 +1127,7 @@ def _pr_vote_sweep(
                     logutil.log(
                         "pr_vote_local_fallback_merge",
                         pr_number=number, gh_state=gh_state,
-                        local_duration=local_res.get("duration_seconds") if local_res else None,
+                        local_duration=local_res.get("duration_seconds") if isinstance(local_res, dict) else None,
                     )
                 elif gh_state == "success":
                     # GH passed, local not needed — fall through

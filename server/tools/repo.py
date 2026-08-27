@@ -41,11 +41,10 @@ async def _debounce_ticker() -> None:
             try:
                 import server.ci_runner as ci_runner  # noqa: WPS433
 
-                # domain: degrade-silently - ticker must never crash the loop
                 await asyncio.to_thread(
                     ci_runner.run_branch_ci_for_poller, pr_number, "tests"
                 )
-            except Exception:
+            except Exception:  # domain: degrade-silently - ticker must never crash; one head failure must not stall others
                 pass
 
 
@@ -55,7 +54,7 @@ def _ensure_ticker() -> None:
         return
     try:
         loop = asyncio.get_running_loop()
-    except RuntimeError:
+    except RuntimeError:  # domain: degrade-silently - no running loop during import/tests; enqueue still coalesced
         return
     _TICKER_TASK = loop.create_task(_debounce_ticker())
 
@@ -347,7 +346,7 @@ async def repo_propose_change(
             if pending_hold:
                 open_labels.append(config.PROPOSAL_HOLD_LABEL)
             await _apply_pr_labels(plan["pr_number"], proposal_id, open_labels)
-        except Exception as _exc:
+        except Exception as _exc:  # domain: degrade-silently - PR already open; poller backfills link, never fail response
             proposal_link_error = str(_exc) or type(_exc).__name__
             # The PR is already open on GitHub — log but don't re-raise so the
             # caller gets the plan back. The poller will pick up the PR via
