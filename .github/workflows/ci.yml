@@ -9,10 +9,11 @@ permissions:
   contents: read
   statuses: write
 
-# Cancel outdated runs on force-push — saves queue time during review.
+# Cancel outdated runs on force-push — saves queue time during review,
+# but never cancel main (main must always run to completion as gate).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 on:
   push:

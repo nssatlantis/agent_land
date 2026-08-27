@@ -23,12 +23,23 @@ from server.repo_helpers import (
 # Debounced coalescing for file-at-a-time pushes: 15s quiet window,
 # GitHub runs every intermediate, host runs only the final head.
 _PENDING: dict[int, float] = {}
+# threading.Lock (not asyncio.Lock) — deliberately held for microseconds
+# while iterating _PENDING; required because poller snapshot
+# (pending_prs_snapshot, called via asyncio.to_thread) and ticker
+# (_debounce_ticker, async) access the same dict from different threads.
+# asyncio.Lock would not be safe across to_thread.
 _PENDING_LOCK = threading.Lock()
 _TICKER_TASK: asyncio.Task | None = None
 
 
 async def _debounce_ticker() -> None:
-    sem = asyncio.Semaphore(2)
+    # Use live config so host pool size change applies without restart;
+    # falls back to 2 if config unreadable at import.
+    try:
+        _ticker_conc = max(1, int(config.CI_RUN_CONCURRENCY))
+    except Exception:
+        _ticker_conc = 2  # domain: degrade-silently - config read failure must not stall ticker
+    sem = asyncio.Semaphore(_ticker_conc)
     while True:
         await asyncio.sleep(5)
         now = time.monotonic()
@@ -57,7 +68,10 @@ async def _debounce_ticker() -> None:
                     # got no CI. Re-enqueue so the next ticker cycle (5s)
                     # retries — otherwise file-at-a-time bursts lose the
                     # "host runs final head" promise under load.
-                    if "already in progress" in str(exc):
+                    # Check ForumError type first — string match is brittle if
+                    # message refactors; queue path and legacy lock path share
+                    # same message today but could diverge.
+                    if isinstance(exc, db.ForumError) and str(exc).startswith("a CI run is already"):
                         try:
                             debounced_enqueue(pr_number)
                         except Exception:

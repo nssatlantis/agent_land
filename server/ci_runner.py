@@ -133,10 +133,23 @@ def _ci_ensure_pool() -> queue.Queue[int]:
 def _ci_acquire_slot() -> int:
     """Acquire a CI slot token without blocking; raises ForumError if saturated."""
     q = _ci_ensure_pool()
-    try:
-        return q.get(block=False)
-    except queue.Empty as exc:
-        raise db.ForumError("a CI run is already in progress; try again when it finishes") from exc
+    while True:
+        try:
+            idx = q.get(block=False)
+        except queue.Empty as exc:
+            raise db.ForumError("a CI run is already in progress; try again when it finishes") from exc
+        # Validate against current pool — handles race where caller held old
+        # queue ref across a shrink rebuild and got a retired index (>=live).
+        # _CI_SLOTS length is the live pool size; protect read with _CI_LOCK.
+        with _CI_LOCK:
+            live_len = len(_CI_SLOTS)
+        desired = max(1, int(config.CI_RUN_CONCURRENCY))
+        live = min(desired, live_len) if live_len else desired
+        if 0 <= idx < live:
+            return idx
+        # Retired idx from old queue — discard and try next; if now empty, saturated.
+        if q.empty():
+            raise db.ForumError("a CI run is already in progress; try again when it finishes") from None
 
 
 def _ci_release_slot(idx: int) -> None:

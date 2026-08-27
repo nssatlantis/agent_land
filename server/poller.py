@@ -1131,7 +1131,10 @@ def _pr_vote_sweep(
                 # Run both in parallel — GH wait (polls) and local Docker
                 # (build + run) truly overlap, halving wall time for the
                 # merge candidate. Local-first: cancel GH wait if local succeeds.
-                with ThreadPoolExecutor(max_workers=2) as pool:
+                # Manual pool so we can shutdown(wait=False) when local wins —
+                # with-statement would block on GH poll until it finishes.
+                pool = ThreadPoolExecutor(max_workers=2)
+                try:
                     gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)  # type: ignore[arg-type]
                     local_fut = pool.submit(
                         ci_runner.run_branch_ci_for_poller, number, checks="tests"  # type: ignore[arg-type]
@@ -1253,6 +1256,14 @@ def _pr_vote_sweep(
                                     local_error=str(exc),
                                 )
                             local_ok = False
+                finally:
+                    # Don't block poller on GH poll thread when local already
+                    # decided — detach. with-statement would wait for GH poll
+                    # (up to 1800s) and burn 1 worker per candidate.
+                    try:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass  # domain: degrade-silently - shutdown must not stall sweep
                 # Local-first OR: host success is sufficient even if GH is pending
                 if local_ok:
                     logutil.log(
