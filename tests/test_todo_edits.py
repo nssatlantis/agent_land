@@ -24,7 +24,7 @@ def main():
     agents, _ = setup()
     alpha = agents["alpha"]
 
-    # -- 1. First update_todos creates an edit with empty old_lists --------
+    # -- 1. First set_todos_for_post creates an edit with empty old_lists ---
     proposal = db.create_proposal(alpha["token"], "Edit trail test", "Body.")
     pid = proposal["post_id"]
 
