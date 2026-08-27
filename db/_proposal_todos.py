@@ -758,12 +758,15 @@ def _todo_list_for(conn: sqlite3.Connection, post_id: int, list_id: int) -> dict
 
 
 def update_todo_list(token: str, post_id: int, list_id: int, title: str,
-                     items: list[dict]) -> dict:
-    """Replace one to-do list's title and items in place, leaving all other
-    lists on the proposal untouched. Items use replace semantics for this
-    list only: send the full desired state for the list. Returns the
-    updated list. Author or delegate only, refused for locked or
-    non-proposal posts and for unknown list ids."""
+                     items: list[dict] | None = None) -> dict:
+    """Set a to-do list's title and, optionally, replace its items in place,
+    leaving all other lists on the proposal untouched. When *items* is None
+    (the default) only the title changes - items, done flags and any claims
+    are preserved, so a title change can never silently drop items (the
+    single safe field change that used to be rename_todo_list). Pass the
+    full desired state as *items* to apply replace semantics for this list
+    only. Returns the updated list. Author or delegate only, refused for
+    locked or non-proposal posts and for unknown list ids."""
     title = str(title or "").strip()
     if not title:
         raise ForumError("to-do list titles cannot be empty.")
@@ -771,27 +774,28 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
         raise ForumError(
             f"to-do list titles must be {config.TODO_TITLE_MAX_LEN} characters or fewer."
         )
-    if not isinstance(items, list):
-        raise ForumError("items must be a list.")
-    if len(items) > config.TODO_MAX_ITEMS:
-        raise ForumError(
-            f"a to-do list can carry at most {config.TODO_MAX_ITEMS} items."
-        )
     item_entries: list[dict] = []
-    for it in items:
-        if not isinstance(it, dict):
-            raise ForumError("each to-do item must be an object with a text.")
-        text = str(it.get("text") or "").strip()
-        if not text:
-            raise ForumError("to-do item texts cannot be empty.")
-        if len(text) > config.TODO_ITEM_MAX_LEN:
+    if items is not None:
+        if not isinstance(items, list):
+            raise ForumError("items must be a list.")
+        if len(items) > config.TODO_MAX_ITEMS:
             raise ForumError(
-                f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} characters or fewer."
+                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} items."
             )
-        done = it.get("done", False)
-        if not isinstance(done, bool):
-            raise ForumError("to-do item `done` must be a boolean.")
-        item_entries.append({"text": text, "done": done})
+        for it in items:
+            if not isinstance(it, dict):
+                raise ForumError("each to-do item must be an object with a text.")
+            text = str(it.get("text") or "").strip()
+            if not text:
+                raise ForumError("to-do item texts cannot be empty.")
+            if len(text) > config.TODO_ITEM_MAX_LEN:
+                raise ForumError(
+                    f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} characters or fewer."
+                )
+            done = it.get("done", False)
+            if not isinstance(done, bool):
+                raise ForumError("to-do item `done` must be a boolean.")
+            item_entries.append({"text": text, "done": done})
 
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
@@ -803,75 +807,44 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
             raise ForumError(
                 f"no to-do list #{list_id} on proposal #{post_id}."
             )
-        # Delete old items for this list, then insert new ones.
-        # Snapshot claims before deletion so they survive the rewrite.
-        old_claims: dict[str, tuple[int, str]] = {}
-        for r in conn.execute(
-            "SELECT text, claimed_by_agent_id, claimed_at FROM todo_items"
-            " WHERE list_id = ? AND claimed_by_agent_id IS NOT NULL",
-            (list_id,),
-        ).fetchall():
-            if not _claim_expired(r["claimed_at"]):
-                old_claims[r["text"]] = (r["claimed_by_agent_id"], r["claimed_at"])
-        conn.execute("DELETE FROM todo_items WHERE list_id = ?", (list_id,))
         conn.execute(
             "UPDATE todo_lists SET title = ? WHERE id = ?",
             (title, list_id),
         )
-        for ipos, item in enumerate(item_entries):
-            conn.execute(
-                "INSERT INTO todo_items (list_id, text, done, position) "
-                "VALUES (?, ?, ?, ?)",
-                (list_id, item["text"], int(item["done"]), ipos),
-            )
-        # Restore claims for items whose text was preserved.
-        if old_claims:
+        if items is not None:
+            # Replace semantics: delete old items, insert new ones.
+            # Snapshot claims before deletion so they survive the rewrite.
+            old_claims: dict[str, tuple[int, str]] = {}
             for r in conn.execute(
-                "SELECT id, text FROM todo_items WHERE list_id = ?",
+                "SELECT text, claimed_by_agent_id, claimed_at FROM todo_items"
+                " WHERE list_id = ? AND claimed_by_agent_id IS NOT NULL",
                 (list_id,),
             ).fetchall():
-                claim = old_claims.get(r["text"])
-                if claim and not _claim_expired(claim[1]):
-                    conn.execute(
-                        "UPDATE todo_items SET claimed_by_agent_id = ?,"
-                        " claimed_at = ? WHERE id = ?",
-                        (claim[0], claim[1], r["id"]),
-                    )
-        _notify_collab_items(
-            post_id, {it["text"] for it in item_entries}, agent["id"], conn,
-        )
-        _record_todo_edit(conn, post_id, agent["id"])
-        return _todo_list_for(conn, post_id, list_id)
-
-
-def rename_todo_list(token: str, post_id: int, list_id: int, title: str) -> dict:
-    """Rename a to-do list's title in place, leaving its items (and their
-    done flags and any claims) untouched - a single safe field change that
-    never re-sends the list's item state, so omitting items can't silently
-    drop them. Author or delegate only, refused for locked or non-proposal
-    posts and for unknown list ids. Recorded in the edit trail (todo_edits).
-    Annotation-level action: no karma, votes or cooldown."""
-    title = str(title or "").strip()
-    if not title:
-        raise ForumError("to-do list titles cannot be empty.")
-    if len(title) > config.TODO_TITLE_MAX_LEN:
-        raise ForumError(
-            f"to-do list titles must be {config.TODO_TITLE_MAX_LEN} characters or fewer."
-        )
-    with _conn(immediate=True) as conn:
-        agent, _ = _check_todo_write_access(conn, token, post_id)
-        existing = conn.execute(
-            "SELECT id FROM todo_lists WHERE id = ? AND post_id = ?",
-            (list_id, post_id),
-        ).fetchone()
-        if existing is None:
-            raise ForumError(
-                f"no to-do list #{list_id} on proposal #{post_id}."
+                if not _claim_expired(r["claimed_at"]):
+                    old_claims[r["text"]] = (r["claimed_by_agent_id"], r["claimed_at"])
+            conn.execute("DELETE FROM todo_items WHERE list_id = ?", (list_id,))
+            for ipos, item in enumerate(item_entries):
+                conn.execute(
+                    "INSERT INTO todo_items (list_id, text, done, position) "
+                    "VALUES (?, ?, ?, ?)",
+                    (list_id, item["text"], int(item["done"]), ipos),
+                )
+            # Restore claims for items whose text was preserved.
+            if old_claims:
+                for r in conn.execute(
+                    "SELECT id, text FROM todo_items WHERE list_id = ?",
+                    (list_id,),
+                ).fetchall():
+                    claim = old_claims.get(r["text"])
+                    if claim and not _claim_expired(claim[1]):
+                        conn.execute(
+                            "UPDATE todo_items SET claimed_by_agent_id = ?,"
+                            " claimed_at = ? WHERE id = ?",
+                            (claim[0], claim[1], r["id"]),
+                        )
+            _notify_collab_items(
+                post_id, {it["text"] for it in item_entries}, agent["id"], conn,
             )
-        conn.execute(
-            "UPDATE todo_lists SET title = ? WHERE id = ?",
-            (title, list_id),
-        )
         _record_todo_edit(conn, post_id, agent["id"])
         return _todo_list_for(conn, post_id, list_id)
 
@@ -1590,6 +1563,75 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
             "item_id": item_id,
             "text": item["text"],
             "deleted_by": agent["name"],
+        }
+
+
+def move_todo_item(token: str, post_id: int, list_id: int, item_id: int,
+                   to_list_id: int) -> dict:
+    """Move one to-do item to another list on the same proposal. The list_id
+    is a cross-check - the item is looked up by id AND confirmed to belong
+    to that list on this proposal. The destination list must exist and have
+    room (TODO_MAX_ITEMS cap), and differ from the source list. A live claim
+    on the item is preserved and rides along (moving reserved work between
+    lists doesn't orphan it - the claim stays on the same item); an expired
+    one is swept first. The source list's surviving items are renormalized
+    to 0..n and the moved item appends at the destination's end. Returns
+    from_list_id / to_list_id / item_id / text. Author or delegate only,
+    refused for locked or non-proposal posts. Recorded in the edit trail
+    (todo_edits). Annotation-level action: no karma, votes or cooldown."""
+    with _conn(immediate=True) as conn:
+        agent, row = _check_todo_write_access(conn, token, post_id)
+        # Sweep expired claims first (like delete) so an expired-but-unswept
+        # claim is released rather than silently riding to the new list.
+        _sweep_expired_claims(conn, [post_id])
+        item = _todo_item_by_list(conn, post_id, list_id, item_id)
+        if to_list_id == list_id:
+            raise ForumError(
+                f"to-do item #{item_id} is already on to-do list #{list_id} - "
+                "a move needs a different destination list."
+            )
+        dest = conn.execute(
+            "SELECT id FROM todo_lists WHERE id = ? AND post_id = ?",
+            (to_list_id, post_id),
+        ).fetchone()
+        if dest is None:
+            raise ForumError(
+                f"no to-do list #{to_list_id} on proposal #{post_id}."
+            )
+        count = conn.execute(
+            "SELECT COUNT(*) FROM todo_items WHERE list_id = ?",
+            (to_list_id,),
+        ).fetchone()[0]
+        if count >= config.TODO_MAX_ITEMS:
+            raise ForumError(
+                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} "
+                "items."
+            )
+        # Moving preserves the item's claim columns (the same row keeps its
+        # claimed_by_agent_id / claimed_at), so the reservation survives.
+        conn.execute(
+            "UPDATE todo_items SET list_id = ?, position = ? WHERE id = ?",
+            (to_list_id, count, item_id),
+        )
+        # Renormalize the source list's surviving items to 0..n so the next
+        # add_todo_item's `position = count` stays collision-free.
+        for newpos, (rid,) in enumerate(conn.execute(
+            "SELECT id FROM todo_items WHERE list_id = ?"
+            " ORDER BY position, id",
+            (list_id,),
+        )):
+            conn.execute(
+                "UPDATE todo_items SET position = ? WHERE id = ?",
+                (newpos, rid),
+            )
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {
+            "post_id": post_id,
+            "from_list_id": list_id,
+            "to_list_id": to_list_id,
+            "item_id": item_id,
+            "text": item["text"],
+            "moved_by": agent["name"],
         }
 
 
