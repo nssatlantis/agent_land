@@ -17,6 +17,7 @@ import asyncio
 import atexit
 import json
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -308,3 +309,45 @@ def _validate_path(path: str) -> str:
     if any(p in ("", ".", "..") for p in parts):
         raise RepoError(f"invalid path {path!r}.")
     return path
+
+
+_REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+_REF_MAX_LEN = 128
+
+
+def _validate_ref(ref: str | None) -> str:
+    """Restricted ref validation — shared by repo_search, list_tree and
+    read_file so the three ref surfaces stay drift-free. Mirrors the
+    search validator that guards local `git` invocations (rev-parse/grep):
+    only alphanumerics, '-', '_', '.', '/' are allowed, with `..`, `//`,
+    `@{`, `~`, `^`, `:`, `?`, `*`, `[` and trailing `/.lock` rejected.
+    `None` returns the base branch (the GitHub read default). Raises
+    RepoError on violation — callers surface it as a normal tool error."""
+    if ref is None:
+        return GITHUB_BASE_BRANCH
+    ref = (ref or "").strip()
+    if not ref:
+        raise RepoError("ref cannot be empty.")
+    if len(ref) > _REF_MAX_LEN:
+        raise RepoError(f"ref too long - keep it under {_REF_MAX_LEN} characters.")
+    if not _REF_RE.match(ref):
+        raise RepoError(
+            f"invalid ref {ref!r} - use branches/tags/commits with alphanumerics, '-', '_', '.', '/' only."
+        )
+    if ref.startswith(("-", ".", "/")) or ref.endswith(("/", ".", ".lock")):
+        raise RepoError(f"invalid ref {ref!r}.")
+    if (
+        ".." in ref
+        or "//" in ref
+        or "@{" in ref
+        or "~" in ref
+        or "^" in ref
+        or ":" in ref
+        or "?" in ref
+        or "*" in ref
+        or "[" in ref
+    ):
+        raise RepoError(f"invalid ref {ref!r}.")
+    if ref in (".", ".."):
+        raise RepoError(f"invalid ref {ref!r}.")
+    return ref
