@@ -451,17 +451,25 @@ async def _ci_failure_poller() -> None:
     repo_propose_change/repo_update_pr (15s coalesce) ensures host runs
     once for the final head while GitHub runs every intermediate."""
     while True:
-        # 30s for CI (you approved, not overload: 120 GH GETs/hour vs 12 at 300s,
-        # still < GITHUB_MAX_CONNECTIONS=16), housekeeping inside still throttled
-        interval_seconds = min(30, config.CI_POLL_SECONDS) if config.CI_POLL_SECONDS else 30
+        # 60/180 back-off you approved (30s when merge-eligible, 60s when
+        # candidates exist but none eligible, 180s idle) — still <16 conns,
+        # housekeeping inside still throttled (WAL, checkpoint, stall notices)
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
-            await asyncio.to_thread(_pr_vote_sweep, open_prs)
+            sweep_actions = await asyncio.to_thread(_pr_vote_sweep, open_prs)
             await asyncio.to_thread(_maybe_truncate_wal)
             await asyncio.to_thread(_maybe_checkpoint_economy)
+            # Back-off: 30s when merge-eligible work happened, 60s when open PRs exist but none eligible, 180s idle
+            if sweep_actions:
+                interval_seconds = 30
+            elif open_prs:
+                interval_seconds = 60
+            else:
+                interval_seconds = 180
         except Exception as exc:
             logutil.log("ci_failure_poll", error=str(exc))
+            interval_seconds = 60
         await asyncio.sleep(interval_seconds)
 
 
