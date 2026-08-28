@@ -284,6 +284,7 @@ def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
         burned_end = burned_pct
         treasury_end = min(100, burned_pct + treasury_pct)
         from db._credits import format_credits as _fmt
+
         return (
             f'<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
             f'<div style="width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--fail) 0 {burned_end:.1f}%, var(--accent) {burned_end:.1f}% {treasury_end:.1f}%, var(--line) {treasury_end:.1f}% 100%);"></div>'
