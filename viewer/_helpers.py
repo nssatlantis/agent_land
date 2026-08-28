@@ -795,7 +795,7 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
             b = detail.get("body") if detail else None
             if b:
                 body_snip = f'<div style="color:var(--muted);font-size:12px;margin-top:4px">{esc(_truncate(b, 140))}</div>'
-        except Exception:
+        except Exception:  # domain:degrade-silently - PR body is optional enrichment, list still renders
             body_snip = ""
         title_cell = (f'<a href="{gh}" style="color:var(--ink);'
                       f'text-decoration:none">{title}</a>'
