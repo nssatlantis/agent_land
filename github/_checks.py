@@ -28,8 +28,15 @@ _MAX_FAILURE_LINES = 30
 _MAX_LOG_TAIL_BYTES = 65536
 
 _FAILURE_MARKERS = (
-    "error:", "error ", "failed", "traceback", "assertionerror",
-    "mypy:", "ruff", "fatal", "exit code",
+    "error:",
+    "error ",
+    "failed",
+    "traceback",
+    "assertionerror",
+    "mypy:",
+    "ruff",
+    "fatal",
+    "exit code",
 )
 
 
@@ -52,7 +59,11 @@ def _ci_state(mapped: list[dict]) -> str:
     run failed, 'pending' while any is unfinished, else 'success'.
     Includes 'error' (the combined commit status API's configuration-failure
     state) alongside the check-run / Actions failure vocabularies."""
-    if any(r["conclusion"] in ("failure", "cancelled", "timed_out", "action_required", "error") for r in mapped):
+    if any(
+        r["conclusion"]
+        in ("failure", "cancelled", "timed_out", "action_required", "error")
+        for r in mapped
+    ):
         return "failure"
     if any(r["conclusion"] is None or r["status"] != "completed" for r in mapped):
         return "pending"
@@ -83,32 +94,49 @@ def _checks_from_check_runs(runs: list[dict]) -> dict:
     failures: list[dict] = []
     for r in runs:
         name = r.get("name") or "check"
-        mapped.append({
-            "name": name,
-            "status": r.get("status") or "queued",
-            "conclusion": r.get("conclusion"),
-            "html_url": r.get("html_url"),
-        })
-        if r.get("conclusion") not in ("failure", "cancelled", "timed_out", "action_required"):
+        mapped.append(
+            {
+                "name": name,
+                "status": r.get("status") or "queued",
+                "conclusion": r.get("conclusion"),
+                "html_url": r.get("html_url"),
+            }
+        )
+        if r.get("conclusion") not in (
+            "failure",
+            "cancelled",
+            "timed_out",
+            "action_required",
+        ):
             continue
         run_id = r.get("id")
         annotations: list[dict] = []
         if run_id is not None:
             try:
-                annotations = _core._request(
-                    "GET", f"check-runs/{run_id}/annotations?per_page=100"
-                ) or []
+                annotations = (
+                    _core._request(
+                        "GET", f"check-runs/{run_id}/annotations?per_page=100"
+                    )
+                    or []
+                )
             except RepoError:
                 annotations = []
         for a in annotations[:_MAX_FAILURE_LINES]:
-            failures.append({
-                "name": name,
-                "path": a.get("path"),
-                "line": a.get("start_line"),
-                "message": (a.get("message") or "")[:2000],
-                "log_url": r.get("html_url"),
-            })
-    return {"source": "check_runs", "state": _ci_state(mapped), "runs": mapped, "failures": failures}
+            failures.append(
+                {
+                    "name": name,
+                    "path": a.get("path"),
+                    "line": a.get("start_line"),
+                    "message": (a.get("message") or "")[:2000],
+                    "log_url": r.get("html_url"),
+                }
+            )
+    return {
+        "source": "check_runs",
+        "state": _ci_state(mapped),
+        "runs": mapped,
+        "failures": failures,
+    }
 
 
 def _checks_from_actions(runs: list[dict]) -> dict:
@@ -122,17 +150,21 @@ def _checks_from_actions(runs: list[dict]) -> dict:
         conclusion = r.get("conclusion")
         run_id = r.get("id")
         run_url = r.get("html_url")
-        mapped.append({
-            "name": name,
-            "status": r.get("status") or "completed",
-            "conclusion": conclusion,
-            "html_url": run_url,
-        })
+        mapped.append(
+            {
+                "name": name,
+                "status": r.get("status") or "completed",
+                "conclusion": conclusion,
+                "html_url": run_url,
+            }
+        )
         if conclusion not in ("failure", "cancelled", "timed_out") or run_id is None:
             continue
         jobs: list[dict] = []
         try:
-            jobs = (_core._request("GET", f"actions/runs/{run_id}/jobs?per_page=100") or {}).get("jobs") or []
+            jobs = (
+                _core._request("GET", f"actions/runs/{run_id}/jobs?per_page=100") or {}
+            ).get("jobs") or []
         except RepoError:
             jobs = []
         for job in jobs:
@@ -151,12 +183,19 @@ def _checks_from_actions(runs: list[dict]) -> dict:
                 except RepoError:
                     lines = []
             for line in lines[:_MAX_FAILURE_LINES]:
-                failures.append({
-                    "name": f"{name} / {job_name}",
-                    "message": line,
-                    "log_url": log_url,
-                })
-    return {"source": "actions", "state": _ci_state(mapped), "runs": mapped, "failures": failures}
+                failures.append(
+                    {
+                        "name": f"{name} / {job_name}",
+                        "message": line,
+                        "log_url": log_url,
+                    }
+                )
+    return {
+        "source": "actions",
+        "state": _ci_state(mapped),
+        "runs": mapped,
+        "failures": failures,
+    }
 
 
 _EXIT_CODE_RE = re.compile(r"(?:process completed with )?exit code \d+")
@@ -183,7 +222,9 @@ def _supplement_check_run_failures(result: dict, head_sha: str) -> None:
     if failures and not all(_thin_annotation(f) for f in failures):
         return
     try:
-        data = _core._request("GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}")
+        data = _core._request(
+            "GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}"
+        )
         runs = data.get("workflow_runs") or []
         if not runs:
             return
@@ -203,7 +244,9 @@ def _checks_for_head(head_sha: str) -> dict | None:
     error-lines, then (3) the combined commit status. Each tier's 403/404
     falls into the next; only a total outage yields None."""
     try:
-        data = _core._request("GET", f"commits/{head_sha}/check-runs?per_page={_MAX_CHECK_RUNS}")
+        data = _core._request(
+            "GET", f"commits/{head_sha}/check-runs?per_page={_MAX_CHECK_RUNS}"
+        )
         runs = data.get("check_runs") or []
         if runs:
             result = _checks_from_check_runs(runs)
@@ -213,7 +256,9 @@ def _checks_for_head(head_sha: str) -> dict | None:
     except RepoError:
         pass
     try:
-        data = _core._request("GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}")
+        data = _core._request(
+            "GET", f"actions/runs?head_sha={head_sha}&per_page={_MAX_CHECK_RUNS}"
+        )
         runs = data.get("workflow_runs") or []
         if runs:
             return _checks_from_actions(runs)
@@ -254,9 +299,12 @@ async def _afetch_annotations(run_id):
     if run_id is None:
         return []
     try:
-        return await _core._arequest(
-            "GET", f"check-runs/{run_id}/annotations?per_page=100"
-        ) or []
+        return (
+            await _core._arequest(
+                "GET", f"check-runs/{run_id}/annotations?per_page=100"
+            )
+            or []
+        )
     except RepoError:
         # domain: degrade-silently - one unreadable annotation set keeps
         # its run entry; sibling runs' annotations still land.
@@ -271,33 +319,45 @@ async def _afrom_check_runs(runs):
     failed = []
     for r in runs:
         name = r.get("name") or "check"
-        mapped.append({
-            "name": name,
-            "status": r.get("status") or "queued",
-            "conclusion": r.get("conclusion"),
-            "html_url": r.get("html_url"),
-        })
-        if r.get("conclusion") not in ("failure", "cancelled", "timed_out", "action_required"):
+        mapped.append(
+            {
+                "name": name,
+                "status": r.get("status") or "queued",
+                "conclusion": r.get("conclusion"),
+                "html_url": r.get("html_url"),
+            }
+        )
+        if r.get("conclusion") not in (
+            "failure",
+            "cancelled",
+            "timed_out",
+            "action_required",
+        ):
             continue
         failed.append((name, r.get("id"), r.get("html_url")))
     ann_lists = (
         list(await asyncio.gather(*[_afetch_annotations(rid) for _, rid, _u in failed]))
-        if failed else []
+        if failed
+        else []
     )
     failures = []
-    for (name, _run_id, run_url), anns in zip(
-        failed, ann_lists, strict=True
-    ):
+    for (name, _run_id, run_url), anns in zip(failed, ann_lists, strict=True):
         for a in anns[:_MAX_FAILURE_LINES]:
-            failures.append({
-                "name": name,
-                "path": a.get("path"),
-                "line": a.get("start_line"),
-                "message": (a.get("message") or "")[:2000],
-                "log_url": run_url,
-            })
-    return {"source": "check_runs", "state": _ci_state(mapped),
-            "runs": mapped, "failures": failures}
+            failures.append(
+                {
+                    "name": name,
+                    "path": a.get("path"),
+                    "line": a.get("start_line"),
+                    "message": (a.get("message") or "")[:2000],
+                    "log_url": run_url,
+                }
+            )
+    return {
+        "source": "check_runs",
+        "state": _ci_state(mapped),
+        "runs": mapped,
+        "failures": failures,
+    }
 
 
 async def _afetch_jobs(run_id):
@@ -306,9 +366,10 @@ async def _afetch_jobs(run_id):
     if run_id is None:
         return []
     try:
-        data = await _core._arequest(
-            "GET", f"actions/runs/{run_id}/jobs?per_page=100"
-        ) or {}
+        data = (
+            await _core._arequest("GET", f"actions/runs/{run_id}/jobs?per_page=100")
+            or {}
+        )
         return data.get("jobs") or []
     except RepoError:
         # domain: degrade-silently - one unreadable jobs list keeps the
@@ -345,18 +406,21 @@ async def _afrom_actions(runs):
     failed_runs = []
     for r in runs:
         name = r.get("name") or "workflow"
-        mapped.append({
-            "name": name,
-            "status": r.get("status") or "completed",
-            "conclusion": r.get("conclusion"),
-            "html_url": r.get("html_url"),
-        })
+        mapped.append(
+            {
+                "name": name,
+                "status": r.get("status") or "completed",
+                "conclusion": r.get("conclusion"),
+                "html_url": r.get("html_url"),
+            }
+        )
         if r.get("conclusion") not in ("failure", "cancelled", "timed_out"):
             continue
         failed_runs.append((name, r.get("id"), r.get("html_url")))
     job_lists = (
         list(await asyncio.gather(*[_afetch_jobs(rid) for _n, rid, _u in failed_runs]))
-        if failed_runs else []
+        if failed_runs
+        else []
     )
     failed_jobs = []
     for (name, run_id, _url), jobs in zip(failed_runs, job_lists, strict=True):
@@ -364,25 +428,29 @@ async def _afrom_actions(runs):
             if job.get("conclusion") not in ("failure", "cancelled", "timed_out"):
                 continue
             failed_jobs.append(
-                (name, run_id, f"{name} / {job.get('name') or 'job'}",
-                 job.get("id"))
+                (name, run_id, f"{name} / {job.get('name') or 'job'}", job.get("id"))
             )
     log_results = (
-        list(await asyncio.gather(
-            *[_afetch_job_log(rid, jid) for _n, rid, _jn, jid in failed_jobs]
-        ))
-        if failed_jobs else []
+        list(
+            await asyncio.gather(
+                *[_afetch_job_log(rid, jid) for _n, rid, _jn, jid in failed_jobs]
+            )
+        )
+        if failed_jobs
+        else []
     )
     failures = []
     for (_name, _run_id, fq_name, _jid), (lines, log_url) in zip(
         failed_jobs, log_results, strict=True
     ):
         for line in lines:
-            failures.append(
-                {"name": fq_name, "message": line, "log_url": log_url}
-            )
-    return {"source": "actions", "state": _ci_state(mapped),
-            "runs": mapped, "failures": failures}
+            failures.append({"name": fq_name, "message": line, "log_url": log_url})
+    return {
+        "source": "actions",
+        "state": _ci_state(mapped),
+        "runs": mapped,
+        "failures": failures,
+    }
 
 
 async def _asupplement_check_run_failures(result, head_sha):
@@ -478,8 +546,9 @@ async def _achecks_impl(number, *, _pr=None, _head_sha=None):
         return None
 
 
-def pr_checks(number: int, *, _pr: dict | None = None,
-              _head_sha: str | None = None) -> dict:
+def pr_checks(
+    number: int, *, _pr: dict | None = None, _head_sha: str | None = None
+) -> dict:
     """One pull request's CI detail: per-run name/status/conclusion plus the
     actionable failures (annotations with path/line/message, or error lines
     extracted from a capped Actions log tail). The backend is tiered (check
@@ -502,7 +571,10 @@ def pr_checks(number: int, *, _pr: dict | None = None,
         pr = _core._request("GET", f"pulls/{number}")
         head_sha = pr["head"]["sha"]
     checks = _checks_for_head(head_sha) or {
-        "source": None, "state": "unknown", "runs": [], "failures": []
+        "source": None,
+        "state": "unknown",
+        "runs": [],
+        "failures": [],
     }
     result = {"number": number, "head_sha": head_sha, **checks}
     _core._pr_cache.set(cache_key, result)

@@ -66,7 +66,9 @@ def run(script, *args, env=None):
         e.update(env)
     proc = subprocess.run(
         [PY, str(DEPLOY / script), *args],
-        env=e, capture_output=True, text=True,
+        env=e,
+        capture_output=True,
+        text=True,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -83,16 +85,16 @@ def seed(db_path, names, posts=0):
     `names` is the full citizen list (each seed call must use fresh names)."""
     code = (
         "import os, sys\n"
-        "os.environ['FORUM_DB_PATH'] = {db_path!r}\n"
+        f"os.environ['FORUM_DB_PATH'] = {str(db_path)!r}\n"
         "os.environ['FORUM_POST_COOLDOWN_SECONDS'] = '0'\n"
-        "sys.path.insert(0, {repo!r})\n"
+        f"sys.path.insert(0, {str(REPO)!r})\n"
         "import db\n"
         "db.init_db()\n"
-        "tokens = [db.register_agent(n, 'test-model')['token'] for n in {names!r}]\n"
-        "for i in range({posts}):\n"
+        f"tokens = [db.register_agent(n, 'test-model')['token'] for n in {names!r}]\n"
+        f"for i in range({posts}):\n"
         "    db.create_post(tokens[0], 'seed post ' + str(i), 'seed body ' + str(i))\n"
         "print('SEEDED', len(db.list_agents()))\n"
-    ).format(db_path=str(db_path), repo=str(REPO), names=names, posts=posts)
+    )
     _python(code)
 
 
@@ -103,23 +105,22 @@ def seed_unsigned(db_path, names, posts=0, comments=0):
     must find them unsigned and append the author's own terminal line."""
     code = (
         "import os, sys, sqlite3\n"
-        "os.environ['FORUM_DB_PATH'] = {db_path!r}\n"
+        f"os.environ['FORUM_DB_PATH'] = {str(db_path)!r}\n"
         "os.environ['FORUM_POST_COOLDOWN_SECONDS'] = '0'\n"
-        "sys.path.insert(0, {repo!r})\n"
+        f"sys.path.insert(0, {str(REPO)!r})\n"
         "import db\n"
         "db.init_db()\n"
-        "agents = [db.register_agent(n, 'test-model') for n in {names!r}]\n"
+        f"agents = [db.register_agent(n, 'test-model') for n in {names!r}]\n"
         "with db._conn() as conn:\n"
-        "    for i in range({posts}):\n"
+        f"    for i in range({posts}):\n"
         "        conn.execute('INSERT INTO posts (agent_id, title, body) VALUES (?, ?, ?)',\n"
         "                     (agents[0]['agent_id'], 'unsigned post ' + str(i), 'unsigned body ' + str(i)))\n"
         "        pid = conn.execute('SELECT last_insert_rowid()').fetchone()[0]\n"
-        "        for j in range({comments}):\n"
+        f"        for j in range({comments}):\n"
         "            conn.execute('INSERT INTO comments (post_id, agent_id, body) VALUES (?, ?, ?)',\n"
         "                         (pid, agents[(i + j) % len(agents)]['agent_id'], 'unsigned comment ' + str(j)))\n"
         "print('SEEDED', len(db.list_agents()))\n"
-    ).format(db_path=str(db_path), repo=str(REPO), names=names, posts=posts,
-             comments=comments)
+    )
     _python(code)
 
 
@@ -178,7 +179,11 @@ def _find(lines, needle):
 
 
 def wipe(db_path):
-    for p in (db_path, pathlib.Path(str(db_path) + "-wal"), pathlib.Path(str(db_path) + "-shm")):
+    for p in (
+        db_path,
+        pathlib.Path(str(db_path) + "-wal"),
+        pathlib.Path(str(db_path) + "-shm"),
+    ):
         if p.exists():
             p.unlink()
 
@@ -245,9 +250,12 @@ def main():
         rc, out, err = run("check-db-boot.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 1, (rc, err)
         assert content.name in err, f"must name the content backup, got: {err}"
-        assert empty.name not in err, f"must not name the empty post-wipe snapshot: {err}"
-        assert f"--file {content.name}" in err, \
+        assert empty.name not in err, (
+            f"must not name the empty post-wipe snapshot: {err}"
+        )
+        assert f"--file {content.name}" in err, (
             f"hint must restore the content backup by name, got: {err}"
+        )
         assert "restore-db.py" in err, f"hint must reference restore-db.py, got: {err}"
         assert "--force" not in err, f"an empty live DB needs no --force: {err}"
     print("== wiped with an empty file -> guard names the content backup ==")
@@ -259,9 +267,10 @@ def main():
         rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, err
         wipe(db_path)
-        rc, out, err = run("check-db-boot.py",
-                           env={"FORUM_DB_PATH": str(db_path),
-                                "AGENTLAND_ALLOW_EMPTY_DB": "1"})
+        rc, out, err = run(
+            "check-db-boot.py",
+            env={"FORUM_DB_PATH": str(db_path), "AGENTLAND_ALLOW_EMPTY_DB": "1"},
+        )
         assert rc == 0, (rc, err)
         assert "skipping" in out, out
     print("== escape hatch -> check passes ==")
@@ -296,7 +305,9 @@ def main():
         assert rc == 0, err
         seed(db_path, ["gamma", "delta", "epsilon"])  # live now has 5
         assert count(db_path, "agents") == 5
-        rc, out, err = run("restore-db.py", "--force", env={"FORUM_DB_PATH": str(db_path)})
+        rc, out, err = run(
+            "restore-db.py", "--force", env={"FORUM_DB_PATH": str(db_path)}
+        )
         assert rc == 0, (rc, out, err)
         assert count(db_path, "agents") == 2, "the live db is back to the snapshot"
         pres = sorted((pathlib.Path(td) / "backups").glob("forum.*.pre-restore.db"))
@@ -329,8 +340,13 @@ def main():
         seed(db_path, ["gamma"], posts=0)  # live now has 3
         rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, err
-        rc, _, err = run("restore-db.py", "--file", older.name, "--force",
-                         env={"FORUM_DB_PATH": str(db_path)})
+        rc, _, err = run(
+            "restore-db.py",
+            "--file",
+            older.name,
+            "--force",
+            env={"FORUM_DB_PATH": str(db_path)},
+        )
         assert rc == 0, err
         assert count(db_path, "agents") == 2, "the named older backup is restored"
     print("== --file restores a named older backup ==")
@@ -338,8 +354,12 @@ def main():
     # == restore rejects a non-snapshot / path --file name ==
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         db_path = pathlib.Path(td) / "forum.db"
-        rc, out, err = run("restore-db.py", "--file", "..\\evil.db",
-                           env={"FORUM_DB_PATH": str(db_path)})
+        rc, out, err = run(
+            "restore-db.py",
+            "--file",
+            "..\\evil.db",
+            env={"FORUM_DB_PATH": str(db_path)},
+        )
         assert rc == 2, (rc, out, err)
         assert "not a backup snapshot name" in err, err
     print("== restore rejects a non-snapshot --file name ==")
@@ -353,7 +373,9 @@ def main():
         seed(db_path, ["gamma"], posts=0)
         rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, err
-        rc, out, err = run("restore-db.py", "--list", env={"FORUM_DB_PATH": str(db_path)})
+        rc, out, err = run(
+            "restore-db.py", "--list", env={"FORUM_DB_PATH": str(db_path)}
+        )
         assert rc == 0, err
         for b in backups_of(td):
             assert b.name in out, (b, out)
@@ -370,7 +392,9 @@ def main():
         rc, out, err = run("restore-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 2, (rc, out, err)
         assert "inside the repo" in err, err
-        rc, out, err = run("backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)})
+        rc, out, err = run(
+            "backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)}
+        )
         assert rc == 2, (rc, out, err)
         assert "inside the repo" in err, err
         assert not db_path.exists(), "refused before touching the filesystem"
@@ -388,13 +412,17 @@ def main():
         seed_unsigned(db_path, ["alpha", "beta"], posts=2, comments=2)
         out = count_unsigned(db_path)
         assert "UNSIGNED 6" in out, out  # 2 posts + 4 comments
-        rc, out, err = run("backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)})
+        rc, out, err = run(
+            "backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)}
+        )
         assert rc == 0, (rc, out, err)
         assert "6 signed" in out, out
         assert "0 already signed" in out, out
         out = count_unsigned(db_path)
         assert "UNSIGNED 0" in out, out
-        rc, out, err = run("backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)})
+        rc, out, err = run(
+            "backfill-signatures.py", env={"FORUM_DB_PATH": str(db_path)}
+        )
         assert rc == 0, (rc, out, err)
         assert "0 signed" in out and "6 already signed" in out, out
     print("== backfill signs the pre-convention record, idempotent ==")
@@ -411,20 +439,39 @@ def main():
         (fake / "deploy").mkdir(parents=True)
         (fake / "schema.sql").write_text("-- broken-repo fixture\n", encoding="utf-8")
         (fake / "db").mkdir(exist_ok=True)
-        (fake / "db" / "__init__.py").write_text("# stub - config.py fails before db is ever needed\n", encoding="utf-8")
-        (fake / "config.py").write_text("this is not valid python :(\n", encoding="utf-8")
-        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py",
-                       "backfill-signatures.py"):
+        (fake / "db" / "__init__.py").write_text(
+            "# stub - config.py fails before db is ever needed\n", encoding="utf-8"
+        )
+        (fake / "config.py").write_text(
+            "this is not valid python :(\n", encoding="utf-8"
+        )
+        for script in (
+            "check-db-boot.py",
+            "restore-db.py",
+            "backup-db.py",
+            "backfill-signatures.py",
+        ):
             shutil.copy(DEPLOY / script, fake / "deploy" / script)
         env = dict(os.environ)
         env.pop("AGENTLAND_ALLOW_EMPTY_DB", None)
-        for script in ("check-db-boot.py", "restore-db.py", "backup-db.py",
-                       "backfill-signatures.py"):
+        for script in (
+            "check-db-boot.py",
+            "restore-db.py",
+            "backup-db.py",
+            "backfill-signatures.py",
+        ):
             proc = subprocess.run(
                 [PY, str(fake / "deploy" / script)],
-                env=env, capture_output=True, text=True,
+                env=env,
+                capture_output=True,
+                text=True,
             )
-            assert proc.returncode == 2, (script, proc.returncode, proc.stdout, proc.stderr)
+            assert proc.returncode == 2, (
+                script,
+                proc.returncode,
+                proc.stdout,
+                proc.stderr,
+            )
             assert "config.py" in proc.stderr, (script, proc.stderr)
             assert "refusing to run" in proc.stderr, (script, proc.stderr)
     print("== broken config.py -> every deploy script refuses (exit 2) ==")
@@ -435,7 +482,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="agld_dep_") as td:
         scratch = pathlib.Path(td) / "data"
         scratch.mkdir()
-        (scratch / ".env").write_text("FORUM_POST_COOLDOWN_SECONDS=5\n", encoding="utf-8")
+        (scratch / ".env").write_text(
+            "FORUM_POST_COOLDOWN_SECONDS=5\n", encoding="utf-8"
+        )
         env = dict(os.environ)
         for k in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH", "FORUM_POST_COOLDOWN_SECONDS"):
             env.pop(k, None)
@@ -467,7 +516,9 @@ def main():
             "import config\n"
             "print('CONFIG_OK')\n"
         )
-        proc = subprocess.run([PY, "-c", code_warn], env=env, capture_output=True, text=True)
+        proc = subprocess.run(
+            [PY, "-c", code_warn], env=env, capture_output=True, text=True
+        )
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert "CONFIG_OK" in proc.stdout, proc.stdout
         assert "inside the repo" in proc.stderr, proc.stderr
@@ -475,8 +526,9 @@ def main():
 
         # A bad value in a loaded .env is skipped at boot (logged), so config
         # keeps the code default instead of 500ing every read of the tunable.
-        (scratch / ".env").write_text("FORUM_POST_COOLDOWN_SECONDS=not-a-number\n",
-                                      encoding="utf-8")
+        (scratch / ".env").write_text(
+            "FORUM_POST_COOLDOWN_SECONDS=not-a-number\n", encoding="utf-8"
+        )
         env_bad = dict(os.environ)
         for k in ("AGENTLAND_DATA_DIR", "FORUM_DB_PATH", "FORUM_POST_COOLDOWN_SECONDS"):
             env_bad.pop(k, None)
@@ -489,7 +541,9 @@ def main():
             "assert 'FORUM_POST_COOLDOWN_SECONDS' not in os.environ\n"
             "print('CONFIG_OK')\n"
         )
-        proc = subprocess.run([PY, "-c", code_bad], env=env_bad, capture_output=True, text=True)
+        proc = subprocess.run(
+            [PY, "-c", code_bad], env=env_bad, capture_output=True, text=True
+        )
         assert proc.returncode == 0, (proc.stdout, proc.stderr)
         assert "CONFIG_OK" in proc.stdout, proc.stdout
     print("== config.py resolves env + .env paths, warns on inside-repo DB ==")
@@ -504,8 +558,12 @@ def main():
         rc, _, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc == 0, err
         backups = backups_of(td)
-        assert len(backups) == 2, f"same-second backups must not overwrite: {[b.name for b in backups]}"
-        assert sorted(count(b, "agents") for b in backups) == [2, 3], "both snapshots survive intact"
+        assert len(backups) == 2, (
+            f"same-second backups must not overwrite: {[b.name for b in backups]}"
+        )
+        assert sorted(count(b, "agents") for b in backups) == [2, 3], (
+            "both snapshots survive intact"
+        )
     print("== same-second backups don't overwrite each other ==")
 
     # == update.sh installs the scripts before the guard runs and hints with --file ==
@@ -517,16 +575,29 @@ def main():
     # backup in the empty-file wipe case).
     text = (REPO / "deploy" / "update.sh").read_text(encoding="utf-8")
     lines = text.splitlines()
-    sync = _find(lines, "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py")
+    sync = _find(
+        lines,
+        "for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py",
+    )
     guard = _find(lines, 'check-db-boot.py"; then')
-    assert sync < guard, f"scripts must be installed (line {sync}) before the guard runs (line {guard})"
+    assert sync < guard, (
+        f"scripts must be installed (line {sync}) before the guard runs (line {guard})"
+    )
     assert "restore-db.py --list" in text, "update.sh must document --list"
-    assert "--force" not in text, "update.sh must not suggest restoring the newest snapshot with --force"
-    assert "WIPE-CHECK" in text, "update.sh must point at the guard's own restore command"
+    assert "--force" not in text, (
+        "update.sh must not suggest restoring the newest snapshot with --force"
+    )
+    assert "WIPE-CHECK" in text, (
+        "update.sh must point at the guard's own restore command"
+    )
     boot = (REPO / "deploy" / "check-db-boot.py").read_text(encoding="utf-8")
     assert "restore-db.py" in boot, "the guard must reference the restore script"
-    cmd_line = next(l for l in boot.splitlines() if "--file" in l and "backup.name" in l)
-    assert "--force" not in cmd_line, f"the guard's restore command must not use --force: {cmd_line!r}"
+    cmd_line = next(
+        l for l in boot.splitlines() if "--file" in l and "backup.name" in l
+    )
+    assert "--force" not in cmd_line, (
+        f"the guard's restore command must not use --force: {cmd_line!r}"
+    )
     print("== update.sh wiring ==")
 
     # == record-size watch: a nudge, not a gate (exit 0 unless --strict) ==
@@ -551,7 +622,9 @@ def main():
         rc, out, err = run("check-record-size.py", "--repo", str(scratch), "--strict")
         assert rc == 1, (rc, out, err)
         # a custom --max below a file's size flags it too
-        rc, out, err = run("check-record-size.py", "--repo", str(scratch), "--max", "50")
+        rc, out, err = run(
+            "check-record-size.py", "--repo", str(scratch), "--max", "50"
+        )
         assert rc == 0, (rc, out, err)
         assert "WARNING" in out, out
         # a directory with no record files at all is refused
@@ -560,8 +633,9 @@ def main():
         rc, out, err = run("check-record-size.py", "--repo", str(empty))
         assert rc == 2, (rc, out, err)
         # a --repo that does not exist is refused the same way
-        rc, out, err = run("check-record-size.py", "--repo",
-                           str(pathlib.Path(td) / "missing"))
+        rc, out, err = run(
+            "check-record-size.py", "--repo", str(pathlib.Path(td) / "missing")
+        )
         assert rc == 2, (rc, out, err)
     print("== record-size watch ==")
 
@@ -575,7 +649,9 @@ def main():
         rc, out, err = run("backup-db.py", env={"FORUM_DB_PATH": str(db_path)})
         assert rc != 0, (rc, out, err)
         assert "corrupt" in (out + err).lower(), (out, err)
-        assert backups_of(td) == [], f"a corrupt snapshot must not be kept: {backups_of(td)}"
+        assert backups_of(td) == [], (
+            f"a corrupt snapshot must not be kept: {backups_of(td)}"
+        )
     print("== backup-db on a corrupt source -> nonzero, no snapshot kept ==")
 
     # == backup-db.py of a healthy db still succeeds and the snapshot verifies ==
@@ -633,8 +709,9 @@ def main():
         assert rc == 1, (rc, out, err)
         assert good.name in err, f"must name the intact backup: {err}"
         assert f"--file {good.name}" in err, f"must hint the intact backup: {err}"
-        assert f"--file {newest.name}" not in err, \
+        assert f"--file {newest.name}" not in err, (
             f"must not hint the corrupt newest as the restore candidate: {err}"
+        )
     print("== corrupt + good backups -> guard names the intact backup ==")
 
     # == check-db-boot: healthy live DB passes even with a corrupt backup ==
@@ -663,7 +740,9 @@ def main():
         assert rc == 0, err
         newest = backups_of(td)[-1]
         corrupt(newest)
-        rc, out, err = run("restore-db.py", "--list", env={"FORUM_DB_PATH": str(db_path)})
+        rc, out, err = run(
+            "restore-db.py", "--list", env={"FORUM_DB_PATH": str(db_path)}
+        )
         assert rc == 0, (rc, out, err)
         assert good.name in out, out
         assert newest.name in out, out

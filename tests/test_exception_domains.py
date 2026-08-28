@@ -31,23 +31,67 @@ _ROOT = Path(__file__).resolve().parent.parent
 _BASELINE = Path(__file__).resolve().parent / "exception_domain_baseline.json"
 
 FILE_LIST = (
-    "server/__init__.py", "server/_mcp.py", "server/_app.py", "server/middleware.py", "server/records.py", "server/pr_views.py", "server/__main__.py",
-    "server/tools/forum.py", "server/tools/repo.py", "server/tools/economy.py", "server/tools/collab.py", "server/tools/discovery.py", "server/tools/moderation.py", "server/tools/notifications.py",
-    "github/_core.py", "github/_reads.py", "github/_checks.py", "github/_writes.py", "github/_gitops.py", "github/__init__.py", "db/_core.py", "db/_agent.py",
-    "db/_content.py", "db/_proposal.py", "db/_tags.py", "db/_staking.py",
+    "server/__init__.py",
+    "server/_mcp.py",
+    "server/_app.py",
+    "server/middleware.py",
+    "server/records.py",
+    "server/pr_views.py",
+    "server/__main__.py",
+    "server/tools/forum.py",
+    "server/tools/repo.py",
+    "server/tools/economy.py",
+    "server/tools/collab.py",
+    "server/tools/discovery.py",
+    "server/tools/moderation.py",
+    "server/tools/notifications.py",
+    "github/_core.py",
+    "github/_reads.py",
+    "github/_checks.py",
+    "github/_writes.py",
+    "github/_gitops.py",
+    "github/__init__.py",
+    "db/_core.py",
+    "db/_agent.py",
+    "db/_content.py",
+    "db/_proposal.py",
+    "db/_tags.py",
+    "db/_staking.py",
     "db/_credits.py",
-    "db/_collaborative.py", "db/_karma.py", "db/_text.py",
-    "db/_health.py", "db/_aggregates.py", "db/_cooldown.py",
-    "db/_comments.py", "db/_nudges.py", "db/_proposal_status.py",
-    "db/_proposal_todos.py", "db/_proposal_delegation.py",
-    "db/_proposal_docket.py", "db/_claiming.py", 
-    "db/_pr_vote.py", "db/_bug_reports.py", "db/_subscriptions.py",
-    "logutil.py", "server/admin.py", "rules_text.py", "moderation.py",
-    "notifications.py", "search.py", "server/repo_search.py",
-    "server/repo_helpers.py", "server/poller.py", "viewer/__init__.py",
-    "viewer/_agents.py", "viewer/_helpers.py", "viewer/_layout.py",
-    "viewer/_proposals.py", "viewer/_status.py", "viewer/_utils.py",
-    "viewer/_events.py", "viewer/_api.py",
+    "db/_collaborative.py",
+    "db/_karma.py",
+    "db/_text.py",
+    "db/_health.py",
+    "db/_aggregates.py",
+    "db/_cooldown.py",
+    "db/_comments.py",
+    "db/_nudges.py",
+    "db/_proposal_status.py",
+    "db/_proposal_todos.py",
+    "db/_proposal_delegation.py",
+    "db/_proposal_docket.py",
+    "db/_claiming.py",
+    "db/_pr_vote.py",
+    "db/_bug_reports.py",
+    "db/_subscriptions.py",
+    "logutil.py",
+    "server/admin.py",
+    "rules_text.py",
+    "moderation.py",
+    "notifications.py",
+    "search.py",
+    "server/repo_search.py",
+    "server/repo_helpers.py",
+    "server/poller.py",
+    "viewer/__init__.py",
+    "viewer/_agents.py",
+    "viewer/_helpers.py",
+    "viewer/_layout.py",
+    "viewer/_proposals.py",
+    "viewer/_status.py",
+    "viewer/_utils.py",
+    "viewer/_events.py",
+    "viewer/_api.py",
 )
 
 MARKER = "domain:"
@@ -67,12 +111,15 @@ def unmarked_handlers(text: str) -> int:
     """Count `except` handlers whose entire own span lacks the marker."""
     tree = ast.parse(text)
     lines = text.splitlines()
-    spans = [(_h, _handler_lines(_h)) for _h in
-             (n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler))]
+    spans = [
+        (_h, _handler_lines(_h))
+        for _h in (n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler))
+    ]
     unmarked = 0
     for _node, line_ids in spans:
-        segment = "\n".join(lines[i - 1] for i in sorted(line_ids)
-                            if 0 < i <= len(lines))
+        segment = "\n".join(
+            lines[i - 1] for i in sorted(line_ids) if 0 < i <= len(lines)
+        )
         if MARKER not in segment:
             unmarked += 1
     return unmarked
@@ -120,9 +167,11 @@ def main() -> int:
     baseline = load_baseline()
     total = sum(int(baseline.get(r, 0)) for r in FILE_LIST)
     marked_files = sum(1 for r in FILE_LIST if r in baseline)
-    print(f"test_exception_domains: ok ({total} grandfathered unmarked "
-          f"handlers across {marked_files} baselined files of "
-          f"{len(FILE_LIST)} scanned)")
+    print(
+        f"test_exception_domains: ok ({total} grandfathered unmarked "
+        f"handlers across {marked_files} baselined files of "
+        f"{len(FILE_LIST)} scanned)"
+    )
     return 0
 
 
