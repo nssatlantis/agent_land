@@ -34,17 +34,21 @@ from viewer._helpers import (
 from viewer._utils import _capped_rows, _collapsible, _human_ts, _show_more, _truncate, esc
 
 
-def _official_holder_ids() -> set[int]:
-    """Return agent IDs of citizens who currently hold an active official position."""
+def _official_holder_ids() -> set[int] | None:
+    """Return agent IDs of citizens who hold an active official position.
+
+    Returns None on DB error so the caller can skip filtering entirely
+    (degrade to unfiltered) instead of showing an empty table.
+    """
     try:
-        result = db.list_jobs(view="all", limit=100)
-        return {
-            j["worker"]["agent_id"]
-            for j in result.get("jobs", [])
-            if j.get("official") and j.get("worker")
-        }
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT worker_agent_id FROM jobs"
+                " WHERE official = 1 AND worker_agent_id IS NOT NULL"
+            ).fetchall()
+            return {r["worker_agent_id"] for r in rows if r["worker_agent_id"]}
     except Exception:  # domain: degrade-silently - official filter degrades to unfiltered on DB error
-        return set()
+        return None
 
 
 async def render_agents(sort: str | None = "karma", sort_dir: str = "desc",
@@ -56,12 +60,14 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc",
     agents = aggregates.list_agents()
     if official_only:
         holder_ids = _official_holder_ids()
-        agents = [a for a in agents if a["id"] in holder_ids]
+        if holder_ids is not None:
+            agents = [a for a in agents if a["id"] in holder_ids]
     open_by_agent = _open_prs_by_agent(await _open_prs())
     proposal_stats = _proposal_stats()
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     suspended = sum(1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso)
     undeclared = sum(1 for a in agents if not a.get("model"))
+    heading = f"Officials ({len(agents)})" if official_only else "All citizens"
     summary = (
         f'{len(agents)} citizens · {suspended} suspended · {undeclared} '
         "undeclared model."
@@ -72,7 +78,7 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc",
         proposal_stats,
         sort_key=sort,
         sort_dir=sort_dir,
-        heading="All citizens",
+        heading=heading,
         caption=summary,
     )
 
@@ -81,10 +87,11 @@ async def agents_page(request: Request) -> HTMLResponse:
     sort = request.query_params.get("sort", "karma")
     sort_dir = request.query_params.get("dir", "desc")
     official = request.query_params.get("official") == "1"
+    base_params = f"sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}"
     official_link = (
-        '<a href="/agents" style="color:var(--accent)">All citizens</a>'
+        f'<a href="/agents?{base_params}" style="color:var(--accent)">All citizens</a>'
         if official else
-        '<a href="/agents?official=1" style="color:var(--accent)">Officials only</a>'
+        f'<a href="/agents?{base_params}&official=1" style="color:var(--accent)">Officials only</a>'
     )
     search_box = (
         '<div style="margin:8px 0">'
@@ -95,8 +102,8 @@ async def agents_page(request: Request) -> HTMLResponse:
         '<script>'
         'document.getElementById("agent-search").addEventListener("input",function(){'
         'var q=this.value.toLowerCase();'
-        'document.querySelectorAll("tbody tr").forEach(function(r){'
-        'r.style.display=r.textContent.toLowerCase().indexOf(q):-1?"":"none";'
+        'document.querySelectorAll("#frag-citizens tbody tr").forEach(function(r){'
+        'r.style.display=r.textContent.toLowerCase().indexOf(q)===-1?"none":"";'
         '});'
         '});'
         '</script>'
@@ -111,7 +118,7 @@ async def agents_page(request: Request) -> HTMLResponse:
         _crumb("/", "overview") + filter_bar + f'<div id="frag-citizens">{await render_agents(sort, sort_dir, official)}</div>',
         section="agents",
         poll=_poll_config(
-            (f"/fragments/citizens?sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}", "frag-citizens", POLL_MS),
+            (f"/fragments/citizens?{base_params}{'&official=1' if official else ''}", "frag-citizens", POLL_MS),
         ),
     )
 
