@@ -16,9 +16,14 @@ from datetime import datetime
 
 import config
 
-from . import _core
-from . import _checks
-from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path, _validate_ref
+from . import _checks, _core
+from ._core import (
+    GITHUB_BASE_BRANCH,
+    GITHUB_REPO,
+    RepoError,
+    _validate_path,
+    _validate_ref,
+)
 
 # Cap on lines per repo_read_file range read. Module constant by design - a
 # read cap is a client-ergonomics bound, not a server tunable, so it stays out
@@ -51,9 +56,7 @@ def list_tree(ref: str | None = None) -> dict:
     entries = []
     for item in tree.get("tree", []):
         if item.get("type") == "blob":
-            entries.append(
-                {"path": item["path"], "size": item.get("size", 0)}
-            )
+            entries.append({"path": item["path"], "size": item.get("size", 0)})
     result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
     _core._tree_cache.set(cache_key, result)
     return result
@@ -79,7 +82,12 @@ async def alist_tree(ref: str | None = None) -> dict:
     return result
 
 
-def read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
+def read_file(
+    path: str,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    ref: str | None = None,
+) -> dict:
     """Read one file's text from the base branch. Binary files come back as a
     note instead of content. With line_start and line_end (1-based, inclusive,
     both or neither) only that line range is returned, and the response echoes
@@ -133,8 +141,12 @@ def read_file(path: str, line_start: int | None = None, line_end: int | None = N
     return result
 
 
-async def aread_file(path: str, line_start: int | None = None,
-                     line_end: int | None = None, ref: str | None = None) -> dict:
+async def aread_file(
+    path: str,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    ref: str | None = None,
+) -> dict:
     """Native-await twin of read_file - same contract, non-blocking I/O."""
     path = _validate_path(path)
     ref = _validate_ref(ref)
@@ -143,7 +155,9 @@ async def aread_file(path: str, line_start: int | None = None,
     if cached is not None:
         data = cached
     else:
-        data = await _core._on_bg(_core._arequest("GET", f"contents/{path}?ref={ref}", ok_404=True))
+        data = await _core._on_bg(
+            _core._arequest("GET", f"contents/{path}?ref={ref}", ok_404=True)
+        )
         if data is None:
             raise RepoError(f"no file at {path!r} in {GITHUB_REPO}@{ref}.")
         _core._pr_cache.set(cache_key, data)
@@ -208,7 +222,7 @@ def _slice_line_range(
     total_lines = len(lines)
     if line_end > total_lines:
         line_end = total_lines  # clamp to available lines instead of erroring
-    return "\n".join(lines[line_start - 1:line_end]), total_lines
+    return "\n".join(lines[line_start - 1 : line_end]), total_lines
 
 
 _CITIZEN_RE = re.compile(r"Citizen:\s*(.*?)\s*\(agent_id=(\d+)\)")
@@ -236,10 +250,16 @@ def strip_trailing_proposal(text: str) -> str:
     return _TRAILING_PROPOSAL_RE.sub("", text or "").rstrip()
 
 
-_MD_ESCAPES = str.maketrans({
-    "\\": "\\\\", "*": "\\*", "_": "\\_",
-    "[": "\\[", "]": "\\]", "`": "\\`",
-})
+_MD_ESCAPES = str.maketrans(
+    {
+        "\\": "\\\\",
+        "*": "\\*",
+        "_": "\\_",
+        "[": "\\[",
+        "]": "\\]",
+        "`": "\\`",
+    }
+)
 
 
 def _escape_md(text: str) -> str:
@@ -309,7 +329,9 @@ def open_prs() -> list[dict]:
     if cached is not None:
         return cached
     try:
-        pulls = _core._request("GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}")
+        pulls = _core._request(
+            "GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}"
+        )
         result = [
             {
                 "number": p["number"],
@@ -355,7 +377,7 @@ def open_pr_labels() -> set[str]:
             "GET", f"pulls?state=open&per_page={_PR_PAGE_SIZE}&page={page}"
         )
         for p in batch:
-            for l in (p.get("labels") or []):
+            for l in p.get("labels") or []:
                 labels.add(l.get("name", ""))
         if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
             return labels
@@ -437,10 +459,12 @@ async def alist_prs(state: str = "open", since: str | None = None) -> list[dict]
     if state == "open":
         rows = await asyncio.to_thread(open_prs)
         return [r for r in rows if r["created_at"] >= since] if since else rows
-    pulls = await _core._on_bg(_core._arequest(
-        "GET",
-        f"pulls?state={state}&sort=updated&direction=desc&per_page={config.GITHUB_PRS_PER_PAGE}",
-    ))
+    pulls = await _core._on_bg(
+        _core._arequest(
+            "GET",
+            f"pulls?state={state}&sort=updated&direction=desc&per_page={config.GITHUB_PRS_PER_PAGE}",
+        )
+    )
     rows = []
     for p in pulls:
         row = {
@@ -473,7 +497,9 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
     poller. `proposal_post_id` is the 'Proposal: #N' stamp - the forum
     proposal the PR implements, used by the poller to record the proposal's
     outcome (backfilling pre-existing PRs from the stamp alone)."""
-    pulls = _core._request("GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}")
+    pulls = _core._request(
+        "GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}"
+    )
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
@@ -494,12 +520,16 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
     return closed
 
 
-async def arecently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
+async def arecently_closed_prs(
+    per_page: int = config.GITHUB_PRS_PER_PAGE,
+) -> list[dict]:
     """Native-await twin of recently_closed_prs - the outcome poller's hot
     fetch, now off the worker threads entirely."""
-    pulls = await _core._on_bg(_core._arequest(
-        "GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}"
-    ))
+    pulls = await _core._on_bg(
+        _core._arequest(
+            "GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}"
+        )
+    )
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
@@ -558,7 +588,11 @@ def _pr_outcome(pr: dict) -> str:
     if pr.get("merged_at"):
         return "merged"
     labels = [label.get("name", "") for label in (pr.get("labels") or [])]
-    return "declined" if any(label.lower().startswith("declined") for label in labels) else "closed"
+    return (
+        "declined"
+        if any(label.lower().startswith("declined") for label in labels)
+        else "closed"
+    )
 
 
 def _parse_decline_reason(pr: dict) -> str:
@@ -573,7 +607,7 @@ def _parse_decline_reason(pr: dict) -> str:
     for label in labels:
         low = label.lower()
         if low.startswith("declined"):
-            suffix = low[len("declined"):].lstrip(":").strip()
+            suffix = low[len("declined") :].lstrip(":").strip()
             return suffix if suffix in _VALID_DECLINE_REASONS else "unspecified"
     return "unspecified"
 
@@ -681,9 +715,7 @@ def _paginated_get(path: str) -> list:
     out: list = []
     page = 1
     while True:
-        batch = _core._request(
-            "GET", f"{path}?per_page={_PR_PAGE_SIZE}&page={page}"
-        )
+        batch = _core._request("GET", f"{path}?per_page={_PR_PAGE_SIZE}&page={page}")
         out.extend(batch)
         if len(batch) < _PR_PAGE_SIZE or page >= _PR_PAGE_CAP:
             return out
@@ -741,7 +773,10 @@ def pr_comments(number: int) -> list[dict]:
     if cached is not None:
         return cached
     comments: list[dict] = []
-    for kind, path in (("issue", f"issues/{number}/comments"), ("review", f"pulls/{number}/comments")):
+    for kind, path in (
+        ("issue", f"issues/{number}/comments"),
+        ("review", f"pulls/{number}/comments"),
+    ):
         for c in _paginated_get(path):
             entry = {
                 "id": c["id"],
@@ -781,8 +816,12 @@ def pr_commits(number: int) -> dict:
             {
                 "sha": c["sha"],
                 "message": (c.get("commit") or {}).get("message") or "",
-                "author_name": ((c.get("commit") or {}).get("author") or {}).get("name"),
-                "author_date": ((c.get("commit") or {}).get("author") or {}).get("date"),
+                "author_name": ((c.get("commit") or {}).get("author") or {}).get(
+                    "name"
+                ),
+                "author_date": ((c.get("commit") or {}).get("author") or {}).get(
+                    "date"
+                ),
             }
             for c in commits
         ],

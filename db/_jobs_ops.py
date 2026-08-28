@@ -12,7 +12,6 @@ import re
 import sqlite3
 
 import config
-
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
 
 _PR_RE = re.compile(
@@ -79,9 +78,7 @@ def _remaining_escrow(job: sqlite3.Row) -> int:
     return int(job["payment_quarters"]) * remaining
 
 
-def _resolve_citizen(
-    conn: sqlite3.Connection, name_or_id: str | int
-) -> sqlite3.Row:
+def _resolve_citizen(conn: sqlite3.Connection, name_or_id: str | int) -> sqlite3.Row:
     """Resolve a name-or-id to an ACTIVE agent row."""
     if isinstance(name_or_id, int) or (
         isinstance(name_or_id, str) and name_or_id.isdigit()
@@ -105,8 +102,7 @@ def _resolve_citizen(
 
     if _account_status_for(fresh) != "active":
         raise ForumError(
-            f"{fresh['name']} is not an active citizen and cannot be "
-            "offered work."
+            f"{fresh['name']} is not an active citizen and cannot be offered work."
         )
     return fresh
 
@@ -152,8 +148,12 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
     if job is None:
         return None
     steps = [
-        {"id": r["id"], "position": r["position"], "text": r["text"],
-         "done": bool(r["done"])}
+        {
+            "id": r["id"],
+            "position": r["position"],
+            "text": r["text"],
+            "done": bool(r["done"]),
+        }
         for r in conn.execute(
             "SELECT id, position, text, done FROM job_steps"
             " WHERE job_id = ? ORDER BY position, id",
@@ -168,7 +168,9 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
         (job_id,),
     ).fetchall():
         try:
-            pr_numbers = json.loads(r["evidence_pr_numbers"]) if r["evidence_pr_numbers"] else []
+            pr_numbers = (
+                json.loads(r["evidence_pr_numbers"]) if r["evidence_pr_numbers"] else []
+            )
             if not isinstance(pr_numbers, list):
                 pr_numbers = []
         except Exception:
@@ -179,13 +181,23 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
                 pr_shas = []
         except Exception:
             pr_shas = []
-        pr_numbers = [int(n) for n in pr_numbers if isinstance(n, int) or (isinstance(n, str) and str(n).isdigit())]
-        cycles.append({
-            "cycle_no": r["cycle_no"], "status": r["status"],
-            "evidence": r["evidence"], "evidence_pr_numbers": pr_numbers,
-            "evidence_pr_shas": pr_shas, "feedback": r["feedback"],
-            "submitted_at": r["submitted_at"], "decided_at": r["decided_at"],
-        })
+        pr_numbers = [
+            int(n)
+            for n in pr_numbers
+            if isinstance(n, int) or (isinstance(n, str) and str(n).isdigit())
+        ]
+        cycles.append(
+            {
+                "cycle_no": r["cycle_no"],
+                "status": r["status"],
+                "evidence": r["evidence"],
+                "evidence_pr_numbers": pr_numbers,
+                "evidence_pr_shas": pr_shas,
+                "feedback": r["feedback"],
+                "submitted_at": r["submitted_at"],
+                "decided_at": r["decided_at"],
+            }
+        )
     return {
         "job_id": job["id"],
         "title": job["title"],
@@ -195,18 +207,19 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
         "official": bool(job["official"]),
         "status": job["status"],
         "creator": (
-            {"agent_id": job["creator_agent_id"],
-             "name": job["creator_name"]}
-            if job["creator_agent_id"] is not None else None
+            {"agent_id": job["creator_agent_id"], "name": job["creator_name"]}
+            if job["creator_agent_id"] is not None
+            else None
         ),
         "worker": (
             {"agent_id": job["worker_agent_id"], "name": job["worker_name"]}
-            if job["worker_agent_id"] is not None else None
+            if job["worker_agent_id"] is not None
+            else None
         ),
         "offered_to": (
-            {"agent_id": job["offered_to_agent_id"],
-             "name": job["offered_to_name"]}
-            if job["offered_to_agent_id"] is not None else None
+            {"agent_id": job["offered_to_agent_id"], "name": job["offered_to_name"]}
+            if job["offered_to_agent_id"] is not None
+            else None
         ),
         "payment_credits": _fmt_q(job["payment_quarters"]),
         "payment_quarters": job["payment_quarters"],
@@ -230,9 +243,16 @@ def _detail_or_raise(conn: sqlite3.Connection, job_id: int) -> dict:
 
 
 def _validated_job_intake(
-    title: str, description: str, payment_credits: float,
-    steps: list[str], *, kind: str, cycles: int, scope: str,
-    max_cycles: int, knob_name: str,
+    title: str,
+    description: str,
+    payment_credits: float,
+    steps: list[str],
+    *,
+    kind: str,
+    cycles: int,
+    scope: str,
+    max_cycles: int,
+    knob_name: str,
 ) -> tuple[str, str, str, str, list[str], int, int]:
     """Shared intake validation for citizen and official creation."""
     title = str(title).strip()
@@ -242,8 +262,7 @@ def _validated_job_intake(
         raise ForumError("a job needs a title.")
     if len(title) > config.JOB_TITLE_MAX_LEN:
         raise ForumError(
-            f"title exceeds {config.JOB_TITLE_MAX_LEN} chars "
-            f"(FORUM_JOB_TITLE_MAX_LEN)."
+            f"title exceeds {config.JOB_TITLE_MAX_LEN} chars (FORUM_JOB_TITLE_MAX_LEN)."
         )
     if len(description) > config.JOB_DESC_MAX_LEN:
         raise ForumError(
@@ -252,8 +271,7 @@ def _validated_job_intake(
         )
     if len(scope) > config.JOB_SCOPE_MAX_LEN:
         raise ForumError(
-            f"scope exceeds {config.JOB_SCOPE_MAX_LEN} chars "
-            f"(FORUM_JOB_SCOPE_MAX_LEN)."
+            f"scope exceeds {config.JOB_SCOPE_MAX_LEN} chars (FORUM_JOB_SCOPE_MAX_LEN)."
         )
     if kind not in ("one_time", "recurring"):
         raise ForumError("kind must be 'one_time' or 'recurring'.")
@@ -266,8 +284,7 @@ def _validated_job_intake(
         cycles = 1
     if cycles < 1 or cycles > max_cycles:
         raise ForumError(
-            f"recurring jobs run between 1 and {max_cycles} cycles "
-            f"({knob_name})."
+            f"recurring jobs run between 1 and {max_cycles} cycles ({knob_name})."
         )
     from db._credits import to_quarters
 
@@ -277,11 +294,22 @@ def _validated_job_intake(
     return title, description, scope, kind, steps, payment_q, cycles
 
 
-def _insert_job_with_steps(conn, *, creator_agent_id, offered_to_id,
-                           title, description, scope, kind,
-                           payment_q, cycles, official, steps,
-                           taker_deposit_quarters: int = 0,
-                           treasury_escrow_quarters: int = 0) -> int:
+def _insert_job_with_steps(
+    conn,
+    *,
+    creator_agent_id,
+    offered_to_id,
+    title,
+    description,
+    scope,
+    kind,
+    payment_q,
+    cycles,
+    official,
+    steps,
+    taker_deposit_quarters: int = 0,
+    treasury_escrow_quarters: int = 0,
+) -> int:
     """Shared row insertion so both creators write identical shapes."""
     cur = conn.execute(
         "INSERT INTO jobs (creator_agent_id, offered_to_agent_id,"
@@ -290,24 +318,34 @@ def _insert_job_with_steps(conn, *, creator_agent_id, offered_to_id,
         " treasury_escrow_quarters, status)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            creator_agent_id, offered_to_id, title, description,
-            scope or None, kind, payment_q, cycles, official,
-            taker_deposit_quarters, treasury_escrow_quarters,
+            creator_agent_id,
+            offered_to_id,
+            title,
+            description,
+            scope or None,
+            kind,
+            payment_q,
+            cycles,
+            official,
+            taker_deposit_quarters,
+            treasury_escrow_quarters,
             "offered" if offered_to_id is not None else "open",
         ),
     )
     job_id = int(cur.lastrowid or 0)
     for pos, text in enumerate(steps, start=1):
         conn.execute(
-            "INSERT INTO job_steps (job_id, position, text)"
-            " VALUES (?, ?, ?)",
+            "INSERT INTO job_steps (job_id, position, text) VALUES (?, ?, ?)",
             (job_id, pos, text),
         )
     return job_id
 
 
 def _handle_taker_deposit(
-    conn: sqlite3.Connection, *, agent_id: int, job_id: int,
+    conn: sqlite3.Connection,
+    *,
+    agent_id: int,
+    job_id: int,
     deposit_q: int,
 ) -> None:
     """Handle taker deposit on claim/accept: 50% to treasury, 50% to escrow."""
@@ -323,13 +361,25 @@ def _handle_taker_deposit(
     half_treasury = (deposit_q + 1) // 2
     half_escrow = deposit_q // 2
     if half_treasury > 0:
-        spend(agent_id, half_treasury, "job_deposit_treasury",
-              dest_treasury=True, target_type="job", target_id=job_id,
-              conn=conn)
+        spend(
+            agent_id,
+            half_treasury,
+            "job_deposit_treasury",
+            dest_treasury=True,
+            target_type="job",
+            target_id=job_id,
+            conn=conn,
+        )
     if half_escrow > 0:
-        spend(agent_id, half_escrow, "job_deposit_escrow",
-              dest_treasury=False, target_type="job", target_id=job_id,
-              conn=conn)
+        spend(
+            agent_id,
+            half_escrow,
+            "job_deposit_escrow",
+            dest_treasury=False,
+            target_type="job",
+            target_id=job_id,
+            conn=conn,
+        )
         conn.execute(
             "UPDATE jobs SET deposit_bonus_quarters ="
             " deposit_bonus_quarters + ? WHERE id = ?",
@@ -385,13 +435,17 @@ def create_job(
             f"{__import__('db._credits', fromlist=['format_credits']).format_credits(min_needed)}"
             f" for {kind} jobs."
         )
-    title, description, scope, kind, steps, payment_q, cycles = \
-        _validated_job_intake(
-            title, description, payment_credits, steps,
-            kind=kind, cycles=cycles, scope=scope,
-            max_cycles=config.JOB_MAX_CYCLES,
-            knob_name="FORUM_JOB_MAX_CYCLES",
-        )
+    title, description, scope, kind, steps, payment_q, cycles = _validated_job_intake(
+        title,
+        description,
+        payment_credits,
+        steps,
+        kind=kind,
+        cycles=cycles,
+        scope=scope,
+        max_cycles=config.JOB_MAX_CYCLES,
+        knob_name="FORUM_JOB_MAX_CYCLES",
+    )
     escrow_q = payment_q * cycles
     from db._credits import exact_from_credits, fee_quarters
 
@@ -404,8 +458,8 @@ def create_job(
     placement_fee_q = fee_quarters(escrow_q)
     fees_q = listing_fee_q + placement_fee_q
 
-    from notifications import _notify
     from events import EVT_JOB_CREATED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         from db._karma import effective_karma
@@ -426,10 +480,7 @@ def create_job(
         if balance < escrow_q + fees_q:
             raise ForumError(
                 f"posting this job escrows {_fmt_q(escrow_q)} credits"
-                + (
-                    f" plus {_fmt_q(fees_q)} in fees"
-                    if fees_q else ""
-                )
+                + (f" plus {_fmt_q(fees_q)} in fees" if fees_q else "")
                 + f" and requires {_fmt_q(escrow_q + fees_q)}; "
                 f"{agent['name']} has {_fmt_q(balance)}."
             )
@@ -440,24 +491,39 @@ def create_job(
                 raise ForumError("you cannot offer a job to yourself.")
             offered_to_id = target["id"]
         job_id = _insert_job_with_steps(
-            conn, creator_agent_id=agent["id"],
-            offered_to_id=offered_to_id, title=title,
-            description=description, scope=scope, kind=kind,
-            payment_q=payment_q, cycles=cycles, official=0, steps=steps,
+            conn,
+            creator_agent_id=agent["id"],
+            offered_to_id=offered_to_id,
+            title=title,
+            description=description,
+            scope=scope,
+            kind=kind,
+            payment_q=payment_q,
+            cycles=cycles,
+            official=0,
+            steps=steps,
             taker_deposit_quarters=taker_deposit_q,
             treasury_escrow_quarters=0,
         )
         from db._credits import spend
 
         spend(
-            agent["id"], escrow_q, "job_escrow",
-            target_type="job", target_id=job_id, conn=conn,
+            agent["id"],
+            escrow_q,
+            "job_escrow",
+            target_type="job",
+            target_id=job_id,
+            conn=conn,
         )
         if fees_q:
             spend(
-                agent["id"], fees_q, "job_fee",
+                agent["id"],
+                fees_q,
+                "job_fee",
                 dest_treasury=True,
-                target_type="job", target_id=job_id, conn=conn,
+                target_type="job",
+                target_id=job_id,
+                conn=conn,
             )
         log_event(
             EVT_JOB_CREATED,
@@ -481,7 +547,11 @@ def create_job(
         )
         if offered_to_id is not None:
             _notify(
-                conn, offered_to_id, "jobs", "job", job_id,
+                conn,
+                offered_to_id,
+                "jobs",
+                "job",
+                job_id,
                 f"{agent['name']} offered you a job: '{title}' "
                 f"({_fmt_q(payment_q)} credits/cycle x {cycles}). "
                 "Accept it with accept_job_offer(job_id="
@@ -491,8 +561,11 @@ def create_job(
             )
         detail = _job_detail(conn, job_id)
         assert detail is not None
-        return {**detail, "escrowed_credits": _fmt_q(escrow_q),
-                "fee_credits": _fmt_q(fees_q)}
+        return {
+            **detail,
+            "escrowed_credits": _fmt_q(escrow_q),
+            "fee_credits": _fmt_q(fees_q),
+        }
 
 
 def create_job_official(
@@ -510,13 +583,17 @@ def create_job_official(
     taker_deposit_credits: float | None = None,
 ) -> dict:
     """Create an OFFICIAL job position (admin panel only)."""
-    title, description, scope, kind, steps, payment_q, cycles = \
-        _validated_job_intake(
-            title, description, payment_credits, steps,
-            kind=kind, cycles=cycles, scope=scope,
-            max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
-            knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
-        )
+    title, description, scope, kind, steps, payment_q, cycles = _validated_job_intake(
+        title,
+        description,
+        payment_credits,
+        steps,
+        kind=kind,
+        cycles=cycles,
+        scope=scope,
+        max_cycles=config.JOB_OFFICIAL_MAX_CYCLES,
+        knob_name="FORUM_JOB_OFFICIAL_MAX_CYCLES",
+    )
     if taker_deposit_credits is None:
         taker_deposit_credits = float(
             config.JOB_TAKER_DEPOSIT_MIN_ONE_TIME
@@ -553,8 +630,8 @@ def create_job_official(
     treasury_escrow_q = payment_q * cycles
     admin = (str(admin) or "unknown").strip() or "unknown"
 
-    from notifications import _notify
     from events import EVT_JOB_CREATED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         sponsor_id: int | None = None
@@ -568,20 +645,27 @@ def create_job_official(
             target = _resolve_citizen(conn, offer_to)
             if sponsor_id is not None and target["id"] == sponsor_id:
                 raise ForumError(
-                    "the sponsor and the offeree must be different "
-                    "citizens."
+                    "the sponsor and the offeree must be different citizens."
                 )
             offered_to_id = target["id"]
         job_id = _insert_job_with_steps(
-            conn, creator_agent_id=sponsor_id,
-            offered_to_id=offered_to_id, title=title,
-            description=description, scope=scope, kind=kind,
-            payment_q=payment_q, cycles=cycles, official=1, steps=steps,
+            conn,
+            creator_agent_id=sponsor_id,
+            offered_to_id=offered_to_id,
+            title=title,
+            description=description,
+            scope=scope,
+            kind=kind,
+            payment_q=payment_q,
+            cycles=cycles,
+            official=1,
+            steps=steps,
             taker_deposit_quarters=taker_deposit_q,
             treasury_escrow_quarters=treasury_escrow_q,
         )
         if treasury_escrow_q > 0:
             from db._credits import treasury_balance
+
             if treasury_balance(conn) < treasury_escrow_q:
                 raise ForumError(
                     f"insufficient treasury to escrow official position: "
@@ -589,18 +673,29 @@ def create_job_official(
                     f"{_fmt_q(treasury_balance(conn))}."
                 )
             from db._credits import _insert_entry
-            _insert_entry(conn, None, "treasury", -treasury_escrow_q,
-                          "job_escrow_treasury", "job", job_id)
+
+            _insert_entry(
+                conn,
+                None,
+                "treasury",
+                -treasury_escrow_q,
+                "job_escrow_treasury",
+                "job",
+                job_id,
+            )
             import events
+
             events.log_event(
                 events.EVT_CREDIT_SPENT,
                 actor_agent_id=None,
                 target_type="job",
                 target_id=job_id,
-                detail={"reason": "job_escrow_treasury",
-                        "credits": _fmt_q(treasury_escrow_q),
-                        "delta_quarters": treasury_escrow_q,
-                        "official": True},
+                detail={
+                    "reason": "job_escrow_treasury",
+                    "credits": _fmt_q(treasury_escrow_q),
+                    "delta_quarters": treasury_escrow_q,
+                    "official": True,
+                },
                 conn=conn,
             )
         log_event(
@@ -628,7 +723,11 @@ def create_job_official(
         )
         if offered_to_id is not None:
             _notify(
-                conn, offered_to_id, "jobs", "job", job_id,
+                conn,
+                offered_to_id,
+                "jobs",
+                "job",
+                job_id,
                 f"An OFFICIAL position was offered to you: '{title}' "
                 f"({_fmt_q(payment_q)} credits/cycle x {cycles}, paid "
                 f"from the community treasury), created by {admin}. "
@@ -652,9 +751,7 @@ def list_jobs(
 ) -> dict:
     """The jobs board."""
     if view not in _JOB_VIEWS:
-        raise ForumError(
-            f"view must be one of {', '.join(_JOB_VIEWS)}."
-        )
+        raise ForumError(f"view must be one of {', '.join(_JOB_VIEWS)}.")
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     clauses: list[str] = []
@@ -668,9 +765,7 @@ def list_jobs(
     elif view == "working":
         if not token:
             raise ForumError("view='working' requires your token.")
-        clauses.append(
-            "j.worker_agent_id = ? AND j.status IN ('active', 'completed')"
-        )
+        clauses.append("j.worker_agent_id = ? AND j.status IN ('active', 'completed')")
     with _conn() as conn:
         if view in ("mine", "working"):
             assert token is not None
@@ -691,7 +786,8 @@ def list_jobs(
             (*params, limit, offset),
         ).fetchall()
         total = conn.execute(
-            f"SELECT COUNT(*) FROM jobs j {where}", params,
+            f"SELECT COUNT(*) FROM jobs j {where}",
+            params,
         ).fetchone()[0]
         jobs_out = [
             {
@@ -711,8 +807,13 @@ def list_jobs(
             }
             for r in rows
         ]
-    return {"view": view, "jobs": jobs_out, "total": total,
-            "limit": limit, "offset": offset}
+    return {
+        "view": view,
+        "jobs": jobs_out,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 def get_job(job_id: int) -> dict:
@@ -729,13 +830,14 @@ def get_job(job_id: int) -> dict:
 
 def claim_job(token: str, job_id: int) -> dict:
     """Claim an OPEN job (first come, first served)."""
-    from notifications import _notify
     from events import EVT_JOB_CLAIMED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
@@ -751,8 +853,7 @@ def claim_job(token: str, job_id: int) -> dict:
         if job["creator_agent_id"] == agent["id"]:
             raise ForumError("you cannot claim your own job.")
         conn.execute(
-            "UPDATE jobs SET worker_agent_id = ?, status = 'active'"
-            " WHERE id = ?",
+            "UPDATE jobs SET worker_agent_id = ?, status = 'active' WHERE id = ?",
             (agent["id"], job["id"]),
         )
         conn.execute(
@@ -763,7 +864,9 @@ def claim_job(token: str, job_id: int) -> dict:
         deposit_q = int(job["taker_deposit_quarters"] or 0)
         if deposit_q > 0:
             _handle_taker_deposit(
-                conn, agent_id=agent["id"], job_id=job["id"],
+                conn,
+                agent_id=agent["id"],
+                job_id=job["id"],
                 deposit_q=deposit_q,
             )
         log_event(
@@ -772,14 +875,21 @@ def claim_job(token: str, job_id: int) -> dict:
             actor_name=agent["name"],
             target_type="job",
             target_id=job["id"],
-            detail={"how": "claimed", "title": job["title"],
-                    "creator_agent_id": job["creator_agent_id"],
-                    "deposit_quarters": deposit_q},
+            detail={
+                "how": "claimed",
+                "title": job["title"],
+                "creator_agent_id": job["creator_agent_id"],
+                "deposit_quarters": deposit_q,
+            },
             conn=conn,
         )
         if job["creator_agent_id"] is not None:
             _notify(
-                conn, job["creator_agent_id"], "jobs", "job", job["id"],
+                conn,
+                job["creator_agent_id"],
+                "jobs",
+                "job",
+                job["id"],
                 f"{agent['name']} claimed your job '{job['title']}' "
                 f"(#{job['id']}). You will be pinged at each cycle "
                 "submission; review with review_job().",
@@ -799,22 +909,19 @@ def decline_job_offer(token: str, job_id: int) -> dict:
 
 
 def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
-    from notifications import _notify
     from events import EVT_JOB_CLAIMED, EVT_JOB_OFFER_DECLINED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (job_id,),
+            "SELECT * FROM jobs WHERE id = ?",
+            (job_id,),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
-        if job["status"] != "offered" or (
-            job["offered_to_agent_id"] != agent["id"]
-        ):
-            raise ForumError(
-                f"job #{job_id} has no pending offer for you."
-            )
+        if job["status"] != "offered" or (job["offered_to_agent_id"] != agent["id"]):
+            raise ForumError(f"job #{job_id} has no pending offer for you.")
         if accept:
             conn.execute(
                 "UPDATE jobs SET worker_agent_id = ?,"
@@ -830,7 +937,9 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
             deposit_q = int(job["taker_deposit_quarters"] or 0)
             if deposit_q > 0:
                 _handle_taker_deposit(
-                    conn, agent_id=agent["id"], job_id=job_id,
+                    conn,
+                    agent_id=agent["id"],
+                    job_id=job_id,
                     deposit_q=deposit_q,
                 )
             log_event(
@@ -839,16 +948,21 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
                 actor_name=agent["name"],
                 target_type="job",
                 target_id=job_id,
-                detail={"how": "offer_accepted", "title": job["title"],
-                        "creator_agent_id": job["creator_agent_id"],
-                        "deposit_quarters": int(
-                            job["taker_deposit_quarters"] or 0
-                        )},
+                detail={
+                    "how": "offer_accepted",
+                    "title": job["title"],
+                    "creator_agent_id": job["creator_agent_id"],
+                    "deposit_quarters": int(job["taker_deposit_quarters"] or 0),
+                },
                 conn=conn,
             )
             if job["creator_agent_id"] is not None:
                 _notify(
-                    conn, job["creator_agent_id"], "jobs", "job", job_id,
+                    conn,
+                    job["creator_agent_id"],
+                    "jobs",
+                    "job",
+                    job_id,
                     f"{agent['name']} accepted your job '{job['title']}' "
                     f"(#{job_id}). You will be pinged at each cycle "
                     "submission; review with review_job().",
@@ -871,7 +985,11 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
             )
             if job["creator_agent_id"] is not None:
                 _notify(
-                    conn, job["creator_agent_id"], "jobs", "job", job_id,
+                    conn,
+                    job["creator_agent_id"],
+                    "jobs",
+                    "job",
+                    job_id,
                     f"{agent['name']} declined your job offer "
                     f"'{job['title']}' (#{job_id}) - it is back on the "
                     "open board.",
@@ -883,28 +1001,24 @@ def _resolve_offer(token: str, job_id: int, *, accept: bool) -> dict:
 # -- working --------------------------------------------------------------
 
 
-def tick_job_step(token: str, job_id: int, step_id: int, done: bool = True
-                  ) -> dict:
+def tick_job_step(token: str, job_id: int, step_id: int, done: bool = True) -> dict:
     """Tick (or untick) one checklist step."""
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
         if job["worker_agent_id"] != agent["id"]:
-            raise ForumError(
-                "only the job's current worker may tick its steps."
-            )
+            raise ForumError("only the job's current worker may tick its steps.")
         cur = conn.execute(
             "UPDATE job_steps SET done = ? WHERE id = ? AND job_id = ?",
             (1 if done else 0, int(step_id), job["id"]),
         )
         if cur.rowcount == 0:
-            raise ForumError(
-                f"no step #{step_id} on job #{job['id']}."
-            )
+            raise ForumError(f"no step #{step_id} on job #{job['id']}.")
         return _detail_or_raise(conn, job["id"])
 
 
@@ -916,24 +1030,22 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             f"evidence exceeds {config.JOB_EVIDENCE_MAX_LEN} chars "
             f"(FORUM_JOB_EVIDENCE_MAX_LEN)."
         )
-    from notifications import _notify
     from events import EVT_JOB_SUBMITTED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
         if job["worker_agent_id"] != agent["id"]:
-            raise ForumError(
-                "only the job's current worker may submit work."
-            )
+            raise ForumError("only the job's current worker may submit work.")
         if job["status"] != "active":
             raise ForumError(
-                f"job #{job_id} is '{job['status']}' and accepts no "
-                "submissions."
+                f"job #{job_id} is '{job['status']}' and accepts no submissions."
             )
         cycle_no = job["cycles_done"] + 1
         cycle = conn.execute(
@@ -950,6 +1062,7 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
         if pr_numbers:
             try:
                 import github  # local import to avoid cycle
+
                 for n in pr_numbers:
                     try:
                         pr = github.get_pr(n)
@@ -961,10 +1074,7 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
                     except Exception:
                         # domain: degrade-silently
                         pr_shas.append(None)
-                pr_shas = [
-                    s if isinstance(s, str) and s else None
-                    for s in pr_shas
-                ]
+                pr_shas = [s if isinstance(s, str) and s else None for s in pr_shas]
             except Exception:
                 # domain: degrade-silently
                 pr_shas = [None] * len(pr_numbers)
@@ -982,8 +1092,7 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             " status = 'submitted', feedback = NULL,"
             " submitted_at = excluded.submitted_at,"
             " decided_at = NULL",
-            (job["id"], cycle_no, evidence, pr_numbers_json,
-             pr_shas_json, _now_iso()),
+            (job["id"], cycle_no, evidence, pr_numbers_json, pr_shas_json, _now_iso()),
         )
         log_event(
             EVT_JOB_SUBMITTED,
@@ -991,14 +1100,18 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
             actor_name=agent["name"],
             target_type="job",
             target_id=job["id"],
-            detail={"cycle_no": cycle_no, "evidence": evidence,
-                    "evidence_pr_numbers": pr_numbers,
-                    "title": job["title"]},
+            detail={
+                "cycle_no": cycle_no,
+                "evidence": evidence,
+                "evidence_pr_numbers": pr_numbers,
+                "title": job["title"],
+            },
             conn=conn,
         )
         if pr_numbers:
             try:
                 import github
+
                 for prn in pr_numbers:
                     try:
                         github.add_pr_label(prn, "hold")
@@ -1014,7 +1127,11 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
                 " evidence PRs, and tests before accepting."
             )
             _notify(
-                conn, job["creator_agent_id"], "jobs", "job", job["id"],
+                conn,
+                job["creator_agent_id"],
+                "jobs",
+                "job",
+                job["id"],
                 f"{agent['name']} submitted cycle {cycle_no} of your job "
                 f"'{job['title']}' (#{job['id']})"
                 + (f" - evidence: {evidence}" if evidence else "")
@@ -1029,7 +1146,9 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
 
 
 def _award_cycle_karma(
-    conn: sqlite3.Connection, job: sqlite3.Row, cycle_no: int,
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    cycle_no: int,
     worker_id: int,
 ) -> int:
     """+JOB_KARMA_PER_CYCLE earned karma + JOB_CREDIT_CREDITS credits to
@@ -1040,8 +1159,7 @@ def _award_cycle_karma(
     if amount == 0 and credit_q == 0:
         return 0
     granted_q = 0
-    for role, aid in (("worker", worker_id),
-                      ("creator", job["creator_agent_id"])):
+    for role, aid in (("worker", worker_id), ("creator", job["creator_agent_id"])):
         if aid is None:
             continue
         if amount > 0:
@@ -1057,8 +1175,12 @@ def _award_cycle_karma(
 
         if credit_q > 0:
             grant(
-                aid, credit_q, "job_reward",
-                target_type="job", target_id=job["id"], conn=conn,
+                aid,
+                credit_q,
+                "job_reward",
+                target_type="job",
+                target_id=job["id"],
+                conn=conn,
             )
             granted_q += credit_q
     return granted_q
@@ -1068,10 +1190,13 @@ def _unhold_cycle_prs(cycle: sqlite3.Row) -> None:
     """Remove 'hold' label from PRs referenced in a cycle after accept."""
     try:
         import json as _json
+
         import github as _gh
+
         _pr_nums = (
             _json.loads(cycle["evidence_pr_numbers"])
-            if cycle["evidence_pr_numbers"] else []
+            if cycle["evidence_pr_numbers"]
+            else []
         )
         for _prn in _pr_nums:
             try:
@@ -1091,8 +1216,10 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
 
     # Treasury escrow for official: deduct from treasury_escrow_quarters
     if job["official"]:
-        if (job["treasury_escrow_quarters"] is not None
-                and job["treasury_escrow_quarters"] > 0):
+        if (
+            job["treasury_escrow_quarters"] is not None
+            and job["treasury_escrow_quarters"] > 0
+        ):
             conn.execute(
                 "UPDATE jobs SET treasury_escrow_quarters ="
                 " treasury_escrow_quarters - ? WHERE id = ?",
@@ -1101,9 +1228,11 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
     # Deposit return gate: all PRs merged
     try:
         import json as _j
+
         _pr_nums_check = (
             _j.loads(cycle["evidence_pr_numbers"])
-            if cycle["evidence_pr_numbers"] else []
+            if cycle["evidence_pr_numbers"]
+            else []
         )
         _should_return_deposit = _all_prs_merged(_pr_nums_check)
     except Exception:
@@ -1116,25 +1245,30 @@ def _check_deposit_return(conn, job, cycle, worker_id) -> None:
             _half_escrow = _deposit_q // 2
             if _half_escrow > 0:
                 return_principal(
-                    worker_id, _half_escrow,
+                    worker_id,
+                    _half_escrow,
                     "job_deposit_return_escrow",
-                    target_type="job", target_id=job["id"], conn=conn,
+                    target_type="job",
+                    target_id=job["id"],
+                    conn=conn,
                 )
                 conn.execute(
-                    "UPDATE jobs SET deposit_bonus_quarters = 0"
-                    " WHERE id = ?",
+                    "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
                     (job["id"],),
                 )
             if _half_treasury > 0:
                 from db._credits import grant
+
                 grant(
-                    worker_id, _half_treasury,
+                    worker_id,
+                    _half_treasury,
                     "job_deposit_return_treasury",
-                    target_type="job", target_id=job["id"], conn=conn,
+                    target_type="job",
+                    target_id=job["id"],
+                    conn=conn,
                 )
             conn.execute(
-                "UPDATE jobs SET taker_deposit_quarters = 0"
-                " WHERE id = ?",
+                "UPDATE jobs SET taker_deposit_quarters = 0 WHERE id = ?",
                 (job["id"],),
             )
 
@@ -1144,26 +1278,40 @@ def _pay_worker(conn, job, worker_id) -> None:
     from return_principal) and log the credit event."""
     if job["official"]:
         from db._credits import _insert_entry
+
         _insert_entry(
-            conn, worker_id, "agent", job["payment_quarters"],
-            "official_job_wage", "job", job["id"],
+            conn,
+            worker_id,
+            "agent",
+            job["payment_quarters"],
+            "official_job_wage",
+            "job",
+            job["id"],
         )
         import events
+
         events.log_event(
             events.EVT_CREDIT_EARNED,
             actor_agent_id=worker_id,
             target_type="job",
             target_id=job["id"],
-            detail={"reason": "official_job_wage",
-                    "credits": _fmt_q(job["payment_quarters"]),
-                    "delta_quarters": job["payment_quarters"]},
+            detail={
+                "reason": "official_job_wage",
+                "credits": _fmt_q(job["payment_quarters"]),
+                "delta_quarters": job["payment_quarters"],
+            },
             conn=conn,
         )
     else:
         from db._credits import return_principal
+
         return_principal(
-            worker_id, job["payment_quarters"], "job_payout",
-            target_type="job", target_id=job["id"], conn=conn,
+            worker_id,
+            job["payment_quarters"],
+            "job_payout",
+            target_type="job",
+            target_id=job["id"],
+            conn=conn,
         )
 
 
@@ -1184,13 +1332,17 @@ def _maybe_pay_bonus(conn, job, worker_id) -> None:
     if _bonus > 0:
         try:
             from db._credits import grant
+
             grant(
-                worker_id, _bonus, "job_deposit_bonus",
-                target_type="job", target_id=job["id"], conn=conn,
+                worker_id,
+                _bonus,
+                "job_deposit_bonus",
+                target_type="job",
+                target_id=job["id"],
+                conn=conn,
             )
             conn.execute(
-                "UPDATE jobs SET deposit_bonus_quarters = 0"
-                " WHERE id = ?",
+                "UPDATE jobs SET deposit_bonus_quarters = 0 WHERE id = ?",
                 (job["id"],),
             )
         except Exception:
@@ -1228,11 +1380,13 @@ def _apply_review(
     and admin_review_job_as.  Caller owns the transaction and has
     already validated action/feedback, fetched job+cycle, and
     verified authorization."""
-    from notifications import _notify
     from events import (
-        EVT_JOB_CYCLE_ACCEPTED, EVT_JOB_CYCLE_DECLINED,
-        EVT_JOB_COMPLETED, log_event,
+        EVT_JOB_COMPLETED,
+        EVT_JOB_CYCLE_ACCEPTED,
+        EVT_JOB_CYCLE_DECLINED,
+        log_event,
     )
+    from notifications import _notify
 
     cycle_no = job["cycles_done"] + 1
     worker_id = job["worker_agent_id"]
@@ -1240,8 +1394,7 @@ def _apply_review(
 
     if action == "accept":
         conn.execute(
-            "UPDATE job_cycles SET status = 'accepted',"
-            " decided_at = ? WHERE id = ?",
+            "UPDATE job_cycles SET status = 'accepted', decided_at = ? WHERE id = ?",
             (_now_iso(), cycle["id"]),
         )
         _unhold_cycle_prs(cycle)
@@ -1258,7 +1411,8 @@ def _apply_review(
                 new_done,
                 "completed" if completed else "active",
                 1 if completed else 0,
-                _now_iso() if completed else None, job["id"],
+                _now_iso() if completed else None,
+                job["id"],
             ),
         )
         _seed_next_cycle(conn, job, new_done)
@@ -1286,12 +1440,16 @@ def _apply_review(
         reward_line = f", +{_fmt_q(rewarded)} credits" if rewarded else ""
         cycle_label = (
             " The job is COMPLETE - thank you."
-            if completed else
-            f" Cycle {new_done + 1} of {job['total_cycles']}"
+            if completed
+            else f" Cycle {new_done + 1} of {job['total_cycles']}"
             " is now awaiting your work."
         )
         _notify(
-            conn, worker_id, "jobs", "job", job["id"],
+            conn,
+            worker_id,
+            "jobs",
+            "job",
+            job["id"],
             f"{accept_msg_prefix} accepted cycle {cycle_no} of "
             f"'{job['title']}' (#{job['id']}) - "
             f"{credits_line} credits paid{reward_line}.{cycle_label}",
@@ -1341,12 +1499,13 @@ def _apply_review(
         forfeited = 0
         if forfeit_deposit:
             try:
-                if (job["taker_deposit_quarters"]
-                        and int(job["taker_deposit_quarters"]) > 0):
+                if (
+                    job["taker_deposit_quarters"]
+                    and int(job["taker_deposit_quarters"]) > 0
+                ):
                     forfeited = int(job["taker_deposit_quarters"])
                     conn.execute(
-                        "UPDATE jobs SET taker_deposit_quarters = 0"
-                        " WHERE id = ?",
+                        "UPDATE jobs SET taker_deposit_quarters = 0 WHERE id = ?",
                         (job["id"],),
                     )
             except Exception:
@@ -1373,7 +1532,11 @@ def _apply_review(
             conn=conn,
         )
         _notify(
-            conn, worker_id, "jobs", "job", job["id"],
+            conn,
+            worker_id,
+            "jobs",
+            "job",
+            job["id"],
             f"{decline_msg_prefix} declined cycle {cycle_no} of "
             f"'{job['title']}' (#{job['id']}): {feedback}"
             " Rework and resubmit with submit_job().",
@@ -1381,9 +1544,7 @@ def _apply_review(
         )
 
 
-def review_job(
-    token: str, job_id: int, action: str, feedback: str = ""
-) -> dict:
+def review_job(token: str, job_id: int, action: str, feedback: str = "") -> dict:
     """The creator's verdict on the submitted cycle."""
     feedback = str(feedback or "").strip()
     if action not in ("accept", "decline"):
@@ -1403,27 +1564,28 @@ def review_job(
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
         if job["creator_agent_id"] != agent["id"]:
             raise ForumError("only the job's creator may review its work.")
         if job["status"] != "active":
-            raise ForumError(
-                f"job #{job_id} is '{job['status']}'; nothing to review."
-            )
+            raise ForumError(f"job #{job_id} is '{job['status']}'; nothing to review.")
         cycle_no = job["cycles_done"] + 1
         cycle = conn.execute(
             "SELECT * FROM job_cycles WHERE job_id = ? AND cycle_no = ?",
             (job["id"], cycle_no),
         ).fetchone()
         if cycle is None or cycle["status"] != "submitted":
-            raise ForumError(
-                f"cycle {cycle_no} has no submission awaiting review."
-            )
+            raise ForumError(f"cycle {cycle_no} has no submission awaiting review.")
         _apply_review(
-            conn, job, cycle, action, feedback,
+            conn,
+            job,
+            cycle,
+            action,
+            feedback,
             actor_id=agent["id"],
             actor_name=agent["name"],
             admin_name=None,

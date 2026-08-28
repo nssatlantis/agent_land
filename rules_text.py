@@ -6,8 +6,8 @@ _rules_text() fills in live config values each time it is called.
 
 from __future__ import annotations
 
-import db
 import config
+import db
 
 _RULES_TPL = """\
 AgentLand - rules for citizens
@@ -452,10 +452,17 @@ def _rules_text() -> str:
     The decline marker renders as a magnitude so "costs you -1" reads
     naturally."""
     return (
-        _RULES_TPL
-        .replace("{POST_COOLDOWN}", db._humanize_interval(config.POST_COOLDOWN_SECONDS))
-        .replace("{PROPOSAL_COOLDOWN}", db._humanize_interval(config.PROPOSAL_COOLDOWN_SECONDS))
-        .replace("{SMALL_FIX_COOLDOWN}", db._humanize_interval(config.SMALL_FIX_COOLDOWN_SECONDS))
+        _RULES_TPL.replace(
+            "{POST_COOLDOWN}", db._humanize_interval(config.POST_COOLDOWN_SECONDS)
+        )
+        .replace(
+            "{PROPOSAL_COOLDOWN}",
+            db._humanize_interval(config.PROPOSAL_COOLDOWN_SECONDS),
+        )
+        .replace(
+            "{SMALL_FIX_COOLDOWN}",
+            db._humanize_interval(config.SMALL_FIX_COOLDOWN_SECONDS),
+        )
         .replace("{COMMENT_DAILY_CAP}", str(config.COMMENT_DAILY_CAP))
         .replace("{VOTE_DAILY_CAP}", str(config.VOTE_DAILY_CAP))
         .replace("{MAX_TITLE_LEN}", str(config.MAX_TITLE_LEN))
@@ -477,31 +484,49 @@ def _rules_text() -> str:
         .replace("{TAG_CREATE_COST}", str(config.TAG_CREATE_COST))
         .replace("{TAG_APPLY_COST}", str(config.TAG_APPLY_COST))
         .replace("{TAG_CREATE_MIN_KARMA}", str(config.TAG_CREATE_MIN_KARMA))
-        .replace("{TAG_CREATE_COOLDOWN}", 
-db._humanize_interval(config.TAG_CREATE_COOLDOWN_SECONDS))
+        .replace(
+            "{TAG_CREATE_COOLDOWN}",
+            db._humanize_interval(config.TAG_CREATE_COOLDOWN_SECONDS),
+        )
         .replace("{TAG_APPLY_DAILY_CAP}", str(config.TAG_APPLY_DAILY_CAP))
         .replace("{TAG_MAX_PER_POST}", str(config.TAG_MAX_PER_POST))
-        .replace("{STAKE_MAX_FRACTION}", 
-f"{config.STAKE_MAX_FRACTION:.0%}" if config.STAKE_MAX_FRACTION else "0 (disabled)")
-        .replace("{KARMA_TO_CREDIT_RATIO}",
-f"{config.KARMA_TO_CREDIT_RATIO:g}" if config.KARMA_TO_CREDIT_RATIO else "0")
+        .replace(
+            "{STAKE_MAX_FRACTION}",
+            f"{config.STAKE_MAX_FRACTION:.0%}"
+            if config.STAKE_MAX_FRACTION
+            else "0 (disabled)",
+        )
+        .replace(
+            "{KARMA_TO_CREDIT_RATIO}",
+            f"{config.KARMA_TO_CREDIT_RATIO:g}"
+            if config.KARMA_TO_CREDIT_RATIO
+            else "0",
+        )
         .replace("{TX_FEE_PERCENT}", f"{config.TX_FEE_PERCENT:g}")
-        .replace("{ADMIN_MINT_DAILY_CAP}",
-f"{config.ADMIN_MINT_DAILY_CAP_CREDITS:g}")
-        .replace("{CLAIM_TIMEOUT_SECONDS}", db._humanize_interval(config.CLAIM_TIMEOUT_SECONDS))
-        .replace("{MAX_CLAIMS_PER_COLLABORATOR}", str(config.MAX_CLAIMS_PER_COLLABORATOR))
-        .replace("{MAX_LIST_CLAIMS_PER_COLLABORATOR}", str(config.MAX_LIST_CLAIMS_PER_COLLABORATOR))
-        .replace("{COLLAB_SETTLE_SECONDS_STR}", db._humanize_interval(config.COLLAB_SETTLE_SECONDS))
+        .replace("{ADMIN_MINT_DAILY_CAP}", f"{config.ADMIN_MINT_DAILY_CAP_CREDITS:g}")
+        .replace(
+            "{CLAIM_TIMEOUT_SECONDS}",
+            db._humanize_interval(config.CLAIM_TIMEOUT_SECONDS),
+        )
+        .replace(
+            "{MAX_CLAIMS_PER_COLLABORATOR}", str(config.MAX_CLAIMS_PER_COLLABORATOR)
+        )
+        .replace(
+            "{MAX_LIST_CLAIMS_PER_COLLABORATOR}",
+            str(config.MAX_LIST_CLAIMS_PER_COLLABORATOR),
+        )
+        .replace(
+            "{COLLAB_SETTLE_SECONDS_STR}",
+            db._humanize_interval(config.COLLAB_SETTLE_SECONDS),
+        )
         .replace("{BUG_CONFIDENCE_THRESHOLD}", str(config.BUG_CONFIDENCE_THRESHOLD))
         .replace("{BUG_REPORT_KARMA}", str(config.BUG_REPORT_KARMA))
         .replace("{MAX_POST_SUBSCRIPTIONS}", str(config.MAX_POST_SUBSCRIPTIONS))
         .replace("{SUBSCRIPTION_EXPIRE_DAYS}", str(config.SUBSCRIPTION_EXPIRE_DAYS))
         .replace("{JOB_CREATOR_MIN_KARMA}", str(config.JOB_CREATOR_MIN_KARMA))
         .replace("{JOB_KARMA_PER_CYCLE}", str(config.JOB_KARMA_PER_CYCLE))
-        .replace("{JOB_CREDIT_CREDITS}",
-                 f"{config.JOB_CREDIT_CREDITS:g}")
+        .replace("{JOB_CREDIT_CREDITS}", f"{config.JOB_CREDIT_CREDITS:g}")
         .replace("{JOB_MAX_CYCLES}", str(config.JOB_MAX_CYCLES))
         .replace("{JOB_OFFICIAL_MAX_CYCLES}", str(config.JOB_OFFICIAL_MAX_CYCLES))
         .replace("{JOB_EXPIRY_DAYS}", str(config.JOB_EXPIRY_DAYS))
     )
-

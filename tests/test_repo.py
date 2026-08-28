@@ -1,4 +1,5 @@
 """Test repo tools: search, read, PR planning, patch mode, CI reads, helpers."""
+
 import base64
 import hashlib
 import os
@@ -14,8 +15,12 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import (  # noqa: E402
-    db, reports, aggregates, github,
-    repo_search, setup,
+    aggregates,
+    db,
+    github,
+    repo_search,
+    reports,
+    setup,
 )
 
 
@@ -31,60 +36,80 @@ def main():
     marker = "needle-in-haystack"
     (tree / "src").mkdir()
     (tree / "src" / "mod.py").write_text(
-        "def f():\n    {0} = 1\n".format(marker), encoding="utf-8")
+        f"def f():\n    {marker} = 1\n", encoding="utf-8"
+    )
     (tree / "docs").mkdir()
-    (tree / "docs" / "guide.md").write_text("see the {0}\n".format(marker), encoding="utf-8")
+    (tree / "docs" / "guide.md").write_text(f"see the {marker}\n", encoding="utf-8")
     (tree / "schema.sql").write_text(
-        "CREATE TABLE t (x TEXT); -- {0}\n".format(marker), encoding="utf-8")
+        f"CREATE TABLE t (x TEXT); -- {marker}\n", encoding="utf-8"
+    )
     (tree / "deploy").mkdir()
-    (tree / "deploy" / "run.sh").write_text("echo {0}\n".format(marker), encoding="utf-8")
-    (tree / "ci.yml").write_text("jobs:\n  build: {0}\n".format(marker), encoding="utf-8")
-    (tree / ".env.example").write_text("# {0}\nFORUM_X=1\n".format(marker), encoding="utf-8")
-    (tree / ".gitignore").write_text("*.pyc\n{0}\n".format(marker), encoding="utf-8")
-    (tree / "CODEOWNERS").write_text("* @nssatlantis\n# {0}\n".format(marker), encoding="utf-8")
+    (tree / "deploy" / "run.sh").write_text(f"echo {marker}\n", encoding="utf-8")
+    (tree / "ci.yml").write_text(f"jobs:\n  build: {marker}\n", encoding="utf-8")
+    (tree / ".env.example").write_text(f"# {marker}\nFORUM_X=1\n", encoding="utf-8")
+    (tree / ".gitignore").write_text(f"*.pyc\n{marker}\n", encoding="utf-8")
+    (tree / "CODEOWNERS").write_text(f"* @nssatlantis\n# {marker}\n", encoding="utf-8")
     # excluded by the allowlist / pruning, however the marker is present
-    (tree / ".env").write_text("SECRET={0}\n".format(marker), encoding="utf-8")
+    (tree / ".env").write_text(f"SECRET={marker}\n", encoding="utf-8")
     (tree / "forum.db").write_bytes(b"sqlite\x00" + marker.encode() + b"\x00bytes")
-    (tree / "requirements.txt").write_text("# {0}\nrequests\n".format(marker), encoding="utf-8")
-    (tree / "src" / "notes.txt").write_text("not searchable {0}\n".format(marker), encoding="utf-8")
+    (tree / "requirements.txt").write_text(f"# {marker}\nrequests\n", encoding="utf-8")
+    (tree / "src" / "notes.txt").write_text(
+        f"not searchable {marker}\n", encoding="utf-8"
+    )
     (tree / ".git").mkdir()
-    (tree / ".git" / "config").write_text("[core]\n\t{0}\n".format(marker), encoding="utf-8")
+    (tree / ".git" / "config").write_text(f"[core]\n\t{marker}\n", encoding="utf-8")
     pycache = tree / "src" / "__pycache__"
     pycache.mkdir()
-    (pycache / "mod.py").write_text("# {0}\n".format(marker), encoding="utf-8")
+    (pycache / "mod.py").write_text(f"# {marker}\n", encoding="utf-8")
 
     res = repo_search.search_files(marker, root=tree)
     assert res["query"] == marker
     got = {m["path"] for m in res["matches"]}
     assert got == {
-        "src/mod.py", "docs/guide.md", "schema.sql", "deploy/run.sh",
-        "ci.yml", ".env.example", ".gitignore", "CODEOWNERS",
-    }, "search must cover exactly the allowlisted files, got {}".format(sorted(got))
+        "src/mod.py",
+        "docs/guide.md",
+        "schema.sql",
+        "deploy/run.sh",
+        "ci.yml",
+        ".env.example",
+        ".gitignore",
+        "CODEOWNERS",
+    }, f"search must cover exactly the allowlisted files, got {sorted(got)}"
 
     # matches carry 1-based line numbers and the matching text
     mod = next(m for m in res["matches"] if m["path"] == "src/mod.py")
     assert mod["matches"][0]["line_number"] == 2 and marker in mod["matches"][0]["text"]
 
     # a differently-cased query still hits (case-insensitive substring)
-    assert len(repo_search.search_files(marker.upper(), root=tree)["matches"]) == len(res["matches"])
+    assert len(repo_search.search_files(marker.upper(), root=tree)["matches"]) == len(
+        res["matches"]
+    )
 
     # excluded files never appear, whichever of their names is asked for
     for q in ("SECRET", "sqlite", "requests", "not searchable", "core"):
-        assert all(".env" != m["path"] and not m["path"].endswith((".db", ".txt"))
-                   and not m["path"].startswith((".git/", "src/__pycache__/"))
-                   for m in repo_search.search_files(q, root=tree)["matches"]), \
-            f"query {q!r} must not reach excluded files"
+        assert all(
+            ".env" != m["path"]
+            and not m["path"].endswith((".db", ".txt"))
+            and not m["path"].startswith((".git/", "src/__pycache__/"))
+            for m in repo_search.search_files(q, root=tree)["matches"]
+        ), f"query {q!r} must not reach excluded files"
 
     # long matched lines are trimmed with an ellipsis
     (tree / "src" / "long.py").write_text(
-        "x = '{0}'\n".format("y" * 300), encoding="utf-8")
-    lmatch = next(m for m in repo_search.search_files("y" * 10, root=tree)["matches"]
-                  if m["path"] == "src/long.py")
+        "x = '{}'\n".format("y" * 300), encoding="utf-8"
+    )
+    lmatch = next(
+        m
+        for m in repo_search.search_files("y" * 10, root=tree)["matches"]
+        if m["path"] == "src/long.py"
+    )
     ltext = lmatch["matches"][0]["text"]
     assert len(ltext) <= 160 and ltext.endswith("..."), "long lines must be trimmed"
 
     # max_results bounds the number of files returned
-    assert len(repo_search.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
+    assert (
+        len(repo_search.search_files(marker, max_results=2, root=tree)["matches"]) <= 2
+    )
 
     # empty / too-short / too-long queries are rejected
     for q in ("", "x", "x" * 201):
@@ -105,39 +130,48 @@ def main():
     # 1000, and the exact error wording (locks the message fix).
     no_nl = "alpha\nbeta\ngamma"
     content, total = github._slice_line_range("t.txt", no_nl, 1, 3)
-    assert content == no_nl and total == 3, \
+    assert content == no_nl and total == 3, (
         "a 1..total_lines range reconstructs a file without a trailing newline exactly"
-    assert github._slice_line_range("t.txt", no_nl, 2, 3) == ("beta\ngamma", 3), \
+    )
+    assert github._slice_line_range("t.txt", no_nl, 2, 3) == ("beta\ngamma", 3), (
         "a range slice is the exact 1-based inclusive cut"
-    assert github._slice_line_range("t.txt", no_nl, 1, 1) == ("alpha", 3), \
+    )
+    assert github._slice_line_range("t.txt", no_nl, 1, 1) == ("alpha", 3), (
         "a single-line range returns just that line"
-    assert github._slice_line_range("t.txt", no_nl, 3, 3) == ("gamma", 3), \
+    )
+    assert github._slice_line_range("t.txt", no_nl, 3, 3) == ("gamma", 3), (
         "the last line of a no-newline file is a valid single-line range"
+    )
 
     with_nl = "alpha\nbeta\n"
     content, total = github._slice_line_range("t.txt", with_nl, 1, 3)
-    assert content == with_nl and total == 3, \
+    assert content == with_nl and total == 3, (
         "a file ending in a newline reports one extra, empty final line"
-    assert github._slice_line_range("t.txt", with_nl, 1, 2) == ("alpha\nbeta", 3), \
+    )
+    assert github._slice_line_range("t.txt", with_nl, 1, 2) == ("alpha\nbeta", 3), (
         "the extra final line never leaks into a 1..2 range"
-    assert github._slice_line_range("t.txt", with_nl, 3, 3) == ("", 3), \
+    )
+    assert github._slice_line_range("t.txt", with_nl, 3, 3) == ("", 3), (
         "the final range line of a trailing-newline file is the empty part"
+    )
 
     # both-or-neither: a lone param errors naming the one that WAS provided
     try:
         github._slice_line_range("t.txt", "a\nb", 1, None)
     except github.RepoError as e:
-        assert str(e) == ("repo_read_file line range: line_start was given without "
-                          "its pair - 'line_start' and 'line_end' must be passed together."), \
-            f"a lone line_start must name line_start as given: {e}"
+        assert str(e) == (
+            "repo_read_file line range: line_start was given without "
+            "its pair - 'line_start' and 'line_end' must be passed together."
+        ), f"a lone line_start must name line_start as given: {e}"
     else:
         raise AssertionError("a lone line_start must error")
     try:
         github._slice_line_range("t.txt", "a\nb", None, 2)
     except github.RepoError as e:
-        assert str(e) == ("repo_read_file line range: line_end was given without "
-                          "its pair - 'line_start' and 'line_end' must be passed together."), \
-            f"a lone line_end must name line_end as given: {e}"
+        assert str(e) == (
+            "repo_read_file line range: line_end was given without "
+            "its pair - 'line_start' and 'line_end' must be passed together."
+        ), f"a lone line_end must name line_end as given: {e}"
     else:
         raise AssertionError("a lone line_end must error")
 
@@ -145,75 +179,155 @@ def main():
         try:
             github._slice_line_range("t.txt", no_nl, start, end)
         except github.RepoError as e:
-            assert f"'line_start' must be >= 1, got {start}" in str(e), \
+            assert f"'line_start' must be >= 1, got {start}" in str(e), (
                 f"a start below 1 must error naming the value: {e}"
+            )
         else:
             raise AssertionError(f"start {start} must error")
     try:
         github._slice_line_range("t.txt", no_nl, 10, 5)
     except github.RepoError as e:
-        assert "'line_end' must be >= 'line_start' (10), got 5" in str(e), \
+        assert "'line_end' must be >= 'line_start' (10), got 5" in str(e), (
             f"an end below start must error naming both values: {e}"
+        )
     else:
         raise AssertionError("an end below start must error")
     content, total = github._slice_line_range("t.txt", no_nl, 1, 4)
-    assert content == no_nl and total == 3, \
+    assert content == no_nl and total == 3, (
         "a range past the end is clamped to total_lines, returning all available lines"
+    )
     try:
         github._slice_line_range("t.txt", "a\nb", 1, 1001)
     except github.RepoError as e:
-        assert "1001 lines is too large - at most 1000 lines per read" in str(e), \
+        assert "1001 lines is too large - at most 1000 lines per read" in str(e), (
             f"a range over the cap must name the cap, not the file: {e}"
+        )
     else:
         raise AssertionError("a range over the cap must error")
 
     # --- PR outcome classification (repo_get_pr) ---------------------------
-    assert github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
-    assert github._pr_outcome({
-        "state": "closed", "merged_at": "2026-08-11T00:00:00Z", "labels": [],
-    }) == "merged", "a closed PR with merged_at is merged"
-    assert github._pr_outcome({
-        "state": "closed", "merged_at": None, "labels": [{"name": "declined"}],
-    }) == "declined", "a closed PR with a declined label is declined"
-    assert github._pr_outcome({
-        "state": "closed", "merged_at": None, "labels": [{"name": "DECLINED"}],
-    }) == "declined", "the declined label matches case-insensitively"
-    assert github._pr_outcome({"state": "closed", "merged_at": None, "labels": []}) == "closed", \
-        "a closed PR with no merge or label is closed-other"
-    assert github._pr_outcome({
-        "state": "closed", "merged_at": "2026-08-11T00:00:00Z",
-        "labels": [{"name": "declined"}],
-    }) == "merged", "a merged PR stays merged even with a declined label"
-    assert github._pr_outcome({}) == "open", "an unlabelled, open-shaped PR defaults to open"
+    assert (
+        github._pr_outcome({"state": "open", "merged_at": None, "labels": []}) == "open"
+    )
+    assert (
+        github._pr_outcome(
+            {
+                "state": "closed",
+                "merged_at": "2026-08-11T00:00:00Z",
+                "labels": [],
+            }
+        )
+        == "merged"
+    ), "a closed PR with merged_at is merged"
+    assert (
+        github._pr_outcome(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [{"name": "declined"}],
+            }
+        )
+        == "declined"
+    ), "a closed PR with a declined label is declined"
+    assert (
+        github._pr_outcome(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [{"name": "DECLINED"}],
+            }
+        )
+        == "declined"
+    ), "the declined label matches case-insensitively"
+    assert (
+        github._pr_outcome({"state": "closed", "merged_at": None, "labels": []})
+        == "closed"
+    ), "a closed PR with no merge or label is closed-other"
+    assert (
+        github._pr_outcome(
+            {
+                "state": "closed",
+                "merged_at": "2026-08-11T00:00:00Z",
+                "labels": [{"name": "declined"}],
+            }
+        )
+        == "merged"
+    ), "a merged PR stays merged even with a declined label"
+    assert github._pr_outcome({}) == "open", (
+        "an unlabelled, open-shaped PR defaults to open"
+    )
 
     # --- decline reason parsing (label vocabulary) ---------------------------
-    assert github._parse_decline_reason({
-        "state": "closed", "merged_at": None,
-        "labels": [{"name": "declined"}],
-    }) == "unspecified", "bare declined label maps to unspecified"
-    assert github._parse_decline_reason({
-        "state": "closed", "merged_at": None,
-        "labels": [{"name": "declined:fault"}],
-    }) == "fault", "declined:fault parses the reason"
-    assert github._parse_decline_reason({
-        "state": "closed", "merged_at": None,
-        "labels": [{"name": "declined:infra"}],
-    }) == "infra", "declined:infra parses the reason"
-    assert github._parse_decline_reason({
-        "state": "closed", "merged_at": None,
-        "labels": [{"name": "declined:proof"}],
-    }) == "proof", "declined:proof parses the reason"
-    assert github._parse_decline_reason({
-        "state": "closed", "merged_at": None,
-        "labels": [{"name": "declined:nonsense"}],
-    }) == "unspecified", "unrecognised suffix maps to unspecified"
-    assert github._parse_decline_reason({
-        "state": "closed", "merged_at": None, "labels": [],
-    }) == "", "no labels on a closed PR returns empty (not declined)"
-    assert github._parse_decline_reason({
-        "state": "closed", "merged_at": "2026-08-11T00:00:00Z",
-        "labels": [{"name": "declined:fault"}],
-    }) == "", "merged PR with declined:fault label returns empty (outcome wins)"
+    assert (
+        github._parse_decline_reason(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [{"name": "declined"}],
+            }
+        )
+        == "unspecified"
+    ), "bare declined label maps to unspecified"
+    assert (
+        github._parse_decline_reason(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [{"name": "declined:fault"}],
+            }
+        )
+        == "fault"
+    ), "declined:fault parses the reason"
+    assert (
+        github._parse_decline_reason(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [{"name": "declined:infra"}],
+            }
+        )
+        == "infra"
+    ), "declined:infra parses the reason"
+    assert (
+        github._parse_decline_reason(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [{"name": "declined:proof"}],
+            }
+        )
+        == "proof"
+    ), "declined:proof parses the reason"
+    assert (
+        github._parse_decline_reason(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [{"name": "declined:nonsense"}],
+            }
+        )
+        == "unspecified"
+    ), "unrecognised suffix maps to unspecified"
+    assert (
+        github._parse_decline_reason(
+            {
+                "state": "closed",
+                "merged_at": None,
+                "labels": [],
+            }
+        )
+        == ""
+    ), "no labels on a closed PR returns empty (not declined)"
+    assert (
+        github._parse_decline_reason(
+            {
+                "state": "closed",
+                "merged_at": "2026-08-11T00:00:00Z",
+                "labels": [{"name": "declined:fault"}],
+            }
+        )
+        == ""
+    ), "merged PR with declined:fault label returns empty (outcome wins)"
     assert github._parse_decline_reason({}) == "", "open PR returns empty string"
 
     # --- multi-file PR planning (repo_propose_change -> propose_change) ---
@@ -231,16 +345,27 @@ def main():
         dry_run=True,
     )
     assert plan["dry_run"] is True
-    assert plan["changes"] == ["docs/one.md", "docs/two.md"], \
+    assert plan["changes"] == ["docs/one.md", "docs/two.md"], (
         "the plan must list every file the PR will touch"
-    assert plan["commit_message"] == "multi-file change\n\nCitizen: curious-alpha (agent_id=3)", \
-        "the citizen trailer rides along on every commit"
-    assert plan["branch"].startswith("proposal/"), "a proposal-named branch is auto-generated"
+    )
+    assert (
+        plan["commit_message"]
+        == "multi-file change\n\nCitizen: curious-alpha (agent_id=3)"
+    ), "the citizen trailer rides along on every commit"
+    assert plan["branch"].startswith("proposal/"), (
+        "a proposal-named branch is auto-generated"
+    )
     assert plan["content_manifest"] == [
-        {"path": "docs/one.md", "content_bytes": 3,
-         "content_sha256": hashlib.sha256(b"one").hexdigest()},
-        {"path": "docs/two.md", "content_bytes": 3,
-         "content_sha256": hashlib.sha256(b"two").hexdigest()},
+        {
+            "path": "docs/one.md",
+            "content_bytes": 3,
+            "content_sha256": hashlib.sha256(b"one").hexdigest(),
+        },
+        {
+            "path": "docs/two.md",
+            "content_bytes": 3,
+            "content_sha256": hashlib.sha256(b"two").hexdigest(),
+        },
     ], "the plan must echo per-file byte counts and sha256 of what was received"
 
     # --- empty content is rejected (repo content integrity) ---
@@ -248,16 +373,21 @@ def main():
     # (or an empty-file commit). Deletion is the update path's delete op.
     try:
         github.propose_change(
-            [{"path": "db.py", "content": ""}], title="empty", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            [{"path": "db.py", "content": ""}],
+            title="empty",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("empty content must be rejected by propose_change")
     except github.RepoError as exc:
         assert "empty" in str(exc), str(exc)
     try:
         github.update_pr(
-            1, [{"path": "db.py", "content": ""}],
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            1,
+            [{"path": "db.py", "content": ""}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("empty content must be rejected by update_pr")
     except github.RepoError as exc:
@@ -268,31 +398,47 @@ def main():
     # substring find-replace applied IN ORDER (each against the result of the
     # previous), every find matching exactly once or the requested occurrence
     # - never a guess the caller cannot see to correct.
-    out, log = github._apply_edits("docs/f.txt", "one two one", [
-        {"find": "one", "replace": "1", "occurrence": 2},
-        {"find": "two", "replace": "2"},
-    ])
+    out, log = github._apply_edits(
+        "docs/f.txt",
+        "one two one",
+        [
+            {"find": "one", "replace": "1", "occurrence": 2},
+            {"find": "two", "replace": "2"},
+        ],
+    )
     assert out == "one 2 1", out
     assert log == [
         {"find": "one", "replace": "1", "occurrence": 2, "matched": 2},
         {"find": "two", "replace": "2", "occurrence": 1, "matched": 1},
     ], log
 
-    out, _ = github._apply_edits("docs/f.txt", "a\nbb\nccc\n", [
-        {"find": "bb", "replace": "B"},
-    ])
+    out, _ = github._apply_edits(
+        "docs/f.txt",
+        "a\nbb\nccc\n",
+        [
+            {"find": "bb", "replace": "B"},
+        ],
+    )
     assert out == "a\nB\nccc\n", out
 
     # an empty replace deletes the matched block
-    out, _ = github._apply_edits("docs/f.txt", "keep\n\n// TODO drop\nkeep2\n", [
-        {"find": "\n// TODO drop", "replace": ""},
-    ])
+    out, _ = github._apply_edits(
+        "docs/f.txt",
+        "keep\n\n// TODO drop\nkeep2\n",
+        [
+            {"find": "\n// TODO drop", "replace": ""},
+        ],
+    )
     assert out == "keep\n\nkeep2\n", out
 
     # finds may span lines and carry unicode
-    out, _ = github._apply_edits("docs/f.txt", "hé\nwörld", [
-        {"find": "é\nwö", "replace": "E/W"},
-    ])
+    out, _ = github._apply_edits(
+        "docs/f.txt",
+        "hé\nwörld",
+        [
+            {"find": "é\nwö", "replace": "E/W"},
+        ],
+    )
     assert out == "hE/Wrld", out
 
     # a find that never matches fails closed, with a re-read hint
@@ -311,7 +457,9 @@ def main():
 
     # an out-of-range occurrence is an error
     try:
-        github._apply_edits("docs/f.txt", "a", [{"find": "a", "replace": "b", "occurrence": 2}])
+        github._apply_edits(
+            "docs/f.txt", "a", [{"find": "a", "replace": "b", "occurrence": 2}]
+        )
         raise AssertionError("an out-of-range occurrence must error")
     except github.RepoError as exc:
         assert "out of range" in str(exc), str(exc)
@@ -356,10 +504,14 @@ def main():
 
     # ops apply in order against the RESULT of the previous op, so a find may
     # match text an earlier op just introduced
-    out, _ = github._apply_edits("docs/f.txt", "a b", [
-        {"find": "a", "replace": "x"},
-        {"find": "x", "replace": "y"},
-    ])
+    out, _ = github._apply_edits(
+        "docs/f.txt",
+        "a b",
+        [
+            {"find": "a", "replace": "x"},
+            {"find": "x", "replace": "y"},
+        ],
+    )
     assert out == "y b", out
 
     # direct calls are defensively guarded against malformed replace /
@@ -385,15 +537,24 @@ def main():
 
     def fake_request(method, path, body=None, ok_404=False):
         calls.append((method, path))
-        raise AssertionError(f"exclusivity must be rejected before any request: {method} {path}")
+        raise AssertionError(
+            f"exclusivity must be rejected before any request: {method} {path}"
+        )
 
     github._core._request = fake_request
     try:
         github.propose_change(
-            [{"path": "README.md", "content": "x",
-              "edits": [{"find": "a", "replace": "b"}]}],
-            title="t", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            [
+                {
+                    "path": "README.md",
+                    "content": "x",
+                    "edits": [{"find": "a", "replace": "b"}],
+                }
+            ],
+            title="t",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("content and edits on one entry must be rejected")
     except github.RepoError as exc:
@@ -407,9 +568,15 @@ def main():
     try:
         github.update_pr(
             1,
-            [{"path": "app.py", "delete": True,
-              "edits": [{"find": "a", "replace": "b"}]}],
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            [
+                {
+                    "path": "app.py",
+                    "delete": True,
+                    "edits": [{"find": "a", "replace": "b"}],
+                }
+            ],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("edits and delete on one entry must be rejected")
     except github.RepoError as exc:
@@ -424,7 +591,8 @@ def main():
         github.update_pr(
             1,
             [{"path": "app.py"}],
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("an entry with no write mode must be rejected")
     except github.RepoError as exc:
@@ -439,24 +607,32 @@ def main():
     for bad in (None, 42, 1.5, ["x"]):
         try:
             github.propose_change(
-                [{"path": "README.md", "content": bad}], title="t", body="b",
-                citizen="curious-alpha (agent_id=3)", dry_run=True,
+                [{"path": "README.md", "content": bad}],
+                title="t",
+                body="b",
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=True,
             )
             raise AssertionError(f"propose_change must reject content {bad!r}")
         except github.RepoError as exc:
             assert "non-empty string" in str(exc), (bad, str(exc))
         try:
             github.update_pr(
-                1, [{"path": "app.py", "content": bad}],
-                citizen="curious-alpha (agent_id=3)", dry_run=True,
+                1,
+                [{"path": "app.py", "content": bad}],
+                citizen="curious-alpha (agent_id=3)",
+                dry_run=True,
             )
             raise AssertionError(f"update_pr must reject content {bad!r}")
         except github.RepoError as exc:
             assert "non-empty string" in str(exc), (bad, str(exc))
     try:
         github.propose_change(
-            [{"path": "README.md"}], title="t", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            [{"path": "README.md"}],
+            title="t",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("a change without 'content' must be rejected")
     except github.RepoError as exc:
@@ -472,28 +648,43 @@ def main():
         calls.append((method, path))
         if method == "GET" and path.startswith("contents/README.md?ref="):
             return {"content": base_b64, "sha": "base-sha"}
-        raise AssertionError(f"dry-run patch must only fetch the base, got {method} {path}")
+        raise AssertionError(
+            f"dry-run patch must only fetch the base, got {method} {path}"
+        )
 
     github._core._request = fake_request
     try:
         plan = github.propose_change(
-            [{"path": "README.md", "edits": [{"find": "middle", "replace": "patched"}]}],
-            title="patch demo", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            [
+                {
+                    "path": "README.md",
+                    "edits": [{"find": "middle", "replace": "patched"}],
+                }
+            ],
+            title="patch demo",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
     finally:
         github._core._request = real_request
     assert calls == [("GET", "contents/README.md?ref=main")], calls
     assert plan["changes"] == ["README.md"]
-    assert plan["content_manifest"] == [{
-        "path": "README.md",
-        "content_bytes": len(b"old\npatched\nend\n"),
-        "content_sha256": hashlib.sha256(b"old\npatched\nend\n").hexdigest(),
-    }], "the manifest must describe the APPLIED patch result"
-    assert plan["patch_log"] == [{
-        "path": "README.md",
-        "edits": [{"find": "middle", "replace": "patched", "occurrence": 1, "matched": 1}],
-    }], plan["patch_log"]
+    assert plan["content_manifest"] == [
+        {
+            "path": "README.md",
+            "content_bytes": len(b"old\npatched\nend\n"),
+            "content_sha256": hashlib.sha256(b"old\npatched\nend\n").hexdigest(),
+        }
+    ], "the manifest must describe the APPLIED patch result"
+    assert plan["patch_log"] == [
+        {
+            "path": "README.md",
+            "edits": [
+                {"find": "middle", "replace": "patched", "occurrence": 1, "matched": 1}
+            ],
+        }
+    ], plan["patch_log"]
 
     # update_pr's manifest is computed for a valid content write too (not
     # just propose_change): dry_run needs only the ownership PR read.
@@ -508,26 +699,37 @@ def main():
     github._core._request = fake_request
     try:
         plan = github.update_pr(
-            9, [{"path": "db.py", "content": "x"}],
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            9,
+            [{"path": "db.py", "content": "x"}],
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
     finally:
         github._core._request = real_request
-    assert plan["content_manifest"] == [{
-        "path": "db.py", "content_bytes": 1,
-        "content_sha256": hashlib.sha256(b"x").hexdigest(),
-    }], "update_pr must echo the manifest for a valid content write"
+    assert plan["content_manifest"] == [
+        {
+            "path": "db.py",
+            "content_bytes": 1,
+            "content_sha256": hashlib.sha256(b"x").hexdigest(),
+        }
+    ], "update_pr must echo the manifest for a valid content write"
     assert calls == [("GET", "pulls/9")], calls
 
     # the manifest counts UTF-8 bytes, not characters
     plan = github.propose_change(
-        [{"path": "docs/u.md", "content": "héllo"}], title="unicode", body="b",
-        citizen="curious-alpha (agent_id=3)", dry_run=True,
+        [{"path": "docs/u.md", "content": "héllo"}],
+        title="unicode",
+        body="b",
+        citizen="curious-alpha (agent_id=3)",
+        dry_run=True,
     )
-    assert plan["content_manifest"] == [{
-        "path": "docs/u.md", "content_bytes": 6,
-        "content_sha256": hashlib.sha256("héllo".encode("utf-8")).hexdigest(),
-    }], plan["content_manifest"]
+    assert plan["content_manifest"] == [
+        {
+            "path": "docs/u.md",
+            "content_bytes": 6,
+            "content_sha256": hashlib.sha256("héllo".encode()).hexdigest(),
+        }
+    ], plan["content_manifest"]
 
     # content-mode dry_run stays 100% network-free (regression for #71)
     calls = []
@@ -540,8 +742,10 @@ def main():
     try:
         plan = github.propose_change(
             [{"path": "docs/new.md", "content": "hello"}],
-            title="t", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            title="t",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
     finally:
         github._core._request = real_request
@@ -557,8 +761,10 @@ def main():
     try:
         github.propose_change(
             [{"path": "nope.md", "edits": [{"find": "x", "replace": "y"}]}],
-            title="t", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            title="t",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("patching a missing file must error")
     except github.RepoError as exc:
@@ -569,14 +775,19 @@ def main():
     # a binary file (non-UTF-8) can't be patched
     def fake_request(method, path, body=None, ok_404=False):
         assert method == "GET"
-        return {"content": base64.b64encode(b"\xff\xfe\x00binary").decode("ascii"), "sha": "s"}
+        return {
+            "content": base64.b64encode(b"\xff\xfe\x00binary").decode("ascii"),
+            "sha": "s",
+        }
 
     github._core._request = fake_request
     try:
         github.propose_change(
             [{"path": "logo.png", "edits": [{"find": "x", "replace": "y"}]}],
-            title="t", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            title="t",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
         )
         raise AssertionError("patching a binary file must error")
     except github.RepoError as exc:
@@ -599,7 +810,9 @@ def main():
             return {"ref": "refs/heads/proposal/x", "object": {"sha": "head-sha"}}
         if method == "PUT" and path == "contents/README.md":
             assert body["sha"] == "base-sha", body
-            assert body["content"] == base64.b64encode(b"v2\nkeep\n").decode("ascii"), body
+            assert body["content"] == base64.b64encode(b"v2\nkeep\n").decode("ascii"), (
+                body
+            )
             return {"content": {"sha": "put-sha"}}
         if method == "POST" and path == "pulls":
             return {"number": 7, "html_url": "https://github.com/x/y/pull/7"}
@@ -609,14 +822,18 @@ def main():
     try:
         plan = github.propose_change(
             [{"path": "README.md", "edits": [{"find": "v1", "replace": "v2"}]}],
-            title="patch real", body="b",
-            citizen="curious-alpha (agent_id=3)", dry_run=False,
+            title="patch real",
+            body="b",
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
         )
     finally:
         github._core._request = real_request
     assert plan["pr_number"] == 7
-    assert plan["content_manifest"][0]["content_sha256"] == \
-        hashlib.sha256(b"v2\nkeep\n").hexdigest(), "real-path manifest is the applied result"
+    assert (
+        plan["content_manifest"][0]["content_sha256"]
+        == hashlib.sha256(b"v2\nkeep\n").hexdigest()
+    ), "real-path manifest is the applied result"
     assert ("GET", "contents/README.md?ref=main") in calls
     assert calls.count(("PUT", "contents/README.md")) == 1
 
@@ -642,15 +859,23 @@ def main():
         plan = github.update_pr(
             9,
             [{"path": "app.py", "edits": [{"find": "orig", "replace": "new"}]}],
-            citizen="curious-alpha (agent_id=3)", dry_run=False,
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=False,
         )
     finally:
         github._core._request = real_request
-    assert plan["patch_log"] == [{
-        "path": "app.py",
-        "edits": [{"find": "orig", "replace": "new", "occurrence": 1, "matched": 1}],
-    }], plan["patch_log"]
-    assert plan["content_manifest"][0]["content_sha256"] == hashlib.sha256(b"new\n").hexdigest()
+    assert plan["patch_log"] == [
+        {
+            "path": "app.py",
+            "edits": [
+                {"find": "orig", "replace": "new", "occurrence": 1, "matched": 1}
+            ],
+        }
+    ], plan["patch_log"]
+    assert (
+        plan["content_manifest"][0]["content_sha256"]
+        == hashlib.sha256(b"new\n").hexdigest()
+    )
     assert ("GET", "contents/app.py?ref=feature/x") in calls
 
     # update_pr accepts the forum-facing get_pr() result as _pr: there head
@@ -669,7 +894,8 @@ def main():
             9,
             [{"path": "app.py", "content": "fresh\n"}],
             title="T2",
-            citizen="curious-alpha (agent_id=3)", dry_run=True,
+            citizen="curious-alpha (agent_id=3)",
+            dry_run=True,
             _pr={"state": "open", "head": "feature/x", "title": "T"},
         )
     finally:
@@ -692,17 +918,41 @@ def main():
         if method == "GET" and path.startswith("commits/abc123/check-runs"):
             raise github.RepoError("GitHub API 403 on GET commits/abc123/check-runs")
         if method == "GET" and path.startswith("actions/runs?head_sha=abc123"):
-            return {"workflow_runs": [
-                {"id": 11, "name": "CI", "status": "completed", "conclusion": "failure",
-                 "html_url": "https://github.com/x/y/actions/runs/11"},
-                {"id": 12, "name": "static", "status": "completed", "conclusion": "success",
-                 "html_url": "https://github.com/x/y/actions/runs/12"},
-            ]}
+            return {
+                "workflow_runs": [
+                    {
+                        "id": 11,
+                        "name": "CI",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "https://github.com/x/y/actions/runs/11",
+                    },
+                    {
+                        "id": 12,
+                        "name": "static",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "html_url": "https://github.com/x/y/actions/runs/12",
+                    },
+                ]
+            }
         if method == "GET" and path == "actions/runs/11/jobs?per_page=100":
-            return {"jobs": [
-                {"id": 111, "name": "test", "status": "completed", "conclusion": "failure"},
-                {"id": 112, "name": "other", "status": "completed", "conclusion": "success"},
-            ]}
+            return {
+                "jobs": [
+                    {
+                        "id": 111,
+                        "name": "test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                    {
+                        "id": 112,
+                        "name": "other",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                ]
+            }
         if method == "GET" and path == "actions/jobs/111/logs":
             return "ok\n== GET /api/posts -> 200 ==\nFAILED test_thing\nError: mypy found 2 errors\n"
         raise AssertionError(f"unexpected request {method} {path}")
@@ -720,8 +970,10 @@ def main():
     assert checks["state"] == "failure", checks
     assert [r["name"] for r in checks["runs"]] == ["CI", "static"], checks["runs"]
     assert checks["failures"][0]["name"] == "CI / test", checks["failures"]
-    assert checks["failures"][0]["log_url"] == \
-        "https://github.com/nssatlantis/agent_land/actions/runs/11/job/111", checks["failures"]
+    assert (
+        checks["failures"][0]["log_url"]
+        == "https://github.com/nssatlantis/agent_land/actions/runs/11/job/111"
+    ), checks["failures"]
     assert any("mypy" in f["message"] for f in checks["failures"]), checks["failures"]
     assert ("GET", "commits/abc123/check-runs?per_page=50") in calls, calls
     assert ("GET", "actions/runs?head_sha=abc123&per_page=50") in calls, calls
@@ -736,29 +988,64 @@ def main():
         if method == "GET" and path == "pulls/9":
             return {"head": {"sha": "def456"}, "state": "open"}
         if method == "GET" and path.startswith("commits/def456/check-runs"):
-            return {"check_runs": [
-                {"id": 21, "name": "test", "status": "completed", "conclusion": "failure",
-                 "html_url": "u21"},
-                {"id": 22, "name": "static", "status": "in_progress", "conclusion": None,
-                 "html_url": "u22"},
-            ]}
+            return {
+                "check_runs": [
+                    {
+                        "id": 21,
+                        "name": "test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "u21",
+                    },
+                    {
+                        "id": 22,
+                        "name": "static",
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "html_url": "u22",
+                    },
+                ]
+            }
         if method == "GET" and path == "check-runs/21/annotations?per_page=100":
             return [{"message": "Process completed with exit code 1."}]
         if method == "GET" and path.startswith("actions/runs?head_sha=def456"):
-            return {"workflow_runs": [
-                {"id": 31, "name": "CI", "status": "completed", "conclusion": "failure",
-                 "html_url": "u31"},
-            ]}
+            return {
+                "workflow_runs": [
+                    {
+                        "id": 31,
+                        "name": "CI",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "u31",
+                    },
+                ]
+            }
         if method == "GET" and path == "actions/runs/31/jobs?per_page=100":
-            return {"jobs": [
-                {"id": 311, "name": "test", "status": "completed", "conclusion": "failure"},
-                {"id": 312, "name": "other", "status": "completed", "conclusion": "failure"},
-            ]}
+            return {
+                "jobs": [
+                    {
+                        "id": 311,
+                        "name": "test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                    {
+                        "id": 312,
+                        "name": "other",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                ]
+            }
         if method == "GET" and path == "actions/jobs/311/logs":
-            return "FAILED tests/test_db.py::test_x - AssertionError: undefined name 'x'\n"
+            return (
+                "FAILED tests/test_db.py::test_x - AssertionError: undefined name 'x'\n"
+            )
         if method == "GET" and path == "actions/jobs/312/logs":
-            return ("FAILED tests/test_db.py::test_x - AssertionError: undefined name 'x'\n"
-                    "FAILED tests/test_db.py::test_y - AssertionError: expected 3 but got 4\n")
+            return (
+                "FAILED tests/test_db.py::test_x - AssertionError: undefined name 'x'\n"
+                "FAILED tests/test_db.py::test_y - AssertionError: expected 3 but got 4\n"
+            )
         raise AssertionError(f"unexpected request {method} {path}")
 
     real_request_text = github._core._request_text
@@ -780,7 +1067,9 @@ def main():
     # dedup: test_x appears in both jobs, kept once (first wins)
     assert len(checks["failures"]) == 3, checks["failures"]
     # thin annotation preserved (last)
-    assert checks["failures"][2]["message"] == "Process completed with exit code 1.", checks["failures"]
+    assert checks["failures"][2]["message"] == "Process completed with exit code 1.", (
+        checks["failures"]
+    )
     assert checks["failures"][2].get("path") is None, checks["failures"]
     # supplement was called
     assert ("GET", "actions/runs?head_sha=def456&per_page=50") in calls, calls
@@ -793,12 +1082,21 @@ def main():
         if method == "GET" and path == "pulls/9":
             return {"head": {"sha": "jkl012"}, "state": "open"}
         if method == "GET" and path.startswith("commits/jkl012/check-runs"):
-            return {"check_runs": [
-                {"id": 41, "name": "test", "status": "completed", "conclusion": "failure",
-                 "html_url": "u41"},
-            ]}
+            return {
+                "check_runs": [
+                    {
+                        "id": 41,
+                        "name": "test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "u41",
+                    },
+                ]
+            }
         if method == "GET" and path == "check-runs/41/annotations?per_page=100":
-            return [{"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}]
+            return [
+                {"path": "db.py", "start_line": 42, "message": "undefined name 'x'"}
+            ]
         raise AssertionError(f"unexpected request {method} {path}")
 
     github._core._request = fake_request
@@ -831,10 +1129,18 @@ def main():
         if method == "GET" and path.startswith("actions/runs?head_sha=ghi789"):
             return {"workflow_runs": []}
         if method == "GET" and path == "commits/ghi789/status":
-            return {"state": "failure", "total_count": 1, "statuses": [
-                {"context": "continuous-integration", "state": "failure",
-                 "description": "The CI build failed", "target_url": "https://ci/x/1"},
-            ]}
+            return {
+                "state": "failure",
+                "total_count": 1,
+                "statuses": [
+                    {
+                        "context": "continuous-integration",
+                        "state": "failure",
+                        "description": "The CI build failed",
+                        "target_url": "https://ci/x/1",
+                    },
+                ],
+            }
         raise AssertionError(f"unexpected request {method} {path}")
 
     github._core._request = fake_request
@@ -872,13 +1178,29 @@ def main():
     def fake_request(method, path, body=None, ok_404=False):
         calls.append((method, path))
         if method == "GET" and path == "pulls/9":
-            return {"head": {"ref": "feature/x"}, "base": {"ref": "main"}, "state": "open"}
+            return {
+                "head": {"ref": "feature/x"},
+                "base": {"ref": "main"},
+                "state": "open",
+            }
         if method == "GET" and path == "pulls/9/commits?per_page=100&page=1":
-            return [{"sha": f"s{i}", "commit": {"message": f"m{i}",
-                    "author": {"name": "a", "date": "d"}}} for i in range(100)]
+            return [
+                {
+                    "sha": f"s{i}",
+                    "commit": {
+                        "message": f"m{i}",
+                        "author": {"name": "a", "date": "d"},
+                    },
+                }
+                for i in range(100)
+            ]
         if method == "GET" and path == "pulls/9/commits?per_page=100&page=2":
-            return [{"sha": "s100", "commit": {"message": "m100",
-                    "author": {"name": "a", "date": "d"}}}]
+            return [
+                {
+                    "sha": "s100",
+                    "commit": {"message": "m100", "author": {"name": "a", "date": "d"}},
+                }
+            ]
         raise AssertionError(f"unexpected request {method} {path}")
 
     github._core._request = fake_request
@@ -947,18 +1269,37 @@ def main():
 
     def fake_request(method, path, body=None, ok_404=False):
         calls.append((method, path))
-        if method == "GET" and path == "pulls?state=closed&sort=updated&direction=desc&per_page=50":
+        if (
+            method == "GET"
+            and path == "pulls?state=closed&sort=updated&direction=desc&per_page=50"
+        ):
             return [
-                {"number": 1, "title": "a", "head": {"ref": "h"}, "base": {"ref": "main"},
-                 "user": {"login": "u"}, "created_at": "2026-08-01T00:00:00Z",
-                 "updated_at": "2026-08-15T00:00:00Z", "state": "closed",
-                 "merged_at": "2026-08-14T00:00:00Z", "closed_at": "2026-08-15T00:00:00Z",
-                 "html_url": "u1"},
-                {"number": 2, "title": "b", "head": {"ref": "h2"}, "base": {"ref": "main"},
-                 "user": {"login": "u"}, "created_at": "2026-07-01T00:00:00Z",
-                 "updated_at": "2026-07-20T00:00:00Z", "state": "closed",
-                 "merged_at": None, "closed_at": "2026-07-20T00:00:00Z",
-                 "html_url": "u2"},
+                {
+                    "number": 1,
+                    "title": "a",
+                    "head": {"ref": "h"},
+                    "base": {"ref": "main"},
+                    "user": {"login": "u"},
+                    "created_at": "2026-08-01T00:00:00Z",
+                    "updated_at": "2026-08-15T00:00:00Z",
+                    "state": "closed",
+                    "merged_at": "2026-08-14T00:00:00Z",
+                    "closed_at": "2026-08-15T00:00:00Z",
+                    "html_url": "u1",
+                },
+                {
+                    "number": 2,
+                    "title": "b",
+                    "head": {"ref": "h2"},
+                    "base": {"ref": "main"},
+                    "user": {"login": "u"},
+                    "created_at": "2026-07-01T00:00:00Z",
+                    "updated_at": "2026-07-20T00:00:00Z",
+                    "state": "closed",
+                    "merged_at": None,
+                    "closed_at": "2026-07-20T00:00:00Z",
+                    "html_url": "u2",
+                },
             ]
         raise AssertionError(f"unexpected request {method} {path}")
 
@@ -969,7 +1310,10 @@ def main():
         github._core._request = real_request
     assert [r["number"] for r in closed] == [1], closed
     assert closed[0]["outcome"] == "merged" and closed[0]["merged_at"], closed
-    assert ("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=50") in calls
+    assert (
+        "GET",
+        "pulls?state=closed&sort=updated&direction=desc&per_page=50",
+    ) in calls
 
     try:
         github.list_prs(state="bogus")
@@ -998,12 +1342,28 @@ def main():
         open_calls.append((method, path))
         if method == "GET" and path.startswith("pulls?state=open"):
             return [
-                {"number": 10, "title": "new", "head": {"ref": "h"}, "base": {"ref": "main"},
-                 "user": {"login": "u"}, "created_at": "2026-08-10T00:00:00Z",
-                 "html_url": "u10", "mergeable_state": "clean", "body": ""},
-                {"number": 11, "title": "old", "head": {"ref": "h2"}, "base": {"ref": "main"},
-                 "user": {"login": "u"}, "created_at": "2026-07-01T00:00:00Z",
-                 "html_url": "u11", "mergeable_state": "clean", "body": ""},
+                {
+                    "number": 10,
+                    "title": "new",
+                    "head": {"ref": "h"},
+                    "base": {"ref": "main"},
+                    "user": {"login": "u"},
+                    "created_at": "2026-08-10T00:00:00Z",
+                    "html_url": "u10",
+                    "mergeable_state": "clean",
+                    "body": "",
+                },
+                {
+                    "number": 11,
+                    "title": "old",
+                    "head": {"ref": "h2"},
+                    "base": {"ref": "main"},
+                    "user": {"login": "u"},
+                    "created_at": "2026-07-01T00:00:00Z",
+                    "html_url": "u11",
+                    "mergeable_state": "clean",
+                    "body": "",
+                },
             ]
         raise AssertionError(f"unexpected request {method} {path}")
 
@@ -1018,18 +1378,32 @@ def main():
 
     fresh_before = db.whoami(agents["fresh"]["token"])["karma"]
     assert fresh_before == 0, "fresh agent should still be at 0 karma"
-    assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is True
-    assert db.award_pr_merge_karma(101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z") is False, \
-        "re-awarding the same PR must be a no-op"
+    assert (
+        db.award_pr_merge_karma(
+            101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z"
+        )
+        is True
+    )
+    assert (
+        db.award_pr_merge_karma(
+            101, agents["fresh"]["agent_id"], "2026-08-11T00:00:00Z"
+        )
+        is False
+    ), "re-awarding the same PR must be a no-op"
     fresh_after = db.whoami(agents["fresh"]["token"])["karma"]
-    assert fresh_after == fresh_before + 1, "a merged PR credits exactly PR_MERGE_KARMA karma"
-    assert db.award_pr_merge_karma(102, 999999, "2026-08-11T00:00:00Z") is False, \
+    assert fresh_after == fresh_before + 1, (
+        "a merged PR credits exactly PR_MERGE_KARMA karma"
+    )
+    assert db.award_pr_merge_karma(102, 999999, "2026-08-11T00:00:00Z") is False, (
         "merges credited to a missing agent must be skipped, not crash"
+    )
     by_id = {a["id"]: a for a in aggregates.list_agents()}
-    assert by_id[agents["fresh"]["agent_id"]]["karma"] == fresh_before + 1, \
+    assert by_id[agents["fresh"]["agent_id"]]["karma"] == fresh_before + 1, (
         "list_agents must include merge karma"
-    assert by_id[agents["fresh"]["agent_id"]]["last_active"] is not None, \
+    )
+    assert by_id[agents["fresh"]["agent_id"]]["last_active"] is not None, (
         "list_agents exposes last_active from any public action (a merge counts)"
+    )
 
     # --- last_active = newest public action; lurkers surface null ----------
     # A citizen whose only public act is a vote gets last_active from that
@@ -1039,17 +1413,21 @@ def main():
     lurker = db.register_agent("lurker")
     db.vote(vote_only["token"], "post", post_id, 1)
     rows_la = {a["id"]: a for a in aggregates.list_agents()}
-    assert rows_la[vote_only["agent_id"]]["last_active"] is not None, \
+    assert rows_la[vote_only["agent_id"]]["last_active"] is not None, (
         "a vote is a public action and must set last_active"
-    assert rows_la[lurker["agent_id"]]["last_active"] is None, \
+    )
+    assert rows_la[lurker["agent_id"]]["last_active"] is None, (
         "a citizen with no public action must expose last_active as null"
+    )
     alpha_id = agents["alpha"]["agent_id"]
     before_edit = rows_la[alpha_id]["last_active"]
-    db.edit_post(agents["alpha"]["token"], post_id,
-                 body="edited so the edit counts as activity")
+    db.edit_post(
+        agents["alpha"]["token"], post_id, body="edited so the edit counts as activity"
+    )
     rows_after = {a["id"]: a for a in aggregates.list_agents()}
-    assert rows_after[alpha_id]["last_active"] >= before_edit, \
+    assert rows_after[alpha_id]["last_active"] >= before_edit, (
         "an edit must count toward last_active and never move it backwards"
+    )
     # Merge karma is the same number used by the gates: fresh can now report.
     reports.report_content(agents["fresh"]["token"], "post", post_id, "now earned")
 
@@ -1062,7 +1440,17 @@ def main():
     # segments - the guard standing between user input and the contents API.
     assert github._validate_path("db.py") == "db.py"
     assert github._validate_path("src/util/thing.py") == "src/util/thing.py"
-    for bad in ("", "  ", "/etc/passwd", "../secret", "a/../b", "a//b", "a/./b", "a/", "a/.."):
+    for bad in (
+        "",
+        "  ",
+        "/etc/passwd",
+        "../secret",
+        "a/../b",
+        "a//b",
+        "a/./b",
+        "a/",
+        "a/..",
+    ):
         try:
             github._validate_path(bad)
         except github.RepoError as exc:
@@ -1071,17 +1459,24 @@ def main():
             raise AssertionError(f"_validate_path must reject {bad!r}")
     # _escape_md: backslash-escape the markdown-significant chars so a title
     # with stars/underscores/brackets/backticks renders as plain text.
-    assert github._escape_md("a*b_c[d]e`f`g\\h") == \
-        "a\\*b\\_c\\[d\\]e\\`f\\`g\\\\h", github._escape_md("a*b_c[d]e`f`g\\h")
+    assert github._escape_md("a*b_c[d]e`f`g\\h") == "a\\*b\\_c\\[d\\]e\\`f\\`g\\\\h", (
+        github._escape_md("a*b_c[d]e`f`g\\h")
+    )
     assert github._escape_md("plain text") == "plain text"
     assert github._escape_md("") == ""
     # _decode_content_text: base64 round-trip; non-UTF-8 bytes are binary and
     # patch mode must refuse them (read_file instead serves a note).
-    assert github._decode_content_text("a.py", {"content": base64.b64encode(
-        "hello\n".encode("utf-8")).decode("ascii")}) == "hello\n"
+    assert (
+        github._decode_content_text(
+            "a.py",
+            {"content": base64.b64encode(b"hello\n").decode("ascii")},
+        )
+        == "hello\n"
+    )
     try:
-        github._decode_content_text("a.py", {"content": base64.b64encode(
-            b"\xff\xfe\x00").decode("ascii")})
+        github._decode_content_text(
+            "a.py", {"content": base64.b64encode(b"\xff\xfe\x00").decode("ascii")}
+        )
         raise AssertionError("binary content must be refused by patch decode")
     except github.RepoError as exc:
         assert "not UTF-8" in str(exc) and "binary" in str(exc), str(exc)
@@ -1107,17 +1502,22 @@ def main():
         )
         assert github._checks._checks_for_head("abc123")["state"] == "success"
         github._core._request = lambda method, path, body=None, ok_404=False: (
-            calls.append((method, path)) or (_ for _ in ()).throw(github.RepoError("down"))
+            calls.append((method, path))
+            or (_ for _ in ()).throw(github.RepoError("down"))
         )
-        assert github._checks._checks_for_head("abc123") is None, \
+        assert github._checks._checks_for_head("abc123") is None, (
             "an unreachable GitHub must degrade to None, not raise"
+        )
     finally:
         github._core._request = real_request
-    tier_probe = [("GET", "commits/abc123/check-runs?per_page=50"),
-                  ("GET", "actions/runs?head_sha=abc123&per_page=50"),
-                  ("GET", "commits/abc123/status")]
-    assert calls == tier_probe * 3, \
+    tier_probe = [
+        ("GET", "commits/abc123/check-runs?per_page=50"),
+        ("GET", "actions/runs?head_sha=abc123&per_page=50"),
+        ("GET", "commits/abc123/status"),
+    ]
+    assert calls == tier_probe * 3, (
         "empty check-runs and Actions tiers fall through to the commit-status endpoint"
+    )
     print("  github pure helpers: ok")
 
     # --- github.recently_closed_prs: parse the poller's input shape ---------
@@ -1128,25 +1528,44 @@ def main():
     try:
         calls = []
         github._core._request = lambda method, path, body=None, ok_404=False: (
-            calls.append((method, path)) or [
-                {"number": 5, "title": "t", "user": {"login": "bob"},
-                 "merged_at": "2026-08-11T00:00:00Z", "closed_at": "2026-08-11T01:00:00Z",
-                 "labels": [{"name": "declined"}],
-                 "body": "stuff\n\nCitizen: curious-alpha (agent_id=3)\n\nProposal: #4"},
-                {"number": 6, "title": "u", "user": {"login": "alice"},
-                 "merged_at": None, "closed_at": "2026-08-11T02:00:00Z",
-                 "labels": [], "body": "human-made, no trailer"},
+            calls.append((method, path))
+            or [
+                {
+                    "number": 5,
+                    "title": "t",
+                    "user": {"login": "bob"},
+                    "merged_at": "2026-08-11T00:00:00Z",
+                    "closed_at": "2026-08-11T01:00:00Z",
+                    "labels": [{"name": "declined"}],
+                    "body": "stuff\n\nCitizen: curious-alpha (agent_id=3)\n\nProposal: #4",
+                },
+                {
+                    "number": 6,
+                    "title": "u",
+                    "user": {"login": "alice"},
+                    "merged_at": None,
+                    "closed_at": "2026-08-11T02:00:00Z",
+                    "labels": [],
+                    "body": "human-made, no trailer",
+                },
             ]
         )
         closed = github.recently_closed_prs(per_page=2)
-        assert calls == [("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=2")], \
-            "recently_closed_prs hits the closed-pulls endpoint with the page size"
-        assert closed[0]["number"] == 5 and closed[0]["merged_at"] == "2026-08-11T00:00:00Z", closed[0]
+        assert calls == [
+            ("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=2")
+        ], "recently_closed_prs hits the closed-pulls endpoint with the page size"
+        assert (
+            closed[0]["number"] == 5
+            and closed[0]["merged_at"] == "2026-08-11T00:00:00Z"
+        ), closed[0]
         assert closed[0]["labels"] == ["declined"], closed[0]
-        assert closed[0]["citizen"] == {"name": "curious-alpha", "agent_id": 3}, closed[0]
+        assert closed[0]["citizen"] == {"name": "curious-alpha", "agent_id": 3}, closed[
+            0
+        ]
         assert closed[0]["proposal_post_id"] == 4, closed[0]
-        assert closed[1]["citizen"] is None and closed[1]["proposal_post_id"] is None, \
+        assert closed[1]["citizen"] is None and closed[1]["proposal_post_id"] is None, (
             "a PR without a Citizen trailer maps to no citizen / proposal"
+        )
     finally:
         github._core._request = real_request
     print("  github.recently_closed_prs: ok")
@@ -1156,8 +1575,9 @@ def main():
     # reads every repo tool reports through (and the viewer's api_overview).
     assert github.repo_spec(), "the tools must be wired to a repo slug"
     assert "/" in github.repo_spec(), "the repo slug must be owner/name"
-    assert github.base_branch() == github.GITHUB_BASE_BRANCH, \
+    assert github.base_branch() == github.GITHUB_BASE_BRANCH, (
         "base_branch must match github's configured GITHUB_BASE_BRANCH"
+    )
     print("  github repo_spec/base_branch: ok")
 
     # --- open-PR helper: one batched opener map (server's prs_open count) --
@@ -1165,7 +1585,9 @@ def main():
     # single query - the server's _open_pr_count_for reads it instead of a
     # per-PR connection.  Set up a link for PR 101 to epsilon.
     _opener_prop = db.create_proposal(
-        agents["alpha"]["token"], "opener helper setup", "body",
+        agents["alpha"]["token"],
+        "opener helper setup",
+        "body",
     )
     db.link_pr_to_proposal(101, _opener_prop["post_id"], agents["epsilon"]["agent_id"])
     links = db.linked_pr_openers()
@@ -1178,10 +1600,12 @@ def main():
     db.link_pr_to_proposal(778, map_prop["post_id"], agents["theta"]["agent_id"])
     links = db.linked_pr_openers()
     assert links[777] == {
-        "name": agents["zeta"]["name"], "agent_id": agents["zeta"]["agent_id"]
+        "name": agents["zeta"]["name"],
+        "agent_id": agents["zeta"]["agent_id"],
     }, "a fresh link appears in the map with its recorded opener"
     assert links[778] == {
-        "name": agents["theta"]["name"], "agent_id": agents["theta"]["agent_id"]
+        "name": agents["theta"]["name"],
+        "agent_id": agents["theta"]["agent_id"],
     }, "the map holds every linked PR in one lookup"
     print("  linked_pr_openers: ok")
 
@@ -1194,16 +1618,18 @@ def main():
     # Valid JSON string -> list[dict] (passed as files parameter, not file_path)
     valid_json = '[{"path": "a.md", "content": "hello"}]'
     parsed = rh._changes_for_repo_propose(None, None, valid_json)
-    assert parsed == [{"path": "a.md", "content": "hello"}], \
+    assert parsed == [{"path": "a.md", "content": "hello"}], (
         "valid JSON string must be parsed to list[dict]"
+    )
 
     # Valid JSON string for update
     parsed_update = rh._changes_for_repo_update(valid_json)
-    assert parsed_update == [{"path": "a.md", "content": "hello"}], \
+    assert parsed_update == [{"path": "a.md", "content": "hello"}], (
         "valid JSON string must be parsed in update path too"
+    )
 
     # Invalid JSON -> clear ForumError
-    invalid_json = 'not valid json {'
+    invalid_json = "not valid json {"
     try:
         rh._changes_for_repo_propose(None, None, invalid_json)
         raise AssertionError("invalid JSON must raise ForumError")
@@ -1218,13 +1644,16 @@ def main():
 
     # None and list inputs still work (backwards compatibility)
     # For propose: None files is only valid with file_path + content provided
-    assert rh._changes_for_repo_propose("a.md", "hello", None) == [{"path": "a.md", "content": "hello"}], \
-        "file_path + content with None files works"
-    assert rh._changes_for_repo_propose(None, None, [{"path": "b.md", "content": "x"}]) == \
-        [{"path": "b.md", "content": "x"}], "list input passes through"
+    assert rh._changes_for_repo_propose("a.md", "hello", None) == [
+        {"path": "a.md", "content": "hello"}
+    ], "file_path + content with None files works"
+    assert rh._changes_for_repo_propose(
+        None, None, [{"path": "b.md", "content": "x"}]
+    ) == [{"path": "b.md", "content": "x"}], "list input passes through"
     assert rh._changes_for_repo_update(None) == [], "None passes through in update"
-    assert rh._changes_for_repo_update([{"path": "c.md", "content": "y"}]) == \
-        [{"path": "c.md", "content": "y"}], "list input passes through in update"
+    assert rh._changes_for_repo_update([{"path": "c.md", "content": "y"}]) == [
+        {"path": "c.md", "content": "y"}
+    ], "list input passes through in update"
 
     # Empty list is rejected (existing behavior)
     try:

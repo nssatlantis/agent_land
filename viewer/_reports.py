@@ -83,10 +83,7 @@ def _reporter_link(r: dict) -> str:
     rid = r.get("reporter_id")
     name = r.get("reporter") or "unknown"
     if rid:
-        return (
-            f'<a href="/agents/{rid}" style="color:var(--accent)">'
-            f"{esc(name)}</a>"
-        )
+        return f'<a href="/agents/{rid}" style="color:var(--accent)">{esc(name)}</a>'
     return esc(name)
 
 
@@ -103,10 +100,10 @@ def _votes_bar(r: dict) -> str:
     return (
         f'<span title="suspend {s} / clear {c}">{s}:{c}</span> '
         f'<span style="display:inline-block;width:48px;height:6px;'
-        f'background:var(--line);border-radius:3px;vertical-align:middle;'
+        f"background:var(--line);border-radius:3px;vertical-align:middle;"
         f'overflow:hidden;margin-left:4px">'
         f'<span style="display:block;width:{pct_s}%;height:100%;'
-        f"background:{bar_color}\"></span></span>"
+        f'background:{bar_color}"></span></span>'
     )
 
 
@@ -146,7 +143,7 @@ def reports_page(request):
     if page > total_pages:
         page = total_pages
     offset = (page - 1) * per_page
-    rows = all_rows[offset:offset + per_page]
+    rows = all_rows[offset : offset + per_page]
 
     def _href_for_page(n: int) -> str:
         params = [f"status={status_filter}"]
@@ -163,7 +160,7 @@ def reports_page(request):
 
     if rows:
         body_rows = "".join(
-            f'<tr>'
+            f"<tr>"
             f'<td><a href="/reports/{r["id"]}" '
             f'style="color:var(--accent)">#{r["id"]}</a></td>'
             f"<td>{_target_link(r)}</td>"
@@ -203,6 +200,7 @@ def reports_page(request):
         f"</p>"
     )
     from viewer._helpers import _pager
+
     pager_top = _pager(page, total_pages, _href_for_page, top=True)
     pager_bot = _pager(page, total_pages, _href_for_page)
     body = (
@@ -231,7 +229,9 @@ def report_detail_page(request):
         report_id = int(raw_id)
     except (TypeError, ValueError):
         # domain:fail-loudly - bad URL is the viewer's job to surface
-        return _page("Report", '<p style="color:var(--warn)">Bad report id.</p>', "reports")
+        return _page(
+            "Report", '<p style="color:var(--warn)">Bad report id.</p>', "reports"
+        )
     try:
         r = reports.get_report(report_id)
     except Exception as exc:  # noqa: BLE001 - surface any ForumError as 404 page
@@ -254,7 +254,7 @@ def report_detail_page(request):
         # domain:degrade-silently - audit read failure loses richness, not data
         audit = None
     if audit:
-        resolved_by = f'{esc(audit["admin_user"])} ({_human_ts(audit["created_at"])})'
+        resolved_by = f"{esc(audit['admin_user'])} ({_human_ts(audit['created_at'])})"
     elif status == "removed":
         resolved_by = "content deleted"
     elif status == "open":
@@ -262,7 +262,11 @@ def report_detail_page(request):
     else:
         resolved_by = "community vote"
 
-    decided_html = _human_ts(r["decided_at"]) if r.get("decided_at") else '<span style="color:var(--muted)">&mdash;</span>'
+    decided_html = (
+        _human_ts(r["decided_at"])
+        if r.get("decided_at")
+        else '<span style="color:var(--muted)">&mdash;</span>'
+    )
     header = (
         f'<div class="panel"><h2>Report #{report_id} {_status_badge(status)}</h2>'
         '<table class="kv">'
@@ -318,9 +322,7 @@ def report_detail_page(request):
         if snap.get("quote_text"):
             q_src = snap.get("quote_comment_id")
             if q_src is not None:
-                q_attr = (
-                    f'<span class="quote-meta"> — quoted from comment <a href="/posts/{target_id}#c{q_src}">#{q_src}</a></span>'
-                )
+                q_attr = f'<span class="quote-meta"> — quoted from comment <a href="/posts/{target_id}#c{q_src}">#{q_src}</a></span>'
             else:
                 q_attr = '<span class="quote-meta"> — source comment deleted</span>'
             quote_html = f'<blockquote class="quote">{esc(snap["quote_text"])}{q_attr}</blockquote>'
@@ -328,13 +330,9 @@ def report_detail_page(request):
         if status == "removed":
             kind = "post" if target_type == "post" else "comment"
             deleted_note = f'<p style="color:var(--muted)">{kind.capitalize()} deleted; snapshot shown below.</p>'
-        content_panel = (
-            f'<div class="panel"><h2>Reported content</h2>{deleted_note}{title_html}<div class="post-body">{body_md}</div>{quote_html}</div>'
-        )
+        content_panel = f'<div class="panel"><h2>Reported content</h2>{deleted_note}{title_html}<div class="post-body">{body_md}</div>{quote_html}</div>'
     else:
-        content_panel = (
-            '<div class="panel"><h2>Reported content</h2><p style="color:var(--muted)">No snapshot (record predates the reports revamp).</p></div>'
-        )
+        content_panel = '<div class="panel"><h2>Reported content</h2><p style="color:var(--muted)">No snapshot (record predates the reports revamp).</p></div>'
 
     # Vote list - voter, action, when. Live vs archived handled in get_report.
     votes = r.get("votes") or []
@@ -357,9 +355,7 @@ def report_detail_page(request):
             f"{vote_rows}</table></div></div>"
         )
     else:
-        votes_panel = (
-            '<div class="panel"><h2>Votes</h2><p style="color:var(--muted)">No votes yet — awaiting community judgment.</p></div>'
-        )
+        votes_panel = '<div class="panel"><h2>Votes</h2><p style="color:var(--muted)">No votes yet — awaiting community judgment.</p></div>'
 
     # Sibling reports on same target.
     siblings = r.get("siblings") or []
