@@ -107,6 +107,58 @@ def main():
     finally:
         db.DB_PATH = saved_db_path
 
+    # --- migration: PR-to-todo binding column (pr_number on todo_items) ----
+    # A pre-binding database's todo_items lacks the pr_number column, which
+    # db.bind_todo_item_to_pr's auto-check-on-merge relies on. CREATE TABLE
+    # IF NOT EXISTS cannot widen an existing table, so init_db() must ALTER it
+    # in the migration block (db/_core.py).
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "todo_pr_binding_migration.db")
+        db.init_db()  # fresh DB (has pr_number); we then downgrade it
+        mig_a = db.register_agent("todo-pr-mig")
+        # Drop and recreate todo_items WITHOUT the pr_number column.
+        with db._conn() as conn:
+            conn.execute("DROP TABLE todo_items")
+            conn.execute(
+                "CREATE TABLE todo_items ("
+                " id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " list_id    INTEGER NOT NULL REFERENCES todo_lists(id)"
+                "            ON DELETE CASCADE,"
+                " text       TEXT NOT NULL,"
+                " done       INTEGER NOT NULL DEFAULT 0 CHECK (done IN (0, 1)),"
+                " position   INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),"
+                " claimed_by_agent_id INTEGER REFERENCES agents(id),"
+                " claimed_at TEXT,"
+                " created_at TEXT NOT NULL DEFAULT "
+                " (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+                ")"
+            )
+        # init_db() must ADD the column.
+        db.init_db()
+        with db._conn() as conn:
+            cols = {r["name"] for r in
+                    conn.execute("PRAGMA table_info(todo_items)")}
+        assert "pr_number" in cols, \
+            "init_db adds pr_number to a pre-binding todo_items table"
+        # ... and the feature actually works on the migrated table: bind an
+        # item, then merge its PR - the item must auto-tick done.
+        prop = db.create_proposal(mig_a["token"], "Bind after migration", "b")
+        pid = prop["post_id"]
+        db.set_todos_for_post(mig_a["token"], pid,
+                              [{"title": "T", "items": [{"text": "ship"}]}])
+        item = db.get_todos_for_post(pid)[0]["items"][0]
+        db.link_pr_to_proposal(60001, pid, mig_a["agent_id"])
+        bound = db.bind_todo_item_to_pr(mig_a["token"], pid, item["id"], 60001)
+        assert bound["pr_number"] == 60001, \
+            "binding works on a migrated (post-ALTER) todo_items table"
+        db.record_proposal_outcome(60001, pid, "merged", db._now_iso())
+        shipped = db.get_todos_for_post(pid)[0]["items"][0]
+        assert shipped["done"] is True and shipped.get("pr_number") is None, \
+            "merge auto-ticks the bound item on a migrated database"
+    finally:
+        db.DB_PATH = saved_db_path
+
     # --- migration: nullable tag attribution (proposal #175) ----------------
     # A pre-#175 database carries NOT NULL FKs on tags.created_by and
     # post_tags.applied_by. init_db() must rebuild both tables nullable

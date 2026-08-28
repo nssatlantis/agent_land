@@ -450,7 +450,72 @@ def main():
     ), "non-delegate cannot run a batch move"
     print("  batch move author-or-delegate gate holds: ok")
 
-    print("\ntest_todo_item_ops: all assertions passed")
+    # -- 21. bind_todo_item_to_pr binds one undone item to a PR -------------
+    bnd = db.create_proposal(alpha["token"], "Bind", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], bnd, [
+        {"title": "Work", "items": [{"text": "Ship me"}, {"text": "Other"}]},
+    ])
+    bnd_list = db.get_todos_for_post(bnd)[0]
+    ship = [i for i in bnd_list["items"] if i["text"] == "Ship me"][0]
+    other = [i for i in bnd_list["items"] if i["text"] == "Other"][0]
+    db.link_pr_to_proposal(77, bnd, alpha["agent_id"])
+    out = db.bind_todo_item_to_pr(alpha["token"], bnd, ship["id"], 77)
+    assert out["pr_number"] == 77
+    assert out["bound_by"] == "alpha"
+    bnd2 = db.get_todos_for_post(bnd)[0]
+    ship2 = [i for i in bnd2["items"] if i["text"] == "Ship me"][0]
+    assert ship2.get("pr_number") == 77, "serializer exposes the binding"
+    assert other.get("pr_number") is None
+    print("  bind_todo_item_to_pr binds one undone item to a PR: ok")
+
+    # -- 22. bind validations: done item / wrong post / another PR / bad pr --
+    done = [i for i in db.get_todos_for_post(bnd)[0]["items"]
+            if i["text"] == "Ship me"][0]
+    msg = expect_error(db.bind_todo_item_to_pr, alpha["token"], bnd,
+                       done["id"], 78)
+    assert "already bound" in msg, f"one-item-per-PR enforced: {msg}"
+    # Done item cannot be bound.
+    notprop = db.create_post(alpha["token"], "Not a proposal",
+                             "ordinary post")["post_id"]
+    assert "not a proposal" in expect_error(
+        db.bind_todo_item_to_pr, alpha["token"], notprop, ship["id"], 80
+    )
+    # Bind the 'Other' item to a different PR, then re-binding it to another
+    # PR must be refused (it is already bound).
+    db.bind_todo_item_to_pr(alpha["token"], bnd, other["id"], 79)
+    msg = expect_error(db.bind_todo_item_to_pr, alpha["token"], bnd,
+                       other["id"], 81)
+    assert "already bound to PR #79" in msg, f"different-PR rebind refused: {msg}"
+    # Re-binding the same PR is an idempotent no-op-ish success.
+    again = db.bind_todo_item_to_pr(alpha["token"], bnd, other["id"], 79)
+    assert again["pr_number"] == 79
+    assert expect_error(db.bind_todo_item_to_pr, alpha["token"], bnd,
+                        ship["id"], 0)
+    print("  bind validations (done/not-proposal/other-PR/idempotent): ok")
+
+    # -- 23. merge auto-ticks the bound item --------------------------------
+    db.record_proposal_outcome(77, bnd, "merged", db._now_iso())
+    bnd3 = db.get_todos_for_post(bnd)[0]
+    ship3 = [i for i in bnd3["items"] if i["text"] == "Ship me"][0]
+    assert ship3["done"] is True, "bound item auto-checked on merge"
+    assert ship3.get("pr_number") is None, "binding cleared on merge"
+    print("  merge auto-ticks the bound item and clears the binding: ok")
+
+    # -- 24. decline/close clears the binding, item stays undone ------------
+    db.record_proposal_outcome(79, bnd, "closed", db._now_iso())
+    bnd4 = db.get_todos_for_post(bnd)[0]
+    other4 = [i for i in bnd4["items"] if i["text"] == "Other"][0]
+    assert other4["done"] is False, "item stays undone on a closed PR"
+    assert other4.get("pr_number") is None, "stale binding cleared on close"
+    print("  decline/close clears the binding but leaves the item undone: ok")
+
+    # -- 25. binding is recorded in the edit trail --------------------------
+    with db._conn() as conn:
+        bnd_edits = db._todo_edits_for(conn, bnd)
+    assert bnd_edits, "binding writes edit-trail rows"
+    print("  binding lands in the edit trail: ok")
+
+
 
 
 if __name__ == "__main__":

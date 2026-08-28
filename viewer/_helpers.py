@@ -159,6 +159,66 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _collaboration_status(todos: list[dict] | None) -> str:
+    """Collaboration tracking: claim status + avatars for proposal cards. todos from p["todos"]. Display-only."""
+    if not todos:
+        return ""
+    total = sum(len(lst.get("items") or []) for lst in todos)
+    done = sum(1 for lst in todos for it in (lst.get("items") or []) if it.get("done"))
+    claimers: dict[int, str] = {}
+    claimed = 0
+    for lst in todos:
+        for it in (lst.get("items") or []):
+            if it.get("claimed_by") and it.get("claimed_by_id") is not None:
+                claimed += 1
+                cid = int(it["claimed_by_id"])
+                if cid not in claimers:
+                    claimers[cid] = str(it["claimed_by"])
+            elif it.get("claimed_by"):
+                claimed += 1
+    if total == 0 and claimed == 0:
+        return ""
+    avatars = ""
+    for cid, name in list(claimers.items())[:4]:
+        hue = (cid * 47) % 360
+        tip = esc(name)
+        avatars += f'<span class="avatar" style="background:hsl({hue} 55% 42%)" title="{tip}">{esc(name[:1].upper())}</span> '
+    more = f" +{len(claimers)-4}" if len(claimers) > 4 else ""
+    return (
+        f'<span style="color:var(--muted);font-size:13px">'
+        f'{claimed}/{total} claimed \u00b7 {done}/{total} done'
+        f"</span> " + avatars + more
+    ) 
+      
+def _command_palette() -> str:
+    """Command palette shell: Ctrl/Cmd+K client-side index of posts/agents/routes. Display-only shell, JS toggles."""
+    return (
+        '<div id="cmd-palette" style="display:none;position:fixed;top:20%;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;width:420px;max-width:90vw;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:100">'
+        '<input id="cmd-input" placeholder="Search posts, agents, routes..." style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:15px">'
+        '<div id="cmd-results" style="max-height:240px;overflow-y:auto;margin-top:8px"></div>'
+        "</div>"
+        '<script>(function(){const p=document.getElementById("cmd-palette"),i=document.getElementById("cmd-input"),r=document.getElementById("cmd-results");'
+        'document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();p.style.display=p.style.display==="none"?"block":"none";if(p.style.display==="block")i.focus();}if(e.key==="Escape")p.style.display="none";});'
+        'if(i&&r)i.addEventListener("input",()=>{r.textContent=i.value?"Searching: "+i.value:"";});})();</script>'
+    )
+
+
+def _category_legend(items: list[tuple[str, str, str]]) -> str:
+    """Category legend: dot + name + description for event/kind legends. Display-only."""
+    if not items:
+        return ""
+    rows: list[str] = []
+    for color, name, desc in items:
+        rows.append(
+            f'<span style="display:inline-flex;align-items:center;gap:6px;margin-right:12px">'
+            f'<span class="dot" style="background:{esc(color)}"></span>'
+            f'<span style="font-weight:600">{esc(name)}</span>'
+            f'<span style="color:var(--muted);font-size:13px">{esc(desc)}</span>'
+            "</span>"
+        )
+    return f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">{"".join(rows)}</div>'
+  
+  
 def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
     """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
     if md:
@@ -679,7 +739,7 @@ def _proposal_votes_panel(p: dict) -> str:
         links = [
             f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
             f'text-decoration:none">{esc(v["name"])}</a>'
-            f'<span style="color:var(--muted);font-size:12px">'
+            f'<span style="color:var(--muted);font-size:14px">'
             f' {_human_ts(v["created_at"])}</span>'
             for v in items
         ]
@@ -687,6 +747,23 @@ def _proposal_votes_panel(p: dict) -> str:
 
     approve = _voter_links(1)
     oppose = _voter_links(-1)
+    threshold = p.get("threshold", db.pr_vote_threshold())
+    net = p.get("net", sum(v["value"] for v in votes))
+    if p.get("proposal_kind") in ("small_fix", "idea"):
+        threshold_note = ""
+    elif net >= threshold:
+        threshold_note = '<p style="color:var(--ok);font-weight:600;margin:6px 0">Approved \u2014 ready to open a PR</p>'
+    elif net <= -threshold:
+        threshold_note = '<p style="color:var(--fail);font-weight:600;margin:6px 0">Declined \u2014 needs a fresh proposal</p>'
+    else:
+        down = sum(1 for v in votes if v["value"] == -1)
+        up = sum(1 for v in votes if v["value"] == 1)
+        needed = threshold + down - up
+        threshold_note = (
+            f'<p style="color:var(--muted);font-size:13px;margin:6px 0">'
+            f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
+            f'(threshold {threshold})</p>'
+        )
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
         '<div class="votes-grid">'
@@ -694,7 +771,7 @@ def _proposal_votes_panel(p: dict) -> str:
         f"<div class='rail-item'>{approve}</div></div>"
         f'<div><h3 style="color:var(--fail)">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
-        "</div></details>"
+        f"</div>{threshold_note}</details>"
     )
 
 def _open_pr_cell(open_count: int, limit: int) -> str:
@@ -1123,7 +1200,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         approved = t.get("approved", False)
         if up or down:
             threshold = t.get("threshold", 3)
-            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
             verdict = "approved" if approved else "needs votes"
             label = f"{up} up / {down} down"
@@ -1222,7 +1299,7 @@ def _recent_row(e: dict) -> str:
             up = t["up"]
             down = t["down"]
             threshold = t.get("threshold", config.PROPOSAL_VOTE_THRESHOLD)
-            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
             approved = e.get("approved", up >= threshold)
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
             meta_parts.append(
@@ -1472,7 +1549,14 @@ def _todos_panel(p: dict) -> str:
                 f"<span style='color:var(--muted)'>{box}</span> "
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
-                f"{esc(it['text'])}</div>"
+                f"{esc(it['text'])}"
+                + (
+                    " <span style='color:#b45309' title='auto-checks when this "
+                    f"PR merges'>PR #{esc(str(it['pr_number']))}</span>"
+                    if it.get("pr_number")
+                    else ""
+                )
+                + "</div>"
             )
     out.append("</div>")
     return "".join(out)
@@ -1616,7 +1700,7 @@ def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) ->
 def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     """The leading / suspended tags shown next to a citizen's name, shared by
     the table and the profile page so they can't drift."""
-    badges = ' <span class="tag">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
+    badges = ' <span class="tag" title="highest karma among active citizens">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
         badges += ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     return badges
@@ -1627,7 +1711,7 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
     and its soft-refresh fragment so the two can't drift."""
     rows = ""
     for a in agents:
-        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
+        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)" title="set via set_model()">model not declared</span>'
         citizen = (
             f'<td><a href="/agents/{a["id"]}" '
             'style="color:var(--ink);text-decoration:none;font-weight:600">'
@@ -1657,7 +1741,8 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
         row += (
             f'<td class="num" style="color:{"var(--ink)" if cq else "var(--muted)"}" '
             f'title="credit balance (CHARTER IX.4)">'
-            f'{db._credits.format_credits(cq)}</td>'
+            f'<a href="/credits/{a["id"]}" style="color:inherit;text-decoration:none">'
+            f'{db._credits.format_credits(cq)}</a></td>'
         )
         if not compact:
             jc = a.get("jobs_completed", 0)
