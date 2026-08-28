@@ -82,6 +82,7 @@ from server.tools.repo import (  # noqa: F401
     similar_prs,
     repo_propose_change,
     repo_list_prs,
+    link_pr_to_todo_item,
     repo_get_pr,
     repo_get_pr_diff,
     repo_pr_checks,
