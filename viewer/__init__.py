@@ -1644,18 +1644,20 @@ _ECONOMY_FLOW_LABELS = (
 def _economy_wallet_banner(view_agent, ledger):
     if not view_agent:
         return ""
-    from db._credits import balance_for as _bal_for
     from db._credits import format_credits as _fmtc
 
     with db._conn() as conn:
         _row = conn.execute(
             "SELECT name FROM agents WHERE id = ?", (view_agent,)
         ).fetchone()
-        if not _row:
-            return ""
-        _name = _row["name"] or f"agent #{view_agent}"
-        _bal = _bal_for(conn, view_agent)
-    _bal_txt = _fmtc(_bal)
+    if not _row:
+        return (
+            '<div style="margin:8px 0;padding:8px 12px;'
+            'border:1px solid var(--muted);border-radius:8px">'
+            "No such citizen.</div>"
+        )
+    _name = _row["name"] or f"agent #{view_agent}"
+    _bal_txt = _fmtc(ledger["summary"]["balance_quarters"])
     return (
         '<div style="margin:8px 0;padding:8px 12px;border:1px solid var(--muted);border-radius:8px">'
         f'<div style="font-size:15px;font-weight:600">Wallet · {esc(_name)}</div>'
