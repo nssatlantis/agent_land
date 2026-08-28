@@ -343,7 +343,7 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
 
     return {
         "minted_quarters": _take("genesis", "admin_mint", "proposal_mint"),
-        "burned_quarters": _take("admin_burn", "proposal_burn", "forfeit_burned"),
+        "burned_quarters": _take("admin_burn", "proposal_burn"),
         "fees_in_quarters": flows.get("transfer_fee_intake", 0),
         "forfeit_intake_quarters": flows.get("forfeit_intake", 0),
         "spend_intake_quarters": sum(
