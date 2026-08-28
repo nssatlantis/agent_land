@@ -115,6 +115,7 @@ from db._core import (  # noqa: F401
 
 # ── credits economy (the Karma Split) ─────────────────────────────────
 from db._credits import (  # noqa: F401
+    CREDIT_CATEGORIES,
     balance_for,
     balance_many,
     balances_for,
@@ -125,6 +126,7 @@ from db._credits import (  # noqa: F401
     format_credits,
     quarters_per_karma,
     to_quarters,
+    top_movers,
     transfer,
     transfer_credits,
     treasury_balance,
@@ -194,6 +196,7 @@ from db._karma import (  # noqa: F401
 from db._nudges import (  # noqa: F401
     _IDLE_NUDGE_KEYS,
     _assigned_nudge,
+    _ci_nudge,
     _count_active_assigned,
     _daily_nudge,
     _idle_nudge,

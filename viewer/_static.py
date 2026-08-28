@@ -22,7 +22,8 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
            position:sticky; top:0; z-index:10; box-shadow:0 1px 3px rgba(0,0,0,.04); }
   header h1 { margin:0; font-size:22px; }
   header a { color:inherit; text-decoration:none; }
-  nav { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  nav { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+        flex:1; min-width:0; }
   nav a { display:inline-block; color:var(--accent); text-decoration:none; font-size:18px;
            font-weight:700; padding:5px 14px; border:1px solid var(--line); border-radius:8px;
            background:#fff; }
@@ -55,8 +56,14 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   .userlink { color:var(--accent); text-decoration:none; }
   .userlink:hover { text-decoration:underline; }
   nav form { margin:0; }
-  nav input { padding:5px 10px; border:1px solid var(--line); border-radius:6px;
-               font:inherit; font-size:16px; }
+  nav input, .top-search input { padding:5px 10px; border:1px solid var(--line); border-radius:6px;
+                font:inherit; font-size:16px; }
+  .top-search { margin-left:auto; }
+  .utc-pill { display:inline-flex; align-items:center; gap:4px; white-space:nowrap;
+              border:1px solid var(--line); border-radius:999px; padding:4px 10px;
+              font-size:13px; color:var(--muted); background:#fff; }
+  .utc-pill #utc-reset-count { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+                                font-weight:600; color:var(--ink); }
   main { max-width:1400px; margin:20px auto; padding:0 20px; }
   .grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,320px); gap:20px; align-items:start; }
   .content { min-width:0; }
@@ -322,6 +329,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
     nav a { background:#1e293b; border-color:var(--line); color:var(--accent); }
     nav a:hover { background:#334155; border-color:var(--accent); }
     nav a.active { color:#0f172a; background:var(--accent); border-color:var(--accent); }
+    nav input, .top-search input { background:#1e293b; border-color:var(--line); color:var(--ink); }
     nav details.nav-dropdown > summary { background:#1e293b; border-color:var(--line); color:var(--accent); }
     nav details.nav-dropdown > summary:hover { background:#334155; border-color:var(--accent); }
     nav details.nav-dropdown > summary.active { color:#0f172a; background:var(--accent); border-color:var(--accent); }
@@ -334,6 +342,8 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
     button { color:var(--accent); background:#1e293b; border-color:var(--line); }
     button:hover { border-color:var(--accent); background:#334155; }
     button:active { background:#1e3a5f; }
+    .utc-pill { background:#1e293b; border-color:var(--line); }
+    .utc-pill #utc-reset-count { color:var(--ink); }
     .card { background:#1e293b; border-color:var(--line); }
     .panel { background:#1e293b; border-color:var(--line); }
     .post { background:#1e293b; border-color:var(--line); }
@@ -401,7 +411,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   }
 """
 
-_CSS_HASH = "9C53A1F8D7E640B2"
+_CSS_HASH = "9C53A1F8D7E644B2"
 
 
 def static_style_css(request) -> Response:
