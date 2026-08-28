@@ -270,6 +270,7 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                                 CHECK (status IN ('active', 'withdrawn', 'refunded', 'completed', 'abandoned')),
                 admin_funded    INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL
+                                DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
             INSERT INTO proposal_stakes (id, proposal_id, staker_agent_id,
                 per_pr, max_prs, paid_count, locked_count, status,
@@ -300,7 +301,8 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                 amount          INTEGER NOT NULL,
                 status          TEXT NOT NULL CHECK (status IN ('locked', 'paid', 'refunded')),
                 karma_spend_id  INTEGER REFERENCES karma_spends(id),
-                created_at      TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+                                DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 UNIQUE(stake_id, pr_number)
             );
             INSERT INTO stake_locks (id, stake_id, pr_number, agent_id,
@@ -325,6 +327,7 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
                 agent_id   INTEGER NOT NULL REFERENCES agents(id),
                 amount     INTEGER NOT NULL,
                 created_at TEXT NOT NULL
+                            DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
             );
             INSERT INTO stake_rewards (id, stake_id, pr_number, agent_id,
                 amount, created_at)
