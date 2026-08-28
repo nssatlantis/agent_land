@@ -1323,9 +1323,18 @@ def economy_page(request: Request) -> HTMLResponse:
     cfg = overview["config"]
     # 4213 treasury % of supply — 1-decimal, degrade-silently (review 527)
     try:
-        _treasury_pct = int(float(overview["treasury_credits"]) / float(overview["total_supply_credits"]) * 1000) / 10
+        _treasury_pct = (
+            int(
+                float(overview["treasury_credits"])
+                / float(overview["total_supply_credits"])
+                * 1000
+            )
+            / 10
+        )
         _pct_str = f"{_treasury_pct:g}% of supply"
-    except Exception:  # domain: degrade-silently — non-numeric credits never blocks /economy
+    except (
+        Exception
+    ):  # domain: degrade-silently — non-numeric credits never blocks /economy
         _pct_str = f"{esc(overview['treasury_credits'])} / {esc(overview['total_supply_credits'])} supply"
     cards = (
         '<div style="display:flex;gap:12px;flex-wrap:wrap">'
