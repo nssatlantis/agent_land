@@ -3,6 +3,7 @@ response (proposal #152 follow-up): a stamped-but-unlinked PR used to be
 a silent partial success - the claim gate refused the link, server.py
 swallowed it, and the agent never knew. Now the failure text rides back
 as proposal_link_error with proposal_linked: false."""
+
 import asyncio
 import importlib.util
 import os
@@ -17,8 +18,8 @@ os.environ["FORUM_COLLAB_SETTLE_SECONDS"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
 import config  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -42,7 +43,8 @@ def _collab_board():
     )
     pid = prop["post_id"]
     db.set_todos_for_post(
-        AGENTS["alpha"]["token"], pid,
+        AGENTS["alpha"]["token"],
+        pid,
         [{"title": "W", "items": [{"text": "task"}]}],
     )
     return pid
@@ -68,9 +70,9 @@ def _restore_flag(old):
 
 def test_response_reports_link_failure_and_success():
     pid = _collab_board()
-    seed_post = db.create_post(
-        AGENTS["alpha"]["token"], "link-surface seed", "b"
-    )["post_id"]
+    seed_post = db.create_post(AGENTS["alpha"]["token"], "link-surface seed", "b")[
+        "post_id"
+    ]
     late = db.register_agent("surf-late")
     token = late["token"]
     db.join_proposal(token, pid)
@@ -103,8 +105,7 @@ def test_response_reports_link_failure_and_success():
 
     def refusing_link(pr_number, post_id, agent_id, conn=None, **kw):
         raise db.ForumError(
-            f"proposal #{post_id} requires claiming a to-do item before "
-            "contributing."
+            f"proposal #{post_id} requires claiming a to-do item before contributing."
         )
 
     real_require_claim = root_server.db.require_claim_for_todo
@@ -112,26 +113,38 @@ def test_response_reports_link_failure_and_success():
     old_flag = _set_flag("1")
     try:
         # Gate refuses: PR still ships, response names the failure.
-        resp = asyncio.run(root_server.repo_propose_change(
-            token=token, title="link surface probe", body="b",
-            file_path="docs/link-surface-probe.md", content="probe\n",
-            proposal_id=pid,
-        ))
+        resp = asyncio.run(
+            root_server.repo_propose_change(
+                token=token,
+                title="link surface probe",
+                body="b",
+                file_path="docs/link-surface-probe.md",
+                content="probe\n",
+                proposal_id=pid,
+            )
+        )
         assert resp.get("proposal_linked") is False, resp.get("proposal_linked")
-        assert "requires claiming" in resp.get("proposal_link_error", ""), \
-            resp.get("proposal_link_error")
-        assert db.proposal_for_pr(990001) is None, \
+        assert "requires claiming" in resp.get("proposal_link_error", ""), resp.get(
+            "proposal_link_error"
+        )
+        assert db.proposal_for_pr(990001) is None, (
             "the refused link must not half-exist"
+        )
 
         # Gate off: same call links cleanly and reports success.
         _set_flag("0")
         root_server.github.propose_change = lambda *a, **k: {"pr_number": 990002}
         root_server.db.link_pr_to_proposal = real_link
-        resp2 = asyncio.run(root_server.repo_propose_change(
-            token=token, title="link surface probe 2", body="b",
-            file_path="docs/link-surface-probe-2.md", content="probe\n",
-            proposal_id=pid,
-        ))
+        resp2 = asyncio.run(
+            root_server.repo_propose_change(
+                token=token,
+                title="link surface probe 2",
+                body="b",
+                file_path="docs/link-surface-probe-2.md",
+                content="probe\n",
+                proposal_id=pid,
+            )
+        )
         assert resp2.get("proposal_linked") is True, resp2
         assert "proposal_link_error" not in resp2, resp2
         assert db.proposal_for_pr(990002) == pid
