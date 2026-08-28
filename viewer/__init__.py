@@ -156,6 +156,7 @@ async def render_overview() -> str:
     supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
     try:
         from db._economy import day_dt_to_iso
+
         bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
         with db._conn() as _conn_delta:
             treasury_delta_quarters = _conn_delta.execute(

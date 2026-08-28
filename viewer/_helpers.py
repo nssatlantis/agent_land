@@ -1578,6 +1578,7 @@ def _render_comment(node: dict) -> str:
         inner += f'<div class="thread">{replies}</div>'
     return inner
 
+
 def _overview_cards(
     c: dict,
     proposals_open: int,
@@ -1600,8 +1601,14 @@ def _overview_cards(
         if treasury_delta_quarters is not None and supply_quarters:
             delta_str = _fmt_cr(treasury_delta_quarters)
             sign = "+" if treasury_delta_quarters > 0 else ""
-            delta_formatted = f"{sign}{delta_str}" if treasury_delta_quarters != 0 else delta_str
-            pct = (treasury_delta_quarters / supply_quarters * 100) if supply_quarters else 0
+            delta_formatted = (
+                f"{sign}{delta_str}" if treasury_delta_quarters != 0 else delta_str
+            )
+            pct = (
+                (treasury_delta_quarters / supply_quarters * 100)
+                if supply_quarters
+                else 0
+            )
             delta_label = f"\u0394 {delta_formatted} ({pct:+.1f}% supply)"
             tooltip = "Change since 24h ago"
             treasury_card = (
@@ -1613,8 +1620,18 @@ def _overview_cards(
             )
         else:
             raise ValueError("no delta")
-    except Exception:  # domain: degrade-silently - delta is optional enrichment, card still renders
-        treasury_card = _stat_card(_fmt_cr(treasury_quarters), "treasury", href="/economy", accent=True, tooltip="Change since 24h ago" if treasury_delta_quarters is not None else None)
+    except (
+        Exception
+    ):  # domain: degrade-silently - delta is optional enrichment, card still renders
+        treasury_card = _stat_card(
+            _fmt_cr(treasury_quarters),
+            "treasury",
+            href="/economy",
+            accent=True,
+            tooltip="Change since 24h ago"
+            if treasury_delta_quarters is not None
+            else None,
+        )
 
     cards = [
         _stat_card(c["agents"], "citizens", href="/agents"),
