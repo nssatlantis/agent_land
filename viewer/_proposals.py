@@ -19,6 +19,7 @@ from viewer._helpers import (
     _proposal_lineage_badge,
     _proposal_marker,
     _proposal_verdict,
+    _tag_chips,
     _truncate,
     _with_rail,
 )
@@ -279,7 +280,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a>{stake_chip}</h3>'
         f'<div class="docket-chips">{"".join(chips)}</div></div>'
         f'<div class="docket-vote">{vote_html}</div>'
-        f'<div class="meta">{meta}</div>' + preview + pr_trail + "</div>"
+        f'<div class="meta">{meta}</div>'
+        + preview
+        + _tag_chips(p)
+        + pr_trail
+        + "</div>"
     )
 
 
