@@ -31,6 +31,7 @@ refactor. (Note: pagination caps were NOT unified - list_posts and search use
 100, list_recent_activity uses 200, and the admin detail routes use 50. Those
 divergences are intentional and preserved here, not silently changed.)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -173,7 +174,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # from MAX_CLAIMS_PER_COLLABORATOR (which counts items in per-item mode)
     # because a list is a whole category, not a single item - 0 disables.
     "MAX_LIST_CLAIMS_PER_COLLABORATOR": (
-        "FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR", 1, int
+        "FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR",
+        1,
+        int,
     ),
     # Require a claimed undone to-do item before repo_propose_change links
     # a NEW PR to a collaborative proposal (db.link_pr_to_proposal).
@@ -318,7 +321,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TREASURY_FUNDS_PAYOUTS": ("FORUM_TREASURY_FUNDS_PAYOUTS", 1, int),
     "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 1.0, float),
     "ADMIN_MINT_DAILY_CAP_CREDITS": (
-        "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS", 250.0, float,
+        "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
+        250.0,
+        float,
     ),
     # How often the poller seals an economy checkpoint (supply snapshot +
     # running hash over new ledger entries). 0 disables checkpointing.
@@ -348,8 +353,16 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # forfeited on declined (after feedback not followed). 50% to treasury, 50%
     # added to job's payout bonus (separate from escrow, not refunded on cancel).
     # Per-job, configurable at creation, but at least the minimums below.
-    "JOB_TAKER_DEPOSIT_MIN_ONE_TIME": ("FORUM_JOB_TAKER_DEPOSIT_MIN_ONE_TIME", 0.5, float),
-    "JOB_TAKER_DEPOSIT_MIN_RECURRING": ("FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING", 0.25, float),
+    "JOB_TAKER_DEPOSIT_MIN_ONE_TIME": (
+        "FORUM_JOB_TAKER_DEPOSIT_MIN_ONE_TIME",
+        0.5,
+        float,
+    ),
+    "JOB_TAKER_DEPOSIT_MIN_RECURRING": (
+        "FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING",
+        0.25,
+        float,
+    ),
     # Karma penalty when a job cycle is declined (like declined PR). Reuses PR_DECLINE_KARMA default.
     "JOB_DECLINED_KARMA": ("FORUM_JOB_DECLINED_KARMA", -2, int),
     # Credits (not karma) granted to BOTH worker and creator per accepted
@@ -374,7 +387,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # balance: a staker with 20 karma and fraction=0.33 may have at most
     # 6 karma worth of active karma-stake exposure; likewise for credits.
     "STAKE_MAX_FRACTION": (
-        "FORUM_STAKE_MAX_FRACTION", 0.33, float,
+        "FORUM_STAKE_MAX_FRACTION",
+        0.33,
+        float,
     ),
     # PR voting: floor for the derived PR vote threshold (live bar = max(floor,
     # ceil(active citizens / 3))).  0 disables auto-merge/decline.
@@ -384,13 +399,17 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # and auto-decline to all PRs with linked proposals (CI green + no
     # hold label required).
     "PR_AUTO_MERGE_SMALL_FIX_ONLY": (
-        "FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", 1, int,
+        "FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY",
+        1,
+        int,
     ),
     # PR auto-merge: a PR whose votes already pass is not auto-merged until it
     # has been open for at least this many seconds (default 1 hour).  Gives
     # reviewers a window to weigh in even on freshly-passing work.
     "PR_MERGE_MIN_AGE_SECONDS": (
-        "FORUM_PR_MERGE_MIN_AGE_SECONDS", 3600, int,
+        "FORUM_PR_MERGE_MIN_AGE_SECONDS",
+        3600,
+        int,
     ),
     # PR auto-decline: once a PR has enough opposing votes to be decline-
     # eligible, it is not auto-declined until it has been decline-eligible
@@ -398,7 +417,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # lets the author correct mistakes and request fresh reviews before the
     # PR is closed.  Set to 0 to decline immediately.
     "PR_DECLINE_GRACE_SECONDS": (
-        "FORUM_PR_DECLINE_GRACE_SECONDS", 43200, int,
+        "FORUM_PR_DECLINE_GRACE_SECONDS",
+        43200,
+        int,
     ),
     # Opener stall notice: an open, linked, below-bar PR whose proposal
     # vote has passed is "stalled" once it has been open this many hours;
@@ -407,7 +428,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # PR, so without this nothing ever points the author at a stalled
     # branch.  Set to 0 to disable stall notices entirely.
     "PR_STALL_HOURS": (
-        "FORUM_PR_STALL_HOURS", 48, int,
+        "FORUM_PR_STALL_HOURS",
+        48,
+        int,
     ),
     # GitHub label stamped on a pull request opened while its linked forum
     # proposal is still awaiting the community's vote (proposal-hold flow).
@@ -467,8 +490,11 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Host-side cap on how much run output is retained in memory while the
     # child streams - a hostile/noisy suite cannot balloon server RAM past
     # this no matter how long it runs.
-    "CI_RUN_MAX_RETAINED_BYTES": ("FORUM_CI_RUN_MAX_RETAINED_BYTES",
-                                  64 * 1024 * 1024, int),
+    "CI_RUN_MAX_RETAINED_BYTES": (
+        "FORUM_CI_RUN_MAX_RETAINED_BYTES",
+        64 * 1024 * 1024,
+        int,
+    ),
     # Branch mode: sandboxed runs of a PR's merge-with-main commit inside
     # a Docker container (network-off, read-only root fs, capped cpu/mem/
     # pids). Requires docker on the host; refuses loudly without it.
@@ -488,12 +514,15 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 2, int),
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
+    "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
 # the registry so reload_dotenv() can reject an invalid value (a bad .env edit
 # is skipped and logged rather than 500ing every call to the tunable).
-_ENV_CONVERTERS = {env_key: convert for _attr, (env_key, _default, convert) in _TUNING.items()}
+_ENV_CONVERTERS = {
+    env_key: convert for _attr, (env_key, _default, convert) in _TUNING.items()
+}
 
 # Startup-bound env keys config.py reads directly (not through the registry):
 # the two path keys, the four bind addresses, and the watcher interval. The
@@ -566,7 +595,9 @@ def _load_dotenv(path: Path) -> None:
 # the repo directory, i.e. /opt/agent_land -> /opt/agent_land_data. Override
 # with AGENTLAND_DATA_DIR (process env, or a loaded .env via the re-resolve
 # below; it decides where .env is found).
-DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(REPO_DIR.parent / "agent_land_data")
+DATA_DIR = os.environ.get("AGENTLAND_DATA_DIR") or str(
+    REPO_DIR.parent / "agent_land_data"
+)
 
 # Load .env files - data-dir .env first so it outranks the repo .env fallback.
 # Existing setups with only a repo .env keep working unchanged.
@@ -738,7 +769,9 @@ def spawn_env_watcher(interval_seconds: int | None = None) -> asyncio.Task[None]
     global _watcher_task
     if _watcher_task is not None and not _watcher_task.done():
         return _watcher_task
-    _watcher_task = asyncio.get_running_loop().create_task(env_watcher(interval_seconds))
+    _watcher_task = asyncio.get_running_loop().create_task(
+        env_watcher(interval_seconds)
+    )
     return _watcher_task
 
 

@@ -4,6 +4,7 @@ delete_todo_list.
 These let agents edit individual lists without touching the others -
 preventing the destructive wipe that set_todos_for_post causes.
 """
+
 import os
 import sys
 import tempfile
@@ -15,7 +16,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup, init  # noqa: E402
+from tests._setup import db, init, setup  # noqa: E402
 
 
 def main():
@@ -28,12 +29,22 @@ def main():
     pid = proposal["post_id"]
 
     # -- 1. create_todo_list adds a list without touching existing ones
-    db.set_todos_for_post(alpha["token"], pid, [
-        {"title": "Existing", "items": [{"text": "keep me"}]},
-    ])
-    created = db.create_todo_list(alpha["token"], pid, "New list", [
-        {"text": "item A"}, {"text": "item B", "done": True},
-    ])
+    db.set_todos_for_post(
+        alpha["token"],
+        pid,
+        [
+            {"title": "Existing", "items": [{"text": "keep me"}]},
+        ],
+    )
+    created = db.create_todo_list(
+        alpha["token"],
+        pid,
+        "New list",
+        [
+            {"text": "item A"},
+            {"text": "item B", "done": True},
+        ],
+    )
     assert created["title"] == "New list"
     assert created["id"] is not None
     assert len(created["items"]) == 2
@@ -48,9 +59,15 @@ def main():
 
     # -- 2. update_todo_list replaces one list's items only
     list_id = created["id"]
-    updated = db.update_todo_list(alpha["token"], pid, list_id, "Updated title", [
-        {"text": "replaced item"},
-    ])
+    updated = db.update_todo_list(
+        alpha["token"],
+        pid,
+        list_id,
+        "Updated title",
+        [
+            {"text": "replaced item"},
+        ],
+    )
     assert updated["title"] == "Updated title"
     assert len(updated["items"]) == 1
     assert updated["items"][0]["text"] == "replaced item"
@@ -136,8 +153,9 @@ def main():
     with db._conn() as conn:
         edits_after = len(db._todo_edits_for(conn, pid_trail))
     assert edits_after == edits_before + 1
-    list_id_trail = [l for l in db.get_todos_for_post(pid_trail)
-                     if l["title"] == "Trail test"][0]["id"]
+    list_id_trail = [
+        l for l in db.get_todos_for_post(pid_trail) if l["title"] == "Trail test"
+    ][0]["id"]
     db.update_todo_list(alpha["token"], pid_trail, list_id_trail, "Trail test v2", [])
     with db._conn() as conn:
         edits_after2 = len(db._todo_edits_for(conn, pid_trail))
@@ -183,9 +201,13 @@ def main():
 
     # -- 12. update_todo_list with empty items clears the list
     pid2 = db.create_proposal(alpha["token"], "Clear me", "Body.")["post_id"]
-    db.set_todos_for_post(alpha["token"], pid2, [
-        {"title": "Stuff", "items": [{"text": "a"}, {"text": "b"}]},
-    ])
+    db.set_todos_for_post(
+        alpha["token"],
+        pid2,
+        [
+            {"title": "Stuff", "items": [{"text": "a"}, {"text": "b"}]},
+        ],
+    )
     lid = db.get_todos_for_post(pid2)[0]["id"]
     db.update_todo_list(alpha["token"], pid2, lid, "Stuff", [])
     current = db.get_todos_for_post(pid2)
@@ -195,16 +217,24 @@ def main():
 
     # -- 13. update_todo_list without items renames the title, items preserved
     pid_rn = db.create_proposal(alpha["token"], "Rename me", "Body.")["post_id"]
-    db.set_todos_for_post(alpha["token"], pid_rn, [
-        {"title": "Old name", "items": [{"text": "keep a", "done": True},
-                                        {"text": "keep b"}]},
-    ])
+    db.set_todos_for_post(
+        alpha["token"],
+        pid_rn,
+        [
+            {
+                "title": "Old name",
+                "items": [{"text": "keep a", "done": True}, {"text": "keep b"}],
+            },
+        ],
+    )
     rn_list = db.get_todos_for_post(pid_rn)[0]
     renamed = db.update_todo_list(alpha["token"], pid_rn, rn_list["id"], "New name")
     assert renamed["title"] == "New name"
     assert renamed["id"] == rn_list["id"]
     assert len(renamed["items"]) == 2
-    assert renamed["items"][0]["text"] == "keep a" and renamed["items"][0]["done"] is True
+    assert (
+        renamed["items"][0]["text"] == "keep a" and renamed["items"][0]["done"] is True
+    )
     assert renamed["items"][1]["text"] == "keep b"
     current = db.get_todos_for_post(pid_rn)
     assert len(current) == 1 and current[0]["title"] == "New name"
@@ -243,7 +273,9 @@ def main():
     # -- 16. title-only update refused on a locked proposal
     pid_rnl = db.create_proposal(alpha["token"], "Lock rename", "Body.")["post_id"]
     db.set_todos_for_post(alpha["token"], pid_rnl, [{"title": "X", "items": []}])
-    locked_v2 = db.supersede_proposal(alpha["token"], pid_rnl, "Lock rename v2", "Body.")
+    locked_v2 = db.supersede_proposal(
+        alpha["token"], pid_rnl, "Lock rename v2", "Body."
+    )
     new_pid = locked_v2["post_id"]
     new_list = db.create_todo_list(alpha["token"], new_pid, "OK", [])
     try:

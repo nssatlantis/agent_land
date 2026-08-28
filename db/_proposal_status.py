@@ -6,9 +6,11 @@ import sqlite3
 from datetime import datetime, timezone
 
 import config
-
 from db._core import (
-    _humanize_interval, _id_chunks, _parse_iso, active_citizens,
+    _humanize_interval,
+    _id_chunks,
+    _parse_iso,
+    active_citizens,
 )
 from search import _normalized_title
 
@@ -170,10 +172,16 @@ def _proposal_pr_history_map(conn: sqlite3.Connection, post_ids: list) -> dict:
         ).fetchall()
         for r in rows:
             by_post.setdefault(r["post_id"], []).append(
-                {k: r[k] for k in (
-                    "pr_number", "status", "opened_by_agent_id",
-                    "opened_by_name", "happened_at",
-                )}
+                {
+                    k: r[k]
+                    for k in (
+                        "pr_number",
+                        "status",
+                        "opened_by_agent_id",
+                        "opened_by_name",
+                        "happened_at",
+                    )
+                }
             )
     return by_post
 
@@ -373,8 +381,9 @@ def _last_activity_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
-def _open_proposal_with_title(conn: sqlite3.Connection, title: str,
-                              exclude_post_id: int | None = None) -> dict | None:
+def _open_proposal_with_title(
+    conn: sqlite3.Connection, title: str, exclude_post_id: int | None = None
+) -> dict | None:
     """The current (open, unlocked) proposal whose normalized title exactly
     matches `title`, or None. The exact-title duplicate guard's scan: a
     proposal is a duplicate blocker only while it is still live on the
@@ -418,8 +427,9 @@ def _proposal_vote_threshold(conn: sqlite3.Connection) -> int:
     return max(floor, (active + 2) // 3)
 
 
-def _proposal_tally(up: int, down: int, small_fix: bool, threshold: int = 0,
-                    idea: bool = False) -> dict:
+def _proposal_tally(
+    up: int, down: int, small_fix: bool, threshold: int = 0, idea: bool = False
+) -> dict:
     """The approve/oppose tally of one proposal and the community's verdict.
     `approved` means the vote gate (if any) is satisfied: small fixes and
     ideas always pass (ideas skip the vote gate entirely), a disabled
@@ -458,7 +468,9 @@ def _proposal_stale(tally: dict, created_at: str) -> bool:
     """Whether an open proposal has lingered past config.PROPOSAL_STALE_DAYS without
     clearing the vote gate. Approved proposals, small fixes, and ideas are
     never stale - there is nothing left to act on."""
-    return tally["needs_votes"] and _proposal_age(created_at) >= config.PROPOSAL_STALE_DAYS
+    return (
+        tally["needs_votes"] and _proposal_age(created_at) >= config.PROPOSAL_STALE_DAYS
+    )
 
 
 def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
@@ -490,9 +502,7 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
             "the closed PR stays on the record."
         )
     if decision == "review_requested":
-        live = next(
-            (pr for pr in row.get("prs", []) if pr["status"] == "open"), None
-        )
+        live = next((pr for pr in row.get("prs", []) if pr["status"] == "open"), None)
         pr_num = live["pr_number"] if live else "?"
         return (
             f"review requested - pull request #{pr_num} is open and awaiting "
@@ -510,8 +520,11 @@ def _proposal_status_note(decision: str, row: dict, tally: dict) -> str:
         # but a fresh collaborative proposal still waits out its settling
         # window before any PR may open - say so rather than promising an
         # immediate open (the gate in require_proposal_approval refuses).
-        if decision == "approved" and row.get("collaborative") \
-                and config.COLLAB_SETTLE_SECONDS > 0:
+        if (
+            decision == "approved"
+            and row.get("collaborative")
+            and config.COLLAB_SETTLE_SECONDS > 0
+        ):
             created_at = row.get("created_at")
             if created_at:
                 age_s = _proposal_age_seconds(created_at)
@@ -550,7 +563,8 @@ def _proposal_tally_for(conn: sqlite3.Connection, post_id: int, kind: str) -> di
         (post_id,),
     ).fetchone()
     return _proposal_tally(
-        row["up"], row["down"],
+        row["up"],
+        row["down"],
         small_fix=(kind == "small_fix"),
         threshold=_proposal_vote_threshold(conn),
         idea=(kind == "idea"),
@@ -577,9 +591,17 @@ def _proposal_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
         ).fetchall()
         for r in rows:
             out.setdefault(r["post_id"], []).append(
-                {k: r[k] for k in (
-                    "edited_at", "editor", "editor_id",
-                    "old_title", "new_title", "old_body", "new_body",
-                )}
+                {
+                    k: r[k]
+                    for k in (
+                        "edited_at",
+                        "editor",
+                        "editor_id",
+                        "old_title",
+                        "new_title",
+                        "old_body",
+                        "new_body",
+                    )
+                }
             )
     return out

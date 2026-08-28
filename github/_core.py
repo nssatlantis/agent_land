@@ -33,6 +33,7 @@ GITHUB_BASE_BRANCH = os.environ.get("GITHUB_BASE_BRANCH", "main")
 
 # ------------------------------------------------------------------ cache --
 
+
 class _TTLCache:
     """Minimal in-memory TTL cache keyed by an arbitrary hashable key.
     Stores (timestamp, value) pairs; ``get`` returns the value when fresh,
@@ -64,10 +65,10 @@ class _TTLCache:
 # docstring.  Only ``open_prs`` caches failures (guarded by ``_CACHE_FAILURES``);
 # the other read caches store successes only.  All TTLs are read live from
 # config, so a .env change applies without a restart.
-_pr_cache = _TTLCache()       # PR reads (get_pr, pr_diff, pr_checks, ...)
-_tree_cache = _TTLCache()     # list_tree (long-lived, tree changes rarely)
-_open_prs_cache = _TTLCache() # open_prs (thin wrapper around the same class)
-_CACHE_FAILURES = True        # cache RepoError too, for graceful degradation
+_pr_cache = _TTLCache()  # PR reads (get_pr, pr_diff, pr_checks, ...)
+_tree_cache = _TTLCache()  # list_tree (long-lived, tree changes rarely)
+_open_prs_cache = _TTLCache()  # open_prs (thin wrapper around the same class)
+_CACHE_FAILURES = True  # cache RepoError too, for graceful degradation
 
 
 def clear_cache() -> None:
@@ -183,9 +184,9 @@ def _shutdown_client() -> None:
     try:
         client = _client
         if client is not None and not client.is_closed:
-            asyncio.run_coroutine_threadsafe(
-                client.aclose(), _bg_loop()
-            ).result(timeout=5)
+            asyncio.run_coroutine_threadsafe(client.aclose(), _bg_loop()).result(
+                timeout=5
+            )
     except Exception:
         pass  # interpreter shutdown - best effort only
 
@@ -202,8 +203,9 @@ def _ensure_token() -> None:
         )
 
 
-async def _arequest(method: str, path: str, body: dict | None = None,
-                    ok_404: bool = False):
+async def _arequest(
+    method: str, path: str, body: dict | None = None, ok_404: bool = False
+):
     """Async heart of every GitHub REST call. Raises RepoError on failure;
     returns parsed JSON (or None for an empty 2xx / ok_404 miss).
 
@@ -248,8 +250,7 @@ async def _arequest(method: str, path: str, body: dict | None = None,
     raise RepoError(f"GitHub API {status}{detail} on {method} {path}")
 
 
-def _request(method: str, path: str, body: dict | None = None,
-             ok_404: bool = False):
+def _request(method: str, path: str, body: dict | None = None, ok_404: bool = False):
     """Sync face of _arequest for callers without a running loop (viewer
     helpers, tests, deploy scripts, composite flows on worker threads).
     Blocks on the background loop's result."""
@@ -271,7 +272,10 @@ async def _arequest_text(method: str, path: str, ok_404: bool = False) -> str | 
 
     async def _do() -> httpx.Response:
         return await client.request(
-            method, url_path, headers=hdrs, follow_redirects=True,
+            method,
+            url_path,
+            headers=hdrs,
+            follow_redirects=True,
         )
 
     try:

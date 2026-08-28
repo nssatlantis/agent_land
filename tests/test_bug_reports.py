@@ -14,14 +14,18 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests._setup import db, init, setup  # noqa: E402
-
 import db._bug_reports as bug_mod  # noqa: E402
+from tests._setup import db, init, setup  # noqa: E402
 
 
 def test_file_and_get(helpers):
     reporter = helpers["alpha"]
-    r = bug_mod.file_bug_report(reporter["token"], "Login 500", "Server crashes on login", "https://example.com/login")
+    r = bug_mod.file_bug_report(
+        reporter["token"],
+        "Login 500",
+        "Server crashes on login",
+        "https://example.com/login",
+    )
     assert r["id"] >= 1
     assert r["title"] == "Login 500"
     assert r["body"] == "Server crashes on login"
@@ -42,15 +46,21 @@ def test_duplicate_raises_confidence(helpers):
     alpha = helpers["alpha"]
     beta = helpers["beta"]
     gamma = helpers["gamma"]
-    r1 = bug_mod.file_bug_report(alpha["token"], "Login 500", "crash", "https://example.com/login-dup")
+    r1 = bug_mod.file_bug_report(
+        alpha["token"], "Login 500", "crash", "https://example.com/login-dup"
+    )
     assert r1["confidence"] == 1
-    r2 = bug_mod.file_bug_report(beta["token"], "Login broken", "500 error", "https://example.com/login-dup")
+    r2 = bug_mod.file_bug_report(
+        beta["token"], "Login broken", "500 error", "https://example.com/login-dup"
+    )
     assert r2["duplicate_of"] == r1["id"]
     assert r2["confidence"] == 1
     full = bug_mod.get_bug_report(r1["id"])
     assert full["confidence"] == 2
     assert len(full["duplicates"]) == 1
-    r3 = bug_mod.file_bug_report(gamma["token"], "Login fail", "500", "https://example.com/login-dup")
+    r3 = bug_mod.file_bug_report(
+        gamma["token"], "Login fail", "500", "https://example.com/login-dup"
+    )
     assert r3["duplicate_of"] == r1["id"]
     assert r3["confidence"] == 1
     full2 = bug_mod.get_bug_report(r1["id"])
@@ -62,9 +72,15 @@ def test_threshold_confirms(helpers):
     alpha = helpers["alpha"]
     beta = helpers["beta"]
     gamma = helpers["gamma"]
-    r = bug_mod.file_bug_report(alpha["token"], "DB lock", "sqlite locked", "https://example.com/db-lock")
-    bug_mod.file_bug_report(beta["token"], "DB lock dup", "locked", "https://example.com/db-lock")
-    bug_mod.file_bug_report(gamma["token"], "DB lock dup2", "locked", "https://example.com/db-lock")
+    r = bug_mod.file_bug_report(
+        alpha["token"], "DB lock", "sqlite locked", "https://example.com/db-lock"
+    )
+    bug_mod.file_bug_report(
+        beta["token"], "DB lock dup", "locked", "https://example.com/db-lock"
+    )
+    bug_mod.file_bug_report(
+        gamma["token"], "DB lock dup2", "locked", "https://example.com/db-lock"
+    )
     full = bug_mod.get_bug_report(r["id"])
     assert full["confidence"] == 3
     assert full["status"] == "confirmed"
@@ -74,8 +90,12 @@ def test_threshold_confirms(helpers):
 def test_different_urls_no_duplicate(helpers):
     alpha = helpers["alpha"]
     beta = helpers["beta"]
-    r1 = bug_mod.file_bug_report(alpha["token"], "Login 500", "crash", "https://example.com/login-diff")
-    r2 = bug_mod.file_bug_report(beta["token"], "Signup 500", "crash", "https://example.com/signup-diff")
+    r1 = bug_mod.file_bug_report(
+        alpha["token"], "Login 500", "crash", "https://example.com/login-diff"
+    )
+    r2 = bug_mod.file_bug_report(
+        beta["token"], "Signup 500", "crash", "https://example.com/signup-diff"
+    )
     assert r1["id"] != r2["id"]
     assert bug_mod.get_bug_report(r1["id"])["confidence"] == 1
     assert bug_mod.get_bug_report(r2["id"])["confidence"] == 1
@@ -89,8 +109,9 @@ def test_fixed_bug(helpers):
     assert bug_mod.fix_bug_report(r["id"])["status"] == "fixed"
     assert bug_mod.get_bug_report(r["id"])["status"] == "fixed"
     karma_after = db.whoami(alpha["token"])["karma"]
-    assert karma_after == karma_before + 1, \
+    assert karma_after == karma_before + 1, (
         f"fixing a bug report credits +1 karma: {karma_before} -> {karma_after}"
+    )
     print("  fixed bug: ok")
 
 
@@ -112,8 +133,9 @@ def test_reference_expansion(helpers):
     r = bug_mod.file_bug_report(alpha["token"], "Login bug", "body", None)
     post = db.create_post(alpha["token"], "Reference test", f"See #B{r['id']}")
     refs = post.get("referenced", [])
-    assert any(ref.get("kind") == "bug_report" and ref.get("id") == r["id"]
-               for ref in refs), f"expected bug_report ref in {refs}"
+    assert any(
+        ref.get("kind") == "bug_report" and ref.get("id") == r["id"] for ref in refs
+    ), f"expected bug_report ref in {refs}"
     print("  reference expansion: ok")
 
 
@@ -123,7 +145,8 @@ def test_linked_proposals(helpers):
     r = bug_mod.file_bug_report(alpha["token"], "Login bug", "body", None)
     db.create_post(beta["token"], "Fix login", "Fix the login bug #B" + str(r["id"]))
     prop = db.create_proposal(
-        beta["token"], "Fix login proposal",
+        beta["token"],
+        "Fix login proposal",
         "Fix bug #B" + str(r["id"]),
     )
     full = bug_mod.get_bug_report(r["id"])
@@ -168,6 +191,7 @@ def test_viewer_bug_detail(helpers):
 def test_api_bugs(helpers):
     """Smoke test: api_bugs returns JSON."""
     from starlette.requests import Request
+
     from viewer._api import api_bugs
 
     alpha = helpers["alpha"]
@@ -180,14 +204,20 @@ def test_api_bugs(helpers):
             self["method"] = "GET"
             self["server"] = ("127.0.0.1", 8000)
 
-    scope = {"type": "http", "query_string": b"", "method": "GET",
-             "server": ("127.0.0.1", 8000), "path": "/api/bugs",
-             "headers": []}
+    scope = {
+        "type": "http",
+        "query_string": b"",
+        "method": "GET",
+        "server": ("127.0.0.1", 8000),
+        "path": "/api/bugs",
+        "headers": [],
+    }
 
     req = Request(scope)
     resp = api_bugs(req)
     data = resp.body
     import json
+
     result = json.loads(data)
     assert result["total"] >= 1
     assert any(r["title"] == "API Bug" for r in result["reports"])
@@ -197,22 +227,31 @@ def test_api_bugs(helpers):
 def test_small_fix_gates_bug_confidence(helpers):
     """small_fix with #B must be confirmed (Rule 21, #309 follow-up)."""
     import uuid
+
     reporter = helpers["alpha"]
     beta = helpers["beta"]
     gamma = helpers["gamma"]
     from db._core import ForumError
+
     url = f"https://example.com/gate-{uuid.uuid4()}"
     r = bug_mod.file_bug_report(reporter["token"], "Gate bug", "body", url)
     assert r["confidence"] == 1
     assert bug_mod.get_bug_report(r["id"])["status"] == "open"
     # 1/3 -> small_fix with #B must be rejected
     try:
-        db.create_proposal(reporter["token"], "Fix gate bug", f"Fix #B{r['id']}", small_fix=True)
+        db.create_proposal(
+            reporter["token"], "Fix gate bug", f"Fix #B{r['id']}", small_fix=True
+        )
         assert False, "1/3 bug must block small_fix"
     except ForumError as e:
         assert "not confirmed" in str(e) and f"#{r['id']}" in str(e)
     # normal proposal with same #B is still allowed
-    p = db.create_proposal(reporter["token"], "Fix gate bug normal", f"Fix #B{r['id']} via normal", small_fix=False)
+    p = db.create_proposal(
+        reporter["token"],
+        "Fix gate bug normal",
+        f"Fix #B{r['id']} via normal",
+        small_fix=False,
+    )
     assert p["proposal_kind"] == "proposal"
     # small_fix without #B is still allowed (typo etc)
     p2 = db.create_proposal(reporter["token"], "Fix typo", "fix typo", small_fix=True)
@@ -222,7 +261,9 @@ def test_small_fix_gates_bug_confidence(helpers):
     assert bug_mod.get_bug_report(r["id"])["confidence"] == 2
     assert bug_mod.get_bug_report(r["id"])["status"] == "open"
     try:
-        db.create_proposal(reporter["token"], "Fix gate bug2", f"Fix #B{r['id']}", small_fix=True)
+        db.create_proposal(
+            reporter["token"], "Fix gate bug2", f"Fix #B{r['id']}", small_fix=True
+        )
         assert False, "2/3 bug must still block small_fix"
     except ForumError:
         pass
@@ -230,7 +271,9 @@ def test_small_fix_gates_bug_confidence(helpers):
     bug_mod.file_bug_report(gamma["token"], "Gate dup3", "body", url)
     assert bug_mod.get_bug_report(r["id"])["status"] == "confirmed"
     assert bug_mod.get_bug_report(r["id"])["confidence"] == 3
-    p3 = db.create_proposal(reporter["token"], "Fix gate bug3", f"Fix #B{r['id']}", small_fix=True)
+    p3 = db.create_proposal(
+        reporter["token"], "Fix gate bug3", f"Fix #B{r['id']}", small_fix=True
+    )
     assert p3["proposal_kind"] == "small_fix"
     print("  small_fix gates bug confidence: ok")
 
@@ -238,6 +281,7 @@ def test_small_fix_gates_bug_confidence(helpers):
 def test_confirm_and_fix_audit(helpers):
     """confirm_bug_report and fix_bug_report write admin_actions rows."""
     import sqlite3
+
     alpha = helpers["alpha"]
     r = bug_mod.file_bug_report(alpha["token"], "Audit bug", "body", None)
     report_id = r["id"]
@@ -248,11 +292,15 @@ def test_confirm_and_fix_audit(helpers):
 
     conn = sqlite3.connect(os.environ["FORUM_DB_PATH"])
     conn.row_factory = sqlite3.Row
-    rows = [dict(r) for r in conn.execute(
-        "SELECT admin_user, action, target_type, target_id"
-        " FROM admin_actions WHERE target_type = 'bug_report'"
-        " AND target_id = ? ORDER BY id", (report_id,),
-    )]
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT admin_user, action, target_type, target_id"
+            " FROM admin_actions WHERE target_type = 'bug_report'"
+            " AND target_id = ? ORDER BY id",
+            (report_id,),
+        )
+    ]
     conn.close()
     assert len(rows) == 1
     assert rows[0]["admin_user"] == "testadmin"
@@ -264,11 +312,15 @@ def test_confirm_and_fix_audit(helpers):
 
     conn = sqlite3.connect(os.environ["FORUM_DB_PATH"])
     conn.row_factory = sqlite3.Row
-    rows = [dict(r) for r in conn.execute(
-        "SELECT admin_user, action, target_type, target_id"
-        " FROM admin_actions WHERE target_type = 'bug_report'"
-        " AND target_id = ? ORDER BY id", (report_id,),
-    )]
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT admin_user, action, target_type, target_id"
+            " FROM admin_actions WHERE target_type = 'bug_report'"
+            " AND target_id = ? ORDER BY id",
+            (report_id,),
+        )
+    ]
     conn.close()
     assert len(rows) == 2
     assert rows[1]["admin_user"] == "testadmin"
@@ -280,6 +332,7 @@ def test_mcp_admin_auth(helpers):
     """MCP admin tools reject non-admin callers."""
     from db._core import ForumError
     from server.tools.moderation import _require_admin
+
     alpha = helpers["alpha"]
     # non-admin caller is refused
     try:
