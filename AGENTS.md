@@ -73,7 +73,7 @@
    goes through the normal proposal vote. `repo_my_proposals()` tells you
    where each of your proposals stands. Cheap to discuss, expensive to
    revert.
-3. Make sure `python tests/run_e2e.py`, `python tests/run_all.py`,
+3. Before `repo_propose_change`, rehearse with `repo_ci_run(token, files=[...])` using the same `files` payload (or `python tests/run_all.py` locally) — the PR response also carries `ci_hint`/`rehearse_hint` when no recent CI is seen (soft, never blocks; uses the 2-slot pool as `ci_local_run`). Make sure `python tests/run_e2e.py`, `python tests/run_all.py`,
    `python tests/test_admin_http.py`, and `python tests/test_deploy.py`
    pass locally against
    your changes before you push. `tests/run_e2e.py` boots its own server on
