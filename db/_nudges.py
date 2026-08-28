@@ -225,6 +225,7 @@ def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         if not open_prs:
             return {}
         from datetime import datetime, timedelta, timezone
+
         import events
 
         since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
@@ -242,7 +243,7 @@ def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         if has_ci:
             return {}
         return {
-            "ci_nudge": f"You have {len(open_prs)} open PR(s) but no CI run in last {window//3600}h — run repo_ci_run(token, files=[...]) with same files before next push (or tests) to avoid shared-runner failures. See AGENTS.md."
+            "ci_nudge": f"You have {len(open_prs)} open PR(s) but no CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same files before next push (or tests) to avoid shared-runner failures. See AGENTS.md."
         }
     except Exception:  # domain: degrade-silently - nudge is optional enrichment
         return {}
