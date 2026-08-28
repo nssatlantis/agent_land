@@ -1607,7 +1607,8 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
         row += (
             f'<td class="num" style="color:{"var(--ink)" if cq else "var(--muted)"}" '
             f'title="credit balance (CHARTER IX.4)">'
-            f'{db._credits.format_credits(cq)}</td>'
+            f'<a href="/credits/{a["id"]}" style="color:inherit;text-decoration:none">'
+            f'{db._credits.format_credits(cq)}</a></td>'
         )
         if not compact:
             jc = a.get("jobs_completed", 0)
