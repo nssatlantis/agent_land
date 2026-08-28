@@ -138,7 +138,8 @@ def _breadcrumbs(trail: list[tuple[str | None, str]]) -> str:
             parts.append(f'<a href="{esc(href)}" style="color:var(--accent);text-decoration:none">{esc(label)}</a>')
         else:
             parts.append(f'<span style="color:var(--muted)">{esc(label)}</span>')
-    return f'<div class="breadcrumb">{" <span style=\'color:var(--muted)\'>›</span> ".join(parts)}</div>'
+    sep = ' <span style="color:var(--muted)">\u203a</span> '
+    return f'<div class="breadcrumb">{sep.join(parts)}</div>'
 
 
 def _proposal_badge(p: dict) -> str:
