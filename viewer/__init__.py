@@ -1899,6 +1899,7 @@ def economy_page(request: Request) -> HTMLResponse:
         + holders_rows
         + "</tbody></table></div>"
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
+        + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
             "<table><thead><tr><th>when</th><th>wallet</th>"
