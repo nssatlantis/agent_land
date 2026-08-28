@@ -125,7 +125,7 @@ async def agents_page(request: Request) -> HTMLResponse:
     return _page(
         "citizens",
         _crumb("/", "overview")
-        + '<p style="color:var(--muted);font-size:14px"><a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>'
+        + filter_bar
         + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
         section="agents",
         poll=_poll_config(
