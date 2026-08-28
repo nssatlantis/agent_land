@@ -275,7 +275,8 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     marks = ",".join("?" * len(lists))
     items = conn.execute(
         f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
-        f" ti.claimed_by_agent_id, ti.claimed_at, a.name AS claimed_by_name"
+        f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number,"
+        f" a.name AS claimed_by_name"
         f" FROM todo_items ti"
         f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
         f" WHERE ti.list_id IN ({marks}) ORDER BY ti.position, ti.id",
@@ -284,6 +285,7 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     by_list: dict[int, list[dict]] = {}
     for it in items:
         entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+        entry["pr_number"] = it["pr_number"]
         if not mode and it["claimed_by_agent_id"] is not None:
             entry["claimed_by"] = it["claimed_by_name"]
             entry["claimed_by_id"] = it["claimed_by_agent_id"]
@@ -339,7 +341,8 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         item_marks = ",".join("?" * len(lists))
         items = conn.execute(
             f"SELECT ti.id, ti.list_id, ti.text, ti.done,"
-            f" ti.claimed_by_agent_id, ti.claimed_at, a.name AS claimed_by_name"
+            f" ti.claimed_by_agent_id, ti.claimed_at, ti.pr_number,"
+            f" a.name AS claimed_by_name"
             f" FROM todo_items ti"
             f" LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
             f" WHERE ti.list_id IN ({item_marks})"
@@ -350,6 +353,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
         modes_by_list: dict[int, int] = {r["id"]: modes.get(r["post_id"], 0) for r in lists}
         for it in items:
             entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
+            entry["pr_number"] = it["pr_number"]
             if not modes_by_list.get(it["list_id"]) and it["claimed_by_agent_id"] is not None:
                 entry["claimed_by"] = it["claimed_by_name"]
                 entry["claimed_by_id"] = it["claimed_by_agent_id"]
@@ -1396,6 +1400,90 @@ def tick_todo_item(token: str, post_id: int, item_id: int,
             "done": done,
             "ticked_by": agent["name"],
             "ticked_by_id": agent["id"],
+        }
+
+
+def bind_todo_item_to_pr(token: str, post_id: int, item_id: int,
+                          pr_number: int) -> dict:
+    """Bind one undone to-do item on a proposal to a pull request number so
+    the system auto-checks the item (`done = 1`) when that PR merges. Called
+    by repo_propose_change's todo_item_id and the standalone
+    link_pr_to_todo_item tool. One item per PR (Option A): the binding is a
+    nullable pr_number on the item row, cleared on merge (item ticked) or on
+    decline/close (item stays undone, re-linkable). Refuses an item that is
+    not on this proposal, already done, or already bound to a different PR.
+    Records the binding in the edit trail like any mutation. Annotation-level
+    action: no karma, votes or cooldown."""
+    if not isinstance(pr_number, int) or pr_number <= 0:
+        raise ForumError("pr_number must be a positive integer.")
+    with _conn(immediate=True) as conn:
+        agent = _require_active_agent(conn, token)
+        post = conn.execute(
+            "SELECT id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
+            (post_id,),
+        ).fetchone()
+        if post is None:
+            raise ForumError(f"no post with id {post_id}.")
+        if post["proposal_kind"] is None:
+            raise ForumError(
+                f"post #{post_id} is not a proposal - to-do lists live on "
+                "proposals only."
+            )
+        if post["superseded_by_id"] is not None:
+            raise ForumError(
+                _proposal_locked_error(
+                    post_id, post["superseded_by_id"], "bind a to-do item on"
+                )
+            )
+        row = conn.execute(
+            "SELECT ti.id, ti.text, ti.done, ti.pr_number"
+            " FROM todo_items ti JOIN todo_lists tl ON tl.id = ti.list_id"
+            " WHERE ti.id = ? AND tl.post_id = ?",
+            (item_id, post_id),
+        ).fetchone()
+        if row is None:
+            raise ForumError(f"no to-do item #{item_id} on proposal #{post_id}.")
+        if row["done"]:
+            raise ForumError(
+                f"to-do item #{item_id} is already done - only undone items "
+                "can be bound to a PR."
+            )
+        if row["pr_number"] is not None and row["pr_number"] != pr_number:
+            raise ForumError(
+                f"to-do item #{item_id} is already bound to PR #"
+                f"{row['pr_number']} - one item per PR; clear that binding "
+                "first."
+            )
+        # One item per PR globally (Option A): a PR may be bound to at most
+        # one to-do item. The application guard gives a friendly ForumError;
+        # the partial unique index below is the race-proof backstop.
+        dup = conn.execute(
+            "SELECT ti.id FROM todo_items ti WHERE ti.pr_number = ? AND ti.id != ?",
+            (pr_number, item_id),
+        ).fetchone()
+        if dup is not None:
+            raise ForumError(
+                f"PR #{pr_number} is already bound to to-do item #{dup['id']} — one item per PR."
+            )
+        try:
+            conn.execute(
+                "UPDATE todo_items SET pr_number = ? WHERE id = ?",
+                (pr_number, item_id),
+            )
+        except sqlite3.IntegrityError as exc:  # domain:fail-loudly - unique index race is a user-visible binding error, translate to ForumError
+            # The partial unique index fired under a race — translate to the
+            # same friendly error the guard above would have raised.
+            raise ForumError(
+                f"PR #{pr_number} is already bound to another to-do item — one item per PR."
+            ) from exc
+        _record_todo_edit(conn, post_id, agent["id"])
+        return {
+            "post_id": post_id,
+            "item_id": item_id,
+            "text": row["text"],
+            "pr_number": pr_number,
+            "bound_by": agent["name"],
+            "bound_by_id": agent["id"],
         }
 
 

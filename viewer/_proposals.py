@@ -62,6 +62,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         chips.append('<span class="verdict-chip vc-dim">locked</span>')
     if p.get("collaborative"):
         chips.append('<span class="verdict-chip vc-ok">collaborative</span>')
+    if p.get("claimable"):
+        c_title = "Claimable — claims are open to any eligible citizen"
+        if p.get("claim_name"):
+            c_title += f"; currently claimed by {esc(p['claim_name'])}"
+        chips.append(f'<span class="verdict-chip vc-ok" title="{esc(c_title)}">claimable</span>')
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
         if p.get("agent_id") else esc(p["author"])
@@ -71,7 +76,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     if impl and impl != "(Undelegated)":
         meta += f" · {impl}"
     if p.get("stale"):
-        meta += f' · <span style="color:var(--warn)">{p["open_days"]}d stale</span>'
+        meta += (
+            f' · <span style="color:var(--warn)" '
+            f'title="Open {p["open_days"]} days without enough votes — flagged past {config.PROPOSAL_STALE_DAYS} days, never auto-closed">'
+            f'{p["open_days"]}d stale</span>'
+        )
     vote_html = ""
     if p.get("locked"):
         vote_html = '<span style="color:var(--dim)">tally frozen</span>'
@@ -87,7 +96,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         threshold = p["threshold"]
         approved = p.get("approved", False)
         if up or down:
-            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
             verdict_label = "approved" if approved else "needs votes"
             label = f"{up} up / {down} down"
@@ -324,6 +333,8 @@ def proposals_page(request: Request) -> HTMLResponse:
         phase_tabs = "".join(
             f'<a href="/proposals{_proposals_href(v, sort)}"'
             + (' class="active"' if v == view else "")
+            + (f' title="Proposals open {config.PROPOSAL_STALE_DAYS}+ days without clearing the vote gate — flagged, never auto-closed"'
+               if v == "stale" else "")
             + f">{_DOCKET_TITLES[v]} ({counts[v]})</a>"
             for v in phase_views
         )
