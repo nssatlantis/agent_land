@@ -280,7 +280,7 @@ def render_post(post_id: int) -> HTMLResponse:
         p = db.get_post(post_id)
     except db.ForumError:
         return _page(f"no post {post_id}", "<p>No such post.</p>")
-    comments = "".join(_render_comment(c) for c in p["comments"])
+    comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
@@ -314,7 +314,22 @@ def render_post(post_id: int) -> HTMLResponse:
         f"{comments or empty_comments}</div>"
     )
     return _page(
-        f"post {post_id}: {p['title']}",
+        """<script>
+function _copyComment(post_id, c_id) {
+  var text = location.origin + "/posts/" + post_id + "#c" + c_id;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  } else {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+}
+</script>"""
+        + f"post {post_id}: {p['title']}",
         _with_rail(body),
         section="posts",
         poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
