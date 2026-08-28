@@ -1,6 +1,7 @@
 """Tests for the server-side CI runner (repo_ci_run): guardrail gating,
 main-only tree refresh seams, sanitized child environments, timeout kill,
 output tailing, and the events-ledger audit trail."""
+
 import json
 import os
 import subprocess
@@ -16,10 +17,10 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import config  # noqa: E402
 import db  # noqa: E402
 import events  # noqa: E402
 import server.ci_runner as ci_runner  # noqa: E402
+from tests._setup import config  # noqa: E402
 
 db.init_db()
 
@@ -31,6 +32,8 @@ def _uid() -> int:
     """Fresh actor id per executing scenario - shared ids would trip the
     real cooldown between tests."""
     return next(_uid_counter)
+
+
 _SAVED: dict[str, object] = {}
 
 
@@ -100,12 +103,15 @@ def test_busy_lock_refuses():
 
 
 def test_success_run_parses_summary_and_logs_event():
-    stub = _StubTree("tests", """
+    stub = _StubTree(
+        "tests",
+        """
         import sys
         print("  test_a.py: ok")
         print("all 1 test files passed")
         sys.exit(0)
-    """)
+    """,
+    )
     uid = _uid()
     before = len(events.query_events(agent_id=uid, kind="ci_run"))
     try:
@@ -122,29 +128,36 @@ def test_success_run_parses_summary_and_logs_event():
 
 
 def test_failing_run_lists_failed_files():
-    stub = _StubTree("tests", """
+    stub = _StubTree(
+        "tests",
+        """
         import sys
         print("FAILED: test_bad.py")
         print("some traceback noise")
         print("FAILED: 1 of 5 test files")
         sys.exit(1)
-    """)
+    """,
+    )
     try:
         result = ci_runner.run_checks(_uid(), "t", "tests")
         assert result["ok"] is False and result["exit_code"] == 1
         assert result["summary"] == {"passed_files": 4, "failed_files": 1}
-        assert result["failed_files"] == ["tests/test_bad.py"], \
+        assert result["failed_files"] == ["tests/test_bad.py"], (
             "bare basenames are normalized to repo-root paths"
+        )
     finally:
         stub.cleanup()
 
 
 def test_timeout_kills_and_reports():
-    stub = _StubTree("tests", """
+    stub = _StubTree(
+        "tests",
+        """
         import time
         print("starting", flush=True)
         time.sleep(60)
-    """)
+    """,
+    )
     _shadow("CI_RUN_TIMEOUT_SECONDS", 2)
     try:
         started = time.monotonic()
@@ -163,7 +176,9 @@ def test_child_env_is_sanitized():
     decoys = {"GITHUB_TOKEN": "supersecret", "FORUM_SECRET_KNOB": "x"}
     saved_env = {k: os.environ.get(k) for k in decoys}
     os.environ.update(decoys)
-    stub = _StubTree("tests", """
+    stub = _StubTree(
+        "tests",
+        """
         import json, os, sys
         leaky = [k for k in os.environ
                  if "TOKEN" in k.upper() or "SECRET" in k.upper()
@@ -171,7 +186,8 @@ def test_child_env_is_sanitized():
         print(json.dumps({"leaky": sorted(leaky),
                           "data_dir": os.environ.get("AGENTLAND_DATA_DIR")}))
         sys.exit(0)
-    """)
+    """,
+    )
     try:
         result = ci_runner.run_checks(_uid(), "t", "tests")
         payload = json.loads(result["output_tail"].strip().splitlines()[-1])
@@ -188,8 +204,9 @@ def test_child_env_is_sanitized():
 
 
 def test_cooldown_gate():
-    events.log_event(events.EVT_CI_RUN, actor_agent_id=_ACTOR,
-                     detail={"checks": "tests"})
+    events.log_event(
+        events.EVT_CI_RUN, actor_agent_id=_ACTOR, detail={"checks": "tests"}
+    )
     _shadow("CI_RUN_COOLDOWN_SECONDS", 300)
     try:
         ci_runner.run_checks(_ACTOR, "t", "tests")
@@ -215,11 +232,14 @@ def test_daily_cap_gate():
 
 
 def test_output_tail_truncation():
-    stub = _StubTree("benchmarks", """
+    stub = _StubTree(
+        "benchmarks",
+        """
         import sys
         print("x" * 50000)
         sys.exit(0)
-    """)
+    """,
+    )
     _shadow("CI_RUN_TAIL_BYTES", 100)
     try:
         result = ci_runner.run_checks(_uid(), "t", "benchmarks")
@@ -234,13 +254,16 @@ def test_output_retained_bytes_capped_against_host_memory():
     """A noisy (potentially hostile) suite cannot balloon server RAM: the
     drain keeps at most CI_RUN_MAX_RETAINED_BYTES no matter how much the
     child streams, while total-count still drives the truncated flag."""
-    stub = _StubTree("tests", """
+    stub = _StubTree(
+        "tests",
+        """
         import sys
         for _ in range(200):
             print("y" * 10000, flush=True)
         print("all 1 test files passed")
         sys.exit(0)
-    """)
+    """,
+    )
     _shadow("CI_RUN_MAX_RETAINED_BYTES", 2048)
     _shadow("CI_RUN_TAIL_BYTES", 256)
     try:
@@ -259,31 +282,36 @@ def test_output_retained_bytes_capped_against_host_memory():
 def test_multibyte_tail_is_byte_exact():
     """Truncation flag and returned tail must agree in BYTES: multi-byte
     output used to make a character slice exceed the byte budget ~3x."""
-    stub = _StubTree("tests", """
+    stub = _StubTree(
+        "tests",
+        """
         import sys
         print("héllo-🎉" * 5000)
         print("all 1 test files passed")
         sys.exit(0)
-    """)
+    """,
+    )
     _shadow("CI_RUN_TAIL_BYTES", 64)
     try:
         result = ci_runner.run_checks(_uid(), "t", "tests")
         assert result["output_truncated"] is True
-        assert len(result["output_tail"].encode("utf-8")) <= 64 + 4, \
+        assert len(result["output_tail"].encode("utf-8")) <= 64 + 4, (
             "tail exceeded its byte budget"
+        )
     finally:
         _restore()
         stub.cleanup()
-
 
 
 def _root_server():
     """Load the repo's root server package under a private name so its MCP
     handlers can be driven directly."""
     import importlib.util
+
     root = Path(__file__).resolve().parent.parent / "server" / "__init__.py"
     spec = importlib.util.spec_from_file_location(
-        f"agentland_root_server_{_uid()}", root)
+        f"agentland_root_server_{_uid()}", root
+    )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -311,8 +339,7 @@ def test_suspended_citizen_cannot_run_ci():
     fresh = db.register_agent(f"ci_act_{_uid()}")
     db.require_active_agent(fresh["token"])
     with db._conn() as conn:
-        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?",
-                     (fresh["agent_id"],))
+        conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (fresh["agent_id"],))
     try:
         db.require_active_agent(fresh["token"])
         raise AssertionError("expected ForumError for banned citizen")
@@ -338,12 +365,14 @@ def test_prune_filter_is_docker_glob_not_regex():
         class _R:
             returncode = 1
             stdout = ""
+
         return _R()
 
     import unittest.mock as _mock
 
-    with _mock.patch.object(ci_runner.subprocess, "run", side_effect=fake_run) \
-            as _called:
+    with _mock.patch.object(
+        ci_runner.subprocess, "run", side_effect=fake_run
+    ) as _called:
         ci_runner._prune_stale_images("agentland-ci:deadbeef")
     assert _called.called
     flt = [a for a in captured["cmd"] if a.startswith("reference=")]
@@ -367,23 +396,22 @@ def test_drain_bounded_and_tail_contiguous():
     bounded by retain (+one chunk), the tail stays contiguous and correct,
     and total counts every byte that flowed."""
     import random
+
     rng = random.Random(1234)
-    stream = [bytes([65 + (i % 26)]) * rng.randint(200, 900)
-              for i in range(400)]
+    stream = [bytes([65 + (i % 26)]) * rng.randint(200, 900) for i in range(400)]
     retain = 8192
     chunks: list = []
     state: dict = {}
-    ci_runner._drain(_FakePipe(stream), chunks,
-                     {"start": 0}, retain, state)
+    ci_runner._drain(_FakePipe(stream), chunks, {"start": 0}, retain, state)
     assert state["total"] == sum(len(c) for c in stream)
     start = state["start"]
     parts = [c[start:] if i == 0 else c for i, c in enumerate(chunks)]
     joined = b"".join(parts)
-    assert len(joined) <= retain + 900, \
-        f"retained {len(joined)} exceeds budget+chunk"
+    assert len(joined) <= retain + 900, f"retained {len(joined)} exceeds budget+chunk"
     expected_tail = b"".join(stream)[-retain:]
-    assert joined.endswith(expected_tail[-64:]), \
+    assert joined.endswith(expected_tail[-64:]), (
         "retained tail diverged from the true stream tail"
+    )
     assert joined == expected_tail or len(expected_tail) < retain
 
 
@@ -392,11 +420,14 @@ def test_gc_sweep_survives_timeout_exception():
     timeout raises TimeoutExpired rather than returning a code, so only an
     exception guard honors the never-fail-a-passed-run contract."""
     db.register_agent(f"gcfail_{_uid()}")
-    stub = _StubTree("tests", """
+    stub = _StubTree(
+        "tests",
+        """
         import sys
         print("all 1 test files passed")
         sys.exit(0)
-    """)
+    """,
+    )
     saved_prepare = ci_runner._prepare_tree
     real_git = ci_runner._git
 
@@ -416,7 +447,6 @@ def test_gc_sweep_survives_timeout_exception():
         stub.cleanup()
 
 
-
 def test_parse_summary_db_benchmark_median_parsed():
     """Regression: db_benchmark timing rows with a sub-100ms median carry a
     leading space (width-6 right justify), so the parser must allow one-or-more
@@ -430,8 +460,9 @@ def test_parse_summary_db_benchmark_median_parsed():
     summary, failed = ci_runner._parse_summary(output)
     assert summary is not None, "db_benchmark block should parse"
     assert summary.get("bench") == "db_benchmark"
-    assert summary["timings_median_ms"]["query_a"] == 45.67, \
+    assert summary["timings_median_ms"]["query_a"] == 45.67, (
         "sub-100ms median (leading space) was dropped"
+    )
     assert summary["timings_median_ms"]["query_b"] == 123.45
 
 

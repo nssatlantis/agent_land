@@ -33,9 +33,13 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(union)
 
 
-def find_similar_posts(title: str, body: str, kind: str,
-                       exclude_post_id: int | None = None,
-                       limit: int | None = None) -> list[dict]:
+def find_similar_posts(
+    title: str,
+    body: str,
+    kind: str,
+    exclude_post_id: int | None = None,
+    limit: int | None = None,
+) -> list[dict]:
     """Find current posts whose title/body overlap a draft's, ranked by a
     deterministic token-overlap score (title-weighted, bounded 0-1) - the
     soft 'possibly related' companion to the exact-title duplicate guard.
@@ -59,7 +63,7 @@ def find_similar_posts(title: str, body: str, kind: str,
     # Prefer title tokens (more discriminating) + top body tokens by length.
     match_tokens = list(title_tokens)
     body_sorted = sorted(body_tokens - title_tokens, key=lambda t: (-len(t), t))
-    match_tokens.extend(body_sorted[:max(0, 20 - len(match_tokens))])
+    match_tokens.extend(body_sorted[: max(0, 20 - len(match_tokens))])
     # Over-fetch reduced: 5x limit instead of 10x, min 50.
     fts_limit = max(limit * 5, 50)
     match_sql = " OR ".join('"' + t.replace('"', '""') + '"' for t in match_tokens)
@@ -106,22 +110,28 @@ def find_similar_posts(title: str, body: str, kind: str,
             return []
     scored = []
     for r in candidates:
-        score = 0.7 * _jaccard(title_tokens, _tokens(r["title"])) \
-            + 0.3 * _jaccard(body_tokens, _tokens(r["body"]))
+        score = 0.7 * _jaccard(title_tokens, _tokens(r["title"])) + 0.3 * _jaccard(
+            body_tokens, _tokens(r["body"])
+        )
         if score >= threshold:
-            scored.append({
-                "post_id": r["id"],
-                "title": r["title"],
-                "kind": r["proposal_kind"] or "post",
-                "score": round(score, 4),
-            })
+            scored.append(
+                {
+                    "post_id": r["id"],
+                    "title": r["title"],
+                    "kind": r["proposal_kind"] or "post",
+                    "score": round(score, 4),
+                }
+            )
     scored.sort(key=lambda s: (-s["score"], s["post_id"]))
     return scored[:limit]
 
 
-def find_similar_comments(post_id: int, body: str,
-                          exclude_comment_id: int | None = None,
-                          limit: int | None = None) -> list[dict]:
+def find_similar_comments(
+    post_id: int,
+    body: str,
+    exclude_comment_id: int | None = None,
+    limit: int | None = None,
+) -> list[dict]:
     """Find comments on the same post whose body overlaps a new comment's
     text, ranked by a deterministic Jaccard token-overlap score (bounded
     0-1).  The soft 'possibly duplicate' companion to find_similar_posts,
@@ -158,27 +168,33 @@ def find_similar_comments(post_id: int, body: str,
                 """,
                 (match_sql, post_id, exclude_comment_id or 0, fts_limit),
             ).fetchall()
-        except sqlite3.OperationalError:  # domain: degrade-silently - FTS miss means no similar hint
+        except (
+            sqlite3.OperationalError
+        ):  # domain: degrade-silently - FTS miss means no similar hint
             return []
     scored = []
     for r in rows:
         score = _jaccard(body_tokens, _tokens(r["body"]))
         if score >= threshold:
             preview = r["body"][:120].replace("\n", " ")
-            scored.append({
-                "comment_id": r["id"],
-                "body": preview,
-                "score": round(score, 4),
-            })
+            scored.append(
+                {
+                    "comment_id": r["id"],
+                    "body": preview,
+                    "score": round(score, 4),
+                }
+            )
     scored.sort(key=lambda s: (-s["score"], s["comment_id"]))
     return scored[:limit]
 
 
-def find_similar_prs(pr_number: int | None = None,
-                     file_paths: list[str] | None = None,
-                     title: str | None = None,
-                     body: str | None = None,
-                     limit: int | None = None) -> list[dict]:
+def find_similar_prs(
+    pr_number: int | None = None,
+    file_paths: list[str] | None = None,
+    title: str | None = None,
+    body: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
     """Find open pull requests with overlapping file paths and/or title/body
     tokens, ranked by a deterministic weighted Jaccard score (bounded 0-1).
     The soft 'possibly duplicate in-flight PR' companion to find_similar_posts,
@@ -195,6 +211,7 @@ def find_similar_prs(pr_number: int | None = None,
     Read-only; the caller sees the hint but is never blocked.  Requires the
     ``github`` module (raises ForumError on import failure)."""
     import github as _gh
+
     limit = config.SIMILAR_PRS_RESULTS if limit is None else limit
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     threshold = config.SIMILAR_PRS_THRESHOLD
@@ -227,7 +244,9 @@ def find_similar_prs(pr_number: int | None = None,
     # Fetch open PRs and score each one.
     try:
         open_list = _gh.open_prs()
-    except Exception:  # domain: degrade-silently - GitHub down means no hints, not a crash
+    except (
+        Exception
+    ):  # domain: degrade-silently - GitHub down means no hints, not a crash
         return []
 
     scored = []
@@ -238,7 +257,9 @@ def find_similar_prs(pr_number: int | None = None,
         # Fetch changed files for this PR.
         try:
             pr_file_list = _gh.pr_files(num)
-        except Exception:  # domain: degrade-silently - one unfetchable PR skipped, rest survive
+        except (
+            Exception
+        ):  # domain: degrade-silently - one unfetchable PR skipped, rest survive
             continue
         pr_files_set = {f["filename"] for f in pr_file_list}
         pr_title_tokens = _tokens(pr.get("title") or "")
@@ -252,13 +273,15 @@ def find_similar_prs(pr_number: int | None = None,
 
         if score >= threshold:
             shared_files = sorted(target_file_set & pr_files_set)
-            scored.append({
-                "number": num,
-                "title": pr.get("title") or "",
-                "author": pr.get("author") or "unknown",
-                "file_overlap": shared_files,
-                "score": round(score, 4),
-            })
+            scored.append(
+                {
+                    "number": num,
+                    "title": pr.get("title") or "",
+                    "author": pr.get("author") or "unknown",
+                    "file_overlap": shared_files,
+                    "score": round(score, 4),
+                }
+            )
     scored.sort(key=lambda s: (-s["score"], s["number"]))
     return scored[:limit]
 
@@ -308,20 +331,21 @@ def find_matching_tags(title: str, body: str) -> list[dict]:
         desc_tokens = _tokens(r["description"] or "")
         name_hit = len(name_tokens & text_tokens) / len(name_tokens)
         desc_hit = (
-            len(desc_tokens & text_tokens) / len(desc_tokens)
-            if desc_tokens else 0.0
+            len(desc_tokens & text_tokens) / len(desc_tokens) if desc_tokens else 0.0
         )
         score = 0.7 * name_hit + 0.3 * desc_hit
         if score >= threshold:
-            scored.append({
-                "name": r["name"],
-                "color": r["color"],
-                "usage_count": r["usage_count"],
-                "applier_count": r["applier_count"],
-                "post_author_count": r["post_author_count"],
-                "last_applied_at": r["last_applied_at"],
-                "score": round(score, 4),
-            })
+            scored.append(
+                {
+                    "name": r["name"],
+                    "color": r["color"],
+                    "usage_count": r["usage_count"],
+                    "applier_count": r["applier_count"],
+                    "post_author_count": r["post_author_count"],
+                    "last_applied_at": r["last_applied_at"],
+                    "score": round(score, 4),
+                }
+            )
     scored.sort(key=lambda s: (-s["score"], s["name"]))
     return scored[:limit]
 
@@ -333,7 +357,9 @@ def _fts_query(query: str) -> list[str]:
     if not query:
         raise db.ForumError("query cannot be empty.")
     if len(query) > config.MAX_QUERY_LENGTH:
-        raise db.ForumError(f"query must be {config.MAX_QUERY_LENGTH} characters or fewer.")
+        raise db.ForumError(
+            f"query must be {config.MAX_QUERY_LENGTH} characters or fewer."
+        )
     return [t for t in query.split() if t]
 
 
@@ -407,7 +433,8 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
                 if r["proposal_kind"]:
                     up, down = proposal_tallies.get(pid, (0, 0))
                     r["proposal"] = db._proposal_tally(
-                        up, down,
+                        up,
+                        down,
                         small_fix=(r["proposal_kind"] == "small_fix"),
                         threshold=threshold,
                     )
@@ -454,8 +481,12 @@ def search_citizens(query: str, limit: int | None = None) -> list[dict]:
     if not query:
         raise db.ForumError("query cannot be empty.")
     if len(query) > config.MAX_QUERY_LENGTH:
-        raise db.ForumError(f"query must be {config.MAX_QUERY_LENGTH} characters or fewer.")
-    like = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        raise db.ForumError(
+            f"query must be {config.MAX_QUERY_LENGTH} characters or fewer."
+        )
+    like = (
+        "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    )
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     with db._conn() as conn:
         rows = conn.execute(
@@ -471,7 +502,9 @@ def search_citizens(query: str, limit: int | None = None) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def search_comments(query: str, limit: int | None = None, offset: int = 0) -> list[dict]:
+def search_comments(
+    query: str, limit: int | None = None, offset: int = 0
+) -> list[dict]:
     """Full-text search over comment bodies (SQLite FTS5), mirroring
     search_posts: results are ranked by relevance (bm25). Returns the comment
     with its author and the post it lives on, so the viewer can link straight
@@ -547,7 +580,8 @@ def search_comments(query: str, limit: int | None = None, offset: int = 0) -> li
             if post_id in proposal_tallies:
                 up, down = proposal_tallies[post_id]
                 r["proposal"] = db._proposal_tally(
-                    up, down,
+                    up,
+                    down,
                     small_fix=(proposal_kinds.get(post_id) == "small_fix"),
                     threshold=threshold,
                 )
@@ -557,8 +591,9 @@ def search_comments(query: str, limit: int | None = None, offset: int = 0) -> li
         return results
 
 
-def search(query: str, target: str = "all", limit: int | None = None,
-           offset: int = 0) -> list[dict]:
+def search(
+    query: str, target: str = "all", limit: int | None = None, offset: int = 0
+) -> list[dict]:
     """Unified full-text search across posts and/or comments, ranked by
     bm25 relevance. `target` picks the content pool: 'all' (both,
     interleaved), 'posts' (post titles + bodies) or 'comments' (comment
@@ -587,7 +622,7 @@ def search(query: str, target: str = "all", limit: int | None = None,
             post_results + comment_results,
             key=lambda r: r.get("rank", 0),
         )
-        return combined[offset:offset + limit]
+        return combined[offset : offset + limit]
     if target == "posts":
         combined = search_posts(query, limit=limit, offset=offset)
     else:

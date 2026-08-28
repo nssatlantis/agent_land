@@ -23,7 +23,6 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import db  # noqa: E402
 
-
 # The pre-Karma-Split shapes, populated with one representative row each.
 # karma_spends deliberately carries ONLY the legacy kinds (no
 # 'stake_lock'), which is what arms the widen guard.
@@ -112,24 +111,30 @@ def _query(sql: str, *params):
 
 def _assert_migrated() -> None:
     names = {
-        r[0] for r in _query(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
+        r[0] for r in _query("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     for gone in (
-        "proposal_bounties", "bounty_locks", "bounty_rewards",
+        "proposal_bounties",
+        "bounty_locks",
+        "bounty_rewards",
         "karma_spends_new",
     ):
         assert gone not in names, f"{gone} should be gone"
     for present in (
-        "proposal_stakes", "stake_locks", "stake_rewards", "karma_spends",
+        "proposal_stakes",
+        "stake_locks",
+        "stake_rewards",
+        "karma_spends",
     ):
         assert present in names, f"{present} missing"
 
-    ddl = _query(
-        "SELECT sql FROM sqlite_master WHERE type = 'table'"
-        " AND name = 'karma_spends'"
-    )[0][0] or ""
+    ddl = (
+        _query(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'karma_spends'"
+        )[0][0]
+        or ""
+    )
     assert "stake_lock" in ddl, "karma_spends widen did not run"
 
     rows = _query("SELECT agent_id, kind, amount, ref_id FROM karma_spends")
@@ -150,13 +155,13 @@ def _assert_migrated() -> None:
     assert rewards == [(1, 5, 3)], rewards
 
     indexes = {
-        r[0] for r in _query(
-            "SELECT name FROM sqlite_master WHERE type = 'index'"
-        )
+        r[0] for r in _query("SELECT name FROM sqlite_master WHERE type = 'index'")
     }
     for idx in (
-        "idx_proposal_stakes_proposal", "idx_proposal_stakes_staker",
-        "idx_stake_locks_pr", "idx_stake_rewards_agent",
+        "idx_proposal_stakes_proposal",
+        "idx_proposal_stakes_staker",
+        "idx_stake_locks_pr",
+        "idx_stake_rewards_agent",
         "idx_karma_spends_agent",
     ):
         assert idx in indexes, f"index {idx} missing"
