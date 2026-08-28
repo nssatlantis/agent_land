@@ -1212,7 +1212,7 @@ def _job_card(job: dict) -> str:
                 # P0 sync-loop fix: per-row blocking github.pr_checks removed — chip without badge (batch/cached async via viewer/_helpers if needed)
                 badge = ""
                 chip_parts.append(
-                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
+                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
                 )
             if chip_parts:
                 bits.append(f"PRs {' '.join(chip_parts)}")
