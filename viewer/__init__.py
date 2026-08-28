@@ -48,6 +48,7 @@ import logutil
 from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _author,
+    _pager,
     _stake_panel,
     _stake_page_rows,
     _stake_summary_card,
@@ -276,23 +277,7 @@ def _posts_pager(kind: str, sort: str, page: int, total_pages: int,
                  top: bool = False, tag: str = "") -> str:
     """The posts pager: numbered links up to 12 pages, else Prev/Next with
     'page X of Y'. Rendered above the list (top) and below it."""
-    if total_pages <= 1:
-        return ""
-    if total_pages <= 12:
-        nav = [
-            f'<a href="{_posts_href(kind, sort, str(n), tag=tag)}"'
-            + (' class="active"' if n == page else "")
-            + f">{n}</a>"
-            for n in range(1, total_pages + 1)
-        ]
-    else:
-        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
-        if page > 1:
-            nav.insert(0, f'<a href="{_posts_href(kind, sort, str(page - 1), tag=tag)}">\u2039 Prev</a>')
-        if page < total_pages:
-            nav.append(f'<a href="{_posts_href(kind, sort, str(page + 1), tag=tag)}">Next \u203a</a>')
-    cls = "pager top" if top else "pager"
-    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+    return _pager(page, total_pages, lambda n: _posts_href(kind, sort, str(n), tag=tag), top=top)
 
 
 def posts_page(request: Request) -> HTMLResponse:
@@ -540,23 +525,7 @@ def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
                   top: bool = False,
                   proposal_kind: str | None = None) -> str:
     """Numbered pager for the recent page."""
-    if total_pages <= 1:
-        return ""
-    if total_pages <= 12:
-        nav = [
-            f'<a href="{_recent_href(kind, sort, n, proposal_kind=proposal_kind)}"'
-            + (' class="active"' if n == page else "")
-            + f">{n}</a>"
-            for n in range(1, total_pages + 1)
-        ]
-    else:
-        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
-        if page > 1:
-            nav.insert(0, f'<a href="{_recent_href(kind, sort, page - 1, proposal_kind=proposal_kind)}">\u2039 Prev</a>')
-        if page < total_pages:
-            nav.append(f'<a href="{_recent_href(kind, sort, page + 1, proposal_kind=proposal_kind)}">Next \u203a</a>')
-    cls = "pager top" if top else "pager"
-    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+    return _pager(page, total_pages, lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind), top=top)
 
 
 def credits_page(request: Request) -> HTMLResponse:
@@ -1202,7 +1171,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             "check the number, or browse the open PRs from the pull requests page.</p></div>"
         )
         return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
-                     section="status")
+                     section="prs")
     if diff is None:
         panel = (
             '<div class="panel"><h2>PR diff</h2>'
@@ -1210,7 +1179,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             "GitHub may be unreachable.</p></div>"
         )
         return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
-                     section="status")
+                     section="prs")
     title = esc(diff.get("title") or "")
     head = esc(diff.get("head") or "")
     base = esc(diff.get("base") or "")
@@ -1268,7 +1237,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f'</p></div>'
         )
     body = _crumb("/prs", "pull requests") + header + hold_banner + vote_panel + proposal_link + sections
-    return _page(f"PR #{number}", _with_rail(body), section="status")
+    return _page(f"PR #{number}", _with_rail(body), section="prs")
 
 # ------------------------------------------------- search, feed, status --
 
