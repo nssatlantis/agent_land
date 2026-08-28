@@ -1377,6 +1377,15 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         parts.append('<span class="verdict-chip vc-warn">stale</span>')
     if (p.get("proposal") or {}).get("review_requested"):
         parts.append('<span class="verdict-chip vc-ok">in review</span>')
+    # promoted from idea chip (237:4263)
+    try:
+        sid = p.get("supersedes_id") or (p.get("proposal") or {}).get("supersedes_id")
+        if p.get("proposal_kind") == "proposal" and sid:
+            parts.append(
+                f'<span class="verdict-chip vc-ok">promoted from idea <a href="/posts/{int(sid)}" style="color:inherit;text-decoration:underline">#{int(sid)}</a></span>'
+            )
+    except Exception:  # domain: degrade-silently - chip never blocks card render
+        pass
     staked_parts: list[str] = []
     if p.get("proposal_kind"):
         for src in (p, p.get("proposal") or {}):
