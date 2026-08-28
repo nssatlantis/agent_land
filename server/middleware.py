@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
-
 from collections.abc import MutableMapping
+from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -65,21 +64,26 @@ class GracefulRestartMiddleware:
         app_obj = scope.get("app")
         shutting = False
         try:
-            shutting = bool(getattr(getattr(app_obj, "state", None), "shutting_down", False))
+            shutting = bool(
+                getattr(getattr(app_obj, "state", None), "shutting_down", False)
+            )
         except Exception:  # domain: degrade-silently - shutting_down flag is best-effort, default to not shutting
             shutting = False
         if shutting:
             retry = 10
             try:
                 import config  # live tunable
+
                 retry = int(config.RESTART_RETRY_AFTER_SECONDS)
-            except Exception:  # domain: degrade-silently - retry_after tunable fallback to 10
+            except (
+                Exception
+            ):  # domain: degrade-silently - retry_after tunable fallback to 10
                 pass
             path = scope.get("path", "")
             if path == "/mcp" or path.startswith("/mcp"):
                 body = (
                     b'{"jsonrpc":"2.0","error":{"code":-32000,"message":"restarting",'
-                    b'"data":{"retry_after":' + str(retry).encode() + b'}}}'
+                    b'"data":{"retry_after":' + str(retry).encode() + b"}}}"
                 )
                 await send(
                     {
@@ -98,10 +102,18 @@ class GracefulRestartMiddleware:
                 {
                     "type": "http.response.start",
                     "status": 503,
-                    "headers": [[b"retry-after", str(retry).encode()], [b"content-type", b"text/plain"]],
+                    "headers": [
+                        [b"retry-after", str(retry).encode()],
+                        [b"content-type", b"text/plain"],
+                    ],
                 }
             )
-            await send({"type": "http.response.body", "body": b"restarting, retry in a few seconds"})
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b"restarting, retry in a few seconds",
+                }
+            )
             return
         await self.app(scope, receive, send)
 
