@@ -299,14 +299,27 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
             p_ids = [p["id"] for p in a["posts"][:20]]
             if p_ids:
                 marks = ",".join("?" * len(p_ids))
-                for r in conn.execute(f"SELECT agent_id, COUNT(*) as c FROM votes WHERE target_id IN ({marks}) AND agent_id != ? GROUP BY agent_id ORDER BY c DESC LIMIT 5", (*p_ids, a["id"])).fetchall():
-                    peer_counts[r["agent_id"]] = peer_counts.get(r["agent_id"], 0) + int(r["c"])
+                for r in conn.execute(
+                    f"SELECT agent_id, COUNT(*) as c FROM votes WHERE target_id IN ({marks}) AND agent_id != ? GROUP BY agent_id ORDER BY c DESC LIMIT 5",
+                    (*p_ids, a["id"]),
+                ).fetchall():
+                    peer_counts[r["agent_id"]] = peer_counts.get(
+                        r["agent_id"], 0
+                    ) + int(r["c"])
         if peer_counts:
             for pid, cnt in sorted(peer_counts.items(), key=lambda x: -x[1])[:5]:
-                collab_rows.append(f'<div class="rail-item"><a href="/agents/{pid}" style="color:var(--accent)">citizen {pid}</a><span class="rail-meta">{cnt} interactions</span></div>')
+                collab_rows.append(
+                    f'<div class="rail-item"><a href="/agents/{pid}" style="color:var(--accent)">citizen {pid}</a><span class="rail-meta">{cnt} interactions</span></div>'
+                )
     except Exception:  # domain: degrade-silently
         collab_rows = []
-    collab_panel = _collapsible(f"Collaboration network · {len(collab_rows)}", "".join(collab_rows) if collab_rows else "<p style='color:var(--muted)'>No collaborations yet.</p>", "collab")
+    collab_panel = _collapsible(
+        f"Collaboration network · {len(collab_rows)}",
+        "".join(collab_rows)
+        if collab_rows
+        else "<p style='color:var(--muted)'>No collaborations yet.</p>",
+        "collab",
+    )
 
     repo = f"https://github.com/{esc(github.repo_spec())}"
     pr_rows = []
