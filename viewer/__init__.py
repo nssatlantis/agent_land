@@ -1322,14 +1322,56 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 
 def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
+    author_filter = request.query_params.get("author", "").strip()
+    raw_page = request.query_params.get("page") or "1"
     try:
-        posts = search.search_posts(q) if q else []
-        citizens = search.search_citizens(q) if q else []
-        comments = search.search_comments(q) if q else []
-    except db.ForumError:
-        posts = citizens = comments = []
+        page = max(1, int(raw_page))
+    except (TypeError, ValueError):
+        page = 1
+    per_page = 30
+    offset = (page - 1) * per_page
+
+    error_msg = ""
+    posts = []
+    citizens = []
+    comments = []
+    if q:
+        try:
+            posts = search.search_posts(q, limit=per_page, offset=offset)
+            citizens = search.search_citizens(q, limit=per_page)
+            comments = search.search_comments(q, limit=per_page, offset=offset)
+        except db.ForumError as exc:
+            error_msg = str(exc)
+
+    if author_filter:
+        try:
+            aid = int(author_filter)
+        except (TypeError, ValueError):
+            aid = None
+        if aid is not None:
+            posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
+            comments = [c for c in comments if c.get("author_id") == aid]
+
+    def _search_href(p: int, af: str) -> str:
+        params = []
+        if q:
+            params.append(f"q={q}")
+        if af:
+            params.append(f"author={af}")
+        if p > 1:
+            params.append(f"page={p}")
+        return "/search" + (f"?{'&'.join(params)}" if params else "")
+
+    total_rows = len(posts) + len(citizens) + len(comments)
+    total_pages = max(1, (total_rows + per_page - 1) // per_page) if q else 1
+    if page > total_pages:
+        page = total_pages
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
+    error_html = (
+        f"<p style='color:#e53e3e;font-size:15px'>Search error: {esc(error_msg)}</p>"
+        if error_msg else ""
+    )
     post_rows = "".join(_post_card(p, snippet=True) for p in posts)
     citizen_rows = "".join(
         f'<div class="rail-item"><a href="/agents/{c["id"]}">{esc(c["name"])}</a>'
@@ -1345,17 +1387,20 @@ def search_page(request: Request) -> HTMLResponse:
         for c in comments
     )
     heading = f"Search: {esc(q)}" if q else "Search"
+    pager = _pager(page, total_pages, lambda n: _search_href(n, author_filter)) if q and total_pages > 1 else ""
+    meta = f"<p class='meta' style='margin:0 0 8px;font-size:14px'>{len(posts)} posts, {len(citizens)} citizens, {len(comments)} comments matched.</p>" if q and not error_msg else ""
     body = (
         _crumb("/posts", "all posts")
         + f'<div class="panel"><h2>{heading}</h2>'
-        + (f"<p style='color:var(--muted);font-size:15px'>{len(posts)} posts, "
-           f"{len(citizens)} citizens, {len(comments)} comments matched.</p>" if q else "")
+        + error_html
+        + meta + pager
         + f'<div class="search-group"><h3>Posts</h3>{post_rows or empty}</div>'
         + f'<div class="search-group"><h3>Citizens</h3>{citizen_rows or empty}</div>'
         + f'<div class="search-group"><h3>Comments</h3>{comment_rows or empty}</div>'
+        + pager
         + "</div>"
     )
-    return _page("search", _with_rail(body), q=q, section="posts",
+    return _page("search", _with_rail(body), q=q, section="",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 def feed(request: Request) -> HTMLResponse:
