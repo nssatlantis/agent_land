@@ -7,6 +7,7 @@ mocked; the DB operations are real.
 
 Covers the atomicity improvement: proposal_outcomes, pr_merges, and
 bounty operations all commit in one connection in the outcome poller."""
+
 import os
 import sys
 import tempfile
@@ -18,13 +19,12 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
-import github  # noqa: E402
-import events  # noqa: E402
 import config  # noqa: E402
 import db._staking as staking_mod  # noqa: E402
+import events  # noqa: E402
+import github  # noqa: E402
 from server.poller import _pr_vote_sweep  # noqa: E402
-
+from tests._setup import db, setup  # noqa: E402
 
 AGENTS, _ = setup()
 _counter = [0]
@@ -46,14 +46,23 @@ def _make_small_fix(opener_name="alpha"):
 
 def _open_pr_dict(number, citizen=None):
     return {
-        "number": number, "title": "test", "head": "branch",
-        "base": "main", "author": "nobody", "created_at": "",
-        "html_url": "", "mergeable_state": "clean", "body": "",
-        "head_sha": "sha", "citizen": citizen,
+        "number": number,
+        "title": "test",
+        "head": "branch",
+        "base": "main",
+        "author": "nobody",
+        "created_at": "",
+        "html_url": "",
+        "mergeable_state": "clean",
+        "body": "",
+        "head_sha": "sha",
+        "citizen": citizen,
     }
 
 
-def _simulate_outcome_poller(pr_number, proposal_post_id, status, merged_at=None, agent_id=None):
+def _simulate_outcome_poller(
+    pr_number, proposal_post_id, status, merged_at=None, agent_id=None
+):
     """Simulate what the outcome poller does after the vote sweep merges a PR.
 
     This mirrors the real code path from server/poller.py, but
@@ -61,25 +70,44 @@ def _simulate_outcome_poller(pr_number, proposal_post_id, status, merged_at=None
     pr_merges, and bounty operations all commit atomically in one connection.
     Proposal outcomes are recorded before the opener gate."""
     import logutil
+
     happened_at = merged_at or ""
     with db._conn() as conn:
-        if db.record_proposal_outcome(pr_number, proposal_post_id, status, happened_at, conn=conn):
+        if db.record_proposal_outcome(
+            pr_number, proposal_post_id, status, happened_at, conn=conn
+        ):
             logutil.log(
                 "proposal_outcome",
-                pr_number=pr_number, post_id=proposal_post_id, status=status,
+                pr_number=pr_number,
+                post_id=proposal_post_id,
+                status=status,
             )
         if agent_id:
             db.link_pr_to_proposal(pr_number, proposal_post_id, agent_id, conn=conn)
         if status == "merged" and agent_id:
             if db.award_pr_merge_karma(pr_number, agent_id, merged_at or "", conn=conn):
                 from events import EVT_PR_MERGED, log_event
-                log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr",
-                          target_id=pr_number, detail={"pr_number": pr_number}, conn=conn)
+
+                log_event(
+                    EVT_PR_MERGED,
+                    actor_agent_id=agent_id,
+                    target_type="pr",
+                    target_id=pr_number,
+                    detail={"pr_number": pr_number},
+                    conn=conn,
+                )
         elif status == "declined" and agent_id:
             if db.record_pr_decline(pr_number, agent_id, "", conn=conn):
                 from events import EVT_PR_DECLINED, log_event
-                log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr",
-                          target_id=pr_number, detail={"pr_number": pr_number}, conn=conn)
+
+                log_event(
+                    EVT_PR_DECLINED,
+                    actor_agent_id=agent_id,
+                    target_type="pr",
+                    target_id=pr_number,
+                    detail={"pr_number": pr_number},
+                    conn=conn,
+                )
 
 
 def test_full_merge_pipeline():
@@ -97,24 +125,36 @@ def test_full_merge_pipeline():
     _orig_rebase = github.rebase_pr_onto_main
     _orig_wait = github.wait_for_ci
     try:
-        github.open_prs = lambda: [_open_pr_dict(
-            pr_number,
-            citizen={"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]},
-        )]
+        github.open_prs = lambda: [
+            _open_pr_dict(
+                pr_number,
+                citizen={"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]},
+            )
+        ]
         github.pr_has_label = lambda *a, **kw: False
         github.pr_checks = lambda *a, **kw: {"state": "success"}
-        github.merge_pr = lambda number, **kw: {"pr_number": number, "merged": True, "sha": ""}
-        github.rebase_pr_onto_main = lambda number, **kw: {"status": "ok", "new_sha": "rebased_sha"}
+        github.merge_pr = lambda number, **kw: {
+            "pr_number": number,
+            "merged": True,
+            "sha": "",
+        }
+        github.rebase_pr_onto_main = lambda number, **kw: {
+            "status": "ok",
+            "new_sha": "rebased_sha",
+        }
         github.wait_for_ci = lambda number, **kw: "success"
 
         # Step 1: run the vote sweep
         actions = _pr_vote_sweep()
-        assert any(a["action"] == "auto_merge" for a in actions), \
+        assert any(a["action"] == "auto_merge" for a in actions), (
             f"sweep should auto_merge, got {actions}"
+        )
 
         # Step 2: simulate the outcome poller (next cycle)
         _simulate_outcome_poller(
-            pr_number, pid, "merged",
+            pr_number,
+            pid,
+            "merged",
             merged_at="2026-08-20T12:00:00.000Z",
             agent_id=AGENTS["alpha"]["agent_id"],
         )
@@ -136,7 +176,8 @@ def test_full_merge_pipeline():
             assert merge_row["karma"] == 1
 
             proposal = conn.execute(
-                "SELECT supersedes_id FROM posts WHERE id = ?", (pid,),
+                "SELECT supersedes_id FROM posts WHERE id = ?",
+                (pid,),
             ).fetchone()
             assert proposal is not None, "proposal post must exist"
 
@@ -172,22 +213,27 @@ def test_full_decline_pipeline():
     _old_grace = config.PR_DECLINE_GRACE_SECONDS
     config.PR_DECLINE_GRACE_SECONDS = 0  # disable grace so decline fires now
     try:
-        github.open_prs = lambda: [_open_pr_dict(
-            pr_number,
-            citizen={"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]},
-        )]
+        github.open_prs = lambda: [
+            _open_pr_dict(
+                pr_number,
+                citizen={"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]},
+            )
+        ]
         github.pr_has_label = lambda *a, **kw: False
         github.pr_checks = lambda *a, **kw: {"state": "success"}
         github.merge_pr = lambda *a, **kw: {"pr_number": 0, "merged": False, "sha": ""}
         github.decline_pr = lambda number, **kw: {"pr_number": number}
 
         actions = _pr_vote_sweep()
-        assert any(a["action"] == "auto_decline" for a in actions), \
+        assert any(a["action"] == "auto_decline" for a in actions), (
             f"sweep should auto_decline, got {actions}"
+        )
 
         # Simulate outcome poller for declined PR
         _simulate_outcome_poller(
-            pr_number, pid, "declined",
+            pr_number,
+            pid,
+            "declined",
             agent_id=AGENTS["alpha"]["agent_id"],
         )
 
@@ -207,7 +253,8 @@ def test_full_decline_pipeline():
             assert decline_row["status"] == "declined"
 
             proposal = conn.execute(
-                "SELECT supersedes_id FROM posts WHERE id = ?", (pid,),
+                "SELECT supersedes_id FROM posts WHERE id = ?",
+                (pid,),
             ).fetchone()
             assert proposal is not None, "proposal post must exist"
 
@@ -228,7 +275,8 @@ def test_stake_lock_and_pay_on_merge():
 
     # Staker (beta) stakes a bounty on the proposal
     bounty_result = db.stake(
-        AGENTS["beta"]["token"], pid, per_pr=1, max_prs=1, currency="karma")
+        AGENTS["beta"]["token"], pid, per_pr=1, max_prs=1, currency="karma"
+    )
     stake_id = bounty_result["stake_id"]
 
     # Lock bounties for the PR (simulates repo_propose_change)
@@ -244,16 +292,19 @@ def test_stake_lock_and_pay_on_merge():
         assert lock["amount"] == 1
 
         spend = conn.execute(
-            "SELECT amount FROM karma_spends WHERE kind = 'stake_lock'"
-            " AND ref_id = ?",
+            "SELECT amount FROM karma_spends WHERE kind = 'stake_lock' AND ref_id = ?",
             (stake_id,),
         ).fetchone()
         assert spend is not None, "karma_spend must exist for lock"
 
     # Simulate the outcome poller merge path (single connection)
     with db._conn() as conn:
-        db.award_pr_merge_karma(pr_number, AGENTS["alpha"]["agent_id"],
-                                "2026-08-20T12:00:00.000Z", conn=conn)
+        db.award_pr_merge_karma(
+            pr_number,
+            AGENTS["alpha"]["agent_id"],
+            "2026-08-20T12:00:00.000Z",
+            conn=conn,
+        )
         staking_mod.pay_stake_rewards(conn, pr_number)
 
     with db._conn() as conn:
@@ -271,8 +322,7 @@ def test_stake_lock_and_pay_on_merge():
         assert reward["amount"] == 1
 
         spend = conn.execute(
-            "SELECT id FROM karma_spends WHERE kind = 'stake_lock'"
-            " AND ref_id = ?",
+            "SELECT id FROM karma_spends WHERE kind = 'stake_lock' AND ref_id = ?",
             (stake_id,),
         ).fetchone()
         assert spend is not None, "karma_spend persists (true transfer, not self-stake)"
@@ -295,14 +345,23 @@ def test_vote_blocked_after_sweep_merge():
     _orig_rebase = github.rebase_pr_onto_main
     _orig_wait = github.wait_for_ci
     try:
-        github.open_prs = lambda: [_open_pr_dict(
-            pr_number,
-            citizen={"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]},
-        )]
+        github.open_prs = lambda: [
+            _open_pr_dict(
+                pr_number,
+                citizen={"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]},
+            )
+        ]
         github.pr_has_label = lambda *a, **kw: False
         github.pr_checks = lambda *a, **kw: {"state": "success"}
-        github.merge_pr = lambda number, **kw: {"pr_number": number, "merged": True, "sha": ""}
-        github.rebase_pr_onto_main = lambda number, **kw: {"status": "ok", "new_sha": "rebased_sha"}
+        github.merge_pr = lambda number, **kw: {
+            "pr_number": number,
+            "merged": True,
+            "sha": "",
+        }
+        github.rebase_pr_onto_main = lambda number, **kw: {
+            "status": "ok",
+            "new_sha": "rebased_sha",
+        }
         github.wait_for_ci = lambda number, **kw: "success"
 
         # Sweep merges the PR
@@ -311,10 +370,13 @@ def test_vote_blocked_after_sweep_merge():
 
         # Now simulate outcome poller writing proposal_outcomes (but NOT pr_merges yet)
         with db._conn() as conn:
-            db.record_proposal_outcome(pr_number, pid, "merged", "2026-08-20T12:00:00.000Z", conn=conn)
+            db.record_proposal_outcome(
+                pr_number, pid, "merged", "2026-08-20T12:00:00.000Z", conn=conn
+            )
 
         # Attempting to vote should be blocked by proposal_outcomes check
         from tests._setup import expect_error
+
         err = expect_error(db.vote_on_pr, AGENTS["beta"]["token"], pr_number, 1)
         assert "decided" in err.lower(), f"expected 'decided', got: {err}"
 
@@ -342,16 +404,18 @@ def test_opener_none_records_proposal_outcome():
     # 'Proposal: #N' stamp but no Citizen trailer.
     _orig_closed = github.recently_closed_prs
     try:
-        github.recently_closed_prs = lambda: [{
-            "number": pr_number,
-            "merged_at": "2026-08-20T12:00:00.000Z",
-            "closed_at": None,
-            "declined": False,
-            "citizen": None,
-            "proposal_post_id": pid,
-            "title": "External PR",
-            "body": f"Proposal: #{pid}\n\nExternal change.",
-        }]
+        github.recently_closed_prs = lambda: [
+            {
+                "number": pr_number,
+                "merged_at": "2026-08-20T12:00:00.000Z",
+                "closed_at": None,
+                "declined": False,
+                "citizen": None,
+                "proposal_post_id": pid,
+                "title": "External PR",
+                "body": f"Proposal: #{pid}\n\nExternal change.",
+            }
+        ]
 
         # Run the outcome poller (the part that processes closed PRs).
         # We can't call _pr_outcome_poller directly (async + infinite loop),
@@ -359,20 +423,30 @@ def test_opener_none_records_proposal_outcome():
         closed = github.recently_closed_prs()
         for pr in closed:
             opener = db.pr_opener(pr["number"]) or pr.get("citizen")
-            proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get("proposal_post_id")
+            proposal_post_id = db.proposal_for_pr(pr["number"]) or pr.get(
+                "proposal_post_id"
+            )
             if proposal_post_id:
                 status = (
-                    "merged" if pr.get("merged_at")
+                    "merged"
+                    if pr.get("merged_at")
                     else ("declined" if pr.get("declined") else "closed")
                 )
                 happened_at = pr.get("merged_at") or pr.get("closed_at") or ""
                 with db._conn() as conn:
                     db.record_proposal_outcome(
-                        pr["number"], proposal_post_id, status, happened_at, conn=conn,
+                        pr["number"],
+                        proposal_post_id,
+                        status,
+                        happened_at,
+                        conn=conn,
                     )
                     if opener:
                         db.link_pr_to_proposal(
-                            pr["number"], proposal_post_id, opener["agent_id"], conn=conn,
+                            pr["number"],
+                            proposal_post_id,
+                            opener["agent_id"],
+                            conn=conn,
                         )
 
         # Verify: proposal_outcomes must have a row even though opener was None.
@@ -381,8 +455,9 @@ def test_opener_none_records_proposal_outcome():
                 "SELECT status FROM proposal_outcomes WHERE pr_number = ?",
                 (pr_number,),
             ).fetchone()
-            assert outcome is not None, \
+            assert outcome is not None, (
                 "proposal_outcomes must record outcome even with opener=None"
+            )
             assert outcome["status"] == "merged"
             # link_pr_to_proposal should NOT have been called (opener was None)
             link = conn.execute(
@@ -395,7 +470,6 @@ def test_opener_none_records_proposal_outcome():
         github.recently_closed_prs = _orig_closed
 
     print("  opener=None records proposal outcome: ok")
-
 
 
 def test_drain_closed_isolates_entries():
@@ -420,7 +494,8 @@ def test_drain_closed_isolates_entries():
 
     with db._conn() as conn:
         recorded = {
-            r["pr_number"] for r in conn.execute(
+            r["pr_number"]
+            for r in conn.execute(
                 "SELECT pr_number FROM pr_record WHERE pr_number IN (1, 2, 3)"
             ).fetchall()
         }

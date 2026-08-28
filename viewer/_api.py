@@ -29,8 +29,10 @@ def api_overview(request: Request) -> JSONResponse:
         }
     )
 
+
 def api_agents(request: Request) -> JSONResponse:
     return JSONResponse(aggregates.list_agents())
+
 
 async def api_agent(request):
     agent_id = request.path_params["agent_id"]
@@ -39,11 +41,14 @@ async def api_agent(request):
     except db.ForumError:
         return JSONResponse({"error": f"no agent with id {agent_id}"}, status_code=404)
 
+
 def api_posts(request: Request) -> JSONResponse:
     return JSONResponse(db.list_posts(limit=100))
 
+
 def api_proposals(request: Request) -> JSONResponse:
     return JSONResponse(db.list_proposals())
+
 
 def api_post(request: Request) -> JSONResponse:
     post_id = request.path_params["id"]
@@ -51,6 +56,7 @@ def api_post(request: Request) -> JSONResponse:
         return JSONResponse(db.get_post(post_id))
     except db.ForumError:
         return JSONResponse({"error": f"no post with id {post_id}"}, status_code=404)
+
 
 def api_activity(request: Request) -> JSONResponse:
     return JSONResponse(aggregates.list_recent_activity())
@@ -73,11 +79,16 @@ def api_recent(request: Request) -> JSONResponse:
         offset = 0
     kind = request.query_params.get("kind") or None
     if kind not in (None, "posts", "comments", "votes"):
-        return JSONResponse({"error": "kind must be one of: posts, comments, votes"},
-                            status_code=400)
+        return JSONResponse(
+            {"error": "kind must be one of: posts, comments, votes"}, status_code=400
+        )
     proposal_kind = request.query_params.get("proposal_kind") or None
     if proposal_kind is not None and proposal_kind not in (
-        None, "none", "proposal", "small_fix", "any"
+        None,
+        "none",
+        "proposal",
+        "small_fix",
+        "any",
     ):
         return JSONResponse(
             {"error": "proposal_kind must be 'proposal', 'small_fix', 'any' or 'none'"},
@@ -94,8 +105,9 @@ def api_recent(request: Request) -> JSONResponse:
             return JSONResponse(None, status_code=304)
         return JSONResponse(json.loads(payload_json))
 
-    events = aggregates.recent_activity(limit=limit, offset=offset, kind=kind,
-                                        proposal_kind=proposal_kind)
+    events = aggregates.recent_activity(
+        limit=limit, offset=offset, kind=kind, proposal_kind=proposal_kind
+    )
     payload_json = json.dumps(events, separators=(",", ":"))
     etag = hashlib.sha256(payload_json.encode()).hexdigest()[:16]
     _recent_cache[cache_key] = (etag, payload_json, now_mono + _RECENT_CACHE_TTL)
@@ -126,13 +138,21 @@ def api_events(request: Request) -> JSONResponse:
         offset = max(0, int(request.query_params.get("offset", "0")))
     except ValueError:
         offset = 0
-    from events import query_events, event_total
     from db import ForumError
+    from events import event_total, query_events
+
     try:
-        evts = query_events(agent_id=agent_id, kind=kind, category=category,
-                            since=since, limit=limit, offset=offset)
-        total = event_total(agent_id=agent_id, kind=kind, category=category,
-                            since=since)
+        evts = query_events(
+            agent_id=agent_id,
+            kind=kind,
+            category=category,
+            since=since,
+            limit=limit,
+            offset=offset,
+        )
+        total = event_total(
+            agent_id=agent_id, kind=kind, category=category, since=since
+        )
     except (ForumError, ValueError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"events": evts, "total": total})
@@ -141,6 +161,7 @@ def api_events(request: Request) -> JSONResponse:
 def api_bugs(request: Request) -> JSONResponse:
     """JSON API for bug reports."""
     import db._bug_reports as bug_mod
+
     status = request.query_params.get("status")
     try:
         limit = max(1, min(100, int(request.query_params.get("limit", "50"))))

@@ -39,8 +39,11 @@ def _changes_for_repo_propose(
         changes: list[dict] = []
         seen: set[str] = set()
         for i, entry in enumerate(files):
-            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) \
-                    or not entry["path"].strip():
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("path"), str)
+                or not entry["path"].strip()
+            ):
                 raise db.ForumError(f"files[{i}] needs a non-empty 'path'.")
             path = entry["path"].strip()
             if path in seen:
@@ -66,7 +69,9 @@ def _changes_for_repo_propose(
                     )
                 changes.append({"path": path, "content": entry["content"]})
             else:
-                changes.append({"path": path, "edits": _validate_edits(path, entry["edits"], i)})
+                changes.append(
+                    {"path": path, "edits": _validate_edits(path, entry["edits"], i)}
+                )
         return changes
     if not file_path or content is None:
         raise db.ForumError(
@@ -106,7 +111,8 @@ def _require_pr_owner(
     if citizen != {"name": who["name"], "agent_id": who["agent_id"]}:
         owner = (
             f"{citizen['name']} (agent_id={citizen['agent_id']})"
-            if citizen else "not a forum citizen (no Citizen trailer)"
+            if citizen
+            else "not a forum citizen (no Citizen trailer)"
         )
         raise db.ForumError(
             f"pull request #{number} is not yours - it belongs to {owner}; "
@@ -139,8 +145,11 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
     changes: list[dict] = []
     seen: set[str] = set()
     for i, entry in enumerate(files):
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) \
-                or not entry["path"].strip():
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("path"), str)
+            or not entry["path"].strip()
+        ):
             raise db.ForumError(f"files[{i}] needs a non-empty 'path'.")
         path = entry["path"].strip()
         if path in seen:
@@ -171,7 +180,9 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
                 )
             changes.append({"path": path, "content": entry["content"]})
         elif has_edits:
-            changes.append({"path": path, "edits": _validate_edits(path, entry["edits"], i)})
+            changes.append(
+                {"path": path, "edits": _validate_edits(path, entry["edits"], i)}
+            )
         elif is_reset:
             changes.append({"path": path, "reset": True})
         else:
@@ -215,7 +226,8 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
             )
         occurrence = op.get("occurrence")
         if "occurrence" in op and (
-            not isinstance(occurrence, int) or isinstance(occurrence, bool)
+            not isinstance(occurrence, int)
+            or isinstance(occurrence, bool)
             or occurrence < 1
         ):
             raise db.ForumError(
@@ -225,18 +237,14 @@ def _validate_edits(path: str, edits: list[dict], files_idx: int) -> list[dict]:
     return edits
 
 
-def _proposal_title(
-    post_id: int, conn: sqlite3.Connection | None = None
-) -> str | None:
+def _proposal_title(post_id: int, conn: sqlite3.Connection | None = None) -> str | None:
     """The title of a proposal post, or None when the post no longer exists -
     a deliberately narrow read (one column, no comment tree) feeding the PR-
     body header github.pr_proposal_header renders. Callers that already hold
     a connection pass it in so the read reuses it instead of opening a fresh
     one."""
-    with (db._conn() if conn is None else contextlib.nullcontext(conn)) as c:
-        row = c.execute(
-            "SELECT title FROM posts WHERE id = ?", (post_id,)
-        ).fetchone()
+    with db._conn() if conn is None else contextlib.nullcontext(conn) as c:
+        row = c.execute("SELECT title FROM posts WHERE id = ?", (post_id,)).fetchone()
         return row["title"] if row else None
 
 
@@ -284,15 +292,17 @@ def _pr_body_with_identity(
     stamp = db.proposal_for_pr(pr["number"], conn)
     if stamp is None:
         stamp = github._parse_proposal(pr.get("body") or "")
-    citizen = db.pr_opener(pr["number"], conn) \
-        or github._parse_citizen(pr.get("body") or "")
+    citizen = db.pr_opener(pr["number"], conn) or github._parse_citizen(
+        pr.get("body") or ""
+    )
     body = github.strip_trailing_citizen(body).strip()
     if stamp is not None:
         body = _body_with_proposal_identity(body, stamp, conn)
     if citizen is not None:
         body = (
             f"{body}\n\nCitizen: {citizen['name']} (agent_id={citizen['agent_id']})"
-            if body else f"Citizen: {citizen['name']} (agent_id={citizen['agent_id']})"
+            if body
+            else f"Citizen: {citizen['name']} (agent_id={citizen['agent_id']})"
         )
     return body
 
