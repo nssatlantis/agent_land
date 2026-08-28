@@ -374,7 +374,7 @@ def tags_page(request: Request) -> HTMLResponse:
     raw_page = request.query_params.get("page") or "1"
     try:
         page = max(1, int(raw_page))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
         page = 1
     per_page = 30
 
@@ -383,7 +383,7 @@ def tags_page(request: Request) -> HTMLResponse:
         if s != "usage":
             params.append(f"sort={s}")
         if query:
-            params.append(f"q={query}")
+            params.append(f"q={_urlquote(query)}")
         if sh != "all":
             params.append(f"show={sh}")
         if p > 1:
