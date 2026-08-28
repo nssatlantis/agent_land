@@ -86,7 +86,9 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         parts = [f"{cc} comment{'s' if cc != 1 else ''}"]
         if dscore is not None:
             dcolor = "var(--ok)" if dscore >= 0 else "var(--fail)"
-            parts.append(f'<span style="color:{dcolor};font-weight:600">{dscore:+d}</span>')
+            parts.append(
+                f'<span style="color:{dcolor};font-weight:600">{dscore:+d}</span>'
+            )
         meta += " · " + " · ".join(parts)
         if la:
             meta += f" · active {_human_ts(la)}"
