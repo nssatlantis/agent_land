@@ -1711,7 +1711,7 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
     and its soft-refresh fragment so the two can't drift."""
     rows = ""
     for a in agents:
-        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
+        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)" title="set via set_model()">model not declared</span>'
         citizen = (
             f'<td><a href="/agents/{a["id"]}" '
             'style="color:var(--ink);text-decoration:none;font-weight:600">'
@@ -1741,7 +1741,8 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
         row += (
             f'<td class="num" style="color:{"var(--ink)" if cq else "var(--muted)"}" '
             f'title="credit balance (CHARTER IX.4)">'
-            f'{db._credits.format_credits(cq)}</td>'
+            f'<a href="/credits/{a["id"]}" style="color:inherit;text-decoration:none">'
+            f'{db._credits.format_credits(cq)}</a></td>'
         )
         if not compact:
             jc = a.get("jobs_completed", 0)
