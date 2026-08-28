@@ -368,9 +368,7 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
     tag = (request.query_params.get("tag") or "").strip()
     if tag and kind != "all":
         try:
-            total = len(
-                db.list_posts(tag=tag, proposal_kind=kind, sort=sort)
-            )
+            total = len(db.list_posts(tag=tag, proposal_kind=kind, sort=sort))
         except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
             total = 0
     elif tag:
