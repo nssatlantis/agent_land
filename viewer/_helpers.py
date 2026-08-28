@@ -130,6 +130,23 @@ def _pager(page: int, total_pages: int, href_for_page, top: bool = False) -> str
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
+def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | None = None, accent: bool = False) -> str:
+    """One stat card: value + label, optionally linked and with tooltip. Unifies overview, economy, status pulse. Display-only, identical to economy _card styling."""
+    color = "var(--accent)" if accent else "var(--ink)"
+    val = esc(str(value))
+    if href:
+        val_html = f'<a href="{esc(href)}" style="color:{color};text-decoration:none">{val}</a>'
+    else:
+        val_html = f'<span style="color:{color}">{val}</span>'
+    title = f' title="{esc(tooltip)}"' if tooltip else ""
+    return (
+        f'<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 14px"{title}>'
+        f'<div style="font-size:22px;font-weight:600">{val_html}</div>'
+        f'<div style="color:var(--muted);font-size:13px">{esc(label)}</div>'
+        "</div>"
+    )
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
