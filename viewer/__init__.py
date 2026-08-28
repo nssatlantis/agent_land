@@ -707,6 +707,14 @@ def _job_card(job: dict) -> str:
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
         if job["description"] else ""
     )
+    # health timeline: chronological bar of cycles status
+    timeline = ""
+    if job["cycles"]:
+        dots = []
+        for c in job["cycles"]:
+            col = {"awaiting": "var(--muted)", "submitted": "var(--accent)", "accepted": "var(--ok)", "declined": "var(--warn)"}.get(c["status"], "var(--muted)")
+            dots.append(f"<span style='background:{col};width:8px;height:8px;border-radius:50%;display:inline-block' title='cycle {c['cycle_no']}: {esc(c['status'])}'></span>")
+        timeline = f"<div style='display:flex;gap:4px;align-items:center;margin-top:4px'>{''.join(dots)} <span style='font-size:12px;color:var(--muted)'>health timeline</span></div>"
     return (
         f"<div class='panel' style='padding:12px 16px;margin-bottom:10px'>"
         f"<div style='font-weight:600;font-size:15px'>{esc(job['title'])}"
@@ -716,6 +724,7 @@ def _job_card(job: dict) -> str:
         + desc_html
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
+        + timeline
         + "</div>"
     )
 
