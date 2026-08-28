@@ -111,6 +111,25 @@ def _score_badge(score: int) -> str:
     cls = "score-pos" if score > 0 else ("score-neg" if score < 0 else "score-zero")
     return f'<span class="score-badge {cls}">{score:+d}</span>'
 
+def _pager(page: int, total_pages: int, href_for_page, top: bool = False) -> str:
+    """Shared numbered pager: ≤12 numbered links else Prev/Next with 'page X of Y'. href_for_page(n)->href. Preserves ?kind/&sort/&tag & ?proposal_kind via caller closure. Display-only."""
+    if total_pages <= 1:
+        return ""
+    if total_pages <= 12:
+        nav = [
+            f'<a href="{esc(href_for_page(n))}"' + (' class="active"' if n == page else "") + f">{n}</a>"
+            for n in range(1, total_pages + 1)
+        ]
+    else:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        if page > 1:
+            nav.insert(0, f'<a href="{esc(href_for_page(page - 1))}">\u2039 Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="{esc(href_for_page(page + 1))}">Next \u203a</a>')
+    cls = "pager top" if top else "pager"
+    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
