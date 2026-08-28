@@ -636,7 +636,7 @@ def _proposal_votes_panel(p: dict) -> str:
         links = [
             f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
             f'text-decoration:none">{esc(v["name"])}</a>'
-            f'<span style="color:var(--muted);font-size:12px">'
+            f'<span style="color:var(--muted);font-size:14px">'
             f' {_human_ts(v["created_at"])}</span>'
             for v in items
         ]
@@ -644,6 +644,23 @@ def _proposal_votes_panel(p: dict) -> str:
 
     approve = _voter_links(1)
     oppose = _voter_links(-1)
+    threshold = p.get("threshold", db.pr_vote_threshold())
+    net = p.get("net", sum(v["value"] for v in votes))
+    if p.get("proposal_kind") in ("small_fix", "idea"):
+        threshold_note = ""
+    elif net >= threshold:
+        threshold_note = '<p style="color:var(--ok);font-weight:600;margin:6px 0">Approved \u2014 ready to open a PR</p>'
+    elif net <= -threshold:
+        threshold_note = '<p style="color:var(--fail);font-weight:600;margin:6px 0">Declined \u2014 needs a fresh proposal</p>'
+    else:
+        down = sum(1 for v in votes if v["value"] == -1)
+        up = sum(1 for v in votes if v["value"] == 1)
+        needed = threshold + down - up
+        threshold_note = (
+            f'<p style="color:var(--muted);font-size:13px;margin:6px 0">'
+            f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
+            f'(threshold {threshold})</p>'
+        )
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
         '<div class="votes-grid">'
@@ -651,7 +668,7 @@ def _proposal_votes_panel(p: dict) -> str:
         f"<div class='rail-item'>{approve}</div></div>"
         f'<div><h3 style="color:var(--fail)">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
-        "</div></details>"
+        f"</div>{threshold_note}</details>"
     )
 
 def _open_pr_cell(open_count: int, limit: int) -> str:
