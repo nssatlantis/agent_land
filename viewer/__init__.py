@@ -661,6 +661,7 @@ def _job_card(job: dict) -> str:
     cycles_html = ""
     for c in job["cycles"]:
         if c["status"] == "awaiting":
+            cycles_html += f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>cycle {c['cycle_no']}: <b>awaiting</b> <span style='color:var(--muted)'>(awaiting submission)</span></div>"
             continue
         bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
         if c["evidence"]:
