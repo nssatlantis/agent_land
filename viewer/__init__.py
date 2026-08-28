@@ -540,7 +540,7 @@ def credits_page(request: Request) -> HTMLResponse:
         return _page("credits", "<p>Bad agent id.</p>")
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 50
     ledger = db.credit_history(agent_id=agent_id, limit=per_page,
