@@ -416,6 +416,95 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
     return out
 
 
+def admin_delete_stake(admin_user: str, stake_id: int) -> dict:
+    """Admin delete for any stake (including admin-funded). If the stake
+    has locked PRs, their escrow is refunded (treasury for admin credit
+    stakes, staker for normal). Status becomes 'withdrawn' (admin delete
+    is a withdraw, not a hard DELETE, so the ledger stays auditable)."""
+    with _conn(immediate=True) as conn:
+        stake_row = conn.execute(
+            "SELECT id, proposal_id, staker_agent_id, per_pr, max_prs,"
+            " currency, paid_count, locked_count, status, admin_funded"
+            " FROM proposal_stakes WHERE id = ?",
+            (stake_id,),
+        ).fetchone()
+        if stake_row is None:
+            raise ForumError(f"no stake with id {stake_id}.")
+        if stake_row["status"] != "active":
+            raise ForumError(
+                f"stake #{stake_id} has status '{stake_row['status']}' "
+                "and cannot be deleted."
+            )
+        # Refund any locked escrow first (like refund_stake_locks for this stake only)
+        if stake_row["locked_count"] > 0:
+            locks = conn.execute(
+                "SELECT sl.id AS lock_id, sl.amount, sl.karma_spend_id, s.currency, s.staker_agent_id"
+                " FROM stake_locks sl JOIN proposal_stakes s ON s.id=sl.stake_id"
+                " WHERE sl.stake_id=? AND sl.status='locked'",
+                (stake_id,),
+            ).fetchall()
+            for lk in locks:
+                cur = lk["currency"]
+                conn.execute(
+                    "UPDATE stake_locks SET status='refunded', karma_spend_id=NULL WHERE id=?",
+                    (lk["lock_id"],),
+                )
+                if lk["karma_spend_id"] is not None:
+                    conn.execute("DELETE FROM karma_spends WHERE id=?", (lk["karma_spend_id"],))
+                elif cur == "credits":
+                    if lk["staker_agent_id"] is not None:
+                        from db._credits import refund
+
+                        refund(
+                            lk["staker_agent_id"], lk["amount"], "stake_refund",
+                            target_type="proposal_stake", target_id=stake_id, conn=conn,
+                        )
+                    else:
+                        from db._credits import _insert_entry
+
+                        _insert_entry(
+                            conn, None, "treasury", lk["amount"], "stake_refund",
+                            "proposal_stake", stake_id,
+                        )
+            conn.execute(
+                "UPDATE proposal_stakes SET locked_count=0 WHERE id=?", (stake_id,)
+            )
+        conn.execute("UPDATE proposal_stakes SET status='withdrawn' WHERE id=?", (stake_id,))
+        from events import EVT_STAKE_WITHDRAWN, log_event
+
+        log_event(
+            EVT_STAKE_WITHDRAWN,
+            actor_agent_id=None,
+            target_type="proposal_stake",
+            target_id=stake_id,
+            detail={
+                "proposal_id": stake_row["proposal_id"],
+                "per_pr": stake_row["per_pr"],
+                "currency": stake_row["currency"],
+                "admin": admin_user,
+                "admin_delete": True,
+            },
+            conn=conn,
+        )
+        post_author = conn.execute(
+            "SELECT agent_id FROM posts WHERE id=?", (stake_row["proposal_id"],)
+        ).fetchone()
+        if post_author:
+            _notify(
+                conn, post_author["agent_id"], "proposal", "post", stake_row["proposal_id"],
+                f"Admin ({admin_user}) deleted stake #{stake_id} "
+                f"({stake_row['per_pr']} {stake_row['currency']} x {stake_row['max_prs']} PRs).",
+                actor_agent_id=None,
+            )
+        if stake_row["staker_agent_id"] is not None:
+            _notify(
+                conn, stake_row["staker_agent_id"], "proposal", "stake_withdrawn", stake_id,
+                f"Your stake #{stake_id} was deleted by admin ({admin_user}).",
+                actor_agent_id=None,
+            )
+    return {"stake_id": stake_id, "status": "withdrawn"}
+
+
 # ── internal helpers (called from server.py / poller.py) ───────────────
 
 
@@ -565,6 +654,7 @@ def lock_stakes_for_pr(
             staker = b["staker_agent_id"]
             spend_id = None
             credited = None
+            treasury_debited = False
             if not b["admin_funded"]:
                 seen = remaining[currency].get(staker, 0)
                 if seen < b["per_pr"]:
@@ -596,6 +686,21 @@ def lock_stakes_for_pr(
                     # continue instead of aborting the whole batch.
                     _abandon(b, seen)
                     continue
+            else:
+                # Admin-funded: take from treasury for credit stakes, like
+                # a normal stake but from the community account. Karma
+                # admin stakes have no wallet to debit.
+                if currency == "credits":
+                    from db._credits import treasury_balance, _insert_entry
+
+                    if treasury_balance(c) < b["per_pr"]:
+                        _abandon(b, treasury_balance(c))
+                        continue
+                    _insert_entry(
+                        c, None, "treasury", -b["per_pr"], "stake_lock",
+                        "proposal_stake", b["id"],
+                    )
+                    treasury_debited = True
             try:
                 c.execute(
                     "INSERT INTO stake_locks"
@@ -614,6 +719,10 @@ def lock_stakes_for_pr(
                               (spend_id,))
                 if credited is not None:
                     _revert_credit_debit(credited, b["per_pr"])
+                if treasury_debited:
+                    from db._credits import _insert_entry
+
+                    _insert_entry(c, None, "treasury", b["per_pr"], "stake_refund", "proposal_stake", b["id"])
                 if not b["admin_funded"]:
                     remaining[currency][staker] = (
                         remaining[currency].get(staker, 0) + b["per_pr"]
@@ -648,6 +757,10 @@ def lock_stakes_for_pr(
                               (spend_id,))
                 if credited is not None:
                     _revert_credit_debit(credited, b["per_pr"])
+                if treasury_debited:
+                    from db._credits import _insert_entry
+
+                    _insert_entry(c, None, "treasury", b["per_pr"], "stake_refund", "proposal_stake", b["id"])
                 if not b["admin_funded"]:
                     remaining[currency][staker] = (
                         remaining[currency].get(staker, 0) + b["per_pr"]
@@ -879,14 +992,23 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     "DELETE FROM karma_spends WHERE id = ?",
                     (lk["karma_spend_id"],),
                 )
-            elif currency == "credits" and lk["staker_agent_id"] is not None:
-                from db._credits import refund
+            elif currency == "credits":
+                if lk["staker_agent_id"] is not None:
+                    from db._credits import refund
 
-                refund(
-                    lk["staker_agent_id"], lk["amount"], "stake_refund",
-                    target_type="proposal_stake",
-                    target_id=lk["stake_id"], conn=c,
-                )
+                    refund(
+                        lk["staker_agent_id"], lk["amount"], "stake_refund",
+                        target_type="proposal_stake",
+                        target_id=lk["stake_id"], conn=c,
+                    )
+                else:
+                    # admin-funded credit stake: refund to treasury (escrow return)
+                    from db._credits import _insert_entry
+
+                    _insert_entry(
+                        c, None, "treasury", lk["amount"], "stake_refund",
+                        "proposal_stake", lk["stake_id"],
+                    )
             log_event(
                 EVT_STAKE_REFUNDED,
                 actor_agent_id=lk["agent_id"],
