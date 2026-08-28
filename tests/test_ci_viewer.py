@@ -1,9 +1,10 @@
-'''Tests for the /ci build health timeline (proposal #237 list 587 - 4409/4410).
+"""Tests for the /ci build health timeline (proposal #237 list 587 - 4409/4410).
 
 The /ci page is a read-only view onto events.query_events(kind="ci_run"/"ci_branch_run").
 We exercise the handler directly so the test stays fast and doesn't need a
 running server, same pattern as tests/test_reports_viewer.py.
-'''
+"""
+
 import os
 import sys
 import tempfile
@@ -62,12 +63,14 @@ def _seed_ci_events(prefix: str = "ci"):
 class _Req:
     def __init__(self, params: dict | None = None):
         from starlette.datastructures import QueryParams
+
         self.query_params = QueryParams(params or {})
 
 
 def test_ci_page_native_tab_and_top_strip():
     _seed_ci_events(prefix="native")
     from viewer._ci import ci_page
+
     resp = ci_page(_Req({"mode": "native"}))
     body = resp.body.decode("utf-8")
     assert "Build health" in body
@@ -81,6 +84,7 @@ def test_ci_page_native_tab_and_top_strip():
 def test_ci_page_branch_tab_filters():
     _seed_ci_events(prefix="branch")
     from viewer._ci import ci_page
+
     resp = ci_page(_Req({"mode": "branch"}))
     body = resp.body.decode("utf-8")
     assert "/prs/100" in body or "/prs/101" in body
@@ -89,6 +93,7 @@ def test_ci_page_branch_tab_filters():
 
 def test_ci_page_garbage_mode_clamps_to_native():
     from viewer._ci import ci_page
+
     resp = ci_page(_Req({"mode": "lolnope", "page": "abc"}))
     body = resp.body.decode("utf-8")
     assert "Build health" in body
@@ -98,6 +103,7 @@ def test_ci_page_garbage_mode_clamps_to_native():
 def test_ci_page_timeline_rows_show_badge_duration_failed_files():
     _seed_ci_events(prefix="timeline")
     from viewer._ci import ci_page
+
     resp = ci_page(_Req({"mode": "native"}))
     body = resp.body.decode("utf-8")
     assert "kind-badge" in body
@@ -109,6 +115,7 @@ def test_ci_page_timeline_rows_show_badge_duration_failed_files():
 def test_ci_page_branch_rows_show_pr_link_and_timeout():
     _seed_ci_events(prefix="branch2")
     from viewer._ci import ci_page
+
     resp = ci_page(_Req({"mode": "branch"}))
     body = resp.body.decode("utf-8")
     assert "timeout" in body.lower()
@@ -117,12 +124,14 @@ def test_ci_page_branch_rows_show_pr_link_and_timeout():
 
 def test_ci_top_strip_empty():
     from viewer._ci import _ci_top_strip
+
     html = _ci_top_strip([])
     assert "No runs yet" in html
 
 
 def test_ci_badge_variants():
     from viewer._ci import _ci_badge
+
     assert "ok" in _ci_badge({"ok": True, "timed_out": False}).lower()
     assert "fail" in _ci_badge({"ok": False, "timed_out": False}).lower()
     assert "timeout" in _ci_badge({"timed_out": True}).lower()

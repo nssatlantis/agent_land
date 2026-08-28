@@ -48,10 +48,10 @@ def _ci_top_strip(events: list[dict]) -> str:
     avg_dur = (dur_sum / dur_cnt) if dur_cnt else 0
     return (
         '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:8px 0">'
-        f'<span><b>{total}</b> runs</span> · '
-        f'<span>{ok_pct}% ok</span> · '
-        f'<span>avg {avg_dur:.1f}s</span> · '
-        f'<span>{timeout_n} timeouts</span>'
+        f"<span><b>{total}</b> runs</span> · "
+        f"<span>{ok_pct}% ok</span> · "
+        f"<span>avg {avg_dur:.1f}s</span> · "
+        f"<span>{timeout_n} timeouts</span>"
         "</div>"
     )
 
@@ -84,17 +84,27 @@ def _ci_row(e: dict) -> str:
         sha_html = '<span style="color:var(--muted)">—</span>'
     badge = _ci_badge(detail)
     dur = detail.get("duration_seconds")
-    dur_html = f"{float(dur):.1f}s" if isinstance(dur, (int, float)) else '<span style="color:var(--muted)">—</span>'
+    dur_html = (
+        f"{float(dur):.1f}s"
+        if isinstance(dur, (int, float))
+        else '<span style="color:var(--muted)">—</span>'
+    )
     checks = esc(str(detail.get("checks") or ""))
-    checks_html = f'<span style="color:var(--muted);font-size:13px">{checks}</span>' if checks else ""
+    checks_html = (
+        f'<span style="color:var(--muted);font-size:13px">{checks}</span>'
+        if checks
+        else ""
+    )
     failed = detail.get("failed_files") or e.get("failed_files") or []
     if isinstance(failed, str):
         failed = [failed]
     failed_html = ""
     if failed:
         shown = ", ".join(esc(str(f)) for f in list(failed)[:5])
-        more = f" +{len(failed)-5} more" if len(failed) > 5 else ""
-        failed_html = f'<div style="font-size:13px;color:var(--fail)">{shown}{more}</div>'
+        more = f" +{len(failed) - 5} more" if len(failed) > 5 else ""
+        failed_html = (
+            f'<div style="font-size:13px;color:var(--fail)">{shown}{more}</div>'
+        )
     output_tail = detail.get("output_tail") or detail.get("output") or ""
     tail_html = ""
     if output_tail:
@@ -106,7 +116,7 @@ def _ci_row(e: dict) -> str:
         '<div class="row" style="padding:8px 0;border-bottom:1px solid var(--border)">'
         f'<span style="color:var(--muted);font-size:13px">{when}</span> · '
         f'<span style="font-size:13px">{mode}</span> · '
-        f'{sha_html} · {badge} · '
+        f"{sha_html} · {badge} · "
         f'<span style="font-size:13px">{dur_html}</span> '
         f"{checks_html}"
         f"{failed_html}"
@@ -136,26 +146,46 @@ def ci_page(request: Request) -> HTMLResponse:
     evts = query_events(kind=kind, limit=per_page, offset=offset)
     native_cls = "active" if mode == "native" else ""
     branch_cls = "active" if mode == "branch" else ""
-    tabs = ('<div class="tabs">' f'<a href="/ci?mode=native" class="{native_cls}">Native</a>' f'<a href="/ci?mode=branch" class="{branch_cls}">PR merges</a>' "</div>")
+    tabs = (
+        '<div class="tabs">'
+        f'<a href="/ci?mode=native" class="{native_cls}">Native</a>'
+        f'<a href="/ci?mode=branch" class="{branch_cls}">PR merges</a>'
+        "</div>"
+    )
     try:
         stats_evts = query_events(kind=kind, limit=500, offset=0)
     except Exception:  # noqa: BLE001
         # domain:degrade-silently - stats query failure loses richness, not data
         stats_evts = evts
     top_strip = _ci_top_strip(stats_evts)
+
     def _href_for_page(n: int) -> str:
         return f"/ci?mode={mode}&page={n}" if n > 1 else f"/ci?mode={mode}"
+
     pager = ""
     if total_pages > 1:
         nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
         if page > 1:
-            nav.insert(0, f'<a href="{esc(_href_for_page(page-1))}">\u2039 Prev</a>')
+            nav.insert(0, f'<a href="{esc(_href_for_page(page - 1))}">\u2039 Prev</a>')
         if page < total_pages:
-            nav.append(f'<a href="{esc(_href_for_page(page+1))}">Next \u203a</a>')
+            nav.append(f'<a href="{esc(_href_for_page(page + 1))}">Next \u203a</a>')
         pager = '<div class="pager">' + " \u00b7 ".join(nav) + "</div>"
     empty = "<p style='color:var(--muted)'>No CI runs yet — the runner is idle.</p>"
     rows_html = "".join(_ci_row(e) for e in evts) if evts else empty
     summary = f'<p class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} runs</p>'
-    hint = "<p style='color:var(--muted);font-size:13px'>Branch mode: each run tests the merge of <code>main</code> into the PR head; sha7 links to the PR.</p>" if mode == "branch" else ""
-    body = ('<div class="panel"><h2>Build health</h2><p style=\'color:var(--muted);font-size:15px\'>CI runs via the sandboxed runner — native (main) vs PR merges (branch). Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>' + tabs + top_strip + summary + rows_html + pager + hint + "</div>")
+    hint = (
+        "<p style='color:var(--muted);font-size:13px'>Branch mode: each run tests the merge of <code>main</code> into the PR head; sha7 links to the PR.</p>"
+        if mode == "branch"
+        else ""
+    )
+    body = (
+        "<div class=\"panel\"><h2>Build health</h2><p style='color:var(--muted);font-size:15px'>CI runs via the sandboxed runner — native (main) vs PR merges (branch). Each row shows when, mode, head sha, badge, duration and failed files; expand output_tail for logs.</p>"
+        + tabs
+        + top_strip
+        + summary
+        + rows_html
+        + pager
+        + hint
+        + "</div>"
+    )
     return _page("CI", body, section="ci")
