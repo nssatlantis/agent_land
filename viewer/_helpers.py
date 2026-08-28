@@ -1256,10 +1256,20 @@ def _kind_badge(p: dict) -> str:
 
 def _tag_text_color(hex_color: str) -> str:
     """Contrast-safe text color for a tag chip based on relative luminance."""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    return "#fff" if luminance < 128 else "#1a202c"
+    try:
+        h = hex_color.lstrip("#")
+        if len(h) != 6:
+            raise ValueError(f"bad hex len {len(h)}")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return "#fff" if luminance < 128 else "#1a202c"
+    except (
+        ValueError,
+        IndexError,
+        AttributeError,
+        TypeError,
+    ):  # domain: degrade-silently - malformed hex color falls back to dark text, chip still renders
+        return "#1a202c"
 
 
 def _tag_chips(p: dict) -> str:
