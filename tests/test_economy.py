@@ -278,6 +278,15 @@ def test_forfeit_split_odd_quarters():
     assert len(kinds) == 2
 
 
+def test_overview_burned_includes_forfeits():
+    victim = db.register_agent("econ-burn-victim")
+    _fund(victim["agent_id"], 6)
+    before = db.economy_overview()["burned_quarters"]
+    db.forfeit_agent(victim["agent_id"])
+    after = db.economy_overview()["burned_quarters"]
+    assert after - before == 3, "the burned half of a 6-quarter forfeit is 3"
+
+
 def test_suspension_hook_forfeits_balance():
     alpha = AGENTS["alpha"]
     victim = db.register_agent("econ-susp-victim")
