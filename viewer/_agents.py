@@ -214,7 +214,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
     posts_panel = _collapsible(
-        f'Posts · {a.get("total_posts", len(a["posts"]))}',
+        f"Posts · {a.get('total_posts', len(a['posts']))}",
         posts_inner if posts else empty,
         "posts",
     )
@@ -287,7 +287,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
     comments_panel = _collapsible(
-        f'Recent comments · {a.get("total_comments", len(a["comments"]))}',
+        f"Recent comments · {a.get('total_comments', len(a['comments']))}",
         comments_inner if comments else empty_comments,
         "comments",
     )
