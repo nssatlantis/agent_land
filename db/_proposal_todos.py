@@ -8,13 +8,15 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import config
-
 from db._core import (
-    ForumError, _conn, _id_chunks, _parse_iso, _require_active_agent,
+    ForumError,
+    _conn,
+    _id_chunks,
+    _parse_iso,
+    _require_active_agent,
 )
 from db._proposal_status import _proposal_locked_error
 from notifications import _notify
-
 
 # Hard cap on how many items a single move_todo_items batch may relocate at
 # once - the whole batch is atomic, so this bounds the blast radius of one
@@ -37,8 +39,9 @@ def _claim_expired(claimed_at: str | None) -> bool:
     ).total_seconds() >= timeout
 
 
-def _snapshot_claims(conn: sqlite3.Connection,
-                     post_id: int) -> dict[tuple[str, str], tuple[int, str]]:
+def _snapshot_claims(
+    conn: sqlite3.Connection, post_id: int
+) -> dict[tuple[str, str], tuple[int, str]]:
     """Snapshot all active (non-expired) claims on a proposal's todo items
     before a destructive rewrite.  Returns {(list_title, item_text):
     (agent_id, claimed_at)} — the key identifies the item by content, so
@@ -58,9 +61,11 @@ def _snapshot_claims(conn: sqlite3.Connection,
     return out
 
 
-def _restore_claims(conn: sqlite3.Connection,
-                    post_id: int,
-                    snapshot: dict[tuple[str, str], tuple[int, str]]) -> int:
+def _restore_claims(
+    conn: sqlite3.Connection,
+    post_id: int,
+    snapshot: dict[tuple[str, str], tuple[int, str]],
+) -> int:
     """Restore claims from a snapshot onto newly-inserted todo items.
     Matches by (list_title, item_text).  Returns the number of claims
     restored.  Skips claims whose timeout has expired since the snapshot."""
@@ -91,8 +96,9 @@ def _restore_claims(conn: sqlite3.Connection,
     return restored
 
 
-def _snapshot_list_claims(conn: sqlite3.Connection,
-                          post_id: int) -> dict[str, tuple[int, str]]:
+def _snapshot_list_claims(
+    conn: sqlite3.Connection, post_id: int
+) -> dict[str, tuple[int, str]]:
     """Snapshot all active (non-expired) whole-list claims on a proposal
     before a destructive rewrite. Returns {list_title: (agent_id,
     claimed_at)} - keyed by list title so a list claim survives a rewrite
@@ -110,9 +116,9 @@ def _snapshot_list_claims(conn: sqlite3.Connection,
     return out
 
 
-def _restore_list_claims(conn: sqlite3.Connection,
-                         post_id: int,
-                         snapshot: dict[str, tuple[int, str]]) -> int:
+def _restore_list_claims(
+    conn: sqlite3.Connection, post_id: int, snapshot: dict[str, tuple[int, str]]
+) -> int:
     """Restore whole-list claims from a snapshot onto a proposal's
     re-created todo_lists, matching by title. Returns the number of claims
     restored. Skips claims whose timeout has expired since the snapshot."""
@@ -120,7 +126,8 @@ def _restore_list_claims(conn: sqlite3.Connection,
         return 0
     restored = 0
     lists = conn.execute(
-        "SELECT id, title FROM todo_lists WHERE post_id = ?", (post_id,),
+        "SELECT id, title FROM todo_lists WHERE post_id = ?",
+        (post_id,),
     ).fetchall()
     for row in lists:
         claim = snapshot.get(row["title"])
@@ -138,8 +145,7 @@ def _restore_list_claims(conn: sqlite3.Connection,
     return restored
 
 
-def _sweep_expired_claims(conn: sqlite3.Connection,
-                          post_ids: list[int]) -> int:
+def _sweep_expired_claims(conn: sqlite3.Connection, post_ids: list[int]) -> int:
     """Clear item and whole-list claims past their timeout on the given
     posts. Lazy maintenance called by the readers and gates: the UPDATEs
     fire only when something has actually expired, so steady-state reads
@@ -154,8 +160,7 @@ def _sweep_expired_claims(conn: sqlite3.Connection,
         return 0
     post_marks = ",".join("?" * len(post_ids))
     list_rows = conn.execute(
-        f"SELECT id, post_id, title FROM todo_lists"
-        f" WHERE post_id IN ({post_marks})",
+        f"SELECT id, post_id, title FROM todo_lists WHERE post_id IN ({post_marks})",
         post_ids,
     ).fetchall()
     if not list_rows:
@@ -199,7 +204,11 @@ def _sweep_expired_claims(conn: sqlite3.Connection,
             g["parts"].append(text)
         for (claimer_id, post_id), g in grouped.items():
             _notify(
-                conn, claimer_id, "delegation", "post", post_id,
+                conn,
+                claimer_id,
+                "delegation",
+                "post",
+                post_id,
                 f"Your to-do claim(s) on proposal #{post_id}"
                 f" ({g['title']}) expired after the auto-release window "
                 f"({config.CLAIM_TIMEOUT_SECONDS}s): "
@@ -229,13 +238,15 @@ def _sweep_expired_claims(conn: sqlite3.Connection,
         released += len(stale_lists)
         grouped_lists: dict[tuple[int, int], dict] = {}
         for _lid, claimer_id, title, post_id in stale_lists:
-            g = grouped_lists.setdefault(
-                (claimer_id, post_id), {"titles": []}
-            )
+            g = grouped_lists.setdefault((claimer_id, post_id), {"titles": []})
             g["titles"].append(title)
         for (claimer_id, post_id), g in grouped_lists.items():
             _notify(
-                conn, claimer_id, "delegation", "post", post_id,
+                conn,
+                claimer_id,
+                "delegation",
+                "post",
+                post_id,
                 f"Your to-do list claim(s) on proposal #{post_id}"
                 f" ({'; '.join(g['titles'])}) expired after the "
                 f"auto-release window ({config.CLAIM_TIMEOUT_SECONDS}s). "
@@ -257,7 +268,8 @@ def _todos_for_post(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     get_todos_for_post, get_post and the docket listers so every surface
     renders the same shape."""
     mode_row = conn.execute(
-        "SELECT todo_claim_mode FROM posts WHERE id = ?", (post_id,),
+        "SELECT todo_claim_mode FROM posts WHERE id = ?",
+        (post_id,),
     ).fetchone()
     mode = 1 if (mode_row and mode_row["todo_claim_mode"]) else 0
     _sweep_expired_claims(conn, [post_id])
@@ -320,8 +332,7 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
     for chunk in _id_chunks(post_ids):
         cmarks = ",".join("?" * len(chunk))
         for r in conn.execute(
-            f"SELECT id, todo_claim_mode FROM posts"
-            f" WHERE id IN ({cmarks})",
+            f"SELECT id, todo_claim_mode FROM posts WHERE id IN ({cmarks})",
             chunk,
         ):
             modes[r["id"]] = 1 if r["todo_claim_mode"] else 0
@@ -350,11 +361,16 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
             [r["id"] for r in lists],
         ).fetchall()
         by_list: dict[int, list[dict]] = {}
-        modes_by_list: dict[int, int] = {r["id"]: modes.get(r["post_id"], 0) for r in lists}
+        modes_by_list: dict[int, int] = {
+            r["id"]: modes.get(r["post_id"], 0) for r in lists
+        }
         for it in items:
             entry = {"id": it["id"], "text": it["text"], "done": bool(it["done"])}
             entry["pr_number"] = it["pr_number"]
-            if not modes_by_list.get(it["list_id"]) and it["claimed_by_agent_id"] is not None:
+            if (
+                not modes_by_list.get(it["list_id"])
+                and it["claimed_by_agent_id"] is not None
+            ):
                 entry["claimed_by"] = it["claimed_by_name"]
                 entry["claimed_by_id"] = it["claimed_by_agent_id"]
                 entry["claimed_at"] = it["claimed_at"]
@@ -375,8 +391,9 @@ def _todos_for_posts(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
-def _check_todo_write_access(conn: sqlite3.Connection, token: str,
-                             post_id: int) -> tuple[sqlite3.Row, sqlite3.Row]:
+def _check_todo_write_access(
+    conn: sqlite3.Connection, token: str, post_id: int
+) -> tuple[sqlite3.Row, sqlite3.Row]:
     """Shared gate for every to-do write operation: verifies the post exists,
     is a proposal, is not locked (superseded), and the caller is the author
     or current delegate. Returns (agent, post_row) for the caller to use."""
@@ -393,8 +410,7 @@ def _check_todo_write_access(conn: sqlite3.Connection, token: str,
         raise ForumError(f"no post with id {post_id}.")
     if row["proposal_kind"] is None:
         raise ForumError(
-            f"post #{post_id} is not a proposal - to-do lists live on "
-            "proposals only."
+            f"post #{post_id} is not a proposal - to-do lists live on proposals only."
         )
     if row["superseded_by_id"] is not None:
         raise ForumError(
@@ -410,15 +426,15 @@ def _check_todo_write_access(conn: sqlite3.Connection, token: str,
     return agent, row
 
 
-def _record_todo_edit(conn: sqlite3.Connection, post_id: int,
-                      editor_agent_id: int) -> None:
+def _record_todo_edit(
+    conn: sqlite3.Connection, post_id: int, editor_agent_id: int
+) -> None:
     """Snapshot the current to-do state into todo_edits and log the event.
     Called after every mutation so the full edit trail is preserved."""
     new_state = _todos_for_post(conn, post_id)
     # Read the most recent old_lists from todo_edits (or empty if first edit).
     prev = conn.execute(
-        "SELECT new_lists FROM todo_edits"
-        " WHERE post_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT new_lists FROM todo_edits WHERE post_id = ? ORDER BY id DESC LIMIT 1",
         (post_id,),
     ).fetchone()
     old_state = json.loads(prev["new_lists"]) if prev else []
@@ -428,6 +444,7 @@ def _record_todo_edit(conn: sqlite3.Connection, post_id: int,
         (post_id, editor_agent_id, json.dumps(old_state), json.dumps(new_state)),
     )
     from events import EVT_TODO_EDITED, log_event
+
     log_event(
         EVT_TODO_EDITED,
         actor_agent_id=editor_agent_id,
@@ -438,20 +455,20 @@ def _record_todo_edit(conn: sqlite3.Connection, post_id: int,
     )
 
 
-def _notify_collab_items(post_id: int, new_texts: set[str],
-                         editor_agent_id: int,
-                         conn: sqlite3.Connection) -> None:
+def _notify_collab_items(
+    post_id: int, new_texts: set[str], editor_agent_id: int, conn: sqlite3.Connection
+) -> None:
     """Notify collaborators when new to-do items appear on a collaborative
     proposal. new_texts is the set of item texts after the mutation."""
     post = conn.execute(
-        "SELECT collaborative FROM posts WHERE id = ?", (post_id,),
+        "SELECT collaborative FROM posts WHERE id = ?",
+        (post_id,),
     ).fetchone()
     if not post or not post["collaborative"]:
         return
     # Find which items are truly new by comparing against the previous state.
     prev = conn.execute(
-        "SELECT new_lists FROM todo_edits"
-        " WHERE post_id = ? ORDER BY id DESC LIMIT 1",
+        "SELECT new_lists FROM todo_edits WHERE post_id = ? ORDER BY id DESC LIMIT 1",
         (post_id,),
     ).fetchone()
     if prev:
@@ -466,13 +483,17 @@ def _notify_collab_items(post_id: int, new_texts: set[str],
     if not added:
         return
     from db._collaborative import list_proposal_collaborators
+
     collabs = list_proposal_collaborators(post_id, conn=conn)
     summary = ", ".join(sorted(added)[:3])
     if len(added) > 3:
         summary += f" and {len(added) - 3} more"
     for col in collabs:
         _notify(
-            conn, col["agent_id"], "proposal", "post",
+            conn,
+            col["agent_id"],
+            "proposal",
+            "post",
             post_id,
             f"To-do list updated on collaborative proposal "
             f"#{post_id}: new items added ({summary}). "
@@ -487,9 +508,10 @@ def get_todos_for_post(post_id: int) -> list[dict]:
     posts and proposals without lists. Public read - no token needed. Raises
     for an unknown post id, matching get_post / list_comments."""
     with _conn() as conn:
-        if conn.execute(
-            "SELECT 1 FROM posts WHERE id = ?", (post_id,)
-        ).fetchone() is None:
+        if (
+            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+            is None
+        ):
             raise ForumError(f"no post with id {post_id}.")
         return _todos_for_post(conn, post_id)
 
@@ -544,8 +566,7 @@ def _todo_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     ]
 
 
-def _todo_edits_batch(conn: sqlite3.Connection,
-                      post_ids: list) -> dict:
+def _todo_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: [_todo_edits_for entry, ...]} for a batch of proposals."""
     if not post_ids:
         return {}
@@ -561,14 +582,16 @@ def _todo_edits_batch(conn: sqlite3.Connection,
             chunk,
         ).fetchall()
         for r in rows:
-            out.setdefault(r["post_id"], []).append({
-                "id": r["id"],
-                "editor": r["editor"],
-                "editor_id": r["editor_id"],
-                "old_lists": json.loads(r["old_lists"]),
-                "new_lists": json.loads(r["new_lists"]),
-                "edited_at": r["edited_at"],
-            })
+            out.setdefault(r["post_id"], []).append(
+                {
+                    "id": r["id"],
+                    "editor": r["editor"],
+                    "editor_id": r["editor_id"],
+                    "old_lists": json.loads(r["old_lists"]),
+                    "new_lists": json.loads(r["new_lists"]),
+                    "edited_at": r["edited_at"],
+                }
+            )
     return out
 
 
@@ -592,7 +615,9 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
     normalized: list[dict] = []
     for lst in lists:
         if not isinstance(lst, dict):
-            raise ForumError("each to-do list must be an object with a title and items.")
+            raise ForumError(
+                "each to-do list must be an object with a title and items."
+            )
         title = str(lst.get("title") or "").strip()
         items = lst.get("items", [])
         if not title:
@@ -629,11 +654,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         # Everything validated: replace atomically. Deleting the lists cascades
         # their items; positions are normalized 0..n on the way in.
         old_state = _todos_for_post(conn, post_id)
-        old_item_texts = {
-            item["text"]
-            for lst in old_state
-            for item in lst["items"]
-        }
+        old_item_texts = {item["text"] for lst in old_state for item in lst["items"]}
         claim_snapshot = _snapshot_claims(conn, post_id)
         list_claim_snapshot = _snapshot_list_claims(conn, post_id)
         conn.execute("DELETE FROM todo_lists WHERE post_id = ?", (post_id,))
@@ -658,6 +679,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
             (post_id, agent["id"], json.dumps(old_state), json.dumps(new_state)),
         )
         from events import EVT_TODO_EDITED, log_event
+
         log_event(
             EVT_TODO_EDITED,
             actor_agent_id=agent["id"],
@@ -668,21 +690,21 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         )
         # Notify collaborators when new to-do items are added.
         if row["collaborative"]:
-            new_texts = {
-                item["text"]
-                for lst in normalized
-                for item in lst["items"]
-            }
+            new_texts = {item["text"] for lst in normalized for item in lst["items"]}
             added = new_texts - old_item_texts
             if added:
                 from db._collaborative import list_proposal_collaborators
+
                 collabs = list_proposal_collaborators(post_id, conn=conn)
                 summary = ", ".join(sorted(added)[:3])
                 if len(added) > 3:
                     summary += f" and {len(added) - 3} more"
                 for col in collabs:
                     _notify(
-                        conn, col["agent_id"], "proposal", "post",
+                        conn,
+                        col["agent_id"],
+                        "proposal",
+                        "post",
                         post_id,
                         f"To-do list updated on collaborative proposal "
                         f"#{post_id}: new items added ({summary}). "
@@ -692,8 +714,9 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         return _todos_for_post(conn, post_id)
 
 
-def create_todo_list(token: str, post_id: int, title: str,
-                     items: list[dict] | None = None) -> dict:
+def create_todo_list(
+    token: str, post_id: int, title: str, items: list[dict] | None = None
+) -> dict:
     """Add a single new to-do list to a proposal without touching the
     existing lists. Title is required (non-empty, max TODO_TITLE_MAX_LEN);
     items is an optional list of {text, done} dicts (default empty, max
@@ -755,7 +778,10 @@ def create_todo_list(token: str, post_id: int, title: str,
                 (list_id, item["text"], int(item["done"]), ipos),
             )
         _notify_collab_items(
-            post_id, {it["text"] for it in item_entries}, agent["id"], conn,
+            post_id,
+            {it["text"] for it in item_entries},
+            agent["id"],
+            conn,
         )
         _record_todo_edit(conn, post_id, agent["id"])
         return _todo_list_for(conn, post_id, list_id)
@@ -771,8 +797,9 @@ def _todo_list_for(conn: sqlite3.Connection, post_id: int, list_id: int) -> dict
     raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
 
 
-def update_todo_list(token: str, post_id: int, list_id: int, title: str,
-                     items: list[dict] | None = None) -> dict:
+def update_todo_list(
+    token: str, post_id: int, list_id: int, title: str, items: list[dict] | None = None
+) -> dict:
     """Set a to-do list's title and, optionally, replace its items in place,
     leaving all other lists on the proposal untouched. When *items* is None
     (the default) only the title changes - items, done flags and any claims
@@ -818,9 +845,7 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
             (list_id, post_id),
         ).fetchone()
         if existing is None:
-            raise ForumError(
-                f"no to-do list #{list_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
         conn.execute(
             "UPDATE todo_lists SET title = ? WHERE id = ?",
             (title, list_id),
@@ -857,7 +882,10 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
                             (claim[0], claim[1], r["id"]),
                         )
             _notify_collab_items(
-                post_id, {it["text"] for it in item_entries}, agent["id"], conn,
+                post_id,
+                {it["text"] for it in item_entries},
+                agent["id"],
+                conn,
             )
         _record_todo_edit(conn, post_id, agent["id"])
         return _todo_list_for(conn, post_id, list_id)
@@ -877,9 +905,7 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
             (list_id, post_id),
         ).fetchone()
         if existing is None:
-            raise ForumError(
-                f"no to-do list #{list_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
         count = conn.execute(
             "SELECT COUNT(*) FROM todo_lists WHERE post_id = ?",
             (post_id,),
@@ -926,7 +952,8 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
         if post["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(
-                    post_id, post["superseded_by_id"],
+                    post_id,
+                    post["superseded_by_id"],
                     "claim a to-do item on",
                 )
             )
@@ -963,14 +990,10 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
             (item_id, post_id),
         ).fetchone()
         if item is None:
-            raise ForumError(
-                f"no to-do item #{item_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do item #{item_id} on proposal #{post_id}.")
         if item["claimed_by_agent_id"] is not None:
             who = item["holder"] or "another citizen"
-            raise ForumError(
-                f"to-do item #{item_id} is already claimed by {who}."
-            )
+            raise ForumError(f"to-do item #{item_id} is already claimed by {who}.")
         held = conn.execute(
             "SELECT COUNT(*) FROM todo_items ti"
             " JOIN todo_lists tl ON tl.id = ti.list_id"
@@ -990,17 +1013,22 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
             (agent["id"], item_id),
         )
         from events import EVT_TODO_CLAIMED, log_event
+
         log_event(
             EVT_TODO_CLAIMED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"item_id": item_id, "claimer_id": agent["id"],
-                    "claimer_name": agent["name"]},
+            detail={
+                "item_id": item_id,
+                "claimer_id": agent["id"],
+                "claimer_name": agent["name"],
+            },
             conn=conn,
         )
         stamped = conn.execute(
-            "SELECT claimed_at FROM todo_items WHERE id = ?", (item_id,),
+            "SELECT claimed_at FROM todo_items WHERE id = ?",
+            (item_id,),
         ).fetchone()
         return {
             "post_id": post_id,
@@ -1022,7 +1050,8 @@ def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id FROM posts WHERE id = ?", (post_id,),
+            "SELECT id, agent_id FROM posts WHERE id = ?",
+            (post_id,),
         ).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
@@ -1036,9 +1065,7 @@ def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
             (item_id, post_id),
         ).fetchone()
         if item is None:
-            raise ForumError(
-                f"no to-do item #{item_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do item #{item_id} on proposal #{post_id}.")
         if item["claimed_by_agent_id"] is None:
             raise ForumError(f"to-do item #{item_id} is not claimed.")
         allowed = (
@@ -1056,14 +1083,17 @@ def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
             (item_id,),
         )
         from events import EVT_TODO_UNCLAIMED, log_event
+
         log_event(
             EVT_TODO_UNCLAIMED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"item_id": item_id,
-                    "released_from_id": item["claimed_by_agent_id"],
-                    "released_from": item["holder"]},
+            detail={
+                "item_id": item_id,
+                "released_from_id": item["claimed_by_agent_id"],
+                "released_from": item["holder"],
+            },
             conn=conn,
         )
         return {
@@ -1092,7 +1122,8 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, collaborative, todo_claim_mode"
-            " FROM posts WHERE id = ?", (post_id,),
+            " FROM posts WHERE id = ?",
+            (post_id,),
         ).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
@@ -1102,9 +1133,7 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
                 "mode is a collaborative-proposal feature."
             )
         if agent["id"] != post["agent_id"]:
-            raise ForumError(
-                "only the proposal author may set the to-do claim mode."
-            )
+            raise ForumError("only the proposal author may set the to-do claim mode.")
         new_mode = 1 if mode == "list" else 0
         if bool(post["todo_claim_mode"]) == bool(new_mode):
             return {
@@ -1174,7 +1203,8 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
         if post["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(
-                    post_id, post["superseded_by_id"],
+                    post_id,
+                    post["superseded_by_id"],
                     "claim a to-do list on",
                 )
             )
@@ -1210,17 +1240,12 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
             (list_id, post_id),
         ).fetchone()
         if lst is None:
-            raise ForumError(
-                f"no to-do list #{list_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
         if lst["claimed_by_agent_id"] is not None:
             who = lst["holder"] or "another citizen"
-            raise ForumError(
-                f"to-do list #{list_id} already claimed by {who}."
-            )
+            raise ForumError(f"to-do list #{list_id} already claimed by {who}.")
         undone = conn.execute(
-            "SELECT COUNT(*) FROM todo_items"
-            " WHERE list_id = ? AND done = 0",
+            "SELECT COUNT(*) FROM todo_items WHERE list_id = ? AND done = 0",
             (list_id,),
         ).fetchone()[0]
         if undone == 0:
@@ -1245,17 +1270,22 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
             (agent["id"], list_id),
         )
         from events import EVT_TODO_CLAIMED, log_event
+
         log_event(
             EVT_TODO_CLAIMED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"list_id": list_id, "claimer_id": agent["id"],
-                    "claimer_name": agent["name"]},
+            detail={
+                "list_id": list_id,
+                "claimer_id": agent["id"],
+                "claimer_name": agent["name"],
+            },
             conn=conn,
         )
         stamped = conn.execute(
-            "SELECT claimed_at FROM todo_lists WHERE id = ?", (list_id,),
+            "SELECT claimed_at FROM todo_lists WHERE id = ?",
+            (list_id,),
         ).fetchone()
         return {
             "post_id": post_id,
@@ -1277,7 +1307,8 @@ def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
-            "SELECT id, agent_id FROM posts WHERE id = ?", (post_id,),
+            "SELECT id, agent_id FROM posts WHERE id = ?",
+            (post_id,),
         ).fetchone()
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
@@ -1289,14 +1320,11 @@ def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
             (list_id, post_id),
         ).fetchone()
         if lst is None:
-            raise ForumError(
-                f"no to-do list #{list_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
         if lst["claimed_by_agent_id"] is None:
             raise ForumError(f"to-do list #{list_id} is not claimed.")
         allowed = (
-            agent["id"] == lst["claimed_by_agent_id"]
-            or agent["id"] == post["agent_id"]
+            agent["id"] == lst["claimed_by_agent_id"] or agent["id"] == post["agent_id"]
         )
         if not allowed:
             raise ForumError(
@@ -1309,14 +1337,17 @@ def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
             (list_id,),
         )
         from events import EVT_TODO_UNCLAIMED, log_event
+
         log_event(
             EVT_TODO_UNCLAIMED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"list_id": list_id,
-                    "released_from_id": lst["claimed_by_agent_id"],
-                    "released_from": lst["holder"]},
+            detail={
+                "list_id": list_id,
+                "released_from_id": lst["claimed_by_agent_id"],
+                "released_from": lst["holder"],
+            },
             conn=conn,
         )
         return {
@@ -1328,8 +1359,7 @@ def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
         }
 
 
-def tick_todo_item(token: str, post_id: int, item_id: int,
-                   done: bool = True) -> dict:
+def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) -> dict:
     """Flip one to-do item's done flag without resending its whole list -
     tick completed entries as the work ships so reviewers can diff promise
     against delivery. The proposal's author or current delegate may tick
@@ -1351,8 +1381,10 @@ def tick_todo_item(token: str, post_id: int, item_id: int,
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
         if not post["proposal_kind"]:
-            raise ForumError(f"post #{post_id} is not a proposal - to-do "
-                             "lists live on proposals only.")
+            raise ForumError(
+                f"post #{post_id} is not a proposal - to-do "
+                "lists live on proposals only."
+            )
         if post["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(
@@ -1369,9 +1401,7 @@ def tick_todo_item(token: str, post_id: int, item_id: int,
             (item_id, post_id),
         ).fetchone()
         if item is None:
-            raise ForumError(
-                f"no to-do item #{item_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do item #{item_id} on proposal #{post_id}.")
         # In item mode the item's own claimer may tick; in list mode the
         # whole-list claimer of the item's list may tick anything in it.
         can_tick_claim = (
@@ -1403,8 +1433,9 @@ def tick_todo_item(token: str, post_id: int, item_id: int,
         }
 
 
-def bind_todo_item_to_pr(token: str, post_id: int, item_id: int,
-                          pr_number: int) -> dict:
+def bind_todo_item_to_pr(
+    token: str, post_id: int, item_id: int, pr_number: int
+) -> dict:
     """Bind one undone to-do item on a proposal to a pull request number so
     the system auto-checks the item (`done = 1`) when that PR merges. Called
     by repo_propose_change's todo_item_id and the standalone
@@ -1487,8 +1518,9 @@ def bind_todo_item_to_pr(token: str, post_id: int, item_id: int,
         }
 
 
-def _todo_item_by_list(conn: sqlite3.Connection, post_id: int,
-                       list_id: int, item_id: int) -> sqlite3.Row:
+def _todo_item_by_list(
+    conn: sqlite3.Connection, post_id: int, list_id: int, item_id: int
+) -> sqlite3.Row:
     """Look up one to-do item, cross-checking that it belongs to the given
     list on the given post. The list_id cross-check is the guard that stops
     an agent silently hitting an item in the wrong list (a bare, globally
@@ -1501,9 +1533,7 @@ def _todo_item_by_list(conn: sqlite3.Connection, post_id: int,
         (list_id, post_id),
     ).fetchone()
     if lst is None:
-        raise ForumError(
-            f"no to-do list #{list_id} on proposal #{post_id}."
-        )
+        raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
     item = conn.execute(
         "SELECT ti.id, ti.text, ti.done, ti.list_id,"
         " ti.claimed_by_agent_id, a.name AS holder"
@@ -1513,9 +1543,7 @@ def _todo_item_by_list(conn: sqlite3.Connection, post_id: int,
         (item_id,),
     ).fetchone()
     if item is None:
-        raise ForumError(
-            f"no to-do item #{item_id} on proposal #{post_id}."
-        )
+        raise ForumError(f"no to-do item #{item_id} on proposal #{post_id}.")
     if item["list_id"] != list_id:
         raise ForumError(
             f"to-do item #{item_id} is not on to-do list #{list_id} - "
@@ -1524,8 +1552,9 @@ def _todo_item_by_list(conn: sqlite3.Connection, post_id: int,
     return item
 
 
-def add_todo_item(token: str, post_id: int, list_id: int, text: str,
-                  done: bool = False) -> dict:
+def add_todo_item(
+    token: str, post_id: int, list_id: int, text: str, done: bool = False
+) -> dict:
     """Append one to-do item to an existing list on a proposal without
     touching any other item. Pass the owning list_id so the item lands in
     the list you expect; the list must belong to this proposal. Returns the
@@ -1538,8 +1567,7 @@ def add_todo_item(token: str, post_id: int, list_id: int, text: str,
         raise ForumError("to-do item texts cannot be empty.")
     if len(text) > config.TODO_ITEM_MAX_LEN:
         raise ForumError(
-            f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} "
-            "characters or fewer."
+            f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} characters or fewer."
         )
     if not isinstance(done, bool):
         raise ForumError("`done` must be a boolean.")
@@ -1550,17 +1578,14 @@ def add_todo_item(token: str, post_id: int, list_id: int, text: str,
             (list_id, post_id),
         ).fetchone()
         if lst is None:
-            raise ForumError(
-                f"no to-do list #{list_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do list #{list_id} on proposal #{post_id}.")
         count = conn.execute(
             "SELECT COUNT(*) FROM todo_items WHERE list_id = ?",
             (list_id,),
         ).fetchone()[0]
         if count >= config.TODO_MAX_ITEMS:
             raise ForumError(
-                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} "
-                "items."
+                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} items."
             )
         cur = conn.execute(
             "INSERT INTO todo_items (list_id, text, done, position)"
@@ -1581,8 +1606,9 @@ def add_todo_item(token: str, post_id: int, list_id: int, text: str,
         }
 
 
-def update_todo_item(token: str, post_id: int, list_id: int,
-                     item_id: int, text: str) -> dict:
+def update_todo_item(
+    token: str, post_id: int, list_id: int, item_id: int, text: str
+) -> dict:
     """Rewrite one to-do item's text in place, leaving every other item and
     the list untouched. The list_id is a cross-check - the item is looked up
     by id AND confirmed to belong to that list on this proposal, erroring on
@@ -1596,8 +1622,7 @@ def update_todo_item(token: str, post_id: int, list_id: int,
         raise ForumError("to-do item texts cannot be empty.")
     if len(text) > config.TODO_ITEM_MAX_LEN:
         raise ForumError(
-            f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} "
-            "characters or fewer."
+            f"to-do item texts must be {config.TODO_ITEM_MAX_LEN} characters or fewer."
         )
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
@@ -1617,8 +1642,7 @@ def update_todo_item(token: str, post_id: int, list_id: int,
         }
 
 
-def delete_todo_item(token: str, post_id: int, list_id: int,
-                     item_id: int) -> dict:
+def delete_todo_item(token: str, post_id: int, list_id: int, item_id: int) -> dict:
     """Remove a single to-do item from a list, leaving every other item and
     the list untouched. The list_id is a cross-check - the item is looked up
     by id AND confirmed to belong to that list on this proposal. Refuses to
@@ -1645,11 +1669,12 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
         # middle delete otherwise leaves a gap and COUNT(*) reuses a
         # position already taken (positions stay 0-based, normalized on
         # every write, matching the bulk ops).
-        for newpos, (rid,) in enumerate(conn.execute(
-            "SELECT id FROM todo_items WHERE list_id = ?"
-            " ORDER BY position, id",
-            (list_id,),
-        )):
+        for newpos, (rid,) in enumerate(
+            conn.execute(
+                "SELECT id FROM todo_items WHERE list_id = ? ORDER BY position, id",
+                (list_id,),
+            )
+        ):
             conn.execute(
                 "UPDATE todo_items SET position = ? WHERE id = ?",
                 (newpos, rid),
@@ -1664,8 +1689,9 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
         }
 
 
-def move_todo_item(token: str, post_id: int, list_id: int, item_id: int,
-                   to_list_id: int) -> dict:
+def move_todo_item(
+    token: str, post_id: int, list_id: int, item_id: int, to_list_id: int
+) -> dict:
     """Move one to-do item to another list on the same proposal. The list_id
     is a cross-check - the item is looked up by id AND confirmed to belong
     to that list on this proposal. The destination list must exist and have
@@ -1693,17 +1719,14 @@ def move_todo_item(token: str, post_id: int, list_id: int, item_id: int,
             (to_list_id, post_id),
         ).fetchone()
         if dest is None:
-            raise ForumError(
-                f"no to-do list #{to_list_id} on proposal #{post_id}."
-            )
+            raise ForumError(f"no to-do list #{to_list_id} on proposal #{post_id}.")
         count = conn.execute(
             "SELECT COUNT(*) FROM todo_items WHERE list_id = ?",
             (to_list_id,),
         ).fetchone()[0]
         if count >= config.TODO_MAX_ITEMS:
             raise ForumError(
-                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} "
-                "items."
+                f"a to-do list can carry at most {config.TODO_MAX_ITEMS} items."
             )
         # Moving preserves the item's claim columns (the same row keeps its
         # claimed_by_agent_id / claimed_at), so the reservation survives.
@@ -1713,11 +1736,12 @@ def move_todo_item(token: str, post_id: int, list_id: int, item_id: int,
         )
         # Renormalize the source list's surviving items to 0..n so the next
         # add_todo_item's `position = count` stays collision-free.
-        for newpos, (rid,) in enumerate(conn.execute(
-            "SELECT id FROM todo_items WHERE list_id = ?"
-            " ORDER BY position, id",
-            (list_id,),
-        )):
+        for newpos, (rid,) in enumerate(
+            conn.execute(
+                "SELECT id FROM todo_items WHERE list_id = ? ORDER BY position, id",
+                (list_id,),
+            )
+        ):
             conn.execute(
                 "UPDATE todo_items SET position = ? WHERE id = ?",
                 (newpos, rid),
@@ -1753,9 +1777,7 @@ def move_todo_items(token: str, post_id: int, moves: list[dict]) -> dict:
     if not isinstance(moves, list) or not moves:
         raise ForumError("moves must be a non-empty list.")
     if len(moves) > _MOVE_BATCH_MAX:
-        raise ForumError(
-            f"moves accepts at most {_MOVE_BATCH_MAX} items at once."
-        )
+        raise ForumError(f"moves accepts at most {_MOVE_BATCH_MAX} items at once.")
     with _conn(immediate=True) as conn:
         agent, row = _check_todo_write_access(conn, token, post_id)
         _sweep_expired_claims(conn, [post_id])
@@ -1765,14 +1787,16 @@ def move_todo_items(token: str, post_id: int, moves: list[dict]) -> dict:
         for m in moves:
             if not isinstance(m, dict):
                 raise ForumError(
-                    "each move must be an object with list_id, item_id and "
-                    "to_list_id."
+                    "each move must be an object with list_id, item_id and to_list_id."
                 )
             lid = m.get("list_id")
             iid = m.get("item_id")
             to_lid = m.get("to_list_id")
-            if (not isinstance(lid, int) or not isinstance(iid, int)
-                    or not isinstance(to_lid, int)):
+            if (
+                not isinstance(lid, int)
+                or not isinstance(iid, int)
+                or not isinstance(to_lid, int)
+            ):
                 raise ForumError(
                     "list_id, item_id and to_list_id must all be integers."
                 )
@@ -1792,9 +1816,7 @@ def move_todo_items(token: str, post_id: int, moves: list[dict]) -> dict:
                 (to_lid, post_id),
             ).fetchone()
             if dest is None:
-                raise ForumError(
-                    f"no to-do list #{to_lid} on proposal #{post_id}."
-                )
+                raise ForumError(f"no to-do list #{to_lid} on proposal #{post_id}.")
             dest_incoming[to_lid] = dest_incoming.get(to_lid, 0) + 1
             parsed.append((lid, iid, to_lid, item["text"]))
         # Destination capacity: current + incoming <= TODO_MAX_ITEMS.
@@ -1825,26 +1847,27 @@ def move_todo_items(token: str, post_id: int, moves: list[dict]) -> dict:
             {lid for lid, _, _, _ in parsed} | {to for _, _, to, _ in parsed}
         )
         for abl in affected:
-            for newpos, (rid,) in enumerate(conn.execute(
-                "SELECT id FROM todo_items WHERE list_id = ?"
-                " ORDER BY position, id",
-                (abl,),
-            )):
+            for newpos, (rid,) in enumerate(
+                conn.execute(
+                    "SELECT id FROM todo_items WHERE list_id = ? ORDER BY position, id",
+                    (abl,),
+                )
+            ):
                 conn.execute(
                     "UPDATE todo_items SET position = ? WHERE id = ?",
                     (newpos, rid),
                 )
         _record_todo_edit(conn, post_id, agent["id"])
         moved = [
-            {"item_id": iid, "text": text,
-             "from_list_id": lid, "to_list_id": to_lid}
+            {"item_id": iid, "text": text, "from_list_id": lid, "to_list_id": to_lid}
             for lid, iid, to_lid, text in parsed
         ]
         return {"post_id": post_id, "moved": moved}
 
 
-def release_claims_for_agent(post_id: int, agent_id: int,
-                             conn: sqlite3.Connection | None = None) -> int:
+def release_claims_for_agent(
+    post_id: int, agent_id: int, conn: sqlite3.Connection | None = None
+) -> int:
     """Clear every to-do item AND whole-list claim `agent_id` holds on
     `post_id`'s lists - called when a collaborator leaves the proposal or
     when a linked PR of theirs reaches a verdict (merged, declined,
@@ -1853,7 +1876,7 @@ def release_claims_for_agent(post_id: int, agent_id: int,
     one is opened and committed. Returns the number of claims cleared
     (items + lists). Internal sweep: logs nothing - the triggering
     lifecycle event carries the record."""
-    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         item_held = c.execute(
             "SELECT COUNT(*) FROM todo_items ti"
             " JOIN todo_lists tl ON tl.id = ti.list_id"
@@ -1883,13 +1906,14 @@ def release_claims_for_agent(post_id: int, agent_id: int,
         return item_held + list_held
 
 
-def release_claims_for_proposal(post_id: int,
-                                conn: sqlite3.Connection | None = None) -> int:
+def release_claims_for_proposal(
+    post_id: int, conn: sqlite3.Connection | None = None
+) -> int:
     """Clear ALL to-do item and whole-list claims on `post_id` - called by
     close_proposal: a decided collaborative proposal leaves nothing
     reserved. Same transaction rules and return value as
     release_claims_for_agent."""
-    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         item_held = c.execute(
             "SELECT COUNT(*) FROM todo_items ti"
             " JOIN todo_lists tl ON tl.id = ti.list_id"

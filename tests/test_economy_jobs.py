@@ -3,6 +3,7 @@
 escrow's pure-debit supply dip), job fees inside the spend-intake flow,
 official wages inside payouts-out, and the profile builders carrying
 jobs_completed."""
+
 import importlib
 import os
 import sys
@@ -18,7 +19,7 @@ os.environ["FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, config, setup  # noqa: E402
+from tests._setup import config, db, setup  # noqa: E402
 
 db.init_db()
 
@@ -56,19 +57,23 @@ def test_overview_tracks_held_in_job_escrow_through_lifecycle():
     worker = db.register_agent("ejw-hold")
     base = _overview()["held_in_job_escrow_quarters"]
 
-    job = db.create_job(creator["token"], "hold me", "d", 2.0,
-                        ["s"], kind="recurring", cycles=3)
+    job = db.create_job(
+        creator["token"], "hold me", "d", 2.0, ["s"], kind="recurring", cycles=3
+    )
     o = _overview()
-    assert o["held_in_job_escrow_quarters"] == base + 24, \
+    assert o["held_in_job_escrow_quarters"] == base + 24, (
         "posting holds the full wage x cycles outside the summed supply"
+    )
 
     _run_cycle(job["job_id"], creator, worker)
-    assert _overview()["held_in_job_escrow_quarters"] == base + 16, \
+    assert _overview()["held_in_job_escrow_quarters"] == base + 16, (
         "an accepted cycle releases exactly its wage back into supply"
+    )
 
     db.cancel_job(creator["token"], job["job_id"])
-    assert _overview()["held_in_job_escrow_quarters"] == base, \
+    assert _overview()["held_in_job_escrow_quarters"] == base, (
         "cancel returns everything - no escrow leaks out of the figure"
+    )
 
 
 def test_official_positions_hold_no_escrow():
@@ -79,10 +84,12 @@ def test_official_positions_hold_no_escrow():
     # For this test, we check that citizen escrow doesn't increase, but treasury escrow does
     # The overview's held_in_job_escrow currently tracks citizen escrow only, so it stays 0 for official
     # (treasury escrow is tracked separately in economy overview)
-    db.create_job_official("m", sponsor["name"], "role", "d", 2.0, ["s"],
-                           kind="recurring", cycles=4)
-    assert _overview()["held_in_job_escrow_quarters"] == base, \
+    db.create_job_official(
+        "m", sponsor["name"], "role", "d", 2.0, ["s"], kind="recurring", cycles=4
+    )
+    assert _overview()["held_in_job_escrow_quarters"] == base, (
         "official wages are treasury escrow, not citizen escrow — citizen held stays 0"
+    )
 
 
 def test_job_fees_land_in_spend_intake_flow():
@@ -108,8 +115,9 @@ def test_job_fees_land_in_spend_intake_flow():
 def test_official_wages_count_as_earnings_paid_out():
     sponsor = _make_creator("ejc-wage")
     worker = db.register_agent("ejw-wage")
-    job = db.create_job_official("m", sponsor["name"], "paid role", "d",
-                                 2.0, ["s"], offer_to=worker["name"])
+    job = db.create_job_official(
+        "m", sponsor["name"], "paid role", "d", 2.0, ["s"], offer_to=worker["name"]
+    )
     # Treasury escrow now locked at creation (full payout reserved)
     # For one-time 2.0 (8q) the escrow is 8q, so flows should already include it
     # We check the per-cycle wage + rewards after accept still count as payouts
@@ -132,9 +140,16 @@ def test_profile_builders_expose_jobs_completed():
     worker = db.register_agent("ejw-prof")
     other = db.register_agent("ejw-prof-other")
     # One completed job as WORKER, one merely claimed (must not count).
-    done = db.create_job_official("m", creator["name"], "done role", "d",
-                                  1.0, ["s"], kind="one_time",
-                                  offer_to=worker["name"])
+    done = db.create_job_official(
+        "m",
+        creator["name"],
+        "done role",
+        "d",
+        1.0,
+        ["s"],
+        kind="one_time",
+        offer_to=worker["name"],
+    )
     db.accept_job_offer(worker["token"], done["job_id"])
     db.submit_job(worker["token"], done["job_id"], "#P1")
     db.review_job(creator["token"], done["job_id"], "accept")
@@ -157,8 +172,9 @@ def test_overview_counts_and_creator_escrow_in_tool_returns():
     worker = db.register_agent("ejw-countsw")
     o0 = _overview()
     base_open, base_active = o0["open_jobs"], o0["active_jobs"]
-    job = db.create_job(creator["token"], "counted", "d", 2.0,
-                        ["s"], kind="recurring", cycles=2)
+    job = db.create_job(
+        creator["token"], "counted", "d", 2.0, ["s"], kind="recurring", cycles=2
+    )
     o1 = _overview()
     assert o1["open_jobs"] == base_open + 1
     assert o1["active_jobs"] == base_active
@@ -174,8 +190,9 @@ def test_overview_counts_and_creator_escrow_in_tool_returns():
     db.submit_job(worker["token"], job["job_id"], "#P")
     db.review_job(creator["token"], job["job_id"], "accept")
     prof2 = db.my_profile(creator["token"])
-    assert prof2["credits"]["job_escrow_committed_quarters"] == 8, \
+    assert prof2["credits"]["job_escrow_committed_quarters"] == 8, (
         "an accepted cycle releases its wage from the committed figure"
+    )
 
 
 def test_leaderboard_karma_includes_job_rewards():
@@ -183,9 +200,16 @@ def test_leaderboard_karma_includes_job_rewards():
     or /agents and the leaderboard disagree with my_profile."""
     creator = _make_creator("ejc-board")
     worker = db.register_agent("ejw-boardw")
-    job = db.create_job_official("m", creator["name"], "board role", "d",
-                                 1.0, ["s"], kind="one_time",
-                                 offer_to=worker["name"])
+    job = db.create_job_official(
+        "m",
+        creator["name"],
+        "board role",
+        "d",
+        1.0,
+        ["s"],
+        kind="one_time",
+        offer_to=worker["name"],
+    )
     db.accept_job_offer(worker["token"], job["job_id"])
     db.submit_job(worker["token"], job["job_id"], "#P")
     db.review_job(creator["token"], job["job_id"], "accept")
@@ -196,14 +220,16 @@ def test_leaderboard_karma_includes_job_rewards():
         expected = db.effective_karma(conn, worker["agent_id"])
         breakdown = db._karma_parts(conn, worker["agent_id"])
     assert breakdown["job_rewards"] == 1
-    assert w_row["karma"] == expected, \
+    assert w_row["karma"] == expected, (
         "leaderboard karma must equal effective karma (7 sources)"
+    )
     assert w_row["jobs_completed"] == 1
 
 
 if __name__ == "__main__":
-    fns = [v for k, v in sorted(globals().items())
-           if k.startswith("test_") and callable(v)]
+    fns = [
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
+    ]
     for fn in fns:
         fn()
         print(f"PASS {fn.__name__}")
