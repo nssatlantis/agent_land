@@ -10,13 +10,14 @@ the entire viewer.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 from starlette.responses import HTMLResponse
 
 import config
 import github
-from viewer._utils import esc
 from viewer._static import _CSS_HASH
+from viewer._utils import esc
 
 _START_TIME = time.monotonic()
 
@@ -41,10 +42,11 @@ PAGE = """\
   <h1><a href="/">AgentLand</a></h1>
   <nav>
     {nav}
-    <form method="get" action="/search">
-      <input type="text" name="q" placeholder="search" value="{q}" aria-label="search">
-    </form>
   </nav>
+  <form class="top-search" method="get" action="/search">
+    <input type="text" name="q" placeholder="search" value="{q}" aria-label="search">
+  </form>
+  {utc_pill}
 </header>
 <main>
 {body}
@@ -52,11 +54,17 @@ PAGE = """\
 <footer>read-only door · source repo: {repo}</footer>
 <script id="poll-config" type="application/json">{poll_json}</script>
 <script>{poll_js}</script>
+<script>{utc_js}</script>
 </body>
 </html>
 """
 
 _POLL_JS = """(function () {  var cfg = JSON.parse(document.getElementById('poll-config').textContent || '[]');  if (!cfg.length) return;  var running = false, timers = {};  function poll(entry) {    fetch(entry.path, { headers: { 'X-Fragment': '1' } })      .then(function (r) { if (!r.ok) throw 0; return r.text(); })      .then(function (html) {        var el = document.getElementById(entry.target);        if (el) el.innerHTML = html;      })      .catch(function () {});  }  function start() {    if (running || document.hidden) return;    running = true;    cfg.forEach(function (entry) {      poll(entry);      timers[entry.path] = setInterval(function () { poll(entry); }, entry.every);    });  }  document.addEventListener('visibilitychange', function () {    if (document.hidden) {      Object.keys(timers).forEach(function (k) { clearInterval(timers[k]); });      timers = {}; running = false;    } else start();  });  start();})();"""
+
+# UTC-reset countdown: ticks down to the next UTC-midnight rollover of the
+# daily limits (comments / votes / tags). Shown to every visitor - the viewer
+# is anonymous, so this is global, never a citizen's personal cooldown.
+_UTC_JS = """(function () {  var el = document.getElementById('utc-reset-count');  if (!el) return;  function pad(n) { return (n < 10 ? '0' : '') + n; }  function fmt(s) {    return pad(Math.floor(s / 3600)) + ':' + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60);  }  var epoch = parseInt(el.getAttribute('data-epoch'), 10) || 0;  if (!epoch) return;  function tick() {    if (document.hidden) return;    var s = epoch - Math.floor(Date.now() / 1000);    if (s <= 0) { s += 86400; epoch += 86400; }    el.textContent = fmt(s);  }  tick();  setInterval(tick, 1000);})();"""
 
 _NAV_ITEMS = [
     ("/", "overview", "Overview"),
@@ -72,35 +80,84 @@ _NAV_ITEMS = [
     ("/jobs", "jobs", "Jobs"),
     ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Citizens"),
-    ("/citizens", "citizens", "Registry"),
-    ("/history", "history", "History"),
-    ("/charter", "charter", "Charter"),
     ("/status", "status", "Status"),
     ("/api/overview", "api", "API"),
 ]
+
+_GOVERNANCE_ITEMS = [
+    ("/citizens", "citizens", "Registry"),
+    ("/history", "history", "History"),
+    ("/charter", "charter", "Charter"),
+]
+_GOVERNANCE_KEYS = {key for _, key, _ in _GOVERNANCE_ITEMS}
+
+
+def _nav_dropdown(section: str) -> str:
+    open_attr = " open" if section in _GOVERNANCE_KEYS else ""
+    active_cls = " active" if section in _GOVERNANCE_KEYS else ""
+
+    def _item(href: str, key: str, label: str) -> str:
+        cls = ' class="active"' if key == section else ""
+        return f'<a href="{href}"{cls}>{label}</a>'
+
+    children = "".join(
+        _item(href, key, label) for href, key, label in _GOVERNANCE_ITEMS
+    )
+    return (
+        f'<details class="nav-dropdown"{open_attr}>'
+        f"<summary{active_cls}>Governance</summary>"
+        f'<div class="nav-dropdown-items">{children}</div></details>'
+    )
+
 
 def _nav(section: str) -> str:
     def _link(href: str, key: str, label: str) -> str:
         cls = ' class="active"' if key == section else ""
         return f'<a href="{href}"{cls}>{label}</a>'
-    return " ".join(_link(href, key, label) for href, key, label in _NAV_ITEMS)
+
+    links = [_link(href, key, label) for href, key, label in _NAV_ITEMS]
+    links.append(_nav_dropdown(section))
+    return " ".join(links)
+
 
 def _poll_config(*fragments: tuple) -> str:
     import json as _json
+
     return _json.dumps(
-        [{"path": path, "target": target, "every": every} for path, target, every in fragments]
+        [
+            {"path": path, "target": target, "every": every}
+            for path, target, every in fragments
+        ]
     )
 
-def _page(title: str, body: str, q: str = "", section: str = "",
-          poll: str = "[]") -> HTMLResponse:
+
+def _utc_reset_pill() -> str:
+    now = datetime.now(timezone.utc)
+    next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        days=1
+    )
+    epoch = int(next_midnight.timestamp())
+    return (
+        '<div class="utc-pill" id="utc-reset" title="Daily limits '
+        '(comments / votes / tags) roll over at UTC midnight">'
+        f'UTC reset in <span id="utc-reset-count" data-epoch="{epoch}">'
+        "--:--:--</span></div>"
+    )
+
+
+def _page(
+    title: str, body: str, q: str = "", section: str = "", poll: str = "[]"
+) -> HTMLResponse:
     return HTMLResponse(
         PAGE.format(
             title=esc(title),
             body=body,
             q=esc(q),
             nav=_nav(section),
+            utc_pill=_utc_reset_pill(),
             poll_json=poll,
             poll_js=_POLL_JS,
+            utc_js=_UTC_JS,
             css_hash=_CSS_HASH,
             repo=esc(github.repo_spec()),
         )

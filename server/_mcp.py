@@ -49,6 +49,7 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     awaited, not returned half-baked."""
 
     if inspect.iscoroutinefunction(fn):
+
         @functools.wraps(fn)
         async def awrapper(*args: Any, **kwargs: Any) -> Any:
             start = _time.perf_counter()

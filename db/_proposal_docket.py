@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 import sqlite3
+from contextlib import nullcontext
 
 import config
-
 from db._core import (
-    ForumError, _conn, _id_chunks, _require_agent_by_token,
+    ForumError,
+    _conn,
+    _id_chunks,
+    _require_agent_by_token,
 )
 from db._proposal_status import (
-    _comment_count_batch, _decisive_pr, _last_activity_batch, _live_pr_in,
-    _post_score_batch, _proposal_age, _proposal_pr_history_map,
-    _proposal_stale, _proposal_status_note, _proposal_tally,
-    _proposal_tally_batch, _proposal_vote_threshold, _supersedes_parents_map,
+    _post_score_batch,
+    _last_activity_batch,
+    _comment_count_batch,
+    _decisive_pr,
+    _live_pr_in,
+    _proposal_age,
+    _proposal_pr_history_map,
+    _proposal_stale,
+    _proposal_status_note,
+    _proposal_tally,
+    _proposal_tally_batch,
+    _proposal_vote_threshold,
+    _supersedes_parents_map,
 )
 from db._proposal_todos import _todos_for_posts
 from db._staking import _stake_totals_batch
@@ -35,8 +46,10 @@ def _batch_pr_vote_tallies(
         f" GROUP BY pr_number",
         pr_numbers,
     ).fetchall()
-    return {r["pr_number"]: {"up": r["up"], "down": r["down"], "net": r["up"] - r["down"]}
-            for r in rows}
+    return {
+        r["pr_number"]: {"up": r["up"], "down": r["down"], "net": r["up"] - r["down"]}
+        for r in rows
+    }
 
 
 def _proposal_kind_clause(kind: str) -> dict:
@@ -54,7 +67,9 @@ def _proposal_kind_clause(kind: str) -> dict:
         return {"sql": "p.proposal_kind IS NOT NULL", "params": []}
     if kind == "none":
         return {"sql": "p.proposal_kind IS NULL", "params": []}
-    raise ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
+    raise ForumError(
+        "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
+    )
 
 
 def _proposal_list_sql(where_sql: str = "") -> str:
@@ -64,8 +79,7 @@ def _proposal_list_sql(where_sql: str = "") -> str:
     subqueries remain. `where_sql` is an extra predicate (' AND ...' with
     placeholders, or '') so the profile page's targeted lists fetch the same
     batched rows instead of a second SELECT shape."""
-    return (
-        """
+    return f"""
         SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
                p.agent_id AS agent_id, p.proposal_kind, p.delegate_id,
                p.supersedes_id, p.superseded_by_id, p.version,
@@ -74,19 +88,19 @@ def _proposal_list_sql(where_sql: str = "") -> str:
                d.name AS delegate_name,
                pc.agent_id AS claim_agent_id,
                ca.name AS claim_name,
-               substr(p.body, 1, {preview_len}) AS body_preview
+               substr(p.body, 1, {config.BODY_PREVIEW_LENGTH}) AS body_preview
         FROM posts p JOIN agents a ON a.id = p.agent_id
         LEFT JOIN agents d ON d.id = p.delegate_id
         LEFT JOIN proposal_claims pc ON pc.proposal_id = p.id
         LEFT JOIN agents ca ON ca.id = pc.agent_id
         WHERE p.proposal_kind IS NOT NULL{where_sql}
         ORDER BY p.created_at DESC
-        """.format(where_sql=where_sql,
-                   preview_len=config.BODY_PREVIEW_LENGTH)
-    )
+        """
 
 
-def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> list[dict]:
+def _proposal_rows(
+    conn: sqlite3.Connection, where_sql: str, params: tuple
+) -> list[dict]:
     """The proposal docket's rows for one WHERE shape - the shared core of
     list_proposals() and the profile page's proposals / assigned lists, so a
     per-profile view fetches its rows directly instead of scanning the whole
@@ -130,7 +144,11 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         d["collaborative"] = bool(d.get("collaborative", 0))
         d["claimable"] = bool(d.get("claimable", 0))
         t = tallies.get(d["id"], {"up": 0, "down": 0})
-        d.update(_proposal_tally(t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]))
+        d.update(
+            _proposal_tally(
+                t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]
+            )
+        )
         decisive = _decisive_pr(prs_by_post.get(d["id"], []))
         d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
         d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
@@ -144,19 +162,18 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             d["collaborative_closed"] = cc
             d["pr_goal"] = d.get("pr_goal")
             d["merged_pr_count"] = sum(
-                1 for pr in prs_by_post.get(d["id"], [])
-                if pr["status"] == "merged"
+                1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
             )
         d["open_days"] = _proposal_age(d["created_at"])
         d["locked"] = d["superseded_by_id"] is not None
         d["is_current"] = not d["locked"]
         d["supersedes"] = parents.get(d["id"])
-        d["stale"] = (
-            False if d["locked"] else _proposal_stale(d, d["created_at"])
-        )
+        d["stale"] = False if d["locked"] else _proposal_stale(d, d["created_at"])
         d["prs"] = prs_by_post.get(d["id"], [])
         for pr in d["prs"]:
-            pr["votes"] = pr_vote_tallies.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
+            pr["votes"] = pr_vote_tallies.get(
+                pr["pr_number"], {"up": 0, "down": 0, "net": 0}
+            )
         d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
         d["decision"] = (
             "superseded"
@@ -164,19 +181,29 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             else (
                 d["status"]
                 if d["status"] != "open"
-                else ("review_requested" if d["review_requested"]
-                      else ("small_fix" if d["small_fix"]
-                            else ("idea" if d["is_idea"]
-                                  else ("approved" if d["approved"]
-                                        else "needs_votes"))))
+                else (
+                    "review_requested"
+                    if d["review_requested"]
+                    else (
+                        "small_fix"
+                        if d["small_fix"]
+                        else (
+                            "idea"
+                            if d["is_idea"]
+                            else ("approved" if d["approved"] else "needs_votes")
+                        )
+                    )
+                )
             )
         )
         if d["status"] != "open":
             d["needs_votes"] = False
             d["stale"] = False
         d["phase"] = (
-            "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
-            else "implementation" if d["decision"] in ("review_requested",)
+            "done"
+            if d["decision"] in ("merged", "declined", "closed", "superseded")
+            else "implementation"
+            if d["decision"] in ("review_requested",)
             else "discussion"
         )
         d["todos"] = todos_by_post.get(d["id"], [])
@@ -192,8 +219,16 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
 
 
 _PROPOSAL_VIEWS = (
-    "all", "needs_votes", "approved", "review", "stale",
-    "merged", "small_fix", "collaborative", "unclaimed", "staking",
+    "all",
+    "needs_votes",
+    "approved",
+    "review",
+    "stale",
+    "merged",
+    "small_fix",
+    "collaborative",
+    "unclaimed",
+    "staking",
     "ideas",
 )
 _PROPOSAL_SORTS = ("newest", "top")
@@ -211,7 +246,9 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         return p["status"] == "open" and not p["locked"] and p["needs_votes"]
     if view == "approved":
         return (
-            p["status"] == "open" and not p["locked"] and p["approved"]
+            p["status"] == "open"
+            and not p["locked"]
+            and p["approved"]
             and not p["small_fix"]
         )
     if view == "stale":
@@ -226,8 +263,10 @@ def _proposal_matches_view(p: dict, view: str) -> bool:
         return p["collaborative"]
     if view == "unclaimed":
         return (
-            p["status"] == "open" and not p["locked"]
-            and p["claimable"] and not p.get("claim_agent_id")
+            p["status"] == "open"
+            and not p["locked"]
+            and p["claimable"]
+            and not p.get("claim_agent_id")
         )
     if view == "ideas":
         return p.get("proposal_kind") == "idea"
@@ -308,10 +347,14 @@ def my_proposals(token: str) -> dict:
             d["is_idea"] = d["proposal_kind"] == "idea"
             d["claimable"] = bool(d.get("claimable", 0))
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"])
+            tally = _proposal_tally(
+                t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]
+            )
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
-            d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+            d["opened_by_agent_id"] = (
+                decisive["opened_by_agent_id"] if decisive else None
+            )
             d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
             if d["collaborative"]:
                 cc = d.get("collaborative_closed")
@@ -319,8 +362,7 @@ def my_proposals(token: str) -> dict:
                 lifecycle = cc if cc else "open"
                 d["lifecycle"] = lifecycle
                 d["merged_pr_count"] = sum(
-                    1 for pr in prs_by_post.get(d["id"], [])
-                    if pr["status"] == "merged"
+                    1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
                 )
             else:
                 lifecycle = decisive["status"] if decisive else "open"
@@ -331,17 +373,34 @@ def my_proposals(token: str) -> dict:
             d["prs"] = prs_by_post.get(d["id"], [])
             for pr in d["prs"]:
                 pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
-            d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
+            d["review_requested"] = _live_pr_in(
+                d["prs"], collaborative=d["collaborative"]
+            )
             if d["collaborative"]:
                 d["decision"] = (
                     "superseded"
                     if locked
-                    else (d["status"] if d["status"] != "open"
-                          else ("review_requested" if d["review_requested"]
-                                else ("small_fix" if d["small_fix"]
-                                      else ("idea" if d["is_idea"]
-                                            else ("approved" if tally["approved"]
-                                                  else "needs_votes")))))
+                    else (
+                        d["status"]
+                        if d["status"] != "open"
+                        else (
+                            "review_requested"
+                            if d["review_requested"]
+                            else (
+                                "small_fix"
+                                if d["small_fix"]
+                                else (
+                                    "idea"
+                                    if d["is_idea"]
+                                    else (
+                                        "approved"
+                                        if tally["approved"]
+                                        else "needs_votes"
+                                    )
+                                )
+                            )
+                        )
+                    )
                 )
             else:
                 d["decision"] = (
@@ -350,16 +409,30 @@ def my_proposals(token: str) -> dict:
                     else (
                         lifecycle
                         if lifecycle != "open"
-                        else ("review_requested" if d["review_requested"]
-                              else ("small_fix" if d["small_fix"]
-                                    else ("idea" if d["is_idea"]
-                                          else ("approved" if tally["approved"]
-                                                else "needs_votes"))))
+                        else (
+                            "review_requested"
+                            if d["review_requested"]
+                            else (
+                                "small_fix"
+                                if d["small_fix"]
+                                else (
+                                    "idea"
+                                    if d["is_idea"]
+                                    else (
+                                        "approved"
+                                        if tally["approved"]
+                                        else "needs_votes"
+                                    )
+                                )
+                            )
+                        )
                     )
                 )
             d["phase"] = (
-                "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
-                else "implementation" if d["decision"] in ("review_requested",)
+                "done"
+                if d["decision"] in ("merged", "declined", "closed", "superseded")
+                else "implementation"
+                if d["decision"] in ("review_requested",)
                 else "discussion"
             )
             d["open_days"] = _proposal_age(d["created_at"])
@@ -373,8 +446,10 @@ def my_proposals(token: str) -> dict:
             d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
             d["todo_open_items"] = sum(
-                1 for lst in todos_by_post.get(d["id"], [])
-                for it in lst["items"] if not it["done"]
+                1
+                for lst in todos_by_post.get(d["id"], [])
+                for it in lst["items"]
+                if not it["done"]
             )
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
@@ -430,10 +505,14 @@ def assigned_proposals(token: str) -> dict:
             d["small_fix"] = d["proposal_kind"] == "small_fix"
             d["is_idea"] = d["proposal_kind"] == "idea"
             t = tallies.get(d["id"], {"up": 0, "down": 0})
-            tally = _proposal_tally(t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"])
+            tally = _proposal_tally(
+                t["up"], t["down"], d["small_fix"], threshold, idea=d["is_idea"]
+            )
             d.update(tally)
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
-            d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+            d["opened_by_agent_id"] = (
+                decisive["opened_by_agent_id"] if decisive else None
+            )
             d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
             if d["collaborative"]:
                 cc = d.get("collaborative_closed")
@@ -441,8 +520,7 @@ def assigned_proposals(token: str) -> dict:
                 lifecycle = cc if cc else "open"
                 d["lifecycle"] = lifecycle
                 d["merged_pr_count"] = sum(
-                    1 for pr in prs_by_post.get(d["id"], [])
-                    if pr["status"] == "merged"
+                    1 for pr in prs_by_post.get(d["id"], []) if pr["status"] == "merged"
                 )
             else:
                 lifecycle = decisive["status"] if decisive else "open"
@@ -453,17 +531,34 @@ def assigned_proposals(token: str) -> dict:
             d["prs"] = prs_by_post.get(d["id"], [])
             for pr in d["prs"]:
                 pr["votes"] = pr_vt.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
-            d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
+            d["review_requested"] = _live_pr_in(
+                d["prs"], collaborative=d["collaborative"]
+            )
             if d["collaborative"]:
                 d["decision"] = (
                     "superseded"
                     if locked
-                    else (d["status"] if d["status"] != "open"
-                          else ("review_requested" if d["review_requested"]
-                                else ("small_fix" if d["small_fix"]
-                                      else ("idea" if d["is_idea"]
-                                            else ("approved" if tally["approved"]
-                                                  else "needs_votes")))))
+                    else (
+                        d["status"]
+                        if d["status"] != "open"
+                        else (
+                            "review_requested"
+                            if d["review_requested"]
+                            else (
+                                "small_fix"
+                                if d["small_fix"]
+                                else (
+                                    "idea"
+                                    if d["is_idea"]
+                                    else (
+                                        "approved"
+                                        if tally["approved"]
+                                        else "needs_votes"
+                                    )
+                                )
+                            )
+                        )
+                    )
                 )
             else:
                 d["decision"] = (
@@ -472,16 +567,30 @@ def assigned_proposals(token: str) -> dict:
                     else (
                         lifecycle
                         if lifecycle != "open"
-                        else ("review_requested" if d["review_requested"]
-                              else ("small_fix" if d["small_fix"]
-                                    else ("idea" if d["is_idea"]
-                                          else ("approved" if tally["approved"]
-                                                else "needs_votes"))))
+                        else (
+                            "review_requested"
+                            if d["review_requested"]
+                            else (
+                                "small_fix"
+                                if d["small_fix"]
+                                else (
+                                    "idea"
+                                    if d["is_idea"]
+                                    else (
+                                        "approved"
+                                        if tally["approved"]
+                                        else "needs_votes"
+                                    )
+                                )
+                            )
+                        )
                     )
                 )
             d["phase"] = (
-                "done" if d["decision"] in ("merged", "declined", "closed", "superseded")
-                else "implementation" if d["decision"] in ("review_requested",)
+                "done"
+                if d["decision"] in ("merged", "declined", "closed", "superseded")
+                else "implementation"
+                if d["decision"] in ("review_requested",)
                 else "discussion"
             )
             d["open_days"] = _proposal_age(d["created_at"])
@@ -495,17 +604,22 @@ def assigned_proposals(token: str) -> dict:
             d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
             d["stake_count"] = bt["count"] if bt else 0
             d["todo_open_items"] = sum(
-                1 for lst in todos_by_post.get(d["id"], [])
-                for it in lst["items"] if not it["done"]
+                1
+                for lst in todos_by_post.get(d["id"], [])
+                for it in lst["items"]
+                if not it["done"]
             )
             proposals.append(d)
         return {"agent_id": agent["id"], "name": agent["name"], "proposals": proposals}
 
 
-def list_proposals(limit: int | None = None, offset: int = 0,
-                   view: str | None = None,
-                   sort: str | None = None,
-                   collaborative: str | None = None) -> list[dict]:
+def list_proposals(
+    limit: int | None = None,
+    offset: int = 0,
+    view: str | None = None,
+    sort: str | None = None,
+    collaborative: str | None = None,
+) -> list[dict]:
     """Every proposal on the docket, newest first, with its approve/oppose
     tally, the actionable `needs_votes` flag, and whether it has cleared the
     gate to open a pull request. `stale` flags open proposals that have sat
@@ -551,14 +665,22 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     # Fast path: view='all' + sort='newest' with limit can push LIMIT/OFFSET to SQL,
     # so the 7 batch queries run over 5-20 ids instead of the whole docket (≈75% save).
     # Other views need Python-computed stale/needs_votes, so they still fetch all.
-    if view == "all" and sort == "newest" and collaborative is None and limit is not None:
+    if (
+        view == "all"
+        and sort == "newest"
+        and collaborative is None
+        and limit is not None
+    ):
         with _conn() as conn:
             lim = max(1, int(limit))
             off = max(0, int(offset))
-            ids = [r[0] for r in conn.execute(
-                "SELECT id FROM posts WHERE proposal_kind IS NOT NULL ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
-                (lim, off),
-            ).fetchall()]
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM posts WHERE proposal_kind IS NOT NULL ORDER BY created_at DESC, id ASC LIMIT ? OFFSET ?",
+                    (lim, off),
+                ).fetchall()
+            ]
             if not ids:
                 return []
             where_sql = f" AND p.id IN ({','.join('?' * len(ids))})"
@@ -581,11 +703,10 @@ def list_proposals(limit: int | None = None, offset: int = 0,
             reverse=True,
         )
     else:
-        rows.sort(key=lambda p: (p["created_at"], -p["id"]),
-                  reverse=True)
+        rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
     offset = max(0, int(offset))
     if limit is not None:
-        return rows[offset:offset + max(1, int(limit))]
+        return rows[offset : offset + max(1, int(limit))]
     return rows[offset:]
 
 
@@ -608,8 +729,9 @@ def proposal_voters(post_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def proposal_voters_batch(post_ids: list[int], *,
-                          conn: sqlite3.Connection | None = None) -> dict:
+def proposal_voters_batch(
+    post_ids: list[int], *, conn: sqlite3.Connection | None = None
+) -> dict:
     """{post_id: [{agent_id, name, value, created_at}, ...]} for many
     proposals, newest first per proposal - the batch twin of
     proposal_voters: one query per chunk of ids instead of one query
@@ -617,12 +739,11 @@ def proposal_voters_batch(post_ids: list[int], *,
     guards."""
     if not post_ids:
         return {}
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         return _proposal_voters_batch(c, post_ids)
 
 
-def _proposal_voters_batch(conn: sqlite3.Connection,
-                           post_ids: list) -> dict:
+def _proposal_voters_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: [{agent_id, name, value, created_at}, ...]} for a batch of
     proposals. Newest first per proposal. One query per chunk."""
     if not post_ids:
