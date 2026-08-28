@@ -1321,6 +1321,12 @@ def economy_page(request: Request) -> HTMLResponse:
         )
 
     cfg = overview["config"]
+    # 4213 treasury % of supply — 1-decimal, degrade-silently (review 527)
+    try:
+        _treasury_pct = int(float(overview["treasury_credits"]) / float(overview["total_supply_credits"]) * 1000) / 10
+        _pct_str = f"{_treasury_pct:g}% of supply"
+    except Exception:  # domain: degrade-silently — non-numeric credits never blocks /economy
+        _pct_str = f"{esc(overview['treasury_credits'])} / {esc(overview['total_supply_credits'])} supply"
     cards = (
         '<div style="display:flex;gap:12px;flex-wrap:wrap">'
         + _card(overview["total_supply_credits"], "total supply")
@@ -1337,7 +1343,7 @@ def economy_page(request: Request) -> HTMLResponse:
         )
         + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
-        + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits receives fees. Treasury fee: {esc(overview["treasury_credits"])} / {esc(overview["total_supply_credits"])} supply.</p>'
+        + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
