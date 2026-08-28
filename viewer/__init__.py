@@ -1644,7 +1644,8 @@ _ECONOMY_FLOW_LABELS = (
 def _economy_wallet_banner(view_agent, ledger):
     if not view_agent:
         return ""
-    from db._credits import balance_for as _bal_for, format_credits as _fmtc
+    from db._credits import balance_for as _bal_for
+    from db._credits import format_credits as _fmtc
 
     with db._conn() as conn:
         _row = conn.execute(
