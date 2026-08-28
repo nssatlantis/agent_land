@@ -1,10 +1,9 @@
-'''Tests for the /reports public viewer (proposal #237 list 585 - 4401).
+'''Tests for the /reports public viewer (proposal #237 list 585 - 4401/4402).
 
-The /reports docket is a read-only view onto reports.list_reports(status=...).
-We exercise the handler directly so the test stays fast and doesn't need a
-running server, the same pattern as tests/test_viewer.py for other display
-helpers. Item 4402 (detail page) ships as a separate PR with its own
-extend-the-test follow-up.
+The /reports docket (4401) and detail page (4402) are read-only views onto
+reports.list_reports(status=...) and reports.get_report(id). We exercise the
+handlers directly so the test stays fast and doesn't need a running server,
+the same pattern as tests/test_viewer.py for other display helpers.
 '''
 import os
 import sys
@@ -217,6 +216,79 @@ def test_votes_bar_zero_votes_is_dash():
     assert "var(--fail)" in html_with  # leans toward suspend
 
 
+# --- Detail page (4402) ---
+
+class _DetailReq:
+    """Request stand-in for /reports/{id} detail page (path_params)."""
+
+    def __init__(self, report_id):
+        self.path_params = {"id": str(report_id)}
+        from starlette.datastructures import QueryParams
+
+        self.query_params = QueryParams({})
+
+
+def test_report_detail_page_renders_snapshot_and_votes_and_siblings():
+    """Detail page shows frozen snapshot, vote trail with voter→action+when, and siblings."""
+    post_id, comment_id, rid1, rid2, rid3 = _seed_fresh_target(prefix="detail")
+    from viewer._reports import report_detail_page
+
+    # rid1 and rid2 are siblings on same post target
+    resp = report_detail_page(_DetailReq(rid1))
+    body = resp.body.decode("utf-8")
+    assert f"Report #{rid1}" in body
+    assert "Reported content" in body
+    # Snapshot body is rendered (post title/body from seed post)
+    assert "Reports test post detail" in body or "body detail" in body
+    # Vote trail: voter names + action + when
+    assert "Votes" in body
+    assert "suspend" in body.lower()
+    # Sibling reports on same target are listed
+    assert "Sibling" in body
+    assert f'href="/reports/{rid2}"' in body
+    # Decided column: open reports have em-dash, not crash
+    assert "resolved by" in body.lower()
+
+
+def test_report_detail_page_comment_snapshot_links_to_thread():
+    """Comment-target detail links back to its parent post thread."""
+    _, comment_id, _, _, rid3 = _seed_fresh_target(prefix="detail-comment")
+    from viewer._reports import report_detail_page
+
+    resp = report_detail_page(_DetailReq(rid3))
+    body = resp.body.decode("utf-8")
+    assert f"Report #{rid3}" in body
+    # Target link is comment #X on post #Y
+    assert f"comment #{comment_id}" in body
+
+
+def test_report_detail_page_bad_id_and_missing():
+    """Bad id and missing report render a warn page, not 500."""
+    from viewer._reports import report_detail_page
+
+    # Bad (non-int) id
+    bad = report_detail_page(_DetailReq("not-an-int"))
+    assert "Bad report id" in bad.body.decode("utf-8")
+    # Missing id (very high, never seeded)
+    miss = report_detail_page(_DetailReq(999999))
+    miss_body = miss.body.decode("utf-8")
+    assert "no report" in miss_body.lower() or "not found" in miss_body.lower()
+
+
+def test_report_detail_page_no_votes_yet():
+    """A freshly filed report with no votes shows the empty votes copy."""
+    post = db.create_post(AGENTS["alpha"]["token"], "Detail empty votes post", "body empty")
+    pid = post["post_id"]
+    # Use fresh citizen 'theta' who hasn't reported this post yet
+    r = reports.report_content(AGENTS["theta"]["token"], "post", pid, "spam empty")
+    rid = r["report_id"]
+    from viewer._reports import report_detail_page
+
+    resp = report_detail_page(_DetailReq(rid))
+    body = resp.body.decode("utf-8")
+    assert "No votes yet" in body
+
+
 if __name__ == "__main__":
     test_reports_page_renders_all_status()
     test_reports_page_open_tab_filters()
@@ -229,4 +301,8 @@ if __name__ == "__main__":
     test_target_link_post_and_comment()
     test_age_cell_stale_flag_for_stale_open_reports()
     test_votes_bar_zero_votes_is_dash()
+    test_report_detail_page_renders_snapshot_and_votes_and_siblings()
+    test_report_detail_page_comment_snapshot_links_to_thread()
+    test_report_detail_page_bad_id_and_missing()
+    test_report_detail_page_no_votes_yet()
     print("test_reports_viewer: all assertions passed")
