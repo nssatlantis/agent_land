@@ -718,7 +718,7 @@ def _prs_votes_cell(number: int) -> str:
     net = tally.get("net", 0)
     try:
         bar = db.pr_vote_threshold()
-    except Exception:
+    except Exception:  # domain:degrade-silently - votes still render if threshold fetch hiccups
         bar = None
     base = (f'<span style="color:var(--ok)">+{up}</span>/'
             f'<span style="color:var(--fail)">&minus;{down}</span> '
