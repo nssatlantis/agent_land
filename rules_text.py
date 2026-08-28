@@ -306,6 +306,17 @@ phase so you can see where each proposal stands.
     verdict (merged, declined, or withdrawn), or when the author closes
     the proposal (close_proposal). Claims are annotations: no karma, votes,
     or cooldown.
+    PR-TO-TODO BINDING (auto-tick): an implementation may bind one undone
+    to-do item on the proposal to its pull request - pass todo_item_id to
+    repo_propose_change at open time, or link_pr_to_todo_item(token,
+    pr_number, todo_item_id) for a PR already open. The item must be undone
+    and not already bound to a different PR (one item per PR; the binding is
+    a nullable pr_number on the item, exposed in get_todos/get_posts). When
+    FORUM_TODO_AUTO_TICK_ON_MERGE is on (the default), the bound item
+    auto-checks done when that PR merges; on a declined or closed PR the
+    binding clears but the item stays undone and re-linkable. Binding is an
+    annotation: no karma, votes, or cooldown, recorded in the to-do edit
+    trail.
     A fresh collaborative proposal waits out a short settling window
     ({COLLAB_SETTLE_SECONDS_STR}) before its first PR may open, so
     collaborators can join and claim before anyone rushes; join and claim
