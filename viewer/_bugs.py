@@ -46,6 +46,13 @@ def _confidence_bar(confidence: int, threshold: int) -> str:
 def bugs_page(request):
     query = request.query_params
     status_filter = query.get("status")
+    raw_agent = query.get("agent_id")
+    reporter_id = None
+    if raw_agent:
+        try:
+            reporter_id = int(raw_agent)
+        except ValueError:
+            reporter_id = None
     raw_page = query.get("page") or "1"
     try:
         page = max(1, int(raw_page))
@@ -59,12 +66,20 @@ def bugs_page(request):
 
     result = bug_reports_mod.list_bug_reports(
         status=status_filter,
+        agent_id=reporter_id,
         limit=per_page,
         offset=offset,
     )
     reports = result["reports"]
     total = result["total"]
     threshold = config.BUG_CONFIDENCE_THRESHOLD
+
+    reporter_name = None
+    if reporter_id is not None:
+        try:
+            reporter_name = db.public_agent_detail(reporter_id).get("name")
+        except Exception:
+            reporter_name = None
 
     tabs = []
     for key, label in [
@@ -96,7 +111,8 @@ def bugs_page(request):
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
             f'<div style="margin:4px 0">{status_b}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
-            f"by {esc(r['reporter_name'])}{_human_ts(r['created_at'])}{url_part}{dupes}"
+            f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"])}</a>'
+            f"{_human_ts(r['created_at'])}{url_part}{dupes}"
             f"</div></div>"
         )
 
@@ -118,14 +134,29 @@ def bugs_page(request):
         pages = math.ceil(total / per_page)
         parts = []
         for p in range(1, pages + 1):
-            q = f"?page={p}" + (f"&status={status_filter}" if status_filter else "")
+            q = (
+                f"?page={p}"
+                + (f"&status={status_filter}" if status_filter else "")
+                + (f"&agent_id={reporter_id}" if reporter_id is not None else "")
+            )
             cls = "active" if p == page else ""
             parts.append(f'<a href="/bugs{q}" class="{cls}">{p}</a>')
         pages_html = f'<div class="tabs" style="margin-top:12px">{"".join(parts)}</div>'
 
+    filter_banner = ""
+    if reporter_id is not None:
+        name = esc(reporter_name) if reporter_name else f"#{reporter_id}"
+        clear_href = f"/bugs?status={status_filter}" if status_filter else "/bugs"
+        filter_banner = (
+            f'<p style="color:var(--muted);font-size:14px">'
+            f'Filtered by reporter <a href="/agents/{reporter_id}">{name}</a> '
+            f'<a href="{clear_href}">clear</a></p>'
+        )
+
     body = (
         f"<h2>Bug Reports</h2>"
         f'<div class="tabs">{"".join(tabs)}</div>'
+        f"{filter_banner}"
         f'<p style="color:var(--muted);font-size:14px">'
         f"{total} report{'s' if total != 1 else ''} · "
         f"threshold: {threshold} duplicates to confirm</p>"

@@ -10,7 +10,6 @@ from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -21,6 +20,7 @@ import logutil
 import viewer
 from server import admin
 from server._mcp import mcp
+from server.gzip_tunable import TunableGZipMiddleware
 from server.middleware import ClientSeenRecording, GracefulRestartMiddleware
 from server.poller import _ci_failure_poller, _pr_outcome_poller
 
@@ -178,7 +178,7 @@ app = Starlette(
     lifespan=lifespan,
     middleware=[
         Middleware(GracefulRestartMiddleware),
-        Middleware(GZipMiddleware, minimum_size=500),
+        Middleware(TunableGZipMiddleware),
         Middleware(logutil.RequestLogging),
         Middleware(ClientSeenRecording),
     ],
