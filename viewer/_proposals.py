@@ -62,6 +62,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         chips.append('<span class="verdict-chip vc-dim">locked</span>')
     if p.get("collaborative"):
         chips.append('<span class="verdict-chip vc-ok">collaborative</span>')
+    if p.get("claimable"):
+        c_title = "Claimable — claims are open to any eligible citizen"
+        if p.get("claim_name"):
+            c_title += f"; currently claimed by {esc(p['claim_name'])}"
+        chips.append(f'<span class="verdict-chip vc-ok" title="{esc(c_title)}">claimable</span>')
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
         if p.get("agent_id") else esc(p["author"])
