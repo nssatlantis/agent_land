@@ -530,7 +530,8 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f'</div>'
             f'<div class="stake-bar">'
             f'<div class="stake-bar-track"><div class="stake-bar-fill" style="width:{progress_pct}%"></div></div>'
-            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining}</span>'
+            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining} '
+            f"\xb7 {_human_ts(b['created_at'])}</span>"
             f'</div>'
             f'</div>'
         )
