@@ -159,6 +159,13 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
+    """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
+    if md:
+        return f'<div class="panel"><h2>{esc(heading)}</h2>{intro}{_markdown(md)}</div>'
+    return f'<div class="panel"><h2>{esc(heading)}</h2><p style="color:var(--muted)">{esc(notice)}</p></div>'
+  
+  
 def _timeline_card(badge_label: str, badge_cls: str, body_html: str, meta_html: str | None = None, preview: str | None = None, when: str | None = None) -> str:
     """Shared timeline card for events/recent/activity. body_html/meta_html are pre-escaped caller HTML; badge/preview/when are esc'd. Display-only."""
     badge = f'<span class="recent-badge {esc(badge_cls)}">{esc(badge_label)}</span>'

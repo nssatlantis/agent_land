@@ -723,6 +723,19 @@ def _job_card(job: dict) -> str:
         f"cycle {min(job['cycles_done'] + 1, job['total_cycles'])}"
         f"/{job['total_cycles']}",
     ]
+    # expiry countdown + urgency indicator (new/active X days, near-expiry warning)
+    try:
+        created = job.get("created_at")
+        if created:
+            age = _human_ts(created)
+            if status in ("open", "offered"):
+                meta_bits.append(f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {esc(age)}</span>")
+            elif status == "active":
+                meta_bits.append(f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {esc(age)}</span>")
+            elif status in ("cancelled", "expired"):
+                meta_bits.append(f"<span style='color:var(--muted)'>{esc(age)}</span>")
+    except Exception:  # domain: degrade-silently - badge never blocks card render
+        pass
     if job["official"]:
         meta_bits.append("OFFICIAL")
     if job["scope"]:
