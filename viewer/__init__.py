@@ -180,11 +180,10 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
-    # GitHub stale state (237:4374) — degrade-silently
+    _sync = {}
+    # GitHub stale state (237:4374) — degrade-silently (viewer_status._git_sync_status has 60s fetch cache)
     try:
-        from viewer import _status as _vs
-
-        _sync = _vs._git_sync_status()
+        _sync = viewer_status._git_sync_status()
         if _sync.get("error"):
             _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git status: {esc(str(_sync["error"]))} \u2014 unreachable</div>'
         elif _sync.get("stale"):
