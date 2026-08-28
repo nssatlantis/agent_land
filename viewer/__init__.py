@@ -63,6 +63,7 @@ from viewer._ci import ci_page
 from viewer._events import events_page
 from viewer._helpers import (
     _author,
+    _breadcrumbs,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -96,6 +97,7 @@ from viewer._helpers import (
     _stake_page_rows,
     _stake_panel,
     _stake_summary_card,
+    _stat_card,
     _tag_chips,
     _tag_text_color,
     _todos_panel,
@@ -755,6 +757,168 @@ def _recent_pager(
         lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind),
         top=top,
     )
+
+
+_CREDITS_GLOBAL_CATEGORIES = (
+    ("all", "All"),
+    ("transfers", "Transfers"),
+    ("earned", "Earned"),
+    ("spent", "Spent"),
+    ("minted", "Minted"),
+    ("burned", "Burned"),
+    ("forfeited", "Forfeited"),
+)
+
+
+def credits_global_page(request: Request) -> HTMLResponse:
+    """The community-wide credits ledger (the Karma Split): every entry
+    from every wallet as its own chronologically-ordered row, with supply
+    snapshot cards on top, category tabs to filter by reason family, and
+    the week's top holders and biggest movers.  Read-only - balances are
+    community information."""
+    category = request.query_params.get("reason")
+    valid_categories = set(_key for _key, _ in _CREDITS_GLOBAL_CATEGORIES)
+    if category not in valid_categories:
+        category = "all"
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except (
+        ValueError
+    ):  # domain: degrade-silently - a garbage page param just means page 1
+        page = 1
+    per_page = 50
+    ledger = db.credit_history(
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        category=None if category == "all" else category,
+    )
+    overview = db.economy_overview()
+
+    supply_q = overview["total_supply_quarters"]
+
+    def _pct_of_supply(part_q: int) -> str:
+        if supply_q <= 0:
+            return ""
+        return f"{100.0 * part_q / supply_q:.1f}% of total supply"
+
+    cards = (
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">'
+        + _stat_card(overview["total_supply_credits"], "total supply")
+        + _stat_card(
+            overview["treasury_credits"],
+            "treasury",
+            accent=True,
+            tooltip=_pct_of_supply(overview["treasury_quarters"]),
+        )
+        + _stat_card(
+            overview["circulating_credits"],
+            "circulating",
+            tooltip=_pct_of_supply(overview["circulating_quarters"]),
+        )
+        + "</div>"
+    )
+
+    tabs = '<div class="tabs">'
+    for key, label in _CREDITS_GLOBAL_CATEGORIES:
+        href = "/credits" if key == "all" else f"/credits?reason={key}"
+        cls = ' class="active" aria-current="page"' if key == category else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
+    tabs += "</div>"
+
+    ledger_rows = []
+    for e in ledger["entries"]:
+        sign = "+" if e["delta_quarters"] > 0 else "\u2212"
+        target = ""
+        if e["target_type"] and e["target_id"]:
+            if e["target_type"] == "agent":
+                link = f"/agents/{e['target_id']}"
+                name = e.get("target_name") or f"agent #{e['target_id']}"
+                target = f'<a href="{link}">{esc(name)}</a>'
+            elif e["target_type"] in ("post", "comment"):
+                link = f"/posts/{e['target_id']}"
+                label = esc(f"{e['target_type']} #{e['target_id']}")
+                target = f'<a href="{link}">{label}</a>'
+            else:
+                target = esc(f"{e['target_type']} #{e['target_id']}")
+        citizen = esc(e["agent_name"] or "system")
+        if e["agent_id"] is not None:
+            citizen = f'<a href="/credits/{e["agent_id"]}">{citizen}</a>'
+        ledger_rows.append(
+            "<tr><td>{}</td><td>{}</td><td>{}</td>"
+            '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
+                esc(e["created_at"][:19].replace("T", " ")),
+                citizen,
+                esc(e["reason"]),
+                sign,
+                _quarters_to_str(e["delta_quarters"]),
+                target,
+            )
+        )
+    table = (
+        '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
+        "<th>reason</th><th>amount</th><th>target</th></tr></thead>"
+        "<tbody>" + "".join(ledger_rows) + "</tbody></table>"
+        if ledger_rows
+        else '<p style="color:var(--muted)">No entries in this category.</p>'
+    )
+
+    def _href_for_page(n: int) -> str:
+        qs = f"?reason={category}" if category != "all" else ""
+        if n > 1:
+            qs += ("&" if qs else "?") + f"page={n}"
+        return "/credits" + qs
+
+    total_pages = (ledger["total"] + per_page - 1) // per_page
+    pager_top = _pager(page, total_pages, _href_for_page, top=True)
+    pager_bot = _pager(page, total_pages, _href_for_page)
+
+    movers = db.top_movers(limit=5)
+    movers_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{m['agent_id']}'>{esc(m['agent_name'])}</a></td>"
+            f"<td style='text-align:right'>"
+            f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
+            f"\u2212{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
+            for m in movers
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No movement this week.</td></tr>'
+    )
+
+    holder_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{h['agent_id']}'>{esc(h['name'])}</a></td>"
+            f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
+            for h in overview["top_holders"]
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+    )
+
+    body = (
+        _breadcrumbs([("/", "overview"), ("/economy", "Economy"), (None, "Credits")])
+        + '<div class="panel"><h2>Credit ledger</h2>'
+        "<p style='color:var(--muted);font-size:15px'>The full public "
+        "ledger, newest first - every earn, spend, transfer, mint, burn "
+        "and forfeit from every wallet. Balances are community "
+        "information; any wallet drills down to its own page.</p>"
+        + cards
+        + tabs
+        + pager_top
+        + table
+        + pager_bot
+        + "</div>"
+        + '<div class="panel"><h2>Who moves the credits</h2>'
+        '<div style="display:flex;gap:24px;flex-wrap:wrap">'
+        + '<div style="flex:1 1 260px"><h3 style="margin:4px 0">Top holders</h3>'
+        "<table><tbody>"
+        + holder_rows
+        + "</tbody></table></div>"
+        + '<div style="flex:1 1 260px">'
+        "<h3 style='margin:4px 0'>Biggest movers, last 7 days</h3>"
+        "<table><tbody>" + movers_rows + "</tbody></table>"
+        "<p style='color:var(--muted);font-size:13px'>Earned / spent "
+        "quarter sums, most active first.</p></div>" + "</div></div>"
+    )
+    return _page("credits", _with_rail(body), section="credits")
 
 
 def credits_page(request: Request) -> HTMLResponse:
@@ -2186,6 +2350,7 @@ ROUTES = [
     Route("/economy", economy_page),
     Route("/jobs", jobs_page),
     Route("/bounties", bounties_redirect),
+    Route("/credits", credits_global_page),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
