@@ -296,15 +296,19 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     repo = f"https://github.com/{esc(github.repo_spec())}"
     pr_rows = []
     for m in a["pr_merges"]:
+        m_title = esc(m.get("title") or f"PR #{m['pr_number']}")
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
+            f"<td>{m_title}</td>"
             f'<td style="color:var(--ok);font-weight:600">merged</td>'
             f"<td></td><td>{_human_ts(m['merged_at'])}</td></tr>"
         )
     for r in a["pr_record"]:
         color = "var(--fail)" if r["status"] == "declined" else "var(--dim)"
+        r_title = esc(r.get("title") or f"PR #{r['pr_number']}")
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
+            f"<td>{r_title}</td>"
             f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
             f"<td></td><td>{_human_ts(r['closed_at'])}</td></tr>"
         )
@@ -323,13 +327,17 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
                 if (tv["up"] + tv["down"]) > 0
                 else '<span style="color:var(--muted)">\u2014</span>'
             )
+            o_title = esc(pr.get("title") or f"PR #{pr['number']}")
             pr_rows.append(
                 f'<tr><td><a href="{esc(pr["html_url"])}" style="color:var(--accent)">#{pr["number"]}</a></td>'
+                f"<td>{o_title}</td>"
                 f'<td style="color:var(--muted)">open</td><td>{vote_s}</td>'
                 f'<td><a href="/prs/{esc(pr["number"])}" style="color:var(--accent)">detail</a></td></tr>'
             )
     empty_prs = "<p style='color:var(--muted)'>No pull requests yet.</p>"
-    pr_head = "<tr><th>PR</th><th>outcome</th><th>votes</th><th></th></tr>"
+    pr_head = (
+        "<tr><th>PR</th><th>title</th><th>outcome</th><th>votes</th><th></th></tr>"
+    )
     visible_prs, rest_prs = _capped_rows(pr_rows)
     pr_inner = (
         f'<div class="table-wrap profile-scroll"><table>{pr_head}{"".join(visible_prs)}</table>'
