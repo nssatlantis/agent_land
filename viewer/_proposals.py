@@ -71,7 +71,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     if impl and impl != "(Undelegated)":
         meta += f" · {impl}"
     if p.get("stale"):
-        meta += f' · <span style="color:var(--warn)">{p["open_days"]}d stale</span>'
+        meta += (
+            f' · <span style="color:var(--warn)" '
+            f'title="Open {p["open_days"]} days without enough votes — flagged past {config.PROPOSAL_STALE_DAYS} days, never auto-closed">'
+            f'{p["open_days"]}d stale</span>'
+        )
     vote_html = ""
     if p.get("locked"):
         vote_html = '<span style="color:var(--dim)">tally frozen</span>'
@@ -294,6 +298,8 @@ def proposals_page(request: Request) -> HTMLResponse:
         phase_tabs = "".join(
             f'<a href="/proposals{_proposals_href(v, sort)}"'
             + (' class="active"' if v == view else "")
+            + (f' title="Proposals open {config.PROPOSAL_STALE_DAYS}+ days without clearing the vote gate — flagged, never auto-closed"'
+               if v == "stale" else "")
             + f">{_DOCKET_TITLES[v]} ({counts[v]})</a>"
             for v in phase_views
         )
