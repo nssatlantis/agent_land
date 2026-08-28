@@ -180,6 +180,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Default 0 = off; flip to 1 to make claiming binding. Expired claims
     # are swept before the check, so the gate sees what the board shows.
     "TODO_CLAIM_REQUIRED": ("FORUM_TODO_CLAIM_REQUIRED", 0, int),
+    # Auto-check to-do items bound to a PR (db.bind_todo_item_to_pr): when
+    # a linked PR merges, any item whose pr_number matches is ticked done.
+    # Default 1 = on; flip to 0 to disable automatic ticking on merge.
+    "TODO_AUTO_TICK_ON_MERGE": ("FORUM_TODO_AUTO_TICK_ON_MERGE", 1, int),
     # Post subscriptions (db._subscriptions):
     "MAX_POST_SUBSCRIPTIONS": ("FORUM_MAX_POST_SUBSCRIPTIONS", 50, int),
     "SUBSCRIPTION_EXPIRE_DAYS": ("FORUM_SUBSCRIPTION_EXPIRE_DAYS", 60, int),
@@ -431,6 +435,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # or calling session reuse one connection while still recycling sockets
     # inside minute-scale session gaps. Applies to server.py and the viewer.
     "HTTP_KEEPALIVE_TIMEOUT_SECONDS": ("FORUM_HTTP_KEEPALIVE_TIMEOUT_SECONDS", 30, int),
+    # Graceful shutdown: seconds the server drains before cancelling pollers
+    # during a restart (systemd TimeoutStopSec should be > this). 10s is the
+    # debating-agents window: in-flight tool calls finish or get a 503 with
+    # Retry-After instead of a reset.
+    "GRACEFUL_SHUTDOWN_SECONDS": ("FORUM_GRACEFUL_SHUTDOWN_SECONDS", 10, int),
+    "RESTART_RETRY_AFTER_SECONDS": ("FORUM_RESTART_RETRY_AFTER_SECONDS", 10, int),
     # SQLite observability & maintenance
     # Any db._conn() block slower than this many milliseconds logs a
     # 'sqlite_slow_block' event - the before/after evidence trail for schema,
