@@ -575,7 +575,7 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f'<a href="/posts/{b["proposal_id"]}" class="stake-proposal-link">{proposal_title}</a>'
             f' <span class="stake-badge {status_cls}">{status}</span>'
             f' <span class="stake-staker">by {staker_html}</span>{admin_label}'
-            f'</div>'
+            f"</div>"
             f'<div class="stake-row-detail">'
             f'<span class="stake-amount"><b>{_stake_amount(b["per_pr"], cur)}</b> {_stake_unit(cur)} \u00d7 {b["max_prs"]} PRs</span>'
             f" \xb7 paid {b['paid_count']} \xb7 locked {b['locked_count']} \xb7 remaining {remaining}"
