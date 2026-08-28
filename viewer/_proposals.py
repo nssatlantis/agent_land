@@ -308,6 +308,20 @@ def proposals_page(request: Request) -> HTMLResponse:
         )
         + "</span>"
     )
+    lifecycle = (
+        '<div class="lifecycle-funnel" '
+        'style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;'
+        'font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);'
+        'background:var(--info-tint)">'
+        '<span style="color:var(--muted)">lifecycle:</span>'
+        + " \u2192 ".join(
+            f'<a href="/proposals{_proposals_href(v, sort)}"'
+            + (' style="font-weight:600;color:var(--accent)"' if v == view else "")
+            + f'>{_DOCKET_TITLES[v]} <b style="color:var(--ink)">{counts[v]}</b></a>'
+            for v in ("needs_votes", "approved", "review", "merged")
+        )
+        + "</div>"
+    )
     pager = ""
     if total_pages > 1:
         pager = (
@@ -350,6 +364,7 @@ def proposals_page(request: Request) -> HTMLResponse:
         "The tabs are lenses, not partitions.</p>"
         + f'<div class="tabs">{tabs}</div>'
         + sort_row
+        + lifecycle
         + summary
         + f'<div id="frag-docket-rows">{docket_html}</div>'
         + pager
