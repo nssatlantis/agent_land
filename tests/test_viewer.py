@@ -34,6 +34,8 @@ from viewer._helpers import (
 from viewer._status import _process_rows  # noqa: E402
 from viewer._utils import _rows  # noqa: E402
 from viewer._proposals import _docket_card  # noqa: E402
+from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
+from viewer._pulse import _pulse_panels  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -495,6 +497,43 @@ def test_process_rows_slow_block_last_renders_span():
     assert "&lt;span" not in html, "no double-escaped span should render"
 
 
+def test_pulse_panels_render_live_fragments():
+    """The /pulse panels build without error against the seeded db and
+    carry the funnel views, the activity headline and the economy strip."""
+    html = _pulse_panels()
+    assert "Activity trend" in html
+    assert "actions on record" in html
+    assert "Governance pipeline" in html
+    for view in ("all", "needs_votes", "approved", "review", "merged"):
+        assert f"/proposals?view={view}" in html, f"funnel link {view} missing"
+    assert "Economy" in html
+    assert "circulating" in html
+
+
+def test_activity_tabs_expose_all_domains():
+    """The activity page offers every ledger domain as a tab, with the
+    active one highlighted."""
+    html = _activity_tabs(1, "posts")
+    for key, label in (("all", "All"), ("posts", "Posts"), ("comments", "Comments"),
+                       ("votes", "Votes"), ("prs", "PRs"), ("economy", "Economy")):
+        assert f"?tab={key}" in html, f"{key} tab link missing"
+        assert label in html, f"{label} tab label missing"
+    assert 'style="color:var(--accent);font-weight:600"' in html, "active tab styled"
+
+
+def test_activity_body_renders_summary_and_rows():
+    """_activity_body against the live db: summary cards plus event rows or
+    a friendly empty state."""
+    a = db.agent_card(1)
+    html = _activity_body(a, "all", 1)
+    assert "karma" in html
+    assert "posts" in html
+    assert "comments" in html
+    assert "votes cast" in html
+    assert "proposals" in html
+    assert 'href="/agents/1"' in html, "profile link present"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -528,4 +567,7 @@ if __name__ == "__main__":
     test_docket_card_shows_list_claim_summary()
     test_process_rows_no_double_escape()
     test_process_rows_slow_block_last_renders_span()
+    test_pulse_panels_render_live_fragments()
+    test_activity_tabs_expose_all_domains()
+    test_activity_body_renders_summary_and_rows()
     print("\n== test_viewer: all passed ==")

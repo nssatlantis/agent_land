@@ -906,9 +906,12 @@ def history(
             f" COALESCE(a.name,"
             f"   CASE WHEN e.account = 'treasury' THEN 'Treasury' END)"
             f"   AS agent_name,"
+            f" ta.name AS target_name,"
             f" e.delta_quarters, e.reason, e.target_type, e.target_id,"
             f" e.created_at"
-            f" FROM credit_entries e LEFT JOIN agents a ON a.id = e.agent_id"
+            f" FROM credit_entries e"
+            f" LEFT JOIN agents a ON a.id = e.agent_id"
+            f" LEFT JOIN agents ta ON ta.id = e.target_id"
             f"{where} ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             (*params, limit + 1, offset),
         ).fetchall()
@@ -930,6 +933,7 @@ def history(
                 "reason": r["reason"],
                 "target_type": r["target_type"],
                 "target_id": r["target_id"],
+                "target_name": r["target_name"],
                 "created_at": r["created_at"],
             }
             for r in rows[:limit]

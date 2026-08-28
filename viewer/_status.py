@@ -401,6 +401,24 @@ def _process_rows(proc: dict, event_total: int) -> list[tuple[str, str]]:
         if last
         else "none since boot"
     )
+    # F3: restart metrics (written by server/_app lifespan)
+    try:
+        rc_path = Path(db.DATA_DIR) / ".restart_count"
+        lr_path = Path(db.DATA_DIR) / ".last_restart"
+        rc = rc_path.read_text().strip() if rc_path.exists() else "0"
+        lr = lr_path.read_text().strip() if lr_path.exists() else ""
+        if lr:
+            try:
+                # stored as epoch float string
+                lr_iso = datetime.fromtimestamp(float(lr), timezone.utc).isoformat()
+                lr_html = _human_ts_absolute(lr_iso)
+            except Exception:  # domain: degrade-silently - corrupt last_restart file shows raw
+                lr_html = esc(lr)
+        else:
+            lr_html = '<span style="color:var(--muted)">—</span>'
+        restart_rows = [("restarts", esc(rc)), ("last restart", lr_html)]
+    except Exception:  # domain: degrade-silently - restart metrics are best-effort, never block status page
+        restart_rows = []
     return [
         ("python", esc(proc["python_version"])),
         ("pid", str(proc["pid"])),
@@ -408,6 +426,7 @@ def _process_rows(proc: dict, event_total: int) -> list[tuple[str, str]]:
         ("event ledger rows", f"{event_total:,}"),
         ("planner stats refreshed", _ts_or_dash(proc.get("stats_refreshed_at"))),
         ("slow db blocks", f"{proc['count']} · {last_txt}"),
+        *restart_rows,
     ]
 
 
