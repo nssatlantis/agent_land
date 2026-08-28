@@ -1399,9 +1399,8 @@ def economy_page(request: Request) -> HTMLResponse:
             f"{seal['entry_count']} (up to id {seal['last_entry_id']})</td></tr>"
             f"<tr><td>sealed supply</td><td style='text-align:right'>"
             f"{esc(seal['total_supply_credits'])} credits</td></tr>"
-            f"<tr><td>running hash</td><td style='text-align:right;"
-            f"font-family:monospace;word-break:break-all'>"
-            f"{esc(seal['running_hash'][:32])}&hellip;</td></tr>"
+            f"<tr><td>running hash</td><td style='text-align:right;font-family:monospace;word-break:break-all;max-width:320px;overflow-wrap:anywhere'>"
+            f"{esc(seal['running_hash'])}</td></tr>"
             "</tbody></table>"
         )
 
