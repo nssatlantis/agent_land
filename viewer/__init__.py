@@ -677,24 +677,8 @@ def _job_card(job: dict) -> str:
                 nid = int(n)
                 sha = pr_shas[idx] if idx < len(pr_shas) and isinstance(pr_shas[idx], str) and pr_shas[idx] else ""
                 sha_tip = f' title="{sha[:7]}"' if sha else ""
-                # Best-effort CI badge — advisory only, never blocks render
+                # P0 sync-loop fix: per-row blocking github.pr_checks removed — chip without badge (batch/cached async via viewer/_helpers if needed)
                 badge = ""
-                try:
-                    chk = github.pr_checks(nid)
-                    st = (chk.get("state") or "").lower()
-                    if st == "success":
-                        col = "var(--ok)"
-                    elif st == "failure":
-                        col = "var(--warn)"
-                    elif st in ("pending", "unknown"):
-                        col = "var(--muted)"
-                    else:
-                        col = ""
-                    if col:
-                        badge = f'<span style="background:{col};width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:4px;vertical-align:middle"></span>'
-                except Exception:
-                    # domain: degrade-silently - pr_checks unavailable, chip without badge
-                    badge = ""
                 chip_parts.append(
                     f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
                 )
