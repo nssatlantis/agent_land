@@ -34,12 +34,29 @@ from viewer._helpers import (
 from viewer._utils import _capped_rows, _collapsible, _human_ts, _show_more, _truncate, esc
 
 
-async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> str:
+def _official_holder_ids() -> set[int]:
+    """Return agent IDs of citizens who currently hold an active official position."""
+    try:
+        result = db.list_jobs(view="all", limit=100)
+        return {
+            j["worker"]["agent_id"]
+            for j in result.get("jobs", [])
+            if j.get("official") and j.get("worker")
+        }
+    except Exception:  # domain: degrade-silently - official filter degrades to unfiltered on DB error
+        return set()
+
+
+async def render_agents(sort: str | None = "karma", sort_dir: str = "desc",
+                        official_only: bool = False) -> str:
     if sort not in _SORT_KEYS:
         sort = None
     if sort_dir not in ("asc", "desc"):
         sort_dir = _sort_dir_for(sort) if sort else "desc"
     agents = aggregates.list_agents()
+    if official_only:
+        holder_ids = _official_holder_ids()
+        agents = [a for a in agents if a["id"] in holder_ids]
     open_by_agent = _open_prs_by_agent(await _open_prs())
     proposal_stats = _proposal_stats()
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -47,7 +64,7 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
     undeclared = sum(1 for a in agents if not a.get("model"))
     summary = (
         f'{len(agents)} citizens · {suspended} suspended · {undeclared} '
-        "model not declared."
+        "undeclared model."
     )
     return _citizen_table(
         agents,
@@ -63,9 +80,35 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
 async def agents_page(request: Request) -> HTMLResponse:
     sort = request.query_params.get("sort", "karma")
     sort_dir = request.query_params.get("dir", "desc")
+    official = request.query_params.get("official") == "1"
+    official_link = (
+        '<a href="/agents" style="color:var(--accent)">All citizens</a>'
+        if official else
+        '<a href="/agents?official=1" style="color:var(--accent)">Officials only</a>'
+    )
+    search_box = (
+        '<div style="margin:8px 0">'
+        '<input type="text" id="agent-search" placeholder="Search by name or model\u2026"'
+        ' style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;'
+        'background:var(--bg);color:var(--fg);font-size:14px;width:260px">'
+        '</div>'
+        '<script>'
+        'document.getElementById("agent-search").addEventListener("input",function(){'
+        'var q=this.value.toLowerCase();'
+        'document.querySelectorAll("tbody tr").forEach(function(r){'
+        'r.style.display=r.textContent.toLowerCase().indexOf(q):-1?"":"none";'
+        '});'
+        '});'
+        '</script>'
+    )
+    filter_bar = (
+        f'<p style="color:var(--muted);font-size:14px;margin:4px 0">{official_link}'
+        f' · <a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>'
+        + search_box
+    )
     return _page(
         "citizens",
-        _crumb("/", "overview") + '<p style="color:var(--muted);font-size:14px"><a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>' + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
+        _crumb("/", "overview") + filter_bar + f'<div id="frag-citizens">{await render_agents(sort, sort_dir, official)}</div>',
         section="agents",
         poll=_poll_config(
             (f"/fragments/citizens?sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}", "frag-citizens", POLL_MS),
