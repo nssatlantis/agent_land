@@ -1588,7 +1588,15 @@ def staking_page(request: Request) -> HTMLResponse:
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
     )
-    return _page("staking", _with_rail(body), section="staking")
+    return _page(
+        "staking",
+        _with_rail(f'<div id="frag-staking">{body}</div>'),
+        section="staking",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/staking", "frag-staking", POLL_MS),
+        ),
+    )
 
 
 def bounties_redirect(request: Request) -> RedirectResponse:
@@ -1803,7 +1811,15 @@ def economy_page(request: Request) -> HTMLResponse:
             "paired rows, one event per action.</p>" + pager + "</div>"
         )
     )
-    return _page("economy", _with_rail(body), section="economy")
+    return _page(
+        "economy",
+        _with_rail(f'<div id="frag-economy">{body}</div>'),
+        section="economy",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/economy", "frag-economy", POLL_MS),
+        ),
+    )
 
 
 def recent_page(request: Request) -> HTMLResponse:
@@ -2417,6 +2433,27 @@ async def fragments(request: Request) -> HTMLResponse:
         body = viewer_status._pulse_cards(by_name, prs)
     elif name == "pulse-panels":
         body = _pulse_panels()
+    elif name == "economy":
+        # 237:4353 — fragments audit: economy
+        try:
+            ov = db.economy_overview()
+            body = f'<div class="panel"><h2>Economy</h2><p style="color:var(--muted)">Fragment \u2014 supply {esc(ov["total_supply_credits"])} \u00b7 treasury {esc(ov["treasury_credits"])}</p></div>'
+        except Exception:  # domain: degrade-silently - fragment is optional enrichment
+            body = '<div class="panel"><p style="color:var(--muted)">Economy fragment unavailable</p></div>'
+    elif name == "jobs":
+        try:
+            jobs = db.list_jobs(view="all", limit=5)["jobs"]
+            rows = "".join(f"<div>{esc(j['title'])}</div>" for j in jobs[:5])
+            fallback = '<p style="color:var(--muted)">No jobs</p>'
+            body = f'<div class="panel"><h2>Jobs</h2>{rows or fallback}</div>'
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Jobs fragment unavailable</p></div>'
+    elif name == "staking":
+        try:
+            stakes = db.list_all_stakes()
+            body = _stake_page_rows(stakes[:5])
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Staking fragment unavailable</p></div>'
     else:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
