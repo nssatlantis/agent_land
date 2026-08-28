@@ -532,7 +532,7 @@ def posts_page(request: Request) -> HTMLResponse:
             title = f"Posts tagged \xb7 {esc(tag)} \xb7 {tag_total}"
     else:
         title = titles[kind]
-    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {counts["total"]} posts</div>'
+    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {(tag_total if (tag and tag_found) else (0 if tag else counts["total"]))} posts</div>'
     try:
         _tbar = db.pr_vote_threshold()
         _threshold_note = (
@@ -1826,7 +1826,7 @@ def _economy_body(request: Request) -> str:
 
     holders_rows = (
         "".join(
-            "<tr><td><a href='/agents/{0}'>{1}</a> <span style='color:var(--muted)'"
+            "<tr><td><a href='/credits/{0}'>{1}</a> <span style='color:var(--muted)'"
             ">#{0}</span></td><td style='text-align:right'>{2}</td></tr>".format(
                 h["agent_id"],
                 esc(h["name"]),
