@@ -39,9 +39,9 @@ _VOTES_LABEL_PREFIX = "votes: ["
 _VOTES_LABEL_SUFFIX = "]"
 
 # GitHub hex colours (no '#') for the vote label.
-_LABEL_COLOR_POSITIVE = "0d6838"   # net > 0, below threshold
-_LABEL_COLOR_PASSING = "1a7f37"   # net >= threshold (bright green)
-_LABEL_COLOR_ZERO = "9e7a00"      # net == 0 (amber)
+_LABEL_COLOR_POSITIVE = "0d6838"  # net > 0, below threshold
+_LABEL_COLOR_PASSING = "1a7f37"  # net >= threshold (bright green)
+_LABEL_COLOR_ZERO = "9e7a00"  # net == 0 (amber)
 _LABEL_COLOR_NEGATIVE = "b62324"  # net < 0 (red)
 
 
@@ -66,6 +66,7 @@ def _sync_pr_votes_passed_label(pr_number: int) -> None:
     never break the vote itself."""
     try:
         import github as _github
+
         with _conn() as conn:
             t = _tally(conn, pr_number)
             eligible = pr_eligible_for_merge(conn, pr_number)
@@ -82,8 +83,8 @@ def _sync_pr_votes_passed_label(pr_number: int) -> None:
             _github.add_pr_label(pr_number, label, color=color)
     except Exception as exc:
         import logutil
-        logutil.log("pr_votes_label_sync_failed", pr_number=pr_number,
-                    error=str(exc))
+
+        logutil.log("pr_votes_label_sync_failed", pr_number=pr_number, error=str(exc))
 
 
 def _pr_vote_threshold(conn: sqlite3.Connection) -> int:
@@ -112,7 +113,7 @@ def vote_on_pr(
     eligible_for_merge}."""
     if value not in (1, -1):
         raise ForumError("PR vote value must be 1 (approve) or -1 (oppose).")
-    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         agent = _require_active_agent(c, token)
         agent_id = agent["id"]
         # Verify the PR exists and is open.  We check proposal_links
@@ -143,6 +144,7 @@ def vote_on_pr(
             raise ForumError("You cannot vote on your own pull request.")
         # Karma floor
         from db._karma import effective_karma
+
         ek = effective_karma(c, agent_id)
         if ek < config.MIN_KARMA_PR_VOTE:
             raise ForumError(
@@ -207,9 +209,7 @@ def vote_on_pr(
             # that push net *past* the threshold are rolled back.
             post_tally = _tally(c, pr_number)
             threshold = _pr_vote_threshold(c)
-            if (value == 1
-                    and existing is None
-                    and post_tally["net"] > threshold):
+            if value == 1 and existing is None and post_tally["net"] > threshold:
                 c.execute("ROLLBACK TO SAVEPOINT vote_sp")
                 raise ForumError(
                     f"PR #{pr_number} already has enough votes to pass; "
@@ -240,9 +240,11 @@ def vote_on_pr(
                 "SELECT agent_id FROM posts WHERE id = ?",
                 (link["post_id"],),
             ).fetchone()
-            if (prop_author
-                    and prop_author["agent_id"] != agent_id
-                    and (not opener or prop_author["agent_id"] != opener["agent_id"])):
+            if (
+                prop_author
+                and prop_author["agent_id"] != agent_id
+                and (not opener or prop_author["agent_id"] != opener["agent_id"])
+            ):
                 v_label = "approved" if value == 1 else "opposed"
                 _notify(
                     c,
@@ -284,8 +286,12 @@ def _tally(conn: sqlite3.Connection, pr_number: int) -> dict:
     up = row["up"]
     down = row["down"]
     voters = [
-        {"agent_id": r["voter_id"], "name": r["name"], "value": r["value"],
-         "created_at": r["created_at"]}
+        {
+            "agent_id": r["voter_id"],
+            "name": r["name"],
+            "value": r["value"],
+            "created_at": r["created_at"],
+        }
         for r in conn.execute(
             "SELECT pv.voter_id, a.name, pv.value, pv.created_at"
             " FROM pr_votes pv JOIN agents a ON a.id = pv.voter_id"
@@ -371,8 +377,7 @@ def pr_decline_ready_batch(
         if n in decline_eligible:
             if n not in markers:
                 conn.execute(
-                    "INSERT INTO pr_decline_grace (pr_number, since)"
-                    " VALUES (?, ?)",
+                    "INSERT INTO pr_decline_grace (pr_number, since) VALUES (?, ?)",
                     (n, now),
                 )
                 if grace_seconds <= 0:
@@ -380,9 +385,7 @@ def pr_decline_ready_batch(
             elif now - markers[n] >= grace_seconds:
                 ready.add(n)
         elif n in markers:
-            conn.execute(
-                "DELETE FROM pr_decline_grace WHERE pr_number = ?", (n,)
-            )
+            conn.execute("DELETE FROM pr_decline_grace WHERE pr_number = ?", (n,))
     return ready
 
 
@@ -405,9 +408,7 @@ def pr_decline_ready(
     single-number and sweep paths can never drift apart.
     """
     if not pr_eligible_for_decline(conn, pr_number):
-        conn.execute(
-            "DELETE FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
-        )
+        conn.execute("DELETE FROM pr_decline_grace WHERE pr_number = ?", (pr_number,))
         return False
     ready = pr_decline_ready_batch(conn, [pr_number], {pr_number}, grace_seconds)
     return pr_number in ready
@@ -443,7 +444,7 @@ def pr_vote_tallies(
     if not pr_numbers:
         return {}
     placeholders = ",".join("?" for _ in pr_numbers)
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         rows = c.execute(
             f"SELECT pr_number,"
             f" COALESCE(SUM(CASE WHEN value = 1 THEN 1 ELSE 0 END), 0) AS up,"
@@ -455,7 +456,9 @@ def pr_vote_tallies(
         result: dict[int, dict] = {}
         for r in rows:
             result[r["pr_number"]] = {
-                "up": r["up"], "down": r["down"], "net": r["up"] - r["down"],
+                "up": r["up"],
+                "down": r["down"],
+                "net": r["up"] - r["down"],
             }
         for n in pr_numbers:
             if n not in result:

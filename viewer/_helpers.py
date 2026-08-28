@@ -15,8 +15,8 @@ from typing import Any
 
 import config
 import db
-import github
 import db._aggregates as aggregates
+import github
 import reports
 import search
 from viewer._utils import (
@@ -32,6 +32,7 @@ from viewer._utils import (
 _PR_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
 
+
 async def _open_prs() -> list[dict] | None:
     now = time.monotonic()
     if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_PRS_CACHE_SECONDS:
@@ -43,6 +44,7 @@ async def _open_prs() -> list[dict] | None:
     _pr_prs_cache.update(ts=now, prs=prs, fresh=True)
     return prs
 
+
 def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
     by_agent: dict[int, int] = {}
     for pr in prs or []:
@@ -51,10 +53,18 @@ def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:
             by_agent[citizen["agent_id"]] = by_agent.get(citizen["agent_id"], 0) + 1
     return by_agent
 
+
 # PR diff cache -----------------------------------------------------------
 
 _PR_DIFF_CACHE_SECONDS = config.PR_CACHE_SECONDS
-_pr_diff_cache: dict[str, Any] = {"ts": 0.0, "number": None, "diff": None, "missing": False, "fresh": False}
+_pr_diff_cache: dict[str, Any] = {
+    "ts": 0.0,
+    "number": None,
+    "diff": None,
+    "missing": False,
+    "fresh": False,
+}
+
 
 async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     now = time.monotonic()
@@ -76,11 +86,13 @@ async def _pr_diff(number: int) -> tuple[dict | None, bool]:
     _pr_diff_cache.update(ts=now, number=number, diff=diff, missing=missing, fresh=True)
     return diff, missing
 
+
 async def _pr_checks(number: int) -> dict | None:
     try:
         return await asyncio.to_thread(github.pr_checks, number)
     except Exception:
         return None
+
 
 def _ci_chip(checks: dict | None) -> str:
     if not checks:
@@ -111,13 +123,16 @@ def _score_badge(score: int) -> str:
     cls = "score-pos" if score > 0 else ("score-neg" if score < 0 else "score-zero")
     return f'<span class="score-badge {cls}">{score:+d}</span>'
 
+
 def _pager(page: int, total_pages: int, href_for_page, top: bool = False) -> str:
     """Shared numbered pager: ≤12 numbered links else Prev/Next with 'page X of Y'. href_for_page(n)->href. Preserves ?kind/&sort/&tag & ?proposal_kind via caller closure. Display-only."""
     if total_pages <= 1:
         return ""
     if total_pages <= 12:
         nav = [
-            f'<a href="{esc(href_for_page(n))}"' + (' class="active"' if n == page else "") + f">{n}</a>"
+            f'<a href="{esc(href_for_page(n))}"'
+            + (' class="active"' if n == page else "")
+            + f">{n}</a>"
             for n in range(1, total_pages + 1)
         ]
     else:
@@ -135,14 +150,22 @@ def _breadcrumbs(trail: list[tuple[str | None, str]]) -> str:
     parts: list[str] = []
     for href, label in trail:
         if href:
-            parts.append(f'<a href="{esc(href)}" style="color:var(--accent);text-decoration:none">{esc(label)}</a>')
+            parts.append(
+                f'<a href="{esc(href)}" style="color:var(--accent);text-decoration:none">{esc(label)}</a>'
+            )
         else:
             parts.append(f'<span style="color:var(--muted)">{esc(label)}</span>')
     sep = ' <span style="color:var(--muted)">\u203a</span> '
     return f'<div class="breadcrumb">{sep.join(parts)}</div>'
-  
-  
-def _stat_card(value: str | int, label: str, href: str | None = None, tooltip: str | None = None, accent: bool = False) -> str:
+
+
+def _stat_card(
+    value: str | int,
+    label: str,
+    href: str | None = None,
+    tooltip: str | None = None,
+    accent: bool = False,
+) -> str:
     """One stat card: value + label, optionally linked and with tooltip. Unifies overview, economy, status pulse. Display-only, identical to economy _card styling."""
     color = "var(--accent)" if accent else "var(--ink)"
     val = esc(str(value))
@@ -168,7 +191,7 @@ def _collaboration_status(todos: list[dict] | None) -> str:
     claimers: dict[int, str] = {}
     claimed = 0
     for lst in todos:
-        for it in (lst.get("items") or []):
+        for it in lst.get("items") or []:
             if it.get("claimed_by") and it.get("claimed_by_id") is not None:
                 claimed += 1
                 cid = int(it["claimed_by_id"])
@@ -183,13 +206,14 @@ def _collaboration_status(todos: list[dict] | None) -> str:
         hue = (cid * 47) % 360
         tip = esc(name)
         avatars += f'<span class="avatar" style="background:hsl({hue} 55% 42%)" title="{tip}">{esc(name[:1].upper())}</span> '
-    more = f" +{len(claimers)-4}" if len(claimers) > 4 else ""
+    more = f" +{len(claimers) - 4}" if len(claimers) > 4 else ""
     return (
         f'<span style="color:var(--muted);font-size:13px">'
-        f'{claimed}/{total} claimed \u00b7 {done}/{total} done'
+        f"{claimed}/{total} claimed \u00b7 {done}/{total} done"
         f"</span> " + avatars + more
-    ) 
-      
+    )
+
+
 def _command_palette() -> str:
     """Command palette shell: Ctrl/Cmd+K client-side index of posts/agents/routes. Display-only shell, JS toggles."""
     return (
@@ -217,19 +241,28 @@ def _category_legend(items: list[tuple[str, str, str]]) -> str:
             "</span>"
         )
     return f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">{"".join(rows)}</div>'
-  
-  
+
+
 def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
     """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
     if md:
         return f'<div class="panel"><h2>{esc(heading)}</h2>{intro}{_markdown(md)}</div>'
     return f'<div class="panel"><h2>{esc(heading)}</h2><p style="color:var(--muted)">{esc(notice)}</p></div>'
-  
-  
-def _timeline_card(badge_label: str, badge_cls: str, body_html: str, meta_html: str | None = None, preview: str | None = None, when: str | None = None) -> str:
+
+
+def _timeline_card(
+    badge_label: str,
+    badge_cls: str,
+    body_html: str,
+    meta_html: str | None = None,
+    preview: str | None = None,
+    when: str | None = None,
+) -> str:
     """Shared timeline card for events/recent/activity. body_html/meta_html are pre-escaped caller HTML; badge/preview/when are esc'd. Display-only."""
     badge = f'<span class="recent-badge {esc(badge_cls)}">{esc(badge_label)}</span>'
-    when_html = f'<span class="muted" style="font-size:14px">{esc(when)}</span>' if when else ""
+    when_html = (
+        f'<span class="muted" style="font-size:14px">{esc(when)}</span>' if when else ""
+    )
     meta = f'<div class="recent-meta">{meta_html}</div>' if meta_html else ""
     prev = f'<div class="recent-preview">{esc(preview[:280])}</div>' if preview else ""
     return (
@@ -274,6 +307,7 @@ def _proposal_badge(p: dict) -> str:
         f"{suffix}"
     )
 
+
 def _proposal_verdict(p: dict) -> tuple[str, str]:
     """A proposal's lifecycle verdict and its color, shared by the docket,
     the side rail and citizen profiles so the three can't drift. Merged means
@@ -306,6 +340,7 @@ def _proposal_verdict(p: dict) -> tuple[str, str]:
         return f"stale ({p['open_days']}d)", "var(--warn)"
     return "needs votes", "var(--fail)"
 
+
 def _proposal_marker(p: dict) -> str:
     """The citizen behind a proposal, for the badge, the docket and the side
     rail. Merged proposals name the agent who actually opened the merged pull
@@ -329,7 +364,7 @@ def _proposal_marker(p: dict) -> str:
             return ""
         return (
             f'implemented by <a class="userlink" href="/agents/{oid}">'
-            f'{esc(oname)}</a>'
+            f"{esc(oname)}</a>"
         )  # Claimed: show "(Claimed by: <name>)" with accent color
     claim_id = t.get("claim_agent_id", p.get("claim_agent_id"))
     claim_name = t.get("claim_name", p.get("claim_name"))
@@ -337,16 +372,17 @@ def _proposal_marker(p: dict) -> str:
         return (
             f'(Claimed by: <a href="/agents/{claim_id}" '
             f'style="color:var(--accent)">'
-            f'{esc(claim_name)}</a>)'
+            f"{esc(claim_name)}</a>)"
         )
     did = t.get("delegate_id", p.get("delegate_id"))
     dname = t.get("delegate_name", p.get("delegate_name"))
     if did and dname and dname != author:
         return (
             f'(Delegated to: <a href="/agents/{did}" style="color:var(--accent)">'
-            f'{esc(dname)}</a>)'
+            f"{esc(dname)}</a>)"
         )
     return "(Undelegated)"
+
 
 _PR_STATUS_COLORS = {
     "merged": "var(--ok)",
@@ -354,6 +390,7 @@ _PR_STATUS_COLORS = {
     "closed": "var(--dim)",
     "open": "var(--warn)",
 }
+
 
 def _proposal_prs_cell(p: dict) -> str:
     """The pull request trail of a proposal, for the docket and the side rail:
@@ -377,6 +414,7 @@ def _proposal_prs_cell(p: dict) -> str:
         )
     return " · ".join(bits)
 
+
 def _proposal_lock_banner(p: dict) -> str:
     """The version-chain banner on a proposal's own page: a locked proposal
     tells the reader it was superseded and points to the new version; a newer
@@ -388,20 +426,21 @@ def _proposal_lock_banner(p: dict) -> str:
     if t.get("superseded_by_id"):
         return (
             '<div class="panel" style="border-color:var(--info-border);background:var(--info-tint)">'
-            f'<b>Locked</b> - this proposal was superseded by '
+            f"<b>Locked</b> - this proposal was superseded by "
             f'<a href="/posts/{t["superseded_by_id"]}" style="color:var(--accent)">'
-            f'proposal #{t["superseded_by_id"]}</a>, where the discussion '
+            f"proposal #{t['superseded_by_id']}</a>, where the discussion "
             "continues. Its tally is frozen on the record.</div>"
         )
     sup = t.get("supersedes")
     if sup:
         return (
             '<div class="panel" style="border-color:var(--ok-border);background:var(--ok-tint)">'
-            f'This proposal is <b>version {t.get("version", 1)}</b> and supersedes '
+            f"This proposal is <b>version {t.get('version', 1)}</b> and supersedes "
             f'<a href="/posts/{sup["id"]}" style="color:var(--accent)">'
-            f'proposal #{sup["id"]} (v{sup["version"]})</a> - {esc(sup["title"])}.</div>'
+            f"proposal #{sup['id']} (v{sup['version']})</a> - {esc(sup['title'])}.</div>"
         )
     return ""
+
 
 def _stake_amount(amount, currency: str) -> str:
     """Format a stake amount in its own currency: karma points as-is,
@@ -433,7 +472,11 @@ def _stake_panel(p: dict) -> str:
         cur = b.get("currency", "karma")
         staker = esc(b.get("staker_name") or "system")
         status = b["status"]
-        admin_label = ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>' if b.get("admin_funded") else ""
+        admin_label = (
+            ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>'
+            if b.get("admin_funded")
+            else ""
+        )
         remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
         status_cls = {
             "active": "stake-active",
@@ -442,37 +485,43 @@ def _stake_panel(p: dict) -> str:
             "completed": "stake-completed",
         }.get(status, "")
         total_val = b["per_pr"] * b["max_prs"]
-        progress_pct = int(((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100)
+        progress_pct = int(
+            ((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100
+        )
         rows.append(
             f'<div class="stake-row">'
             f'<div class="stake-row-top">'
             f'<span class="stake-badge {status_cls}">{status}</span>'
             f' <span class="stake-staker">{staker}</span>{admin_label}'
             f' <span class="stake-amount"><b>{_stake_amount(b["per_pr"], cur)}</b>'
-            f' {_stake_unit(cur)} \u00d7 {b["max_prs"]} PRs ='
-            f' {_stake_amount(total_val, cur)} total</span>'
-            f'</div>'
+            f" {_stake_unit(cur)} \u00d7 {b['max_prs']} PRs ="
+            f" {_stake_amount(total_val, cur)} total</span>"
+            f"</div>"
             f'<div class="stake-bar">'
             f'<div class="stake-bar-track"><div class="stake-bar-fill" style="width:{progress_pct}%"></div></div>'
             f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining}</span>'
-            f'</div>'
-            f'</div>'
+            f"</div>"
+            f"</div>"
         )
     avail_karma = sum(
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in stakes if b["status"] == "active" and b.get("currency", "karma") == "karma"
+        for b in stakes
+        if b["status"] == "active" and b.get("currency", "karma") == "karma"
     )
     avail_cred = sum(
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in stakes if b["status"] == "active" and b.get("currency") == "credits"
+        for b in stakes
+        if b["status"] == "active" and b.get("currency") == "credits"
     )
     locked_karma = sum(
         b["per_pr"] * b["locked_count"]
-        for b in stakes if b["status"] == "active" and b.get("currency", "karma") == "karma"
+        for b in stakes
+        if b["status"] == "active" and b.get("currency", "karma") == "karma"
     )
     locked_cred = sum(
         b["per_pr"] * b["locked_count"]
-        for b in stakes if b["status"] == "active" and b.get("currency") == "credits"
+        for b in stakes
+        if b["status"] == "active" and b.get("currency") == "credits"
     )
     summary = ""
     bits = []
@@ -485,12 +534,10 @@ def _stake_panel(p: dict) -> str:
     if locked_cred:
         bits.append(f"{_stake_amount(locked_cred, 'credits')} credits locked")
     if bits:
-        summary = ' <span class="meta">(' + " \xb7 ".join(bits) + ')</span>'
+        summary = ' <span class="meta">(' + " \xb7 ".join(bits) + ")</span>"
     return (
         '<div class="panel">'
-        f'<h2>Stakes \xb7 {len(stakes)}{summary}</h2>'
-        + "".join(rows)
-        + '</div>'
+        f"<h2>Stakes \xb7 {len(stakes)}{summary}</h2>" + "".join(rows) + "</div>"
     )
 
 
@@ -508,7 +555,11 @@ def _stake_page_rows(stakes: list[dict]) -> str:
         staker = esc(b.get("staker_name") or "system")
         proposal_title = esc(b.get("proposal_title") or f"proposal #{b['proposal_id']}")
         status = b["status"]
-        admin_label = ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>' if b.get("admin_funded") else ""
+        admin_label = (
+            ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>'
+            if b.get("admin_funded")
+            else ""
+        )
         remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
         total_val = b["per_pr"] * b["max_prs"]
         progress_pct = int(((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100)
@@ -536,9 +587,11 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f'</div>'
         )
     return (
-        '<div class="panel"><h2>All stakes \xb7 ' + str(len(stakes)) + '</h2>'
+        '<div class="panel"><h2>All stakes \xb7 '
+        + str(len(stakes))
+        + "</h2>"
         + "".join(rows)
-        + '</div>'
+        + "</div>"
     )
 
 
@@ -548,14 +601,17 @@ def _stake_summary_card() -> str:
     stakes = db.list_all_stakes(status="active")
     if not stakes:
         return ""
+
     def _sum(field):
         k = sum(
             b["per_pr"] * getattr_b(b, field)
-            for b in stakes if b.get("currency", "karma") == "karma"
+            for b in stakes
+            if b.get("currency", "karma") == "karma"
         )
         c = sum(
             b["per_pr"] * getattr_b(b, field)
-            for b in stakes if b.get("currency") == "credits"
+            for b in stakes
+            if b.get("currency") == "credits"
         )
         return k, c
 
@@ -588,9 +644,14 @@ def _stake_summary_card() -> str:
     return (
         '<div class="panel"><h2>Staking \xb7 '
         '<a href="/staking" style="color:var(--accent);font-weight:normal;font-size:14px">view all \u2192</a></h2>'
-        '<p class="meta">' + str(len(stakes)) + ' active stakes \xb7 ' + " \xb7 ".join(parts) + '</p>'
-        '</div>'
+        '<p class="meta">'
+        + str(len(stakes))
+        + " active stakes \xb7 "
+        + " \xb7 ".join(parts)
+        + "</p>"
+        "</div>"
     )
+
 
 def _proposal_prs_panel(p: dict) -> str:
     """A read-only panel listing every pull request ever linked to a proposal -
@@ -616,20 +677,24 @@ def _proposal_prs_panel(p: dict) -> str:
         down = tv.get("down", 0)
         net = tv.get("net", 0)
         if up + down > 0:
-            nc = "var(--ok)" if net > 0 else ("var(--fail)" if net < 0 else "var(--muted)")
+            nc = (
+                "var(--ok)"
+                if net > 0
+                else ("var(--fail)" if net < 0 else "var(--muted)")
+            )
             vote_cell = (
-                f'\u25b2{up} \u25bc{down} '
+                f"\u25b2{up} \u25bc{down} "
                 f'<span style="color:{nc};font-weight:600">{net:+d}</span>'
             )
         else:
             vote_cell = '<span style="color:var(--muted)">\u2014</span>'
         rows += (
             f'<tr><td><a href="{repo}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
-            f'#{pr["pr_number"]}</a></td>'
+            f"#{pr['pr_number']}</a></td>"
             f'<td style="color:{color};font-weight:600">{esc(pr["status"])}</td>'
             f"<td>{opener_cell}</td>"
             f"<td>{vote_cell}</td>"
-            f'<td>{_human_ts(pr["happened_at"])}</td></tr>'
+            f"<td>{_human_ts(pr['happened_at'])}</td></tr>"
         )
     return (
         f'<div class="panel"><h2>Pull requests</h2>'
@@ -637,6 +702,7 @@ def _proposal_prs_panel(p: dict) -> str:
         "<table><tr><th>PR</th><th>status</th><th>opened by</th><th>votes</th><th>happened</th></tr>"
         f"{rows}</table></div></div>"
     )
+
 
 def _pr_vote_panel(pr_number: int) -> str:
     """Vote tally panel for a single PR: the up/down/net bar, the live
@@ -654,25 +720,27 @@ def _pr_vote_panel(pr_number: int) -> str:
         up_pct = int(up * 100 / total)
     else:
         up_pct = 0
-    net_color = "var(--ok)" if net > 0 else ("var(--fail)" if net < 0 else "var(--muted)")
+    net_color = (
+        "var(--ok)" if net > 0 else ("var(--fail)" if net < 0 else "var(--muted)")
+    )
     bar = (
         f'<div style="display:flex;gap:8px;align-items:center;margin:8px 0">'
         f'<span style="color:var(--ok);font-weight:600">\u25b2 {up}</span>'
         f'<span style="color:var(--fail);font-weight:600">\u25bc {down}</span>'
         f'<span style="color:{net_color};font-weight:700">net {net:+d}</span>'
-        f'</div>'
+        f"</div>"
     )
     if total > 0:
         bar += (
             f'<div style="background:var(--border);border-radius:4px;height:8px;width:200px;margin-bottom:8px">'
             f'<div style="background:var(--ok);height:100%;width:{up_pct}%;border-radius:4px"></div>'
-            f'</div>'
+            f"</div>"
         )
     # --- threshold ---
     bar += (
         f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
-        f'Threshold: <strong>{threshold}</strong>'
-        f'</p>'
+        f"Threshold: <strong>{threshold}</strong>"
+        f"</p>"
     )
     # --- eligibility (gated: small_fix && CI pass) ---
     is_small_fix = False
@@ -682,7 +750,12 @@ def _pr_vote_panel(pr_number: int) -> str:
         if pid:
             post = db.get_post(pid)
             t = post.get("proposal") or {}
-            is_small_fix = bool(post.get("small_fix") or t.get("small_fix") or post.get("proposal_kind") == "small_fix" or t.get("proposal_kind") == "small_fix")
+            is_small_fix = bool(
+                post.get("small_fix")
+                or t.get("small_fix")
+                or post.get("proposal_kind") == "small_fix"
+                or t.get("proposal_kind") == "small_fix"
+            )
         chk = github.pr_checks(pr_number)
         ci_ok = bool(chk and chk.get("state") == "success")
     except Exception:
@@ -697,20 +770,20 @@ def _pr_vote_panel(pr_number: int) -> str:
             needed = threshold + down - up
             bar += (
                 f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
-                f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
-                f'(threshold {threshold}'
-                f'{", opposing votes increase the bar" if down else ""})'
-                f'</p>'
+                f"{needed} more approve vote{'s' if needed != 1 else ''} needed "
+                f"(threshold {threshold}"
+                f"{', opposing votes increase the bar' if down else ''})"
+                f"</p>"
             )
     else:
         needed = threshold + down - up
         hint = " (requires small_fix + CI pass)" if not (is_small_fix and ci_ok) else ""
         bar += (
             f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
-            f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
-            f'(threshold {threshold}'
-            f'{", opposing votes increase the bar" if down else ""}){hint}'
-            f'</p>'
+            f"{needed} more approve vote{'s' if needed != 1 else ''} needed "
+            f"(threshold {threshold}"
+            f"{', opposing votes increase the bar' if down else ''}){hint}"
+            f"</p>"
         )
     # --- voter list ---
     if voters:
@@ -720,15 +793,16 @@ def _pr_vote_panel(pr_number: int) -> str:
             vlabel = "+1" if v["value"] == 1 else "-1"
             vrows += (
                 f'<tr><td><a href="/agents/{v["agent_id"]}" style="color:var(--accent)">'
-                f'{esc(v["name"])}</a></td>'
+                f"{esc(v['name'])}</a></td>"
                 f'<td style="color:{vcolor};font-weight:600">{vlabel}</td>'
                 f'<td style="color:var(--muted)">{_human_ts(v["created_at"])}</td></tr>'
             )
         bar += (
             '<table style="margin-top:8px"><tr><th>voter</th><th>vote</th><th>when</th></tr>'
-            f'{vrows}</table>'
+            f"{vrows}</table>"
         )
     return f'<div class="panel"><h2>PR votes</h2>{bar}</div>'
+
 
 def _proposal_votes_panel(p: dict) -> str:
     """The 'who voted' ledger for a proposal: every citizen who approved and
@@ -747,7 +821,7 @@ def _proposal_votes_panel(p: dict) -> str:
             f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
             f'text-decoration:none">{esc(v["name"])}</a>'
             f'<span style="color:var(--muted);font-size:14px">'
-            f' {_human_ts(v["created_at"])}</span>'
+            f" {_human_ts(v['created_at'])}</span>"
             for v in items
         ]
         return " · ".join(links)
@@ -768,8 +842,8 @@ def _proposal_votes_panel(p: dict) -> str:
         needed = threshold + down - up
         threshold_note = (
             f'<p style="color:var(--muted);font-size:13px;margin:6px 0">'
-            f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
-            f'(threshold {threshold})</p>'
+            f"{needed} more approve vote{'s' if needed != 1 else ''} needed "
+            f"(threshold {threshold})</p>"
         )
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
@@ -781,6 +855,7 @@ def _proposal_votes_panel(p: dict) -> str:
         f"</div>{threshold_note}</details>"
     )
 
+
 def _open_pr_cell(open_count: int, limit: int) -> str:
     """Render 'n / limit' for a collaborator's open PRs, flagging red at cap."""
     if open_count >= limit:
@@ -791,8 +866,12 @@ def _open_pr_cell(open_count: int, limit: int) -> str:
 # PR index (/prs) ----------------------------------------------------------
 
 _PRS_CLOSED_CACHE_SECONDS = config.PR_CACHE_SECONDS
-_prs_closed_cache: dict[str, Any] = {"ts": 0.0, "state": None, "rows": None,
-                                     "fresh": False}
+_prs_closed_cache: dict[str, Any] = {
+    "ts": 0.0,
+    "state": None,
+    "rows": None,
+    "fresh": False,
+}
 
 
 async def _prs_page_rows(state: str) -> list[dict] | None:
@@ -817,15 +896,20 @@ async def _prs_page_rows(state: str) -> list[dict] | None:
     return rows
 
 
-_PRS_OUTCOME_CLS = {"merged": "pr-merged", "open": "pr-open",
-                    "declined": "pr-declined", "closed": "pr-closed"}
+_PRS_OUTCOME_CLS = {
+    "merged": "pr-merged",
+    "open": "pr-open",
+    "declined": "pr-declined",
+    "closed": "pr-closed",
+}
 
 
 def _prs_outcome_chip(row: dict) -> str:
     """The lifecycle chip for one PR row - merged/open/declined/closed,
     reusing the docket's pr-chip vocabulary."""
     outcome = row.get("outcome") or (
-        "open" if row.get("state", "open") == "open" else "closed")
+        "open" if row.get("state", "open") == "open" else "closed"
+    )
     cls = _PRS_OUTCOME_CLS.get(outcome, "pr-closed")
     return f'<span class="pr-chip {cls}">{esc(outcome)}</span>'
 
@@ -857,11 +941,15 @@ def _prs_votes_cell(number: int) -> str:
     net = tally.get("net", 0)
     try:
         bar = db.pr_vote_threshold()
-    except Exception:  # domain:degrade-silently - votes still render if threshold fetch hiccups
+    except (
+        Exception
+    ):  # domain:degrade-silently - votes still render if threshold fetch hiccups
         bar = None
-    base = (f'<span style="color:var(--ok)">+{up}</span>/'
-            f'<span style="color:var(--fail)">&minus;{down}</span> '
-            f'<span style="color:var(--muted)">net {net}</span>')
+    base = (
+        f'<span style="color:var(--ok)">+{up}</span>/'
+        f'<span style="color:var(--fail)">&minus;{down}</span> '
+        f'<span style="color:var(--muted)">net {net}</span>'
+    )
     if bar is not None:
         base += f'<div style="color:var(--muted);font-size:11px">Net \u2265 {bar} to merge</div>'
     return base
@@ -884,13 +972,16 @@ def _prs_hold_chip(r: dict, state: str) -> str:
         # domain: degrade-silently - the index must render even if the
         #   forum db hiccups; the detail page still carries the hold note.
         return ""
-    return (' <span style="color:#b45309;font-size:12px;'
-            'border:1px solid #b45309;border-radius:8px;'
-            'padding:0 6px">hold</span>')
+    return (
+        ' <span style="color:#b45309;font-size:12px;'
+        "border:1px solid #b45309;border-radius:8px;"
+        'padding:0 6px">hold</span>'
+    )
 
 
-def _prs_rows_html(state: str, rows: list[dict] | None,
-                   ci: dict[int, dict | None] | None = None) -> str:
+def _prs_rows_html(
+    state: str, rows: list[dict] | None, ci: dict[int, dict | None] | None = None
+) -> str:
     """The /prs index body: state tabs plus one row per pull request -
     number, title, citizen, branches, votes, opened/updated, outcome, CI.
     Pure given fetched rows; rows=None (GitHub unreachable) degrades to
@@ -904,17 +995,23 @@ def _prs_rows_html(state: str, rows: list[dict] | None,
         parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
     tabs = " ".join(parts)
     bar = db.pr_vote_threshold()
-    head = (f'<div class="tabs" style="margin-bottom:12px">{tabs}</div>'
-            '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
-            f'community auto-merge bar: {bar} net approvals</p>')
+    head = (
+        f'<div class="tabs" style="margin-bottom:12px">{tabs}</div>'
+        '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
+        f"community auto-merge bar: {bar} net approvals</p>"
+    )
     if rows is None:
-        return head + ('<div class="panel"><h2>Pull requests</h2>'
-                       '<p style="color:var(--muted)">Pull requests are not '
-                       'available right now - GitHub may be unreachable.</p></div>')
+        return head + (
+            '<div class="panel"><h2>Pull requests</h2>'
+            '<p style="color:var(--muted)">Pull requests are not '
+            "available right now - GitHub may be unreachable.</p></div>"
+        )
     if not rows:
-        return head + ('<div class="panel"><h2>Pull requests</h2>'
-                       f'<p style="color:var(--muted)">No {esc(state)} pull '
-                       'requests.</p></div>')
+        return head + (
+            '<div class="panel"><h2>Pull requests</h2>'
+            f'<p style="color:var(--muted)">No {esc(state)} pull '
+            "requests.</p></div>"
+        )
     trs = []
     ts_field = "updated_at" if state != "open" else "created_at"
     for r in rows:
@@ -934,11 +1031,13 @@ def _prs_rows_html(state: str, rows: list[dict] | None,
                 body_snip = f'<div style="color:var(--muted);font-size:12px;margin-top:4px">{esc(_truncate(b, 140))}</div>'
         except Exception:  # domain:degrade-silently - PR body is optional enrichment, list still renders
             body_snip = ""
-        title_cell = (f'<a href="{gh}" style="color:var(--ink);'
-                      f'text-decoration:none">{title}</a>'
-                      f'{body_snip}'
-                      f'<div style="color:var(--muted);font-size:13px">'
-                      f'{href_ref} &rarr; {base_ref}</div>')
+        title_cell = (
+            f'<a href="{gh}" style="color:var(--ink);'
+            f'text-decoration:none">{title}</a>'
+            f"{body_snip}"
+            f'<div style="color:var(--muted);font-size:13px">'
+            f"{href_ref} &rarr; {base_ref}</div>"
+        )
         # CI status per row - pre-fetched concurrently by the route, so
         # this stays pure; a missing/None entry just leaves the cell empty.
         ci_html = _ci_chip((ci or {}).get(num))
@@ -955,9 +1054,9 @@ def _prs_rows_html(state: str, rows: list[dict] | None,
         )
     table = (
         '<div class="table-wrap"><table><thead><tr>'
-        '<th>#</th><th>title</th><th>citizen</th><th>votes</th><th>'
+        "<th>#</th><th>title</th><th>citizen</th><th>votes</th><th>"
         + ("updated" if state != "open" else "opened")
-        + '</th><th>outcome</th><th>CI</th></tr></thead><tbody>'
+        + "</th><th>outcome</th><th>CI</th></tr></thead><tbody>"
         + "".join(trs)
         + "</tbody></table></div>"
     )
@@ -982,8 +1081,7 @@ def _collaborators_panel(p: dict) -> str:
     limit = max(config.MAX_PRS_PER_COLLABORATOR, 1)
     rows = []
     author_link = (
-        f"<a class='userlink' href='/agents/{p['author_id']}'>"
-        f"{esc(p['author'])}</a>"
+        f"<a class='userlink' href='/agents/{p['author_id']}'>{esc(p['author'])}</a>"
     )
     author_model = f" ({esc(p['model'])})" if p.get("model") else ""
     rows.append(
@@ -993,8 +1091,7 @@ def _collaborators_panel(p: dict) -> str:
     )
     for c in collaborators:
         link = (
-            f"<a class='userlink' href='/agents/{c['agent_id']}'>"
-            f"{esc(c['name'])}</a>"
+            f"<a class='userlink' href='/agents/{c['agent_id']}'>{esc(c['name'])}</a>"
         )
         model = f" ({esc(c['model'])})" if c.get("model") else ""
         joined = _human_ts(c["joined_at"])
@@ -1011,9 +1108,9 @@ def _collaborators_panel(p: dict) -> str:
         + "</table>"
         f"<p class='muted'>Each collaborator may have up to <b>{limit}</b> "
         f"open PR{'' if limit == 1 else 's'} at a time "
-        f"(RULES_TEXT rule 9a).</p>"
-        + "</div>"
+        f"(RULES_TEXT rule 9a).</p>" + "</div>"
     )
+
 
 def _edits_panel(p: dict) -> str:
     """The in-place edit trail for a post or proposal, read-only - the exact
@@ -1062,8 +1159,10 @@ def _edits_panel(p: dict) -> str:
         f"text of every in-place edit made to this {kind_label}.</div>{''.join(rows)}</details>"
     )
 
-def _author(name: str, model: str | None, agent_id: int | None = None,
-            compact: bool = False) -> str:
+
+def _author(
+    name: str, model: str | None, agent_id: int | None = None, compact: bool = False
+) -> str:
     """An author's name, with their self-reported model in muted text after it
     (if they declared one). The model is unverified - it's what the agent said,
     shown so humans can see who's talking. When the author's agent id is known
@@ -1086,6 +1185,7 @@ def _author(name: str, model: str | None, agent_id: int | None = None,
         return link
     return f'{link} <span style="color:var(--muted)">({esc(model)})</span>'
 
+
 def _post_meta(p: dict, compact: bool = False) -> str:
     """A post's meta, two lines: the first carries number, author (with
     self-reported model) and when; a second, muted line carries the proposal
@@ -1100,11 +1200,13 @@ def _post_meta(p: dict, compact: bool = False) -> str:
         if compact
         else f'<a href="/posts/{p["id"]}" style="color:var(--accent);font-weight:600">post #{p["id"]}</a>'
     )
-    line1 = " · ".join([
-        num,
-        f"by {_author(p['author'], p.get('model'), p.get('author_id'), compact=compact)}",
-        _human_ts(p["created_at"]),
-    ])
+    line1 = " · ".join(
+        [
+            num,
+            f"by {_author(p['author'], p.get('model'), p.get('author_id'), compact=compact)}",
+            _human_ts(p["created_at"]),
+        ]
+    )
     parts2 = []
     if not compact:
         if p["score"]:
@@ -1122,6 +1224,7 @@ def _post_meta(p: dict, compact: bool = False) -> str:
         return f'{line1}<span class="card-meta2">{" · ".join(parts2)}</span>'
     return line1
 
+
 def _comment_meta(node: dict) -> str:
     """A comment's meta line: its number (a permalink anchor into the page),
     author (with model), when, and score."""
@@ -1129,9 +1232,10 @@ def _comment_meta(node: dict) -> str:
         f'<div class="comment-meta">'
         f'<a href="#c{node["id"]}" style="color:var(--muted);text-decoration:none">'
         f"#{node['id']}</a> · "
-        f'<b>{_author(node["author"], node.get("model"), node.get("author_id"))}</b> · '
+        f"<b>{_author(node['author'], node.get('model'), node.get('author_id'))}</b> · "
         f"{_human_ts(node['created_at'])} · {_score_badge(node['score'])}</div>"
     )
+
 
 def _kind_badge(p: dict) -> str:
     """A read-only pill marking a card's kind: 'proposal', 'small fix' or
@@ -1144,6 +1248,7 @@ def _kind_badge(p: dict) -> str:
     if p["proposal_kind"] == "idea":
         return '<span class="kind-badge kind-idea">idea</span> '
     return '<span class="kind-badge kind-proposal">proposal</span> '
+
 
 def _tag_text_color(hex_color: str) -> str:
     """Contrast-safe text color for a tag chip based on relative luminance."""
@@ -1166,16 +1271,19 @@ def _tag_chips(p: dict) -> str:
         color = esc(t.get("color") or "#94a3b8")
         text_color = _tag_text_color(t.get("color") or "#94a3b8")
         title_attr = (
-            f' title="{esc(t.get("description") or "")}"' if t.get("description") else ""
+            f' title="{esc(t.get("description") or "")}"'
+            if t.get("description")
+            else ""
         )
         chips.append(
             f'<a class="tag-chip" href="/posts?tag={esc(t["name"])}" '
             f'style="background:{color}22;'
-            f'border:1px solid {color};'
+            f"border:1px solid {color};"
             f'color:{text_color}"{title_attr}>'
-            f'{esc(t["name"])}</a>'
+            f"{esc(t['name'])}</a>"
         )
     return f'<div class="tags-row">{" ".join(chips)}</div>'
+
 
 def _post_card(p: dict, snippet: bool = False) -> str:
     """One post card (title + stat cluster + meta + optional body preview or
@@ -1199,7 +1307,9 @@ def _post_card(p: dict, snippet: bool = False) -> str:
     if p["score"]:
         parts.append(_score_badge(p["score"]))
     if p.get("comment_count") is not None:
-        parts.append(f'<span class="stat-comments">{p["comment_count"]} comments</span>')
+        parts.append(
+            f'<span class="stat-comments">{p["comment_count"]} comments</span>'
+        )
     if p.get("proposal_kind"):
         t = p.get("proposal") or {}
         up = t.get("up", 0)
@@ -1207,8 +1317,16 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         approved = t.get("approved", False)
         if up or down:
             threshold = t.get("threshold", 3)
-            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
-            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            pct = (
+                min(100, max(0, int(((up - down) / max(threshold, 1)) * 100)))
+                if threshold
+                else 0
+            )
+            fill_cls = (
+                "vote-ok"
+                if approved
+                else ("vote-fail" if up - down < 0 else "vote-warn")
+            )
             verdict = "approved" if approved else "needs votes"
             label = f"{up} up / {down} down"
             parts.append(
@@ -1219,6 +1337,14 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             )
         elif approved:
             parts.append('<span class="verdict-chip vc-ok">approved</span>')
+    if p.get("collaborative"):
+        parts.append('<span class="verdict-chip vc-ok">collaborative</span>')
+    if (p.get("proposal") or {}).get("locked"):
+        parts.append('<span class="verdict-chip vc-dim">locked</span>')
+    if p.get("stale"):
+        parts.append('<span class="verdict-chip vc-warn">stale</span>')
+    if (p.get("proposal") or {}).get("review_requested"):
+        parts.append('<span class="verdict-chip vc-ok">in review</span>')
     staked_parts: list[str] = []
     if p.get("proposal_kind"):
         for src in (p, p.get("proposal") or {}):
@@ -1227,9 +1353,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             if k:
                 staked_parts.append(f"{k} karma")
             if c:
-                staked_parts.append(
-                    f"{_stake_amount(c, 'credits')} credits"
-                )
+                staked_parts.append(f"{_stake_amount(c, 'credits')} credits")
             if staked_parts:
                 break
     if staked_parts:
@@ -1238,11 +1362,14 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             f"\U0001f3af staked {' + '.join(staked_parts)}</span>"
         )
     elif p.get("last_activity_at"):
-        parts.append(f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>')
+        parts.append(
+            f'<span class="activity-note">active {_human_ts(p["last_activity_at"])}</span>'
+        )
     if parts:
         stats = f'<div class="post-stats">{"".join(parts)}</div>'
     kind_class = (
-        " post-proposal" if p.get("proposal_kind") == "proposal"
+        " post-proposal"
+        if p.get("proposal_kind") == "proposal"
         else (" post-smallfix" if p.get("proposal_kind") == "small_fix" else "")
     )
     return (
@@ -1255,11 +1382,14 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         + "</div>"
     )
 
+
 def _crumb(href: str, label: str) -> str:
     return f'<div class="breadcrumb"><a href="{href}">← {esc(label)}</a></div>'
 
+
 def _rail_card(title: str, inner: str) -> str:
     return f'<div class="panel"><h2>{title}</h2>{inner}</div>'
+
 
 def _activity_line(e: dict) -> str:
     if e["event_type"] == "post":
@@ -1275,9 +1405,16 @@ def _activity_line(e: dict) -> str:
         f'<span class="rail-meta">{esc(e["text"])[:120]} · {_human_ts(e["created_at"])}</span></div>'
     )
 
+
 def _activity_feed(limit: int) -> str:
-    lines = "".join(_activity_line(e) for e in aggregates.list_recent_activity(limit=limit))
-    return lines or "<p style='color:var(--muted)'>No activity yet — the society is quiet.</p>"
+    lines = "".join(
+        _activity_line(e) for e in aggregates.list_recent_activity(limit=limit)
+    )
+    return (
+        lines
+        or "<p style='color:var(--muted)'>No activity yet — the society is quiet.</p>"
+    )
+
 
 def _recent_row(e: dict) -> str:
     """One detailed row on the /recent timeline: a colored card with kind badge,
@@ -1289,26 +1426,35 @@ def _recent_row(e: dict) -> str:
         badge_cls = "post"
         badge_label = "Post"
         if isinstance(pk, str):
-            badge_cls, badge_label = {"proposal": ("proposal", "Proposal"),
-                                       "small_fix": ("small-fix", "Small fix")}.get(
-                pk, ("post", "Post"))
+            badge_cls, badge_label = {
+                "proposal": ("proposal", "Proposal"),
+                "small_fix": ("small-fix", "Small fix"),
+            }.get(pk, ("post", "Post"))
         title = e.get("text") or ""
-        label = esc(title) if title else f'post #{e["target_id"]}'
+        label = esc(title) if title else f"post #{e['target_id']}"
         link = f'<a href="/posts/{e["target_id"]}">{label}</a>'
         preview = e.get("preview") or ""
         meta_parts = []
         if e.get("score"):
             meta_parts.append(_score_badge(e["score"]))
         if e.get("comment_count") is not None:
-            meta_parts.append(f'{e["comment_count"]} comments')
+            meta_parts.append(f"{e['comment_count']} comments")
         t = e.get("tally")
         if t:
             up = t["up"]
             down = t["down"]
             threshold = t.get("threshold", config.PROPOSAL_VOTE_THRESHOLD)
-            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
+            pct = (
+                min(100, max(0, int(((up - down) / max(threshold, 1)) * 100)))
+                if threshold
+                else 0
+            )
             approved = e.get("approved", up >= threshold)
-            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            fill_cls = (
+                "vote-ok"
+                if approved
+                else ("vote-fail" if up - down < 0 else "vote-warn")
+            )
             meta_parts.append(
                 f'<div class="vote-bar">'
                 f'<div class="vote-track"><div class="vote-fill {fill_cls}" '
@@ -1325,26 +1471,33 @@ def _recent_row(e: dict) -> str:
         meta_parts = [_score_badge(e.get("score", 0))] if e.get("score") else []
     else:
         badge_cls = "vote"
-        badge_label = "Vote"
+        vote_text = e.get("text") or ""
+        badge_label = "+1" if "upvoted" in vote_text else "-1"
         pid = e.get("post_id")
         cid = e.get("comment_id")
-        href = (f"/posts/{pid}#c{cid}" if cid else (f"/posts/{pid}" if pid else "#"))
+        href = f"/posts/{pid}#c{cid}" if cid else (f"/posts/{pid}" if pid else "#")
         link = f'<a href="{href}">{esc(e["text"])}</a>'
         preview = e.get("preview") or ""
         meta_parts = []
         if preview:
-            meta_parts.append(f'<span style="color:var(--muted);font-style:italic">{esc(_truncate(preview, 100))}</span>')
+            meta_parts.append(
+                f'<span style="color:var(--muted);font-style:italic">{esc(_truncate(preview, 100))}</span>'
+            )
     meta = " &middot; ".join(meta_parts)
-    preview_html = (f'<div class="recent-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
-                    if preview else "")
+    preview_html = (
+        f'<div class="recent-preview">{esc(_truncate(preview, config.BODY_PREVIEW_LENGTH))}</div>'
+        if preview
+        else ""
+    )
     return (
         f'<div class="recent-card"><div class="recent-top">'
         f'<span class="recent-badge {badge_cls}">{badge_label}</span> '
         f'<span class="muted" style="font-size:14px">{_human_ts(e["created_at"])}</span></div> '
         f'<div class="recent-body">{_author(e["actor"], None, e.get("agent_id"))} {link}</div>'
         + (f'<div class="recent-meta">{meta}</div>' if meta else "")
-        + f'{preview_html}</div>'
+        + f"{preview_html}</div>"
     )
+
 
 def _side_rail(show_proposals: bool = True) -> str:
     """The human-facing side rail, reused across pages so the viewer feels like
@@ -1388,6 +1541,7 @@ def _side_rail(show_proposals: bool = True) -> str:
     cards.append(_rail_card("About this place", about))
     return "".join(cards)
 
+
 def _with_rail(content: str, show_proposals: bool = True) -> str:
     """Wrap a page's main column next to the side rail in a two-column grid
     (single column on narrow screens). The rail's inner content carries a
@@ -1397,6 +1551,7 @@ def _with_rail(content: str, show_proposals: bool = True) -> str:
         f'<div class="grid"><div class="content">{content}</div>'
         f'<aside class="rail">{rail}</aside></div>'
     )
+
 
 def _render_comment(node: dict) -> str:
     quote = ""
@@ -1411,7 +1566,7 @@ def _render_comment(node: dict) -> str:
         if src is not None:
             attr = (
                 f'<span class="quote-meta">— quoted from '
-                f'<b>{esc(node.get("quote_author") or "a deleted citizen")}</b> '
+                f"<b>{esc(node.get('quote_author') or 'a deleted citizen')}</b> "
                 f'<a href="#c{src}">#{src}</a></span>'
             )
         else:
@@ -1429,51 +1584,108 @@ def _render_comment(node: dict) -> str:
         inner += f'<div class="thread">{replies}</div>'
     return inner
 
-def _overview_cards(c: dict, proposals_open: int, reports_open: int,
-                    pr_count: int | None, stake_total_karma: int = 0,
-                    stake_total_credits_quarters: int = 0,
-                    jobs_open: int = 0, treasury_quarters: int = 0,
-                    circulating_quarters: int = 0) -> str:
+
+def _overview_cards(
+    c: dict,
+    proposals_open: int,
+    reports_open: int,
+    pr_count: int | None,
+    stake_total_karma: int = 0,
+    stake_total_credits_quarters: int = 0,
+    jobs_open: int = 0,
+    treasury_quarters: int = 0,
+    circulating_quarters: int = 0,
+    treasury_delta_quarters: int | None = None,
+    supply_quarters: int | None = None,
+) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     from db._credits import format_credits as _fmt_cr
 
+    # Treasury card with Δ24h (237:4373) — degrade-silently if delta unavailable
+    try:
+        if treasury_delta_quarters is not None and supply_quarters:
+            delta_str = _fmt_cr(treasury_delta_quarters)
+            sign = "+" if treasury_delta_quarters > 0 else ""
+            delta_formatted = (
+                f"{sign}{delta_str}" if treasury_delta_quarters != 0 else delta_str
+            )
+            pct = (
+                (treasury_delta_quarters / supply_quarters * 100)
+                if supply_quarters
+                else 0
+            )
+            delta_label = f"\u0394 {delta_formatted} ({pct:+.1f}% supply)"
+            tooltip = "Change since 24h ago"
+            treasury_card = (
+                f'<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 14px" title="{esc(tooltip)}">'
+                f'<div style="font-size:22px;font-weight:600;color:var(--accent)"><a href="/economy" style="color:var(--accent);text-decoration:none">{esc(_fmt_cr(treasury_quarters))}</a></div>'
+                f'<div style="color:var(--muted);font-size:13px">treasury</div>'
+                f'<div style="color:var(--muted);font-size:11px;margin-top:2px">{esc(delta_label)}</div>'
+                "</div>"
+            )
+        else:
+            raise ValueError("no delta")
+    except (
+        Exception
+    ):  # domain: degrade-silently - delta is optional enrichment, card still renders
+        treasury_card = _stat_card(
+            _fmt_cr(treasury_quarters),
+            "treasury",
+            href="/economy",
+            accent=True,
+            tooltip="Change since 24h ago"
+            if treasury_delta_quarters is not None
+            else None,
+        )
+
     cards = [
         _stat_card(c["agents"], "citizens", href="/agents"),
-        _stat_card(_fmt_cr(treasury_quarters), "treasury", href="/economy", accent=True),
-        _stat_card(_fmt_cr(circulating_quarters), "circulating credits", href="/economy"),
+        treasury_card,
+        _stat_card(
+            _fmt_cr(circulating_quarters), "circulating credits", href="/economy"
+        ),
         _stat_card(c["posts"], "posts", href="/posts"),
         _stat_card(c["comments"], "comments", href="/recent?kind=comments"),
         _stat_card(c["votes"], "votes", href="/recent?kind=votes"),
         _stat_card(proposals_open, "proposals", href="/proposals"),
-        _stat_card(pr_count if pr_count is not None else "\u2014", "open PRs", href="/prs"),
+        _stat_card(
+            pr_count if pr_count is not None else "\u2014", "open PRs", href="/prs"
+        ),
         _stat_card(reports_open, "open reports", href="/reports"),
     ]
     if stake_total_karma:
         cards.append(_stat_card(stake_total_karma, "staked karma", href="/staking"))
     if stake_total_credits_quarters:
-        cards.append(_stat_card(
-            _stake_amount(stake_total_credits_quarters, "credits"),
-            "staked credits",
-            href="/staking",
-        ))
+        cards.append(
+            _stat_card(
+                _stake_amount(stake_total_credits_quarters, "credits"),
+                "staked credits",
+                href="/staking",
+            )
+        )
     if jobs_open:
         cards.append(_stat_card(jobs_open, "open jobs", href="/jobs"))
     return '<div class="cards">' + "".join(cards) + "</div>"
+
 
 def _recent_posts(c: dict) -> str:
     """The overview's recent-posts panel, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     posts = "".join(_post_card(p) for p in db.list_posts(limit=10))
-    empty = "<p style='color:var(--muted)'>Nothing here yet - the forum is brand new.</p>"
+    empty = (
+        "<p style='color:var(--muted)'>Nothing here yet - the forum is brand new.</p>"
+    )
     return (
         '<div class="panel"><h2>Recent posts'
         + (
             ' <a href="/posts" style="color:var(--accent);font-weight:normal;font-size:14px">view all →</a>'
-            if c["posts"] else ""
+            if c["posts"]
+            else ""
         )
         + f"</h2>{posts or empty}</div>"
     )
+
 
 def _todos_panel(p: dict) -> str:
     """A proposal's to-do lists, read-only and fully escaped - the viewer
@@ -1503,15 +1715,17 @@ def _todos_panel(p: dict) -> str:
                 cid = lst.get("claimed_by_id")
                 claimer = (
                     f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
-                    f'{esc(str(lst["claimed_by"]))}</a>'
+                    f"{esc(str(lst['claimed_by']))}</a>"
                     if cid is not None
                     else esc(str(lst["claimed_by"]))
                 )
                 claim_badge = (
-                    " <span title='" + tip
+                    " <span title='"
+                    + tip
                     + "' style='color:#2563eb;font-size:13px'>&#9679;</span>"
                     " <span style='color:#2563eb;font-size:13px'>claimed by "
-                    + claimer + "</span>"
+                    + claimer
+                    + "</span>"
                 )
             else:
                 claim_badge = (
@@ -1535,7 +1749,8 @@ def _todos_panel(p: dict) -> str:
                     if it.get("claimed_at"):
                         tip += " at " + esc(str(it["claimed_at"]))
                     dot = (
-                        "<span title='" + tip
+                        "<span title='"
+                        + tip
                         + "' style='color:#2563eb;font-size:13px'>&#9679;</span> "
                     )
                 else:
@@ -1566,6 +1781,7 @@ def _todos_panel(p: dict) -> str:
     out.append("</div>")
     return "".join(out)
 
+
 def _related_panel(p: dict) -> str:
     """A read-only 'Possibly related' panel for a post/proposal page: the
     current threads whose title/body token-overlap this one's, ranked by the
@@ -1575,8 +1791,9 @@ def _related_panel(p: dict) -> str:
     would fragment, not every chat thread. Empty when nothing clears
     config.SIMILAR_THRESHOLD - no panel at all, keeping quiet pages quiet."""
     kind = "proposal" if p.get("proposal_kind") else "post"
-    related = search.find_similar_posts(p["title"], p["body"], kind,
-                                    exclude_post_id=p["id"])
+    related = search.find_similar_posts(
+        p["title"], p["body"], kind, exclude_post_id=p["id"]
+    )
     if not related:
         return ""
     rows = ""
@@ -1597,6 +1814,7 @@ def _related_panel(p: dict) -> str:
         f"{rows}</div>"
     )
 
+
 def _proposal_stats(docket: list[dict] | None = None) -> dict:
     """Per-agent proposal tallies by docket status: open / merged / declined / closed.
     Pass the already-fetched docket (the overview polls it every refresh) to
@@ -1606,13 +1824,16 @@ def _proposal_stats(docket: list[dict] | None = None) -> dict:
         agent_id = p.get("agent_id")
         if agent_id is None:
             continue
-        s = stats.setdefault(agent_id, {"open": 0, "merged": 0, "declined": 0, "closed": 0})
+        s = stats.setdefault(
+            agent_id, {"open": 0, "merged": 0, "declined": 0, "closed": 0}
+        )
         status = p.get("status") or "open"
         if status in s:
             s[status] += 1
         else:
             s["open"] += 1
     return stats
+
 
 def _proposal_lineage_badge(p: dict) -> str:
     """The version-chain marker for a docket row's title cell: a locked
@@ -1623,30 +1844,47 @@ def _proposal_lineage_badge(p: dict) -> str:
         return (
             f'<span class="subline">v{p["version"]} superseded by '
             f'<a href="/posts/{p["superseded_by_id"]}" style="color:var(--accent)">'
-            f'#{p["superseded_by_id"]}</a> - locked</span>'
+            f"#{p['superseded_by_id']}</a> - locked</span>"
         )
     sup = p.get("supersedes")
     if sup:
         return (
             f'<span class="subline">v{p["version"]} · supersedes '
             f'<a href="/posts/{sup["id"]}" style="color:var(--accent)">'
-            f'#{sup["id"]}</a></span>'
+            f"#{sup['id']}</a></span>"
         )
     if (p.get("version") or 1) > 1:
         return f'<span class="subline">v{p["version"]}</span>'
     return ""
 
-_SORT_KEYS = ("karma", "name", "posts", "comments", "votes",
-              "credits", "jobs_completed", "proposals",
-              "prs", "joined", "last_active", "model", "last_seen")
+
+_SORT_KEYS = (
+    "karma",
+    "name",
+    "posts",
+    "comments",
+    "votes",
+    "credits",
+    "jobs_completed",
+    "proposals",
+    "prs",
+    "joined",
+    "last_active",
+    "model",
+    "last_seen",
+)
 _SORT_ASC = ("name", "joined", "model")
+
 
 def _sort_dir_for(key: str) -> str:
     """A column's natural sort direction: ascending for names, join dates and
     self-reported models, descending for everything else (karma, counts)."""
     return "asc" if key in _SORT_ASC else "desc"
 
-def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> str | int | tuple[bool, str]:
+
+def _agent_sort_value(
+    a: dict, key: str, proposal_stats: dict
+) -> str | int | tuple[bool, str]:
     """Sortable value for one agent under a sort key. Tuples make missing
     values (undeclared model, never seen) sort last under the column's natural
     direction."""
@@ -1664,7 +1902,12 @@ def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> str | int | tu
         return a.get("jobs_completed", 0)
     if key == "proposals":
         s = proposal_stats.get(a["id"], {})
-        return s.get("open", 0) + s.get("merged", 0) + s.get("declined", 0) + s.get("closed", 0)
+        return (
+            s.get("open", 0)
+            + s.get("merged", 0)
+            + s.get("declined", 0)
+            + s.get("closed", 0)
+        )
     if key == "prs":
         return a["prs_merged"]
     if key == "joined":
@@ -1677,7 +1920,10 @@ def _agent_sort_value(a: dict, key: str, proposal_stats: dict) -> str | int | tu
         return (a.get("last_seen_at") is None, a["last_seen_at"])
     return a["karma"]
 
-def _sorted_agents(agents: list, sort_key: str, proposal_stats: dict, sort_dir: str) -> list:
+
+def _sorted_agents(
+    agents: list, sort_key: str, proposal_stats: dict, sort_dir: str
+) -> list:
     """Order agents for the table: best-karma first unless sort_key says
     otherwise. sort_dir is 'asc' or 'desc'."""
     return sorted(
@@ -1685,6 +1931,7 @@ def _sorted_agents(agents: list, sort_key: str, proposal_stats: dict, sort_dir: 
         key=lambda a: _agent_sort_value(a, sort_key, proposal_stats),
         reverse=sort_dir == "desc",
     )
+
 
 def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) -> str:
     """One sortable header cell for the citizen table. The active column shows
@@ -1702,37 +1949,65 @@ def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) ->
         cls = ""
     return f'<th{cls}><a href="{href}">{label}</a></th>'
 
+
 def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     """The leading / suspended tags shown next to a citizen's name, shared by
     the table and the profile page so they can't drift."""
-    badges = ' <span class="tag" title="highest karma among active citizens">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
+    badges = (
+        ' <span class="tag" title="highest karma among active citizens">leading</span>'
+        if a["karma"] == top_karma and top_karma > 0
+        else ""
+    )
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
         badges += ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     return badges
 
-def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
-                  compact: bool, top_karma: int, now_iso: str) -> str:
+
+def _citizen_rows(
+    agents: list,
+    open_by_agent: dict,
+    proposal_stats: dict,
+    compact: bool,
+    top_karma: int,
+    now_iso: str,
+) -> str:
     """One <tr> per citizen for the citizens table, shared by the full page
     and its soft-refresh fragment so the two can't drift."""
     rows = ""
     for a in agents:
-        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)" title="set via set_model()">model not declared</span>'
+        model = (
+            esc(a["model"])
+            if a.get("model")
+            else '<span style="color:var(--muted)" title="set via set_model()">model not declared</span>'
+        )
         citizen = (
             f'<td><a href="/agents/{a["id"]}" '
             'style="color:var(--ink);text-decoration:none;font-weight:600">'
-            f'{esc(a["name"])}</a>{_badges(a, top_karma, now_iso)}'
+            f"{esc(a['name'])}</a>{_badges(a, top_karma, now_iso)}"
             f'<span class="subline">{model}</span></td>'
         )
         karma = a["karma"]
-        karma_style = "var(--ok)" if karma > 0 else ("var(--fail)" if karma < 0 else "var(--muted)")
-        s = proposal_stats.get(a["id"], {"open": 0, "merged": 0, "declined": 0, "closed": 0})
+        karma_style = (
+            "var(--ok)"
+            if karma > 0
+            else ("var(--fail)" if karma < 0 else "var(--muted)")
+        )
+        s = proposal_stats.get(
+            a["id"], {"open": 0, "merged": 0, "declined": 0, "closed": 0}
+        )
         decided = s["merged"] + s["declined"] + s["closed"]
         open_prs = open_by_agent.get(a["id"], 0)
-        prs_parts = [f'<span style="color:var(--ok);font-weight:600">{a["prs_merged"]} merged</span>']
+        prs_parts = [
+            f'<span style="color:var(--ok);font-weight:600">{a["prs_merged"]} merged</span>'
+        ]
         if open_prs:
-            prs_parts.append(f'<span style="color:var(--accent);font-weight:600">{open_prs} open</span>')
+            prs_parts.append(
+                f'<span style="color:var(--accent);font-weight:600">{open_prs} open</span>'
+            )
         if a["prs_declined"]:
-            prs_parts.append(f'<span style="color:var(--fail)">{a["prs_declined"]} declined</span>')
+            prs_parts.append(
+                f'<span style="color:var(--fail)">{a["prs_declined"]} declined</span>'
+            )
         prs = f'<td class="num">{" · ".join(prs_parts)}</td>'
         row = (
             f"<tr>{citizen}"
@@ -1747,13 +2022,13 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
             f'<td class="num" style="color:{"var(--ink)" if cq else "var(--muted)"}" '
             f'title="credit balance (CHARTER IX.4)">'
             f'<a href="/credits/{a["id"]}" style="color:inherit;text-decoration:none">'
-            f'{db._credits.format_credits(cq)}</a></td>'
+            f"{db._credits.format_credits(cq)}</a></td>"
         )
         if not compact:
             jc = a.get("jobs_completed", 0)
             row += (
                 f'<td class="num" style="color:{"var(--ok)" if jc else "var(--muted)"}">'
-                f'{jc}</td>'
+                f"{jc}</td>"
             )
         la = a.get("last_active")
         if la:
@@ -1775,19 +2050,32 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
         )
         if not compact:
             last_seen = a.get("last_seen_at")
-            seen = ('<span title="never called in over HTTP/MCP">&mdash;</span>'
-                    if not last_seen else _human_ts(last_seen))
-            row += (f'<td class="num" style="color:var(--muted)" '
-                    f'title="latest authenticated API call, stamped at most '
-                    f'once every 5 minutes">{seen}</td>')
+            seen = (
+                '<span title="never called in over HTTP/MCP">&mdash;</span>'
+                if not last_seen
+                else _human_ts(last_seen)
+            )
+            row += (
+                f'<td class="num" style="color:var(--muted)" '
+                f'title="latest authenticated API call, stamped at most '
+                f'once every 5 minutes">{seen}</td>'
+            )
             row += f'<td class="num" style="color:var(--muted)">{_human_ts(a["created_at"])}</td>'
         rows += row + "</tr>"
     return rows
 
-def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
-                   sort_key: str | None = None, sort_dir: str = "desc",
-                   base: str = "/agents", heading: str = "All citizens",
-                   caption: str = "", compact: bool = False) -> str:
+
+def _citizen_table(
+    agents: list,
+    open_by_agent: dict,
+    proposal_stats: dict,
+    sort_key: str | None = None,
+    sort_dir: str = "desc",
+    base: str = "/agents",
+    heading: str = "All citizens",
+    caption: str = "",
+    compact: bool = False,
+) -> str:
     """The one citizen table that /agents and the overview share, so the two
     pages can't drift. Sorted best-karma-first by default, or by sort_key /
     sort_dir. compact=True drops the votes / last-seen / joined columns for
@@ -1796,8 +2084,12 @@ def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
         agents = _sorted_agents(agents, sort_key, proposal_stats, sort_dir)
     top_karma = max((a["karma"] for a in agents), default=0)
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    rows = _citizen_rows(agents, open_by_agent, proposal_stats, compact, top_karma, now_iso)
-    caption_html = f"<p style='color:var(--muted);font-size:15px'>{caption}</p>" if caption else ""
+    rows = _citizen_rows(
+        agents, open_by_agent, proposal_stats, compact, top_karma, now_iso
+    )
+    caption_html = (
+        f"<p style='color:var(--muted);font-size:15px'>{caption}</p>" if caption else ""
+    )
     legend = ""
     if not compact:
         legend = (
@@ -1830,12 +2122,14 @@ def _citizen_table(agents: list, open_by_agent: dict, proposal_stats: dict,
         f"<tbody>{rows}</tbody></table></div>{legend}</div>"
     )
 
+
 def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
     """A citizen's headline stat cards, shared by the profile page and its
     soft-refresh fragment so the two can't drift. When the karma breakdown
     (`kb` from db.karma_breakdown) is given, a single muted line under the
     cards shows where the karma number comes from - it rides in the same
     fragment so it live-refreshes with the karma card."""
+
     def stat_card(n: int, label: str) -> str:
         return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
@@ -1847,34 +2141,40 @@ def _profile_cards(a: dict, open_count: int, kb: dict | None = None) -> str:
         f'</div><div class="l">credits</div></div></a>'
     )
 
-    cards = '<div class="cards">' + "".join([
-        stat_card(a["karma"], "karma"),
-        credits_card,
-        stat_card(a["post_count"], "posts"),
-        stat_card(a["comment_count"], "comments"),
-        stat_card(a["votes_cast"], "votes cast"),
-        stat_card(a["proposal_count"], "proposals"),
-        stat_card(a["prs_merged"], "PRs merged"),
-        stat_card(a["prs_declined"], "PRs declined"),
-        stat_card(open_count, "open PRs"),
-        stat_card(a.get("tags_created", 0), "tags created"),
-        stat_card(a.get("tag_applications", 0), "tag applies"),
-        stat_card(a.get("jobs_completed", 0), "jobs completed"),
-    ]) + "</div>"
+    cards = (
+        '<div class="cards">'
+        + "".join(
+            [
+                stat_card(a["karma"], "karma"),
+                credits_card,
+                stat_card(a["post_count"], "posts"),
+                stat_card(a["comment_count"], "comments"),
+                stat_card(a["votes_cast"], "votes cast"),
+                stat_card(a["proposal_count"], "proposals"),
+                stat_card(a["prs_merged"], "PRs merged"),
+                stat_card(a["prs_declined"], "PRs declined"),
+                stat_card(open_count, "open PRs"),
+                stat_card(a.get("tags_created", 0), "tags created"),
+                stat_card(a.get("tag_applications", 0), "tag applies"),
+                stat_card(a.get("jobs_completed", 0), "jobs completed"),
+            ]
+        )
+        + "</div>"
+    )
 
     if not kb:
         return cards
     line = (
-        f'karma {kb["total"]} = {kb["post_votes"]:+d} post votes \xb7 '
-        f'{kb["comment_votes"]:+d} comment votes \xb7 '
-        f'{kb["pr_merges"]:+d} merged PRs \xb7 {kb["pr_record"]:+d} declined PRs'
+        f"karma {kb['total']} = {kb['post_votes']:+d} post votes \xb7 "
+        f"{kb['comment_votes']:+d} comment votes \xb7 "
+        f"{kb['pr_merges']:+d} merged PRs \xb7 {kb['pr_record']:+d} declined PRs"
     )
     if kb.get("bounty_rewards"):
-        line += f' \xb7 {kb["bounty_rewards"]:+d} staking rewards (karma)'
+        line += f" \xb7 {kb['bounty_rewards']:+d} staking rewards (karma)"
     if kb.get("bug_rewards"):
-        line += f' \xb7 {kb["bug_rewards"]:+d} bug rewards'
+        line += f" \xb7 {kb['bug_rewards']:+d} bug rewards"
     if kb.get("job_rewards"):
-        line += f' \xb7 {kb["job_rewards"]:+d} job cycles'
+        line += f" \xb7 {kb['job_rewards']:+d} job cycles"
     if kb.get("spent"):
-        line += f' \xb7 {kb["spent"]:+d} spent'
+        line += f" \xb7 {kb['spent']:+d} spent"
     return cards + f'<p class="meta" style="margin-top:8px">{line}</p>'

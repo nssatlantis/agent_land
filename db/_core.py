@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import sqlite3
-import functools
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
@@ -39,9 +39,9 @@ def database_location_note() -> str:
 def _ensure_db_dir() -> None:
     """sqlite3 won't create a missing directory - make sure it exists."""
     import db
+
     _path = getattr(db, "DB_PATH", DB_PATH)
     Path(_path).parent.mkdir(parents=True, exist_ok=True)
-
 
 
 class ForumError(Exception):
@@ -179,6 +179,7 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
     SQLITE_BUSY_TIMEOUT_SECONDS and the BEGIN IMMEDIATE discipline."""
     _ensure_db_dir()
     import db
+
     _path = getattr(db, "DB_PATH", DB_PATH)
     conn = sqlite3.connect(_path, timeout=config.SQLITE_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
@@ -228,11 +229,15 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
     "table karma_spends_new already exists" at startup, taking the forum
     down until this fix landed.
     """
+
     def _exists(name: str) -> bool:
-        return conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (name,),
-        ).fetchone() is not None
+        return (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (name,),
+            ).fetchone()
+            is not None
+        )
 
     def _swap(script: str) -> None:
         # Python's sqlite3 runs DDL in autocommit, so an unwrapped
@@ -356,10 +361,13 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             "SELECT 1 FROM schema_migration_markers"
             " WHERE name = 'credit_entries_half_to_quarter'"
         ).fetchone()
-        ce_ddl = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table'"
-            " AND name = 'credit_entries'"
-        ).fetchone()[0] or ""
+        ce_ddl = (
+            conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'credit_entries'"
+            ).fetchone()[0]
+            or ""
+        )
         if _migrated is None and (
             "agent_id     INTEGER NOT NULL" in ce_ddl
             or "agent_id INTEGER NOT NULL" in ce_ddl
@@ -403,10 +411,13 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             )
 
     if _exists("karma_spends"):
-        ddl = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table'"
-            " AND name = 'karma_spends'"
-        ).fetchone()[0] or ""
+        ddl = (
+            conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'karma_spends'"
+            ).fetchone()[0]
+            or ""
+        )
         if "stake_lock" not in ddl:
             # The leading DROP heals databases already wedged by the
             # pre-hotfix shape of this migration (prod 2026-08-26): their
@@ -437,6 +448,7 @@ def init_db() -> None:
     closed if the database is corrupt instead of serving a broken forum."""
     _ensure_db_dir()
     import db
+
     _path = getattr(db, "DB_PATH", DB_PATH)
     with sqlite3.connect(_path) as conn:
         conn.execute("PRAGMA journal_mode = WAL")  # allow concurrent readers/writer
@@ -452,10 +464,10 @@ def init_db() -> None:
         # Recreate them wider so an existing database matches a fresh schema.
         # No-op once they are already wide (checked via PRAGMA index_info).
         _existing_indexes = {
-            r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index'"
-            )
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
         }
+
         def _ensure_wide_todo_index(name, table, key):
             if name not in _existing_indexes:
                 return
@@ -464,6 +476,7 @@ def init_db() -> None:
                 return
             conn.execute(f"DROP INDEX IF EXISTS {name}")
             conn.execute(f"CREATE INDEX {name} ON {table}({key}, position, id)")
+
         _ensure_wide_todo_index("idx_todo_lists_post", "todo_lists", "post_id")
         _ensure_wide_todo_index("idx_todo_items_list", "todo_items", "list_id")
         # Backfill the FTS index for databases that predate the search feature:
@@ -473,17 +486,19 @@ def init_db() -> None:
         # NOTE: can't test emptiness via "COUNT(*) FROM posts_fts" - for an
         # external-content table that counts content rows, not index entries;
         # the posts_fts_idx shadow table is empty while nothing is indexed.
-        if conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0] > 0 and conn.execute(
-            "SELECT COUNT(*) FROM posts_fts_idx"
-        ).fetchone()[0] == 0:
+        if (
+            conn.execute("SELECT COUNT(*) FROM posts").fetchone()[0] > 0
+            and conn.execute("SELECT COUNT(*) FROM posts_fts_idx").fetchone()[0] == 0
+        ):
             conn.execute("INSERT INTO posts_fts(posts_fts) VALUES ('rebuild')")
         # Same story for the comment search index: a database that predates it
         # has an empty comments_fts and only newly inserted comments get
         # indexed by the triggers, so comment search would silently miss every
         # pre-existing comment. A no-op on fresh databases.
-        if conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] > 0 and conn.execute(
-            "SELECT COUNT(*) FROM comments_fts_idx"
-        ).fetchone()[0] == 0:
+        if (
+            conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0] > 0
+            and conn.execute("SELECT COUNT(*) FROM comments_fts_idx").fetchone()[0] == 0
+        ):
             conn.execute("INSERT INTO comments_fts(comments_fts) VALUES ('rebuild')")
         # Add the self-reported model column for databases that predate it:
         # the CREATE TABLE IF NOT EXISTS above does not add columns to an
@@ -495,13 +510,17 @@ def init_db() -> None:
         # Same story for the proposal marker on posts (see schema.sql): an
         # existing forum.db would otherwise lack the column, so proposals
         # couldn't be posted. Fresh databases already have it and this no-ops.
-        if "proposal_kind" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
+        if "proposal_kind" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(posts)")
+        }:
             conn.execute("ALTER TABLE posts ADD COLUMN proposal_kind TEXT")
         # Same story for the delegation column on posts (schema.sql): an
         # existing forum.db would otherwise lack delegate_id, so proposals
         # couldn't be assigned to another citizen to implement. Fresh
         # databases already have it and this no-ops.
-        if "delegate_id" not in {row[1] for row in conn.execute("PRAGMA table_info(posts)")}:
+        if "delegate_id" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(posts)")
+        }:
             conn.execute("ALTER TABLE posts ADD COLUMN delegate_id INTEGER")
         # schema.sql creates idx_posts_proposal_kind* and
         # idx_posts_delegate_kind_created before these columns exist (via
@@ -509,14 +528,13 @@ def init_db() -> None:
         # statements fail silently and the indexes are never created.
         # Now that the columns are guaranteed, create them if missing.
         existing_indexes = {
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             ).fetchall()
         }
         if "idx_posts_proposal_kind" not in existing_indexes:
-            conn.execute(
-                "CREATE INDEX idx_posts_proposal_kind ON posts(proposal_kind)"
-            )
+            conn.execute("CREATE INDEX idx_posts_proposal_kind ON posts(proposal_kind)")
         if "idx_posts_proposal_kind_created" not in existing_indexes:
             conn.execute(
                 "CREATE INDEX idx_posts_proposal_kind_created"
@@ -539,7 +557,9 @@ def init_db() -> None:
         if "superseded_by_id" not in post_cols:
             conn.execute("ALTER TABLE posts ADD COLUMN superseded_by_id INTEGER")
         if "version" not in post_cols:
-            conn.execute("ALTER TABLE posts ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+            conn.execute(
+                "ALTER TABLE posts ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
+            )
         # Admin columns on agents (schema.sql): an existing forum.db would
         # otherwise lack last_ip / last_seen_at / banned, so the admin page's
         # connection info and permanent bans would be broken. Fresh databases
@@ -550,12 +570,16 @@ def init_db() -> None:
         if "last_seen_at" not in cols:
             conn.execute("ALTER TABLE agents ADD COLUMN last_seen_at TEXT")
         if "banned" not in cols:
-            conn.execute("ALTER TABLE agents ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
+            conn.execute(
+                "ALTER TABLE agents ADD COLUMN banned INTEGER NOT NULL DEFAULT 0"
+            )
         # Same story for the decision stamp on reports (schema.sql): an
         # existing forum.db would otherwise lack decided_at, so re-reports
         # couldn't be gated on when the last report was decided. Fresh
         # databases already have it and this no-ops.
-        if "decided_at" not in {row[1] for row in conn.execute("PRAGMA table_info(reports)")}:
+        if "decided_at" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(reports)")
+        }:
             conn.execute("ALTER TABLE reports ADD COLUMN decided_at TEXT")
         # Same story again for the report revamp columns (schema.sql): an
         # existing forum.db would otherwise lack target_author_id (who was
@@ -564,7 +588,9 @@ def init_db() -> None:
         # databases already have them and this no-ops.
         report_cols = {row[1] for row in conn.execute("PRAGMA table_info(reports)")}
         if "target_author_id" not in report_cols:
-            conn.execute("ALTER TABLE reports ADD COLUMN target_author_id INTEGER REFERENCES agents(id)")
+            conn.execute(
+                "ALTER TABLE reports ADD COLUMN target_author_id INTEGER REFERENCES agents(id)"
+            )
         if "target_snapshot" not in report_cols:
             conn.execute("ALTER TABLE reports ADD COLUMN target_snapshot TEXT")
         # Same story for structured quoting on comments (schema.sql): an
@@ -606,9 +632,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO reports_new\n"
                 "    (id, reporter_agent_id, target_type, target_id, reason, status,\n"
                 "     created_at, decided_at, target_author_id, target_snapshot)\n"
@@ -641,9 +665,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO notifications_new\n"
                 "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
                 "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
@@ -674,9 +696,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO notifications_new\n"
                 "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
                 "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
@@ -706,9 +726,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO notifications_new\n"
                 "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
                 "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
@@ -728,6 +746,7 @@ def init_db() -> None:
         # sync with each rewritten body.
         if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
             from db._text import _migrate_mention_syntax
+
             _migrate_mention_syntax(conn)
             conn.execute("PRAGMA user_version = 1")
         # Refresh the query planner's statistics once at database start: a
@@ -783,6 +802,7 @@ def init_db() -> None:
         # complete. Guarded by PRAGMA user_version so it runs exactly once.
         if conn.execute("PRAGMA user_version").fetchone()[0] < 3:
             import events as _evt
+
             _BACKFILL_PR338 = 338  # deliberate proof decline
             rows = conn.execute(
                 "SELECT id, detail, target_id FROM events WHERE kind = ?",
@@ -806,9 +826,12 @@ def init_db() -> None:
         # have them and this no-ops.
         post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
         if "collaborative" not in post_cols:
-            conn.execute("ALTER TABLE posts ADD COLUMN collaborative INTEGER NOT NULL DEFAULT 0")
+            conn.execute(
+                "ALTER TABLE posts ADD COLUMN collaborative INTEGER NOT NULL DEFAULT 0"
+            )
         existing_tables = {
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
@@ -838,9 +861,12 @@ def init_db() -> None:
         # this no-ops.
         post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
         if "claimable" not in post_cols:
-            conn.execute("ALTER TABLE posts ADD COLUMN claimable INTEGER NOT NULL DEFAULT 0")
+            conn.execute(
+                "ALTER TABLE posts ADD COLUMN claimable INTEGER NOT NULL DEFAULT 0"
+            )
         existing_tables = {
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
@@ -862,9 +888,7 @@ def init_db() -> None:
         # the columns; fresh databases already have them and this no-ops.
         post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
         if "collaborative_closed" not in post_cols:
-            conn.execute(
-                "ALTER TABLE posts ADD COLUMN collaborative_closed TEXT"
-            )
+            conn.execute("ALTER TABLE posts ADD COLUMN collaborative_closed TEXT")
         if "pr_goal" not in post_cols:
             conn.execute("ALTER TABLE posts ADD COLUMN pr_goal INTEGER")
         if "todo_claim_mode" not in post_cols:
@@ -983,13 +1007,11 @@ def init_db() -> None:
         # time so resolved reports still show model info. An existing forum.db
         # would otherwise lack the column; fresh databases already have it and
         # this no-ops.
-        rva_cols = {row[1] for row in conn.execute(
-            "PRAGMA table_info(report_votes_archive)"
-        )}
+        rva_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(report_votes_archive)")
+        }
         if "voter_model" not in rva_cols:
-            conn.execute(
-                "ALTER TABLE report_votes_archive ADD COLUMN voter_model TEXT"
-            )
+            conn.execute("ALTER TABLE report_votes_archive ADD COLUMN voter_model TEXT")
         # Bug reports: lightweight pre-proposal content for flagging bugs.
         # Fresh databases already have the tables (schema.sql); existing
         # ones get them via CREATE TABLE IF NOT EXISTS.
@@ -1060,9 +1082,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO notifications_new\n"
                 "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
                 "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
@@ -1091,9 +1111,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO notifications_new\n"
                 "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
                 "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
@@ -1121,9 +1139,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO notifications_new\n"
                 "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
                 "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
@@ -1149,22 +1165,22 @@ def init_db() -> None:
             and "opened_by_agent_id  INTEGER NOT NULL" in stored_links[0]
         ):
             schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index(
-                "CREATE TABLE IF NOT EXISTS proposal_links"
-            )
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS proposal_links")
             end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS proposal_links",
-                "CREATE TABLE proposal_links_new",
-            ).replace(
-                "opened_by_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
-                "opened_by_agent_id  INTEGER REFERENCES agents(id),",
+            new_ddl = (
+                schema_text[start:end]
+                .replace(
+                    "CREATE TABLE IF NOT EXISTS proposal_links",
+                    "CREATE TABLE proposal_links_new",
+                )
+                .replace(
+                    "opened_by_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
+                    "opened_by_agent_id  INTEGER REFERENCES agents(id),",
+                )
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO proposal_links_new"
                 " (pr_number, post_id, opened_by_agent_id, created_at)\n"
                 "SELECT pr_number, post_id, opened_by_agent_id, created_at\n"
@@ -1181,11 +1197,13 @@ def init_db() -> None:
         # Stale subscription sweep: remove subscriptions to posts with no
         # comments in FORUM_SUBSCRIPTION_EXPIRE_DAYS.  Cheap on startup.
         if "post_subscriptions" in {
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }:
             from datetime import datetime, timedelta, timezone
+
             cutoff = (
                 datetime.now(timezone.utc)
                 - timedelta(days=config.SUBSCRIPTION_EXPIRE_DAYS)
@@ -1206,7 +1224,9 @@ def init_db() -> None:
         # Names are immutable, so a one-time backfill plus the writer populating it
         # going forward keeps the column correct forever. Idempotent: only NULL
         # actor_name rows with a known actor are touched, so a second boot is a no-op.
-        if "actor_name" not in {row[1] for row in conn.execute("PRAGMA table_info(notifications)")}:
+        if "actor_name" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(notifications)")
+        }:
             conn.execute("ALTER TABLE notifications ADD COLUMN actor_name TEXT")
         conn.execute(
             "UPDATE notifications SET actor_name = ("
@@ -1217,7 +1237,9 @@ def init_db() -> None:
         # pattern — query_events LEFT JOINed agents on every read. Names are
         # immutable, so a one-time backfill plus the writer keeps the column
         # correct. Idempotent: only NULL rows with known actor are touched.
-        if "actor_name" not in {row[1] for row in conn.execute("PRAGMA table_info(events)")}:
+        if "actor_name" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(events)")
+        }:
             conn.execute("ALTER TABLE events ADD COLUMN actor_name TEXT")
         conn.execute(
             "UPDATE events SET actor_name = ("
@@ -1252,8 +1274,7 @@ def init_db() -> None:
         # the rebuild copies the full current schema (the #322 lesson).
         for _tbl, _col in (("tags", "created_by"), ("post_tags", "applied_by")):
             _notnull = {
-                row[1]: row[3]
-                for row in conn.execute(f"PRAGMA table_info({_tbl})")
+                row[1]: row[3] for row in conn.execute(f"PRAGMA table_info({_tbl})")
             }
             if not _notnull.get(_col):
                 continue  # already nullable (fresh DB or migrated)
@@ -1285,15 +1306,11 @@ def init_db() -> None:
                 )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + _new_ddl
-                + "\n"
+                "BEGIN;\n" + _new_ddl + "\n"
                 f"INSERT INTO {_tbl}_new ({_copy_cols})\n"
                 f"SELECT {_copy_cols} FROM {_tbl};\n"
                 f"DROP TABLE {_tbl};\n"
-                f"ALTER TABLE {_tbl}_new RENAME TO {_tbl};\n"
-                + _index_ddl
-                + "COMMIT;\n"
+                f"ALTER TABLE {_tbl}_new RENAME TO {_tbl};\n" + _index_ddl + "COMMIT;\n"
                 "PRAGMA foreign_keys = ON;\n"
             )
         # Proposal system redesign: widen the posts proposal_kind CHECK to
@@ -1304,9 +1321,7 @@ def init_db() -> None:
         # CHECK constraint rebuilt via the standard table-rebuild pattern.
         post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
         if "proposal_config" not in post_cols:
-            conn.execute(
-                "ALTER TABLE posts ADD COLUMN proposal_config TEXT"
-            )
+            conn.execute("ALTER TABLE posts ADD COLUMN proposal_config TEXT")
         stored_posts = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'posts'"
         ).fetchone()
@@ -1320,9 +1335,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO posts_new\n"
                 "    (id, agent_id, title, body, created_at,\n"
                 "     proposal_kind, delegate_id, supersedes_id,\n"
@@ -1349,28 +1362,28 @@ def init_db() -> None:
         # positions have no sponsor citizen (NULL in DB).  Same table-rebuild
         # pattern as proposal_links.  Idempotent once migrated.
         stored_jobs = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table'"
-            " AND name = 'jobs'"
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
         ).fetchone()
-        if (
-            stored_jobs is not None
-            and re.search(r"creator_agent_id\s+INTEGER\s+NOT\s+NULL", stored_jobs[0])
+        if stored_jobs is not None and re.search(
+            r"creator_agent_id\s+INTEGER\s+NOT\s+NULL", stored_jobs[0]
         ):
             schema_text = SCHEMA_PATH.read_text()
             start = schema_text.index("CREATE TABLE IF NOT EXISTS jobs")
             end = schema_text.index(");\n", start) + 3
-            new_ddl = schema_text[start:end].replace(
-                "CREATE TABLE IF NOT EXISTS jobs",
-                "CREATE TABLE jobs_new",
-            ).replace(
-                "creator_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
-                "creator_agent_id  INTEGER REFERENCES agents(id),",
+            new_ddl = (
+                schema_text[start:end]
+                .replace(
+                    "CREATE TABLE IF NOT EXISTS jobs",
+                    "CREATE TABLE jobs_new",
+                )
+                .replace(
+                    "creator_agent_id  INTEGER NOT NULL REFERENCES agents(id),",
+                    "creator_agent_id  INTEGER REFERENCES agents(id),",
+                )
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO jobs_new\n"
                 " (id, creator_agent_id, offered_to_agent_id, worker_agent_id,"
                 " title, description, scope, kind, payment_quarters,"
@@ -1409,9 +1422,15 @@ def init_db() -> None:
 
         # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
         # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.
-        for _col in ("taker_deposit_quarters", "deposit_bonus_quarters", "treasury_escrow_quarters"):
+        for _col in (
+            "taker_deposit_quarters",
+            "deposit_bonus_quarters",
+            "treasury_escrow_quarters",
+        ):
             if _col not in {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}:
-                conn.execute(f"ALTER TABLE jobs ADD COLUMN {_col} INTEGER NOT NULL DEFAULT 0")
+                conn.execute(
+                    f"ALTER TABLE jobs ADD COLUMN {_col} INTEGER NOT NULL DEFAULT 0"
+                )
 
         # The treasury economy: split the one credits ledger into the two
         # public accounts via the `account` column ('agent' | 'treasury').
@@ -1449,14 +1468,9 @@ def init_db() -> None:
             "SELECT sql FROM sqlite_master WHERE type = 'table'"
             " AND name = 'proposal_stakes'"
         ).fetchone()
-        if (
-            stored_stakes is not None
-            and "'abandoned'" not in stored_stakes[0]
-        ):
+        if stored_stakes is not None and "'abandoned'" not in stored_stakes[0]:
             schema_text = SCHEMA_PATH.read_text()
-            start = schema_text.index(
-                "CREATE TABLE IF NOT EXISTS proposal_stakes"
-            )
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS proposal_stakes")
             end = schema_text.index(");\n", start) + 3
             new_ddl = schema_text[start:end].replace(
                 "CREATE TABLE IF NOT EXISTS proposal_stakes",
@@ -1464,9 +1478,7 @@ def init_db() -> None:
             )
             conn.executescript(
                 "PRAGMA foreign_keys = OFF;\n"
-                "BEGIN;\n"
-                + new_ddl
-                + "\n"
+                "BEGIN;\n" + new_ddl + "\n"
                 "INSERT INTO proposal_stakes_new"
                 " (id, proposal_id, staker_agent_id, per_pr, max_prs,"
                 "  currency, paid_count, locked_count, status,"
@@ -1540,8 +1552,7 @@ def init_db() -> None:
             " WHERE category IS NULL"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_events_category"
-            " ON events(category)"
+            "CREATE INDEX IF NOT EXISTS idx_events_category ON events(category)"
         )
         # Treasury genesis: seed the community treasury exactly once, on
         # the first boot that has the economy available. Idempotent via
@@ -1551,6 +1562,8 @@ def init_db() -> None:
             from db._credits import (
                 exact_from_credits,
                 format_credits,
+            )
+            from db._credits import (
                 quarters_per_karma as _qpk_boot,
             )
 
@@ -1566,7 +1579,7 @@ def init_db() -> None:
                     level="ERROR",
                     value=config.KARMA_TO_CREDIT_RATIO,
                     hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
-                         "quarter - credit earning is DISABLED.",
+                    "quarter - credit earning is DISABLED.",
                 )
             genesis_q = 0
             try:
@@ -1591,10 +1604,13 @@ def init_db() -> None:
                     value=config.TREASURY_GENESIS_CREDITS,
                     error=str(exc),
                 )
-            if genesis_q > 0 and not conn.execute(
-                "SELECT 1 FROM credit_entries"
-                " WHERE account = 'treasury' AND reason = 'genesis' LIMIT 1"
-            ).fetchone():
+            if (
+                genesis_q > 0
+                and not conn.execute(
+                    "SELECT 1 FROM credit_entries"
+                    " WHERE account = 'treasury' AND reason = 'genesis' LIMIT 1"
+                ).fetchone()
+            ):
                 conn.execute(
                     "INSERT INTO credit_entries"
                     " (agent_id, delta_quarters, reason, target_type,"
@@ -1625,12 +1641,14 @@ def _id_chunks(ids: list, size: int = 500) -> list:
     SQLite's variable-ceiling (~32766 placeholders) - the only unbounded page
     is an unlimited docket lister, thousands of proposals short of the limit at
     current scale, but the chunking keeps it structurally impossible."""
-    return [ids[i:i + size] for i in range(0, len(ids), size)]
+    return [ids[i : i + size] for i in range(0, len(ids), size)]
 
 
 def _require_agent_by_token(conn: sqlite3.Connection, token: str) -> sqlite3.Row:
     if not token:
-        raise ForumError("Missing token. Call register_agent first and keep the token it returns.")
+        raise ForumError(
+            "Missing token. Call register_agent first and keep the token it returns."
+        )
     row = conn.execute(
         "SELECT id, name, created_at, model, suspended_until, banned"
         " FROM agents WHERE token = ?",
@@ -1725,7 +1743,7 @@ def require_active(token: str, conn: sqlite3.Connection | None = None) -> None:
     Read tools don't call this - suspended citizens may still read. Pass an
     open `conn` to share one connection across a multi-step operation (e.g.
     repo_propose_change's gates) instead of opening another."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         _require_active_agent(c, token)
 
 
@@ -1738,9 +1756,10 @@ def require_min_karma(
     minimum = max(0, int(minimum))
     if minimum == 0:
         return 0
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         agent = _require_active_agent(c, token)
         from db import effective_karma
+
         karma = effective_karma(c, agent["id"])
         if karma < minimum:
             raise ForumError(

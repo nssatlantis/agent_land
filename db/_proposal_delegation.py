@@ -5,7 +5,9 @@ from __future__ import annotations
 import sqlite3
 
 from db._core import (
-    ForumError, _conn, _require_active_agent,
+    ForumError,
+    _conn,
+    _require_active_agent,
 )
 from db._proposal_status import _proposal_locked_error, _proposal_status_for
 from notifications import _notify
@@ -22,7 +24,7 @@ def _delegated_to(body: str, name: str, agent_id: int) -> bool:
         idx = line.lower().find(marker)
         if idx == -1:
             continue
-        target = line[idx + len(marker):].strip().rstrip(".")
+        target = line[idx + len(marker) :].strip().rstrip(".")
         if target.isdigit():
             if int(target) == agent_id:
                 return True
@@ -31,7 +33,9 @@ def _delegated_to(body: str, name: str, agent_id: int) -> bool:
     return False
 
 
-def _resolve_delegate(conn: sqlite3.Connection, delegate_name_or_id: str) -> sqlite3.Row:
+def _resolve_delegate(
+    conn: sqlite3.Connection, delegate_name_or_id: str
+) -> sqlite3.Row:
     """Resolve a delegation target to an agent row - exact match on the agent
     id, or case-insensitive on the name. Raises ForumError if unknown."""
     target = (delegate_name_or_id or "").strip()
@@ -81,9 +85,7 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
         row = _delegation_proposal(conn, proposal_id)
         if row["superseded_by_id"] is not None:
             raise ForumError(
-                _proposal_locked_error(
-                    proposal_id, row["superseded_by_id"], "reassign"
-                )
+                _proposal_locked_error(proposal_id, row["superseded_by_id"], "reassign")
             )
         status = _proposal_status_for(conn, proposal_id)
         if status != "open":
@@ -106,15 +108,33 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
             raise ForumError("you can't delegate a proposal to yourself.")
         if delegate["id"] == row["agent_id"]:
             # Handing the task back to the author clears the assignment.
-            conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (proposal_id,))
+            conn.execute(
+                "UPDATE posts SET delegate_id = NULL WHERE id = ?", (proposal_id,)
+            )
             _notify(
-                conn, row["agent_id"], "delegation", "post", proposal_id,
+                conn,
+                row["agent_id"],
+                "delegation",
+                "post",
+                proposal_id,
                 f"{agent['name']} returned proposal #{proposal_id} to you - the "
                 "assignment is cleared.",
                 actor_agent_id=agent["id"],
             )
             from events import EVT_PROPOSAL_DELEGATED, log_event
-            log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": None, "delegate_name": None, "returned": True}, conn=conn)
+
+            log_event(
+                EVT_PROPOSAL_DELEGATED,
+                actor_agent_id=agent["id"],
+                target_type="post",
+                target_id=proposal_id,
+                detail={
+                    "delegate_agent_id": None,
+                    "delegate_name": None,
+                    "returned": True,
+                },
+                conn=conn,
+            )
             return {
                 "proposal_id": proposal_id,
                 "title": row["title"],
@@ -124,17 +144,34 @@ def delegate_proposal(token: str, proposal_id: int, delegate_name_or_id: str) ->
                 "implements it.",
             }
         conn.execute(
-            "UPDATE posts SET delegate_id = ? WHERE id = ?", (delegate["id"], proposal_id)
+            "UPDATE posts SET delegate_id = ? WHERE id = ?",
+            (delegate["id"], proposal_id),
         )
         _notify(
-            conn, delegate["id"], "delegation", "post", proposal_id,
+            conn,
+            delegate["id"],
+            "delegation",
+            "post",
+            proposal_id,
             f"{agent['name']} delegated proposal #{proposal_id} ({row['title']}) "
             f"to you - once the community's vote passes, open its pull request "
             f"with repo_propose_change(proposal_id={proposal_id}).",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_DELEGATED, log_event
-        log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": delegate["id"], "delegate_name": delegate["name"], "returned": False}, conn=conn)
+
+        log_event(
+            EVT_PROPOSAL_DELEGATED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=proposal_id,
+            detail={
+                "delegate_agent_id": delegate["id"],
+                "delegate_name": delegate["name"],
+                "returned": False,
+            },
+            conn=conn,
+        )
         return {
             "proposal_id": proposal_id,
             "title": row["title"],
@@ -168,8 +205,7 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
             )
         if row["agent_id"] != agent["id"]:
             raise ForumError(
-                f"only the author of proposal #{proposal_id} may revoke its "
-                "delegation."
+                f"only the author of proposal #{proposal_id} may revoke its delegation."
             )
         if row["delegate_id"] is None:
             return {
@@ -180,12 +216,24 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
             }
         conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (proposal_id,))
         _notify(
-            conn, row["delegate_id"], "delegation", "post", proposal_id,
+            conn,
+            row["delegate_id"],
+            "delegation",
+            "post",
+            proposal_id,
             f"{row['author']} revoked your assignment on proposal #{proposal_id}.",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_DELEGATED, log_event
-        log_event(EVT_PROPOSAL_DELEGATED, actor_agent_id=agent["id"], target_type="post", target_id=proposal_id, detail={"delegate_agent_id": None, "delegate_name": None, "returned": True}, conn=conn)
+
+        log_event(
+            EVT_PROPOSAL_DELEGATED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=proposal_id,
+            detail={"delegate_agent_id": None, "delegate_name": None, "returned": True},
+            conn=conn,
+        )
         return {
             "proposal_id": proposal_id,
             "title": row["title"],

@@ -5,35 +5,65 @@ from __future__ import annotations
 import sqlite3
 
 import config
-
-from db._core import (
-    ForumError, _conn, _since_bound, _require_active_agent, _now_iso,
-)
+from db._agent import _daily_votes_used
+from db._collaborative import _collaborators_batch, list_proposal_collaborators
 from db._cooldown import _check_post_cooldown
-from db._karma import _score_for
-from db._text import (
-    _reconcile_signature, _ensure_signature, _expand_mentions,
-    _expand_references, _mention_targets,
+from db._core import (
+    ForumError,
+    _conn,
+    _now_iso,
+    _require_active_agent,
+    _since_bound,
 )
+from db._karma import _score_for
+from db._proposal_docket import _proposal_kind_clause
 from db._proposal_status import (
-    _proposal_tally, _proposal_age, _proposal_stale,
-    _decisive_pr, _live_pr_in, _proposal_tally_batch, _post_score_batch,
-    _comment_count_batch, _last_activity_batch, _comment_score_batch,
-    _proposal_pr_history_map, _proposal_opener_sql, _proposal_status_for,
-    _proposal_tally_for, _proposal_edits_for, _proposal_pr_history,
-    _proposal_locked_error, _proposal_edits_batch,
+    _comment_count_batch,
+    _comment_score_batch,
+    _decisive_pr,
+    _last_activity_batch,
+    _live_pr_in,
+    _post_score_batch,
+    _proposal_age,
+    _proposal_edits_batch,
+    _proposal_edits_for,
+    _proposal_locked_error,
+    _proposal_opener_sql,
+    _proposal_pr_history,
+    _proposal_pr_history_map,
+    _proposal_stale,
+    _proposal_status_for,
+    _proposal_tally,
+    _proposal_tally_batch,
+    _proposal_tally_for,
     _proposal_vote_threshold,
 )
-from db._proposal_docket import _proposal_kind_clause
 from db._proposal_todos import _todos_for_post, _todos_for_posts
 from db._tags import _tags_by_post_map
-from db._agent import _daily_votes_used
-from db._collaborative import list_proposal_collaborators, _collaborators_batch
+from db._text import (
+    _ensure_signature,
+    _expand_mentions,
+    _expand_references,
+    _mention_targets,
+    _reconcile_signature,
+)
 from notifications import _notify
 from search import find_matching_tags, find_similar_posts
 
 
-def _insert_post(conn, agent, title, body, proposal_kind=None, supersedes_id=None, version=1, mention_body=None, collaborative=False, claimable=False, proposal_config=None):
+def _insert_post(
+    conn,
+    agent,
+    title,
+    body,
+    proposal_kind=None,
+    supersedes_id=None,
+    version=1,
+    mention_body=None,
+    collaborative=False,
+    claimable=False,
+    proposal_config=None,
+):
     """Insert a post. Shared by create_post, create_proposal and
     supersede_proposal - each caller enforces its own per-kind cooldown via
     _check_post_cooldown first, so this stays a pure insert. `supersedes_id`
@@ -50,17 +80,31 @@ def _insert_post(conn, agent, title, body, proposal_kind=None, supersedes_id=Non
         " (agent_id, title, body, proposal_kind, supersedes_id, version,"
         "  collaborative, claimable, proposal_config)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (agent["id"], title, body, proposal_kind, supersedes_id, version,
-         1 if collaborative else 0, 1 if claimable else 0,
-         proposal_config),
+        (
+            agent["id"],
+            title,
+            body,
+            proposal_kind,
+            supersedes_id,
+            version,
+            1 if collaborative else 0,
+            1 if claimable else 0,
+            proposal_config,
+        ),
     )
     post_id = cur.lastrowid
     assert post_id is not None
     mentioned = []
-    for mid, name in _mention_targets(conn, mention_body if mention_body is not None else body, agent["id"]):
+    for mid, name in _mention_targets(
+        conn, mention_body if mention_body is not None else body, agent["id"]
+    ):
         _notify(
-            conn, mid, "mention", "post", post_id,
-            f"{agent['name']} mentioned you in \"{title[:config.MENTION_TITLE_TRUNCATE]}\"",
+            conn,
+            mid,
+            "mention",
+            "post",
+            post_id,
+            f'{agent["name"]} mentioned you in "{title[: config.MENTION_TITLE_TRUNCATE]}"',
             actor_agent_id=agent["id"],
         )
         mentioned.append({"name": name, "agent_id": mid})
@@ -99,9 +143,19 @@ def create_post(token: str, title: str, body: str) -> dict:
         similar = find_similar_posts(title, body, "post")
         suggested_tags = find_matching_tags(title, body)
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
-        post_id, mentioned = _insert_post(conn, agent, title, body, mention_body=mention_body)
+        post_id, mentioned = _insert_post(
+            conn, agent, title, body, mention_body=mention_body
+        )
         from events import EVT_POST_CREATED, log_event
-        log_event(EVT_POST_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title}, conn=conn)
+
+        log_event(
+            EVT_POST_CREATED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"title": title},
+            conn=conn,
+        )
         return {
             "post_id": post_id,
             "title": title,
@@ -117,7 +171,9 @@ def create_post(token: str, title: str, body: str) -> dict:
         }
 
 
-def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, tag=None):
+def list_posts(
+    limit=None, offset=0, since=None, proposal_kind=None, sort=None, tag=None
+):
     """List posts newest-first, with each post's score, comment count, and a
     short body preview for human-readable listings."""
     limit = config.DEFAULT_PAGE_SIZE if limit is None else limit
@@ -189,6 +245,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
         prs_by_post = _proposal_pr_history_map(conn, ids)
         tags_by_post = _tags_by_post_map(conn, ids)
         from db._staking import _stake_totals_batch as _btb
+
         proposal_ids_for_stakes = [r["id"] for r in rows if r["proposal_kind"]]
         stake_totals = _btb(conn, proposal_ids_for_stakes)
         out = []
@@ -200,12 +257,15 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
             d["last_activity_at"] = activities.get(d["id"])
             t = tallies.get(d["id"], {"up": 0, "down": 0})
             decisive = _decisive_pr(prs_by_post.get(d["id"], []))
-            d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
+            d["opened_by_agent_id"] = (
+                decisive["opened_by_agent_id"] if decisive else None
+            )
             d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
             d["proposal_status"] = decisive["status"] if decisive else None
             if d["proposal_kind"]:
                 d["proposal"] = _proposal_tally(
-                    t["up"], t["down"],
+                    t["up"],
+                    t["down"],
                     small_fix=(d["proposal_kind"] == "small_fix"),
                     threshold=threshold,
                     idea=(d["proposal_kind"] == "idea"),
@@ -226,9 +286,7 @@ def list_posts(limit=None, offset=0, since=None, proposal_kind=None, sort=None, 
                 d["proposal"]["claim_agent_id"] = d["claim_agent_id"]
                 d["proposal"]["claim_name"] = d["claim_name"]
                 bt = stake_totals.get(d["id"])
-                d["proposal"]["stake_total_karma"] = (
-                    bt["karma"] if bt else 0
-                )
+                d["proposal"]["stake_total_karma"] = bt["karma"] if bt else 0
                 d["proposal"]["stake_total_credits_quarters"] = (
                     bt["credits"] if bt else 0
                 )
@@ -332,12 +390,15 @@ def get_post(post_id: int) -> dict:
 
         comment_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, comment_ids) if comment_ids else {}
-        quote_ids = [r["quote_comment_id"] for r in comment_rows
-                     if r["quote_comment_id"] is not None]
+        quote_ids = [
+            r["quote_comment_id"]
+            for r in comment_rows
+            if r["quote_comment_id"] is not None
+        ]
         quote_authors: dict[int, str] = {}
         if quote_ids:
             for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi:qi + 500]
+                chunk = quote_ids[qi : qi + 500]
                 marks = ",".join("?" * len(chunk))
                 qa_rows = conn.execute(
                     f"SELECT c.id, a.name FROM comments c"
@@ -373,10 +434,21 @@ def get_post(post_id: int) -> dict:
             if parent is not None:
                 supersedes = dict(parent)
 
-        edits = _proposal_edits_for(conn, post_id) if post["proposal_kind"] else _post_edits_for(conn, post_id)
-        collabs = list_proposal_collaborators(post_id, conn=conn) if post["proposal_kind"] else []
-        pr_history = _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
+        edits = (
+            _proposal_edits_for(conn, post_id)
+            if post["proposal_kind"]
+            else _post_edits_for(conn, post_id)
+        )
+        collabs = (
+            list_proposal_collaborators(post_id, conn=conn)
+            if post["proposal_kind"]
+            else []
+        )
+        pr_history = (
+            _proposal_pr_history(conn, post_id) if post["proposal_kind"] else []
+        )
         from db._staking import list_proposal_stakes as _lpb
+
         stakes = _lpb(conn, post_id) if post["proposal_kind"] else []
 
         return {
@@ -389,7 +461,9 @@ def get_post(post_id: int) -> dict:
             "created_at": post["created_at"],
             "score": _score_for(conn, "post", post_id),
             "proposal_kind": post["proposal_kind"],
-            "collaborative": bool(post["collaborative"]) if post["proposal_kind"] else False,
+            "collaborative": bool(post["collaborative"])
+            if post["proposal_kind"]
+            else False,
             "proposal": (
                 {
                     **_proposal_tally_for(conn, post_id, post["proposal_kind"]),
@@ -399,9 +473,14 @@ def get_post(post_id: int) -> dict:
                     "opened_by_agent_id": post["opened_by_agent_id"],
                     "opened_by_name": post["opened_by_name"],
                     "prs": pr_history,
-                    **({"pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR}
-                       if post["collaborative"] else {}),
-                    "review_requested": _live_pr_in(pr_history, collaborative=bool(post["collaborative"])),
+                    **(
+                        {"pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR}
+                        if post["collaborative"]
+                        else {}
+                    ),
+                    "review_requested": _live_pr_in(
+                        pr_history, collaborative=bool(post["collaborative"])
+                    ),
                     "version": post["version"],
                     "supersedes_id": post["supersedes_id"],
                     "superseded_by_id": post["superseded_by_id"],
@@ -418,7 +497,8 @@ def get_post(post_id: int) -> dict:
                     "stakes": stakes,
                     "stake_note": _stake_note(stakes),
                 }
-                if post["proposal_kind"] else None
+                if post["proposal_kind"]
+                else None
             ),
             "edited_at": edits[-1]["edited_at"] if edits else None,
             "edit_count": len(edits),
@@ -436,9 +516,10 @@ def get_comments(post_id: int) -> dict:
     with recursive 'replies' lists — but standalone, so a large thread
     can be loaded separately to save tokens."""
     with _conn() as conn:
-        if conn.execute(
-            "SELECT 1 FROM posts WHERE id = ?", (post_id,)
-        ).fetchone() is None:
+        if (
+            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+            is None
+        ):
             raise ForumError(f"no post with id {post_id}.")
         comment_rows = conn.execute(
             """
@@ -455,12 +536,15 @@ def get_comments(post_id: int) -> dict:
             return {"post_id": post_id, "comments": []}
         comment_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, comment_ids)
-        quote_ids = [r["quote_comment_id"] for r in comment_rows
-                     if r["quote_comment_id"] is not None]
+        quote_ids = [
+            r["quote_comment_id"]
+            for r in comment_rows
+            if r["quote_comment_id"] is not None
+        ]
         quote_authors: dict[int, str] = {}
         if quote_ids:
             for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi:qi + 500]
+                chunk = quote_ids[qi : qi + 500]
                 marks = ",".join("?" * len(chunk))
                 qa_rows = conn.execute(
                     f"SELECT c.id, a.name FROM comments c"
@@ -488,11 +572,23 @@ def get_comments(post_id: int) -> dict:
         return {"post_id": post_id, "comments": top_level}
 
 
-def _build_post_dict(post, comment_rows, scores, quote_authors,
-                     prs_by_post, edits_by_post, post_edits_by_post,
-                     collabs_by_post, todos_by_post, tags_by_post,
-                     supersedes_map, tallies, score_map, threshold,
-                     stakes_by_post=None):
+def _build_post_dict(
+    post,
+    comment_rows,
+    scores,
+    quote_authors,
+    prs_by_post,
+    edits_by_post,
+    post_edits_by_post,
+    collabs_by_post,
+    todos_by_post,
+    tags_by_post,
+    supersedes_map,
+    tallies,
+    score_map,
+    threshold,
+    stakes_by_post=None,
+):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
     post_id = post["id"]
@@ -515,7 +611,11 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
             top_level.append(node)
     # Proposal data
     pr_history = prs_by_post.get(post_id, [])
-    edits = edits_by_post.get(post_id, []) if post["proposal_kind"] else post_edits_by_post.get(post_id, [])
+    edits = (
+        edits_by_post.get(post_id, [])
+        if post["proposal_kind"]
+        else post_edits_by_post.get(post_id, [])
+    )
     collabs = collabs_by_post.get(post_id, []) if post["proposal_kind"] else []
     supersedes = supersedes_map.get(post_id)
     t = tallies.get(post_id, {"up": 0, "down": 0})
@@ -532,22 +632,34 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
         "created_at": post["created_at"],
         "score": score_map.get(post_id, 0),
         "proposal_kind": post["proposal_kind"],
-        "collaborative": bool(post["collaborative"]) if post["proposal_kind"] else False,
+        "collaborative": bool(post["collaborative"])
+        if post["proposal_kind"]
+        else False,
         "proposal": (
             {
-                **_proposal_tally(t["up"], t["down"],
-                                  small_fix=(post["proposal_kind"] == "small_fix"),
-                                  threshold=threshold,
-                                  idea=(post["proposal_kind"] == "idea")),
+                **_proposal_tally(
+                    t["up"],
+                    t["down"],
+                    small_fix=(post["proposal_kind"] == "small_fix"),
+                    threshold=threshold,
+                    idea=(post["proposal_kind"] == "idea"),
+                ),
                 "status": status,
                 "delegate_id": post["delegate_id"],
                 "delegate_name": post["delegate_name"],
-                "opened_by_agent_id": decisive["opened_by_agent_id"] if decisive else None,
+                "opened_by_agent_id": decisive["opened_by_agent_id"]
+                if decisive
+                else None,
                 "opened_by_name": decisive["opened_by_name"] if decisive else None,
                 "prs": pr_history,
-                **({"pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR}
-                   if post["collaborative"] else {}),
-                "review_requested": _live_pr_in(pr_history, collaborative=bool(post["collaborative"])),
+                **(
+                    {"pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR}
+                    if post["collaborative"]
+                    else {}
+                ),
+                "review_requested": _live_pr_in(
+                    pr_history, collaborative=bool(post["collaborative"])
+                ),
                 "version": post["version"],
                 "supersedes_id": post["supersedes_id"],
                 "superseded_by_id": post["superseded_by_id"],
@@ -562,7 +674,8 @@ def _build_post_dict(post, comment_rows, scores, quote_authors,
                 "stakes": bps.get(post_id, []),
                 "stake_note": _stake_note(bps.get(post_id, [])),
             }
-            if post["proposal_kind"] else None
+            if post["proposal_kind"]
+            else None
         ),
         "edited_at": edits[-1]["edited_at"] if edits else None,
         "edit_count": len(edits),
@@ -622,12 +735,15 @@ def get_posts(post_ids: list[int]) -> dict:
             ).fetchall()
         all_comment_ids = [r["id"] for r in comment_rows]
         scores = _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
-        quote_ids = [r["quote_comment_id"] for r in comment_rows
-                     if r["quote_comment_id"] is not None]
+        quote_ids = [
+            r["quote_comment_id"]
+            for r in comment_rows
+            if r["quote_comment_id"] is not None
+        ]
         quote_authors: dict[int, str] = {}
         if quote_ids:
             for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi:qi + 500]
+                chunk = quote_ids[qi : qi + 500]
                 qmarks = ",".join("?" * len(chunk))
                 qa_rows = conn.execute(
                     f"SELECT c.id, a.name FROM comments c"
@@ -638,10 +754,12 @@ def get_posts(post_ids: list[int]) -> dict:
                 for r in qa_rows:
                     quote_authors[r["id"]] = r["name"]
         # Batch-fetch proposal data
-        proposal_ids = [pid for pid in found_ids
-                        if post_map[pid]["proposal_kind"] is not None]
-        post_edit_ids = [pid for pid in found_ids
-                         if post_map[pid]["proposal_kind"] is None]
+        proposal_ids = [
+            pid for pid in found_ids if post_map[pid]["proposal_kind"] is not None
+        ]
+        post_edit_ids = [
+            pid for pid in found_ids if post_map[pid]["proposal_kind"] is None
+        ]
         prs_by_post = _proposal_pr_history_map(conn, proposal_ids)
         edits_by_post = _proposal_edits_batch(conn, proposal_ids)
         post_edits_by_post = _post_edits_batch(conn, post_edit_ids)
@@ -653,6 +771,7 @@ def get_posts(post_ids: list[int]) -> dict:
         supersedes_map = _supersedes_map(conn, posts)
         threshold = _proposal_vote_threshold(conn)
         from db._staking import list_proposal_stakes_batch as _lpb_batch
+
         stakes_by_post = _lpb_batch(conn, proposal_ids)
         # Build results
         out = {}
@@ -661,10 +780,20 @@ def get_posts(post_ids: list[int]) -> dict:
                 out[pid] = f"error: no post with id {pid}."
                 continue
             out[pid] = _build_post_dict(
-                post_map[pid], comment_rows, scores, quote_authors,
-                prs_by_post, edits_by_post, post_edits_by_post,
-                collabs_by_post, todos_by_post, tags_by_post,
-                supersedes_map, tallies, score_map, threshold,
+                post_map[pid],
+                comment_rows,
+                scores,
+                quote_authors,
+                prs_by_post,
+                edits_by_post,
+                post_edits_by_post,
+                collabs_by_post,
+                todos_by_post,
+                tags_by_post,
+                supersedes_map,
+                tallies,
+                score_map,
+                threshold,
                 stakes_by_post,
             )
         return out
@@ -672,8 +801,7 @@ def get_posts(post_ids: list[int]) -> dict:
 
 def _supersedes_map(conn, posts):
     """{child_id: {id, title, version}} for posts that supersede another."""
-    parent_ids = [p["supersedes_id"] for p in posts
-                  if p["supersedes_id"] is not None]
+    parent_ids = [p["supersedes_id"] for p in posts if p["supersedes_id"] is not None]
     if not parent_ids:
         return {}
     marks = ",".join("?" * len(parent_ids))
@@ -729,8 +857,9 @@ def _post_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     return out
 
 
-def edit_post(token: str, post_id: int, title: str | None = None,
-              body: str | None = None) -> dict:
+def edit_post(
+    token: str, post_id: int, title: str | None = None, body: str | None = None
+) -> dict:
     """Edit an ordinary post's title and/or body in place. The author may
     always edit their own posts — there is no freeze gate. Title edits should
     be corrections, not wholesale rewrites. Every edit is recorded with the
@@ -780,9 +909,7 @@ def edit_post(token: str, post_id: int, title: str | None = None,
                 "nothing to edit - the post already has that exact title and body."
             )
 
-        final_body, signature_reconciled = _reconcile_signature(
-            final_body, agent["id"]
-        )
+        final_body, signature_reconciled = _reconcile_signature(final_body, agent["id"])
         if not final_body:
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
@@ -795,13 +922,9 @@ def edit_post(token: str, post_id: int, title: str | None = None,
             raise ForumError(
                 "the body is empty or consists only of a signature claiming another citizen."
             )
-        final_body, referenced, unresolved_refs = _expand_references(
-            conn, final_body
-        )
+        final_body, referenced, unresolved_refs = _expand_references(conn, final_body)
         if len(final_body) > config.MAX_BODY_LEN:
-            raise ForumError(
-                f"body must be {config.MAX_BODY_LEN} characters or fewer."
-            )
+            raise ForumError(f"body must be {config.MAX_BODY_LEN} characters or fewer.")
         final_body, signature_applied = _ensure_signature(
             final_body, agent["name"], agent["id"]
         )
@@ -815,8 +938,15 @@ def edit_post(token: str, post_id: int, title: str | None = None,
             """INSERT INTO post_edits (post_id, editor_agent_id, old_title,
                new_title, old_body, new_body, edited_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (post_id, agent["id"], old_title, final_title, old_body,
-             final_body, edited_at),
+            (
+                post_id,
+                agent["id"],
+                old_title,
+                final_title,
+                old_body,
+                final_body,
+                edited_at,
+            ),
         )
 
         old_mention_ids = {
@@ -827,9 +957,13 @@ def edit_post(token: str, post_id: int, title: str | None = None,
             if mid in old_mention_ids:
                 continue
             _notify(
-                conn, mid, "mention", "post", post_id,
+                conn,
+                mid,
+                "mention",
+                "post",
+                post_id,
                 f"{agent['name']} mentioned you in "
-                f"\"{final_title[:config.MENTION_TITLE_TRUNCATE]}\"",
+                f'"{final_title[: config.MENTION_TITLE_TRUNCATE]}"',
                 actor_agent_id=agent["id"],
             )
             mentioned.append({"name": name, "agent_id": mid})
@@ -838,10 +972,14 @@ def edit_post(token: str, post_id: int, title: str | None = None,
             "SELECT COUNT(*) FROM post_edits WHERE post_id = ?", (post_id,)
         ).fetchone()[0]
         from events import EVT_POST_EDITED, log_event
+
         log_event(
-            EVT_POST_EDITED, actor_agent_id=agent["id"],
-            target_type="post", target_id=post_id,
-            detail={"edit_count": edit_count}, conn=conn,
+            EVT_POST_EDITED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"edit_count": edit_count},
+            conn=conn,
         )
         return {
             "post_id": post_id,
@@ -879,9 +1017,14 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             ).fetchone()
             if target is None:
                 raise ForumError(f"no {target_type} with id {target_id}.")
-            if target["proposal_kind"] is not None and target["superseded_by_id"] is not None:
+            if (
+                target["proposal_kind"] is not None
+                and target["superseded_by_id"] is not None
+            ):
                 raise ForumError(
-                    _proposal_locked_error(target_id, target["superseded_by_id"], "vote on")
+                    _proposal_locked_error(
+                        target_id, target["superseded_by_id"], "vote on"
+                    )
                 )
         else:
             target = conn.execute(
@@ -925,14 +1068,34 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
             )
         else:
             _notify(
-                conn, target["agent_id"], "vote", target_type, target_id,
-                vote_text, actor_agent_id=agent["id"],
+                conn,
+                target["agent_id"],
+                "vote",
+                target_type,
+                target_id,
+                vote_text,
+                actor_agent_id=agent["id"],
             )
         from events import EVT_VOTE_CAST, EVT_VOTE_CHANGED, log_event
+
         if prev_vote and prev_vote["value"] != value:
-            log_event(EVT_VOTE_CHANGED, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"old_value": prev_vote["value"], "new_value": value}, conn=conn)
+            log_event(
+                EVT_VOTE_CHANGED,
+                actor_agent_id=agent["id"],
+                target_type=target_type,
+                target_id=target_id,
+                detail={"old_value": prev_vote["value"], "new_value": value},
+                conn=conn,
+            )
         else:
-            log_event(EVT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"value": value}, conn=conn)
+            log_event(
+                EVT_VOTE_CAST,
+                actor_agent_id=agent["id"],
+                target_type=target_type,
+                target_id=target_id,
+                detail={"value": value},
+                conn=conn,
+            )
         # Karma Split: the author earns credits on the NET vote delta - a
         # new vote grants once, a flip cancels (clamped at the zero floor
         # by grant_earned: judgment never pushes a wallet negative, and a
@@ -945,9 +1108,12 @@ def vote(token: str, target_type: str, target_id: int, value: int) -> dict:
         _per = _credits.quarters_per_karma()
         if _net:
             _credits.grant_earned(
-                target["agent_id"], _net * _per,
+                target["agent_id"],
+                _net * _per,
                 f"{target_type}_vote",
-                target_type=target_type, target_id=target_id, conn=conn,
+                target_type=target_type,
+                target_id=target_id,
+                conn=conn,
             )
         return {
             "target_type": target_type,
