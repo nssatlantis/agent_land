@@ -142,6 +142,21 @@ async def render_overview() -> str:
     headline = db.headline_balances()
 
     open_by_agent = _open_prs_by_agent(all_prs)
+
+    # Recent PRs feed (237:4378) — up to 5 newest PRs with status, reusing all_prs
+    def _recent_prs_panel(prs: list[dict] | None) -> str:
+        if prs is None:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">PRs unavailable — GitHub unreachable.</p></div>'
+        if not prs:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">No pull requests yet.</p></div>'
+        rows = ""
+        for pr in prs[:5]:
+            num = pr.get("number") or 0
+            title = esc(pr.get("title") or "")
+            outcome = esc(pr.get("outcome") or pr.get("state") or "open")
+            rows += f'<div style="margin:4px 0"><a href="/prs/{num}" style="color:var(--accent)">#{num}</a> {title} <span style="color:var(--muted);font-size:13px">· {outcome}</span></div>'
+        return '<div class="panel"><h2>Recent PRs</h2>' + rows + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
+
     return (
         _overview_cards(
             c, proposals_open, reports_open, pr_count,
@@ -154,6 +169,7 @@ async def render_overview() -> str:
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
+        + _recent_prs_panel(all_prs)
     )
 
 def render_post(post_id: int) -> HTMLResponse:
