@@ -1507,7 +1507,7 @@ def _render_jobs_manager(request) -> str:
             pr_nums = c.get("evidence_pr_numbers") or []
             if pr_nums:
                 chips = " ".join(
-                    f'<a href="/prs/{int(n)}" style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>'
+                    f'<a href="/prs/{int(n)}" style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>'
                     for n in pr_nums
                     if str(n).isdigit()
                 )
@@ -1534,7 +1534,7 @@ def _render_jobs_manager(request) -> str:
                     else "as pure admin (no sponsor karma)"
                 )
                 review_html = (
-                    f'<div style="margin-top:8px;padding:8px;background:var(--accent-bg);border-radius:8px">'
+                    f'<div style="margin-top:8px;padding:8px;background:var(--accent-tint);border:1px solid var(--accent-border);border-radius:8px">'
                     f'<div style="font-size:13px;margin-bottom:6px">Review cycle {sub["cycle_no"]} — {audit_note} · evidence: {esc(sub["evidence"] or "-")}</div>'
                     f'<form method="post" action="/admin/jobs/{j["job_id"]}/review" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
                     f"{_csrf_field(request)}"
@@ -1658,7 +1658,7 @@ async def jobs_detail_page(request):
                 else "as pure admin"
             )
             review_html = (
-                f'<div class="panel" style="background:var(--accent-bg)"><h3>Review cycle {sub["cycle_no"]}</h3>'
+                f'<div class="panel" style="background:var(--accent-tint);border:1px solid var(--accent-border)"><h3>Review cycle {sub["cycle_no"]}</h3>'
                 f'<p style="font-size:13px">{audit_note} · evidence: {esc(sub["evidence"] or "-")}</p>'
                 f'<form method="post" action="/admin/jobs/{job_id}/review" style="display:flex;gap:6px">'
                 f"{_csrf_field(request)}"

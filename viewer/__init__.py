@@ -64,6 +64,7 @@ from viewer._events import events_page
 from viewer._helpers import (
     _author,
     _breadcrumbs,
+    _burn_gauge,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -93,6 +94,7 @@ from viewer._helpers import (
     _render_comment,
     _score_badge,
     _side_rail,
+    _stake_amount,
     _stake_page_rows,
     _stake_panel,
     _stake_summary_card,
@@ -120,15 +122,37 @@ from viewer._utils import (
 
 
 def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
-    """The overview's top-citizens table, shared by the full page and its
-    soft-refresh fragment so the two can't drift."""
-    return _citizen_table(
-        aggregates.list_agents(),
-        open_by_agent,
-        proposal_stats,
-        heading="Citizens by karma",
-        compact=True,
-    )
+    """The overview's top-citizens tables, shared by the full page and its
+    soft-refresh fragment so the two can't drift. Shows karma ranking and credits ranking."""
+    try:
+        agents = aggregates.list_agents()
+        karma_table = _citizen_table(
+            agents,
+            open_by_agent,
+            proposal_stats,
+            heading="Citizens by karma",
+            compact=True,
+        )
+        try:
+            credits_sorted = sorted(
+                agents, key=lambda a: a.get("credits_quarters", 0), reverse=True
+            )
+            credits_table = _citizen_table(
+                credits_sorted,
+                open_by_agent,
+                proposal_stats,
+                heading="Top citizens by credits",
+                compact=True,
+            )
+            return karma_table + credits_table
+        except (
+            Exception
+        ):  # domain: degrade-silently - credits ranking is optional enrichment
+            return karma_table
+    except (
+        Exception
+    ):  # domain: degrade-silently - leaderboard is optional, overview still renders
+        return ""
 
 
 async def render_overview() -> str:
@@ -156,6 +180,25 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
+    _sync = {}
+    # GitHub stale state (237:4374) — degrade-silently (viewer_status._git_sync_status has 60s fetch cache)
+    try:
+        _sync = viewer_status._git_sync_status()
+        if _sync.get("error"):
+            _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git status: {esc(str(_sync["error"]))} \u2014 unreachable</div>'
+        elif _sync.get("stale"):
+            _stale_html = '<div style="color:var(--warn);font-size:12px;margin:4px 0">GitHub unreachable \u2014 PR data may be stale (last fetch failed)</div>'
+        elif _sync.get("commits_behind"):
+            _stale_html = f'<div style="color:var(--warn);font-size:12px;margin:4px 0">Git sync: behind origin/main by {_sync["commits_behind"]} \u2014 deploy stale</div>'
+        elif _sync.get("commits_ahead"):
+            _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: ahead by {_sync["commits_ahead"]} (local commits not yet on origin)</div>'
+        else:
+            _stale_html = '<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: in sync with origin/main</div>'
+    except Exception:  # domain: degrade-silently - staleness is optional enrichment
+        _stale_html = ""
+        _sync = {}
+    if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
+        _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
     # \u039424h for treasury card (237:4373) — degrade-silently, db-layer helper (AGENTS.md: no raw SQL in viewer)
     treasury_delta_quarters = None
     supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
@@ -218,6 +261,7 @@ async def render_overview() -> str:
             treasury_delta_quarters=treasury_delta_quarters,
             supply_quarters=supply_quarters,
         )
+        + _stale_html
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + zero_state_cta
@@ -283,7 +327,7 @@ async def overview(request: Request) -> HTMLResponse:
         section="overview",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/overview", "frag-overview", POLL_MS),
+            ("/fragments/overview", "frag-overview", POLL_MS * 2),
         ),
     )
 
@@ -1165,7 +1209,7 @@ def _job_card(job: dict) -> str:
                 # P0 sync-loop fix: per-row blocking github.pr_checks removed — chip without badge (batch/cached async via viewer/_helpers if needed)
                 badge = ""
                 chip_parts.append(
-                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
+                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
                 )
             if chip_parts:
                 bits.append(f"PRs {' '.join(chip_parts)}")
@@ -1428,7 +1472,15 @@ def jobs_page(request: Request) -> HTMLResponse:
         + pager_bot
         + "</div>"
     )
-    return _page("jobs", _with_rail(body), section="jobs")
+    return _page(
+        "jobs",
+        _with_rail(f'<div id="frag-jobs">{body}</div>'),
+        section="jobs",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/jobs", "frag-jobs", POLL_MS * 2),
+        ),
+    )
 
 
 def _agent_exists(agent_id: int) -> bool:
@@ -1452,7 +1504,42 @@ def staking_page(request: Request) -> HTMLResponse:
         "abandoned",
     ):
         status = None
-    stakes = db.list_all_stakes(status=status)
+    all_stakes = db.list_all_stakes()
+    if status is None:
+        stakes = all_stakes
+    else:
+        stakes = [s for s in all_stakes if s["status"] == status]
+    total_exposure_karma = sum(
+        s["per_pr"] * s["max_prs"]
+        for s in all_stakes
+        if s.get("currency", "karma") == "karma"
+    )
+    total_exposure_credits = sum(
+        s["per_pr"] * s["max_prs"] for s in all_stakes if s.get("currency") == "credits"
+    )
+    counts = {
+        None: len(all_stakes),
+        "active": 0,
+        "completed": 0,
+        "withdrawn": 0,
+        "refunded": 0,
+        "abandoned": 0,
+    }
+    for s in all_stakes:
+        if s["status"] in counts:
+            counts[s["status"]] += 1
+    exposure_bits = []
+    if total_exposure_karma:
+        exposure_bits.append(f"{total_exposure_karma} karma")
+    if total_exposure_credits:
+        exposure_bits.append(
+            f"{_stake_amount(total_exposure_credits, 'credits')} credits"
+        )
+    exposure_text = " \xb7 ".join(exposure_bits) if exposure_bits else "0"
+    currency = request.query_params.get("currency")
+    if currency not in (None, "karma", "credits"):
+        currency = None
+    stakes = db.list_all_stakes(status=status, currency=currency)
     tabs = '<div class="tabs">'
     for key, label in (
         (None, "All"),
@@ -1462,8 +1549,29 @@ def staking_page(request: Request) -> HTMLResponse:
         ("refunded", "Refunded"),
         ("abandoned", "Abandoned"),
     ):
-        href = "/staking" if key is None else f"/staking?status={key}"
+        params = []
+        if key is not None:
+            params.append(f"status={key}")
+        if currency:
+            params.append(f"currency={currency}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
         cls = ' class="active" aria-current="page"' if key == status else ""
+        cnt = counts.get(key, 0)
+        tabs += f'<a href="{href}"{cls}>{label} <span style="font-size:12px;color:var(--muted)">({cnt})</span></a>'
+    tabs += "</div>"
+    tabs += '<div class="tabs" style="margin-top:4px">'
+    for key, label in (
+        (None, "All currencies"),
+        ("karma", "Karma"),
+        ("credits", "Credits"),
+    ):
+        params = []
+        if status:
+            params.append(f"status={status}")
+        if key is not None:
+            params.append(f"currency={key}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
+        cls = ' class="active" aria-current="page"' if key == currency else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
@@ -1473,11 +1581,27 @@ def staking_page(request: Request) -> HTMLResponse:
         "staker's choice. Stakers set per-PR amount and max PRs; the amount is "
         "locked when a PR is opened, paid on merge in the staked denomination, "
         "refunded on failure.</p>"
+        f'<p style="color:var(--muted);font-size:14px">Total staked exposure: '
+        f"<b>{exposure_text}</b> across all stakes "
+        f"(per-PR amount x max PRs, split by currency).</p>"
+        '<div class="panel" style="margin-top:8px"><h3>How staking works</h3>'
+        '<p style="color:var(--muted);font-size:14px">Each stake sets a per-PR '
+        "reward and a maximum number of PRs. The amount is locked when a PR is "
+        "opened, paid on merge in the chosen denomination, and refunded if the "
+        "PR fails. Total exposure = per-PR amount x max PRs.</p></div>"
         + tabs
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
     )
-    return _page("staking", _with_rail(body), section="staking")
+    return _page(
+        "staking",
+        _with_rail(f'<div id="frag-staking">{body}</div>'),
+        section="staking",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/staking", "frag-staking", POLL_MS * 2),
+        ),
+    )
 
 
 def bounties_redirect(request: Request) -> RedirectResponse:
@@ -1553,6 +1677,11 @@ def economy_page(request: Request) -> HTMLResponse:
         + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
+        + _burn_gauge(
+            overview["total_supply_quarters"],
+            overview["treasury_quarters"],
+            overview["flows"]["all_time"]["burned_quarters"],
+        )
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
@@ -1593,6 +1722,31 @@ def economy_page(request: Request) -> HTMLResponse:
         )
         or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
     )
+    holder_bar = ""
+    try:
+        total_supply_q = overview["total_supply_quarters"]
+        if total_supply_q > 0 and overview["top_holders"]:
+            segs: list[str] = []
+            acc_pct = 0.0
+            for idx, h in enumerate(overview["top_holders"][:5]):
+                bal_q = h.get("balance_quarters", 0)
+                pct = max(0, min(100, bal_q / total_supply_q * 100))
+                if pct <= 0:
+                    continue
+                acc_pct += pct
+                hue = 30 + idx * 40
+                segs.append(
+                    f'<a href="/credits/{int(h["agent_id"])}" style="flex:{pct:.3f};background:hsl({hue} 70% 45%);min-width:4px;display:block" title="{esc(h["name"])}: {pct:.1f}%"></a>'
+                )
+            if segs:
+                remainder = max(0, 100 - acc_pct)
+                if remainder > 0.1:
+                    segs.append(
+                        f'<div style="flex:{remainder:.3f};background:var(--line);min-width:4px"></div>'
+                    )
+                holder_bar = f'<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin:8px 0">{"".join(segs)}</div>'
+    except Exception:  # domain: degrade-silently - malformed overview degrades to no bar, never crash the page
+        holder_bar = ""
 
     seal = overview["checkpoint"]
     if seal is None:
@@ -1627,19 +1781,31 @@ def economy_page(request: Request) -> HTMLResponse:
     ):  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 25
+
+    def _led_target(e: dict) -> str:
+        if not e.get("target_type") or not e.get("target_id"):
+            return ""
+        if e["target_type"] == "agent":
+            link = f"/agents/{e['target_id']}"
+            name = e.get("target_name") or f"agent #{e['target_id']}"
+            return f'<a href="{link}">{esc(name)}</a>'
+        if e["target_type"] in ("post", "comment"):
+            link = f"/posts/{e['target_id']}"
+            label = f"{e['target_type']} #{e['target_id']}"
+            return f'<a href="{link}">{esc(label)}</a>'
+        return esc(f"{e['target_type']} #{e['target_id']}")
+
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     ledger_rows = (
         "".join(
-            "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
-            "<td>{}</td></tr>".format(
-                esc(e["created_at"][:19].replace("T", " ")),
-                esc(e["agent_name"]),
-                esc(("+" if e["delta_quarters"] > 0 else "") + e["credits"]),
-                esc(e["reason"]),
-            )
+            f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
+            f"<td>{esc(e['agent_name'])}</td>"
+            f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
+            f"<td>{esc(e['reason'])}</td>"
+            f"<td>{_led_target(e)}</td></tr>"
             for e in ledger["entries"]
         )
-        or '<tr><td colspan=4 style="color:var(--muted)">Empty ledger.</td></tr>'
+        or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
     if page > 1:
@@ -1675,7 +1841,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + flow_panels
         + "</div>"
         + '<div class="panel"><h2>Top holders</h2>'
-        '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
+        + holder_bar
+        + '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
         "</th></tr></thead><tbody>"
         + holders_rows
         + "</tbody></table></div>"
@@ -1683,7 +1850,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
             "<table><thead><tr><th>when</th><th>wallet</th>"
-            '<th style="text-align:right">amount</th><th>reason</th></tr>'
+            '<th style="text-align:right">amount</th><th>reason</th>'
+            "<th>target</th></tr>"
             "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
@@ -1692,7 +1860,15 @@ def economy_page(request: Request) -> HTMLResponse:
             "paired rows, one event per action.</p>" + pager + "</div>"
         )
     )
-    return _page("economy", _with_rail(body), section="economy")
+    return _page(
+        "economy",
+        _with_rail(f'<div id="frag-economy">{body}</div>'),
+        section="economy",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/economy", "frag-economy", POLL_MS * 2),
+        ),
+    )
 
 
 def recent_page(request: Request) -> HTMLResponse:
@@ -2306,6 +2482,27 @@ async def fragments(request: Request) -> HTMLResponse:
         body = viewer_status._pulse_cards(by_name, prs)
     elif name == "pulse-panels":
         body = _pulse_panels()
+    elif name == "economy":
+        # 237:4353 — fragments audit: economy
+        try:
+            ov = db.economy_overview()
+            body = f'<div class="panel"><h2>Economy</h2><p style="color:var(--muted)">Fragment \u2014 supply {esc(ov["total_supply_credits"])} \u00b7 treasury {esc(ov["treasury_credits"])}</p></div>'
+        except Exception:  # domain: degrade-silently - fragment is optional enrichment
+            body = '<div class="panel"><p style="color:var(--muted)">Economy fragment unavailable</p></div>'
+    elif name == "jobs":
+        try:
+            jobs = db.list_jobs(view="all", limit=5)["jobs"]
+            rows = "".join(f"<div>{esc(j['title'])}</div>" for j in jobs[:5])
+            fallback = '<p style="color:var(--muted)">No jobs</p>'
+            body = f'<div class="panel"><h2>Jobs</h2>{rows or fallback}</div>'
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Jobs fragment unavailable</p></div>'
+    elif name == "staking":
+        try:
+            stakes = db.list_all_stakes()
+            body = _stake_page_rows(stakes[:5])
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Staking fragment unavailable</p></div>'
     else:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
