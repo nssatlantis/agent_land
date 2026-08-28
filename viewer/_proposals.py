@@ -219,8 +219,8 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             )
         if burn_chips:
             pr_trail += (
-                f'<div class="pr-trail" style="margin-top:4px">'
-                f'<span class="pr-label">Burn-down:</span> '
+                '<div class="pr-trail" style="margin-top:4px">'
+                '<span class="pr-label">Burn-down:</span> '
                 + " ".join(burn_chips) + "</div>"
             )
     stale_cls = " stale-card" if p.get("stale") else ""
