@@ -1009,7 +1009,10 @@ def _prs_hold_chip(r: dict, state: str) -> str:
 
 
 def _prs_rows_html(
-    state: str, rows: list[dict] | None, ci: dict[int, dict | None] | None = None
+    state: str,
+    rows: list[dict] | None,
+    ci: dict[int, dict | None] | None = None,
+    author: str = "",
 ) -> str:
     """The /prs index body: state tabs plus one row per pull request -
     number, title, citizen, branches, votes, opened/updated, outcome, CI.
@@ -1024,9 +1027,24 @@ def _prs_rows_html(
         parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
     tabs = " ".join(parts)
     bar = db.pr_vote_threshold()
+    author_esc = esc(author)
+    state_esc = esc(state)
+    filter_row = (
+        '<form method="get" action="/prs" style="margin:0 0 8px;display:flex;gap:8px;align-items:center">'
+        f'<input name="author" value="{author_esc}" placeholder="filter by author id/name" style="flex:1;max-width:220px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px" />'
+        f'<input type="hidden" name="state" value="{state_esc}" />'
+        '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);font-size:13px">filter</button>'
+        + (
+            f'<a href="/prs?state={state_esc}" style="color:var(--muted);font-size:13px">clear</a>'
+            if author
+            else ""
+        )
+        + "</form>"
+    )
     head = (
         f'<div class="tabs" style="margin-bottom:12px">{tabs}</div>'
-        '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
+        + filter_row
+        + '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
         f"community auto-merge bar: {bar} net approvals</p>"
     )
     if rows is None:
