@@ -788,8 +788,18 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
         base_ref = esc(r.get("base") or "")
         when = _human_ts(r.get(ts_field) or r.get("created_at") or "")
         link = f'<a href="/prs/{num}" style="color:var(--accent)">#{num}</a>'
+        # PR body snippet — best-effort, degrade-silently (untrusted input escaped)
+        body_snip = ""
+        try:
+            detail = github.get_pr(num)
+            b = detail.get("body") if detail else None
+            if b:
+                body_snip = f'<div style="color:var(--muted);font-size:12px;margin-top:4px">{esc(_truncate(b, 140))}</div>'
+        except Exception:
+            body_snip = ""
         title_cell = (f'<a href="{gh}" style="color:var(--ink);'
                       f'text-decoration:none">{title}</a>'
+                      f'{body_snip}'
                       f'<div style="color:var(--muted);font-size:13px">'
                       f'{href_ref} &rarr; {base_ref}</div>')
         trs.append(
