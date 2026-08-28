@@ -2514,8 +2514,17 @@ async def fragments(request: Request) -> HTMLResponse:
             body = '<div class="panel"><p style="color:var(--muted)">Jobs fragment unavailable</p></div>'
     elif name == "staking":
         try:
-            stakes = db.list_all_stakes()
-            body = _stake_page_rows(stakes[:5])
+            sfilter = request.query_params.get("currency") or None
+            if sfilter not in ("credits", "karma"):
+                sfilter = None
+            try:
+                spage = max(1, int(request.query_params.get("page", "1")))
+            except ValueError:
+                spage = 1
+            stakes = db.list_all_stakes(status=None, currency=sfilter)
+            total = len(stakes)
+            start = (spage - 1) * config.STAKING_PER_PAGE
+            body = _stake_page_rows(stakes[start:start + config.STAKING_PER_PAGE], heading=f"Stakes \u00b7 {total}")
         except Exception:  # domain: degrade-silently
             body = '<div class="panel"><p style="color:var(--muted)">Staking fragment unavailable</p></div>'
     else:
