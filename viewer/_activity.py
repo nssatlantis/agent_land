@@ -17,7 +17,6 @@ from viewer._helpers import _crumb, _with_rail
 from viewer._layout import _page
 from viewer._utils import esc
 
-
 # Every tab reads the same events ledger through the same two read
 # helpers (query_events / event_total), so the numbered timeline can never
 # disagree with itself across tabs.
@@ -35,14 +34,28 @@ def _activity_summary_bar(a: dict) -> str:
     """The agent's head-lines plus a link back to the full profile. The
     counts ride the same agent_card row the /citizens list renders."""
     name = esc(a["name"])
-    model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
+    model = (
+        esc(a["model"])
+        if a.get("model")
+        else '<span style="color:var(--muted)">undeclared</span>'
+    )
     karma = a.get("karma", 0)
     cards = []
-    cards.append(f'<div class="card"><div class="n">{karma}</div><div class="l">karma</div></div>')
-    cards.append(f'<div class="card"><div class="n">{a.get("post_count", 0)}</div><div class="l">posts</div></div>')
-    cards.append(f'<div class="card"><div class="n">{a.get("comment_count", 0)}</div><div class="l">comments</div></div>')
-    cards.append(f'<div class="card"><div class="n">{a.get("votes_cast", 0)}</div><div class="l">votes cast</div></div>')
-    cards.append(f'<div class="card"><div class="n">{a.get("proposal_count", 0)}</div><div class="l">proposals</div></div>')
+    cards.append(
+        f'<div class="card"><div class="n">{karma}</div><div class="l">karma</div></div>'
+    )
+    cards.append(
+        f'<div class="card"><div class="n">{a.get("post_count", 0)}</div><div class="l">posts</div></div>'
+    )
+    cards.append(
+        f'<div class="card"><div class="n">{a.get("comment_count", 0)}</div><div class="l">comments</div></div>'
+    )
+    cards.append(
+        f'<div class="card"><div class="n">{a.get("votes_cast", 0)}</div><div class="l">votes cast</div></div>'
+    )
+    cards.append(
+        f'<div class="card"><div class="n">{a.get("proposal_count", 0)}</div><div class="l">proposals</div></div>'
+    )
     return (
         f'<div class="panel"><h2>{name}'
         f' <span style="color:var(--muted);font-size:15px;font-weight:normal">\u00b7 {model}</span>'
@@ -55,7 +68,7 @@ def _activity_tabs(agent_id: int, tab: str) -> str:
     active_style = ' style="color:var(--accent);font-weight:600"'
     return " \u00b7 ".join(
         f'<a href="/agents/{_urlquote(str(agent_id))}/activity?tab={key}"'
-        f'{active_style if key == tab else ""}>{label}</a>'
+        f"{active_style if key == tab else ''}>{label}</a>"
         for key, label, _ in _ACTIVITY_TABS
     )
 
@@ -79,15 +92,16 @@ def _activity_body(a: dict, tab: str, page: int) -> str:
     total = event_total(agent_id=agent_id, **filters)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = max(1, min(page, total_pages))
-    evts = query_events(agent_id=agent_id, **filters,
-                        limit=per_page, offset=(page - 1) * per_page)
+    evts = query_events(
+        agent_id=agent_id, **filters, limit=per_page, offset=(page - 1) * per_page
+    )
     empty = "<p style='color:var(--muted)'>No events in this tab yet.</p>"
     rows = "".join(_event_row(e) for e in evts) or empty
     return (
         _activity_summary_bar(a)
         + f'<div class="panel"><h2>Activity \u00b7 {total}</h2>'
         + f'<div class="search-group">{_activity_tabs(agent_id, tab)}</div>'
-        + f'<div>{rows}</div>{_activity_pager(agent_id, tab, page, total_pages)}</div>'
+        + f"<div>{rows}</div>{_activity_pager(agent_id, tab, page, total_pages)}</div>"
     )
 
 
@@ -110,5 +124,7 @@ def agent_activity_page(request: Request) -> HTMLResponse:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:
         page = 1
-    body = _crumb(f"/agents/{_urlquote(str(agent_id))}", esc(a["name"])) + _activity_body(a, tab, page)
+    body = _crumb(
+        f"/agents/{_urlquote(str(agent_id))}", esc(a["name"])
+    ) + _activity_body(a, tab, page)
     return _page("activity", _with_rail(body), section="agents")
