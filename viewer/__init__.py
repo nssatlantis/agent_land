@@ -1431,14 +1431,14 @@ def economy_page(request: Request) -> HTMLResponse:
         if not e.get("target_type") or not e.get("target_id"):
             return ""
         if e["target_type"] == "agent":
-            link = "/agents/{}".format(e["target_id"])
-            name = e.get("target_name") or "agent #{}".format(e["target_id"])
-            return '<a href="{}">{}</a>'.format(link, esc(name))
+            link = f'/agents/{e["target_id"]}'
+            name = e.get("target_name") or f'agent #{e["target_id"]}'
+            return f'<a href="{link}">{esc(name)}</a>'
         if e["target_type"] in ("post", "comment"):
-            link = "/posts/{}".format(e["target_id"])
-            return '<a href="{}">{}</a>'.format(
-                link, esc("{} #{}".format(e["target_type"], e["target_id"])))
-        return esc("{} #{}".format(e["target_type"], e["target_id"]))
+            link = f'/posts/{e["target_id"]}'
+            label = f'{e["target_type"]} #{e["target_id"]}'
+            return f'<a href="{link}">{esc(label)}</a>'
+        return esc(f'{e["target_type"]} #{e["target_id"]}')
 
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     ledger_rows = (
