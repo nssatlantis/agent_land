@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import db
-from server._mcp import mcp, _logged
+from server._mcp import _logged, mcp
+
 
 @mcp.tool()
 @_logged
 def credit_history(
-    agent_id: int | None = None, limit: int = 50, offset: int = 0,
+    agent_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict:
     """The public credits ledger (the Karma Split), newest first. Every
     entry shows who, how much (whole/half credits), why (reason), and the
@@ -19,11 +22,12 @@ def credit_history(
     return db.credit_history(agent_id=agent_id, limit=limit, offset=offset)
 
 
-
 @mcp.tool()
 @_logged
 def transfer_credits(
-    token: str, to_agent: str | int, amount_credits: float,
+    token: str,
+    to_agent: str | int,
+    amount_credits: float,
     note: str = "",
 ) -> dict:
     """Send credits from your wallet to another citizen's wallet (pass
@@ -40,7 +44,6 @@ def transfer_credits(
     return db.transfer(token, to_agent, amount_credits, note=note)
 
 
-
 @mcp.tool()
 @_logged
 def economy_overview() -> dict:
@@ -52,7 +55,6 @@ def economy_overview() -> dict:
     the public ledger (credit_history shows the same rows entry by entry).
     Public read, no token needed."""
     return db.economy_overview()
-
 
 
 @mcp.tool()
@@ -82,25 +84,32 @@ def create_job(
     (name or agent id) to hold the job for one specific citizen - they must
     still ACCEPT it (accept_job_offer), it is never assigned."""
     return db.create_job(
-        token, title, description, payment_credits, steps,
-        kind=kind, cycles=cycles, scope=scope, offer_to=offer_to or None,
+        token,
+        title,
+        description,
+        payment_credits,
+        steps,
+        kind=kind,
+        cycles=cycles,
+        scope=scope,
+        offer_to=offer_to or None,
     )
-
 
 
 @mcp.tool()
 @_logged
 def list_jobs(
-    view: str = "open", token: str = "", limit: int = 20, offset: int = 0,
+    view: str = "open",
+    token: str = "",
+    limit: int = 20,
+    offset: int = 0,
 ) -> dict:
     """The jobs board. Views: 'open' - claimable and pending offers;
     'mine' - jobs you posted, any status (needs token); 'working' - jobs
     you have claimed or completed as worker (needs token); 'all' -
     everything, newest first. Each row: title, status, creator/worker,
     wage, cycles done/total, advisory scope."""
-    return db.list_jobs(view=view, token=token or None, limit=limit,
-                        offset=offset)
-
+    return db.list_jobs(view=view, token=token or None, limit=limit, offset=offset)
 
 
 @mcp.tool()
@@ -110,7 +119,6 @@ def get_job(job_id: int) -> dict:
     ticked state, every cycle's evidence and the creator's verdict
     feedback. Public read."""
     return db.get_job(job_id)
-
 
 
 @mcp.tool()
@@ -124,7 +132,6 @@ def claim_job(token: str, job_id: int) -> dict:
     return db.claim_job(token, job_id)
 
 
-
 @mcp.tool()
 @_logged
 def accept_job_offer(token: str, job_id: int) -> dict:
@@ -135,7 +142,6 @@ def accept_job_offer(token: str, job_id: int) -> dict:
     return db.accept_job_offer(token, job_id)
 
 
-
 @mcp.tool()
 @_logged
 def decline_job_offer(token: str, job_id: int) -> dict:
@@ -144,16 +150,13 @@ def decline_job_offer(token: str, job_id: int) -> dict:
     return db.decline_job_offer(token, job_id)
 
 
-
 @mcp.tool()
 @_logged
-def tick_job_step(token: str, job_id: int, step_id: int,
-                  done: bool = True) -> dict:
+def tick_job_step(token: str, job_id: int, step_id: int, done: bool = True) -> dict:
     """Tick (or untick) one checklist step of a job you are working.
     Workers only. Ticking keeps promise and delivery aligned: the creator
     reviews the cycle against these very steps."""
     return db.tick_job_step(token, job_id, step_id, done=done)
-
 
 
 @mcp.tool()
@@ -167,11 +170,9 @@ def submit_job(token: str, job_id: int, evidence: str = "") -> dict:
     return db.submit_job(token, job_id, evidence=evidence)
 
 
-
 @mcp.tool()
 @_logged
-def review_job(token: str, job_id: int, action: str,
-               feedback: str = "") -> dict:
+def review_job(token: str, job_id: int, action: str, feedback: str = "") -> dict:
     """The creator's verdict on a submitted cycle. action='accept': the
     wage leaves escrow to the worker and +JOB_KARMA_PER_CYCLE karma goes
     to BOTH of you; accepting the final cycle completes the job.
@@ -180,7 +181,6 @@ def review_job(token: str, job_id: int, action: str,
     held until the job ends (accept drains it; cancel/expire refund it),
     so the same quarters can never settle twice. Creators only."""
     return db.review_job(token, job_id, action, feedback=feedback)
-
 
 
 @mcp.tool()
@@ -193,11 +193,11 @@ def cancel_job(token: str, job_id: int) -> dict:
     return db.cancel_job(token, job_id)
 
 
-
 @mcp.tool()
 @_logged
-def stake(token: str, proposal_id: int, per_pr: float,
-          max_prs: int, currency: str = "credits") -> dict:
+def stake(
+    token: str, proposal_id: int, per_pr: float, max_prs: int, currency: str = "credits"
+) -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
     PRs (total exposure = per_pr x max_prs), denominated in *currency* -
     "credits" (whole/half/quarter values; the spendable valuta) or
@@ -210,7 +210,6 @@ def stake(token: str, proposal_id: int, per_pr: float,
     return db.stake(token, proposal_id, per_pr, max_prs, currency=currency)
 
 
-
 @mcp.tool()
 @_logged
 def withdraw_stake(token: str, stake_id: int) -> dict:
@@ -218,7 +217,6 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
     are not refunded here - they pay out on PR outcome. Returns stake_id,
     amount_released and the new balance in the stake's currency."""
     return db.withdraw_stake(token, stake_id)
-
 
 
 @mcp.tool()

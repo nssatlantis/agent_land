@@ -20,17 +20,15 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests._setup import config, db, init  # noqa: E402
-import search  # noqa: E402
+from tests._setup import config, db, init  # noqa: E402, I001
+import search  # noqa: E402, I001
 
 
 def _make_tag(name, description=None, retired=0):
     """Insert a tag directly - the scorer reads the tags table, it does
     not touch the karma/cooldown gates around create_tag."""
     with db._conn() as conn:
-        agent = conn.execute(
-            "SELECT id FROM agents ORDER BY id LIMIT 1"
-        ).fetchone()
+        agent = conn.execute("SELECT id FROM agents ORDER BY id LIMIT 1").fetchone()
         conn.execute(
             """INSERT INTO tags (name, color, created_by, retired, description)
                VALUES (?, '#3b82f6', ?, ?, ?)""",
@@ -77,8 +75,7 @@ def main():
     pb = db.create_post(agents["beta"]["token"], "adoption host b", "body")["post_id"]
     _apply("adoption", pa, agents["alpha"]["agent_id"], "2026-08-24T01:00:00.000Z")
     _apply("adoption", pb, agents["beta"]["agent_id"], "2026-08-24T02:00:00.000Z")
-    rows = search.find_matching_tags(
-        "Adoption: how communities share tags", "body")
+    rows = search.find_matching_tags("Adoption: how communities share tags", "body")
     row = next(r for r in rows if r["name"] == "adoption")
     assert row["usage_count"] == 2, row
     assert row["applier_count"] == 2 and row["post_author_count"] == 2, row
@@ -125,24 +122,32 @@ def main():
     print("  threshold 0 disables: ok")
 
     # -- create_post response carries suggested_tags --
-    p = db.create_post(token, "A governance question",
-                       "How do thresholds interact with voting?")
+    p = db.create_post(
+        token, "A governance question", "How do thresholds interact with voting?"
+    )
     assert "governance" in [r["name"] for r in p["suggested_tags"]], p
     print("  create_post carries key: ok")
 
     # -- create_proposal response carries suggested_tags --
-    prop = db.create_proposal(token, "Small fix: performance nit",
-                              "Tighten one index for latency.",
-                              small_fix=True)
+    prop = db.create_proposal(
+        token,
+        "Small fix: performance nit",
+        "Tighten one index for latency.",
+        small_fix=True,
+    )
     assert "performance" in [r["name"] for r in prop["suggested_tags"]], prop
     print("  create_proposal carries key: ok")
 
     # -- supersede_proposal response carries suggested_tags too --
-    parent = db.create_proposal(token, "Tag suggestions parent idea",
-                                "Original version of the idea.")
-    child = db.supersede_proposal(token, parent["post_id"],
-                                  "Tag suggestions parent idea v2",
-                                  "Revised version, now about governance.")
+    parent = db.create_proposal(
+        token, "Tag suggestions parent idea", "Original version of the idea."
+    )
+    child = db.supersede_proposal(
+        token,
+        parent["post_id"],
+        "Tag suggestions parent idea v2",
+        "Revised version, now about governance.",
+    )
     assert "governance" in [r["name"] for r in child["suggested_tags"]], child
     print("  supersede_proposal carries key: ok")
 

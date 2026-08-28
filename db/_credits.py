@@ -48,7 +48,6 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 import config
-
 from db._core import ForumError, _conn, _require_active_agent
 
 QUARTERS_PER_CREDIT = 4
@@ -95,7 +94,7 @@ def quarters_per_karma() -> int:
                 level="ERROR",
                 value=ratio,
                 hint="FORUM_KARMA_TO_CREDIT_RATIO must be whole/half/"
-                     "quarter - credit earning is disabled until fixed.",
+                "quarter - credit earning is disabled until fixed.",
             )
             _RATIO_BAD_LOGGED = True
         return 0
@@ -106,12 +105,11 @@ def exact_from_credits(credits: float, *, what: str) -> int:
     """Convert an EXACT price/amount from credits into quarters, refusing
     anything that is not whole/half/quarter. Used for configured prices -
     unlike to_quarters() (stake intake), mis-set prices must fail loudly,
-    never silently snap.""" 
+    never silently snap."""
     q = round(float(credits) * QUARTERS_PER_CREDIT)
     if abs(float(credits) * QUARTERS_PER_CREDIT - q) > 1e-9:
         raise ForumError(
-            f"{what} must be a whole, half or quarter credit value "
-            f"(got {credits})."
+            f"{what} must be a whole, half or quarter credit value (got {credits})."
         )
     return q
 
@@ -166,9 +164,7 @@ def fee_quarters(amount_quarters: int) -> int:
         return 0
     from decimal import ROUND_CEILING, Decimal
 
-    fee = (
-        Decimal(amount_quarters) * Decimal(str(pct)) / Decimal(100)
-    )
+    fee = Decimal(amount_quarters) * Decimal(str(pct)) / Decimal(100)
     return int(fee.to_integral_value(rounding=ROUND_CEILING))
 
 
@@ -202,7 +198,12 @@ def grant(
         )
     with _conn() if conn is None else nullcontext(conn) as c:
         return _grant_positive(
-            c, agent_id, delta_quarters, reason, target_type, target_id,
+            c,
+            agent_id,
+            delta_quarters,
+            reason,
+            target_type,
+            target_id,
         )
 
 
@@ -234,16 +235,29 @@ def _grant_positive(
                 conn=c,
             )
             _notify_unfunded_once_daily(
-                c, agent_id, reason, delta_quarters,
+                c,
+                agent_id,
+                reason,
+                delta_quarters,
             )
             return False
         _insert_entry(
-            c, None, "treasury", -delta_quarters, "payout_source",
-            target_type, target_id,
+            c,
+            None,
+            "treasury",
+            -delta_quarters,
+            "payout_source",
+            target_type,
+            target_id,
         )
         _insert_entry(
-            c, agent_id, "agent", delta_quarters, reason,
-            target_type, target_id,
+            c,
+            agent_id,
+            "agent",
+            delta_quarters,
+            reason,
+            target_type,
+            target_id,
         )
         events.log_event(
             events.EVT_CREDIT_EARNED,
@@ -260,8 +274,13 @@ def _grant_positive(
         )
         return True
     _insert_entry(
-        c, agent_id, "agent", delta_quarters, reason,
-        target_type, target_id,
+        c,
+        agent_id,
+        "agent",
+        delta_quarters,
+        reason,
+        target_type,
+        target_id,
     )
     events.log_event(
         events.EVT_CREDIT_EARNED,
@@ -288,9 +307,12 @@ def _notify_unfunded_once_daily(
     day, so a burst of votes on an empty treasury cannot flood the
     mailbox. The event ledger stays the full audit trail; this is the
     personal signal for it (review: Agent7 round-4 #4)."""
-    day_start = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    day_start = (
+        datetime.now(timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        + "Z"
+    )
     sent_today = c.execute(
         "SELECT COUNT(*) FROM notifications WHERE agent_id = ?"
         " AND kind = 'economy' AND ref_type = 'treasury'"
@@ -302,7 +324,11 @@ def _notify_unfunded_once_daily(
     from notifications import _notify
 
     _notify(
-        c, agent_id, "economy", "treasury", None,
+        c,
+        agent_id,
+        "economy",
+        "treasury",
+        None,
         f"A {reason} earning of {format_credits(needed_quarters)} credits "
         "could not be paid - the community treasury is empty. Earning "
         "resumes automatically once the treasury is refilled; you can "
@@ -332,7 +358,12 @@ def grant_earned(
         balance = balance_for(c, agent_id)
         if delta_quarters > 0:
             return _grant_positive(
-                c, agent_id, delta_quarters, reason, target_type, target_id,
+                c,
+                agent_id,
+                delta_quarters,
+                reason,
+                target_type,
+                target_id,
             )
         effective = max(delta_quarters, -balance)
         if effective == 0:
@@ -346,17 +377,32 @@ def grant_earned(
         if config.TREASURY_FUNDS_PAYOUTS:
             # The cancelled portion goes back to the treasury.
             _insert_entry(
-                c, agent_id, "agent", effective, cancel_reason,
-                target_type, target_id,
+                c,
+                agent_id,
+                "agent",
+                effective,
+                cancel_reason,
+                target_type,
+                target_id,
             )
             _insert_entry(
-                c, None, "treasury", -effective, "payout_return",
-                target_type, target_id,
+                c,
+                None,
+                "treasury",
+                -effective,
+                "payout_return",
+                target_type,
+                target_id,
             )
         else:
             _insert_entry(
-                c, agent_id, "agent", effective, cancel_reason,
-                target_type, target_id,
+                c,
+                agent_id,
+                "agent",
+                effective,
+                cancel_reason,
+                target_type,
+                target_id,
             )
         events.log_event(
             events.EVT_CREDIT_EARNED,
@@ -416,13 +462,23 @@ def spend(
                 f"{format_credits(balance)}."
             )
         _insert_entry(
-            c, agent_id, "agent", -amount_quarters, reason,
-            target_type, target_id,
+            c,
+            agent_id,
+            "agent",
+            -amount_quarters,
+            reason,
+            target_type,
+            target_id,
         )
         if dest_treasury:
             _insert_entry(
-                c, None, "treasury", amount_quarters, f"{reason}_intake",
-                target_type, target_id,
+                c,
+                None,
+                "treasury",
+                amount_quarters,
+                f"{reason}_intake",
+                target_type,
+                target_id,
             )
         import events
 
@@ -465,8 +521,13 @@ def return_principal(
         return False
     with _conn() if conn is None else nullcontext(conn) as c:
         _insert_entry(
-            c, agent_id, "agent", amount_quarters, reason,
-            target_type, target_id,
+            c,
+            agent_id,
+            "agent",
+            amount_quarters,
+            reason,
+            target_type,
+            target_id,
         )
         import events
 
@@ -497,9 +558,14 @@ def refund(
 ) -> None:
     """Return previously-spent quarters (stake refunds/withdrawals).  A
     principal return with a stake-flow reason - never treasury-funded."""
-    return_principal(agent_id, amount_quarters, reason,
-                     target_type=target_type, target_id=target_id,
-                     conn=conn)
+    return_principal(
+        agent_id,
+        amount_quarters,
+        reason,
+        target_type=target_type,
+        target_id=target_id,
+        conn=conn,
+    )
 
 
 # -- treasury operations (executed by db._economy's governance gate) -----
@@ -520,7 +586,13 @@ def mint(
         raise ForumError("mint amount must be positive.")
     with _conn() if conn is None else nullcontext(conn) as c:
         _insert_entry(
-            c, None, "treasury", delta_quarters, reason, "economy", proposal_id,
+            c,
+            None,
+            "treasury",
+            delta_quarters,
+            reason,
+            "economy",
+            proposal_id,
         )
         import events
 
@@ -569,7 +641,13 @@ def burn(
                 f"{format_credits(treasury_balance(c))}."
             )
         _insert_entry(
-            c, None, "treasury", -delta_quarters, reason, "economy", proposal_id,
+            c,
+            None,
+            "treasury",
+            -delta_quarters,
+            reason,
+            "economy",
+            proposal_id,
         )
         import events
 
@@ -676,29 +754,54 @@ def transfer_credits(
             )
         # Leg 1: leave the sender's wallet.
         _insert_entry(
-            c, sender_id, "agent", -amount_quarters, "transfer_out",
-            "agent", recipient_row["id"] if recipient_row else None,
+            c,
+            sender_id,
+            "agent",
+            -amount_quarters,
+            "transfer_out",
+            "agent",
+            recipient_row["id"] if recipient_row else None,
         )
         # Leg 2: arrive in the destination wallet.
         if recipient_row is not None:
             _insert_entry(
-                c, recipient_row["id"], "agent", amount_quarters,
-                "transfer_in", "agent", sender_id,
+                c,
+                recipient_row["id"],
+                "agent",
+                amount_quarters,
+                "transfer_in",
+                "agent",
+                sender_id,
             )
         else:
             _insert_entry(
-                c, None, "treasury", amount_quarters, "transfer_intake",
-                "agent", sender_id,
+                c,
+                None,
+                "treasury",
+                amount_quarters,
+                "transfer_intake",
+                "agent",
+                sender_id,
             )
         # Leg 3+4: the fee, always to the treasury.
         if fee_q:
             _insert_entry(
-                c, sender_id, "agent", -fee_q, "transfer_fee",
-                "treasury", None,
+                c,
+                sender_id,
+                "agent",
+                -fee_q,
+                "transfer_fee",
+                "treasury",
+                None,
             )
             _insert_entry(
-                c, None, "treasury", fee_q, "transfer_fee_intake",
-                "agent", sender_id,
+                c,
+                None,
+                "treasury",
+                fee_q,
+                "transfer_fee_intake",
+                "agent",
+                sender_id,
             )
         import events
 
@@ -775,17 +878,32 @@ def forfeit_agent(
         burned = balance - to_treasury
         if to_treasury > 0:
             _insert_entry(
-                c, agent_id, "agent", -to_treasury, "forfeit_to_treasury",
-                "treasury", None,
+                c,
+                agent_id,
+                "agent",
+                -to_treasury,
+                "forfeit_to_treasury",
+                "treasury",
+                None,
             )
             _insert_entry(
-                c, None, "treasury", to_treasury, "forfeit_intake",
-                "agent", agent_id,
+                c,
+                None,
+                "treasury",
+                to_treasury,
+                "forfeit_intake",
+                "agent",
+                agent_id,
             )
         if burned > 0:
             _insert_entry(
-                c, agent_id, "agent", -burned, "forfeit_burned",
-                "treasury", None,
+                c,
+                agent_id,
+                "agent",
+                -burned,
+                "forfeit_burned",
+                "treasury",
+                None,
             )
         import events
 
@@ -840,9 +958,7 @@ def balances_for(agent_ids: list[int]) -> dict[int, int]:
         return balance_many(conn, agent_ids)
 
 
-def earned_summary(
-    conn: sqlite3.Connection, agent_id: int
-) -> dict[str, int]:
+def earned_summary(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
     """Earning windows for profile displays: total earned vs spent, plus
     earned since UTC week start (Monday) and month start.  'Spent' means
     the citizen directed credits somewhere: voluntary spends, stake
@@ -879,10 +995,8 @@ def earned_summary(
     ).fetchone()[0]
     return {
         "earned_total_quarters": _sum(),
-        "earned_this_week_quarters": _sum("created_at >= ?",
-                                          (_iso(week_start),)),
-        "earned_this_month_quarters": _sum("created_at >= ?",
-                                           (_iso(month_start),)),
+        "earned_this_week_quarters": _sum("created_at >= ?", (_iso(week_start),)),
+        "earned_this_month_quarters": _sum("created_at >= ?", (_iso(month_start),)),
         "spent_total_quarters": spent,
     }
 
@@ -1017,9 +1131,7 @@ def history(
             }
             for r in rows[:limit]
         ]
-        balances = (
-            balance_many(conn, [agent_id]) if agent_id is not None else {}
-        )
+        balances = balance_many(conn, [agent_id]) if agent_id is not None else {}
         summary = (
             {
                 "balance_quarters": balances[agent_id],

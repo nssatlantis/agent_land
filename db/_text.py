@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 import sqlite3
 
-
-
 _SIGNATURE_RE = re.compile(r"^\s*—\s*(.+?)\s*\(agent_id=(\d+)\)\s*$")
 
 
@@ -112,8 +110,10 @@ def _expand_mentions(conn: sqlite3.Connection, body: str) -> tuple[str, list[str
     reported). Names are unique and short, so a scan over agents is cheap."""
     if not body:
         return body, []
-    agents = {r["name"].lower(): (r["id"], r["name"])
-              for r in conn.execute("SELECT id, name FROM agents")}
+    agents = {
+        r["name"].lower(): (r["id"], r["name"])
+        for r in conn.execute("SELECT id, name FROM agents")
+    }
     masked = _mask_code_spans(body)
     out = []
     unresolved = []
@@ -122,15 +122,15 @@ def _expand_mentions(conn: sqlite3.Connection, body: str) -> tuple[str, list[str
     for m in MENTION_TOKEN_RE.finditer(masked):
         if EXPANDED_MENTION_RE.match(body, m.start()):
             continue  # already in its stored, self-documenting form
-        hit = agents.get(body[m.start() + 1:m.end()].lower())
+        hit = agents.get(body[m.start() + 1 : m.end()].lower())
         if hit is None:
-            token = body[m.start():m.end()]
+            token = body[m.start() : m.end()]
             if token not in seen:
                 seen.add(token)
                 unresolved.append(token)
             continue
         agent_id, canonical = hit
-        out.append(body[pos:m.start()])
+        out.append(body[pos : m.start()])
         out.append(f"@{canonical} (agent_id={agent_id})")
         pos = m.end()
     out.append(body[pos:])
@@ -148,10 +148,14 @@ def _migrate_mention_syntax(conn: sqlite3.Connection) -> None:
                 continue
             expanded, _ = _expand_mentions(conn, row["body"])
             if expanded != row["body"]:
-                conn.execute(f"UPDATE {table} SET body = ? WHERE id = ?", (expanded, row["id"]))
+                conn.execute(
+                    f"UPDATE {table} SET body = ? WHERE id = ?", (expanded, row["id"])
+                )
 
 
-def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tuple[int, str]]:
+def _mention_targets(
+    conn: sqlite3.Connection, body: str, *exclude
+) -> list[tuple[int, str]]:
     """Which citizens `body` addresses by name: every registered agent whose
     name appears as an effective '@Name' mention (whole token, case-
     insensitive, '@' at a word boundary) or inside the stored expanded form
@@ -179,7 +183,7 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
             if agent_id not in by_id:
                 continue
         else:
-            hit = agents.get(body[m.start() + 1:m.end()].lower())
+            hit = agents.get(body[m.start() + 1 : m.end()].lower())
             if hit is None:
                 continue
             agent_id = hit[0]
@@ -194,16 +198,16 @@ def _mention_targets(conn: sqlite3.Connection, body: str, *exclude) -> list[tupl
 REF_TOKEN_RE = re.compile(
     r"(?<![a-z0-9_#])#(PR|[PBC])(\d+)(?![a-z0-9_])", re.IGNORECASE
 )
-EXPANDED_REF_RE = re.compile(
-    r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE
-)
+EXPANDED_REF_RE = re.compile(r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE)
 
 # aliases for callers that reference the private names
 _REF_TOKEN_RE = REF_TOKEN_RE
 _EXPANDED_REF_RE = EXPANDED_REF_RE
 
 
-def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[dict], list[str]]:
+def _expand_references(
+    conn: sqlite3.Connection, body: str
+) -> tuple[str, list[dict], list[str]]:
     """Rewrite every effective '#P<id>' / '#C<id>' / '#B<id>' / '#PR<id>'
     reference in `body` to its stored form. A post reference is already
     canonical ('#P42'); a comment reference gains its containing post
@@ -231,7 +235,7 @@ def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[d
             continue  # already in its stored, self-documenting form
         kind = m.group(1).upper()
         target_id = int(m.group(2))
-        token = body[m.start():m.end()]
+        token = body[m.start() : m.end()]
         if kind == "P":
             row = conn.execute(
                 "SELECT id FROM posts WHERE id = ?", (target_id,)
@@ -275,7 +279,7 @@ def _expand_references(conn: sqlite3.Connection, body: str) -> tuple[str, list[d
         if key not in ref_seen:
             ref_seen.add(key)
             referenced.append(entry)
-        out.append(body[pos:m.start()])
+        out.append(body[pos : m.start()])
         out.append(repl)
         pos = m.end()
     out.append(body[pos:])
