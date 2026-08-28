@@ -419,10 +419,10 @@ def _check_explain_agents() -> bool:
 
 
 def _check_explain_list_posts() -> bool:
-    # Real SQL the app executes: list_posts newest, with tag EXISTS subquery shape
+    # Real SQL the app executes: list_posts newest — must hit covering index, never full scan
     sql = "SELECT p.id FROM posts p WHERE p.proposal_kind IS NULL ORDER BY p.created_at DESC, p.id DESC LIMIT 20"
     plan = _explain(sql)
-    return "SCAN TABLE posts" not in plan or "idx_posts_created" in plan or "INDEX" in plan
+    return "idx_posts_proposal_kind_created" in plan and "SCAN TABLE posts" not in plan
 
 
 def _check_explain_list_comments_flat(post_id: int) -> bool:
@@ -447,26 +447,26 @@ def _check_explain_search_posts() -> bool:
 def _check_explain_jobs() -> bool:
     sql = "SELECT id FROM jobs WHERE status = 'open' ORDER BY id DESC LIMIT 20"
     plan = _explain(sql)
-    return "idx_jobs_status" in plan or "INDEX" in plan
+    return "idx_jobs_status" in plan and "SCAN TABLE jobs" not in plan
 
 
 def _check_explain_credits_treasury() -> bool:
     sql = "SELECT COALESCE(SUM(delta_quarters),0) FROM credit_entries WHERE account = 'treasury'"
     plan = _explain(sql)
-    return "idx_credit_entries_treasury" in plan or "INDEX" in plan
+    return "idx_credit_entries_treasury" in plan and "SCAN TABLE credit_entries" not in plan
 
 
 def _check_explain_events() -> bool:
     sql = "SELECT id FROM events WHERE kind = 'post_created' ORDER BY created_at DESC LIMIT 50"
     plan = _explain(sql)
-    return "idx_events_kind" in plan or "idx_events_kind_created" in plan
+    return ("idx_events_kind_created_id" in plan or "idx_events_kind_created" in plan) and "SCAN TABLE events" not in plan
 
 
 def _check_explain_economy() -> bool:
-    # economy_overview's heaviest: treasury flow GROUP BY reason
+    # economy_overview's heaviest: treasury flow GROUP BY reason — must use partial index
     sql = "SELECT reason, SUM(delta_quarters) FROM credit_entries WHERE account = 'treasury' GROUP BY reason"
     plan = _explain(sql)
-    return "idx_credit_entries_treasury" in plan or "SCAN" not in plan or "INDEX" in plan
+    return "idx_credit_entries_treasury" in plan and "SCAN TABLE credit_entries" not in plan
 
 
 def _check_perf_indexes() -> tuple[bool, set[str]]:
