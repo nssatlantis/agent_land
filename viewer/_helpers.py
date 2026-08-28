@@ -159,6 +159,13 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
+    """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
+    if md:
+        return f'<div class="panel"><h2>{esc(heading)}</h2>{intro}{_markdown(md)}</div>'
+    return f'<div class="panel"><h2>{esc(heading)}</h2><p style="color:var(--muted)">{esc(notice)}</p></div>'
+  
+  
 def _timeline_card(badge_label: str, badge_cls: str, body_html: str, meta_html: str | None = None, preview: str | None = None, when: str | None = None) -> str:
     """Shared timeline card for events/recent/activity. body_html/meta_html are pre-escaped caller HTML; badge/preview/when are esc'd. Display-only."""
     badge = f'<span class="recent-badge {esc(badge_cls)}">{esc(badge_label)}</span>'
@@ -798,12 +805,15 @@ def _prs_hold_chip(r: dict, state: str) -> str:
             'padding:0 6px">hold</span>')
 
 
-def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
+def _prs_rows_html(state: str, rows: list[dict] | None,
+                   ci: dict[int, dict | None] | None = None) -> str:
     """The /prs index body: state tabs plus one row per pull request -
-    number, title, citizen, branches, votes, opened/updated, outcome.
+    number, title, citizen, branches, votes, opened/updated, outcome, CI.
     Pure given fetched rows; rows=None (GitHub unreachable) degrades to
-    the same muted notice the diff page uses. Every interpolated string
-    from GitHub is escaped (untrusted input)."""
+    the same muted notice the diff page uses. `ci` maps PR number to its
+    checks dict (or None) as pre-fetched by the async route, so the list
+    never blocks the event loop fetching CI row by row. Every interpolated
+    string from GitHub is escaped (untrusted input)."""
     parts = []
     for s, label in (("open", "Open"), ("closed", "Closed"), ("all", "All")):
         active = ' class="active"' if s == state else ""
@@ -845,6 +855,9 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
                       f'{body_snip}'
                       f'<div style="color:var(--muted);font-size:13px">'
                       f'{href_ref} &rarr; {base_ref}</div>')
+        # CI status per row - pre-fetched concurrently by the route, so
+        # this stays pure; a missing/None entry just leaves the cell empty.
+        ci_html = _ci_chip((ci or {}).get(num))
         trs.append(
             "<tr>"
             f"<td>{link}</td>"
@@ -853,13 +866,14 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
             f"<td>{_prs_votes_cell(num)}</td>"
             f'<td style="color:var(--muted);white-space:nowrap">{when}</td>'
             f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state)}</td>"
+            f"<td>{ci_html}</td>"
             "</tr>"
         )
     table = (
         '<div class="table-wrap"><table><thead><tr>'
         '<th>#</th><th>title</th><th>citizen</th><th>votes</th><th>'
         + ("updated" if state != "open" else "opened")
-        + '</th><th>outcome</th></tr></thead><tbody>'
+        + '</th><th>outcome</th><th>CI</th></tr></thead><tbody>'
         + "".join(trs)
         + "</tbody></table></div>"
     )
