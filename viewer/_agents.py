@@ -147,7 +147,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     try:
         a = db.public_agent_detail(agent_id)
     except db.ForumError:
-        return _page(f"no agent {agent_id}", "<p>No such citizen.</p>")
+        return _page(f"no agent {agent_id}", "<p>No such citizen.</p>", status_code=404)
 
     prs = await _open_prs()
     open_by_agent = _open_prs_by_agent(prs)

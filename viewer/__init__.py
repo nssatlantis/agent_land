@@ -1001,7 +1001,7 @@ def credits_page(request: Request) -> HTMLResponse:
     except (KeyError, ValueError):
         # domain: degrade-silently - a malformed URL degrades to the
         # no-such-citizen page instead of a server error.
-        return _page("credits", "<p>Bad agent id.</p>")
+        return _page("credits", "<p>Bad agent id.</p>", status_code=404)
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except (
@@ -1013,7 +1013,7 @@ def credits_page(request: Request) -> HTMLResponse:
         agent_id=agent_id, limit=per_page, offset=(page - 1) * per_page
     )
     if not ledger["summary"] or (ledger["total"] == 0 and not _agent_exists(agent_id)):
-        return _page("credits", "<p>No such citizen.</p>")
+        return _page("credits", "<p>No such citizen.</p>", status_code=404)
     pager_bits = []
     if page > 1:
         pager_bits.append(
@@ -2208,6 +2208,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f"PR #{number} diff",
             _with_rail(_crumb("/prs", "pull requests") + panel),
             section="prs",
+            status_code=404,
         )
     if diff is None:
         panel = (
