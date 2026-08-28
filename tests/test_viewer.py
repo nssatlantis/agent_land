@@ -287,6 +287,21 @@ def test_prs_rows_html_votes_tabs_and_history():
     assert "/prs/5" in html
 
 
+def test_prs_rows_html_ci_from_map():
+    rows = [{"number": 1, "title": "t", "head": "h", "base": "main",
+             "html_url": "", "created_at": "2026-08-23T00:00:00Z",
+             "state": "open", "outcome": None}]
+    passing = {"state": "success", "failures": [], "runs": [{"name": "test"}]}
+    html = _prs_rows_html("open", rows, {1: passing})
+    assert "CI: passing" in html
+    # A row whose PR is missing from the map (or unknown) renders empty.
+    assert "CI: passing" not in _prs_rows_html("open", rows, {})
+    assert "CI: passing" not in _prs_rows_html("open", rows, {1: None})
+    assert "CI: passing" not in _prs_rows_html("open", rows)
+    # The table still gains the CI column header.
+    assert "<th>CI</th>" in _prs_rows_html("open", rows, {1: passing})
+
+
 def test_profile_cards_tag_stats():
     a = {"karma": 5, "post_count": 1, "comment_count": 0, "votes_cast": 3,
          "proposal_count": 1, "prs_merged": 0, "prs_declined": 0}
@@ -505,6 +520,7 @@ if __name__ == "__main__":
     test_prs_citizen_cell_fallback()
     test_prs_rows_html_empty_and_unreachable()
     test_prs_rows_html_votes_tabs_and_history()
+    test_prs_rows_html_ci_from_map()
     test_profile_cards_tag_stats()
     test_prs_hold_chip_states()
     test_todos_panel_shows_list_and_item_ids()
