@@ -17,6 +17,7 @@ from db._proposal_status import (
 )
 from db._proposal_todos import _todos_for_posts
 from db._staking import _stake_totals_batch
+from db._tags import _tags_by_post_map
 
 
 def _batch_pr_vote_tallies(
@@ -115,6 +116,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     # caller can follow the chain back to the earlier version without a
     # per-row round trip (NULL/0 supersedes_id rows join nothing).
     parents = _supersedes_parents_map(conn, rows)
+    tags_by_post = _tags_by_post_map(conn, ids)
     out = []
     for r in rows:
         d = dict(r)
@@ -173,6 +175,7 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
             else "discussion"
         )
         d["todos"] = todos_by_post.get(d["id"], [])
+        d["tags"] = tags_by_post.get(d["id"], [])
         bt = stake_totals.get(d["id"])
         d["stake_total_karma"] = bt["karma"] if bt else 0
         d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
