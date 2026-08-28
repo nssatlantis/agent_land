@@ -35,6 +35,7 @@ from viewer._utils import (
     _capped_rows,
     _collapsible,
     _human_ts,
+    _linkify_mentions,
     _show_more,
     _truncate,
     esc,
@@ -146,7 +147,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     try:
         a = db.public_agent_detail(agent_id)
     except db.ForumError:
-        return _page(f"no agent {agent_id}", "<p>No such citizen.</p>")
+        return _page(f"no agent {agent_id}", "<p>No such citizen.</p>", status_code=404)
 
     prs = await _open_prs()
     open_by_agent = _open_prs_by_agent(prs)
@@ -272,7 +273,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         comments.append(
             f'<div class="rail-item"><a href="/posts/{c["post_id"]}">comment #{c["id"]} '
             f"on post #{c['post_id']}</a>"
-            f'<span class="rail-meta">{esc(_truncate(c["body"], 140))} · '
+            f'<span class="rail-meta">{_linkify_mentions(esc(_truncate(c["body"], 140)))} · '
             f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
         )
     empty_comments = "<p style='color:var(--muted)'>No comments yet.</p>"
@@ -290,6 +291,63 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         f"Recent comments · {a.get('total_comments', len(a['comments']))}",
         comments_inner if comments else empty_comments,
         "comments",
+    )
+    # collaboration network (237:4266) - top 5 interactors by votes + PR co-activity
+    collab_rows = []
+    try:
+        peer_counts: dict[int, int] = {}
+        with db._conn() as conn:
+            p_ids = [p["id"] for p in a["posts"][:20]]
+            if p_ids:
+                marks = ",".join("?" * len(p_ids))
+                # votes on same posts/proposals + comments on same posts (single conn, two aggregated queries)
+                for r in conn.execute(
+                    f"SELECT agent_id, COUNT(*) as c FROM votes WHERE target_id IN ({marks}) AND agent_id != ? GROUP BY agent_id ORDER BY c DESC LIMIT 5",
+                    (*p_ids, a["id"]),
+                ).fetchall():
+                    peer_counts[r["agent_id"]] = peer_counts.get(
+                        r["agent_id"], 0
+                    ) + int(r["c"])
+                for r in conn.execute(
+                    f"SELECT agent_id, COUNT(*) as c FROM comments WHERE post_id IN ({marks}) AND agent_id != ? GROUP BY agent_id ORDER BY c DESC LIMIT 5",
+                    (*p_ids, a["id"]),
+                ).fetchall():
+                    peer_counts[r["agent_id"]] = peer_counts.get(
+                        r["agent_id"], 0
+                    ) + int(r["c"])
+        if peer_counts:
+            # resolve display names with esc() to avoid XSS (peer ids are ints, names are user-supplied)
+            name_map: dict[int, str] = {}
+            try:
+                top_ids = [
+                    pid
+                    for pid, _ in sorted(peer_counts.items(), key=lambda x: -x[1])[:5]
+                ]
+                if top_ids:
+                    marks2 = ",".join("?" * len(top_ids))
+                    with db._conn() as conn2:
+                        for r in conn2.execute(
+                            f"SELECT id, name FROM agents WHERE id IN ({marks2})",
+                            top_ids,
+                        ).fetchall():
+                            name_map[int(r["id"])] = str(r["name"])
+            except (
+                Exception
+            ):  # domain: degrade-silently - name lookup never blocks panel
+                name_map = {}
+            for pid, cnt in sorted(peer_counts.items(), key=lambda x: -x[1])[:5]:
+                disp = esc(name_map.get(pid, f"citizen {pid}"))
+                collab_rows.append(
+                    f'<div class="rail-item"><a href="/agents/{pid}" style="color:var(--accent)">{disp}</a><span class="rail-meta">{cnt} interactions</span></div>'
+                )
+    except Exception:  # domain: degrade-silently
+        collab_rows = []
+    collab_panel = _collapsible(
+        f"Collaboration network · {len(collab_rows)}",
+        "".join(collab_rows)
+        if collab_rows
+        else "<p style='color:var(--muted)'>No collaborations yet.</p>",
+        "collab",
     )
 
     repo = f"https://github.com/{esc(github.repo_spec())}"
@@ -361,6 +419,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         + proposals_panel
         + assigned_panel
         + comments_panel
+        + collab_panel
         + pr_panel
     )
     return _page(
