@@ -616,7 +616,7 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f"</div>"
         )
     return (
-        '<div class="panel"><h2>All stakes \xb7 '
+        '<div class="panel"><h2>Stakes \xb7 '
         + str(len(stakes))
         + "</h2>"
         + "".join(rows)
