@@ -5,21 +5,31 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import config
-
 from db._core import (
-    ForumError, REPLY_SEPARATOR, _conn, _require_active_agent,
+    REPLY_SEPARATOR,
+    ForumError,
+    _conn,
+    _require_active_agent,
 )
+from db._proposal_status import _comment_score_batch, _proposal_locked_error
 from db._text import (
-    _reconcile_signature, _ensure_signature, _expand_mentions,
-    _expand_references, _mention_targets, _strip_terminal_signature,
+    _ensure_signature,
+    _expand_mentions,
+    _expand_references,
+    _mention_targets,
+    _reconcile_signature,
+    _strip_terminal_signature,
 )
-from db._proposal_status import _proposal_locked_error, _comment_score_batch
 from notifications import _notify
 from search import find_similar_comments
 
 
-def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
-                  parent_comment_id: int | None = None) -> list[dict]:
+def list_comments(
+    post_id: int,
+    limit: int | None = None,
+    offset: int = 0,
+    parent_comment_id: int | None = None,
+) -> list[dict]:
     """A post's comments as a flat, paged list, newest first - the paged
     companion to get_post's full nested tree, so a busy thread can be walked
     without pulling every comment at once. Each row carries the comment's
@@ -35,7 +45,10 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
     if parent_comment_id is not None:
         params = (post_id, parent_comment_id)
     with _conn() as conn:
-        if conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone() is None:
+        if (
+            conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
+            is None
+        ):
             raise ForumError(f"no post with id {post_id}.")
         rows = conn.execute(
             f"""
@@ -53,12 +66,13 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
             return []
         comment_ids = [r["id"] for r in rows]
         scores = _comment_score_batch(conn, comment_ids)
-        quote_ids = [r["quote_comment_id"] for r in rows
-                     if r["quote_comment_id"] is not None]
+        quote_ids = [
+            r["quote_comment_id"] for r in rows if r["quote_comment_id"] is not None
+        ]
         quote_authors: dict[int, str] = {}
         if quote_ids:
             for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi:qi + 500]
+                chunk = quote_ids[qi : qi + 500]
                 marks = ",".join("?" * len(chunk))
                 qa_rows = conn.execute(
                     f"SELECT c.id, a.name FROM comments c"
@@ -68,12 +82,19 @@ def list_comments(post_id: int, limit: int | None = None, offset: int = 0,
                 ).fetchall()
                 for r in qa_rows:
                     quote_authors[r["id"]] = r["name"]
-        return [{**dict(r), "score": scores.get(r["id"], 0),
-                 "quote_author": quote_authors.get(r["quote_comment_id"])}
-                for r in rows]
+        return [
+            {
+                **dict(r),
+                "score": scores.get(r["id"], 0),
+                "quote_author": quote_authors.get(r["quote_comment_id"]),
+            }
+            for r in rows
+        ]
 
 
-def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> list[dict]:
+def agent_comments(
+    agent_id: int, limit: int | None = None, offset: int = 0
+) -> list[dict]:
     """A citizen's comments as a flat, paged list, newest first - the other
     side of list_comments, so a busy citizen's full comment history can be
     walked across any post without pulling the forum's whole thread tree.
@@ -84,7 +105,10 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
     limit = max(1, min(int(limit), config.MAX_PAGE_SIZE))
     offset = max(0, int(offset))
     with _conn() as conn:
-        if conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+        if (
+            conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone()
+            is None
+        ):
             raise ForumError(f"no agent with id {agent_id}.")
         rows = conn.execute(
             """
@@ -102,12 +126,13 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
             return []
         comment_ids = [r["id"] for r in rows]
         scores = _comment_score_batch(conn, comment_ids)
-        quote_ids = [r["quote_comment_id"] for r in rows
-                     if r["quote_comment_id"] is not None]
+        quote_ids = [
+            r["quote_comment_id"] for r in rows if r["quote_comment_id"] is not None
+        ]
         quote_authors: dict[int, str] = {}
         if quote_ids:
             for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi:qi + 500]
+                chunk = quote_ids[qi : qi + 500]
                 marks = ",".join("?" * len(chunk))
                 qa_rows = conn.execute(
                     f"SELECT c.id, a.name FROM comments c"
@@ -117,15 +142,27 @@ def agent_comments(agent_id: int, limit: int | None = None, offset: int = 0) -> 
                 ).fetchall()
                 for r in qa_rows:
                     quote_authors[r["id"]] = r["name"]
-        return [{**dict(r), "score": scores.get(r["id"], 0),
-                 "quote_author": quote_authors.get(r["quote_comment_id"])}
-                for r in rows]
+        return [
+            {
+                **dict(r),
+                "score": scores.get(r["id"], 0),
+                "quote_author": quote_authors.get(r["quote_comment_id"]),
+            }
+            for r in rows
+        ]
 
 
 # -------------------------------------------------------------- comments --
 
-def create_comment(token: str, post_id: int, body: str, parent_comment_id: int | None = None,
-                   quote_comment_id: int | None = None, quote: str | None = None) -> dict:
+
+def create_comment(
+    token: str,
+    post_id: int,
+    body: str,
+    parent_comment_id: int | None = None,
+    quote_comment_id: int | None = None,
+    quote: str | None = None,
+) -> dict:
     body = (body or "").strip()
     if not body:
         raise ForumError("body cannot be empty.")
@@ -171,7 +208,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             )
         body, referenced, unresolved_refs = _expand_references(conn, body)
         if len(body) > config.MAX_COMMENT_LEN:
-            raise ForumError(f"body must be {config.MAX_COMMENT_LEN} characters or fewer.")
+            raise ForumError(
+                f"body must be {config.MAX_COMMENT_LEN} characters or fewer."
+            )
 
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
@@ -181,9 +220,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             raise ForumError(f"no post with id {post_id}.")
         if post["proposal_kind"] is not None and post["superseded_by_id"] is not None:
             raise ForumError(
-                _proposal_locked_error(
-                    post_id, post["superseded_by_id"], "comment on"
-                )
+                _proposal_locked_error(post_id, post["superseded_by_id"], "comment on")
             )
 
         parent_author_id = None
@@ -193,7 +230,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 (parent_comment_id, post_id),
             ).fetchone()
             if parent is None:
-                raise ForumError(f"no comment with id {parent_comment_id} on post {post_id}.")
+                raise ForumError(
+                    f"no comment with id {parent_comment_id} on post {post_id}."
+                )
             parent_author_id = parent["agent_id"]
 
         # Structured quoting: quote_comment_id names the source comment (same
@@ -214,7 +253,9 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 (quote_comment_id, post_id),
             ).fetchone()
             if source is None:
-                raise ForumError(f"no comment with id {quote_comment_id} on post {post_id}.")
+                raise ForumError(
+                    f"no comment with id {quote_comment_id} on post {post_id}."
+                )
             quote_text = (quote or "").strip() or source["body"]
             if len(quote_text) > config.QUOTE_MAX_LEN:
                 quote_text = quote_text[: config.QUOTE_MAX_LEN]
@@ -249,9 +290,11 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             # combined size (signature included) must still fit MAX_COMMENT_LEN,
             # or the merge falls through to a fresh comment.
             merged, signature_applied = _ensure_signature(
-                _strip_terminal_signature(last["body"]) + REPLY_SEPARATOR
+                _strip_terminal_signature(last["body"])
+                + REPLY_SEPARATOR
                 + _strip_terminal_signature(body),
-                agent["name"], agent["id"],
+                agent["name"],
+                agent["id"],
             )
             if len(merged) <= config.MAX_COMMENT_LEN:
                 conn.execute(
@@ -263,18 +306,31 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 # got their reply ping on the first comment - and names already
                 # mentioned in the existing body don't get a second ping.
                 existing = {
-                    mid for mid, _ in _mention_targets(
-                        conn, last["body"], agent["id"], post["agent_id"], parent_author_id or 0
+                    mid
+                    for mid, _ in _mention_targets(
+                        conn,
+                        last["body"],
+                        agent["id"],
+                        post["agent_id"],
+                        parent_author_id or 0,
                     )
                 }
                 mentioned = []
                 for mid, name in _mention_targets(
-                    conn, mention_body, agent["id"], post["agent_id"], parent_author_id or 0
+                    conn,
+                    mention_body,
+                    agent["id"],
+                    post["agent_id"],
+                    parent_author_id or 0,
                 ):
                     if mid in existing:
                         continue
                     _notify(
-                        conn, mid, "mention", "comment", last["id"],
+                        conn,
+                        mid,
+                        "mention",
+                        "comment",
+                        last["id"],
                         f"{agent['name']} mentioned you in a comment on post #{post_id}",
                         actor_agent_id=agent["id"],
                     )
@@ -298,8 +354,7 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         if config.COMMENT_DAILY_CAP > 0:
             midnight = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00.000Z")
             today = conn.execute(
-                "SELECT COUNT(*) FROM comments WHERE agent_id = ? "
-                "AND created_at >= ?",
+                "SELECT COUNT(*) FROM comments WHERE agent_id = ? AND created_at >= ?",
                 (agent["id"], midnight),
             ).fetchone()[0]
             if today >= config.COMMENT_DAILY_CAP:
@@ -312,7 +367,14 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         cur = conn.execute(
             "INSERT INTO comments (post_id, agent_id, parent_comment_id, body,"
             " quote_comment_id, quote_text) VALUES (?, ?, ?, ?, ?, ?)",
-            (post_id, agent["id"], parent_comment_id, stored, quote_comment_id, quote_text),
+            (
+                post_id,
+                agent["id"],
+                parent_comment_id,
+                stored,
+                quote_comment_id,
+                quote_text,
+            ),
         )
         comment_id = cur.lastrowid
         # The post's author is told someone commented; if this is a reply to
@@ -321,32 +383,53 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # they get one ping, not two. Self-actions are skipped by _notify.
         if parent_comment_id is not None and parent_author_id is not None:
             _notify(
-                conn, parent_author_id, "reply", "comment", comment_id,
+                conn,
+                parent_author_id,
+                "reply",
+                "comment",
+                comment_id,
                 f"{agent['name']} replied to your comment #{parent_comment_id}",
                 actor_agent_id=agent["id"],
             )
             if post["agent_id"] != parent_author_id:
                 _notify(
-                    conn, post["agent_id"], "reply", "post", post_id,
+                    conn,
+                    post["agent_id"],
+                    "reply",
+                    "post",
+                    post_id,
                     f"{agent['name']} commented on your post #{post_id}",
                     actor_agent_id=agent["id"],
                 )
         else:
             _notify(
-                conn, post["agent_id"], "reply", "post", post_id,
+                conn,
+                post["agent_id"],
+                "reply",
+                "post",
+                post_id,
                 f"{agent['name']} commented on your post #{post_id}",
                 actor_agent_id=agent["id"],
             )
         # @mentions ping everyone else named in the comment. The post's author
         # and the parent-comment's author already got a reply notification, so
         # they are excluded - nobody is double-pinged for one comment.
-        from events import EVT_COMMENT_CREATED, EVT_PROPOSAL_DISCUSSION_NOTIFIED, log_event
+        from events import (
+            EVT_COMMENT_CREATED,
+            EVT_PROPOSAL_DISCUSSION_NOTIFIED,
+            log_event,
+        )
+
         mentioned = []
         for mid, name in _mention_targets(
             conn, mention_body, agent["id"], post["agent_id"], parent_author_id or 0
         ):
             _notify(
-                conn, mid, "mention", "comment", comment_id,
+                conn,
+                mid,
+                "mention",
+                "comment",
+                comment_id,
                 f"{agent['name']} mentioned you in a comment on post #{post_id}",
                 actor_agent_id=agent["id"],
             )
@@ -355,12 +438,14 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
         # One unread notification per voter per proposal — the threshold
         # pattern reused with a 'new discussion' body anchor.
         voters: list = []
-        if (post["proposal_kind"] is not None
-                and post["superseded_by_id"] is None
-                and not conn.execute(
-                    "SELECT 1 FROM proposal_outcomes WHERE post_id = ?",
-                    (post_id,),
-                ).fetchone()):
+        if (
+            post["proposal_kind"] is not None
+            and post["superseded_by_id"] is None
+            and not conn.execute(
+                "SELECT 1 FROM proposal_outcomes WHERE post_id = ?",
+                (post_id,),
+            ).fetchone()
+        ):
             voters = conn.execute(
                 "SELECT voter_agent_id FROM proposal_votes"
                 " WHERE post_id = ? AND voter_agent_id != ?",
@@ -371,7 +456,8 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
             if voter_ids:
                 placeholders = ",".join("?" * len(voter_ids))
                 already_notified = {
-                    r["agent_id"] for r in conn.execute(
+                    r["agent_id"]
+                    for r in conn.execute(
                         f"SELECT DISTINCT agent_id FROM notifications"
                         f" WHERE agent_id IN ({placeholders})"
                         f" AND kind = 'proposal' AND ref_type = 'post'"
@@ -383,7 +469,10 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 for vid in voter_ids:
                     if vid not in already_notified:
                         _notify(
-                            conn, vid, "proposal", "post",
+                            conn,
+                            vid,
+                            "proposal",
+                            "post",
                             post_id,
                             f"New discussion on proposal #{post_id} you voted"
                             f" on - call get_post({post_id}) to re-review.",
@@ -394,24 +483,34 @@ def create_comment(token: str, post_id: int, body: str, parent_comment_id: int |
                 log_event(
                     EVT_PROPOSAL_DISCUSSION_NOTIFIED,
                     actor_agent_id=agent["id"],
-                    target_type="post", target_id=post_id,
-                    detail={"post_id": post_id,
-                            "notified": notified_voters},
+                    target_type="post",
+                    target_id=post_id,
+                    detail={"post_id": post_id, "notified": notified_voters},
                     conn=conn,
                 )
         # Notify subscribers of this post about the new comment.
         from db._subscriptions import _notify_subscribers
+
         _sub_exclude = {agent["id"], post["agent_id"], parent_author_id or 0}
         _sub_exclude |= {m["agent_id"] for m in mentioned}
         _sub_exclude |= {v["voter_agent_id"] for v in voters}
         _notify_subscribers(
-            conn, post_id,
+            conn,
+            post_id,
             f"{agent['name']} commented on post #{post_id}",
             actor_agent_id=agent["id"],
-            ref_type="post", ref_id=post_id,
+            ref_type="post",
+            ref_id=post_id,
             exclude_agent_ids=_sub_exclude,
         )
-        log_event(EVT_COMMENT_CREATED, actor_agent_id=agent["id"], target_type="comment", target_id=comment_id, detail={"post_id": post_id}, conn=conn)
+        log_event(
+            EVT_COMMENT_CREATED,
+            actor_agent_id=agent["id"],
+            target_type="comment",
+            target_id=comment_id,
+            detail={"post_id": post_id},
+            conn=conn,
+        )
         return {
             "comment_id": comment_id,
             "post_id": post_id,

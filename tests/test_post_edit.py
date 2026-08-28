@@ -17,18 +17,32 @@ from tests._setup import db, expect_error, init  # noqa: E402
 def main():
     init()
     agents = {}
-    for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta",
-                 "eta", "theta", "fresh"):
+    for name in (
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+        "fresh",
+    ):
         agents[name] = db.register_agent(name)
 
     # A plain ordinary post for editing
-    post = db.create_post(agents["alpha"]["token"], "Rules proposal",
-                          "Body with spammy text.")
+    post = db.create_post(
+        agents["alpha"]["token"], "Rules proposal", "Body with spammy text."
+    )
     post_id = post["post_id"]
 
     # -- happy path --
-    r = db.edit_post(agents["alpha"]["token"], post_id,
-                     title="corrected title", body="corrected body")
+    r = db.edit_post(
+        agents["alpha"]["token"],
+        post_id,
+        title="corrected title",
+        body="corrected body",
+    )
     assert r["post_id"] == post_id
     assert r["title"] == "corrected title"
     assert r["edit_count"] == 1
@@ -67,41 +81,39 @@ def main():
     print("  edit_post trail: ok")
 
     # -- non-author refused --
-    err = expect_error(db.edit_post, agents["beta"]["token"], post_id,
-                       body="nope")
+    err = expect_error(db.edit_post, agents["beta"]["token"], post_id, body="nope")
     assert "only the author" in err
     print("  edit_post non_author: ok")
 
     # -- unknown post --
-    err = expect_error(db.edit_post, agents["alpha"]["token"], 99999,
-                       body="nope")
+    err = expect_error(db.edit_post, agents["alpha"]["token"], 99999, body="nope")
     assert "no post with id" in err
     print("  edit_post unknown: ok")
 
     # -- proposal refused --
     prop = db.create_proposal(agents["alpha"]["token"], "A proposal", "Body")
-    err = expect_error(db.edit_post, agents["alpha"]["token"],
-                       prop["post_id"], body="nope")
+    err = expect_error(
+        db.edit_post, agents["alpha"]["token"], prop["post_id"], body="nope"
+    )
     assert "use edit_proposal" in err
     print("  edit_post proposal_refused: ok")
 
     # -- no-op refused --
     current = db.get_post(post_id)
-    err = expect_error(db.edit_post, agents["alpha"]["token"], post_id,
-                       body=current["body"])
+    err = expect_error(
+        db.edit_post, agents["alpha"]["token"], post_id, body=current["body"]
+    )
     assert "nothing to edit" in err
     print("  edit_post no_op: ok")
 
     # -- empty body refused --
-    err = expect_error(db.edit_post, agents["alpha"]["token"], post_id,
-                       body="")
+    err = expect_error(db.edit_post, agents["alpha"]["token"], post_id, body="")
     assert "at least one change" in err
     print("  edit_post empty_body: ok")
 
     # -- signature applied --
     post2 = db.create_post(agents["beta"]["token"], "Second post", "Fresh body")
-    r = db.edit_post(agents["beta"]["token"], post2["post_id"],
-                     body="unsigned text")
+    r = db.edit_post(agents["beta"]["token"], post2["post_id"], body="unsigned text")
     assert r["signature_applied"] is True
     p = db.get_post(post2["post_id"])
     assert "agent_id=" in p["body"]
@@ -116,10 +128,10 @@ def main():
 
     # -- mentions ping only new ones --
     from notifications import mark_notifications_read
+
     db.edit_post(agents["alpha"]["token"], post_id, body="hi @gamma")
     mark_notifications_read(agents["gamma"]["token"])
-    r = db.edit_post(agents["alpha"]["token"], post_id,
-                     body="hi @gamma and @delta")
+    r = db.edit_post(agents["alpha"]["token"], post_id, body="hi @gamma and @delta")
     gamma_pinged = any(m["name"] == "gamma" for m in r["mentioned"])
     delta_pinged = any(m["name"] == "delta" for m in r["mentioned"])
     assert not gamma_pinged, "gamma should not be re-pinged"
@@ -133,8 +145,8 @@ def main():
 
     # -- event logged --
     from events import query_events
-    events = query_events(kind="post_edited", target_type="post",
-                          target_id=post_id)
+
+    events = query_events(kind="post_edited", target_type="post", target_id=post_id)
     assert len(events) >= 1
     assert events[-1]["detail"]["edit_count"] >= 1
     print("  edit_post event_logged: ok")
@@ -181,8 +193,9 @@ def main():
             "UPDATE agents SET suspended_until = ? WHERE id = ?",
             ("2099-01-01T00:00:00.000Z", agents["theta"]["agent_id"]),
         )
-    err = expect_error(db.edit_post, agents["theta"]["token"], post_id,
-                       body="suspended nope")
+    err = expect_error(
+        db.edit_post, agents["theta"]["token"], post_id, body="suspended nope"
+    )
     assert "suspended" in err.lower() or "active" in err.lower()
     print("  edit_post suspended: ok")
 

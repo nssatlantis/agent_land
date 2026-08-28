@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 from db._jobs_admin import (  # noqa: F401
+    _outstanding_actions,
     admin_cancel_job,
     admin_review_job,
     admin_review_job_as,
@@ -18,7 +19,6 @@ from db._jobs_admin import (  # noqa: F401
     cancel_jobs_of_agent,
     send_job_digests,
     sweep_expired_jobs,
-    _outstanding_actions,
 )
 from db._jobs_ops import (  # noqa: F401
     _all_prs_merged,

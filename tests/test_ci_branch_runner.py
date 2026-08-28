@@ -2,6 +2,7 @@
 argv shape, image hash-tagging, the live-git merge preview (clean and
 conflict paths), gate-bucket separation, validation refusals, and - when
 docker exists on the host - a hostile-payload containment proof."""
+
 import json
 import os
 import subprocess
@@ -16,10 +17,10 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import config  # noqa: E402
 import db  # noqa: E402
 import events  # noqa: E402
 import server.ci_runner as ci_runner  # noqa: E402
+from tests._setup import config  # noqa: E402
 
 db.init_db()
 
@@ -43,8 +44,9 @@ def _restore_cfg():
 
 
 def _git(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(cwd), *args], check=True,
-                   capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+    )
 
 
 class _GitFixture:
@@ -53,7 +55,9 @@ class _GitFixture:
 
     def __init__(self, conflicting: bool, pr_edits_requirements: bool = False):
         self.work = Path(tempfile.mkdtemp(prefix="agentland_ci_fx_work_"))
-        self.bare = Path(tempfile.mkdtemp(prefix="agentland_ci_fx_bare_")) / "origin.git"
+        self.bare = (
+            Path(tempfile.mkdtemp(prefix="agentland_ci_fx_bare_")) / "origin.git"
+        )
         self.tree_dir = Path(tempfile.mkdtemp(prefix="agentland_ci_fx_run_"))
         self.conflict_file = "shared.txt"
         self.pr_edits_requirements = pr_edits_requirements
@@ -68,10 +72,17 @@ class _GitFixture:
         env = os.environ.copy()
         env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "fixture"
         env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
-        subprocess.run(["git", "-C", str(self.work), "commit", "-m", msg],
-                       check=True, capture_output=True, env=env)
-        return subprocess.run(["git", "-C", str(self.work), "rev-parse", "HEAD"],
-                              capture_output=True, text=True).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(self.work), "commit", "-m", msg],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        return subprocess.run(
+            ["git", "-C", str(self.work), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
     def _seed_main(self):
         _git(self.work, "init", "-b", "main")
@@ -107,8 +118,11 @@ class _GitFixture:
         self.main_sha = self._commit("main advances the same file")
 
     def _make_bare(self):
-        subprocess.run(["git", "clone", "--bare", str(self.work), str(self.bare)],
-                       check=True, capture_output=True)
+        subprocess.run(
+            ["git", "clone", "--bare", str(self.work), str(self.bare)],
+            check=True,
+            capture_output=True,
+        )
         # Re-push main explicitly and expose the feature branch the way
         # GitHub does: as refs/pull/7/head.
         _git(self.bare, "update-ref", "refs/heads/main", self.main_sha)
@@ -173,8 +187,9 @@ def test_sandbox_missing_refuses():
 
 def test_gate_bucket_is_branch_kind():
     actor = _uid()
-    events.log_event(events.EVT_CI_BRANCH_RUN, actor_agent_id=actor,
-                     detail={"checks": "tests"})
+    events.log_event(
+        events.EVT_CI_BRANCH_RUN, actor_agent_id=actor, detail={"checks": "tests"}
+    )
     _shadow("CI_RUN_COOLDOWN_SECONDS", 300)
     fx = _GitFixture(conflicting=False)
     fx.patch_runner()
@@ -183,9 +198,9 @@ def test_gate_bucket_is_branch_kind():
     saved_img = ci_runner._ensure_image
     ci_runner._ensure_image = lambda tree, rev: "fake:tag"
     saved_argv = ci_runner._sandbox_argv
-    ci_runner._sandbox_argv = (
-        lambda tree, image_tag, script_rel:
-            ([sys.executable, "-c", "print('hi')"], "c1")
+    ci_runner._sandbox_argv = lambda tree, image_tag, script_rel: (
+        [sys.executable, "-c", "print('hi')"],
+        "c1",
     )
     try:
         ci_runner.run_checks(actor, "t", "tests", pr_number=7)
@@ -225,7 +240,7 @@ def test_sandbox_argv_shape():
         assert "PYTHONDONTWRITEBYTECODE=1" in argv
         assert "/tree:/repo:ro" in argv
         assert argv[-2:] == ["python3", "tests/run_all.py"]
-        assert argv[argv.index("img:abc") + 1:] == ["python3", "tests/run_all.py"]
+        assert argv[argv.index("img:abc") + 1 :] == ["python3", "tests/run_all.py"]
         assert name.startswith("agentland-ci-")
         assert "GITHUB_TOKEN" not in text
     finally:
@@ -245,16 +260,23 @@ def test_image_tag_tracks_requirements_hash():
     env = os.environ.copy()
     env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "fixture"
     env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "f@e.com"
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "reqs"],
-                   check=True, capture_output=True, env=env)
-    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                         capture_output=True, text=True).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "reqs"],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
     # Worktree now differs from the commit - only the committed bytes count.
     (repo / "requirements.txt").write_text("httpx==0.28.1\nstarlette==1.6.0\n")
     at_rev = ci_runner._requirements_at(str(repo), sha)
     assert at_rev == b"httpx==0.28.1\n"
     tag_a = ci_runner._image_tag(ci_runner._digest(at_rev))
-    tag_b = ci_runner._image_tag(ci_runner._digest(b"httpx==0.28.1\nstarlette==1.6.0\n"))
+    tag_b = ci_runner._image_tag(
+        ci_runner._digest(b"httpx==0.28.1\nstarlette==1.6.0\n")
+    )
     assert tag_a.startswith("agentland-ci:") and tag_b.startswith("agentland-ci:")
     assert tag_a != tag_b
 
@@ -265,8 +287,11 @@ def _patched_execution(stub_script: str):
     image was pinned to and the call count."""
     holder = {"image_calls": 0}
     rev_holder = {"rev": None}
-    saved = (ci_runner._ensure_image, ci_runner._sandbox_argv,
-             ci_runner._docker_available)
+    saved = (
+        ci_runner._ensure_image,
+        ci_runner._sandbox_argv,
+        ci_runner._docker_available,
+    )
 
     def fake_image(tree, rev):
         holder["image_calls"] += 1
@@ -281,8 +306,11 @@ def _patched_execution(stub_script: str):
     ci_runner._docker_available = lambda: True
 
     def restore():
-        (ci_runner._ensure_image, ci_runner._sandbox_argv,
-         ci_runner._docker_available) = saved
+        (
+            ci_runner._ensure_image,
+            ci_runner._sandbox_argv,
+            ci_runner._docker_available,
+        ) = saved
 
     return restore, holder, rev_holder
 
@@ -353,8 +381,9 @@ def test_pr_requirements_never_reach_the_build():
         assert result["ok"] is True and holder["image_calls"] == 1
         tree = Path(ci_runner._runner_dir())
         merged_reqs = (tree / "requirements.txt").read_text()
-        assert "attacker-pkg==6.6.6" in merged_reqs, \
+        assert "attacker-pkg==6.6.6" in merged_reqs, (
             "fixture sanity: merge tree carries the PR's deps"
+        )
         pinned = ci_runner._requirements_at(str(tree), result["base_sha"])
         assert b"attacker-pkg" not in pinned
         assert pinned == b"# fixture requirements\n"
@@ -371,8 +400,7 @@ def test_native_mode_still_reports_native():
     ci_runner._prepare_tree = lambda: (str(scratch), "f" * 40)
     restore_exec, _, _ = _patched_execution("")
     try:
-        result = ci_runner.run_checks(actor, "t", "benchmarks",
-                                      pr_number=None)
+        result = ci_runner.run_checks(actor, "t", "benchmarks", pr_number=None)
         assert result["mode"] == "native"
         assert "pr_number" not in result
     finally:
@@ -391,8 +419,9 @@ def test_hostile_payload_contained():
     if not _docker_present():
         print("  skipping hostile-payload proof (no docker on host)")
         return
-    daemon = subprocess.run(["docker", "info", "--format", "."],
-                            capture_output=True, timeout=30)
+    daemon = subprocess.run(
+        ["docker", "info", "--format", "."], capture_output=True, timeout=30
+    )
     if daemon.returncode != 0:
         print("  skipping hostile-payload proof (docker daemon unreachable)")
         return
@@ -405,8 +434,12 @@ def test_hostile_payload_contained():
     env = os.environ.copy()
     env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "fixture"
     env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
-    subprocess.run(["git", "-C", str(fx.work), "commit", "-m", "empty reqs"],
-                   check=True, capture_output=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(fx.work), "commit", "-m", "empty reqs"],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
     # Push (not update-ref): the bare fixture has never seen this commit,
     # so the object must travel with the ref change.
     _git(fx.work, "push", str(fx.bare), "feature:refs/pull/7/head")

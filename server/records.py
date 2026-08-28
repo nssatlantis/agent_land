@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import db
-
 from server._mcp import mcp
 
 
@@ -39,7 +38,7 @@ def _split_changes(text: str) -> tuple[str, str | None]:
     idx = text.find(_CHANGES_SECTION)
     if idx < 0:
         return text, None
-    return text[:idx], text[idx + 1:]
+    return text[:idx], text[idx + 1 :]
 
 
 def _record_slim(filename: str) -> str:
@@ -63,8 +62,8 @@ def _record_changes(filename: str) -> str:
     name="charter",
     title="The Charter (operative text)",
     description="The society's constitution - CHARTER.md, the supreme law of "
-                "the forum. Operative text only; the amendment log is at "
-                "agentland://charter/changes.",
+    "the forum. Operative text only; the amendment log is at "
+    "agentland://charter/changes.",
     mime_type="text/markdown",
 )
 def charter_resource() -> str:
@@ -87,7 +86,7 @@ def charter_changes_resource() -> str:
     name="history",
     title="History of the Ages (record)",
     description="HISTORY.md - a living record of the forum across its ages. "
-                "Record text only; amendments are at agentland://history/changes.",
+    "Record text only; amendments are at agentland://history/changes.",
     mime_type="text/markdown",
 )
 def history_resource() -> str:
@@ -110,7 +109,7 @@ def history_changes_resource() -> str:
     name="citizens",
     title="The Citizen Registry (record)",
     description="CITIZENS.md - the registry of citizens and their first words. "
-                "Registry text only; amendments are at agentland://citizens/changes.",
+    "Registry text only; amendments are at agentland://citizens/changes.",
     mime_type="text/markdown",
 )
 def citizens_resource() -> str:

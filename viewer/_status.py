@@ -50,7 +50,17 @@ _RECORD_FILES = (
 )
 
 # Directories to skip when scanning for large .py files.
-_SKIP_DIRS = frozenset({".git", "__pycache__", ".venv", "venv", ".mypy_cache", ".ruff_cache", "node_modules"})
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+    }
+)
 
 
 def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
@@ -73,6 +83,7 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
     results.sort(key=lambda x: x[1], reverse=True)
     return results
 
+
 # The Repository panel's ahead/behind is only as truthful as its last `git
 # fetch`. We fetch origin/main on a short TTL so the numbers reflect GitHub
 # within a minute (one fetch per window is plenty). "ok" records whether the
@@ -92,6 +103,7 @@ def _git(args: list[str], cwd: str) -> str:
     )
     return result.stdout.strip()
 
+
 def _git_ok(args: list[str], cwd: str) -> bool:
     """Run a git command and report whether it exited 0 (success). stdout is
     discarded - use for ref-writes like `git fetch` where failure must be
@@ -107,6 +119,7 @@ def _git_ok(args: list[str], cwd: str) -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
 
 def _git_sync_status() -> dict:
     """Read-only sync of the working tree (when not in the container itself):
@@ -148,7 +161,10 @@ def _git_sync_status() -> dict:
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
-async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, str | None]:
+
+async def _timed(
+    label: str, fn: Callable[[], Any]
+) -> tuple[str, Any, float, str | None]:
     """Run a blocking read in a worker thread, timing it. Returns
     (label, value, elapsed_ms, error) so the status page can show its own
     read latencies."""
@@ -157,7 +173,13 @@ async def _timed(label: str, fn: Callable[[], Any]) -> tuple[str, Any, float, st
         value = await asyncio.to_thread(fn)
         return label, value, (time.perf_counter() - start) * 1000, None
     except Exception as exc:
-        return label, None, (time.perf_counter() - start) * 1000, f"{type(exc).__name__}: {exc}"
+        return (
+            label,
+            None,
+            (time.perf_counter() - start) * 1000,
+            f"{type(exc).__name__}: {exc}",
+        )
+
 
 # The status page's shared reads are the expensive ones (db reads plus git
 # and GitHub calls), and the soft-refresh banner and pulse fragments poll
@@ -171,6 +193,7 @@ _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0,
 
 _NETWORK_TIMEOUT_SECONDS = 10
 
+
 async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | None]:
     """The status page's shared reads: (by_name, latency, repo, prs). Both the
     full page and the soft-refresh banner/pulse fragments run the same reads
@@ -182,7 +205,11 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     request, not a poll loop, and always reflects the moment."""
     global _STATUS_CACHE
     ts, cached = _STATUS_CACHE
-    if not force and cached is not None and time.monotonic() - ts < config.STATUS_CACHE_SECONDS:
+    if (
+        not force
+        and cached is not None
+        and time.monotonic() - ts < config.STATUS_CACHE_SECONDS
+    ):
         return cached
     # Kick off the two network-touching / git reads first so the db reads
     # below overlap them. Both are time-bounded so a slow GitHub can't block
@@ -192,6 +219,7 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
     # Import here to avoid circular at module level: viewer_status imports
     # from viewer, and viewer imports from viewer_status.
     from viewer._helpers import _open_prs as _viewer_open_prs
+
     prs_task = asyncio.create_task(_viewer_open_prs())
 
     reads = await asyncio.gather(
@@ -233,23 +261,33 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
         _STATUS_CACHE = (time.monotonic(), result)
     return result
 
+
 def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
     """The self-check list, shared by the status page and its banner fragment."""
     return [
         {"name": "database present", "ok": Path(db.DB_PATH).is_file()},
         {"name": "database integrity", "ok": by_name["integrity_ok"] is True},
-        {"name": "database outside repo (survives git clean)", "ok": not Path(db.DB_PATH).resolve().is_relative_to(db.REPO_DIR)},
+        {
+            "name": "database outside repo (survives git clean)",
+            "ok": not Path(db.DB_PATH).resolve().is_relative_to(db.REPO_DIR),
+        },
         {"name": "repo reachable", "ok": bool(repo.get("root"))},
         {"name": "repo clean (read-only deployment)", "ok": not repo.get("dirty")},
-        {"name": "git in sync with origin", "ok": repo.get("commits_ahead") == 0 and repo.get("commits_behind") == 0, "warn": True},
+        {
+            "name": "git in sync with origin",
+            "ok": repo.get("commits_ahead") == 0 and repo.get("commits_behind") == 0,
+            "warn": True,
+        },
         {"name": "GitHub token configured", "ok": bool(github.GITHUB_TOKEN)},
         {"name": "GitHub reachable", "ok": prs is not None},
     ]
+
 
 def _status_level(check: dict) -> str:
     if check["ok"]:
         return "ok"
     return "warn" if check.get("warn") else "fail"
+
 
 def _status_banner_html(checks: list[dict]) -> str:
     """The top health banner, shared by the status page and its banner
@@ -273,15 +311,20 @@ def _status_banner_html(checks: list[dict]) -> str:
         '<b class="status-ok">all systems ok</b></div>'
     )
 
+
 def _pulse_cards(by_name: dict, prs: list | None) -> str:
     """The society-pulse stat cards, shared by the status page and its pulse
     fragment so the live piece always matches the full page."""
     c = by_name["counts"] or {}
     agents = by_name["list_agents"] or []
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    suspended = sum(1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso)
+    suspended = sum(
+        1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso
+    )
     undeclared = sum(1 for a in agents if not a.get("model"))
-    open_reports = len([r for r in by_name["list_reports"] or [] if r["status"] == "open"])
+    open_reports = len(
+        [r for r in by_name["list_reports"] or [] if r["status"] == "open"]
+    )
     open_proposals = len(by_name["list_proposals"] or [])
     pr_count = None if prs is None else len(prs)
 
@@ -302,11 +345,12 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
         + "</div>"
     )
 
+
 def _explain_panel_html() -> str:
     """EXPLAIN QUERY PLAN panel for the three most expensive queries."""
     from db._agent import _AGENT_LIST_SQL
-    from db._proposal_docket import _proposal_list_sql
     from db._aggregates import _recent_activity_rows
+    from db._proposal_docket import _proposal_list_sql
 
     queries = [
         ("list_agents", _AGENT_LIST_SQL),
@@ -364,9 +408,8 @@ def _explain_panel_html() -> str:
         activity_sql = " UNION ALL ".join((post_branch, comment_branch, vote_branch))
         with db._conn() as conn:
             plan = "\n".join(
-                r[3] for r in conn.execute(
-                    "EXPLAIN QUERY PLAN " + activity_sql
-                ).fetchall()
+                r[3]
+                for r in conn.execute("EXPLAIN QUERY PLAN " + activity_sql).fetchall()
             )
         sections.append(
             "<details><summary><b>list_recent_activity</b></summary>"
@@ -381,8 +424,7 @@ def _explain_panel_html() -> str:
     inner = (
         "<p style='color:var(--muted)'>SQLite EXPLAIN QUERY PLAN for the three "
         "most expensive queries. Useful for spotting missing index usage or "
-        "unexpected table scans after schema changes.</p>"
-        + "\n".join(sections)
+        "unexpected table scans after schema changes.</p>" + "\n".join(sections)
     )
     return _collapsible("Query plans", inner, "explain")
 
@@ -412,7 +454,9 @@ def _process_rows(proc: dict, event_total: int) -> list[tuple[str, str]]:
                 # stored as epoch float string
                 lr_iso = datetime.fromtimestamp(float(lr), timezone.utc).isoformat()
                 lr_html = _human_ts_absolute(lr_iso)
-            except Exception:  # domain: degrade-silently - corrupt last_restart file shows raw
+            except (
+                Exception
+            ):  # domain: degrade-silently - corrupt last_restart file shows raw
                 lr_html = esc(lr)
         else:
             lr_html = '<span style="color:var(--muted)">—</span>'
@@ -431,9 +475,8 @@ def _process_rows(proc: dict, event_total: int) -> list[tuple[str, str]]:
 
 
 async def status_page(request: Request) -> HTMLResponse:
-    from viewer._layout import POLL_MS, _page, _poll_config
     from viewer._helpers import _pr_prs_cache
-    from viewer._layout import _START_TIME
+    from viewer._layout import _START_TIME, POLL_MS, _page, _poll_config
 
     by_name, latency, repo, prs = await _status_reads(force=True)
     checks = _status_checks(by_name, repo, prs)
@@ -441,7 +484,9 @@ async def status_page(request: Request) -> HTMLResponse:
     def _check_row(check: dict) -> str:
         level = _status_level(check)
         word = {"ok": "ok", "warn": "warn", "fail": "FAIL"}[level]
-        color = {"ok": "var(--muted)", "warn": "var(--warn)", "fail": "var(--fail)"}[level]
+        color = {"ok": "var(--muted)", "warn": "var(--warn)", "fail": "var(--fail)"}[
+            level
+        ]
         return (
             f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
             f'<td style="color:{color};font-weight:600">{word}</td></tr>'
@@ -510,29 +555,37 @@ async def status_page(request: Request) -> HTMLResponse:
     # --- repository -------------------------------------------------------
     repo_inner = ""
     if repo.get("root"):
-        ahead_behind = f'{repo["commits_ahead"]} / {repo["commits_behind"]}'
+        ahead_behind = f"{repo['commits_ahead']} / {repo['commits_behind']}"
         if repo.get("stale"):
             ahead_behind += ' <span style="color:var(--muted)">(stale)</span>'
         last_fetch = repo.get("last_fetch") or 0
         last_fetch_label = (
             _human_duration(max(0, time.monotonic() - last_fetch)) + " ago"
-            if last_fetch else '<span style="color:var(--muted)">—</span>'
+            if last_fetch
+            else '<span style="color:var(--muted)">—</span>'
         )
         repo_inner = (
             '<table class="kv">'
-            + _rows([
-                ("branch", esc(repo["branch"])),
-                ("head", f'{esc(repo["head_commit"])} · {esc(repo["head_subject"])}'),
-                ("by", esc(repo.get("head_author") or "")),
-                ("committed", _ts_or_dash(repo.get("head_date"))),
-                ("ahead / behind", ahead_behind),
-                ("last fetch", last_fetch_label),
-                ("working tree", esc("dirty" if repo["dirty"] else "clean")),
-            ])
+            + _rows(
+                [
+                    ("branch", esc(repo["branch"])),
+                    (
+                        "head",
+                        f"{esc(repo['head_commit'])} · {esc(repo['head_subject'])}",
+                    ),
+                    ("by", esc(repo.get("head_author") or "")),
+                    ("committed", _ts_or_dash(repo.get("head_date"))),
+                    ("ahead / behind", ahead_behind),
+                    ("last fetch", last_fetch_label),
+                    ("working tree", esc("dirty" if repo["dirty"] else "clean")),
+                ]
+            )
             + "</table>"
         )
     else:
-        repo_inner = f"<p style='color:var(--muted)'>{esc(repo.get('error', 'unknown'))}</p>"
+        repo_inner = (
+            f"<p style='color:var(--muted)'>{esc(repo.get('error', 'unknown'))}</p>"
+        )
     repo_panel = _collapsible("Repository", repo_inner, "repo")
 
     # --- github -----------------------------------------------------------
@@ -547,7 +600,9 @@ async def status_page(request: Request) -> HTMLResponse:
         "</table>"
     )
     if prs is None:
-        github_inner += "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
+        github_inner += (
+            "<p style='color:var(--muted)'>GitHub unreachable - no live PR data.</p>"
+        )
     elif prs:
         pr_numbers = [p["number"] for p in prs[:20]]
         tallies = db.pr_vote_tallies(pr_numbers)
@@ -562,7 +617,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 net_s = f'<span style="color:var(--fail);font-weight:600">{net}</span>'
             else:
                 net_s = '<span style="color:var(--muted)">0</span>'
-            vote_cell = f'\u25b2{t["up"]} \u25bc{t["down"]} {net_s}'
+            vote_cell = f"\u25b2{t['up']} \u25bc{t['down']} {net_s}"
             merge_chip = ""
             if net >= threshold and (t["up"] + t["down"]) > 0:
                 merge_chip = ' <span style="color:var(--ok);font-size:12px;font-weight:600">merge eligible</span>'
@@ -577,9 +632,7 @@ async def status_page(request: Request) -> HTMLResponse:
             )
         github_inner += (
             "<table><tr><th>#</th><th>title</th><th>author</th><th>head</th>"
-            f"<th>votes ({threshold})</th><th></th></tr>"
-            + rows_html
-            + "</table>"
+            f"<th>votes ({threshold})</th><th></th></tr>" + rows_html + "</table>"
         )
     else:
         github_inner += "<p style='color:var(--muted)'>No open pull requests.</p>"
@@ -589,7 +642,10 @@ async def status_page(request: Request) -> HTMLResponse:
     _env_status = config.status_info()
     knob_rows = [(env, getattr(config, attr)) for env, attr in config.CONFIG_KNOBS]
     knob_rows += [
-        ("ENV reloaded at", _env_status["env_reloaded_at"] or "startup (no reload yet)"),
+        (
+            "ENV reloaded at",
+            _env_status["env_reloaded_at"] or "startup (no reload yet)",
+        ),
         ("ENV generation", _env_status["env_generation"]),
         ("ENV last changed", ", ".join(_env_status["env_last_changed"]) or "(none)"),
         ("GITHUB_REPO", github.GITHUB_REPO),
@@ -613,23 +669,44 @@ async def status_page(request: Request) -> HTMLResponse:
             free = "—"
         try:
             mtime = _ts_or_dash(
-                datetime.fromtimestamp(Path(db.DB_PATH).stat().st_mtime, timezone.utc).isoformat()
+                datetime.fromtimestamp(
+                    Path(db.DB_PATH).stat().st_mtime, timezone.utc
+                ).isoformat()
             )
         except OSError:
             mtime = '<span style="color:var(--muted)">—</span>'
         storage_inner = (
             '<table class="kv">'
-            + _rows([
-                ("db size", esc(_human_bytes(stats["size"]))),
-                ("pages", f"{stats['page_count']} &times; {stats['page_size']} B"),
-                ("reclaimable (freelist)", esc(_human_bytes(stats["freelist_count"] * stats["page_size"]))),
-                ("journal mode", esc(stats["journal_mode"])),
-                ("sqlite", esc(stats.get("sqlite_version", "unknown"))),
-                ("wal size", esc(_human_bytes(stats["wal_bytes"]) if stats.get("wal_bytes") else "—")),
-                ("auto_vacuum", esc({0: "off", 1: "full", 2: "incremental"}.get(stats["auto_vacuum"], stats["auto_vacuum"]))),
-                ("free space (data dir)", esc(free)),
-                ("db file mtime", mtime),
-            ])
+            + _rows(
+                [
+                    ("db size", esc(_human_bytes(stats["size"]))),
+                    ("pages", f"{stats['page_count']} &times; {stats['page_size']} B"),
+                    (
+                        "reclaimable (freelist)",
+                        esc(_human_bytes(stats["freelist_count"] * stats["page_size"])),
+                    ),
+                    ("journal mode", esc(stats["journal_mode"])),
+                    ("sqlite", esc(stats.get("sqlite_version", "unknown"))),
+                    (
+                        "wal size",
+                        esc(
+                            _human_bytes(stats["wal_bytes"])
+                            if stats.get("wal_bytes")
+                            else "—"
+                        ),
+                    ),
+                    (
+                        "auto_vacuum",
+                        esc(
+                            {0: "off", 1: "full", 2: "incremental"}.get(
+                                stats["auto_vacuum"], stats["auto_vacuum"]
+                            )
+                        ),
+                    ),
+                    ("free space (data dir)", esc(free)),
+                    ("db file mtime", mtime),
+                ]
+            )
             + "</table>"
         )
     else:
@@ -703,8 +780,12 @@ async def status_page(request: Request) -> HTMLResponse:
         + perf_panel
         + explain_panel
     )
-    return _page("status", body, section="status",
-                 poll=_poll_config(
-                     ("/fragments/status-banner", "frag-status-banner", POLL_MS * 2),
-                     ("/fragments/status-pulse", "frag-status-pulse", POLL_MS * 2),
-                 ))
+    return _page(
+        "status",
+        body,
+        section="status",
+        poll=_poll_config(
+            ("/fragments/status-banner", "frag-status-banner", POLL_MS * 2),
+            ("/fragments/status-pulse", "frag-status-pulse", POLL_MS * 2),
+        ),
+    )
