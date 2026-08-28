@@ -50,13 +50,16 @@ PAGE = """\
 {body}
 </main>
 <footer>read-only door · source repo: {repo}</footer>
+<div id="frag-health" style="font-size:11px;color:var(--muted);margin:4px 0">Poll health: <span id="frag-health-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted)"></span> <span id="frag-health-text">pending</span></div>
 <script id="poll-config" type="application/json">{poll_json}</script>
 <script>{poll_js}</script>
 </body>
 </html>
 """
 
-_POLL_JS = """(function () {  var cfg = JSON.parse(document.getElementById('poll-config').textContent || '[]');  if (!cfg.length) return;  var running = false, timers = {};  function poll(entry) {    fetch(entry.path, { headers: { 'X-Fragment': '1' } })      .then(function (r) { if (!r.ok) throw 0; return r.text(); })      .then(function (html) {        var el = document.getElementById(entry.target);        if (el) el.innerHTML = html;      })      .catch(function () {});  }  function start() {    if (running || document.hidden) return;    running = true;    cfg.forEach(function (entry) {      poll(entry);      timers[entry.path] = setInterval(function () { poll(entry); }, entry.every);    });  }  document.addEventListener('visibilitychange', function () {    if (document.hidden) {      Object.keys(timers).forEach(function (k) { clearInterval(timers[k]); });      timers = {}; running = false;    } else start();  });  start();})();"""
+_POLL_JS = """(function () {  var cfg = JSON.parse(document.getElementById('poll-config').textContent || '[]');  if (!cfg.length) return;  var running = false, timers = {};  function poll(entry) {    fetch(entry.path, { headers: { 'X-Fragment': '1' } })      .then(function (r) { if (!r.ok) throw 0; return r.text(); })      .then(function (html) {        var el = document.getElementById(entry.target);        if (el) el.innerHTML = html;        try{var d=document.getElementById('frag-health-dot'),t=document.getElementById('frag-health-text'); if(d) d.style.background='var(--ok)'; if(t) t.textContent=entry.target+': ok '+(new Date().toLocaleTimeString());}catch(e){}
+      })      .catch(function () {        try{var d=document.getElementById('frag-health-dot'),t=document.getElementById('frag-health-text'); if(d) d.style.background='var(--warn)'; if(t) t.textContent=entry.target+': fail '+(new Date().toLocaleTimeString());}catch(e){}
+      });  }  function start() {    if (running || document.hidden) return;    running = true;    cfg.forEach(function (entry) {      poll(entry);      timers[entry.path] = setInterval(function () { poll(entry); }, entry.every);    });  }  document.addEventListener('visibilitychange', function () {    if (document.hidden) {      Object.keys(timers).forEach(function (k) { clearInterval(timers[k]); });      timers = {}; running = false;    } else start();  });  start();})();"""
 
 _NAV_ITEMS = [
     ("/", "overview", "Overview"),
