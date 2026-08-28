@@ -883,6 +883,11 @@ def init_db() -> None:
             )
         if "claimed_at" not in todo_cols:
             conn.execute("ALTER TABLE todo_items ADD COLUMN claimed_at TEXT")
+        # Auto-check PR binding: a nullable pr_number on the item whose merge
+        # ticks it done (db.bind_todo_item_to_pr). Existing databases lack it;
+        # fresh ones carry it (schema.sql) and no-op here.
+        if "pr_number" not in todo_cols:
+            conn.execute("ALTER TABLE todo_items ADD COLUMN pr_number INTEGER")
         # Create the claim partial index (moved here from schema.sql because
         # an existing database may lack the column when executescript runs).
         conn.execute(
