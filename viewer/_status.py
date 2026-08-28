@@ -265,21 +265,47 @@ async def _status_reads(force: bool = False) -> tuple[dict, dict, dict, list | N
 def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
     """The self-check list, shared by the status page and its banner fragment."""
     return [
-        {"name": "database present", "ok": Path(db.DB_PATH).is_file()},
-        {"name": "database integrity", "ok": by_name["integrity_ok"] is True},
+        {
+            "name": "database present",
+            "ok": Path(db.DB_PATH).is_file(),
+            "tooltip": "SQLite database file exists on disk",
+        },
+        {
+            "name": "database integrity",
+            "ok": by_name["integrity_ok"] is True,
+            "tooltip": "PRAGMA integrity_check passed \u2014 no corruption detected",
+        },
         {
             "name": "database outside repo (survives git clean)",
             "ok": not Path(db.DB_PATH).resolve().is_relative_to(db.REPO_DIR),
+            "tooltip": "DB lives outside the repo tree so git operations can't delete it",
         },
-        {"name": "repo reachable", "ok": bool(repo.get("root"))},
-        {"name": "repo clean (read-only deployment)", "ok": not repo.get("dirty")},
+        {
+            "name": "repo reachable",
+            "ok": bool(repo.get("root")),
+            "tooltip": "git rev-parse found a valid repo root",
+        },
+        {
+            "name": "repo clean (read-only deployment)",
+            "ok": not repo.get("dirty"),
+            "tooltip": "No uncommitted changes \u2014 deployment is pristine",
+        },
         {
             "name": "git in sync with origin",
             "ok": repo.get("commits_ahead") == 0 and repo.get("commits_behind") == 0,
             "warn": True,
+            "tooltip": "HEAD matches origin/main \u2014 no local divergence",
         },
-        {"name": "GitHub token configured", "ok": bool(github.GITHUB_TOKEN)},
-        {"name": "GitHub reachable", "ok": prs is not None},
+        {
+            "name": "GitHub token configured",
+            "ok": bool(github.GITHUB_TOKEN),
+            "tooltip": "GITHUB_TOKEN env var is set for API access",
+        },
+        {
+            "name": "GitHub reachable",
+            "ok": prs is not None,
+            "tooltip": "GitHub API responded \u2014 open PR list fetched successfully",
+        },
     ]
 
 
@@ -487,8 +513,9 @@ async def status_page(request: Request) -> HTMLResponse:
         color = {"ok": "var(--muted)", "warn": "var(--warn)", "fail": "var(--fail)"}[
             level
         ]
+        title_attr = f' title="{esc(check["tooltip"])}"' if check.get("tooltip") else ""
         return (
-            f'<tr><td><span class="dot {level}"></span>{esc(check["name"])}</td>'
+            f'<tr><td><span class="dot {level}"></span><span{title_attr}>{esc(check["name"])}</span></td>'
             f'<td style="color:{color};font-weight:600">{word}</td></tr>'
         )
 
