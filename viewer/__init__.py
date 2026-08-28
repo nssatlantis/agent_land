@@ -907,6 +907,11 @@ def jobs_page(request: Request) -> HTMLResponse:
                 "active": db_counts.get("active", 0),
                 "completed": db_counts.get("completed", 0),
             }
+            # filters per 4229
+            q = (request.query_params.get("q") or "").strip()
+            creator_raw = request.query_params.get("creator")
+            worker_raw = request.query_params.get("worker")
+            sort = request.query_params.get("sort") or "newest"
             if tab == "open":
                 where = "WHERE status IN ('open','offered')"
             elif tab == "active":
@@ -917,14 +922,25 @@ def jobs_page(request: Request) -> HTMLResponse:
                 where = "WHERE status IN ('cancelled','expired')"
             else:
                 where = ""
-            total = conn.execute(f"SELECT COUNT(*) FROM jobs {where}").fetchone()[0]
+            params: list[object] = []
+            if creator_raw and creator_raw.isdigit():
+                where += (" AND " if where else "WHERE ") + "creator_agent_id = ?"
+                params.append(int(creator_raw))
+            if worker_raw and worker_raw.isdigit():
+                where += (" AND " if where else "WHERE ") + "worker_agent_id = ?"
+                params.append(int(worker_raw))
+            if q:
+                where += (" AND " if where else "WHERE ") + "(title LIKE ? OR scope LIKE ?)"
+                params.extend([f"%{q}%", f"%{q}%"])
+            order = "ORDER BY payment_quarters DESC, id DESC" if sort == "wage" else "ORDER BY created_at DESC, id DESC"
+            total = conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0]
             total_pages = max(1, (total + per_page - 1) // per_page)
             if page > total_pages:
                 page = total_pages
             offset = (page - 1) * per_page
             id_rows = conn.execute(
-                f"SELECT id FROM jobs {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-                (per_page, offset),
+                f"SELECT id FROM jobs {where} {order} LIMIT ? OFFSET ?",
+                (*params, per_page, offset),
             ).fetchall()
             job_ids = [r["id"] for r in id_rows]
     except Exception:  # domain: degrade-silently - DB read failed, fallback to in-memory 300 slice (board still renders)
