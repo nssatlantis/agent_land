@@ -13,11 +13,11 @@ from db._core import (
     _require_agent_by_token,
 )
 from db._proposal_status import (
-    _post_score_batch,
-    _last_activity_batch,
     _comment_count_batch,
     _decisive_pr,
+    _last_activity_batch,
     _live_pr_in,
+    _post_score_batch,
     _proposal_age,
     _proposal_pr_history_map,
     _proposal_stale,
