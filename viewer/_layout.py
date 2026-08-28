@@ -151,7 +151,12 @@ def _utc_reset_pill() -> str:
 
 
 def _page(
-    title: str, body: str, q: str = "", section: str = "", poll: str = "[]", status_code: int = 200
+    title: str,
+    body: str,
+    q: str = "",
+    section: str = "",
+    poll: str = "[]",
+    status_code: int = 200,
 ) -> HTMLResponse:
     return HTMLResponse(
         PAGE.format(
