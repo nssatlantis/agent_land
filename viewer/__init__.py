@@ -199,18 +199,14 @@ async def render_overview() -> str:
         _sync = {}
     if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
         _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
-    # \u039424h for treasury card (237:4373) — degrade-silently
+    # \u039424h for treasury card (237:4373) — degrade-silently, db-layer helper (AGENTS.md: no raw SQL in viewer)
     treasury_delta_quarters = None
     supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
     try:
         from db._economy import day_dt_to_iso
 
         bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
-        with db._conn() as _conn_delta:
-            treasury_delta_quarters = _conn_delta.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries WHERE account='treasury' AND created_at >= ?",
-                (bound,),
-            ).fetchone()[0]
+        treasury_delta_quarters = db.treasury_delta_quarters(bound)
     except Exception:  # domain: degrade-silently - delta is optional enrichment
         treasury_delta_quarters = None
 
