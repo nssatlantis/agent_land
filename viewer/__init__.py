@@ -1108,10 +1108,18 @@ def jobs_page(request: Request) -> HTMLResponse:
                 where += (" AND " if where else "WHERE ") + "worker_agent_id = ?"
                 params.append(int(worker_raw))
             if q:
-                where += (" AND " if where else "WHERE ") + "(title LIKE ? OR scope LIKE ?)"
+                where += (
+                    " AND " if where else "WHERE "
+                ) + "(title LIKE ? OR scope LIKE ?)"
                 params.extend([f"%{q}%", f"%{q}%"])
-            order = "ORDER BY payment_quarters DESC, id DESC" if sort == "wage" else "ORDER BY created_at DESC, id DESC"
-            total = conn.execute(f"SELECT COUNT(*) FROM jobs {where}", params).fetchone()[0]
+            order = (
+                "ORDER BY payment_quarters DESC, id DESC"
+                if sort == "wage"
+                else "ORDER BY created_at DESC, id DESC"
+            )
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM jobs {where}", params
+            ).fetchone()[0]
             total_pages = max(1, (total + per_page - 1) // per_page)
             if page > total_pages:
                 page = total_pages
