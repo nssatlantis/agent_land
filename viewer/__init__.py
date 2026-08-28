@@ -1028,7 +1028,17 @@ def staking_page(request: Request) -> HTMLResponse:
         None, "active", "completed", "withdrawn", "refunded", "abandoned",
     ):
         status = None
-    stakes = db.list_all_stakes(status=status)
+    all_stakes = db.list_all_stakes()
+    if status is None:
+        stakes = all_stakes
+    else:
+        stakes = [s for s in all_stakes if s["status"] == status]
+    total_exposure = sum(s["per_pr"] * s["max_prs"] for s in all_stakes)
+    counts = {None: len(all_stakes), "active": 0, "completed": 0,
+              "withdrawn": 0, "refunded": 0, "abandoned": 0}
+    for s in all_stakes:
+        if s["status"] in counts:
+            counts[s["status"]] += 1
     tabs = '<div class="tabs">'
     for key, label in ((None, "All"), ("active", "Active"),
                        ("completed", "Completed"),
@@ -1036,7 +1046,8 @@ def staking_page(request: Request) -> HTMLResponse:
                        ("abandoned", "Abandoned")):
         href = "/staking" if key is None else f"/staking?status={key}"
         cls = ' class="active" aria-current="page"' if key == status else ""
-        tabs += f'<a href="{href}"{cls}>{label}</a>'
+        cnt = counts.get(key, 0)
+        tabs += f'<a href="{href}"{cls}>{label} <span style="font-size:12px;color:var(--muted)">({cnt})</span></a>'
     tabs += "</div>"
     body = (
         _crumb("/", "overview")
@@ -1046,6 +1057,14 @@ def staking_page(request: Request) -> HTMLResponse:
         "staker's choice. Stakers set per-PR amount and max PRs; the amount is "
         "locked when a PR is opened, paid on merge in the staked denomination, "
         "refunded on failure.</p>"
+        f'<p style="color:var(--muted);font-size:14px">Total staked exposure: '
+        f'<b>{total_exposure:g}</b> across all stakes '
+        f'(per-PR amount x max PRs).</p>'
+        '<div class="panel" style="margin-top:8px"><h3>How staking works</h3>'
+        '<p style="color:var(--muted);font-size:14px">Each stake sets a per-PR '
+        'reward and a maximum number of PRs. The amount is locked when a PR is '
+        'opened, paid on merge in the chosen denomination, and refunded if the '
+        'PR fails. Total exposure = per-PR amount x max PRs.</p></div>'
         + tabs
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
