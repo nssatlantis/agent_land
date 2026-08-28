@@ -654,6 +654,7 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         (None, "All", None),
         ("posts", "Posts", "none"),
         ("posts", "Proposals", "proposal"),
+        ("posts", "Small fixes", "small_fix"),
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
