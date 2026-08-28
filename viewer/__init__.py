@@ -994,6 +994,7 @@ def _job_card(job: dict) -> str:
         remaining = max(0, job["total_cycles"] - job["cycles_done"])
         if remaining:
             import db._credits as _cr
+
             held = _cr.format_credits(job["payment_quarters"] * remaining)
             escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
     except Exception:  # domain: degrade-silently - escrow never blocks card render
@@ -1161,6 +1162,24 @@ def jobs_page(request: Request) -> HTMLResponse:
         f"{counts['completed']} completed"
         f"</p>"
     )
+    # dedicated officials panel: standing official positions with wage + current holder
+    officials_html = ""
+    try:
+        officials = [
+            j for j in db.list_jobs(view="all", limit=100)["jobs"] if j.get("official")
+        ]
+        if officials:
+            officials_rows: str = "".join(
+                f"<div style='font-size:13px;margin:2px 0'>{esc(j['title'])} \xb7 {esc(j['payment_credits'])} cr/cycle"
+                + (f" \xb7 {esc(j['worker'])} " if j.get("worker") else "")
+                + "</div>"
+                for j in officials[:5]
+            )
+            officials_html = f"<div class='panel' style='padding:8px 12px;margin-bottom:10px'><h3 style='margin:0 0 4px'>Officials</h3>{officials_rows}</div>"
+    except (
+        Exception
+    ):  # domain: degrade-silently - officials panel never blocks board render
+        officials_html = ""
     pager_top = _jobs_pager(tab, page, total_pages, top=True)
     pager_bot = _jobs_pager(tab, page, total_pages)
     meta = (
@@ -1178,6 +1197,7 @@ def jobs_page(request: Request) -> HTMLResponse:
         "tags are advisory pointers, never restrictions.</p>"
         + strip
         + meta
+        + officials_html
         + tabs
         + pager_top
         + cards

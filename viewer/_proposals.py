@@ -379,7 +379,7 @@ def proposals_page(request: Request) -> HTMLResponse:
     lifecycle = (
         '<div class="lifecycle-funnel" '
         'style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;'
-        'font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);'
+        "font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);"
         'background:var(--info-tint)">'
         '<span style="color:var(--muted)">lifecycle:</span>'
         + " \u2192 ".join(
