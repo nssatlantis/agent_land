@@ -48,8 +48,17 @@ def _resolve_ref_commit(ref: str) -> str:
     for candidate in (ref, f"origin/{ref}"):
         try:
             proc = subprocess.run(
-                ["git", "-C", repo_dir, "rev-parse", "--verify", f"{candidate}^{{commit}}"],
-                capture_output=True, text=True, timeout=10,
+                [
+                    "git",
+                    "-C",
+                    repo_dir,
+                    "rev-parse",
+                    "--verify",
+                    f"{candidate}^{{commit}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except subprocess.TimeoutExpired:  # domain: degrade-silently - rev-parse timeout retries next candidate (origin/)
             continue
@@ -57,7 +66,9 @@ def _resolve_ref_commit(ref: str) -> str:
             sha = proc.stdout.strip()
             if sha:
                 return sha
-    raise RepoError(f"unknown ref {ref!r} - no such branch, tag or commit in the local checkout.")
+    raise RepoError(
+        f"unknown ref {ref!r} - no such branch, tag or commit in the local checkout."
+    )
 
 
 def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
@@ -69,10 +80,27 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
     # `git grep -n -i -F -I` at a rev outputs "<rev>:<path>:<line>:<text>".
     try:
         proc = subprocess.run(
-            ["git", "-C", repo_dir, "grep", "-n", "-i", "-F", "-I", "-e", query, commit, "--"],
-            capture_output=True, text=True, timeout=30,
+            [
+                "git",
+                "-C",
+                repo_dir,
+                "grep",
+                "-n",
+                "-i",
+                "-F",
+                "-I",
+                "-e",
+                query,
+                commit,
+                "--",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
-    except subprocess.TimeoutExpired:  # domain: fail-loudly - grep timeout must surface to caller
+    except (
+        subprocess.TimeoutExpired
+    ):  # domain: fail-loudly - grep timeout must surface to caller
         raise RepoError("repo_search timed out while searching the branch.") from None
     if proc.returncode not in (0, 1):
         # 1 = no matches (not an error), 128 = rev not found, else error
@@ -94,7 +122,9 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
         # possible) is not mis-split; text may also contain ":".
         try:
             path_str, lineno_str, text = rest.rsplit(":", 2)
-        except ValueError:  # domain: degrade-silently - malformed path:line:text skipped
+        except (
+            ValueError
+        ):  # domain: degrade-silently - malformed path:line:text skipped
             continue
         try:
             lineno = int(lineno_str)
@@ -102,7 +132,10 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
             continue
         # Allowlist — same as walk path.
         p = Path(path_str)
-        if p.name not in SEARCH_SPECIAL_FILES and p.suffix.lower() not in SEARCH_EXTENSIONS:
+        if (
+            p.name not in SEARCH_SPECIAL_FILES
+            and p.suffix.lower() not in SEARCH_EXTENSIONS
+        ):
             continue
         # Per-file cap
         lst = by_file.get(path_str)
@@ -119,7 +152,12 @@ def _search_with_ref(query: str, max_results: int, ref: str) -> dict:
     return {"query": query, "matches": results, "ref": ref}
 
 
-def search_files(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_FILES, root=None, ref: str | None = None) -> dict:
+def search_files(
+    query: str,
+    max_results: int = config.REPO_SEARCH_DEFAULT_MAX_FILES,
+    root=None,
+    ref: str | None = None,
+) -> dict:
     """Search the repo's checked-out working tree for a case-insensitive
     substring, restricted to the record and code files (SEARCH_EXTENSIONS +
     SEARCH_SPECIAL_FILES) so the database, secrets and manifests are never
@@ -166,11 +204,15 @@ def search_files(query: str, max_results: int = config.REPO_SEARCH_DEFAULT_MAX_F
             hits = []
             for lineno, line in enumerate(text.splitlines(), 1):
                 if needle in line.lower():
-                    hits.append({"line_number": lineno, "text": _trim_search_line(line)})
+                    hits.append(
+                        {"line_number": lineno, "text": _trim_search_line(line)}
+                    )
                     if len(hits) >= _SEARCH_MAX_PER_FILE:
                         break
             if hits:
-                results.append({"path": full.relative_to(root).as_posix(), "matches": hits})
+                results.append(
+                    {"path": full.relative_to(root).as_posix(), "matches": hits}
+                )
                 if len(results) >= max_results:
                     break
         if len(results) >= max_results:

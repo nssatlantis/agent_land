@@ -2,6 +2,7 @@
 the claim/offer flow, per-cycle submit/verdict with mandatory feedback,
 principal payouts, participation karma for both sides, cancellation and
 expiry refunds, nudges/digests, and deletion safety."""
+
 import importlib
 import os
 import sys
@@ -19,7 +20,7 @@ os.environ["FORUM_JOB_TAKER_DEPOSIT_MIN_RECURRING"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, config, setup  # noqa: E402
+from tests._setup import config, db, setup  # noqa: E402
 
 db.init_db()
 
@@ -91,8 +92,12 @@ def _make_creator(name: str):
 
 def _simple_job(creator, title="Job", pay=1.0, **kw):
     return db.create_job(
-        creator["token"], title, "desc", pay,
-        ["step one", "step two"], **kw,
+        creator["token"],
+        title,
+        "desc",
+        pay,
+        ["step one", "step two"],
+        **kw,
     )
 
 
@@ -101,7 +106,8 @@ def _events_of(kind: str, target_id: int) -> list[dict]:
 
     with db._conn() as conn:
         rows = [
-            dict(r) for r in conn.execute(
+            dict(r)
+            for r in conn.execute(
                 "SELECT * FROM events WHERE kind = ? AND target_type ="
                 " 'job' AND target_id = ?",
                 (kind, target_id),
@@ -117,9 +123,9 @@ def _mail(agent_token: str) -> list[str]:
     with db._conn() as conn:
         ag = db._require_agent_by_token(conn, agent_token)
         return [
-            r["body"] for r in conn.execute(
-                "SELECT body FROM notifications WHERE agent_id = ?"
-                " AND kind = 'jobs'",
+            r["body"]
+            for r in conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ? AND kind = 'jobs'",
                 (ag["id"],),
             ).fetchall()
         ]
@@ -131,8 +137,7 @@ def _mail(agent_token: str) -> list[str]:
 def test_create_escrows_full_exposure():
     creator = _make_creator("jobc1")
     before = _bal(creator["agent_id"])
-    job = _simple_job(creator, pay=2.0, cycles=3, kind="recurring",
-                      scope="HISTORY.md")
+    job = _simple_job(creator, pay=2.0, cycles=3, kind="recurring", scope="HISTORY.md")
     assert job["status"] == "open"
     assert job["payment_quarters"] == 8
     assert job["total_cycles"] == 3
@@ -171,33 +176,51 @@ def test_create_requires_min_karma():
 def test_create_validations():
     creator = _make_creator("jobc-valid")
     cases = [
-        (lambda: db.create_job(
-            creator["token"], "", "d", 1.0, ["s"]), "title"),
-        (lambda: db.create_job(
-            creator["token"], "t" * 121, "d", 1.0, ["s"]), "title"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d" * 4001, 1.0, ["s"]), "description"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 1.0, []), "at least one"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 1.0, ["x" * 201]), "200 chars"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 1.0,
-            [f"s{i}" for i in range(11)]), "cap is"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 0.1, ["s"]), "at least 0.25"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 1.0, ["s"], kind="weekly"),
-         "one_time"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 1.0, ["s"], kind="recurring",
-            cycles=8), "between 1 and"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 1.0, ["s"], scope="x" * 201),
-         "scope"),
-        (lambda: db.create_job(
-            creator["token"], "t", "d", 1.0, ["s"],
-            offer_to="jobc-valid"), "yourself"),
+        (lambda: db.create_job(creator["token"], "", "d", 1.0, ["s"]), "title"),
+        (lambda: db.create_job(creator["token"], "t" * 121, "d", 1.0, ["s"]), "title"),
+        (
+            lambda: db.create_job(creator["token"], "t", "d" * 4001, 1.0, ["s"]),
+            "description",
+        ),
+        (lambda: db.create_job(creator["token"], "t", "d", 1.0, []), "at least one"),
+        (
+            lambda: db.create_job(creator["token"], "t", "d", 1.0, ["x" * 201]),
+            "200 chars",
+        ),
+        (
+            lambda: db.create_job(
+                creator["token"], "t", "d", 1.0, [f"s{i}" for i in range(11)]
+            ),
+            "cap is",
+        ),
+        (
+            lambda: db.create_job(creator["token"], "t", "d", 0.1, ["s"]),
+            "at least 0.25",
+        ),
+        (
+            lambda: db.create_job(
+                creator["token"], "t", "d", 1.0, ["s"], kind="weekly"
+            ),
+            "one_time",
+        ),
+        (
+            lambda: db.create_job(
+                creator["token"], "t", "d", 1.0, ["s"], kind="recurring", cycles=8
+            ),
+            "between 1 and",
+        ),
+        (
+            lambda: db.create_job(
+                creator["token"], "t", "d", 1.0, ["s"], scope="x" * 201
+            ),
+            "scope",
+        ),
+        (
+            lambda: db.create_job(
+                creator["token"], "t", "d", 1.0, ["s"], offer_to="jobc-valid"
+            ),
+            "yourself",
+        ),
     ]
     for fn, needle in cases:
         try:
@@ -365,6 +388,7 @@ def test_accept_pays_principal_and_rewards_both_sides():
     worker = db.register_agent("jobw-acc")
     with db._conn() as conn:
         from db._credits import grant
+
         grant(worker["agent_id"], 8, "test_seed_deposit", conn=conn)
     job = _simple_job(creator, pay=2.0)
     cb, wb = _bal(creator["agent_id"]), _bal(worker["agent_id"])
@@ -402,15 +426,15 @@ def test_decline_needs_feedback_returns_escrow_and_allows_resubmit():
     except db.ForumError as exc:
         assert "feedback" in str(exc)
     try:
-        db.review_job(creator["token"], job["job_id"], "decline",
-                      feedback="x" * 1001)
+        db.review_job(creator["token"], job["job_id"], "decline", feedback="x" * 1001)
         raise AssertionError("feedback cap")
     except db.ForumError as exc:
         assert "1000 chars" in str(exc)
     wb = _bal(worker["agent_id"])
     cb = _bal(creator["agent_id"])
-    out = db.review_job(creator["token"], job["job_id"], "decline",
-                        feedback="add evidence links")
+    out = db.review_job(
+        creator["token"], job["job_id"], "decline", feedback="add evidence links"
+    )
     assert out["status"] == "active"  # still alive for rework
     assert _bal(worker["agent_id"]) == wb, "declined cycle pays nothing"
     # The declined cycle's escrow STAYS HELD (a decline-return followed by
@@ -465,8 +489,9 @@ def test_accept_seeds_next_cycle_so_status_stays_visible():
     assert [c["status"] for c in detail["cycles"]] == ["accepted", "awaiting"]
     with db._conn() as conn:
         actions = db._jobs._outstanding_actions(conn, worker["agent_id"])
-    assert any("cycle 2 awaits your work" in a for a in actions), \
+    assert any("cycle 2 awaits your work" in a for a in actions), (
         f"worker nudge must name cycle 2: {actions}"
+    )
     # ...and the seeded row accepts a normal submission for cycle 2.
     db.submit_job(worker["token"], job["job_id"], "#P2")
     assert db.get_job(job["job_id"])["cycles"][1]["status"] == "submitted"
@@ -483,8 +508,7 @@ def test_worker_deletion_returns_job_and_notifies_creator():
     d = db.get_job(j["job_id"])
     assert d["status"] == "open" and d["worker"] is None
     mails = _mail(helper["token"])
-    assert any("back on the open board" in m and "removed" in m
-               for m in mails), mails
+    assert any("back on the open board" in m and "removed" in m for m in mails), mails
     # The board still serves it: someone else can claim.
     nxt = db.register_agent("jobv-rel2")
     db.claim_job(nxt["token"], j["job_id"])
@@ -499,8 +523,9 @@ def test_cancel_wording_never_says_zero_credits():
     db.cancel_job(creator["token"], j["job_id"])
     mails = _mail(worker["token"])
     assert any("cancelled the job" in m for m in mails)
-    assert not any("0 credits" in m for m in mails), \
+    assert not any("0 credits" in m for m in mails), (
         "a citizen cancel carries real escrow - never a zero-credit line"
+    )
 
 
 def test_supply_is_invariant_through_the_whole_lifecycle():
@@ -515,8 +540,7 @@ def test_supply_is_invariant_through_the_whole_lifecycle():
     def _supply():
         with db._conn() as conn:
             return conn.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0)"
-                " FROM credit_entries",
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
             ).fetchone()[0]
 
     s0 = _supply()
@@ -528,8 +552,7 @@ def test_supply_is_invariant_through_the_whole_lifecycle():
     db.review_job(creator["token"], job["job_id"], "accept")
     assert _supply() == s0 - 16, "cycle 1's wage re-entered circulation"
     db.submit_job(worker["token"], job["job_id"], "#P1b")
-    db.review_job(creator["token"], job["job_id"], "decline",
-                  feedback="no")
+    db.review_job(creator["token"], job["job_id"], "decline", feedback="no")
     assert _supply() == s0 - 16, "a decline pays nothing and holds escrow"
     db.cancel_job(creator["token"], job["job_id"])
     assert _supply() == s0, "cancel returns the two unsettled cycles"
@@ -621,8 +644,8 @@ def test_delete_agent_refunds_escrow_before_forfeit():
     helper = _make_creator("jobc-del-helper")
     from moderation import delete_agent
 
-    j = _simple_job(victim, pay=2.0)          # 8q escrowed, open
-    j2 = _simple_job(victim, pay=1.0)         # purged with their rows
+    j = _simple_job(victim, pay=2.0)  # 8q escrowed, open
+    j2 = _simple_job(victim, pay=1.0)  # purged with their rows
     # A job VICTIM works on: released back to the board when they go.
     j3 = _simple_job(helper, pay=1.0)
     db.claim_job(victim["token"], j3["job_id"])
@@ -631,8 +654,7 @@ def test_delete_agent_refunds_escrow_before_forfeit():
     def _supply():
         with db._conn() as conn:
             return conn.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0)"
-                " FROM credit_entries",
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries",
             ).fetchone()[0]
 
     s0 = _supply()
@@ -646,8 +668,9 @@ def test_delete_agent_refunds_escrow_before_forfeit():
         raise AssertionError("deleted creator's job should be gone")
     except db.ForumError as exc:
         assert "no job" in str(exc)
-    assert _events_of("job_cancelled", j["job_id"]), \
+    assert _events_of("job_cancelled", j["job_id"]), (
         "the cancellation event preserves the trail"
+    )
     # The job the victim was WORKING went back to the board.
     d3 = db.get_job(j3["job_id"])
     assert d3["status"] == "open" and d3["worker"] is None
@@ -686,8 +709,7 @@ def test_delete_agent_purges_worker_role_rewards_on_authored_jobs():
     db.submit_job(worker["token"], keep["job_id"], "#K")
     db.review_job(helper["token"], keep["job_id"], "accept")
     # A reward that must GO with the victim's purged job.
-    doomed = _simple_job(victim, title="doomed", kind="recurring",
-                         cycles=2)
+    doomed = _simple_job(victim, title="doomed", kind="recurring", cycles=2)
     db.claim_job(worker["token"], doomed["job_id"])
     db.submit_job(worker["token"], doomed["job_id"], "#D")
     db.review_job(victim["token"], doomed["job_id"], "accept")
@@ -707,8 +729,9 @@ def test_delete_agent_purges_worker_role_rewards_on_authored_jobs():
         raise AssertionError("the victim's accepted-cycle job is purged")
     except db.ForumError:
         pass
-    assert _reward_count(worker["agent_id"]) == before - 1, \
+    assert _reward_count(worker["agent_id"]) == before - 1, (
         "only the doomed job's reward rows go - survivors are untouched"
+    )
     assert db.get_job(keep["job_id"])["status"] == "completed"
 
 
@@ -730,15 +753,17 @@ def test_mid_review_deletion_resets_inherited_cycle():
     d = db.get_job(j["job_id"])
     assert d["status"] == "open" and d["worker"] is None
     cyc = d["cycles"][0]
-    assert cyc["status"] == "awaiting" and cyc["evidence"] == "", \
+    assert cyc["status"] == "awaiting" and cyc["evidence"] == "", (
         f"in-flight cycle resets for the successor: {cyc}"
+    )
     # The successor runs an unblocked, honest cycle.
     db.claim_job(nxt["token"], j["job_id"])
     db.submit_job(nxt["token"], j["job_id"], "#P1-real")
     out = db.review_job(creator["token"], j["job_id"], "accept")
     assert out["cycles_done"] == 1
-    assert _bal(nxt["agent_id"]) == w_bal + 4 + 1, \
+    assert _bal(nxt["agent_id"]) == w_bal + 4 + 1, (
         "payout plus reward land on the citizen who actually worked"
+    )
 
 
 # -- surfaces: nudges, digests, listings ------------------------------------
@@ -767,8 +792,10 @@ def test_nudge_surfaces_every_waiting_state():
     assert "awaits your review_job()" in note["job_note"]
     assert "awaits your work" not in note["job_note"]
     db.review_job(creator["token"], worked["job_id"], "accept")
-    assert _note(worker["token"]) == {} or "awaits" not in \
-        _note(worker["token"])["job_note"]
+    assert (
+        _note(worker["token"]) == {}
+        or "awaits" not in _note(worker["token"])["job_note"]
+    )
     # After answering the offer, nothing waits on the offeree any more.
     db.decline_job_offer(offeree["token"], offered["job_id"])
     note = _note(offeree["token"])
@@ -813,8 +840,7 @@ def test_daily_digest_time_gated_on_digest_kind():
     # A citizen who BECAME waiting again is swept once the window expires:
     # decline sends the work back -> worker owes a rework -> after aging
     # every digest beyond 24h the next sweep mails them afresh.
-    db.review_job(creator["token"], job["job_id"], "decline",
-                  feedback="rework it")
+    db.review_job(creator["token"], job["job_id"], "decline", feedback="rework it")
     assert _digest_count(worker["token"]) == 1, "still inside the window"
     with db._conn(immediate=True) as conn:
         conn.execute(
@@ -831,18 +857,14 @@ def test_list_views_filter_correctly():
     mine = _simple_job(creator, title="list-mine")
     theirs = _simple_job(creator, title="list-theirs")
     db.claim_job(worker["token"], theirs["job_id"])
-    open_titles = [
-        j["title"] for j in db.list_jobs(view="open")["jobs"]
-    ]
+    open_titles = [j["title"] for j in db.list_jobs(view="open")["jobs"]]
     assert "list-mine" in open_titles and "list-theirs" not in open_titles
     mine_titles = [
-        j["title"] for j in
-        db.list_jobs(view="mine", token=creator["token"])["jobs"]
+        j["title"] for j in db.list_jobs(view="mine", token=creator["token"])["jobs"]
     ]
     assert {mine["title"], theirs["title"]} <= set(mine_titles)
     working = [
-        j["title"] for j in
-        db.list_jobs(view="working", token=worker["token"])["jobs"]
+        j["title"] for j in db.list_jobs(view="working", token=worker["token"])["jobs"]
     ]
     assert working == ["list-theirs"]
     try:
@@ -866,12 +888,16 @@ def test_submit_multi_pr_evidence_advisory():
     job = _simple_job(creator, pay=1.0, kind="recurring", cycles=2)
     db.claim_job(worker["token"], job["job_id"])
     # Multiple PRs in one evidence string (mixed forms)
-    evidence = "#PR12 plus https://github.com/nssatlantis/agent_land/pull/13 and /prs/14"
+    evidence = (
+        "#PR12 plus https://github.com/nssatlantis/agent_land/pull/13 and /prs/14"
+    )
     db.submit_job(worker["token"], job["job_id"], evidence)
     detail = db.get_job(job["job_id"])
     cyc = detail["cycles"][0]
     assert cyc["evidence"] == evidence
-    assert cyc["evidence_pr_numbers"] == [12, 13, 14], f"got {cyc['evidence_pr_numbers']}"
+    assert cyc["evidence_pr_numbers"] == [12, 13, 14], (
+        f"got {cyc['evidence_pr_numbers']}"
+    )
     assert len(cyc["evidence_pr_numbers"]) == 3
     # Dedupe + order preserved, cap at 10, advisory — accept still manual
     db.review_job(creator["token"], job["job_id"], "accept")
@@ -897,8 +923,9 @@ def test_submit_multi_pr_evidence_advisory():
 
 
 if __name__ == "__main__":
-    fns = [v for k, v in sorted(globals().items())
-           if k.startswith("test_") and callable(v)]
+    fns = [
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
+    ]
     for fn in fns:
         fn()
         print(f"PASS {fn.__name__}")

@@ -44,13 +44,20 @@ def _install_delay_mock(delay: float):
         await asyncio.sleep(delay)
         hits.append(request.url.path)
         if request.url.path.endswith("/pulls/9001"):
-            return httpx.Response(200, json={
-                "number": 9001, "title": "bench", "body": "",
-                "head": {"ref": "b", "sha": "s"}, "base": {"ref": "main"},
-                "user": {"login": "u"}, "state": "open",
-                "created_at": "2026-08-24T00:00:00Z",
-                "html_url": "https://github.com/x/y/pull/9001",
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "number": 9001,
+                    "title": "bench",
+                    "body": "",
+                    "head": {"ref": "b", "sha": "s"},
+                    "base": {"ref": "main"},
+                    "user": {"login": "u"},
+                    "state": "open",
+                    "created_at": "2026-08-24T00:00:00Z",
+                    "html_url": "https://github.com/x/y/pull/9001",
+                },
+            )
         return httpx.Response(200, json=[])
 
     old = gh_core._client
@@ -89,8 +96,10 @@ def bench_fanout() -> None:
         print("  get_pr requests      : 4")
         print(f"  sequential (naive)   : {seq_ms:7.1f} ms")
         print(f"  fan-out (native)     : {fan_ms:7.1f} ms")
-        print(f"  latency saved        : {seq_ms - fan_ms:7.1f} ms  "
-              f"({seq_ms / max(fan_ms, 0.001):.2f}x)")
+        print(
+            f"  latency saved        : {seq_ms - fan_ms:7.1f} ms  "
+            f"({seq_ms / max(fan_ms, 0.001):.2f}x)"
+        )
     finally:
         gh_checks._checks_for_head = stub_checks
         gh_core._client = old
@@ -111,8 +120,10 @@ def bench_live(pr_number: int) -> None:
     assert sync_result["number"] == async_result["number"]
     assert len(sync_result["comments"]) == len(async_result["comments"])
     assert len(sync_result["files"]) == len(async_result["files"])
-    print(f"  live get_pr #{pr_number}: sync {sync_ms:.0f} ms | "
-          f"native {async_ms:.0f} ms ({sync_ms / max(async_ms, 0.001):.2f}x)")
+    print(
+        f"  live get_pr #{pr_number}: sync {sync_ms:.0f} ms | "
+        f"native {async_ms:.0f} ms ({sync_ms / max(async_ms, 0.001):.2f}x)"
+    )
 
 
 def _install_checks_delay_mock(delay: float):
@@ -128,15 +139,29 @@ def _install_checks_delay_mock(delay: float):
         if path.endswith("/check-runs"):
             return httpx.Response(200, json={"check_runs": []})
         if path.endswith("/actions/runs"):
-            return httpx.Response(200, json={"workflow_runs": [{
-                "id": 31, "name": "CI", "conclusion": "failure",
-                "html_url": "https://ci/run/31",
-            }]})
+            return httpx.Response(
+                200,
+                json={
+                    "workflow_runs": [
+                        {
+                            "id": 31,
+                            "name": "CI",
+                            "conclusion": "failure",
+                            "html_url": "https://ci/run/31",
+                        }
+                    ]
+                },
+            )
         if path.endswith("/jobs"):
-            return httpx.Response(200, json={"jobs": [
-                {"id": 111, "name": "test", "conclusion": "failure"},
-                {"id": 112, "name": "lint", "conclusion": "failure"},
-            ]})
+            return httpx.Response(
+                200,
+                json={
+                    "jobs": [
+                        {"id": 111, "name": "test", "conclusion": "failure"},
+                        {"id": 112, "name": "lint", "conclusion": "failure"},
+                    ]
+                },
+            )
         if "/logs" in path:
             return httpx.Response(200, text="error: boom\n" * 80)
         return httpx.Response(200, json={})
@@ -179,15 +204,19 @@ def bench_apr_checks() -> None:
         print("  apr_checks requests  : 5 (red path, 2 log tails)")
         print(f"  sequential (naive)   : {seq_ms:7.1f} ms")
         print(f"  fan-out (native)     : {fan_ms:7.1f} ms")
-        print(f"  latency saved        : {seq_ms - fan_ms:7.1f} ms  "
-              f"({seq_ms / max(fan_ms, 0.001):.2f}x)")
+        print(
+            f"  latency saved        : {seq_ms - fan_ms:7.1f} ms  "
+            f"({seq_ms / max(fan_ms, 0.001):.2f}x)"
+        )
     finally:
         gh_core._client = old
         gh.clear_cache()
 
 
 def main():
-    print(f"benchmark_github: per-request delay {DELAY_S*1000:.0f} ms (MockTransport)")
+    print(
+        f"benchmark_github: per-request delay {DELAY_S * 1000:.0f} ms (MockTransport)"
+    )
     bench_fanout()
     bench_apr_checks()
     if os.environ.get("BENCH_LIVE") == "1" and os.environ.get("GITHUB_TOKEN"):
@@ -197,7 +226,9 @@ def main():
         except Exception as exc:
             print(f"  live mode skipped: {type(exc).__name__}: {exc}")
     else:
-        print("  live mode off (set BENCH_LIVE=1 + GITHUB_TOKEN to compare on real API)")
+        print(
+            "  live mode off (set BENCH_LIVE=1 + GITHUB_TOKEN to compare on real API)"
+        )
     print("benchmark_github: done")
     return 0
 
