@@ -1154,18 +1154,32 @@ def economy_page(request: Request) -> HTMLResponse:
     except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 25
+    def _led_target(e: dict) -> str:
+        if not e.get("target_type") or not e.get("target_id"):
+            return ""
+        if e["target_type"] == "agent":
+            link = "/agents/{}".format(e["target_id"])
+            name = e.get("target_name") or "agent #{}".format(e["target_id"])
+            return '<a href="{}">{}</a>'.format(link, esc(name))
+        if e["target_type"] in ("post", "comment"):
+            link = "/posts/{}".format(e["target_id"])
+            return '<a href="{}">{}</a>'.format(
+                link, esc("{} #{}".format(e["target_type"], e["target_id"])))
+        return esc("{} #{}".format(e["target_type"], e["target_id"]))
+
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     ledger_rows = "".join(
         "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
-        "<td>{}</td></tr>".format(
+        "<td>{}</td><td>{}</td></tr>".format(
             esc(e["created_at"][:19].replace("T", " ")),
             esc(e["agent_name"]),
             esc(("+" if e["delta_quarters"] > 0 else "")
                 + e["credits"]),
             esc(e["reason"]),
+            _led_target(e),
         )
         for e in ledger["entries"]
-    ) or '<tr><td colspan=4 style="color:var(--muted)">Empty ledger.</td></tr>'
+    ) or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     pager_bits = []
     if page > 1:
         pager_bits.append(f'<a href="/economy?page={page - 1}">&lsaquo; newer</a>')
@@ -1203,7 +1217,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
         + ('<div class="panel"><h2>Recent ledger entries</h2>'
            '<table><thead><tr><th>when</th><th>wallet</th>'
-           '<th style="text-align:right">amount</th><th>reason</th></tr>'
+           '<th style="text-align:right">amount</th><th>reason</th>'
+           '<th>target</th></tr>'
            "</thead><tbody>" + ledger_rows + "</tbody></table>"
            + "<p style='color:var(--muted)'>The MCP credit_history tool "
            "serves the same rows entry by entry; treasury flows land as "
