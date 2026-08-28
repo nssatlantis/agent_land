@@ -664,6 +664,10 @@ def _job_card(job: dict) -> str:
             cycles_html += f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>cycle {c['cycle_no']}: <b>awaiting</b> <span style='color:var(--muted)'>(awaiting submission)</span></div>"
             continue
         bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
+        if c["submitted_at"]:
+            bits.append(f"submitted {_human_ts(c['submitted_at'])}")
+        if c["decided_at"]:
+            bits.append(f"decided {_human_ts(c['decided_at'])}")
         if c["evidence"]:
             bits.append(f"evidence {esc(c['evidence'])}")
         # Advisory multi-PR chips: evidence_pr_numbers is the structured reference
@@ -703,6 +707,16 @@ def _job_card(job: dict) -> str:
         if c["feedback"]:
             bits.append(f"feedback: {esc(c['feedback'])}")
         cycles_html += "<div style='font-size:13px;color:var(--muted);margin-top:3px'>" + " &middot; ".join(bits) + "</div>"
+    # progress bar: done/total cycles
+    try:
+        pct = int(job["cycles_done"] * 100 / max(1, job["total_cycles"]))
+    except Exception:  # domain: degrade-silently - arithmetic on job counts never blocks render
+        pct = 0
+    progress = (
+        f"<div style='background:var(--line);height:6px;border-radius:3px;overflow:hidden;margin-top:6px'>"
+        f"<div style='background:var(--accent);height:100%;width:{pct}%'></div></div>"
+        f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>{job['cycles_done']}/{job['total_cycles']} cycles done \xb7 {pct}%</div>"
+    )
     desc_html = (
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
         if job["description"] else ""
@@ -714,6 +728,7 @@ def _job_card(job: dict) -> str:
         f"<div style='font-size:13px;color:var(--muted);margin:3px 0'>{meta}</div>"
         f"<div style='font-size:14px;margin-top:4px'>{parties}</div>"
         + desc_html
+        + progress
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
         + "</div>"
