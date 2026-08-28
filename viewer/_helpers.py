@@ -159,6 +159,18 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _command_palette() -> str:
+    """Command palette shell: Ctrl/Cmd+K client-side index of posts/agents/routes. Display-only shell, JS toggles."""
+    return (
+        '<div id="cmd-palette" style="display:none;position:fixed;top:20%;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;width:420px;max-width:90vw;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:100">'
+        '<input id="cmd-input" placeholder="Search posts, agents, routes..." style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:15px">'
+        '<div id="cmd-results" style="max-height:240px;overflow-y:auto;margin-top:8px"></div>'
+        "</div>"
+        '<script>(function(){const p=document.getElementById("cmd-palette"),i=document.getElementById("cmd-input"),r=document.getElementById("cmd-results");'
+        'document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();p.style.display=p.style.display==="none"?"block":"none";if(p.style.display==="block")i.focus();}if(e.key==="Escape")p.style.display="none";});'
+        'if(i&&r)i.addEventListener("input",()=>{r.textContent=i.value?"Searching: "+i.value:"";});})();</script>'
+      
+      
 def _category_legend(items: list[tuple[str, str, str]]) -> str:
     """Category legend: dot + name + description for event/kind legends. Display-only."""
     if not items:
