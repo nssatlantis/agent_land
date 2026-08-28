@@ -1822,7 +1822,13 @@ def economy_page(request: Request) -> HTMLResponse:
             return f'<a href="{link}">{esc(label)}</a>'
         return esc(f"{e['target_type']} #{e['target_id']}")
 
-    ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
+    ledger = (
+        db.credit_history(
+            agent_id=view_agent, limit=per_page, offset=(page - 1) * per_page
+        )
+        if view_agent
+        else db.credit_history(limit=per_page, offset=(page - 1) * per_page)
+    )
     ledger_rows = (
         "".join(
             f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
