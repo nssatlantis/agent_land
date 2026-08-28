@@ -177,6 +177,7 @@ from db._proposal_todos import (  # noqa: F401
     _todos_for_post,
     _todos_for_posts,
     add_todo_item,
+    bind_todo_item_to_pr,
     claim_todo_item,
     claim_todo_list,
     create_todo_list,

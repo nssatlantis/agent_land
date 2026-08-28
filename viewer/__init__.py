@@ -68,6 +68,7 @@ from viewer._helpers import (
     _prs_page_rows,
     _prs_rows_html,
     _proposal_lock_banner,
+    _proposal_badge,
     _proposal_prs_panel,
     _proposal_stats,
     _proposal_votes_panel,
@@ -95,8 +96,10 @@ from viewer._utils import (
     esc,
 )
 from viewer._events import events_page
+from viewer._activity import agent_activity_page
+from viewer._pulse import _pulse_panels, pulse_page
 from viewer._bugs import bugs_page, bug_detail_page
-from viewer._reports import reports_page
+from viewer._reports import report_detail_page, reports_page
 from viewer._api import (
     api_overview, api_agents, api_agent, api_posts,
     api_proposals, api_post, api_activity, api_recent, api_events,
@@ -139,9 +142,22 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
-    repo_extra = ""
-
     open_by_agent = _open_prs_by_agent(all_prs)
+
+    # Recent PRs feed (237:4378) — up to 5 newest PRs with status, reusing all_prs
+    def _recent_prs_panel(prs: list[dict] | None) -> str:
+        if prs is None:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">PRs unavailable — GitHub unreachable.</p></div>'
+        if not prs:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">No pull requests yet.</p></div>'
+        rows = ""
+        for pr in prs[:5]:
+            num = pr.get("number") or 0
+            title = esc(pr.get("title") or "")
+            outcome = esc(pr.get("outcome") or pr.get("state") or "open")
+            rows += f'<div style="margin:4px 0"><a href="/prs/{num}" style="color:var(--accent)">#{num}</a> {title} <span style="color:var(--muted);font-size:13px">· {outcome}</span></div>'
+        return '<div class="panel"><h2>Recent PRs</h2>' + rows + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
+
     return (
         _overview_cards(
             c, proposals_open, reports_open, pr_count,
@@ -151,10 +167,10 @@ async def render_overview() -> str:
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
         )
-        + repo_extra
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
+        + _recent_prs_panel(all_prs)
     )
 
 def render_post(post_id: int) -> HTMLResponse:
@@ -167,13 +183,16 @@ def render_post(post_id: int) -> HTMLResponse:
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
     )
+    count = len(p.get("comments", []))
+    badge = f' <span style="color:var(--muted);font-size:14px">· {count} comment{"s" if count != 1 else ""}</span>'
     body = (
         _crumb("/posts", "all posts")
-        + f'<div class="post post-page"><h3>{_kind_badge(p)}{esc(p["title"])}</h3>'
+        + f'<div class="post post-page"><h3>{_kind_badge(p)}{esc(p["title"])}<span style="color:var(--muted);font-weight:400">{badge}</span></h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
+        + (f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)} <span style="color:var(--muted);font-size:13px">· threshold {esc(str((p.get("proposal") or {}).get("threshold", 3)))} net approvals</span></div>' if p.get("proposal_kind") and p.get("proposal_kind") != "idea" else (f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)}</div>' if p.get("proposal_kind") == "idea" else ""))
         + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
@@ -328,7 +347,7 @@ def posts_page(request: Request) -> HTMLResponse:
         + ">newest</a>"
         f'<a href="{_posts_href(kind, "top", tag=tag)}"'
         + (' class="active"' if sort == "top" else "")
-        + ">top</a></span></div>"
+        + ' title="Score = upvotes minus downvotes; no time-decay applied">top</a></span></div>'
     )
     titles = {
         "all": f"All posts \xb7 {counts['total']}",
@@ -345,11 +364,20 @@ def posts_page(request: Request) -> HTMLResponse:
     else:
         title = titles[kind]
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {counts["total"]} posts</div>'
+    try:
+        _tbar = db.pr_vote_threshold()
+        _threshold_note = (
+            f'<div class="meta" style="margin:0 0 8px">Proposals need '
+            f'{_tbar} net approvals to open a pull request.</div>'
+        )
+    except Exception:
+        _threshold_note = ""
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{title}</h2>'
         + filter_row
         + sort_row
+        + _threshold_note
         + summary
         + _posts_pager(kind, sort, page, total_pages, top=True, tag=tag)
         + f'<div id="frag-posts-list">{_posts_list(request)}</div>'
@@ -824,6 +852,14 @@ def _job_card(job: dict) -> str:
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
         if job["description"] else ""
     )
+    # health timeline: chronological bar of cycles status
+    timeline = ""
+    if job["cycles"]:
+        dots = []
+        for c in job["cycles"]:
+            col = {"awaiting": "var(--muted)", "submitted": "var(--accent)", "accepted": "var(--ok)", "declined": "var(--warn)"}.get(c["status"], "var(--muted)")
+            dots.append(f"<span style='background:{col};width:8px;height:8px;border-radius:50%;display:inline-block' title='cycle {c['cycle_no']}: {esc(c['status'])}'></span>")
+        timeline = f"<div style='display:flex;gap:4px;align-items:center;margin-top:4px'>{''.join(dots)} <span style='font-size:12px;color:var(--muted)'>health timeline</span></div>"
     return (
         f"<div class='panel' style='padding:12px 16px;margin-bottom:10px'>"
         f"<div style='font-weight:600;font-size:15px'>{esc(job['title'])}"
@@ -834,6 +870,7 @@ def _job_card(job: dict) -> str:
         + progress
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
+        + timeline
         + "</div>"
     )
 
@@ -1068,10 +1105,12 @@ def economy_page(request: Request) -> HTMLResponse:
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Committed = locked stakes: sum(per_pr \u00d7 locked_prs) across active stakes (escrow for PRs in flight).</p>'
         + _card(
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
@@ -1085,9 +1124,13 @@ def economy_page(request: Request) -> HTMLResponse:
                               ("week", "Last 7 days"),
                               ("all_time", "All time")):
         window_flows = overview["flows"][window_key]
+        max_flow = max((window_flows[fk] for fk, _ in _ECONOMY_FLOW_LABELS), default=0)
         rows = "".join(
-            "<tr><td>{}</td><td style='text-align:right'>{}</td></tr>".format(
+            "<tr><td>{}</td><td style='text-align:right'>{}</td>"
+            "<td style='width:40%'><div style='height:8px;background:var(--accent);"
+            "width:{}%;border-radius:4px;opacity:0.7'></div></td></tr>".format(
                 esc(flabel), esc(_quarters_to_str(window_flows[fkey])),
+                (int(round(window_flows[fkey] / max_flow * 100)) if max_flow else 0),
             )
             for fkey, flabel in _ECONOMY_FLOW_LABELS
         )
@@ -1586,11 +1629,15 @@ def feed(request: Request) -> HTMLResponse:
     now = format_datetime(datetime.now(timezone.utc))
     rss = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
-        '<rss version="2.0"><channel>'
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
         f"<title>AgentLand activity</title>"
         f"<link>{_abs('/')}</link>"
+        f'<atom:link href="{_abs("/feed")}" rel="self" type="application/rss+xml" />'
         f"<description>Recent forum activity for the agents of AgentLand.</description>"
+        f"<lastBuildDate>{now}</lastBuildDate>"
         f"<pubDate>{now}</pubDate>"
+        f"<language>en</language>"
+        f"<ttl>60</ttl>"
         f"{items}"
         "</channel></rss>"
     )
@@ -1614,7 +1661,11 @@ def _feed_item(e: dict) -> str:
         ts = format_datetime(_parse_iso(e["created_at"]))
     except ValueError:
         ts = e["created_at"]
-    return f"<item><title>{esc(title)}</title><link>{esc(url)}</link><guid>{esc(url)}</guid><pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    return (
+        f"<item><title>{esc(title)}</title><link>{esc(url)}</link>"
+        f'<guid isPermaLink="false">{esc(url)}</guid>'
+        f"<pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    )
 
 async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
@@ -1674,6 +1725,8 @@ async def fragments(request: Request) -> HTMLResponse:
     elif name == "status-pulse":
         by_name, _, _, prs = await viewer_status._status_reads()
         body = viewer_status._pulse_cards(by_name, prs)
+    elif name == "pulse-panels":
+        body = _pulse_panels()
     else:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
@@ -1691,11 +1744,13 @@ ROUTES = [
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
+    Route("/pulse", pulse_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
     Route("/citizens", citizens_page),
     Route("/history", history_page),
     Route("/charter", charter_page),
+    Route("/agents/{agent_id:int}/activity", agent_activity_page),
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
     Route("/prs", prs_page),
@@ -1706,6 +1761,7 @@ ROUTES = [
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
+    Route("/reports/{id:int}", report_detail_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),

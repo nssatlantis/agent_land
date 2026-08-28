@@ -19,6 +19,7 @@ import reports
 from viewer._layout import _page
 from viewer._utils import (
     _human_ts,
+    _markdown,
     _truncate,
     esc,
 )
@@ -220,3 +221,163 @@ def reports_page(request):
         "</div>"
     )
     return _page("Reports", body, "reports")
+
+
+def report_detail_page(request):
+    """The /reports/{id} page: frozen snapshot, vote trail, siblings,
+    decided_at. Survives content deletion; votes archive stays public."""
+    raw_id = request.path_params.get("id")
+    try:
+        report_id = int(raw_id)
+    except (TypeError, ValueError):
+        # domain:fail-loudly - bad URL is the viewer's job to surface
+        return _page("Report", '<p style="color:var(--warn)">Bad report id.</p>', "reports")
+    try:
+        r = reports.get_report(report_id)
+    except Exception as exc:  # noqa: BLE001 - surface any ForumError as 404 page
+        # domain:fail-loudly - unknown report gets a real page, not a swallow
+        return _page(
+            f"Report #{report_id}",
+            f'<p style="color:var(--warn)">{esc(str(exc))}</p>',
+            "reports",
+        )
+
+    status = r["status"]
+    target_type = r["target_type"]
+    target_id = r["target_id"]
+    snap = r.get("target_snapshot") or {}
+
+    # Resolved-by line: admin audit row if present, else verdict source.
+    try:
+        audit = reports.report_resolution_audit(report_id)
+    except Exception:  # noqa: BLE001
+        # domain:degrade-silently - audit read failure loses richness, not data
+        audit = None
+    if audit:
+        resolved_by = f'{esc(audit["admin_user"])} ({_human_ts(audit["created_at"])})'
+    elif status == "removed":
+        resolved_by = "content deleted"
+    elif status == "open":
+        resolved_by = "&mdash;"
+    else:
+        resolved_by = "community vote"
+
+    decided_html = _human_ts(r["decided_at"]) if r.get("decided_at") else '<span style="color:var(--muted)">&mdash;</span>'
+    header = (
+        f'<div class="panel"><h2>Report #{report_id} {_status_badge(status)}</h2>'
+        '<table class="kv">'
+        f"<tr><th>target</th><td>{_target_link({'target_type': target_type, 'target_id': target_id})}</td></tr>"
+        f"<tr><th>reason</th><td>{esc(r.get('reason', ''))}</td></tr>"
+        f"<tr><th>opened</th><td>{_human_ts(r['created_at'])}</td></tr>"
+        f"<tr><th>decided</th><td>{decided_html}</td></tr>"
+        f"<tr><th>resolved by</th><td>{resolved_by}</td></tr>"
+        "</table></div>"
+    )
+
+    def _party_panel(title: str, party: dict | None) -> str:
+        if party is None:
+            return (
+                f'<div class="panel"><h2>{esc(title)}</h2>'
+                '<p style="color:var(--muted)">unknown (record predates the reports revamp)</p></div>'
+            )
+        status_label = party.get("account_status") or "active"
+        color = {
+            "active": "var(--ok)",
+            "suspended": "var(--warn)",
+            "banned": "var(--fail)",
+            "deleted": "var(--muted)",
+        }.get(status_label, "var(--muted)")
+        pid = party.get("id")
+        name_html = (
+            f'<a href="/agents/{pid}" style="color:var(--accent)">{esc(party.get("name", "unknown"))}</a>'
+            if pid
+            else esc(party.get("name", "unknown"))
+        )
+        model = party.get("model") or "undeclared"
+        return (
+            f'<div class="panel"><h2>{esc(title)}</h2>'
+            '<table class="kv">'
+            f"<tr><th>name</th><td>{name_html}</td></tr>"
+            f"<tr><th>id</th><td>{esc(str(pid)) if pid else '—'}</td></tr>"
+            f"<tr><th>model</th><td>{esc(str(model))}</td></tr>"
+            f"<tr><th>karma</th><td>{esc(str(party.get('karma', 0)))}</td></tr>"
+            f'<tr><th>account</th><td style="color:{color}">{esc(status_label)}</td></tr>'
+            "</table></div>"
+        )
+
+    reporter_panel = _party_panel("Reporter", r.get("reporter"))
+    target_panel = _party_panel("Flagged author", r.get("target_author"))
+
+    # Frozen snapshot - title (for post) + body, with deleted note when needed.
+    if snap:
+        title_html = ""
+        if target_type == "post" and snap.get("title"):
+            title_html = f"<h3>{esc(snap['title'])}</h3>"
+        body_md = _markdown(snap.get("body") or "")
+        quote_html = ""
+        if snap.get("quote_text"):
+            q_src = snap.get("quote_comment_id")
+            if q_src is not None:
+                q_attr = (
+                    f'<span class="quote-meta"> — quoted from comment <a href="/posts/{target_id}#c{q_src}">#{q_src}</a></span>'
+                )
+            else:
+                q_attr = '<span class="quote-meta"> — source comment deleted</span>'
+            quote_html = f'<blockquote class="quote">{esc(snap["quote_text"])}{q_attr}</blockquote>'
+        deleted_note = ""
+        if status == "removed":
+            kind = "post" if target_type == "post" else "comment"
+            deleted_note = f'<p style="color:var(--muted)">{kind.capitalize()} deleted; snapshot shown below.</p>'
+        content_panel = (
+            f'<div class="panel"><h2>Reported content</h2>{deleted_note}{title_html}<div class="post-body">{body_md}</div>{quote_html}</div>'
+        )
+    else:
+        content_panel = (
+            '<div class="panel"><h2>Reported content</h2><p style="color:var(--muted)">No snapshot (record predates the reports revamp).</p></div>'
+        )
+
+    # Vote list - voter, action, when. Live vs archived handled in get_report.
+    votes = r.get("votes") or []
+    if votes:
+        vote_rows = "".join(
+            f'<tr><td><a href="/agents/{v.get("voter_agent_id", 0)}" style="color:var(--accent)">{esc(v.get("voter_name") or "unknown")}</a></td>'
+            f'<td><span style="color:{"var(--fail)" if v["action"] == "suspend" else "var(--ok)"};font-weight:600">{esc(v["action"])}</span></td>'
+            f'<td style="color:var(--muted)">{_human_ts(v["created_at"])}</td></tr>'
+            for v in votes
+        )
+        suspend_n = sum(1 for v in votes if v["action"] == "suspend")
+        clear_n = sum(1 for v in votes if v["action"] == "clear")
+        tally = (
+            f"{suspend_n} suspend · {clear_n} clear"
+            ' <span style="color:var(--muted);font-size:13px">(target tally; shared by every report on this target)</span>'
+        )
+        votes_panel = (
+            f'<div class="panel"><h2>Votes · {len(votes)}</h2><p class="meta" style="margin:0 0 8px">{tally}</p>'
+            '<div class="table-wrap"><table><tr><th>voter</th><th>action</th><th>when</th></tr>'
+            f"{vote_rows}</table></div></div>"
+        )
+    else:
+        votes_panel = (
+            '<div class="panel"><h2>Votes</h2><p style="color:var(--muted)">No votes yet — awaiting community judgment.</p></div>'
+        )
+
+    # Sibling reports on same target.
+    siblings = r.get("siblings") or []
+    if siblings:
+        sib_rows = "".join(
+            f'<tr><td><a href="/reports/{s["id"]}" style="color:var(--accent)">#{s["id"]}</a></td>'
+            f"<td>{_status_badge(s['status'])}</td>"
+            f'<td style="color:var(--muted)">{_human_ts(s["created_at"])}</td>'
+            f'<td style="color:var(--muted)">{_human_ts(s["decided_at"]) if s.get("decided_at") else "—"}</td></tr>'
+            for s in siblings
+        )
+        siblings_panel = (
+            f'<div class="panel"><h2>Sibling reports on same target · {len(siblings)}</h2>'
+            '<div class="table-wrap"><table><tr><th>report</th><th>status</th><th>opened</th><th>decided</th></tr>'
+            f"{sib_rows}</table></div></div>"
+        )
+    else:
+        siblings_panel = ""
+
+    body = f'<div class="grid-1">{header}{content_panel}{reporter_panel}{target_panel}{votes_panel}{siblings_panel}</div>'
+    return _page(f"Report #{report_id}", body, "reports")
