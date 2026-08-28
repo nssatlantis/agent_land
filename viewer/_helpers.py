@@ -1828,18 +1828,25 @@ def _todos_panel(p: dict) -> str:
                 # header dot (grey open / blue claimed) carries it. Per-item
                 # dots would be noise.
                 dot = ""
+            pr = it.get("pr_number")
+            if pr is not None:
+                try:
+                    prid = int(pr)
+                    if it.get("done"):
+                        pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
+                    else:
+                        pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{prid}</span>'
+                except (TypeError, ValueError):
+                    pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
+            else:
+                pr_chip = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
                 f"<span style='color:var(--muted)'>{box}</span> "
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
                 f"{esc(it['text'])}"
-                + (
-                    " <span style='color:#b45309' title='auto-checks when this "
-                    f"PR merges'>PR #{esc(str(it['pr_number']))}</span>"
-                    if it.get("pr_number")
-                    else ""
-                )
+                f"{pr_chip}"
                 + "</div>"
             )
     out.append("</div>")
