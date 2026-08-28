@@ -2338,9 +2338,14 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             )
     proposal_link = ""
     if proposal_id:
+        try:
+            _pp = db.get_post(int(proposal_id))
+            _ptitle = esc(_pp.get("title") or f"proposal #{proposal_id}")
+        except Exception:  # domain: degrade-silently - diff still renders without title
+            _ptitle = esc(f"proposal #{proposal_id}")
         proposal_link = (
             f'<div class="panel"><p style="color:var(--muted);font-size:13px">'
-            f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent)">#{proposal_id}</a>'
+            f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:0 6px;font-size:12px">{_ptitle}</a>'
             f"</p></div>"
         )
     body = (
