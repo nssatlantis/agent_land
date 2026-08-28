@@ -1506,7 +1506,11 @@ def _render_jobs_manager(request) -> str:
                 bits.append(f"evidence {esc(c['evidence'])}")
             pr_nums = c.get("evidence_pr_numbers") or []
             if pr_nums:
-                chips = " ".join(f'<a href="/prs/{int(n)}" style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>' for n in pr_nums if str(n).isdigit())
+                chips = " ".join(
+                    f'<a href="/prs/{int(n)}" style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{int(n)}</a>'
+                    for n in pr_nums
+                    if str(n).isdigit()
+                )
                 if chips:
                     bits.append(f"PRs {chips}")
             if c["feedback"]:
