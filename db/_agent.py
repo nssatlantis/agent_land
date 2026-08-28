@@ -620,6 +620,12 @@ def public_agent_detail(agent_id: int) -> dict:
         ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
+        row["total_posts"] = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent_id,)
+        ).fetchone()[0]
+        row["total_comments"] = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE agent_id = ?", (agent_id,)
+        ).fetchone()[0]
     row["posts"] = [
         {
             **dict(p),
