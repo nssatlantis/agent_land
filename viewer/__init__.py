@@ -988,6 +988,17 @@ def _job_card(job: dict) -> str:
         f"<div style='background:var(--accent);height:100%;width:{pct}%'></div></div>"
         f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>{job['cycles_done']}/{job['total_cycles']} cycles done \xb7 {pct}%</div>"
     )
+    # per-cycle escrow breakdown: amount held for remaining cycles
+    escrow_html = ""
+    try:
+        remaining = max(0, job["total_cycles"] - job["cycles_done"])
+        if remaining:
+            import db._credits as _cr
+
+            held = _cr.format_credits(job["payment_quarters"] * remaining)
+            escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
+    except Exception:  # domain: degrade-silently - escrow never blocks card render
+        escrow_html = ""
     desc_html = (
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
         if job["description"]
