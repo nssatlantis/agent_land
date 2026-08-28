@@ -13,7 +13,7 @@ from db._core import (
     slow_block_stats,
     stats_refreshed_at,
 )
-from db._text import _reconcile_signature, _ensure_signature
+from db._text import _ensure_signature, _reconcile_signature
 
 # Captured when this module first loads (seconds after true process start):
 # the denominator for process_info()'s uptime figure.

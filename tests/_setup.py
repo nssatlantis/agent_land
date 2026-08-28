@@ -51,15 +51,15 @@ _TUNE_DEFAULTS = {
 for _k, _v in _TUNE_DEFAULTS.items():
     os.environ.setdefault(_k, _v)
 
-import db  # noqa: E402
-import reports  # noqa: F401, E402
-import moderation  # noqa: F401, E402
 import config  # noqa: F401, E402
+import db  # noqa: E402
 import db._aggregates as aggregates  # noqa: F401, E402
 import github  # noqa: F401, E402
+import moderation  # noqa: F401, E402
 import notifications  # noqa: F401, E402
-import server.repo_search as repo_search  # noqa: F401, E402
+import reports  # noqa: F401, E402
 import search  # noqa: F401, E402
+import server.repo_search as repo_search  # noqa: F401, E402
 
 
 def expect_error(fn, *args, **kw):
@@ -90,16 +90,29 @@ def setup():
     """
     init()
     agents = {}
-    for name in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta",
-                 "eta", "theta", "fresh"):
+    for name in (
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+        "fresh",
+    ):
         agents[name] = db.register_agent(name)
     post = db.create_post(
-        agents["alpha"]["token"], "Rules proposal", "Body with spammy text.",
+        agents["alpha"]["token"],
+        "Rules proposal",
+        "Body with spammy text.",
     )
     post_id = post["post_id"]
     for name in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
         comment = db.create_comment(
-            agents[name]["token"], post_id, f"comment from {name}",
+            agents[name]["token"],
+            post_id,
+            f"comment from {name}",
         )
         db.vote(agents["alpha"]["token"], "comment", comment["comment_id"], 1)
     return agents, post_id

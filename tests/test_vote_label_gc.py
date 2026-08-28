@@ -7,6 +7,7 @@ that one PR - so definitions accumulate forever unless swept.  server.poller
 currently references.  These tests drive the sweep with injected github
 helpers (no GitHub calls), and unit-test the delete-label URL encoding.
 """
+
 import os
 import sys
 import tempfile
@@ -60,6 +61,7 @@ def _patch(**attrs):
         finally:
             for k, v in saved.items():
                 setattr(github, k, v)
+
     return _ctx()
 
 
@@ -68,10 +70,10 @@ def test_sweep_deletes_only_orphaned_votes_labels():
     open PR is kept; a non-votes label is never touched."""
     labeller = _FakeLabeller(
         definitions=[
-            "votes: [+1 | -0]",   # orphan - will be deleted
-            "votes: [+2 | -0]",   # on an open PR - kept
-            "votes: [+1 | -2]",   # orphan - will be deleted
-            "proposal-hold",      # not a votes label - never touched
+            "votes: [+1 | -0]",  # orphan - will be deleted
+            "votes: [+2 | -0]",  # on an open PR - kept
+            "votes: [+1 | -2]",  # orphan - will be deleted
+            "proposal-hold",  # not a votes label - never touched
             "ci: passing",
         ],
         open_labels=["votes: [+2 | -0]", "proposal-hold"],
@@ -83,8 +85,9 @@ def test_sweep_deletes_only_orphaned_votes_labels():
     ):
         deleted = _sweep_orphan_vote_labels()
 
-    assert sorted(deleted) == sorted(["votes: [+1 | -0]", "votes: [+1 | -2]"]), \
+    assert sorted(deleted) == sorted(["votes: [+1 | -0]", "votes: [+1 | -2]"]), (
         f"unexpected deleted set: {deleted}"
+    )
     assert sorted(labeller.deleted) == sorted(
         ["votes: [+1 | -0]", "votes: [+1 | -2]"]
     ), "wrong definitions deleted"
@@ -100,8 +103,8 @@ def test_sweep_filters_by_prefix_and_suffix():
         definitions=[
             "votes: [+0 | -0]",
             "votes: [+5 | -0]",
-            "votesomething",       # prefix-like but not a votes label
-            "votes:[+1|-0]",       # missing spaces - not a match
+            "votesomething",  # prefix-like but not a votes label
+            "votes:[+1|-0]",  # missing spaces - not a match
         ],
         open_labels=set(),
     )
@@ -112,8 +115,9 @@ def test_sweep_filters_by_prefix_and_suffix():
     ):
         deleted = _sweep_orphan_vote_labels()
 
-    assert sorted(deleted) == sorted(["votes: [+0 | -0]", "votes: [+5 | -0]"]), \
+    assert sorted(deleted) == sorted(["votes: [+0 | -0]", "votes: [+5 | -0]"]), (
         f"expected only the two well-formed votes labels, got: {deleted}"
+    )
     print("  sweep filters by votes: [ ] shape: ok")
 
 
@@ -146,6 +150,7 @@ def test_sweep_no_orphans_does_nothing():
 def test_sweep_survives_github_failure():
     """A failed repo-label list still runs (returns []); a failed open-PR
     label fetch skips deletion so live labels are never at risk."""
+
     def boom():
         raise RuntimeError("github down")
 
@@ -191,8 +196,9 @@ def test_delete_pr_label_definition_encodes_url():
     assert captured["method"] == "DELETE", captured
     label = "votes: [+3 | -1]"
     assert urllib.parse.quote(label, safe="") in captured["path"], captured["path"]
-    assert "labels/" + urllib.parse.quote(label, safe="") == captured["path"], \
-        captured["path"]
+    assert "labels/" + urllib.parse.quote(label, safe="") == captured["path"], captured[
+        "path"
+    ]
     assert captured["ok_404"] is True, "missing definition should not raise"
     print("  delete_pr_label_definition URL encoding: ok")
 
@@ -209,11 +215,13 @@ def test_maybe_gc_vote_labels_is_time_gated():
 
     real_sweep = poller._sweep_orphan_vote_labels
     poller._sweep_orphan_vote_labels = fake_sweep
-    interval = (poller.config.PR_MERGE_POLL_SECONDS or 300) * poller._VOTE_LABEL_GC_MULTIPLIER
+    interval = (
+        poller.config.PR_MERGE_POLL_SECONDS or 300
+    ) * poller._VOTE_LABEL_GC_MULTIPLIER
     poller._last_vote_label_gc = time.monotonic() - interval
     try:
         poller._maybe_gc_vote_labels()
-        poller._maybe_gc_vote_labels()   # still inside the window -> no-op
+        poller._maybe_gc_vote_labels()  # still inside the window -> no-op
         assert len(calls) == 1, f"sweep ran {len(calls)} times, expected 1"
     finally:
         poller._sweep_orphan_vote_labels = real_sweep
