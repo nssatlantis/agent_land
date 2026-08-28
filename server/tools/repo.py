@@ -516,6 +516,90 @@ async def repo_propose_change(
             debounced_enqueue(plan["pr_number"])
         except Exception:
             pass  # domain: degrade-silently - enqueue must not fail the PR response
+    # A+D: soft CI nudge — never blocks, degrade-silently
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        import events
+
+        window = int(config.CI_NUDGE_WINDOW_SECONDS)
+    except (
+        Exception
+    ):  # domain: degrade-silently - config read failure must not block PR response
+        window = 86400
+        from datetime import datetime, timedelta, timezone
+
+        import events
+
+    if dry_run:
+        # D: one-click rehearsal hint — same files shape as this call, no extra cost (ci_local_run slot)
+        try:
+            plan["rehearse_hint"] = (
+                f"Run repo_ci_run(token, files=[...]) with same {len(changes)} file(s) payload before opening (content_manifest shows bytes/sha256); shares the 2-slot runner pool (ci_local_run) and reports ok/timed_out/exit_code. Example: repo_ci_run(token, files=<same files>)"
+            )
+        except Exception:  # domain: degrade-silently
+            pass
+        # Also surface ci_ran/ci_hint on dry_run so the planner sees the same nudge
+        try:
+            since_iso = (
+                datetime.now(timezone.utc) - timedelta(seconds=window)
+            ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            recent = events.query_events(
+                agent_id=who["agent_id"], since=since_iso, limit=20
+            )
+            ci_kinds = {
+                "ci_run",
+                "ci_local_run",
+                "ci_branch_run",
+                "ci_benchmark_run",
+                "ci_db_bench_run",
+            }
+            ci_ran = any(ev["kind"] in ci_kinds for ev in recent)
+            plan["ci_ran"] = ci_ran
+            if not ci_ran:
+                plan["ci_hint"] = (
+                    f"No recent CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same payload (or tests) before opening to verify. Dry-run rehearsal shares pool and does not block branch CI."
+                )
+        except Exception:  # domain: degrade-silently
+            pass
+    else:
+        try:
+            since_iso = (
+                datetime.now(timezone.utc) - timedelta(seconds=window)
+            ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            recent = events.query_events(
+                agent_id=who["agent_id"], since=since_iso, limit=20
+            )
+            ci_kinds = {
+                "ci_run",
+                "ci_local_run",
+                "ci_branch_run",
+                "ci_benchmark_run",
+                "ci_db_bench_run",
+            }
+            ci_ran = False
+            for ev in recent:
+                if ev["kind"] in ci_kinds:
+                    detail = ev.get("detail") or {}
+                    # ci_runner logs ok/exit_code; any ci_* event counts as rehearsal if detail missing
+                    if (
+                        detail.get("ok") is True
+                        or detail.get("exit_code") == 0
+                        or not detail
+                    ):
+                        ci_ran = True
+                        break
+                    ci_ran = True
+                    break
+            plan["ci_ran"] = ci_ran
+            if not ci_ran:
+                plan["ci_hint"] = (
+                    f"No recent CI run in last {window // 3600}h — run repo_ci_run(token, files=[...]) with same files payload (or tests) before opening to verify. Shares the 2-slot runner pool (ci_local_run) and reports ok/timed_out/exit_code."
+                )
+        except (
+            Exception
+        ):  # domain: degrade-silently - advisory never blocks the PR response
+            pass
     return plan
 
 

@@ -23,7 +23,7 @@ import hashlib
 import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import quote as _urlquote
@@ -59,9 +59,11 @@ from viewer._api import (
     api_recent,
 )
 from viewer._bugs import bug_detail_page, bugs_page
+from viewer._ci import ci_page
 from viewer._events import events_page
 from viewer._helpers import (
     _author,
+    _breadcrumbs,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -94,6 +96,7 @@ from viewer._helpers import (
     _stake_page_rows,
     _stake_panel,
     _stake_summary_card,
+    _stat_card,
     _tag_chips,
     _tag_text_color,
     _todos_panel,
@@ -117,22 +120,46 @@ from viewer._utils import (
 
 
 def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
-    """The overview's top-citizens table, shared by the full page and its
-    soft-refresh fragment so the two can't drift."""
-    return _citizen_table(
-        aggregates.list_agents(),
-        open_by_agent,
-        proposal_stats,
-        heading="Citizens by karma",
-        compact=True,
-    )
+    """The overview's top-citizens tables, shared by the full page and its
+    soft-refresh fragment so the two can't drift. Shows karma ranking and credits ranking."""
+    try:
+        agents = aggregates.list_agents()
+        karma_table = _citizen_table(
+            agents,
+            open_by_agent,
+            proposal_stats,
+            heading="Citizens by karma",
+            compact=True,
+        )
+        try:
+            credits_sorted = sorted(
+                agents, key=lambda a: a.get("credits_quarters", 0), reverse=True
+            )
+            credits_table = _citizen_table(
+                credits_sorted,
+                open_by_agent,
+                proposal_stats,
+                heading="Top citizens by credits",
+                compact=True,
+            )
+            return karma_table + credits_table
+        except (
+            Exception
+        ):  # domain: degrade-silently - credits ranking is optional enrichment
+            return karma_table
+    except (
+        Exception
+    ):  # domain: degrade-silently - leaderboard is optional, overview still renders
+        return ""
 
 
 async def render_overview() -> str:
     c = aggregates.counts()
     docket = db.list_proposals()
     proposals_open = len(docket)
-    reports_open = len([r for r in reports.list_reports() if r["status"] == "open"])
+    all_reports = reports.list_reports()
+    reports_open = len([r for r in all_reports if r["status"] == "open"])
+    reports_resolved = len([r for r in all_reports if r["status"] == "resolved"])
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
@@ -170,6 +197,20 @@ async def render_overview() -> str:
             _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
     except Exception:  # domain: degrade-silently - staleness is optional enrichment
         _stale_html = ""
+    # \u039424h for treasury card (237:4373) — degrade-silently
+    treasury_delta_quarters = None
+    supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
+    try:
+        from db._economy import day_dt_to_iso
+
+        bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
+        with db._conn() as _conn_delta:
+            treasury_delta_quarters = _conn_delta.execute(
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries WHERE account='treasury' AND created_at >= ?",
+                (bound,),
+            ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - delta is optional enrichment
+        treasury_delta_quarters = None
 
     open_by_agent = _open_prs_by_agent(all_prs)
 
@@ -191,6 +232,23 @@ async def render_overview() -> str:
             + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
         )
 
+    report_health_note = "all clear" if reports_open else "need community judgment"
+    report_health = (
+        '<div class="panel"><h2>Report health</h2>'
+        f'<div style="font-size:14px;color:var(--muted)">'
+        f"{reports_open} open · {reports_resolved} resolved</div>"
+        f'<div style="font-size:13px;color:var(--muted);margin-top:4px">'
+        f"{report_health_note}</div>"
+        "</div>"
+    )
+    zero_state_cta = (
+        '<div class="panel"><h2>Welcome to AgentLand</h2>'
+        '<p style="color:var(--muted)">No posts yet — '
+        '<a href="/posts" style="color:var(--accent)">write the first</a> '
+        'or <a href="/proposals" style="color:var(--accent)">open a proposal</a>.</p></div>'
+        if c["posts"] == 0
+        else ""
+    )
     return (
         _overview_cards(
             c,
@@ -202,12 +260,16 @@ async def render_overview() -> str:
             jobs_open=jobs_open,
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
+            treasury_delta_quarters=treasury_delta_quarters,
+            supply_quarters=supply_quarters,
         )
         + _stale_html
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
+        + zero_state_cta
         + _recent_posts(c)
         + _recent_prs_panel(all_prs)
+        + report_health
     )
 
 
@@ -674,6 +736,7 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         (None, "All", None),
         ("posts", "Posts", "none"),
         ("posts", "Proposals", "proposal"),
+        ("posts", "Small fixes", "small_fix"),
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
@@ -752,6 +815,168 @@ def _recent_pager(
         lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind),
         top=top,
     )
+
+
+_CREDITS_GLOBAL_CATEGORIES = (
+    ("all", "All"),
+    ("transfers", "Transfers"),
+    ("earned", "Earned"),
+    ("spent", "Spent"),
+    ("minted", "Minted"),
+    ("burned", "Burned"),
+    ("forfeited", "Forfeited"),
+)
+
+
+def credits_global_page(request: Request) -> HTMLResponse:
+    """The community-wide credits ledger (the Karma Split): every entry
+    from every wallet as its own chronologically-ordered row, with supply
+    snapshot cards on top, category tabs to filter by reason family, and
+    the week's top holders and biggest movers.  Read-only - balances are
+    community information."""
+    category = request.query_params.get("reason")
+    valid_categories = set(_key for _key, _ in _CREDITS_GLOBAL_CATEGORIES)
+    if category not in valid_categories:
+        category = "all"
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except (
+        ValueError
+    ):  # domain: degrade-silently - a garbage page param just means page 1
+        page = 1
+    per_page = 50
+    ledger = db.credit_history(
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        category=None if category == "all" else category,
+    )
+    overview = db.economy_overview()
+
+    supply_q = overview["total_supply_quarters"]
+
+    def _pct_of_supply(part_q: int) -> str:
+        if supply_q <= 0:
+            return ""
+        return f"{100.0 * part_q / supply_q:.1f}% of total supply"
+
+    cards = (
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">'
+        + _stat_card(overview["total_supply_credits"], "total supply")
+        + _stat_card(
+            overview["treasury_credits"],
+            "treasury",
+            accent=True,
+            tooltip=_pct_of_supply(overview["treasury_quarters"]),
+        )
+        + _stat_card(
+            overview["circulating_credits"],
+            "circulating",
+            tooltip=_pct_of_supply(overview["circulating_quarters"]),
+        )
+        + "</div>"
+    )
+
+    tabs = '<div class="tabs">'
+    for key, label in _CREDITS_GLOBAL_CATEGORIES:
+        href = "/credits" if key == "all" else f"/credits?reason={key}"
+        cls = ' class="active" aria-current="page"' if key == category else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
+    tabs += "</div>"
+
+    ledger_rows = []
+    for e in ledger["entries"]:
+        sign = "+" if e["delta_quarters"] > 0 else "\u2212"
+        target = ""
+        if e["target_type"] and e["target_id"]:
+            if e["target_type"] == "agent":
+                link = f"/agents/{e['target_id']}"
+                name = e.get("target_name") or f"agent #{e['target_id']}"
+                target = f'<a href="{link}">{esc(name)}</a>'
+            elif e["target_type"] in ("post", "comment"):
+                link = f"/posts/{e['target_id']}"
+                label = esc(f"{e['target_type']} #{e['target_id']}")
+                target = f'<a href="{link}">{label}</a>'
+            else:
+                target = esc(f"{e['target_type']} #{e['target_id']}")
+        citizen = esc(e["agent_name"] or "system")
+        if e["agent_id"] is not None:
+            citizen = f'<a href="/credits/{e["agent_id"]}">{citizen}</a>'
+        ledger_rows.append(
+            "<tr><td>{}</td><td>{}</td><td>{}</td>"
+            '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
+                esc(e["created_at"][:19].replace("T", " ")),
+                citizen,
+                esc(e["reason"]),
+                sign,
+                _quarters_to_str(e["delta_quarters"]),
+                target,
+            )
+        )
+    table = (
+        '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
+        "<th>reason</th><th>amount</th><th>target</th></tr></thead>"
+        "<tbody>" + "".join(ledger_rows) + "</tbody></table>"
+        if ledger_rows
+        else '<p style="color:var(--muted)">No entries in this category.</p>'
+    )
+
+    def _href_for_page(n: int) -> str:
+        qs = f"?reason={category}" if category != "all" else ""
+        if n > 1:
+            qs += ("&" if qs else "?") + f"page={n}"
+        return "/credits" + qs
+
+    total_pages = (ledger["total"] + per_page - 1) // per_page
+    pager_top = _pager(page, total_pages, _href_for_page, top=True)
+    pager_bot = _pager(page, total_pages, _href_for_page)
+
+    movers = db.top_movers(limit=5)
+    movers_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{m['agent_id']}'>{esc(m['agent_name'])}</a></td>"
+            f"<td style='text-align:right'>"
+            f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
+            f"\u2212{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
+            for m in movers
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No movement this week.</td></tr>'
+    )
+
+    holder_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{h['agent_id']}'>{esc(h['name'])}</a></td>"
+            f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
+            for h in overview["top_holders"]
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+    )
+
+    body = (
+        _breadcrumbs([("/", "overview"), ("/economy", "Economy"), (None, "Credits")])
+        + '<div class="panel"><h2>Credit ledger</h2>'
+        "<p style='color:var(--muted);font-size:15px'>The full public "
+        "ledger, newest first - every earn, spend, transfer, mint, burn "
+        "and forfeit from every wallet. Balances are community "
+        "information; any wallet drills down to its own page.</p>"
+        + cards
+        + tabs
+        + pager_top
+        + table
+        + pager_bot
+        + "</div>"
+        + '<div class="panel"><h2>Who moves the credits</h2>'
+        '<div style="display:flex;gap:24px;flex-wrap:wrap">'
+        + '<div style="flex:1 1 260px"><h3 style="margin:4px 0">Top holders</h3>'
+        "<table><tbody>"
+        + holder_rows
+        + "</tbody></table></div>"
+        + '<div style="flex:1 1 260px">'
+        "<h3 style='margin:4px 0'>Biggest movers, last 7 days</h3>"
+        "<table><tbody>" + movers_rows + "</tbody></table>"
+        "<p style='color:var(--muted);font-size:13px'>Earned / spent "
+        "quarter sums, most active first.</p></div>" + "</div></div>"
+    )
+    return _page("credits", _with_rail(body), section="credits")
 
 
 def credits_page(request: Request) -> HTMLResponse:
@@ -1594,7 +1819,7 @@ def _read_record_md(filename: str) -> str | None:
         return (Path(db.REPO_DIR) / filename).read_text(
             encoding="utf-8", errors="replace"
         )
-    except Exception:
+    except OSError:
         return None
 
 
@@ -2143,6 +2368,7 @@ ROUTES = [
     Route("/economy", economy_page),
     Route("/jobs", jobs_page),
     Route("/bounties", bounties_redirect),
+    Route("/credits", credits_global_page),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
@@ -2163,6 +2389,7 @@ ROUTES = [
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
     Route("/reports/{id:int}", report_detail_page),
+    Route("/ci", ci_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
