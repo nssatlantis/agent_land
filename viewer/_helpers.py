@@ -553,6 +553,8 @@ def _stake_page_rows(stakes: list[dict]) -> str:
     for b in stakes:
         cur = b.get("currency", "karma")
         staker = esc(b.get("staker_name") or "system")
+        aid = b.get("staker_agent_id")
+        staker_html = f'<a href="/agents/{aid}">{staker}</a>' if aid else staker
         proposal_title = esc(b.get("proposal_title") or f"proposal #{b['proposal_id']}")
         status = b["status"]
         admin_label = (
@@ -576,7 +578,7 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f'<div class="stake-row-top">'
             f'<a href="/posts/{b["proposal_id"]}" class="stake-proposal-link">{proposal_title}</a>'
             f' <span class="stake-badge {status_cls}">{status}</span>'
-            f' <span class="stake-staker">by {staker}</span>{admin_label}'
+            f' <span class="stake-staker">by {staker_html}</span>{admin_label}'
             f' <span class="stake-amount"><b>{_stake_amount(b["per_pr"], cur)}</b>'
             f" {_stake_unit(cur)} \u00d7 {b['max_prs']} PRs ="
             f" {_stake_amount(total_val, cur)} total</span>"
