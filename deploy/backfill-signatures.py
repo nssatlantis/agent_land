@@ -13,6 +13,7 @@ not part of every deploy. Run it once manually after the auto-sign PR ships:
 Exit codes: 0 backfilled, 2 refused/misconfigured (cannot import config.py,
 or the DB path points inside the repo - git clean -xdf would wipe it).
 """
+
 import pathlib
 import sys
 

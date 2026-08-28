@@ -122,7 +122,7 @@ def test_no_db_handle_escapes_its_with_block():
         path = os.path.join(_ROOT, mod)
         if not os.path.exists(path):
             continue
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), filename=mod)
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

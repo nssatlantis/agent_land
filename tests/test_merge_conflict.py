@@ -1,5 +1,6 @@
 """Test merge-conflict helpers: _parse_conflict_markers, _has_conflict_markers,
 _safe_path, _repo_url, _push_ref (PR #184)."""
+
 import os
 import subprocess
 import sys
@@ -14,8 +15,6 @@ if str(_REPO) not in sys.path:
 os.environ.setdefault("GITHUB_REPO", "nssatlantis/agent_land")
 os.environ.setdefault("GITHUB_TOKEN", "")
 
-from tests._setup import github  # noqa: E402
-
 from github import (  # noqa: E402
     _has_conflict_markers,
     _parse_conflict_markers,
@@ -23,9 +22,10 @@ from github import (  # noqa: E402
     _repo_url,
     _safe_path,
 )
-
+from tests._setup import github  # noqa: E402
 
 # ---- _parse_conflict_markers ---------------------------------------------
+
 
 def test_parse_no_markers():
     text = "just a normal file\nno conflicts here\n"
@@ -82,14 +82,7 @@ def test_parse_multiple_conflicts():
 
 def test_parse_multiline_ours_theirs():
     text = (
-        "<<<<<<< HEAD\n"
-        "line A\n"
-        "line B\n"
-        "line C\n"
-        "=======\n"
-        "line X\n"
-        "line Y\n"
-        ">>>>>>> main\n"
+        "<<<<<<< HEAD\nline A\nline B\nline C\n=======\nline X\nline Y\n>>>>>>> main\n"
     )
     regions = _parse_conflict_markers(text)
     assert len(regions) == 1
@@ -98,11 +91,7 @@ def test_parse_multiline_ours_theirs():
 
 
 def test_parse_empty_conflict():
-    text = (
-        "<<<<<<< HEAD\n"
-        "=======\n"
-        ">>>>>>> main\n"
-    )
+    text = "<<<<<<< HEAD\n=======\n>>>>>>> main\n"
     regions = _parse_conflict_markers(text)
     assert len(regions) == 1
     assert regions[0]["ours"] == ""
@@ -151,13 +140,17 @@ def test_parse_unmatched_markers():
 
 # ---- _has_conflict_markers -----------------------------------------------
 
+
 def test_has_markers_true():
     assert _has_conflict_markers("<<<<<<< HEAD") is True
     assert _has_conflict_markers("=======\n") is True
     assert _has_conflict_markers(">>>>>>> main") is True
-    assert _has_conflict_markers(
-        "normal\n<<<<<<< HEAD\n ours\n=======\n theirs\n>>>>>>> main\n"
-    ) is True
+    assert (
+        _has_conflict_markers(
+            "normal\n<<<<<<< HEAD\n ours\n=======\n theirs\n>>>>>>> main\n"
+        )
+        is True
+    )
 
 
 def test_has_markers_false():
@@ -167,6 +160,7 @@ def test_has_markers_false():
 
 
 # ---- _safe_path -----------------------------------------------------------
+
 
 def test_safe_path_normal():
     with tempfile.TemporaryDirectory() as tmp:
@@ -210,6 +204,7 @@ def test_safe_path_accepts_root_dir():
 
 # ---- _repo_url ------------------------------------------------------------
 
+
 def test_repo_url_without_token():
     url = _repo_url(with_token=False)
     assert url == "https://github.com/nssatlantis/agent_land.git"
@@ -239,6 +234,7 @@ def test_repo_url_with_special_chars_in_token():
 
 # ---- _push_ref ------------------------------------------------------------
 
+
 def test_push_ref():
     assert _push_ref("feature-branch") == "HEAD:feature-branch"
     assert _push_ref("main") == "HEAD:main"
@@ -249,7 +245,10 @@ def test_push_ref():
 
 def _fake_completed(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=stderr,
+        args=[],
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
     )
 
 
@@ -398,7 +397,10 @@ def test_resolve_partial_coverage_rejected():
     ):
         try:
             github.apply_merge_resolutions(
-                42, resolutions, "test-citizen", _pr=pr_data,
+                42,
+                resolutions,
+                "test-citizen",
+                _pr=pr_data,
             )
             assert False, "should have raised RepoError"
         except github.RepoError as e:
@@ -465,7 +467,10 @@ def test_resolve_success():
         patch("github._core._invalidate_pr"),
     ):
         result = github.apply_merge_resolutions(
-            42, resolutions, "test-citizen", _pr=pr_data,
+            42,
+            resolutions,
+            "test-citizen",
+            _pr=pr_data,
         )
     assert result["status"] == "resolved", result
     assert result["commit_sha"] == "abc123"
@@ -474,8 +479,7 @@ def test_resolve_success():
     commit_calls = [a for a in seen if "commit" in a]
     assert commit_calls, "no commit invocation captured"
     assert all(
-        "user.name=test-citizen" in a
-        and "user.email=test-citizen@agentland.dev" in a
+        "user.name=test-citizen" in a and "user.email=test-citizen@agentland.dev" in a
         for a in commit_calls
     ), commit_calls
 
@@ -495,8 +499,13 @@ def test_git_timeout_scrubs_token():
 
             with patch("subprocess.run", side_effect=fake_run):
                 try:
-                    github._gitops._git(tmp, "remote", "set-url", "origin",
-                                "https://x-access-token:ghp_secret123@github.com/x/y.git")
+                    github._gitops._git(
+                        tmp,
+                        "remote",
+                        "set-url",
+                        "origin",
+                        "https://x-access-token:ghp_secret123@github.com/x/y.git",
+                    )
                     assert False, "should have raised"
                 except github.RepoError as e:
                     msg = str(e)
@@ -508,6 +517,7 @@ def test_git_timeout_scrubs_token():
 
 
 # ---- runner ---------------------------------------------------------------
+
 
 def main():
     test_parse_no_markers()

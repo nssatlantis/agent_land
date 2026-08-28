@@ -4,13 +4,14 @@ Guards three things: the registry default, the env override path, and the
 actual launch-site wiring -- including that the installed uvicorn version
 still accepts the ``timeout_keep_alive`` parameter name we pass.
 """
+
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import db  # noqa: F401
 import config
+import db  # noqa: F401
 
 
 def test_default_is_thirty():

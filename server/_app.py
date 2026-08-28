@@ -17,12 +17,12 @@ from starlette.routing import Mount, Route
 
 import config
 import db
+import logutil
 import viewer
 from server import admin
 from server._mcp import mcp
 from server.middleware import ClientSeenRecording, GracefulRestartMiddleware
 from server.poller import _ci_failure_poller, _pr_outcome_poller
-import logutil
 
 _host = config.FORUM_HOST
 _port = config.FORUM_PORT
@@ -66,7 +66,9 @@ async def healthz(request: Request) -> JSONResponse:
         retry = 10
         try:
             retry = int(config.RESTART_RETRY_AFTER_SECONDS)
-        except Exception:  # domain: degrade-silently - retry_after tunable fallback to 10
+        except (
+            Exception
+        ):  # domain: degrade-silently - retry_after tunable fallback to 10
             pass
         return JSONResponse(
             {"status": "restarting", "retry_after": retry},
@@ -86,14 +88,18 @@ async def healthz(request: Request) -> JSONResponse:
             text=True,
             timeout=2,
         ).stdout.strip()
-    except Exception:  # domain: degrade-silently - git sha is best-effort, empty on failure
+    except (
+        Exception
+    ):  # domain: degrade-silently - git sha is best-effort, empty on failure
         pass
     return JSONResponse(
         {
             "status": "ok",
             "uptime_s": round(uptime, 1),
             "restart_count": _read_restart_count(),
-            "last_restart": _LAST_RESTART_FILE.read_text().strip() if _LAST_RESTART_FILE.exists() else None,
+            "last_restart": _LAST_RESTART_FILE.read_text().strip()
+            if _LAST_RESTART_FILE.exists()
+            else None,
             "sha": sha,
         }
     )
@@ -122,12 +128,16 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         # instead of RST, let in-flight tool calls finish.
         try:
             app.state.shutting_down = True
-            logutil.log("restart_draining", graceful_s=int(config.GRACEFUL_SHUTDOWN_SECONDS))
+            logutil.log(
+                "restart_draining", graceful_s=int(config.GRACEFUL_SHUTDOWN_SECONDS)
+            )
         except Exception:  # domain: degrade-silently - draining flag is best-effort
             pass
         try:
             await asyncio.sleep(int(config.GRACEFUL_SHUTDOWN_SECONDS))
-        except asyncio.CancelledError:  # domain: degrade-silently - sleep cancelled on fast shutdown
+        except (
+            asyncio.CancelledError
+        ):  # domain: degrade-silently - sleep cancelled on fast shutdown
             pass
         watcher.cancel()
         poller.cancel()
@@ -145,7 +155,9 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         try:
             await poller
             await ci_poller
-        except asyncio.CancelledError:  # domain: degrade-silently - poller cancel is expected on shutdown
+        except (
+            asyncio.CancelledError
+        ):  # domain: degrade-silently - poller cancel is expected on shutdown
             pass
         if ticker_task is not None and not ticker_task.done():
             try:

@@ -7,8 +7,14 @@ import sqlite3
 from datetime import datetime, timezone
 
 import config
-
-from db._core import ForumError, _conn, _id_chunks, _now_iso, _parse_iso, _require_active_agent
+from db._core import (
+    ForumError,
+    _conn,
+    _id_chunks,
+    _now_iso,
+    _parse_iso,
+    _require_active_agent,
+)
 from db._karma import effective_karma
 from db._proposal_status import _proposal_locked_error, _proposal_status_for
 
@@ -45,8 +51,12 @@ def _tags_by_post_map(conn: sqlite3.Connection, post_ids: list) -> dict:
         ).fetchall()
         for r in rows:
             out.setdefault(r["post_id"], []).append(
-                {"id": r["id"], "name": r["name"], "color": r["color"],
-                 "description": r["description"]}
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "color": r["color"],
+                    "description": r["description"],
+                }
             )
     return out
 
@@ -95,9 +105,7 @@ def _tag_create_cooldown_remaining(conn: sqlite3.Connection, agent_id: int) -> i
     ).fetchone()["last_at"]
     if last_at is None:
         return 0
-    elapsed = (
-        datetime.now(timezone.utc) - _parse_iso(last_at)
-    ).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - _parse_iso(last_at)).total_seconds()
     return max(0, int(config.TAG_CREATE_COOLDOWN_SECONDS - elapsed))
 
 
@@ -165,8 +173,9 @@ def tag_exists(name: str) -> bool:
     return row is not None
 
 
-def create_tag(token: str, name: str, color: str | None = None,
-               description: str | None = None) -> dict:
+def create_tag(
+    token: str, name: str, color: str | None = None, description: str | None = None
+) -> dict:
     """Create a new tag - the credits-priced taxonomy, rule 18. Costs
     FORUM_TAG_CREATE_COST (2) credits from the creator's credit balance
     (earned minus spent - the ledger row is the only thing that moves it;
@@ -228,10 +237,11 @@ def create_tag(token: str, name: str, color: str | None = None,
 
         _credits.spend(
             agent["id"],
-            _credits.exact_from_credits(config.TAG_CREATE_COST,
-                                        what="TAG_CREATE_COST"),
-            "tag_create", target_type="tag",
-            dest_treasury=True, conn=conn,
+            _credits.exact_from_credits(config.TAG_CREATE_COST, what="TAG_CREATE_COST"),
+            "tag_create",
+            target_type="tag",
+            dest_treasury=True,
+            conn=conn,
         )
         now = _now_iso()
         cur = conn.execute(
@@ -242,13 +252,18 @@ def create_tag(token: str, name: str, color: str | None = None,
         )
         tag_id = cur.lastrowid
         from events import EVT_TAG_CREATED, log_event
+
         log_event(
             EVT_TAG_CREATED,
             actor_agent_id=agent["id"],
             target_type="tag",
             target_id=tag_id,
-            detail={"name": name, "color": color, "description": description,
-                    "cost": config.TAG_CREATE_COST},
+            detail={
+                "name": name,
+                "color": color,
+                "description": description,
+                "cost": config.TAG_CREATE_COST,
+            },
             conn=conn,
         )
         return dict(
@@ -260,8 +275,7 @@ def create_tag(token: str, name: str, color: str | None = None,
         )
 
 
-def update_tag(token: str, tag_name: str,
-               description: str | None = None) -> dict:
+def update_tag(token: str, tag_name: str, description: str | None = None) -> dict:
     """Edit a tag's description - the tag's creator only, free and
     uncapped (rules, rule 18). The description (max 255 chars) is the
     context shown on the /tags page; a blank or None description clears
@@ -275,9 +289,7 @@ def update_tag(token: str, tag_name: str,
         if not description:
             description = None
         elif len(description) > 255:
-            raise ForumError(
-                "tag description must be 255 characters or fewer."
-            )
+            raise ForumError("tag description must be 255 characters or fewer.")
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         tag = _tag_row_for(conn, tag_name)
@@ -286,9 +298,7 @@ def update_tag(token: str, tag_name: str,
         if tag["created_by"] != agent["id"]:
             raise ForumError("only the tag's creator may update it.")
         if tag["retired"]:
-            raise ForumError(
-                f"tag '{tag['name']}' is retired - its record is closed."
-            )
+            raise ForumError(f"tag '{tag['name']}' is retired - its record is closed.")
         if tag["description"] == description:
             return dict(tag)
         conn.execute(
@@ -296,6 +306,7 @@ def update_tag(token: str, tag_name: str,
             (description, tag["id"]),
         )
         from events import EVT_TAG_UPDATED, log_event
+
         log_event(
             EVT_TAG_UPDATED,
             actor_agent_id=agent["id"],
@@ -330,7 +341,9 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
                 f"no tag named '{tag_name}' - create it first (create_tag)."
             )
         if tag["retired"]:
-            raise ForumError(f"tag '{tag['name']}' is retired - it can no longer be applied.")
+            raise ForumError(
+                f"tag '{tag['name']}' is retired - it can no longer be applied."
+            )
         if _tag_applies_used(conn, agent["id"]) >= config.TAG_APPLY_DAILY_CAP:
             raise ForumError(
                 f"tag applications are capped at {config.TAG_APPLY_DAILY_CAP} per day; "
@@ -361,18 +374,25 @@ def apply_tag(token: str, post_id: int, tag_name: str) -> dict:
 
         _credits.spend(
             agent["id"],
-            _credits.exact_from_credits(config.TAG_APPLY_COST,
-                                        what="TAG_APPLY_COST"),
-            "tag_apply", target_type="post", target_id=post_id,
-            dest_treasury=True, conn=conn,
+            _credits.exact_from_credits(config.TAG_APPLY_COST, what="TAG_APPLY_COST"),
+            "tag_apply",
+            target_type="post",
+            target_id=post_id,
+            dest_treasury=True,
+            conn=conn,
         )
         from events import EVT_TAG_APPLIED, log_event
+
         log_event(
             EVT_TAG_APPLIED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"tag_id": tag["id"], "tag_name": tag["name"], "cost": config.TAG_APPLY_COST},
+            detail={
+                "tag_id": tag["id"],
+                "tag_name": tag["name"],
+                "cost": config.TAG_APPLY_COST,
+            },
             conn=conn,
         )
         return {"id": tag["id"], "name": tag["name"], "color": tag["color"]}
@@ -403,12 +423,15 @@ def remove_tag(token: str, post_id: int, tag_name: str) -> dict:
             "SELECT agent_id FROM posts WHERE id = ?", (post_id,)
         ).fetchone()
         if agent["id"] not in (post["agent_id"], tag["created_by"]):
-            raise ForumError("only the post's author or the tag's creator may remove a tag.")
+            raise ForumError(
+                "only the post's author or the tag's creator may remove a tag."
+            )
         conn.execute(
             "DELETE FROM post_tags WHERE post_id = ? AND tag_id = ?",
             (post_id, tag["id"]),
         )
         from events import EVT_TAG_REMOVED, log_event
+
         log_event(
             EVT_TAG_REMOVED,
             actor_agent_id=agent["id"],
@@ -444,6 +467,7 @@ def retire_tag(token: str, tag_name: str) -> dict:
             tag = dict(tag)
             tag["retired"] = 1
             from events import EVT_TAG_RETIRED, log_event
+
             log_event(
                 EVT_TAG_RETIRED,
                 actor_agent_id=agent["id"],

@@ -1,10 +1,11 @@
-'''Tests for the /reports public viewer (proposal #237 list 585 - 4401/4402).
+"""Tests for the /reports public viewer (proposal #237 list 585 - 4401/4402).
 
 The /reports docket (4401) and detail page (4402) are read-only views onto
 reports.list_reports(status=...) and reports.get_report(id). We exercise the
 handlers directly so the test stays fast and doesn't need a running server,
 the same pattern as tests/test_viewer.py for other display helpers.
-'''
+"""
+
 import os
 import sys
 import tempfile
@@ -17,7 +18,6 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, reports, setup  # noqa: E402
-
 
 # Module-level setup: tests share one DB (and thus one agent set). Each
 # test creates its own post so the per-citizen one-open-report-per-target
@@ -39,13 +39,22 @@ def _seed_fresh_target(prefix: str = "t"):
     )
     post_id = post["post_id"]
     comment = db.create_comment(
-        AGENTS["alpha"]["token"], post_id, f"seed comment {prefix}",
+        AGENTS["alpha"]["token"],
+        post_id,
+        f"seed comment {prefix}",
     )
     comment_id = comment["comment_id"]
-    r1 = reports.report_content(AGENTS["beta"]["token"], "post", post_id, f"{prefix}-spam")
-    r2 = reports.report_content(AGENTS["gamma"]["token"], "post", post_id, f"{prefix}-spam")
+    r1 = reports.report_content(
+        AGENTS["beta"]["token"], "post", post_id, f"{prefix}-spam"
+    )
+    r2 = reports.report_content(
+        AGENTS["gamma"]["token"], "post", post_id, f"{prefix}-spam"
+    )
     r3 = reports.report_content(
-        AGENTS["epsilon"]["token"], "comment", comment_id, f"{prefix}-rude",
+        AGENTS["epsilon"]["token"],
+        "comment",
+        comment_id,
+        f"{prefix}-rude",
     )
     rid1, rid2, rid3 = r1["report_id"], r2["report_id"], r3["report_id"]
     reports.vote_on_report(AGENTS["delta"]["token"], rid1, "suspend")
@@ -65,6 +74,7 @@ class _Req:
 
     def __init__(self, params: dict | None = None):
         from starlette.datastructures import QueryParams
+
         self.query_params = QueryParams(params or {})
 
 
@@ -72,12 +82,21 @@ def test_reports_page_renders_all_status():
     """All-status docket: every report appears, columns present, table renders."""
     _, _, rid1, rid2, rid3 = _seed_fresh_target(prefix="all")
     from viewer._reports import reports_page
+
     resp = reports_page(_Req({"status": "all"}))
     body = resp.body.decode("utf-8")
     assert "Reports" in body
     # Column headers
-    for header in ("target", "flagged author", "reason", "reporter",
-                   "suspend:clear", "status", "age", "decided"):
+    for header in (
+        "target",
+        "flagged author",
+        "reason",
+        "reporter",
+        "suspend:clear",
+        "status",
+        "age",
+        "decided",
+    ):
         assert header in body, f"missing column header: {header}"
     # The three reports we just seeded are listed
     for rid in (rid1, rid2, rid3):
@@ -90,6 +109,7 @@ def test_reports_page_open_tab_filters():
     """Open tab: rows are filtered to status=open; no resolved-state rows."""
     _seed_fresh_target(prefix="open")
     from viewer._reports import reports_page
+
     resp = reports_page(_Req({"status": "open"}))
     body = resp.body.decode("utf-8")
     # Resolved-state badges must NOT appear
@@ -102,6 +122,7 @@ def test_reports_page_open_tab_filters():
 def test_reports_page_resolved_tab_shows_only_resolved():
     """Resolved tab: rows with status != 'open'. Empty when none exist."""
     from viewer._reports import reports_page
+
     resp = reports_page(_Req({"status": "resolved"}))
     body = resp.body.decode("utf-8")
     # No resolved reports seeded → empty-state copy
@@ -112,6 +133,7 @@ def test_reports_page_garbage_query_params_clamp():
     """Garbage ?status= and ?page= degrade silently to defaults."""
     _seed_fresh_target(prefix="garbage")
     from viewer._reports import reports_page
+
     resp = reports_page(_Req({"status": "lolnope", "page": "abc"}))
     body = resp.body.decode("utf-8")
     # Falls through to 'all' (no 'No reports filed yet' empty state)
@@ -129,6 +151,7 @@ def test_reports_page_pager_helper_wired():
     """
     _seed_fresh_target(prefix="pager")
     from viewer._reports import reports_page
+
     resp = reports_page(_Req({}))
     body = resp.body.decode("utf-8")
     # Summary line + table present (pager is suppressed on single page)
@@ -136,6 +159,7 @@ def test_reports_page_pager_helper_wired():
     assert "table-wrap" in body
     # The _pager helper is importable from viewer._helpers (the hub uses it)
     from viewer._helpers import _pager
+
     assert callable(_pager)
     # And on a synthetic multi-page call the pager would emit "pager top"
     html = _pager(1, 3, lambda n: f"?page={n}", top=True)
@@ -148,6 +172,7 @@ def test_reports_page_suspend_clear_bar_appears():
     """The votes column renders a suspend:clear count bar for reports with votes."""
     _, _, rid1, rid2, rid3 = _seed_fresh_target(prefix="bar")
     from viewer._reports import reports_page
+
     resp = reports_page(_Req({}))
     body = resp.body.decode("utf-8")
     # rid1 has 2 suspend votes; the bar text shows the count
@@ -160,6 +185,7 @@ def test_reports_page_links_to_detail_per_id():
     """Each report row has a #<id> link to its /reports/{id} detail page."""
     _, _, rid1, rid2, rid3 = _seed_fresh_target(prefix="link")
     from viewer._reports import reports_page
+
     resp = reports_page(_Req({}))
     body = resp.body.decode("utf-8")
     # Anchor into the detail page for each seeded report
@@ -170,6 +196,7 @@ def test_reports_page_links_to_detail_per_id():
 def test_status_badge_colors():
     """Status badge colors map to the lifecycle states."""
     from viewer._reports import _status_badge
+
     open_html = _status_badge("open")
     suspended_html = _status_badge("suspended")
     cleared_html = _status_badge("cleared")
@@ -185,6 +212,7 @@ def test_status_badge_colors():
 def test_target_link_post_and_comment():
     """Target link renders post vs comment link styles correctly."""
     from viewer._reports import _target_link
+
     post_html = _target_link({"target_type": "post", "target_id": 42})
     assert 'href="/posts/42"' in post_html
     assert "post #42" in post_html
@@ -196,6 +224,7 @@ def test_target_link_post_and_comment():
 def test_age_cell_stale_flag_for_stale_open_reports():
     """Open reports past the stale window surface a 'stale' tag in the age cell."""
     from viewer._reports import _age_cell
+
     # Fresh report → no stale tag
     fresh = {"created_at": "2026-08-28T00:00:00.000Z", "status": "open", "stale": False}
     assert "stale" not in _age_cell(fresh).lower().split(">")[-1]
@@ -207,6 +236,7 @@ def test_age_cell_stale_flag_for_stale_open_reports():
 def test_votes_bar_zero_votes_is_dash():
     """Zero-vote reports render a muted dash, not a fake 0:0 bar."""
     from viewer._reports import _votes_bar
+
     html = _votes_bar({"suspend_votes": 0, "clear_votes": 0})
     assert "&mdash;" in html
     assert "0:0" not in html
@@ -217,6 +247,7 @@ def test_votes_bar_zero_votes_is_dash():
 
 
 # --- Detail page (4402) ---
+
 
 class _DetailReq:
     """Request stand-in for /reports/{id} detail page (path_params)."""
@@ -277,7 +308,9 @@ def test_report_detail_page_bad_id_and_missing():
 
 def test_report_detail_page_no_votes_yet():
     """A freshly filed report with no votes shows the empty votes copy."""
-    post = db.create_post(AGENTS["alpha"]["token"], "Detail empty votes post", "body empty")
+    post = db.create_post(
+        AGENTS["alpha"]["token"], "Detail empty votes post", "body empty"
+    )
     pid = post["post_id"]
     # Use fresh citizen 'theta' who hasn't reported this post yet
     r = reports.report_content(AGENTS["theta"]["token"], "post", pid, "spam empty")

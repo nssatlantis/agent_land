@@ -1,4 +1,5 @@
 """Test collaborative proposals."""
+
 import os
 import sys
 import tempfile
@@ -11,7 +12,10 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import (
-    db, notifications, expect_error, setup,
+    db,
+    expect_error,
+    notifications,
+    setup,
 )
 
 
@@ -24,9 +28,12 @@ def main():
         info = {row[1] for row in _conn.execute("PRAGMA table_info(posts)").fetchall()}
     assert "collaborative" in info, "posts table must have a collaborative column"
     with db._conn() as _conn:
-        tables = {row[0] for row in _conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()}
+        tables = {
+            row[0]
+            for row in _conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
     assert "proposal_collaborators" in tables, "proposal_collaborators table must exist"
     print("  collaborative schema: ok")
 
@@ -48,23 +55,23 @@ def main():
 
     # 4. non-collaborative proposal: join refused
     p2 = db.create_proposal(auth, "Regular P", "body")
-    assert "not collaborative" in expect_error(
-        db.join_proposal, auth, p2["post_id"]
-    ), "join on non-collaborative should be refused"
+    assert "not collaborative" in expect_error(db.join_proposal, auth, p2["post_id"]), (
+        "join on non-collaborative should be refused"
+    )
     print("  non-collaborative join refused: ok")
 
     # 5. author cannot join own proposal
-    assert "author cannot join" in expect_error(
-        db.join_proposal, auth, pid
-    ), "author joining own proposal should be refused"
+    assert "author cannot join" in expect_error(db.join_proposal, auth, pid), (
+        "author joining own proposal should be refused"
+    )
     print("  author self-join refused: ok")
 
     # 6. join without to-do list refused
     c2 = db.register_agent("collab-two")
     auth2 = c2["token"]
-    assert "no to-do list" in expect_error(
-        db.join_proposal, auth2, pid
-    ), "join without to-do list should be refused"
+    assert "no to-do list" in expect_error(db.join_proposal, auth2, pid), (
+        "join without to-do list should be refused"
+    )
     print("  join without todos refused: ok")
 
     # 7. set to-do list, then join
@@ -78,9 +85,9 @@ def main():
     print("  join after todos: ok")
 
     # 8. duplicate join refused
-    assert "already a collaborator" in expect_error(
-        db.join_proposal, auth2, pid
-    ), "duplicate join should be refused"
+    assert "already a collaborator" in expect_error(db.join_proposal, auth2, pid), (
+        "duplicate join should be refused"
+    )
     print("  duplicate join refused: ok")
 
     # 9. third collaborator exceeds cap (default is 3, set to 2 for the test)
@@ -91,9 +98,9 @@ def main():
     db.join_proposal(auth3, pid)
     c4 = db.register_agent("collab-four")
     auth4 = c4["token"]
-    assert "the maximum is" in expect_error(
-        db.join_proposal, auth4, pid
-    ), "exceeding max collaborators should be refused"
+    assert "the maximum is" in expect_error(db.join_proposal, auth4, pid), (
+        "exceeding max collaborators should be refused"
+    )
     if old_max is not None:
         os.environ["FORUM_MAX_COLLABORATORS"] = old_max
     else:
@@ -108,39 +115,43 @@ def main():
     print("  leave proposal: ok")
 
     # 11. author cannot leave
-    assert "cannot leave" in expect_error(
-        db.leave_proposal, auth, pid
-    ), "author leaving own proposal should be refused"
+    assert "cannot leave" in expect_error(db.leave_proposal, auth, pid), (
+        "author leaving own proposal should be refused"
+    )
     print("  author leave refused: ok")
 
     # 12. non-collaborator cannot leave
     c5 = db.register_agent("collab-five")
     auth5 = c5["token"]
-    assert "not a collaborator" in expect_error(
-        db.leave_proposal, auth5, pid
-    ), "non-collaborator leaving should be refused"
+    assert "not a collaborator" in expect_error(db.leave_proposal, auth5, pid), (
+        "non-collaborator leaving should be refused"
+    )
     print("  non-collaborator leave refused: ok")
 
     # 13. close_proposal: author-only
     c6 = db.register_agent("collab-six")
     auth6 = c6["token"]
-    assert "only the proposal" in expect_error(
-        db.close_proposal, auth6, pid
-    ), "non-author closing should be refused"
+    assert "only the proposal" in expect_error(db.close_proposal, auth6, pid), (
+        "non-author closing should be refused"
+    )
     print("  non-author close refused: ok")
 
     # 14. close_proposal: no PRs linked
-    assert "no linked PRs" in expect_error(
-        db.close_proposal, auth, pid
-    ), "closing with no PRs should be refused"
+    assert "no linked PRs" in expect_error(db.close_proposal, auth, pid), (
+        "closing with no PRs should be refused"
+    )
     print("  close with no PRs refused: ok")
 
     # 15. list_proposals collaborative filter
     rows_all = db.list_proposals(collaborative="any")
     assert pid in [r["id"] for r in rows_all], "collab proposal in 'any' filter"
     rows_collab = db.list_proposals(collaborative="collaborative")
-    assert pid in [r["id"] for r in rows_collab], "collab proposal in collaborative filter"
-    assert all(r["collaborative"] for r in rows_collab), "all filtered rows should be collaborative"
+    assert pid in [r["id"] for r in rows_collab], (
+        "collab proposal in collaborative filter"
+    )
+    assert all(r["collaborative"] for r in rows_collab), (
+        "all filtered rows should be collaborative"
+    )
     rows_non = db.list_proposals(collaborative="false")
     assert all(not r["collaborative"] for r in rows_non), "non-collab filter"
     print("  list_proposals collaborative filter: ok")
@@ -176,14 +187,17 @@ def main():
     print("  ordinary create_proposal note unchanged: ok")
 
     # 19. supersede_proposal copies collaborators
-    db.set_todos_for_post(auth_a2, p_note["post_id"],
-                          [{"title": "W", "items": [{"text": "t1"}]}])
+    db.set_todos_for_post(
+        auth_a2, p_note["post_id"], [{"title": "W", "items": [{"text": "t1"}]}]
+    )
     sup_auth2 = db.register_agent("sup-collab2")
     sup_token2 = sup_auth2["token"]
     db.join_proposal(sup_token2, p_note["post_id"])
     sup_result = db.supersede_proposal(
-        auth_a2, p_note["post_id"],
-        title="Note Test v2", body="revised body",
+        auth_a2,
+        p_note["post_id"],
+        title="Note Test v2",
+        body="revised body",
     )
     new_pid = sup_result["post_id"]
     new_collabs = db.list_proposal_collaborators(new_pid)
@@ -221,8 +235,9 @@ def main():
     ca3 = db.register_agent("collab-author3")
     auth_a3 = ca3["token"]
     p_vote = db.create_proposal(auth_a3, "Vote Notify", "body", collaborative=True)
-    db.set_todos_for_post(auth_a3, p_vote["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    db.set_todos_for_post(
+        auth_a3, p_vote["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_vote = db.register_agent("collab-voter")
     c_vote_token = c_vote["token"]
     db.join_proposal(c_vote_token, p_vote["post_id"])
@@ -234,7 +249,9 @@ def main():
     for i in range(15):
         v = db.register_agent(f"vote-thresh-{i}")
         if db.whoami(v["token"])["karma"] < 1:
-            farm = db.create_comment(v["token"], post["id"], f"karma for vote-thresh-{i}")
+            farm = db.create_comment(
+                v["token"], post["id"], f"karma for vote-thresh-{i}"
+            )
             db.vote(ca3["token"], "comment", farm["comment_id"], 1)
         db.vote_on_proposal(v["token"], p_vote["post_id"], 1)
         c_vote_notifs = notifications.notifications(c_vote_token, unread_only=True)
@@ -249,14 +266,18 @@ def main():
     # Create a proposal, join, link a PR, record outcome
     ca4 = db.register_agent("collab-author4")
     auth_a4 = ca4["token"]
-    p_outcome = db.create_proposal(auth_a4, "Outcome Notify", "body",
-                                   collaborative=True)
-    db.set_todos_for_post(auth_a4, p_outcome["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    p_outcome = db.create_proposal(
+        auth_a4, "Outcome Notify", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_a4, p_outcome["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_outcome = db.register_agent("collab-outcome")
     db.join_proposal(c_outcome["token"], p_outcome["post_id"])
     db.link_pr_to_proposal(99999, p_outcome["post_id"], ca4["agent_id"])
-    db.record_proposal_outcome(99999, p_outcome["post_id"], "merged", "2026-08-17T12:00:00.000Z")
+    db.record_proposal_outcome(
+        99999, p_outcome["post_id"], "merged", "2026-08-17T12:00:00.000Z"
+    )
     c_out_notifs = notifications.notifications(c_outcome["token"], unread_only=True)
     c_out_msgs = [n["body"] for n in c_out_notifs["notifications"]]
     assert any("merged" in m for m in c_out_msgs), (
@@ -269,16 +290,20 @@ def main():
     # a collaborative proposal with merged PRs is not blocked)
     ca5 = db.register_agent("collab-author5")
     auth_a5 = ca5["token"]
-    p_close = db.create_proposal(auth_a5, "Close Collab", "body",
-                                 collaborative=True)
-    db.set_todos_for_post(auth_a5, p_close["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    p_close = db.create_proposal(auth_a5, "Close Collab", "body", collaborative=True)
+    db.set_todos_for_post(
+        auth_a5, p_close["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_close = db.register_agent("collab-close")
     db.join_proposal(c_close["token"], p_close["post_id"])
     db.link_pr_to_proposal(88888, p_close["post_id"], ca5["agent_id"])
     db.link_pr_to_proposal(88889, p_close["post_id"], c_close["agent_id"])
-    db.record_proposal_outcome(88888, p_close["post_id"], "merged", "2026-08-17T12:00:00.000Z")
-    db.record_proposal_outcome(88889, p_close["post_id"], "closed", "2026-08-17T12:00:00.000Z")
+    db.record_proposal_outcome(
+        88888, p_close["post_id"], "merged", "2026-08-17T12:00:00.000Z"
+    )
+    db.record_proposal_outcome(
+        88889, p_close["post_id"], "closed", "2026-08-17T12:00:00.000Z"
+    )
     close_result = db.close_proposal(auth_a5, p_close["post_id"])
     assert close_result["post_id"] == p_close["post_id"]
     print("  close_proposal collaborative merged PRs: ok")
@@ -286,16 +311,17 @@ def main():
     # 26. supersede multi-PR error mentions all PR numbers
     ca6 = db.register_agent("collab-author6")
     auth_a6 = ca6["token"]
-    p_multi = db.create_proposal(auth_a6, "Multi PR", "body",
-                                 collaborative=True)
-    db.set_todos_for_post(auth_a6, p_multi["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    p_multi = db.create_proposal(auth_a6, "Multi PR", "body", collaborative=True)
+    db.set_todos_for_post(
+        auth_a6, p_multi["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_multi1 = db.register_agent("multi-collab1")
     db.join_proposal(c_multi1["token"], p_multi["post_id"])
     db.link_pr_to_proposal(77777, p_multi["post_id"], ca6["agent_id"])
     db.link_pr_to_proposal(77778, p_multi["post_id"], c_multi1["agent_id"])
-    err = expect_error(db.supersede_proposal, auth_a6, p_multi["post_id"],
-                       title="Multi v2", body="v2")
+    err = expect_error(
+        db.supersede_proposal, auth_a6, p_multi["post_id"], title="Multi v2", body="v2"
+    )
     assert "open PR" in err, f"multi-PR error should mention open PR, got: {err}"
     assert "#77777" in err and "#77778" in err, (
         f"multi-PR error should list both PR numbers, got: {err}"
@@ -305,16 +331,18 @@ def main():
     # 27. close multi-PR error mentions all PR numbers
     ca7 = db.register_agent("collab-author7")
     auth_a7 = ca7["token"]
-    p_multi2 = db.create_proposal(auth_a7, "Multi PR Close", "body",
-                                  collaborative=True)
-    db.set_todos_for_post(auth_a7, p_multi2["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    p_multi2 = db.create_proposal(auth_a7, "Multi PR Close", "body", collaborative=True)
+    db.set_todos_for_post(
+        auth_a7, p_multi2["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_multi2 = db.register_agent("multi-collab2")
     db.join_proposal(c_multi2["token"], p_multi2["post_id"])
     db.link_pr_to_proposal(66666, p_multi2["post_id"], ca7["agent_id"])
     db.link_pr_to_proposal(66667, p_multi2["post_id"], c_multi2["agent_id"])
     err2 = expect_error(db.close_proposal, auth_a7, p_multi2["post_id"])
-    assert "open PR" in err2, f"multi-PR close error should mention open PR, got: {err2}"
+    assert "open PR" in err2, (
+        f"multi-PR close error should mention open PR, got: {err2}"
+    )
     assert "#66666" in err2 and "#66667" in err2, (
         f"multi-PR close error should list both PR numbers, got: {err2}"
     )
@@ -323,8 +351,7 @@ def main():
     # 28. vote_on_proposal: collaborative flag is accessible in SELECT
     ca8 = db.register_agent("collab-author8")
     auth_a8 = ca8["token"]
-    p_voteflag = db.create_proposal(auth_a8, "Vote Flag", "body",
-                                    collaborative=True)
+    p_voteflag = db.create_proposal(auth_a8, "Vote Flag", "body", collaborative=True)
     voter = db.register_agent("vote-flag-voter")
     if db.whoami(voter["token"])["karma"] < 1:
         farm = db.create_comment(voter["token"], post["id"], "karma for vote-flag")
@@ -339,7 +366,9 @@ def main():
     ca_nocap = db.register_agent("collab-nocap")
     auth_nc = ca_nocap["token"]
     p_nocap = db.create_proposal(auth_nc, "No Cap", "body", collaborative=True)
-    db.set_todos_for_post(auth_nc, p_nocap["post_id"], [{"title": "work", "items": [{"text": "a"}]}])
+    db.set_todos_for_post(
+        auth_nc, p_nocap["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+    )
     # join 4 collaborators - default cap is 3, but 0 means unlimited
     nocap_users = []
     for i in range(4):
@@ -347,7 +376,9 @@ def main():
         db.join_proposal(u["token"], p_nocap["post_id"])
         nocap_users.append(u)
     collabs = db.list_proposal_collaborators(p_nocap["post_id"])
-    assert len(collabs) == 4, f"MAX_COLLABORATORS=0 should allow 4+ collabs, got {len(collabs)}"
+    assert len(collabs) == 4, (
+        f"MAX_COLLABORATORS=0 should allow 4+ collabs, got {len(collabs)}"
+    )
     if old_max is not None:
         os.environ["FORUM_MAX_COLLABORATORS"] = old_max
     else:
@@ -357,18 +388,16 @@ def main():
     # 30. close_proposal when ALL PRs are merged -> status="merged"
     ca9 = db.register_agent("collab-author9")
     auth_a9 = ca9["token"]
-    p_allmerged = db.create_proposal(auth_a9, "All Merged", "body",
-                                     collaborative=True)
-    db.set_todos_for_post(auth_a9, p_allmerged["post_id"],
-                    [{"title": "work", "items": [{"text": "a"}]}])
+    p_allmerged = db.create_proposal(auth_a9, "All Merged", "body", collaborative=True)
+    db.set_todos_for_post(
+        auth_a9, p_allmerged["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+    )
     c_m1 = db.register_agent("merged-collab-1")
     db.join_proposal(c_m1["token"], p_allmerged["post_id"])
     db.link_pr_to_proposal(77700, p_allmerged["post_id"], ca9["agent_id"])
     db.link_pr_to_proposal(77701, p_allmerged["post_id"], c_m1["agent_id"])
-    db.record_proposal_outcome(77700, p_allmerged["post_id"], "merged",
-                               db._now_iso())
-    db.record_proposal_outcome(77701, p_allmerged["post_id"], "merged",
-                               db._now_iso())
+    db.record_proposal_outcome(77700, p_allmerged["post_id"], "merged", db._now_iso())
+    db.record_proposal_outcome(77701, p_allmerged["post_id"], "merged", db._now_iso())
     close_res = db.close_proposal(auth_a9, p_allmerged["post_id"])
     assert close_res["status"] == "merged", (
         f"close with all PRs merged should return 'merged', got {close_res['status']}"
@@ -378,17 +407,17 @@ def main():
     # 31. join_proposal after proposal is merged (status != open)
     ca10 = db.register_agent("collab-author10")
     auth_a10 = ca10["token"]
-    p_joined = db.create_proposal(auth_a10, "Join After Merge", "body",
-                                  collaborative=True)
-    db.set_todos_for_post(auth_a10, p_joined["post_id"],
-                    [{"title": "work", "items": [{"text": "a"}]}])
+    p_joined = db.create_proposal(
+        auth_a10, "Join After Merge", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_a10, p_joined["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+    )
     db.link_pr_to_proposal(77800, p_joined["post_id"], ca10["agent_id"])
-    db.record_proposal_outcome(77800, p_joined["post_id"], "merged",
-                               db._now_iso())
+    db.record_proposal_outcome(77800, p_joined["post_id"], "merged", db._now_iso())
     db.close_proposal(auth_a10, p_joined["post_id"])
     late_user = db.register_agent("late-joiner")
-    err_late = expect_error(db.join_proposal, late_user["token"],
-                            p_joined["post_id"])
+    err_late = expect_error(db.join_proposal, late_user["token"], p_joined["post_id"])
     assert "open" in err_late.lower() or "status" in err_late.lower(), (
         f"join after merge should mention status, got: {err_late}"
     )
@@ -397,10 +426,8 @@ def main():
     # 32. close_proposal on a superseded (locked) collaborative proposal
     ca11 = db.register_agent("collab-author11")
     auth_a11 = ca11["token"]
-    p_lock = db.create_proposal(auth_a11, "Lock Close Test", "body",
-                                collaborative=True)
-    db.supersede_proposal(auth_a11, p_lock["post_id"],
-                          "Lock Close v2", "revised body")
+    p_lock = db.create_proposal(auth_a11, "Lock Close Test", "body", collaborative=True)
+    db.supersede_proposal(auth_a11, p_lock["post_id"], "Lock Close v2", "revised body")
     err_lock = expect_error(db.close_proposal, auth_a11, p_lock["post_id"])
     assert "locked" in err_lock.lower() or "superseded" in err_lock.lower(), (
         f"close on superseded should mention locked/superseded, got: {err_lock}"
@@ -410,15 +437,17 @@ def main():
     # 33. join_proposal on a superseded (locked) collaborative proposal
     ca12 = db.register_agent("collab-author12")
     auth_a12 = ca12["token"]
-    p_join_lock = db.create_proposal(auth_a12, "Join Lock Test", "body",
-                                     collaborative=True)
-    db.set_todos_for_post(auth_a12, p_join_lock["post_id"],
-                          [{"title": "work", "items": [{"text": "a"}]}])
-    db.supersede_proposal(auth_a12, p_join_lock["post_id"],
-                                 "Join Lock v2", "revised")
+    p_join_lock = db.create_proposal(
+        auth_a12, "Join Lock Test", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_a12, p_join_lock["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+    )
+    db.supersede_proposal(auth_a12, p_join_lock["post_id"], "Join Lock v2", "revised")
     late_j = db.register_agent("late-joiner-locked")
-    err_join_lock = expect_error(db.join_proposal, late_j["token"],
-                                 p_join_lock["post_id"])
+    err_join_lock = expect_error(
+        db.join_proposal, late_j["token"], p_join_lock["post_id"]
+    )
     assert "locked" in err_join_lock.lower() or "superseded" in err_join_lock.lower(), (
         f"join on superseded should mention locked/superseded, got: {err_join_lock}"
     )
@@ -427,15 +456,18 @@ def main():
     # 34. leave_proposal with an open PR linked (should refuse)
     ca13 = db.register_agent("collab-author13")
     auth_a13 = ca13["token"]
-    p_leave_pr = db.create_proposal(auth_a13, "Leave PR Test", "body",
-                                    collaborative=True)
-    db.set_todos_for_post(auth_a13, p_leave_pr["post_id"],
-                          [{"title": "work", "items": [{"text": "a"}]}])
+    p_leave_pr = db.create_proposal(
+        auth_a13, "Leave PR Test", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_a13, p_leave_pr["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+    )
     c_leave = db.register_agent("leave-pr-collab")
     db.join_proposal(c_leave["token"], p_leave_pr["post_id"])
     db.link_pr_to_proposal(88800, p_leave_pr["post_id"], c_leave["agent_id"])
-    err_leave_pr = expect_error(db.leave_proposal, c_leave["token"],
-                                p_leave_pr["post_id"])
+    err_leave_pr = expect_error(
+        db.leave_proposal, c_leave["token"], p_leave_pr["post_id"]
+    )
     assert "open" in err_leave_pr.lower() or "pr" in err_leave_pr.lower(), (
         f"leave with open PR should mention open PR, got: {err_leave_pr}"
     )
@@ -444,10 +476,12 @@ def main():
     # 35. multiple PRs per collaborator (up to MAX_PRS_PER_COLLABORATOR)
     ca14 = db.register_agent("collab-author14")
     auth_a14 = ca14["token"]
-    p_multi_pr = db.create_proposal(auth_a14, "Multi PR Test", "body",
-                                     collaborative=True)
-    db.set_todos_for_post(auth_a14, p_multi_pr["post_id"],
-                          [{"title": "work", "items": [{"text": "a"}]}])
+    p_multi_pr = db.create_proposal(
+        auth_a14, "Multi PR Test", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_a14, p_multi_pr["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+    )
     c_multi_pr = db.register_agent("multi-pr-collab")
     db.join_proposal(c_multi_pr["token"], p_multi_pr["post_id"])
     # Link first, second, third PR — all should succeed (default limit is 3)
@@ -478,16 +512,20 @@ def main():
     try:
         ca15 = db.register_agent("collab-author15")
         auth_a15 = ca15["token"]
-        p_one_pr = db.create_proposal(auth_a15, "One PR Test", "body",
-                                       collaborative=True)
-        db.set_todos_for_post(auth_a15, p_one_pr["post_id"],
-                              [{"title": "work", "items": [{"text": "a"}]}])
+        p_one_pr = db.create_proposal(
+            auth_a15, "One PR Test", "body", collaborative=True
+        )
+        db.set_todos_for_post(
+            auth_a15, p_one_pr["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+        )
         c_one_pr = db.register_agent("one-pr-collab")
         db.join_proposal(c_one_pr["token"], p_one_pr["post_id"])
         db.link_pr_to_proposal(55601, p_one_pr["post_id"], c_one_pr["agent_id"])
         err_one = expect_error(
-            db.require_proposal_approval, c_one_pr["token"],
-            p_one_pr["post_id"], "repo_propose_change"
+            db.require_proposal_approval,
+            c_one_pr["token"],
+            p_one_pr["post_id"],
+            "repo_propose_change",
         )
         assert "limit" in err_one.lower() or "1" in err_one, (
             f"second PR should be refused with limit=1, got: {err_one}"
@@ -502,10 +540,10 @@ def main():
     # 37. link_pr_to_proposal enforces the limit (TOCTOU fix)
     ca16 = db.register_agent("collab-author16")
     auth_a16 = ca16["token"]
-    p_toc = db.create_proposal(auth_a16, "TOCTOU Test", "body",
-                                collaborative=True)
-    db.set_todos_for_post(auth_a16, p_toc["post_id"],
-                          [{"title": "work", "items": [{"text": "a"}]}])
+    p_toc = db.create_proposal(auth_a16, "TOCTOU Test", "body", collaborative=True)
+    db.set_todos_for_post(
+        auth_a16, p_toc["post_id"], [{"title": "work", "items": [{"text": "a"}]}]
+    )
     c_toc = db.register_agent("toc-collab")
     db.join_proposal(c_toc["token"], p_toc["post_id"])
     # Link 3 PRs — all succeed (at limit with default max_prs=3)
@@ -514,7 +552,10 @@ def main():
     db.link_pr_to_proposal(55703, p_toc["post_id"], c_toc["agent_id"])
     # 4th link should be refused by link_pr_to_proposal itself (TOCTOU gate)
     err_toc = expect_error(
-        db.link_pr_to_proposal, 55704, p_toc["post_id"], c_toc["agent_id"],
+        db.link_pr_to_proposal,
+        55704,
+        p_toc["post_id"],
+        c_toc["agent_id"],
     )
     assert "limit" in err_toc.lower(), (
         f"link_pr_to_proposal should enforce limit, got: {err_toc}"
@@ -527,8 +568,7 @@ def main():
 
     # 38. schema migration: new columns exist
     with db._conn() as _conn:
-        info = {row[1] for row in _conn.execute(
-            "PRAGMA table_info(posts)").fetchall()}
+        info = {row[1] for row in _conn.execute("PRAGMA table_info(posts)").fetchall()}
     assert "collaborative_closed" in info, (
         "posts table must have collaborative_closed column"
     )
@@ -538,11 +578,12 @@ def main():
     # 39. set_proposal_goal: happy path
     ca_goal = db.register_agent("goal-author")
     auth_goal = ca_goal["token"]
-    p_goal = db.create_proposal(auth_goal, "Goal Test", "body",
-                                collaborative=True)
+    p_goal = db.create_proposal(auth_goal, "Goal Test", "body", collaborative=True)
     goal_pid = p_goal["post_id"]
     res = db.set_proposal_goal(auth_goal, goal_pid, pr_goal=3)
-    assert res["pr_goal"] == 3, f"set_proposal_goal should return 3, got {res['pr_goal']}"
+    assert res["pr_goal"] == 3, (
+        f"set_proposal_goal should return 3, got {res['pr_goal']}"
+    )
     post_g = db.get_post(goal_pid)
     assert post_g["proposal"]["pr_goal"] == 3, (
         f"get_post should show pr_goal=3, got {post_g['proposal'].get('pr_goal')}"
@@ -581,9 +622,7 @@ def main():
     print("  set_proposal_goal non-collaborative refused: ok")
 
     # 43. set_proposal_goal: negative refused
-    err_neg = expect_error(
-        db.set_proposal_goal, auth_goal, goal_pid, pr_goal=-1
-    )
+    err_neg = expect_error(db.set_proposal_goal, auth_goal, goal_pid, pr_goal=-1)
     assert "non-negative" in err_neg.lower(), (
         f"negative goal should be refused, got: {err_neg}"
     )
@@ -592,15 +631,16 @@ def main():
     # 44. set_proposal_goal: closed proposal refused
     ca_goal2 = db.register_agent("goal-author2")
     auth_goal2 = ca_goal2["token"]
-    p_close_goal = db.create_proposal(auth_goal2, "Close Goal Test", "body",
-                                      collaborative=True)
-    db.set_todos_for_post(auth_goal2, p_close_goal["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    p_close_goal = db.create_proposal(
+        auth_goal2, "Close Goal Test", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_goal2, p_close_goal["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_close_goal = db.register_agent("close-goal-collab")
     db.join_proposal(c_close_goal["token"], p_close_goal["post_id"])
     db.link_pr_to_proposal(88900, p_close_goal["post_id"], ca_goal2["agent_id"])
-    db.record_proposal_outcome(88900, p_close_goal["post_id"], "merged",
-                               db._now_iso())
+    db.record_proposal_outcome(88900, p_close_goal["post_id"], "merged", db._now_iso())
     db.close_proposal(auth_goal2, p_close_goal["post_id"])
     err_closed = expect_error(
         db.set_proposal_goal, auth_goal2, p_close_goal["post_id"], pr_goal=5
@@ -613,10 +653,12 @@ def main():
     # 45. set_proposal_goal: superseded proposal refused
     ca_goal3 = db.register_agent("goal-author3")
     auth_goal3 = ca_goal3["token"]
-    p_super_goal = db.create_proposal(auth_goal3, "Super Goal Test", "body",
-                                      collaborative=True)
-    db.supersede_proposal(auth_goal3, p_super_goal["post_id"],
-                          "Super Goal v2", "revised")
+    p_super_goal = db.create_proposal(
+        auth_goal3, "Super Goal Test", "body", collaborative=True
+    )
+    db.supersede_proposal(
+        auth_goal3, p_super_goal["post_id"], "Super Goal v2", "revised"
+    )
     err_super = expect_error(
         db.set_proposal_goal, auth_goal3, p_super_goal["post_id"], pr_goal=2
     )
@@ -628,15 +670,16 @@ def main():
     # 46. close_proposal: persisted collaborative_closed in DB
     ca_goal4 = db.register_agent("goal-author4")
     auth_goal4 = ca_goal4["token"]
-    p_persist = db.create_proposal(auth_goal4, "Persist Test", "body",
-                                   collaborative=True)
-    db.set_todos_for_post(auth_goal4, p_persist["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    p_persist = db.create_proposal(
+        auth_goal4, "Persist Test", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_goal4, p_persist["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_persist = db.register_agent("persist-collab")
     db.join_proposal(c_persist["token"], p_persist["post_id"])
     db.link_pr_to_proposal(88910, p_persist["post_id"], ca_goal4["agent_id"])
-    db.record_proposal_outcome(88910, p_persist["post_id"], "merged",
-                               db._now_iso())
+    db.record_proposal_outcome(88910, p_persist["post_id"], "merged", db._now_iso())
     close_p = db.close_proposal(auth_goal4, p_persist["post_id"])
     assert close_p["status"] == "merged"
     with db._conn() as conn:
@@ -652,16 +695,17 @@ def main():
     # 47. close_proposal: goal_warning when goal unmet
     ca_goal5 = db.register_agent("goal-author5")
     auth_goal5 = ca_goal5["token"]
-    p_warn = db.create_proposal(auth_goal5, "Goal Warn Test", "body",
-                                collaborative=True)
+    p_warn = db.create_proposal(
+        auth_goal5, "Goal Warn Test", "body", collaborative=True
+    )
     db.set_proposal_goal(auth_goal5, p_warn["post_id"], pr_goal=3)
-    db.set_todos_for_post(auth_goal5, p_warn["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    db.set_todos_for_post(
+        auth_goal5, p_warn["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_warn = db.register_agent("warn-collab")
     db.join_proposal(c_warn["token"], p_warn["post_id"])
     db.link_pr_to_proposal(88920, p_warn["post_id"], ca_goal5["agent_id"])
-    db.record_proposal_outcome(88920, p_warn["post_id"], "merged",
-                               db._now_iso())
+    db.record_proposal_outcome(88920, p_warn["post_id"], "merged", db._now_iso())
     close_warn = db.close_proposal(auth_goal5, p_warn["post_id"])
     assert "goal_warning" in close_warn, (
         f"close with unmet goal should include goal_warning, got: {close_warn}"
@@ -673,16 +717,15 @@ def main():
     # 48. close_proposal: no warning when goal met
     ca_goal6 = db.register_agent("goal-author6")
     auth_goal6 = ca_goal6["token"]
-    p_met = db.create_proposal(auth_goal6, "Goal Met Test", "body",
-                               collaborative=True)
+    p_met = db.create_proposal(auth_goal6, "Goal Met Test", "body", collaborative=True)
     db.set_proposal_goal(auth_goal6, p_met["post_id"], pr_goal=1)
-    db.set_todos_for_post(auth_goal6, p_met["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    db.set_todos_for_post(
+        auth_goal6, p_met["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_met = db.register_agent("met-collab")
     db.join_proposal(c_met["token"], p_met["post_id"])
     db.link_pr_to_proposal(88930, p_met["post_id"], ca_goal6["agent_id"])
-    db.record_proposal_outcome(88930, p_met["post_id"], "merged",
-                               db._now_iso())
+    db.record_proposal_outcome(88930, p_met["post_id"], "merged", db._now_iso())
     close_met = db.close_proposal(auth_goal6, p_met["post_id"])
     assert "goal_warning" not in close_met, (
         f"close with met goal should not include goal_warning, got: {close_met}"
@@ -716,8 +759,9 @@ def main():
     ca_lc = db.register_agent("lifecycle-author")
     auth_lc = ca_lc["token"]
     p_lc = db.create_proposal(auth_lc, "Lifecycle Test", "body", collaborative=True)
-    db.set_todos_for_post(auth_lc, p_lc["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    db.set_todos_for_post(
+        auth_lc, p_lc["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_lc = db.register_agent("lifecycle-collab")
     db.join_proposal(c_lc["token"], p_lc["post_id"])
     db.link_pr_to_proposal(90001, p_lc["post_id"], ca_lc["agent_id"])
@@ -739,9 +783,12 @@ def main():
     # 52. leave_proposal on decided proposal refused (collaboration history frozen)
     ca_frozen = db.register_agent("frozen-author")
     auth_frozen = ca_frozen["token"]
-    p_frozen = db.create_proposal(auth_frozen, "Frozen Collab", "body", collaborative=True)
-    db.set_todos_for_post(auth_frozen, p_frozen["post_id"],
-                          [{"title": "W", "items": [{"text": "t"}]}])
+    p_frozen = db.create_proposal(
+        auth_frozen, "Frozen Collab", "body", collaborative=True
+    )
+    db.set_todos_for_post(
+        auth_frozen, p_frozen["post_id"], [{"title": "W", "items": [{"text": "t"}]}]
+    )
     c_frozen = db.register_agent("frozen-collab")
     db.join_proposal(c_frozen["token"], p_frozen["post_id"])
     db.link_pr_to_proposal(90010, p_frozen["post_id"], ca_frozen["agent_id"])
@@ -757,15 +804,20 @@ def main():
     # 53a. collab -> regular (collaborative=False): chain not copied
     ca_flags = db.register_agent("flags-author")
     auth_flags = ca_flags["token"]
-    p_flags = db.create_proposal(auth_flags, "Flags Collab", "body",
-                                 collaborative=True, claimable=True)
-    db.set_todos_for_post(auth_flags, p_flags["post_id"],
-                          [{"title": "W", "items": [{"text": "t1"}]}])
+    p_flags = db.create_proposal(
+        auth_flags, "Flags Collab", "body", collaborative=True, claimable=True
+    )
+    db.set_todos_for_post(
+        auth_flags, p_flags["post_id"], [{"title": "W", "items": [{"text": "t1"}]}]
+    )
     c_flags = db.register_agent("flags-collab")
     db.join_proposal(c_flags["token"], p_flags["post_id"])
     sup_reg = db.supersede_proposal(
-        auth_flags, p_flags["post_id"],
-        "Flags Regular v2", "revised", collaborative=False,
+        auth_flags,
+        p_flags["post_id"],
+        "Flags Regular v2",
+        "revised",
+        collaborative=False,
     )
     reg_pid = sup_reg["post_id"]
     reg_post = db.get_post(reg_pid)
@@ -785,11 +837,15 @@ def main():
 
     # 53b. regular -> collab (collaborative=True): opened without collabs
     p_reg_src = db.create_proposal(auth_flags, "Regular Source", "body")
-    db.set_todos_for_post(auth_flags, p_reg_src["post_id"],
-                          [{"title": "R", "items": [{"text": "r1"}]}])
+    db.set_todos_for_post(
+        auth_flags, p_reg_src["post_id"], [{"title": "R", "items": [{"text": "r1"}]}]
+    )
     sup_collab = db.supersede_proposal(
-        auth_flags, p_reg_src["post_id"],
-        "Collab From Regular v2", "revised", collaborative=True,
+        auth_flags,
+        p_reg_src["post_id"],
+        "Collab From Regular v2",
+        "revised",
+        collaborative=True,
     )
     col_pid = sup_collab["post_id"]
     col_post = db.get_post(col_pid)
@@ -806,11 +862,13 @@ def main():
     print("  supersede regular->collab override opens collaborative: ok")
 
     # 53c. max_collaborators override on a collab parent
-    p_cap = db.create_proposal(auth_flags, "Cap Source", "body",
-                               collaborative=True)
+    p_cap = db.create_proposal(auth_flags, "Cap Source", "body", collaborative=True)
     sup_cap = db.supersede_proposal(
-        auth_flags, p_cap["post_id"],
-        "Capped v2", "revised", max_collaborators=4,
+        auth_flags,
+        p_cap["post_id"],
+        "Capped v2",
+        "revised",
+        max_collaborators=4,
     )
     with db._conn() as conn:
         cap_row = conn.execute(
@@ -826,8 +884,12 @@ def main():
     # 53d. max_collaborators without a collaborative resolution refused
     p_reg2 = db.create_proposal(auth_flags, "Regular Source 2", "body")
     err_mc = expect_error(
-        db.supersede_proposal, auth_flags, p_reg2["post_id"],
-        "Bad mc v2", "revised", max_collaborators=3,
+        db.supersede_proposal,
+        auth_flags,
+        p_reg2["post_id"],
+        "Bad mc v2",
+        "revised",
+        max_collaborators=3,
     )
     assert "requires collaborative" in err_mc, (
         f"max_collaborators without collaborative should be refused, got: {err_mc}"
@@ -835,11 +897,15 @@ def main():
     print("  supersede max_collaborators without collaborative refused: ok")
 
     # 53e. inherited collab supersede keeps claimable and mode/goal (regression guard)
-    p_keep = db.create_proposal(auth_flags, "Keep State", "body",
-                                collaborative=True, claimable=True)
+    p_keep = db.create_proposal(
+        auth_flags, "Keep State", "body", collaborative=True, claimable=True
+    )
     db.set_proposal_goal(auth_flags, p_keep["post_id"], pr_goal=2)
     sup_keep = db.supersede_proposal(
-        auth_flags, p_keep["post_id"], "Keep State v2", "revised",
+        auth_flags,
+        p_keep["post_id"],
+        "Keep State v2",
+        "revised",
     )
     keep_post = db.get_post(sup_keep["post_id"])
     assert keep_post["proposal"].get("claimable"), (
@@ -852,6 +918,7 @@ def main():
 
     print("test_collaborative: all assertions passed")
     import shutil
+
     shutil.rmtree(_TMP, ignore_errors=True)
 
 
