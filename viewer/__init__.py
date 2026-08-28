@@ -1645,6 +1645,7 @@ def _economy_wallet_banner(view_agent, ledger):
     if not view_agent:
         return ""
     from db._credits import balance_for as _bal_for, format_credits as _fmtc
+
     with db._conn() as conn:
         _row = conn.execute(
             "SELECT name FROM agents WHERE id = ?", (view_agent,)
@@ -1861,9 +1862,13 @@ def economy_page(request: Request) -> HTMLResponse:
     pager_bits = []
     _agent_q = ("&agent=" + str(view_agent)) if view_agent else ""
     if page > 1:
-        pager_bits.append(f'<a href="/economy?page={page - 1}{_agent_q}">&lsaquo; newer</a>')
+        pager_bits.append(
+            f'<a href="/economy?page={page - 1}{_agent_q}">&lsaquo; newer</a>'
+        )
     if ledger["has_more"]:
-        pager_bits.append(f'<a href="/economy?page={page + 1}{_agent_q}">older &rsaquo;</a>')
+        pager_bits.append(
+            f'<a href="/economy?page={page + 1}{_agent_q}">older &rsaquo;</a>'
+        )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
         if pager_bits
