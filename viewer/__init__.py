@@ -719,6 +719,33 @@ def _job_card(job: dict) -> str:
     )
 
 
+def _jobs_href(status: str | None, page: int | str) -> str:
+    params: list[str] = []
+    if status:
+        params.append(f"status={status}")
+    if str(page) != "1" and page:
+        params.append(f"page={page}")
+    return "/jobs" + (f"?{'&'.join(params)}" if params else "")
+
+
+def _jobs_pager(status: str | None, page: int, total_pages: int, top: bool = False) -> str:
+    if total_pages <= 1:
+        return ""
+    if total_pages <= 12:
+        nav = [
+            f'<a href="{_jobs_href(status, n)}"' + (' class="active"' if n == page else "") + f">{n}</a>"
+            for n in range(1, total_pages + 1)
+        ]
+    else:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        if page > 1:
+            nav.insert(0, f'<a href="{_jobs_href(status, page - 1)}">Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="{_jobs_href(status, page + 1)}">Next</a>')
+    cls = "pager top" if top else "pager"
+    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+
+
 def jobs_page(request: Request) -> HTMLResponse:
     """The jobs board (CHARTER IX.6): commissioned work posted for
     escrowed credits, each card showing its checklist and per-cycle
@@ -726,30 +753,75 @@ def jobs_page(request: Request) -> HTMLResponse:
     tab = request.query_params.get("status")
     if tab not in {t for t, _ in _JOBS_TABS}:
         tab = None
-    all_jobs = db.list_jobs(view="all", limit=300)["jobs"]
-    counts = {
-        "open": sum(1 for j in all_jobs if j["status"] == "open"),
-        "offered": sum(1 for j in all_jobs if j["status"] == "offered"),
-        "active": sum(1 for j in all_jobs if j["status"] == "active"),
-        "completed": sum(1 for j in all_jobs if j["status"] == "completed"),
-    }
-    if tab == "open":
-        jobs = [j for j in all_jobs if j["status"] in ("open", "offered")]
-    elif tab == "active":
-        jobs = [j for j in all_jobs if j["status"] == "active"]
-    elif tab == "completed":
-        jobs = [j for j in all_jobs if j["status"] == "completed"]
-    elif tab == "closed":
-        jobs = [j for j in all_jobs if j["status"] in ("cancelled", "expired")]
-    else:
-        jobs = all_jobs
+    raw_page = request.query_params.get("page") or "1"
+    try:
+        page = int(raw_page)
+    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
+        page = 1
+    if page < 1:
+        page = 1
+    per_page = 30
+    try:
+        with db._conn() as conn:
+            rows = conn.execute("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status").fetchall()
+            db_counts = {r["status"]: r["c"] for r in rows}
+            counts = {
+                "open": db_counts.get("open", 0),
+                "offered": db_counts.get("offered", 0),
+                "active": db_counts.get("active", 0),
+                "completed": db_counts.get("completed", 0),
+            }
+            if tab == "open":
+                where = "WHERE status IN ('open','offered')"
+            elif tab == "active":
+                where = "WHERE status='active'"
+            elif tab == "completed":
+                where = "WHERE status='completed'"
+            elif tab == "closed":
+                where = "WHERE status IN ('cancelled','expired')"
+            else:
+                where = ""
+            total = conn.execute(f"SELECT COUNT(*) FROM jobs {where}").fetchone()[0]
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            if page > total_pages:
+                page = total_pages
+            offset = (page - 1) * per_page
+            id_rows = conn.execute(
+                f"SELECT id FROM jobs {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (per_page, offset),
+            ).fetchall()
+            job_ids = [r["id"] for r in id_rows]
+    except Exception:  # domain: degrade-silently - DB read failed, fallback to in-memory 300 slice (board still renders)
+        all_jobs = db.list_jobs(view="all", limit=300)["jobs"]
+        counts = {
+            "open": sum(1 for j in all_jobs if j["status"] == "open"),
+            "offered": sum(1 for j in all_jobs if j["status"] == "offered"),
+            "active": sum(1 for j in all_jobs if j["status"] == "active"),
+            "completed": sum(1 for j in all_jobs if j["status"] == "completed"),
+        }
+        if tab == "open":
+            jobs = [j for j in all_jobs if j["status"] in ("open", "offered")]
+        elif tab == "active":
+            jobs = [j for j in all_jobs if j["status"] == "active"]
+        elif tab == "completed":
+            jobs = [j for j in all_jobs if j["status"] == "completed"]
+        elif tab == "closed":
+            jobs = [j for j in all_jobs if j["status"] in ("cancelled", "expired")]
+        else:
+            jobs = all_jobs
+        total = len(jobs)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        if page > total_pages:
+            page = total_pages
+        offset = (page - 1) * per_page
+        job_ids = [j["job_id"] for j in jobs[offset: offset + per_page]]
     tabs = '<div class="tabs">'
     for key, label in _JOBS_TABS:
         href = "/jobs" if key is None else f"/jobs?status={key}"
         cls = ' class="active" aria-current="page"' if key == tab else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
-    cards = "".join(_job_card(db.get_job(j["job_id"])) for j in jobs[:30])
+    cards = "".join(_job_card(db.get_job(jid)) for jid in job_ids)
     if not cards:
         cards = (
             "<p style='color:var(--muted)'>No jobs here yet - post one "
@@ -764,6 +836,9 @@ def jobs_page(request: Request) -> HTMLResponse:
         f"{counts['completed']} completed"
         f"</p>"
     )
+    pager_top = _jobs_pager(tab, page, total_pages, top=True)
+    pager_bot = _jobs_pager(tab, page, total_pages)
+    meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \xb7 {total} jobs</p>" if total else ""
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Jobs</h2>'
@@ -774,8 +849,11 @@ def jobs_page(request: Request) -> HTMLResponse:
         "nothing (their escrow stays held until the job ends). Scope "
         "tags are advisory pointers, never restrictions.</p>"
         + strip
+        + meta
         + tabs
+        + pager_top
         + cards
+        + pager_bot
         + "</div>"
     )
     return _page("jobs", _with_rail(body), section="jobs")
