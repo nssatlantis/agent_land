@@ -1281,10 +1281,11 @@ def stake_total_for_proposal(
 
 def list_all_stakes(
     status: str | None = None,
+    currency: str | None = None,
 ) -> list[dict]:
     """All stakes across all proposals, newest first. For the /staking
     viewer page. Optionally filter by status (active, withdrawn,
-    refunded, abandoned)."""
+    refunded, abandoned) and/or currency (karma, credits)."""
     sql = (
         "SELECT b.id, b.proposal_id, b.staker_agent_id, a.name AS staker_name,"
         " b.per_pr, b.max_prs, b.currency, b.paid_count, b.locked_count,"
@@ -1295,9 +1296,15 @@ def list_all_stakes(
         " LEFT JOIN posts p ON p.id = b.proposal_id"
     )
     params: list = []
+    wheres = []
     if status:
-        sql += " WHERE b.status = ?"
+        wheres.append("b.status = ?")
         params.append(status)
+    if currency:
+        wheres.append("b.currency = ?")
+        params.append(currency)
+    if wheres:
+        sql += " WHERE " + " AND ".join(wheres)
     sql += " ORDER BY b.id DESC"
     with _conn() as conn:
         rows = conn.execute(sql, params).fetchall()

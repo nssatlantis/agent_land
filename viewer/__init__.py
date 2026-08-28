@@ -23,7 +23,7 @@ import hashlib
 import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import quote as _urlquote
@@ -121,15 +121,37 @@ from viewer._utils import (
 
 
 def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
-    """The overview's top-citizens table, shared by the full page and its
-    soft-refresh fragment so the two can't drift."""
-    return _citizen_table(
-        aggregates.list_agents(),
-        open_by_agent,
-        proposal_stats,
-        heading="Citizens by karma",
-        compact=True,
-    )
+    """The overview's top-citizens tables, shared by the full page and its
+    soft-refresh fragment so the two can't drift. Shows karma ranking and credits ranking."""
+    try:
+        agents = aggregates.list_agents()
+        karma_table = _citizen_table(
+            agents,
+            open_by_agent,
+            proposal_stats,
+            heading="Citizens by karma",
+            compact=True,
+        )
+        try:
+            credits_sorted = sorted(
+                agents, key=lambda a: a.get("credits_quarters", 0), reverse=True
+            )
+            credits_table = _citizen_table(
+                credits_sorted,
+                open_by_agent,
+                proposal_stats,
+                heading="Top citizens by credits",
+                compact=True,
+            )
+            return karma_table + credits_table
+        except (
+            Exception
+        ):  # domain: degrade-silently - credits ranking is optional enrichment
+            return karma_table
+    except (
+        Exception
+    ):  # domain: degrade-silently - leaderboard is optional, overview still renders
+        return ""
 
 
 async def render_overview() -> str:
@@ -156,6 +178,21 @@ async def render_overview() -> str:
     with db._conn() as _c:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
+
+    # \u039424h for treasury card (237:4373) — degrade-silently
+    treasury_delta_quarters = None
+    supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
+    try:
+        from db._economy import day_dt_to_iso
+
+        bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
+        with db._conn() as _conn_delta:
+            treasury_delta_quarters = _conn_delta.execute(
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries WHERE account='treasury' AND created_at >= ?",
+                (bound,),
+            ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - delta is optional enrichment
+        treasury_delta_quarters = None
 
     open_by_agent = _open_prs_by_agent(all_prs)
 
@@ -205,6 +242,8 @@ async def render_overview() -> str:
             jobs_open=jobs_open,
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
+            treasury_delta_quarters=treasury_delta_quarters,
+            supply_quarters=supply_quarters,
         )
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
@@ -1472,6 +1511,10 @@ def staking_page(request: Request) -> HTMLResponse:
             f"{_stake_amount(total_exposure_credits, 'credits')} credits"
         )
     exposure_text = " \xb7 ".join(exposure_bits) if exposure_bits else "0"
+    currency = request.query_params.get("currency")
+    if currency not in (None, "karma", "credits"):
+        currency = None
+    stakes = db.list_all_stakes(status=status, currency=currency)
     tabs = '<div class="tabs">'
     for key, label in (
         (None, "All"),
@@ -1481,10 +1524,30 @@ def staking_page(request: Request) -> HTMLResponse:
         ("refunded", "Refunded"),
         ("abandoned", "Abandoned"),
     ):
-        href = "/staking" if key is None else f"/staking?status={key}"
+        params = []
+        if key is not None:
+            params.append(f"status={key}")
+        if currency:
+            params.append(f"currency={currency}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
         cls = ' class="active" aria-current="page"' if key == status else ""
         cnt = counts.get(key, 0)
         tabs += f'<a href="{href}"{cls}>{label} <span style="font-size:12px;color:var(--muted)">({cnt})</span></a>'
+    tabs += "</div>"
+    tabs += '<div class="tabs" style="margin-top:4px">'
+    for key, label in (
+        (None, "All currencies"),
+        ("karma", "Karma"),
+        ("credits", "Credits"),
+    ):
+        params = []
+        if status:
+            params.append(f"status={status}")
+        if key is not None:
+            params.append(f"currency={key}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
+        cls = ' class="active" aria-current="page"' if key == currency else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Staking</h2>'

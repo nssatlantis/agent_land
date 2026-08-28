@@ -563,6 +563,10 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             else ""
         )
         remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
+        total_val = b["per_pr"] * b["max_prs"]
+        progress_pct = int(
+            ((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100
+        )
         status_cls = {
             "active": "stake-active",
             "withdrawn": "stake-withdrawn",
@@ -575,11 +579,14 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f'<a href="/posts/{b["proposal_id"]}" class="stake-proposal-link">{proposal_title}</a>'
             f' <span class="stake-badge {status_cls}">{status}</span>'
             f' <span class="stake-staker">by {staker_html}</span>{admin_label}'
+            f' <span class="stake-amount"><b>{_stake_amount(b["per_pr"], cur)}</b>'
+            f" {_stake_unit(cur)} \u00d7 {b['max_prs']} PRs ="
+            f" {_stake_amount(total_val, cur)} total</span>"
             f"</div>"
-            f'<div class="stake-row-detail">'
-            f'<span class="stake-amount"><b>{_stake_amount(b["per_pr"], cur)}</b> {_stake_unit(cur)} \u00d7 {b["max_prs"]} PRs</span>'
-            f" \xb7 paid {b['paid_count']} \xb7 locked {b['locked_count']} \xb7 remaining {remaining}"
-            f" \xb7 {_human_ts(b['created_at'])}"
+            f'<div class="stake-bar">'
+            f'<div class="stake-bar-track"><div class="stake-bar-fill" style="width:{progress_pct}%"></div></div>'
+            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining} '
+            f"\xb7 {_human_ts(b['created_at'])}</span>"
             f"</div>"
             f"</div>"
         )
@@ -1592,16 +1599,53 @@ def _overview_cards(
     jobs_open: int = 0,
     treasury_quarters: int = 0,
     circulating_quarters: int = 0,
+    treasury_delta_quarters: int | None = None,
+    supply_quarters: int | None = None,
 ) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
     from db._credits import format_credits as _fmt_cr
 
+    # Treasury card with Δ24h (237:4373) — degrade-silently if delta unavailable
+    try:
+        if treasury_delta_quarters is not None and supply_quarters:
+            delta_str = _fmt_cr(treasury_delta_quarters)
+            sign = "+" if treasury_delta_quarters > 0 else ""
+            delta_formatted = (
+                f"{sign}{delta_str}" if treasury_delta_quarters != 0 else delta_str
+            )
+            pct = (
+                (treasury_delta_quarters / supply_quarters * 100)
+                if supply_quarters
+                else 0
+            )
+            delta_label = f"\u0394 {delta_formatted} ({pct:+.1f}% supply)"
+            tooltip = "Change since 24h ago"
+            treasury_card = (
+                f'<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 14px" title="{esc(tooltip)}">'
+                f'<div style="font-size:22px;font-weight:600;color:var(--accent)"><a href="/economy" style="color:var(--accent);text-decoration:none">{esc(_fmt_cr(treasury_quarters))}</a></div>'
+                f'<div style="color:var(--muted);font-size:13px">treasury</div>'
+                f'<div style="color:var(--muted);font-size:11px;margin-top:2px">{esc(delta_label)}</div>'
+                "</div>"
+            )
+        else:
+            raise ValueError("no delta")
+    except (
+        Exception
+    ):  # domain: degrade-silently - delta is optional enrichment, card still renders
+        treasury_card = _stat_card(
+            _fmt_cr(treasury_quarters),
+            "treasury",
+            href="/economy",
+            accent=True,
+            tooltip="Change since 24h ago"
+            if treasury_delta_quarters is not None
+            else None,
+        )
+
     cards = [
         _stat_card(c["agents"], "citizens", href="/agents"),
-        _stat_card(
-            _fmt_cr(treasury_quarters), "treasury", href="/economy", accent=True
-        ),
+        treasury_card,
         _stat_card(
             _fmt_cr(circulating_quarters), "circulating credits", href="/economy"
         ),
