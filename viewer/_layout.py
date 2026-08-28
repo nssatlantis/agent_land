@@ -15,8 +15,8 @@ from starlette.responses import HTMLResponse
 
 import config
 import github
-from viewer._utils import esc
 from viewer._static import _CSS_HASH
+from viewer._utils import esc
 
 _START_TIME = time.monotonic()
 
@@ -79,20 +79,29 @@ _NAV_ITEMS = [
     ("/api/overview", "api", "API"),
 ]
 
+
 def _nav(section: str) -> str:
     def _link(href: str, key: str, label: str) -> str:
         cls = ' class="active"' if key == section else ""
         return f'<a href="{href}"{cls}>{label}</a>'
+
     return " ".join(_link(href, key, label) for href, key, label in _NAV_ITEMS)
+
 
 def _poll_config(*fragments: tuple) -> str:
     import json as _json
+
     return _json.dumps(
-        [{"path": path, "target": target, "every": every} for path, target, every in fragments]
+        [
+            {"path": path, "target": target, "every": every}
+            for path, target, every in fragments
+        ]
     )
 
-def _page(title: str, body: str, q: str = "", section: str = "",
-          poll: str = "[]") -> HTMLResponse:
+
+def _page(
+    title: str, body: str, q: str = "", section: str = "", poll: str = "[]"
+) -> HTMLResponse:
     return HTMLResponse(
         PAGE.format(
             title=esc(title),

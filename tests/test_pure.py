@@ -1,4 +1,5 @@
 """Test pure-function checks: signature reconcile, conn pragmas, config wiring, config-drift guard."""
+
 import os
 import re
 import sys
@@ -11,7 +12,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, config, init  # noqa: E402
+from tests._setup import config, db, init  # noqa: E402
 
 
 def test_signature_reconcile():
@@ -70,10 +71,13 @@ def test_conn_pragmas():
     # its valid 0/1/2 range, so the assertion holds for any configured value;
     # mmap_size is set unconditionally and reads back what was configured.
     with db._conn() as conn:
-        assert conn.execute("PRAGMA temp_store").fetchone()[0] == config.SQLITE_TEMP_STORE, \
-            "temp_store must be applied per connection"
-        assert conn.execute("PRAGMA mmap_size").fetchone()[0] == config.SQLITE_MMAP_SIZE_BYTES, \
-            "mmap_size must be applied per connection"
+        assert (
+            conn.execute("PRAGMA temp_store").fetchone()[0] == config.SQLITE_TEMP_STORE
+        ), "temp_store must be applied per connection"
+        assert (
+            conn.execute("PRAGMA mmap_size").fetchone()[0]
+            == config.SQLITE_MMAP_SIZE_BYTES
+        ), "mmap_size must be applied per connection"
     print("  conn pragmas: ok")
 
 
@@ -95,21 +99,27 @@ def test_big_py_files():
     # Large file in subpackage
     (sub / "deep.py").write_text("\n".join(["y = 2"] * 1500), encoding="utf-8")
     # File in __pycache__ must be ignored
-    (root / "__pycache__" / "cached.py").write_text("\n".join(["z = 3"] * 3000), encoding="utf-8")
+    (root / "__pycache__" / "cached.py").write_text(
+        "\n".join(["z = 3"] * 3000), encoding="utf-8"
+    )
     # Non-.py file must be ignored
     (root / "data.txt").write_text("\n".join(["w = 4"] * 5000), encoding="utf-8")
 
     # Default threshold (1500): big.py and pkg/deep.py, largest first
     result = _big_py_files(root, 1500)
     names = [name for name, _ in result]
-    assert ("big.py" in names), f"big.py should appear, got {names}"
-    assert ("pkg/deep.py" in names), f"pkg/deep.py should appear, got {names}"
-    assert ("tiny.py" not in names), f"tiny.py must not appear, got {names}"
-    assert ("__pycache__/cached.py" not in names), f"cached.py must not appear, got {names}"
-    assert ("data.txt" not in names), f"data.txt must not appear, got {names}"
+    assert "big.py" in names, f"big.py should appear, got {names}"
+    assert "pkg/deep.py" in names, f"pkg/deep.py should appear, got {names}"
+    assert "tiny.py" not in names, f"tiny.py must not appear, got {names}"
+    assert "__pycache__/cached.py" not in names, (
+        f"cached.py must not appear, got {names}"
+    )
+    assert "data.txt" not in names, f"data.txt must not appear, got {names}"
     # Sorted largest-first
     counts = {name: c for name, c in result}
-    assert counts["big.py"] >= counts["pkg/deep.py"], "results must be sorted largest-first"
+    assert counts["big.py"] >= counts["pkg/deep.py"], (
+        "results must be sorted largest-first"
+    )
 
     # Lower threshold includes tiny.py
     result2 = _big_py_files(root, 5)
@@ -138,14 +148,19 @@ def main():
     # point), and config must honor the FORUM_DB_PATH set above - process env
     # wins over .env files, exactly like the old bootstrap in db.
     assert config.DB_PATH == db.DB_PATH, "db must take DB_PATH from config.py"
-    assert config.SCHEMA_PATH == db.SCHEMA_PATH, "db must take SCHEMA_PATH from config.py"
+    assert config.SCHEMA_PATH == db.SCHEMA_PATH, (
+        "db must take SCHEMA_PATH from config.py"
+    )
     assert config.DATA_DIR == db.DATA_DIR, "db must take DATA_DIR from config.py"
     assert config.REPO_DIR == db.REPO_DIR, "db must take REPO_DIR from config.py"
-    assert config.POST_COOLDOWN_SECONDS == 0, "the test's cooldown override must reach config"
+    assert config.POST_COOLDOWN_SECONDS == 0, (
+        "the test's cooldown override must reach config"
+    )
     assert config.DB_PATH == str(_TMP / "forum.db"), "config must honor FORUM_DB_PATH"
     assert Path(config.SCHEMA_PATH).is_file(), "schema.sql must sit next to config.py"
-    assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR), \
+    assert not Path(config.DB_PATH).resolve().is_relative_to(config.REPO_DIR), (
         "the test DB must never resolve inside the repo"
+    )
 
     # --- config-drift guard ------------------------------------------------
     # Every knob config.py knows must sit in the CONFIG_KNOBS manifest (the
@@ -180,17 +195,92 @@ def main():
     # No module outside config.py may read a FORUM_*/VIEWER_* knob straight
     # from the environment - every tunable flows through config.py so the
     # live-reload machinery and this guard both see it.
-    for module in ("server/__init__.py", "server/_mcp.py", "server/_app.py", "server/middleware.py", "server/records.py", "server/pr_views.py", "server/__main__.py", "server/tools/forum.py", "server/tools/repo.py", "server/tools/economy.py", "server/tools/collab.py", "server/tools/discovery.py", "server/tools/moderation.py", "server/tools/notifications.py", "github/_core.py", "github/_reads.py", "github/_checks.py", "github/_writes.py", "github/_gitops.py", "github/__init__.py", "db/_core.py", "db/_agent.py", "db/_content.py", "db/_proposal.py", "db/_tags.py", "db/_collaborative.py", "db/_karma.py", "db/_text.py", "db/_health.py", "db/_aggregates.py", "db/_cooldown.py", "db/_comments.py", "db/_nudges.py", "db/_proposal_status.py", "db/_proposal_todos.py", "db/_proposal_delegation.py", "db/_proposal_docket.py", "db/_claiming.py", "db/_staking.py", "db/_credits.py", "db/_economy.py", "db/_pr_vote.py", "db/_bug_reports.py", "db/_subscriptions.py", "logutil.py", "server/admin.py", "rules_text.py", "moderation.py", "notifications.py", "search.py", "server/repo_search.py", "server/repo_helpers.py", "server/poller.py", "viewer/__init__.py", "viewer/_agents.py", "viewer/_helpers.py", "viewer/_layout.py", "viewer/_proposals.py", "viewer/_status.py", "viewer/_utils.py", "viewer/_events.py", "viewer/_api.py"):
+    for module in (
+        "server/__init__.py",
+        "server/_mcp.py",
+        "server/_app.py",
+        "server/middleware.py",
+        "server/records.py",
+        "server/pr_views.py",
+        "server/__main__.py",
+        "server/tools/forum.py",
+        "server/tools/repo.py",
+        "server/tools/economy.py",
+        "server/tools/collab.py",
+        "server/tools/discovery.py",
+        "server/tools/moderation.py",
+        "server/tools/notifications.py",
+        "github/_core.py",
+        "github/_reads.py",
+        "github/_checks.py",
+        "github/_writes.py",
+        "github/_gitops.py",
+        "github/__init__.py",
+        "db/_core.py",
+        "db/_agent.py",
+        "db/_content.py",
+        "db/_proposal.py",
+        "db/_tags.py",
+        "db/_collaborative.py",
+        "db/_karma.py",
+        "db/_text.py",
+        "db/_health.py",
+        "db/_aggregates.py",
+        "db/_cooldown.py",
+        "db/_comments.py",
+        "db/_nudges.py",
+        "db/_proposal_status.py",
+        "db/_proposal_todos.py",
+        "db/_proposal_delegation.py",
+        "db/_proposal_docket.py",
+        "db/_claiming.py",
+        "db/_staking.py",
+        "db/_credits.py",
+        "db/_economy.py",
+        "db/_pr_vote.py",
+        "db/_bug_reports.py",
+        "db/_subscriptions.py",
+        "logutil.py",
+        "server/admin.py",
+        "rules_text.py",
+        "moderation.py",
+        "notifications.py",
+        "search.py",
+        "server/repo_search.py",
+        "server/repo_helpers.py",
+        "server/poller.py",
+        "viewer/__init__.py",
+        "viewer/_agents.py",
+        "viewer/_helpers.py",
+        "viewer/_layout.py",
+        "viewer/_proposals.py",
+        "viewer/_status.py",
+        "viewer/_utils.py",
+        "viewer/_events.py",
+        "viewer/_api.py",
+    ):
         mod_text = Path(config.REPO_DIR / module).read_text(encoding="utf-8")
-        leaked = set(re.findall(r'os\.environ\.get\("((?:FORUM|VIEWER)_[A-Z0-9_]+)"', mod_text))
-        assert not leaked, f"{module} reads tunables straight from the env: {sorted(leaked)}"
-    example_knobs = set(re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=", example_text, re.MULTILINE))
+        leaked = set(
+            re.findall(r'os\.environ\.get\("((?:FORUM|VIEWER)_[A-Z0-9_]+)"', mod_text)
+        )
+        assert not leaked, (
+            f"{module} reads tunables straight from the env: {sorted(leaked)}"
+        )
+    example_knobs = set(
+        re.findall(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=", example_text, re.MULTILINE)
+    )
     assert knob_envs <= example_knobs, (
         "every knob config.py reads must be documented in .env.example; "
         f"undocumented: {sorted(knob_envs - example_knobs)}"
     )
-    exempt = {"GITHUB_TOKEN", "GITHUB_REPO", "GITHUB_BASE_BRANCH",
-              "ADMIN_USER", "ADMIN_PASSWORD", "AGENTLAND_ALLOW_EMPTY_DB"}
+    exempt = {
+        "GITHUB_TOKEN",
+        "GITHUB_REPO",
+        "GITHUB_BASE_BRANCH",
+        "ADMIN_USER",
+        "ADMIN_PASSWORD",
+        "AGENTLAND_ALLOW_EMPTY_DB",
+    }
     undocumented = (example_knobs - knob_envs) - exempt
     assert not undocumented, (
         ".env.example documents knobs config.py does not read; "
@@ -206,7 +296,9 @@ def main():
     # 'useful variables' list; .env.example (asserted above) is the complete
     # reference.
     readme_text = Path(config.REPO_DIR / "README.md").read_text(encoding="utf-8")
-    readme_knobs = set(re.findall(r"^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|", readme_text, re.MULTILINE))
+    readme_knobs = set(
+        re.findall(r"^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|", readme_text, re.MULTILINE)
+    )
     readme_exempt = exempt | {"FORUM_TEST_ALLOW_REMOTE"}
     stale = (readme_knobs - knob_envs) - readme_exempt
     assert not stale, (
@@ -224,6 +316,7 @@ def main():
 
     print("test_pure: all assertions passed")
     import shutil
+
     shutil.rmtree(_TMP, ignore_errors=True)
 
 

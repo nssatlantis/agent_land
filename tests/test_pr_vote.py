@@ -10,12 +10,13 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests._setup import db, expect_error, setup  # noqa: E402
 import events  # noqa: E402
 
 # Voting now syncs a cosmetic GitHub label; stub it so the suite never hits
 # the GitHub API.  Individual tests may override these with recorders.
 import github as _github_mod  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
+
 _github_mod.add_pr_label = lambda *a, **k: None
 _github_mod.remove_pr_label = lambda *a, **k: None
 _github_mod.list_pr_labels = lambda *a, **k: []
@@ -24,6 +25,7 @@ _github_mod.list_pr_labels = lambda *a, **k: []
 AGENTS, _ = setup()
 
 # -- helpers --
+
 
 def _link_manual(proposal_id, pr_number, opener_name="alpha"):
     """Manually link a PR to a proposal for testing (bypasses GitHub)."""
@@ -49,12 +51,16 @@ proposal_id_counter = [0]
 
 # -- tests --
 
+
 def test_pr_vote_schema():
     """pr_votes table exists with correct structure."""
     with db._conn() as conn:
-        tables = {r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()}
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
     assert "pr_votes" in tables, "pr_votes table missing"
     print("  pr_votes schema: ok")
 
@@ -151,7 +157,9 @@ def test_eligible_for_merge():
 
     db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, 1)
     with db._conn() as conn:
-        assert not db.pr_eligible_for_merge(conn, pr_number)  # net=2, dynamic threshold=3
+        assert not db.pr_eligible_for_merge(
+            conn, pr_number
+        )  # net=2, dynamic threshold=3
 
     db.vote_on_pr(AGENTS["delta"]["token"], pr_number, 1)
     with db._conn() as conn:
@@ -169,11 +177,15 @@ def test_eligible_for_decline():
 
     db.vote_on_pr(AGENTS["gamma"]["token"], pr_number, -1)
     with db._conn() as conn:
-        assert not db.pr_eligible_for_decline(conn, pr_number)  # net=-2, dynamic threshold=3
+        assert not db.pr_eligible_for_decline(
+            conn, pr_number
+        )  # net=-2, dynamic threshold=3
 
     db.vote_on_pr(AGENTS["delta"]["token"], pr_number, -1)
     with db._conn() as conn:
-        assert db.pr_eligible_for_decline(conn, pr_number)  # net=-3, dynamic threshold=3
+        assert db.pr_eligible_for_decline(
+            conn, pr_number
+        )  # net=-3, dynamic threshold=3
     print("  eligible_for_decline: ok")
 
 
@@ -323,7 +335,9 @@ def test_min_karma_pr_vote():
     try:
         os.environ["FORUM_MIN_KARMA_PR_VOTE"] = "2"
         import importlib
+
         import config as _cfg
+
         importlib.reload(_cfg)
         # "fresh" has 0 karma -> should be rejected
         err = expect_error(db.vote_on_pr, AGENTS["fresh"]["token"], pr_number, 1)
@@ -346,7 +360,9 @@ def test_proposal_author_notification():
 
     # Create a normal (non-small-fix) proposal authored by gamma
     proposal = db.create_proposal(
-        AGENTS["gamma"]["token"], "Author notification test", "Body",
+        AGENTS["gamma"]["token"],
+        "Author notification test",
+        "Body",
     )
     pid = proposal["post_id"]
     pr_number = 9500 + pid
@@ -354,6 +370,7 @@ def test_proposal_author_notification():
 
     # Clear gamma's mailbox
     from notifications import mark_notifications_read
+
     mark_notifications_read(AGENTS["gamma"]["token"])
 
     # beta votes on the PR -> gamma (proposal author) should be notified
@@ -367,12 +384,14 @@ def test_proposal_author_notification():
 
 def test_proposal_author_deduped_when_opener():
     """No duplicate notification when proposal author == PR opener."""
-    from notifications import notifications as get_notifications
     from notifications import mark_notifications_read
+    from notifications import notifications as get_notifications
 
     # alpha authors a proposal AND opens the PR
     proposal = db.create_proposal(
-        AGENTS["alpha"]["token"], "Dedup opener test", "Body",
+        AGENTS["alpha"]["token"],
+        "Dedup opener test",
+        "Body",
     )
     pid = proposal["post_id"]
     pr_number = 9600 + pid
@@ -384,18 +403,21 @@ def test_proposal_author_deduped_when_opener():
     db.vote_on_pr(AGENTS["beta"]["token"], pr_number, 1)
     alpha_notifs = get_notifications(AGENTS["alpha"]["token"], unread_only=True)
     pr_notifs = [n for n in alpha_notifs["notifications"] if n["kind"] == "pr"]
-    assert len(pr_notifs) == 1, \
+    assert len(pr_notifs) == 1, (
         f"expected exactly 1 notification (not {len(pr_notifs)}) when author == opener"
+    )
     print("  proposal_author_deduped_when_opener: ok")
 
 
 def test_vote_change_renotifies():
     """Changing a vote re-notifies the proposal author."""
-    from notifications import notifications as get_notifications
     from notifications import mark_notifications_read
+    from notifications import notifications as get_notifications
 
     proposal = db.create_proposal(
-        AGENTS["gamma"]["token"], "Vote change renotify test", "Body",
+        AGENTS["gamma"]["token"],
+        "Vote change renotify test",
+        "Body",
     )
     pid = proposal["post_id"]
     pr_number = 9700 + pid
@@ -411,8 +433,9 @@ def test_vote_change_renotifies():
     # beta changes to -1 -> gamma should be notified again
     db.vote_on_pr(AGENTS["beta"]["token"], pr_number, -1)
     second = get_notifications(AGENTS["gamma"]["token"], unread_only=True)
-    assert second["unread_count"] > first_count, \
+    assert second["unread_count"] > first_count, (
         "vote change should generate a new notification for proposal author"
+    )
     print("  vote_change_renotifies: ok")
 
 
@@ -420,6 +443,7 @@ def test_votes_passed_label_syncs():
     """The dynamic vote-tally label tracks the current up/down count and
     colour-codes it by net score and merge eligibility."""
     import github as _github
+
     real_add, real_remove, real_list = (
         _github.add_pr_label,
         _github.remove_pr_label,
@@ -487,8 +511,10 @@ def test_votes_passed_label_syncs():
 def test_remove_pr_label_encodes_url():
     """remove_pr_label percent-encodes the label name in the DELETE URL
     so labels containing '/', ':', '[', ']' etc. are sent correctly."""
-    import github as _github
     import urllib.parse
+
+    import github as _github
+
     real_request = _github._core._request
     captured_paths: list[str] = []
 
@@ -518,6 +544,7 @@ def test_remove_pr_label_encodes_url():
 def test_pr_vote_tally():
     """pr_vote_tally returns a tally dict with up/down/net/voters."""
     from db._pr_vote import pr_vote_tally
+
     # Non-existent PR should return empty tally
     tally = pr_vote_tally(99999)
     assert tally["pr_number"] == 99999
@@ -630,7 +657,10 @@ def test_vote_deadlock_breaks_via_flip():
 
     # A fresh +1 from a new voter would push net to 4 > threshold → blocked.
     err = expect_error(
-        db.vote_on_pr, AGENTS["theta"]["token"], pr_number, 1,
+        db.vote_on_pr,
+        AGENTS["theta"]["token"],
+        pr_number,
+        1,
     )
     assert "enough votes" in err.lower()
 

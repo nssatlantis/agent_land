@@ -4,6 +4,7 @@ Covers every gate in the auto-merge/decline orchestrator: proposal kind,
 hold label, CI status, threshold eligibility, rebase flow, and error handling.
 No real GitHub calls â€” all github module functions are replaced with stubs.
 """
+
 import os
 import sys
 import tempfile
@@ -17,12 +18,11 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
-import github  # noqa: E402
-import events  # noqa: E402
 import config  # noqa: E402
+import events  # noqa: E402
+import github  # noqa: E402
 from server.poller import _pr_vote_sweep  # noqa: E402
-
+from tests._setup import db, setup  # noqa: E402
 
 # -- shared setup --
 AGENTS, _ = setup()
@@ -40,6 +40,7 @@ _orig = {
 
 
 # -- helpers --
+
 
 def _make_small_fix(opener_name="alpha"):
     """Create a small-fix proposal and return (proposal_id, pr_number)."""
@@ -61,45 +62,56 @@ _counter = [0]
 
 def _stub_open_prs(*prs):
     """Return a function that replaces github.open_prs."""
+
     def fake():
         return list(prs)
+
     return fake
 
 
 def _stub_pr_has_label(hold=False):
     """Return a function that replaces github.pr_has_label."""
+
     def fake(number, label):
         if label == "hold":
             return hold
         return False
+
     return fake
 
 
 def _stub_pr_checks(state="success"):
     """Return a function that replaces github.pr_checks."""
+
     def fake(number, *, _head_sha=None):
         return {"state": state}
+
     return fake
 
 
 def _stub_rebase(status="ok", files=None):
     """Return a function that replaces github.rebase_pr_onto_main."""
+
     def fake(number, **kw):
         if status == "ok":
             return {"status": "ok", "new_sha": "rebased_sha"}
         return {"status": status, "files": files or []}
+
     return fake
 
 
 def _stub_wait_ci(result="success"):
     """Return a function that replaces github.wait_for_ci."""
+
     def fake(number, **kw):
         return result
+
     return fake
 
 
 class _CallLog:
     """Records calls to merge_pr / decline_pr / rebase."""
+
     def __init__(self):
         self.calls = []
 
@@ -122,10 +134,19 @@ class _CallLog:
 
 def _open_pr_dict(number, citizen=None, created_at=""):
     """Minimal github.open_prs() row shape."""
-    d = {"number": number, "title": "test", "head": "branch",
-         "base": "main", "author": "nobody", "created_at": created_at,
-         "html_url": "", "mergeable_state": "clean", "body": "",
-         "head_sha": "sha", "citizen": citizen}
+    d = {
+        "number": number,
+        "title": "test",
+        "head": "branch",
+        "base": "main",
+        "author": "nobody",
+        "created_at": created_at,
+        "html_url": "",
+        "mergeable_state": "clean",
+        "body": "",
+        "head_sha": "sha",
+        "citizen": citizen,
+    }
     return d
 
 
@@ -144,10 +165,12 @@ def _patch(**attrs):
         finally:
             for k, v in saved.items():
                 setattr(github, k, v)
+
     return _ctx()
 
 
 # -- tests --
+
 
 def test_sweep_merges_eligible():
     """Small-fix PR with net >= threshold, CI green, no hold -> rebase + CI + merge."""
@@ -169,9 +192,13 @@ def test_sweep_merges_eligible():
         actions = _pr_vote_sweep()
 
     assert ("rebase", pr_number) in log.calls, f"rebase not called; actions={actions}"
-    assert ("wait_ci", pr_number) in log.calls, f"wait_for_ci not called; actions={actions}"
+    assert ("wait_ci", pr_number) in log.calls, (
+        f"wait_for_ci not called; actions={actions}"
+    )
     assert ("merge", pr_number) in log.calls, f"merge_pr not called; actions={actions}"
-    assert not any(a[0] == "decline" for a in log.calls), "decline_pr should not be called"
+    assert not any(a[0] == "decline" for a in log.calls), (
+        "decline_pr should not be called"
+    )
     evts = events.query_events(kind="pr_auto_merged", target_id=pr_number)
     assert len(evts) == 1, "EVT_PR_AUTO_MERGED not logged"
     print("  sweep merges eligible: ok")
@@ -228,7 +255,9 @@ def test_sweep_skips_hold_label():
     ):
         _pr_vote_sweep()
 
-    assert not log.calls, f"merge/decline should not be called with hold label: {log.calls}"
+    assert not log.calls, (
+        f"merge/decline should not be called with hold label: {log.calls}"
+    )
     print("  sweep skips hold label: ok")
 
 
@@ -279,7 +308,9 @@ def test_sweep_declines_opposed():
     finally:
         config.PR_DECLINE_GRACE_SECONDS = old_grace
 
-    assert ("decline", pr_number) in log.calls, f"decline_pr not called; actions={actions}"
+    assert ("decline", pr_number) in log.calls, (
+        f"decline_pr not called; actions={actions}"
+    )
     assert not any(a[0] == "merge" for a in log.calls), "merge_pr should not be called"
     evts = events.query_events(kind="pr_auto_declined", target_id=pr_number)
     assert len(evts) == 1, "EVT_PR_AUTO_DECLINED not logged"
@@ -386,8 +417,12 @@ def test_sweep_rebase_conflict_skips_merge():
         actions = _pr_vote_sweep()
 
     assert ("rebase", pr_number) in log.calls, f"rebase should be called: {actions}"
-    assert ("wait_ci", pr_number) not in log.calls, "wait_for_ci should not be called on conflict"
-    assert ("merge", pr_number) not in log.calls, "merge should not be called on conflict"
+    assert ("wait_ci", pr_number) not in log.calls, (
+        "wait_for_ci should not be called on conflict"
+    )
+    assert ("merge", pr_number) not in log.calls, (
+        "merge should not be called on conflict"
+    )
     evts = events.query_events(kind="pr_auto_merged", target_id=pr_number)
     assert len(evts) == 0, "no auto_merge event on rebase conflict"
     print("  sweep rebase conflict skips merge: ok")
@@ -419,7 +454,9 @@ def test_sweep_ci_fails_after_rebase():
 
     assert ("rebase", pr_number) in log.calls, f"rebase should be called: {actions}"
     assert ("wait_ci", pr_number) in log.calls, "wait_for_ci should be called"
-    assert ("merge", pr_number) not in log.calls, "merge should not be called when CI fails"
+    assert ("merge", pr_number) not in log.calls, (
+        "merge should not be called when CI fails"
+    )
     evts = events.query_events(kind="pr_auto_merged", target_id=pr_number)
     assert len(evts) == 0, "no auto_merge event when CI fails after rebase"
     print("  sweep CI fails after rebase: ok")
@@ -451,7 +488,10 @@ def test_sweep_normal_proposal_when_toggle_off():
     old = os.environ.get("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY")
     try:
         os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "0"
-        import importlib, config as _cfg
+        import importlib
+
+        import config as _cfg
+
         importlib.reload(_cfg)
 
         log = _CallLog()
@@ -467,8 +507,9 @@ def test_sweep_normal_proposal_when_toggle_off():
         ):
             _pr_vote_sweep()
 
-        assert ("merge", pr_number) in log.calls, \
+        assert ("merge", pr_number) in log.calls, (
             f"merge_pr should be called for normal proposal when toggle=0: {log.calls}"
+        )
     finally:
         if old is None:
             os.environ.pop("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", None)
@@ -505,7 +546,10 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
     old_grace = config.PR_DECLINE_GRACE_SECONDS
     try:
         os.environ["FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY"] = "0"
-        import importlib, config as _cfg
+        import importlib
+
+        import config as _cfg
+
         importlib.reload(_cfg)
         config.PR_DECLINE_GRACE_SECONDS = 0
 
@@ -522,8 +566,9 @@ def test_sweep_declines_normal_proposal_when_toggle_off():
         ):
             _pr_vote_sweep()
 
-        assert ("decline", pr_number) in log.calls, \
+        assert ("decline", pr_number) in log.calls, (
             f"decline_pr should be called for normal proposal when toggle=0: {log.calls}"
+        )
     finally:
         if old is None:
             os.environ.pop("FORUM_PR_AUTO_MERGE_SMALL_FIX_ONLY", None)
@@ -545,7 +590,9 @@ def test_sweep_merge_delayed_when_young():
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
     with _patch(
-        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener, created_at=recent)),
+        open_prs=_stub_open_prs(
+            _open_pr_dict(pr_number, citizen=opener, created_at=recent)
+        ),
         pr_has_label=_stub_pr_has_label(hold=False),
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
@@ -569,7 +616,9 @@ def test_sweep_merge_proceeds_when_old():
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
     with _patch(
-        open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener, created_at=old)),
+        open_prs=_stub_open_prs(
+            _open_pr_dict(pr_number, citizen=opener, created_at=old)
+        ),
         pr_has_label=_stub_pr_has_label(hold=False),
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
@@ -635,7 +684,9 @@ def test_sweep_decline_after_grace():
         wait_for_ci=log.wait_ci,
     ):
         actions = _pr_vote_sweep()
-    assert ("decline", pr_number) in log.calls, f"decline should fire after grace: {actions}"
+    assert ("decline", pr_number) in log.calls, (
+        f"decline should fire after grace: {actions}"
+    )
     print("  sweep decline after grace: ok")
 
 
@@ -664,10 +715,12 @@ def test_sweep_batches_multiple_prs():
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
     with _patch(
-        open_prs=_stub_open_prs(*[
-            _open_pr_dict(n, citizen=opener, created_at=old)
-            for n in (pr_merge, pr_decline, pr_neutral)
-        ]),
+        open_prs=_stub_open_prs(
+            *[
+                _open_pr_dict(n, citizen=opener, created_at=old)
+                for n in (pr_merge, pr_decline, pr_neutral)
+            ]
+        ),
         pr_has_label=_stub_pr_has_label(hold=False),
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
@@ -679,8 +732,9 @@ def test_sweep_batches_multiple_prs():
 
     assert ("merge", pr_merge) in log.calls, f"eligible PR must merge: {log.calls}"
     assert ("decline", pr_decline) in log.calls, f"opposed PR must decline: {log.calls}"
-    assert not any(a[1] == pr_neutral for a in log.calls), \
+    assert not any(a[1] == pr_neutral for a in log.calls), (
         f"neutral PR must be untouched: {log.calls}"
+    )
     print("  sweep batches multiple prs: ok")
 
 
@@ -705,9 +759,9 @@ def test_sweep_db_reads_are_batched():
     log = _CallLog()
     opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
     with _patch(
-        open_prs=_stub_open_prs(*[
-            _open_pr_dict(n, citizen=opener, created_at=old) for n in numbers
-        ]),
+        open_prs=_stub_open_prs(
+            *[_open_pr_dict(n, citizen=opener, created_at=old) for n in numbers]
+        ),
         pr_has_label=_stub_pr_has_label(hold=False),
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
@@ -757,9 +811,7 @@ def test_sweep_db_reads_are_batched():
     assert len(tally_batches) == 1, (
         f"exactly one grouped tally expected, got {len(tally_batches)}"
     )
-    per_pr_tallies = [
-        s for s in sql_log if "FROM pr_votes WHERE pr_number = ?" in s
-    ]
+    per_pr_tallies = [s for s in sql_log if "FROM pr_votes WHERE pr_number = ?" in s]
     assert not per_pr_tallies, f"per-PR tallies must be gone: {per_pr_tallies}"
     kind_fetches = [s for s in sql_log if "proposal_kind = 'small_fix'" in s]
     assert len(kind_fetches) == 1, (
@@ -767,8 +819,7 @@ def test_sweep_db_reads_are_batched():
     )
     merges = [c[1] for c in log.calls if c[0] == "merge"]
     assert merges == numbers, (
-        f"every eligible PR must drain in candidate order per sweep: "
-        f"{log.calls}"
+        f"every eligible PR must drain in candidate order per sweep: {log.calls}"
     )
     print("  sweep db reads are batched: ok")
 
@@ -797,10 +848,12 @@ def test_sweep_drains_past_rebase_conflict():
         return {"status": "ok", "new_sha": f"sha-{number}"}
 
     with _patch(
-        open_prs=_stub_open_prs(*[
-            _open_pr_dict(n, citizen=opener, created_at=old)
-            for n in (pr_bad, pr_good)
-        ]),
+        open_prs=_stub_open_prs(
+            *[
+                _open_pr_dict(n, citizen=opener, created_at=old)
+                for n in (pr_bad, pr_good)
+            ]
+        ),
         pr_has_label=_stub_pr_has_label(hold=False),
         pr_checks=_stub_pr_checks("success"),
         merge_pr=log.merge,
@@ -822,7 +875,6 @@ def test_sweep_drains_past_rebase_conflict():
     print("  sweep drains past rebase conflict: ok")
 
 
-
 def test_sweep_relinks_unlinked_open_prs():
     """Proposal #153: an open PR stamped 'Proposal: #N' whose DB link never
     landed (the claim gate refused at open time because an earlier verdict
@@ -832,13 +884,16 @@ def test_sweep_relinks_unlinked_open_prs():
     import importlib
 
     prop = db.create_proposal(
-        AGENTS["alpha"]["token"], f"Relink fixture {_counter[0]}", "Body",
+        AGENTS["alpha"]["token"],
+        f"Relink fixture {_counter[0]}",
+        "Body",
         collaborative=True,
     )
     _counter[0] += 1
     pid = prop["post_id"]
-    db.set_todos_for_post(AGENTS["alpha"]["token"], pid,
-        [{"title": "W", "items": [{"text": "task"}]}])
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"], pid, [{"title": "W", "items": [{"text": "task"}]}]
+    )
     items = [it["id"] for it in db.get_todos_for_post(pid)[0]["items"]]
     late = db.register_agent(f"relink-late-{_counter[0]}")
     _counter[0] += 1
@@ -848,8 +903,9 @@ def test_sweep_relinks_unlinked_open_prs():
     row = _open_pr_dict(
         pr_number,
         citizen={"name": late["name"], "agent_id": late["agent_id"]},
-        created_at=(datetime.now(timezone.utc) - timedelta(hours=3))
-        .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        created_at=(datetime.now(timezone.utc) - timedelta(hours=3)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
     )
     row["body"] = (
         "Implements the relink item.\n\n"
@@ -872,15 +928,17 @@ def test_sweep_relinks_unlinked_open_prs():
         ):
             # No claim held: the gate still governs - nothing links yet.
             _pr_vote_sweep()
-            assert db.proposal_for_pr(pr_number) is None, \
+            assert db.proposal_for_pr(pr_number) is None, (
                 "gate must hold while the opener claims nothing"
+            )
 
             # The remedy the refusal prescribes: claim an undone item.
             db.claim_todo_item(late["token"], pid, items[0])
 
             _pr_vote_sweep()
-            assert db.proposal_for_pr(pr_number) == pid, \
+            assert db.proposal_for_pr(pr_number) == pid, (
                 "the sweep must relink once the opener holds a claim"
+            )
     finally:
         if saved_flag is None:
             os.environ.pop("FORUM_TODO_CLAIM_REQUIRED", None)
@@ -893,19 +951,27 @@ def test_sweep_relinks_unlinked_open_prs():
 def test_collaborative_digest_sweep():
     """_collaborative_digest_sweep sends digests to collaborators with undone to-dos."""
     from server.poller import _collaborative_digest_sweep
+
     # Create a collaborative proposal with to-dos
     prop = db.create_proposal(
-        AGENTS["alpha"]["token"], "Collab digest sweep test", "body",
+        AGENTS["alpha"]["token"],
+        "Collab digest sweep test",
+        "body",
         collaborative=True,
     )
     pid = prop["post_id"]
-    db.set_todos_for_post(AGENTS["alpha"]["token"], pid, [
-        {"title": "Tasks", "items": [{"text": "task1"}, {"text": "task2"}]},
-    ])
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"],
+        pid,
+        [
+            {"title": "Tasks", "items": [{"text": "task1"}, {"text": "task2"}]},
+        ],
+    )
     # Join as collaborator
     db.join_proposal(AGENTS["beta"]["token"], pid)
     # Verify the work list returns items for beta
     from db._nudges import _collab_work_list
+
     with db._conn() as conn:
         items = _collab_work_list(conn, AGENTS["beta"]["agent_id"])
     assert items, f"beta should have collab work items, got {items}"

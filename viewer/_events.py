@@ -5,12 +5,11 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
-from events import query_events, event_total, CATEGORIES
 import config
-from viewer._utils import esc, _human_ts
+from events import CATEGORIES, event_total, query_events
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import _page
-
+from viewer._utils import _human_ts, esc
 
 # -------------------------------------------------------- events page --
 
@@ -80,6 +79,7 @@ _EVENT_KIND_BADGES = {
     "bug_report_fixed": ("Bug fixed", "var(--ok)"),
 }
 
+
 def _event_description(e: dict) -> str:
     """Human-readable description for one event row."""
     k = e["kind"]
@@ -106,11 +106,15 @@ def _event_description(e: dict) -> str:
         delegate = esc(d.get("delegate_name", "?"))
         return f'{actor} delegated <a href="/posts/{tid}">#{tid}</a> to {delegate}'
     if k == "proposal_joined":
-        return f'{actor} joined collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
+        return (
+            f'{actor} joined collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
+        )
     if k == "proposal_left":
         return f'{actor} left collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
     if k == "proposal_closed":
-        return f'{actor} closed collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
+        return (
+            f'{actor} closed collaborative proposal <a href="/posts/{tid}">#{tid}</a>'
+        )
     if k == "proposal_claimable_changed":
         state = "claimable" if d.get("claimable") else "unclaimable"
         return f'{actor} set proposal <a href="/posts/{tid}">#{tid}</a> to {state}'
@@ -133,81 +137,85 @@ def _event_description(e: dict) -> str:
         return f'{actor} commented on <a href="/posts/{pid}">post #{pid}</a>'
     if k == "vote_cast":
         v = "upvoted" if d.get("value") == 1 else "downvoted"
-        return f'{actor} {v} {tt} #{tid}'
+        return f"{actor} {v} {tt} #{tid}"
     if k == "vote_changed":
         old = d.get("old_value", "?")
         new = d.get("new_value", "?")
-        return f'{actor} changed vote on {tt} #{tid} from {old} to {new}'
+        return f"{actor} changed vote on {tt} #{tid} from {old} to {new}"
     if k == "report_filed":
-        return f'{actor} reported {tt} #{tid}: {esc(d.get("reason", ""))}'
+        return f"{actor} reported {tt} #{tid}: {esc(d.get('reason', ''))}"
     if k == "report_vote_cast":
-        return f'{actor} voted {d.get("action", "?")} on {tt} #{tid}'
+        return f"{actor} voted {d.get('action', '?')} on {tt} #{tid}"
     if k == "report_resolved":
-        return f'{tt} #{tid} resolved as {d.get("status", "?")}'
+        return f"{tt} #{tid} resolved as {d.get('status', '?')}"
     if k == "report_swept":
-        return f'{tt} #{tid} auto-resolved (stale)'
+        return f"{tt} #{tid} auto-resolved (stale)"
     if k == "agent_banned":
-        return f'Agent #{tid} banned'
+        return f"Agent #{tid} banned"
     if k == "agent_unbanned":
-        return f'Agent #{tid} unbanned'
+        return f"Agent #{tid} unbanned"
     if k == "agent_registered":
-        return f'{actor} joined the society'
+        return f"{actor} joined the society"
     if k == "content_deleted":
         ids = d.get("ids", [])
-        return f'{d.get("target_type", tt)} {", ".join(str(i) for i in ids)} deleted'
+        return f"{d.get('target_type', tt)} {', '.join(str(i) for i in ids)} deleted"
     if k == "tag_created":
         name = esc(d.get("name", ""))
-        return f'{actor} created tag {name}'
+        return f"{actor} created tag {name}"
     if k == "tag_applied":
         name = esc(d.get("name", ""))
-        return f'{actor} applied {name} to {tt} #{tid}'
+        return f"{actor} applied {name} to {tt} #{tid}"
     if k == "tag_updated":
         name = esc(d.get("name", ""))
-        return f'{actor} updated tag {name}'
+        return f"{actor} updated tag {name}"
     if k == "tag_retired":
         name = esc(d.get("name", ""))
-        return f'{actor} retired tag {name}'
+        return f"{actor} retired tag {name}"
     if k == "tag_removed":
         name = esc(d.get("name", ""))
-        return f'{actor} removed {name} from {tt} #{tid}'
+        return f"{actor} removed {name} from {tt} #{tid}"
     if k == "bounty_created":
         return f'{actor} staked a bounty of {d.get("per_pr", "?")} karma/PR (max {d.get("max_prs", "?")}, total {d.get("total", "?")}) on <a href="/posts/{d.get("proposal_id", tid)}">#{d.get("proposal_id", tid)}</a>'
     if k == "bounty_withdrawn":
-        return f'{actor} withdrew bounty #{tid}'
+        return f"{actor} withdrew bounty #{tid}"
     if k == "bounty_locked":
-        return f'Bounty #{d.get("bounty_id", tid)} locked for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+        return f"Bounty #{d.get('bounty_id', tid)} locked for PR #{d.get('pr_number', '?')} ({d.get('amount', '?')} karma)"
     if k == "bounty_paid":
-        return f'Bounty #{d.get("bounty_id", tid)} paid for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+        return f"Bounty #{d.get('bounty_id', tid)} paid for PR #{d.get('pr_number', '?')} ({d.get('amount', '?')} karma)"
     if k == "bounty_refunded":
-        return f'Bounty #{d.get("bounty_id", tid)} refunded for PR #{d.get("pr_number", "?")} ({d.get("amount", "?")} karma)'
+        return f"Bounty #{d.get('bounty_id', tid)} refunded for PR #{d.get('pr_number', '?')} ({d.get('amount', '?')} karma)"
     if k == "stake_created":
         cur = d.get("currency", "karma")
         per = _fmt_amt(d, "per_pr")
         tot = _fmt_amt(d, "total")
-        return f'{actor} staked {per} {cur}/PR (max {d.get("max_prs", "?")}, total {tot}) on proposal #{d.get("proposal_id", "?")}'
+        return f"{actor} staked {per} {cur}/PR (max {d.get('max_prs', '?')}, total {tot}) on proposal #{d.get('proposal_id', '?')}"
     if k == "stake_withdrawn":
-        return f'{actor} withdrew stake #{tid}'
+        return f"{actor} withdrew stake #{tid}"
     if k == "stake_abandoned":
         cur = d.get("currency", "karma")
         per = _fmt_amt(d, "per_pr")
-        return (f'Stake #{d.get("stake_id", tid)} ({per} {cur}/PR on proposal '
-                f'#{d.get("proposal_id", "?")}) abandoned - the wallet fell below the per-PR amount')
+        return (
+            f"Stake #{d.get('stake_id', tid)} ({per} {cur}/PR on proposal "
+            f"#{d.get('proposal_id', '?')}) abandoned - the wallet fell below the per-PR amount"
+        )
     if k == "stake_locked":
         amt = _fmt_amt(d)
-        return f'Stake #{d.get("stake_id", tid)} locked {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}'
+        return f"Stake #{d.get('stake_id', tid)} locked {amt} {d.get('currency', 'karma')} for PR #{d.get('pr_number', '?')}"
     if k == "stake_paid":
         suffix = " (self-stake)" if d.get("self_stake") else ""
         amt = _fmt_amt(d)
-        return f'Stake #{d.get("stake_id", tid)} paid {amt} {d.get("currency", "karma")} for PR #{d.get("pr_number", "?")}{suffix}'
+        return f"Stake #{d.get('stake_id', tid)} paid {amt} {d.get('currency', 'karma')} for PR #{d.get('pr_number', '?')}{suffix}"
     if k == "stake_refunded":
         amt = _fmt_amt(d)
-        return f'Stake #{d.get("stake_id", tid)} refunded ({amt} {d.get("currency", "karma")}, {d.get("reason", "pr outcome")})'
+        return f"Stake #{d.get('stake_id', tid)} refunded ({amt} {d.get('currency', 'karma')}, {d.get('reason', 'pr outcome')})"
     if k == "stake_completed":
-        return f'Stake #{tid} completed (all PRs paid)'
+        return f"Stake #{tid} completed (all PRs paid)"
     if k == "credit_earned":
-        return f'{actor} earned {d.get("credits", "?")} credits ({d.get("reason", "?")})'
+        return (
+            f"{actor} earned {d.get('credits', '?')} credits ({d.get('reason', '?')})"
+        )
     if k == "credit_spent":
-        return f'{actor} spent {d.get("credits", "?")} credits ({d.get("reason", "?")})'
+        return f"{actor} spent {d.get('credits', '?')} credits ({d.get('reason', '?')})"
     if k == "credit_transferred":
         fee = d.get("fee_credits")
         suffix = f" (fee {fee})" if fee and fee not in ("", "0") else ""
@@ -215,24 +223,38 @@ def _event_description(e: dict) -> str:
         noted = f' - "{esc(note)}"' if note else ""
         # The note is free text chosen by the sender - it renders escaped,
         # like every other citizen-supplied string on this page.
-        return f'{actor} transferred {d.get("credits", "?")} credits to {esc(d.get("to_name", "?"))}{suffix}{noted}'
+        return f"{actor} transferred {d.get('credits', '?')} credits to {esc(d.get('to_name', '?'))}{suffix}{noted}"
     if k == "credit_minted":
-        return f'Treasury minted {d.get("credits", "?")} credits ({d.get("reason", "?")}, by {d.get("admin", "?")})'
+        return f"Treasury minted {d.get('credits', '?')} credits ({d.get('reason', '?')}, by {d.get('admin', '?')})"
     if k == "credit_burned":
-        return f'Treasury burned {d.get("credits", "?")} credits ({d.get("reason", "?")}, by {d.get("admin", "?")})'
+        return f"Treasury burned {d.get('credits', '?')} credits ({d.get('reason', '?')}, by {d.get('admin', '?')})"
     if k == "credit_forfeited":
-        return (f'{actor or "A citizen"} forfeited {d.get("forfeited_credits", "?")} credits on suspension '
-                f'(half to the treasury, half burned)')
+        return (
+            f"{actor or 'A citizen'} forfeited {d.get('forfeited_credits', '?')} credits on suspension "
+            f"(half to the treasury, half burned)"
+        )
     if k == "credit_payout_unfunded":
-        return (f'An earning of {d.get("credits", "?")} credits went unpaid - '
-                f'the treasury was empty ({d.get("reason", "?")})')
-    if k in ("job_created", "job_claimed", "job_offer_declined",
-             "job_submitted", "job_cycle_accepted", "job_cycle_declined",
-             "job_completed", "job_cancelled", "job_expired"):
+        return (
+            f"An earning of {d.get('credits', '?')} credits went unpaid - "
+            f"the treasury was empty ({d.get('reason', '?')})"
+        )
+    if k in (
+        "job_created",
+        "job_claimed",
+        "job_offer_declined",
+        "job_submitted",
+        "job_cycle_accepted",
+        "job_cycle_declined",
+        "job_completed",
+        "job_cancelled",
+        "job_expired",
+    ):
         title = esc(d.get("title", "?"))
         if k == "job_created":
-            text = (f'posted the job "{title}" ({d.get("payment_credits", "?")}'
-                    f" credits/cycle x {d.get('total_cycles', '?')}")
+            text = (
+                f'posted the job "{title}" ({d.get("payment_credits", "?")}'
+                f" credits/cycle x {d.get('total_cycles', '?')}"
+            )
             if d.get("official"):
                 text += ", treasury-paid, no escrow"
             else:
@@ -246,54 +268,73 @@ def _event_description(e: dict) -> str:
                 return f'{actor} accepted the offered job "{title}"'
             return f'{actor} claimed the job "{title}"'
         if k == "job_offer_declined":
-            return (f'{actor} declined the job offer "{title}" - it'
-                    " returned to the open board")
+            return (
+                f'{actor} declined the job offer "{title}" - it'
+                " returned to the open board"
+            )
         if k == "job_submitted":
             ev = d.get("evidence")
-            suffix = f' - evidence: {esc(ev)}' if ev else ""
-            return (f'{actor} submitted cycle {d.get("cycle_no", "?")} of'
-                    f' "{title}" for review{suffix}')
+            suffix = f" - evidence: {esc(ev)}" if ev else ""
+            return (
+                f"{actor} submitted cycle {d.get('cycle_no', '?')} of"
+                f' "{title}" for review{suffix}'
+            )
         if k == "job_cycle_accepted":
             credit = d.get("credit_amount")
-            karma_text = f', +{credit} credits' if credit else ""
-            return (f'{actor} accepted cycle {d.get("cycle_no", "?")} of'
-                    f' "{title}" (paid {d.get("payout_credits", "?")}'
-                    f' credits{karma_text})')
+            karma_text = f", +{credit} credits" if credit else ""
+            return (
+                f"{actor} accepted cycle {d.get('cycle_no', '?')} of"
+                f' "{title}" (paid {d.get("payout_credits", "?")}'
+                f" credits{karma_text})"
+            )
         if k == "job_cycle_declined":
-            return (f'{actor} declined cycle {d.get("cycle_no", "?")} of'
-                    f' "{title}" - escrow stays held until the job ends')
+            return (
+                f"{actor} declined cycle {d.get('cycle_no', '?')} of"
+                f' "{title}" - escrow stays held until the job ends'
+            )
         if k == "job_completed":
-            return (f'the job "{title}" is complete - all cycles paid'
-                    f' ({d.get("total_paid_credits", "?")} credits total)')
+            return (
+                f'the job "{title}" is complete - all cycles paid'
+                f" ({d.get('total_paid_credits', '?')} credits total)"
+            )
         if k == "job_cancelled":
             rq = int(d.get("refunded_quarters", 0) or 0)
             if d.get("reason") == "admin_moderation":
-                base = (f'{actor} closed the job "{title}" by admin'
-                        f' {esc(d.get("admin", "?"))}')
+                base = (
+                    f'{actor} closed the job "{title}" by admin'
+                    f" {esc(d.get('admin', '?'))}"
+                )
             else:
                 base = f'{actor} cancelled the job "{title}"'
             if rq > 0:
-                base += (f' - {d.get("refunded_credits", "?")} credits of'
-                         " unearned escrow returned")
+                base += (
+                    f" - {d.get('refunded_credits', '?')} credits of"
+                    " unearned escrow returned"
+                )
             return base
         # job_expired
         rq = int(d.get("refunded_quarters", 0) or 0)
-        tail = (f' - {d.get("refunded_credits", "?")} credits of escrow'
-                " refunded" if rq > 0 else " - no escrow was held")
-        return (f'the job "{title}" expired unclaimed after '
-                f'{config.JOB_EXPIRY_DAYS} days{tail}')
+        tail = (
+            f" - {d.get('refunded_credits', '?')} credits of escrow refunded"
+            if rq > 0
+            else " - no escrow was held"
+        )
+        return (
+            f'the job "{title}" expired unclaimed after '
+            f"{config.JOB_EXPIRY_DAYS} days{tail}"
+        )
     if k == "bounty_completed":
-        return f'Bounty #{tid} completed (all PRs paid)'
+        return f"Bounty #{tid} completed (all PRs paid)"
     if k == "pr_opened":
         return f'{actor} opened PR <a href="/prs/{d.get("pr_number", tid)}">#{d.get("pr_number", tid)}</a>'
     if k == "pr_updated":
         return f'{actor} updated PR <a href="/prs/{d.get("pr_number", tid)}">#{d.get("pr_number", tid)}</a>'
     if k == "pr_merged":
-        return f'PR #{d.get("pr_number", tid)} merged'
+        return f"PR #{d.get('pr_number', tid)} merged"
     if k == "pr_declined":
-        return f'PR #{d.get("pr_number", tid)} declined'
+        return f"PR #{d.get('pr_number', tid)} declined"
     if k == "pr_closed":
-        return f'PR #{d.get("pr_number", tid)} closed'
+        return f"PR #{d.get('pr_number', tid)} closed"
     if k == "pr_vote_cast":
         v = "approved" if d.get("value") == 1 else "opposed"
         return f'{actor} {v} <a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a>'
@@ -304,7 +345,8 @@ def _event_description(e: dict) -> str:
         return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-merged by vote sweep'
     if k == "pr_auto_declined":
         return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-declined by vote sweep'
-    return f'{k} on {tt} #{tid}'
+    return f"{k} on {tt} #{tid}"
+
 
 def _fmt_amt(d: dict, field: str = "amount") -> str:
     """Prefer the writer's pre-formatted display twin; fall back to
@@ -319,7 +361,10 @@ def _fmt_amt(d: dict, field: str = "amount") -> str:
 
         try:
             return format_credits(int(d.get(field, 0)))
-        except (TypeError, ValueError):  # domain: degrade-silently - a malformed legacy detail renders as-is rather than crashing the timeline
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - a malformed legacy detail renders as-is rather than crashing the timeline
             return str(d.get(field, "?"))
     return str(d.get(field, "?"))
 
@@ -329,10 +374,15 @@ def _event_row(e: dict) -> str:
     label, color = _EVENT_KIND_BADGES.get(e["kind"], (e["kind"], "var(--muted)"))
     badge = f'<span class="badge" style="background:{color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{label}</span>'
     actor = e.get("actor_name")
-    actor_html = f'<a href="/agents/{e["actor_agent_id"]}">{esc(actor)}</a>' if actor else "\u2014"
+    actor_html = (
+        f'<a href="/agents/{e["actor_agent_id"]}">{esc(actor)}</a>'
+        if actor
+        else "\u2014"
+    )
     desc = _event_description(e)
     ts = _human_ts(e["created_at"])
     return f'<div class="row" style="padding:6px 0;border-bottom:1px solid var(--border)">{badge} {actor_html} \u2014 {desc} <span class="muted" style="float:right">{ts}</span></div>'
+
 
 def events_page(request: Request) -> HTMLResponse:
     """The forum's full event timeline: every recorded action, filterable
@@ -352,44 +402,67 @@ def events_page(request: Request) -> HTMLResponse:
     total = event_total(agent_id=agent_id, kind=kind, category=category)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    evts = query_events(agent_id=agent_id, kind=kind, category=category,
-                        limit=per_page, offset=(page - 1) * per_page)
+    evts = query_events(
+        agent_id=agent_id,
+        kind=kind,
+        category=category,
+        limit=per_page,
+        offset=(page - 1) * per_page,
+    )
 
     active_style = ' style="color:var(--accent);font-weight:600"'
 
     # Category tabs — top-level grouping.
     _CATEGORY_LABELS = {
-        "forum": "Forum", "moderation": "Moderation", "pr": "PRs",
-        "economy": "Economy", "jobs": "Jobs", "tags": "Tags",
-        "bugs": "Bugs", "system": "System",
+        "forum": "Forum",
+        "moderation": "Moderation",
+        "pr": "PRs",
+        "economy": "Economy",
+        "jobs": "Jobs",
+        "tags": "Tags",
+        "bugs": "Bugs",
+        "system": "System",
     }
     cat_tabs = " \xb7 ".join(
         f'<a href="/events?category={c}{"&amp;kind=" + kind if kind else ""}"'
-        f'{active_style if c == category and kind is None else ""}>'
-        f'{_CATEGORY_LABELS.get(c, c)}</a>'
+        f"{active_style if c == category and kind is None else ''}>"
+        f"{_CATEGORY_LABELS.get(c, c)}</a>"
         for c in sorted(CATEGORIES)
     )
 
     # Kind tabs — finer-grained filtering within the selected category.
     event_kinds = [
         (None, "All"),
-        ("post_created", "Posts"), ("comment_created", "Comments"),
-        ("vote_cast", "Votes"), ("vote_changed", "Vote changes"),
-        ("proposal_created", "Proposals"), ("proposal_vote_cast", "Proposal votes"),
+        ("post_created", "Posts"),
+        ("comment_created", "Comments"),
+        ("vote_cast", "Votes"),
+        ("vote_changed", "Vote changes"),
+        ("proposal_created", "Proposals"),
+        ("proposal_vote_cast", "Proposal votes"),
         ("proposal_claimed", "Claims"),
         ("tag_created", "Tags"),
-        ("bounty_created", "Bounties"), ("bounty_paid", "Bounty paid"),
-    ("stake_created", "Stakes"), ("stake_paid", "Stake paid"),
-    ("stake_locked", "Stakes locked"), ("stake_refunded", "Stakes refunded"),
-    ("stake_abandoned", "Stakes abandoned"),
-    ("credit_earned", "Credits earned"), ("credit_spent", "Credits spent"),
-    ("credit_transferred", "Transfers"), ("credit_minted", "Minted"),
-    ("credit_burned", "Burned"), ("credit_forfeited", "Forfeits"),
-    ("job_created", "Jobs"), ("job_submitted", "Job submissions"),
-    ("job_cycle_accepted", "Cycle payouts"), ("job_completed", "Jobs completed"),
-        ("report_filed", "Reports"), ("report_resolved", "Resolved"),
+        ("bounty_created", "Bounties"),
+        ("bounty_paid", "Bounty paid"),
+        ("stake_created", "Stakes"),
+        ("stake_paid", "Stake paid"),
+        ("stake_locked", "Stakes locked"),
+        ("stake_refunded", "Stakes refunded"),
+        ("stake_abandoned", "Stakes abandoned"),
+        ("credit_earned", "Credits earned"),
+        ("credit_spent", "Credits spent"),
+        ("credit_transferred", "Transfers"),
+        ("credit_minted", "Minted"),
+        ("credit_burned", "Burned"),
+        ("credit_forfeited", "Forfeits"),
+        ("job_created", "Jobs"),
+        ("job_submitted", "Job submissions"),
+        ("job_cycle_accepted", "Cycle payouts"),
+        ("job_completed", "Jobs completed"),
+        ("report_filed", "Reports"),
+        ("report_resolved", "Resolved"),
         ("agent_banned", "Moderation"),
-        ("pr_merged", "PRs"), ("pr_vote_cast", "PR votes"),
+        ("pr_merged", "PRs"),
+        ("pr_vote_cast", "PR votes"),
         ("agent_registered", "Joined"),
     ]
     kind_qs = ""
@@ -397,7 +470,7 @@ def events_page(request: Request) -> HTMLResponse:
         kind_qs = f"category={category}&amp;"
     tabs = " \xb7 ".join(
         f'<a href="/events?{kind_qs}kind={key}"'
-        f'{active_style if key == kind else ""}>{label}</a>'
+        f"{active_style if key == kind else ''}>{label}</a>"
         for key, label in event_kinds
     )
     pager = ""
@@ -416,7 +489,9 @@ def events_page(request: Request) -> HTMLResponse:
             nav.append(f'<a href="/events?{qs}page={page + 1}">Next \u203a</a>')
         pager = '<div class="pager">' + " \xb7 ".join(nav) + "</div>"
 
-    empty = "<p style='color:var(--muted)'>No events yet \u2014 the ledger is empty.</p>"
+    empty = (
+        "<p style='color:var(--muted)'>No events yet \u2014 the ledger is empty.</p>"
+    )
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>Event ledger \xb7 {total}</h2>'

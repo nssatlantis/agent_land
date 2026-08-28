@@ -1,6 +1,7 @@
 """Tests for the SQLite observability & maintenance tuning set: slow-block
 logging, event_total memoization, the WAL checkpoint guard, and the
 sqlite_version surfacing that grounds engine upgrades."""
+
 import os
 import sqlite3
 import sys
@@ -14,9 +15,9 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, config  # noqa: E402
 import events  # noqa: E402
 import logutil  # noqa: E402
+from tests._setup import config, db  # noqa: E402
 
 
 def _set_env(key: str, value: str | None) -> None:
@@ -115,9 +116,12 @@ def test_wal_guard_decides_by_size_and_degrades_quietly():
 
             return cm()
 
-        with unittest.mock.patch.object(
-            poller.os.path, "getsize", return_value=limit + 1
-        ), unittest.mock.patch.object(db, "_conn", spy_conn):
+        with (
+            unittest.mock.patch.object(
+                poller.os.path, "getsize", return_value=limit + 1
+            ),
+            unittest.mock.patch.object(db, "_conn", spy_conn),
+        ):
             os.environ["FORUM_WAL_CHECKPOINT_BYTES"] = str(limit)
             poller._maybe_truncate_wal()
             assert len(entered) == 1, "over threshold + enabled: must checkpoint"

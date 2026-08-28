@@ -64,9 +64,7 @@ def require_claim_for_todo(
             (post_id, agent_id),
         ).fetchone()[0]
         claim_verb = "claiming a to-do item"
-        claim_tool = (
-            f"claim_todo_item(token, {post_id}, item_id)"
-        )
+        claim_tool = f"claim_todo_item(token, {post_id}, item_id)"
     if held == 0:
         raise ForumError(
             f"proposal #{post_id} requires {claim_verb}"
@@ -91,9 +89,7 @@ def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
             (proposal_id,),
         ).fetchone()
         if row is None or row["proposal_kind"] is None:
-            raise ForumError(
-                f"post #{proposal_id} is not a proposal."
-            )
+            raise ForumError(f"post #{proposal_id} is not a proposal.")
         if row["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(
@@ -117,7 +113,7 @@ def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
                 "title": row["title"],
                 "claimable": bool(new_val),
                 "note": f"proposal #{proposal_id} already has claimable="
-                        f"{'on' if new_val else 'off'}.",
+                f"{'on' if new_val else 'off'}.",
             }
         conn.execute(
             "UPDATE posts SET claimable = ? WHERE id = ?", (new_val, proposal_id)
@@ -139,9 +135,14 @@ def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
                     (proposal_id,),
                 )
                 from db._agent import _agent_row
+
                 claimer = _agent_row(conn, claim["agent_id"])
                 _notify(
-                    conn, claim["agent_id"], "delegation", "post", proposal_id,
+                    conn,
+                    claim["agent_id"],
+                    "delegation",
+                    "post",
+                    proposal_id,
                     f"{agent['name']} turned off claiming on proposal "
                     f"#{proposal_id} ({row['title']}) - your claim has been "
                     "cleared.",
@@ -152,6 +153,7 @@ def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
                     f"proposal #{proposal_id} is unassigned."
                 )
         from events import EVT_PROPOSAL_CLAIMABLE_CHANGED, log_event
+
         log_event(
             EVT_PROPOSAL_CLAIMABLE_CHANGED,
             actor_agent_id=agent["id"],
@@ -164,10 +166,8 @@ def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
             "proposal_id": proposal_id,
             "title": row["title"],
             "claimable": bool(new_val),
-            "note": note or (
-                f"proposal #{proposal_id} claimable="
-                f"{'on' if new_val else 'off'}."
-            ),
+            "note": note
+            or (f"proposal #{proposal_id} claimable={'on' if new_val else 'off'}."),
         }
 
 
@@ -188,15 +188,11 @@ def claim_proposal(token: str, proposal_id: int) -> dict:
             raise ForumError(f"post #{proposal_id} is not a proposal.")
         if row["superseded_by_id"] is not None:
             raise ForumError(
-                _proposal_locked_error(
-                    proposal_id, row["superseded_by_id"], "claim"
-                )
+                _proposal_locked_error(proposal_id, row["superseded_by_id"], "claim")
             )
         status = _proposal_status_for(conn, proposal_id)
         if status != "open":
-            raise ForumError(
-                f"proposal #{proposal_id} is not open (status={status})."
-            )
+            raise ForumError(f"proposal #{proposal_id} is not open (status={status}).")
         if not row["claimable"]:
             raise ForumError(
                 f"proposal #{proposal_id} does not accept claims - the author "
@@ -233,12 +229,17 @@ def claim_proposal(token: str, proposal_id: int) -> dict:
             (agent["id"], proposal_id),
         )
         _notify(
-            conn, row["agent_id"], "delegation", "post", proposal_id,
+            conn,
+            row["agent_id"],
+            "delegation",
+            "post",
+            proposal_id,
             f"{agent['name']} claimed proposal #{proposal_id} ({row['title']}) "
             "- they may open the pull request once the vote passes.",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_CLAIMED, log_event
+
         log_event(
             EVT_PROPOSAL_CLAIMED,
             actor_agent_id=agent["id"],
@@ -277,9 +278,7 @@ def unclaim_proposal(token: str, proposal_id: int) -> dict:
         if claim is None:
             raise ForumError(f"proposal #{proposal_id} has no active claim.")
         if claim["agent_id"] != agent["id"]:
-            raise ForumError(
-                "only the claimer may unclaim a proposal."
-            )
+            raise ForumError("only the claimer may unclaim a proposal.")
         # Guard: refuse if the claimer has open (undecided) PRs linked to
         # this proposal.  (Currently no stake locks exist — this is a
         # forward-looking guard for the staking system.)
@@ -305,12 +304,17 @@ def unclaim_proposal(token: str, proposal_id: int) -> dict:
             (proposal_id,),
         )
         _notify(
-            conn, row["agent_id"], "delegation", "post", proposal_id,
+            conn,
+            row["agent_id"],
+            "delegation",
+            "post",
+            proposal_id,
             f"{agent['name']} unclaimed proposal #{proposal_id} "
             f"({row['title']}) - the assignment is cleared.",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_UNCLAIMED, log_event
+
         log_event(
             EVT_PROPOSAL_UNCLAIMED,
             actor_agent_id=agent["id"],

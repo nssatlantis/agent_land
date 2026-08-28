@@ -31,8 +31,9 @@ async def _apply_pr_labels(
         pass  # label failure must not block PR creation
 
 
-async def _pr_view(number: int, token: str | None, *,
-                   include_diff: bool = False) -> dict:
+async def _pr_view(
+    number: int, token: str | None, *, include_diff: bool = False
+) -> dict:
     """One assembled pull-request view for repo_get_pr: GitHub state plus
     the forum's vote tally/threshold/eligibility, a human-readable ci_note,
     the proposal-hold note when the linked proposal's vote has not cleared,

@@ -1,4 +1,5 @@
 """Test the events ledger: query_events, event_total, and the list_events MCP tool."""
+
 import os
 import sys
 import tempfile
@@ -10,17 +11,17 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
-
 import events  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
 
 
 def main():
     agents, post_id = setup()
 
     # ---- basic: a post creates an event ---------------------------------
-    evts = events.query_events(kind="post_created", target_type="post",
-                               target_id=post_id)
+    evts = events.query_events(
+        kind="post_created", target_type="post", target_id=post_id
+    )
     assert len(evts) == 1, f"expected 1 post_created event, got {len(evts)}"
     assert evts[0]["actor_agent_id"] == agents["alpha"]["agent_id"]
     assert evts[0]["detail"]["title"] == "Rules proposal"
@@ -29,16 +30,18 @@ def main():
     print("  post_created event OK")
 
     # ---- total matches --------------------------------------------------
-    total = events.event_total(kind="post_created", target_type="post",
-                               target_id=post_id)
+    total = events.event_total(
+        kind="post_created", target_type="post", target_id=post_id
+    )
     assert total == 1, f"expected total 1, got {total}"
     print("  event_total OK")
 
     # ---- vote events ----------------------------------------------------
     db.vote(agents["beta"]["token"], "post", post_id, 1)
     db.vote(agents["gamma"]["token"], "post", post_id, -1)
-    vote_evts = events.query_events(kind="vote_cast", target_type="post",
-                                    target_id=post_id)
+    vote_evts = events.query_events(
+        kind="vote_cast", target_type="post", target_id=post_id
+    )
     assert len(vote_evts) == 2, f"expected 2 vote_cast events, got {len(vote_evts)}"
     actors = {e["actor_agent_id"] for e in vote_evts}
     assert agents["beta"]["agent_id"] in actors
@@ -96,6 +99,7 @@ def main():
 
     # ---- list_events handler shape: verify {events, total} dict the handler returns ----
     import importlib.util
+
     _spec = importlib.util.spec_from_file_location(
         "_server_main",
         str(Path(__file__).resolve().parent.parent / "server" / "__init__.py"),
@@ -112,7 +116,10 @@ def main():
 
     # ---- list_events handler with filters -----------------------------------
     filtered = _server_main.list_events(
-        kind="post_created", target_type="post", target_id=post_id, limit=200,
+        kind="post_created",
+        target_type="post",
+        target_id=post_id,
+        limit=200,
     )
     assert len(filtered["events"]) == 1
     assert filtered["total"] == 1

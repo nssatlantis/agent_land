@@ -11,9 +11,10 @@ import asyncio
 import re
 import sys
 import threading
-import httpx
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -133,13 +134,16 @@ def test_native_twin_alist_tree():
 
     def handler(request):
         assert request.url.path.endswith("git/trees/main")
-        return httpx.Response(200, json={
-            "tree": [
-                {"path": "a.py", "type": "blob", "size": 10},
-                {"path": "d/", "type": "tree"},
-                {"path": "b.md", "type": "blob"},
-            ]
-        })
+        return httpx.Response(
+            200,
+            json={
+                "tree": [
+                    {"path": "a.py", "type": "blob", "size": 10},
+                    {"path": "d/", "type": "tree"},
+                    {"path": "b.md", "type": "blob"},
+                ]
+            },
+        )
 
     old = _install_mock(handler)
     try:
@@ -166,7 +170,9 @@ def test_sync_bridge_shares_one_client_across_threads():
     try:
         threads_before = threading.active_count()
         with ThreadPoolExecutor(max_workers=8) as pool:
-            futures = [pool.submit(gh_core._request, "GET", f"items/{i}") for i in range(16)]
+            futures = [
+                pool.submit(gh_core._request, "GET", f"items/{i}") for i in range(16)
+            ]
             results = [f.result() for f in futures]
         assert results == [{"n": i} for i in range(16)]
         assert len(seen) == 16
@@ -208,8 +214,8 @@ def test_client_stays_single_owner_across_loops():
 
     old = _install_mock(handler)
     try:
-        assert gh_core._request("GET", "warmup") == {}   # first use: background loop
-        result = asyncio.run(gh.alist_tree())       # foreign loop awaits
+        assert gh_core._request("GET", "warmup") == {}  # first use: background loop
+        result = asyncio.run(gh.alist_tree())  # foreign loop awaits
         assert result["files"] == [{"path": "a", "size": 0}]
     finally:
         gh_core._client = old
@@ -260,12 +266,18 @@ def test_aget_pr_fans_out_concurrently():
         try:
             await asyncio.wait_for(release.wait(), timeout=6)
         except asyncio.TimeoutError:
-            raise httpx.ConnectError("gate never opened - no wave-2 fan-out", request=request) from None
+            raise httpx.ConnectError(
+                "gate never opened - no wave-2 fan-out", request=request
+            ) from None
         return httpx.Response(200, json=[])
 
     old = _install_mock(handler)
     stub_checks = gh_checks._checks_for_head
-    gh_checks._checks_for_head = lambda sha: {"state": "unknown", "source": "stub", "runs": []}
+    gh_checks._checks_for_head = lambda sha: {
+        "state": "unknown",
+        "source": "stub",
+        "runs": [],
+    }
     try:
         result = asyncio.run(gh.aget_pr(4242))
         assert result["number"] == 4242 and result["head"] == "probe"
@@ -382,7 +394,9 @@ def _install_gated_pair(pair, payloads):
         try:
             await asyncio.wait_for(release.wait(), timeout=6)
         except asyncio.TimeoutError:
-            raise httpx.ConnectError("pair gate never opened - no overlap", request=request) from None
+            raise httpx.ConnectError(
+                "pair gate never opened - no overlap", request=request
+            ) from None
         base = payloads.get("pr")
         if base is not None and path.endswith(f"/pulls/{base['number']}"):
             return httpx.Response(200, json=base)
@@ -394,8 +408,10 @@ def _install_gated_pair(pair, payloads):
 def test_apr_diff_overlaps_payload_with_first_page():
     gh.clear_cache()
     pr_payload = dict(_PR_4242, number=5151)
-    pair = ("/repos/nssatlantis/agent_land/pulls/5151",
-            "/repos/nssatlantis/agent_land/pulls/5151/files")
+    pair = (
+        "/repos/nssatlantis/agent_land/pulls/5151",
+        "/repos/nssatlantis/agent_land/pulls/5151/files",
+    )
     payloads = {
         "pr": pr_payload,
         pair[1]: [{"filename": "f.py", "additions": 3}],
@@ -405,8 +421,16 @@ def test_apr_diff_overlaps_payload_with_first_page():
     try:
         diff = asyncio.run(gh.apr_diff(5151))
         assert diff["title"] == "fan-out probe"
-        assert diff["files"] == [{"path": "f.py", "status": None, "additions": 3,
-                                  "deletions": 0, "changes": 0, "patch": None}]
+        assert diff["files"] == [
+            {
+                "path": "f.py",
+                "status": None,
+                "additions": 3,
+                "deletions": 0,
+                "changes": 0,
+                "patch": None,
+            }
+        ]
     finally:
         gh_core._client = old
         gh.clear_cache()
@@ -416,22 +440,35 @@ def test_apr_diff_overlaps_payload_with_first_page():
 def test_apr_commits_overlaps_payload_with_first_page():
     gh.clear_cache()
     pr_payload = dict(_PR_4242, number=6161)
-    pair = ("/repos/nssatlantis/agent_land/pulls/6161",
-            "/repos/nssatlantis/agent_land/pulls/6161/commits")
+    pair = (
+        "/repos/nssatlantis/agent_land/pulls/6161",
+        "/repos/nssatlantis/agent_land/pulls/6161/commits",
+    )
     payloads = {
         "pr": pr_payload,
-        pair[1]: [{"sha": "deadbeef", "commit": {"message": "m",
-                   "author": {"name": "n", "date": "2026-08-24T00:00:00Z"}}}],
+        pair[1]: [
+            {
+                "sha": "deadbeef",
+                "commit": {
+                    "message": "m",
+                    "author": {"name": "n", "date": "2026-08-24T00:00:00Z"},
+                },
+            }
+        ],
     }
     handler = _install_gated_pair(pair, payloads)
     old = _install_mock(handler)
     try:
         result = asyncio.run(gh.apr_commits(6161))
         assert result["number"] == 6161 and result["head"] == "probe"
-        assert result["commits"] == [{
-            "sha": "deadbeef", "message": "m",
-            "author_name": "n", "author_date": "2026-08-24T00:00:00Z",
-        }]
+        assert result["commits"] == [
+            {
+                "sha": "deadbeef",
+                "message": "m",
+                "author_name": "n",
+                "author_date": "2026-08-24T00:00:00Z",
+            }
+        ]
     finally:
         gh_core._client = old
         gh.clear_cache()
@@ -466,10 +503,10 @@ def main():
     return 0
 
 
-
 def _serve_pages(hits, path_suffix, pages):
     """Route list-endpoint requests under /pulls/ to canned pages keyed by
     the page= query param; anything else gets an empty list."""
+
     def handler(request):
         url = str(request.url)
         hits.append(url)
@@ -478,27 +515,33 @@ def _serve_pages(hits, path_suffix, pages):
             n = 1
             for part in query.split("&"):
                 if part.startswith("page="):
-                    n = int(part[len("page="):])
-            return httpx.Response(
-                200, json=pages[n - 1] if n <= len(pages) else []
-            )
+                    n = int(part[len("page=") :])
+            return httpx.Response(200, json=pages[n - 1] if n <= len(pages) else [])
         return httpx.Response(200, json=[])
+
     return handler
 
 
 def test_pr_files_paginates_past_the_default_page():
     hits: list[str] = []
-    page1 = [{"filename": f"a{i}.py", "status": "modified", "additions": 1,
-              "deletions": 0, "patch": "x"} for i in range(100)]
-    page2 = [{"filename": "b7.py", "status": "added", "additions": 9,
-              "deletions": 2}]
+    page1 = [
+        {
+            "filename": f"a{i}.py",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 0,
+            "patch": "x",
+        }
+        for i in range(100)
+    ]
+    page2 = [{"filename": "b7.py", "status": "added", "additions": 9, "deletions": 2}]
     handler = _serve_pages(hits, "/files", [page1, page2])
     old = _install_mock(handler)
 
     def qpage(u):
         for part in u.partition("?")[2].split("&"):
             if part.startswith("page="):
-                return int(part[len("page="):])
+                return int(part[len("page=") :])
         return None
 
     try:
@@ -520,9 +563,18 @@ def test_pr_files_paginates_past_the_default_page():
 def test_short_first_page_costs_one_request():
     hits: list[str] = []
     handler = _serve_pages(
-        hits, "/comments",
-        [[{"id": 1, "user": {"login": "a"}, "body": "hi",
-           "created_at": "2026-08-24T00:00:00Z"}]],
+        hits,
+        "/comments",
+        [
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "a"},
+                    "body": "hi",
+                    "created_at": "2026-08-24T00:00:00Z",
+                }
+            ]
+        ],
     )
     old = _install_mock(handler)
     try:
@@ -539,7 +591,8 @@ def test_short_first_page_costs_one_request():
 def test_pagination_cap_bounds_runaway_servers():
     hits: list[str] = []
     handler = _serve_pages(
-        hits, "/files",
+        hits,
+        "/files",
         [[{"filename": "x.py", "status": "modified"}] * 100] * 500,
     )
     saved_cap = gh_reads._PR_PAGE_CAP
@@ -560,11 +613,13 @@ def test_request_text_follows_redirect_to_blob():
     """GitHub's job-log endpoint answers 302 -> signed blob URL. The text
     reader must follow it (httpx defaults to NOT following), or the
     Actions log tier can never produce a line."""
+
     def handler(request):
         url = str(request.url)
         if url.endswith("/actions/jobs/777/logs"):
             return httpx.Response(
-                302, headers={"Location": "https://blob.example/log.txt"},
+                302,
+                headers={"Location": "https://blob.example/log.txt"},
             )
         if url == "https://blob.example/log.txt":
             return httpx.Response(200, text="step ok\nerror: boom\n")
@@ -583,20 +638,39 @@ def test_supplement_enriches_thin_exit_code_annotations():
     """A pathed-but-content-free annotation ('exit code 1') must not
     suppress the log-tail supplement: the merged failures carry the real
     assertion lines ahead of the thin annotation."""
+
     def handler(request):
         url = str(request.url)
         path, _, query = url.partition("?")
         if "/check-runs?" in path or path.endswith("/check-runs"):
             return httpx.Response(200, json={"check_runs": []})
         if path.endswith("/actions/runs") and "head_sha=" in query:
-            return httpx.Response(200, json={"workflow_runs": [{
-                "id": 1, "name": "CI", "conclusion": "failure",
-                "html_url": "https://ci/run/1",
-            }]})
+            return httpx.Response(
+                200,
+                json={
+                    "workflow_runs": [
+                        {
+                            "id": 1,
+                            "name": "CI",
+                            "conclusion": "failure",
+                            "html_url": "https://ci/run/1",
+                        }
+                    ]
+                },
+            )
         if path.endswith("/jobs"):
-            return httpx.Response(200, json={"jobs": [{
-                "id": 9, "name": "test", "conclusion": "failure",
-            }]})
+            return httpx.Response(
+                200,
+                json={
+                    "jobs": [
+                        {
+                            "id": 9,
+                            "name": "test",
+                            "conclusion": "failure",
+                        }
+                    ]
+                },
+            )
         if path.endswith("/logs"):
             return httpx.Response(
                 302,
@@ -612,11 +686,17 @@ def test_supplement_enriches_thin_exit_code_annotations():
         return httpx.Response(200, json={})
 
     result = {
-        "source": "check_runs", "state": "failure",
-        "runs": [{"name": "CI", "status": "completed",
-                  "conclusion": "failure"}],
-        "failures": [{"name": "CI", "path": ".github/workflows/ci.yml",
-                      "message": "exit code 1", "line": 30}],
+        "source": "check_runs",
+        "state": "failure",
+        "runs": [{"name": "CI", "status": "completed", "conclusion": "failure"}],
+        "failures": [
+            {
+                "name": "CI",
+                "path": ".github/workflows/ci.yml",
+                "message": "exit code 1",
+                "line": 30,
+            }
+        ],
     }
     old = _install_mock(handler)
     try:
@@ -644,22 +724,40 @@ def _actions_tier_handler(hits, *, job_bodies=None, gate=None):
         path, _, query = url.partition("?")
         hits.append(url)
         if path.endswith("/pulls/4244") or path.endswith("/pulls/4245"):
-            return httpx.Response(200, json={
-                "number": 4244, "head": {"sha": "deadsha", "ref": "b"},
-                "base": {"ref": "main"},
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "number": 4244,
+                    "head": {"sha": "deadsha", "ref": "b"},
+                    "base": {"ref": "main"},
+                },
+            )
         if path.endswith("/check-runs"):
             return httpx.Response(200, json={"check_runs": []})
         if path.endswith("/actions/runs") and "head_sha=" in query:
-            return httpx.Response(200, json={"workflow_runs": [{
-                "id": 31, "name": "CI", "conclusion": "failure",
-                "html_url": "https://ci/run/31",
-            }]})
+            return httpx.Response(
+                200,
+                json={
+                    "workflow_runs": [
+                        {
+                            "id": 31,
+                            "name": "CI",
+                            "conclusion": "failure",
+                            "html_url": "https://ci/run/31",
+                        }
+                    ]
+                },
+            )
         if path.endswith("/jobs"):
-            return httpx.Response(200, json={"jobs": [
-                {"id": 111, "name": "test", "conclusion": "failure"},
-                {"id": 112, "name": "lint", "conclusion": "failure"},
-            ]})
+            return httpx.Response(
+                200,
+                json={
+                    "jobs": [
+                        {"id": 111, "name": "test", "conclusion": "failure"},
+                        {"id": 112, "name": "lint", "conclusion": "failure"},
+                    ]
+                },
+            )
         m = re.search(r"/actions/jobs/(\d+)/logs$", path)
         if m:
             jid = m.group(1)
