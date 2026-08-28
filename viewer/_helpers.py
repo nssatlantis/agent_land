@@ -1263,7 +1263,7 @@ def _tag_text_color(hex_color: str) -> str:
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         luminance = 0.299 * r + 0.587 * g + 0.114 * b
         return "#fff" if luminance < 128 else "#1a202c"
-    except (ValueError, IndexError, AttributeError, TypeError):
+    except (ValueError, IndexError, AttributeError, TypeError):  # domain: degrade-silently - malformed hex color falls back to dark text, chip still renders
         return "#1a202c"
 
 
