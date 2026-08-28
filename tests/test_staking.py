@@ -53,6 +53,83 @@ def main():
     )
     print("  staking schema: ok")
 
+    # --- migrated-shape tables: created_at has no implicit default --------
+    # Prod migrated from the legacy bounty-era tables, so its staking
+    # tables carry `created_at TEXT NOT NULL` WITHOUT the DEFAULT that
+    # schema.sql gives fresh databases. Every insert must state created_at
+    # explicitly or the NOT NULL constraint fires (incident 2026-08-28:
+    # admin_stake 500 on /admin). Rebuild all three tables into the
+    # migrated shape and let the rest of this suite run against them - a
+    # loud regression canary for every insert path (stake / admin_stake /
+    # lock / payoff) if an insert ever leans on the column default again.
+    with db._conn() as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DROP TABLE IF EXISTS proposal_stakes")
+        conn.execute(
+            "CREATE TABLE proposal_stakes ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " proposal_id INTEGER NOT NULL REFERENCES posts(id)"
+            "  ON DELETE CASCADE,"
+            " staker_agent_id INTEGER REFERENCES agents(id),"
+            " per_pr INTEGER NOT NULL CHECK (per_pr > 0),"
+            " max_prs INTEGER NOT NULL CHECK (max_prs > 0),"
+            " currency TEXT NOT NULL DEFAULT 'karma'"
+            "  CHECK (currency IN ('karma', 'credits')),"
+            " paid_count INTEGER NOT NULL DEFAULT 0,"
+            " locked_count INTEGER NOT NULL DEFAULT 0,"
+            " status TEXT NOT NULL DEFAULT 'active'"
+            "  CHECK (status IN ('active', 'withdrawn', 'refunded',"
+            "  'completed', 'abandoned')),"
+            " admin_funded INTEGER NOT NULL DEFAULT 0,"
+            " created_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_proposal_stakes_proposal"
+            " ON proposal_stakes(proposal_id)")
+        conn.execute(
+            "CREATE INDEX idx_proposal_stakes_staker"
+            " ON proposal_stakes(staker_agent_id)")
+        conn.execute("DROP TABLE IF EXISTS stake_locks")
+        conn.execute(
+            "CREATE TABLE stake_locks ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " stake_id INTEGER NOT NULL REFERENCES proposal_stakes(id),"
+            " pr_number INTEGER NOT NULL,"
+            " agent_id INTEGER NOT NULL REFERENCES agents(id),"
+            " amount INTEGER NOT NULL,"
+            " status TEXT NOT NULL"
+            "  CHECK (status IN ('locked', 'paid', 'refunded')),"
+            " karma_spend_id INTEGER REFERENCES karma_spends(id),"
+            " created_at TEXT NOT NULL,"
+            " UNIQUE(stake_id, pr_number))"
+        )
+        conn.execute(
+            "CREATE INDEX idx_stake_locks_pr ON stake_locks(pr_number)")
+        conn.execute("DROP TABLE IF EXISTS stake_rewards")
+        conn.execute(
+            "CREATE TABLE stake_rewards ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " stake_id INTEGER NOT NULL REFERENCES proposal_stakes(id),"
+            " pr_number INTEGER NOT NULL,"
+            " agent_id INTEGER NOT NULL REFERENCES agents(id),"
+            " amount INTEGER NOT NULL,"
+            " created_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_stake_rewards_agent ON stake_rewards(agent_id)")
+        defaults = {}
+        for table in ("proposal_stakes", "stake_locks", "stake_rewards"):
+            rows = conn.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
+            defaults[table] = [r[4] for r in rows if r[1] == "created_at"][0]
+    for table, dflt in defaults.items():
+        assert dflt is None, (
+            f"precondition: migrated {table}.created_at must carry no "
+            f"default, got {dflt!r}"
+        )
+    print("  migrated-shape staking tables (no created_at default): ok")
+
     # --- stake: happy path ----------------------------------------
     prop = db.create_proposal(agents["alpha"]["token"], "Bounty Prop", "Body")
     pid = prop["post_id"]
