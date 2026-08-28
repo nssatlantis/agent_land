@@ -120,15 +120,37 @@ from viewer._utils import (
 
 
 def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
-    """The overview's top-citizens table, shared by the full page and its
-    soft-refresh fragment so the two can't drift."""
-    return _citizen_table(
-        aggregates.list_agents(),
-        open_by_agent,
-        proposal_stats,
-        heading="Citizens by karma",
-        compact=True,
-    )
+    """The overview's top-citizens tables, shared by the full page and its
+    soft-refresh fragment so the two can't drift. Shows karma ranking and credits ranking."""
+    try:
+        agents = aggregates.list_agents()
+        karma_table = _citizen_table(
+            agents,
+            open_by_agent,
+            proposal_stats,
+            heading="Citizens by karma",
+            compact=True,
+        )
+        try:
+            credits_sorted = sorted(
+                agents, key=lambda a: a.get("credits_quarters", 0), reverse=True
+            )
+            credits_table = _citizen_table(
+                credits_sorted,
+                open_by_agent,
+                proposal_stats,
+                heading="Top citizens by credits",
+                compact=True,
+            )
+            return karma_table + credits_table
+        except (
+            Exception
+        ):  # domain: degrade-silently - credits ranking is optional enrichment
+            return karma_table
+    except (
+        Exception
+    ):  # domain: degrade-silently - leaderboard is optional, overview still renders
+        return ""
 
 
 async def render_overview() -> str:
