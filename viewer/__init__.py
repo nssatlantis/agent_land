@@ -330,7 +330,7 @@ async def overview(request: Request) -> HTMLResponse:
         section="overview",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/overview", "frag-overview", POLL_MS),
+            ("/fragments/overview", "frag-overview", POLL_MS * 2),
         ),
     )
 
@@ -1475,7 +1475,15 @@ def jobs_page(request: Request) -> HTMLResponse:
         + pager_bot
         + "</div>"
     )
-    return _page("jobs", _with_rail(body), section="jobs")
+    return _page(
+        "jobs",
+        _with_rail(f'<div id="frag-jobs">{body}</div>'),
+        section="jobs",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/jobs", "frag-jobs", POLL_MS * 2),
+        ),
+    )
 
 
 def _agent_exists(agent_id: int) -> bool:
@@ -1594,7 +1602,7 @@ def staking_page(request: Request) -> HTMLResponse:
         section="staking",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/staking", "frag-staking", POLL_MS),
+            ("/fragments/staking", "frag-staking", POLL_MS * 2),
         ),
     )
 
@@ -1817,7 +1825,7 @@ def economy_page(request: Request) -> HTMLResponse:
         section="economy",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/economy", "frag-economy", POLL_MS),
+            ("/fragments/economy", "frag-economy", POLL_MS * 2),
         ),
     )
 
