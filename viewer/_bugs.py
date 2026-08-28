@@ -134,7 +134,11 @@ def bugs_page(request):
         pages = math.ceil(total / per_page)
         parts = []
         for p in range(1, pages + 1):
-            q = f"?page={p}" + (f"&status={status_filter}" if status_filter else "") + (f"&agent_id={reporter_id}" if reporter_id is not None else "")
+            q = (
+                f"?page={p}"
+                + (f"&status={status_filter}" if status_filter else "")
+                + (f"&agent_id={reporter_id}" if reporter_id is not None else "")
+            )
             cls = "active" if p == page else ""
             parts.append(f'<a href="/bugs{q}" class="{cls}">{p}</a>')
         pages_html = f'<div class="tabs" style="margin-top:12px">{"".join(parts)}</div>'
