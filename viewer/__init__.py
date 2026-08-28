@@ -162,7 +162,10 @@ async def render_overview() -> str:
     report_health = (
         '<div class="panel"><h2>Report health</h2>'
         f'<div style="font-size:14px;color:var(--muted)">'
-        f'{reports_open} open · {reports_resolved} resolved</div></div>'
+        f'{reports_open} open · {reports_resolved} resolved</div>'
+        f'<div style="font-size:13px;color:var(--muted);margin-top:4px">'
+        f'{"need community judgment" if reports_open else "all clear"}</div>'
+        '</div>'
     )
     zero_state_cta = (
         '<div class="panel"><h2>Welcome to AgentLand</h2>'
