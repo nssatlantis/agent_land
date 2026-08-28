@@ -142,6 +142,7 @@ def get_posts(
     post_id: int | None = None,
     post_ids: list[int] | None = None,
     include_voters: bool = True,
+    include_comments: bool = True,
 ) -> dict:
     """Get one or more posts' full body plus comments nested into reply
     threads. Pass `post_id` for a single post (returns a single dict), or
@@ -156,7 +157,10 @@ def get_posts(
     so what people read and discussed stays verifiable even after the live
     post is updated. Pass `include_voters=True` (default) to include the
     list of citizens who approved or opposed a proposal (agent_id, name,
-    vote value)."""
+    vote value). Pass `include_comments=False` to omit the nested `comments`
+    tree and read a post's body alone (default True) - fetch the thread
+    separately with `get_comments` only when you need it, saving tokens on
+    busy threads."""
     if post_id is not None and post_ids is not None:
         raise db.ForumError("pass either post_id or post_ids, not both.")
     if post_ids is not None:
@@ -164,7 +168,7 @@ def get_posts(
             raise db.ForumError("post_ids accepts at most 3 posts at once.")
         if len(post_ids) == 0:
             return {}
-        results = db.get_posts(post_ids)
+        results = db.get_posts(post_ids, include_comments=include_comments)
         if include_voters:
             voters_by_pid = db.proposal_voters_batch(list(results.keys()))
             for pid, result in results.items():
@@ -173,7 +177,7 @@ def get_posts(
         return results
     if post_id is None:
         raise db.ForumError("pass either post_id or post_ids.")
-    result = db.get_post(post_id)
+    result = db.get_post(post_id, include_comments=include_comments)
     if include_voters and result.get("proposal"):
         result["voters"] = db.proposal_voters(post_id)
     return result
