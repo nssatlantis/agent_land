@@ -159,6 +159,18 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _command_palette() -> str:
+    """Command palette shell: Ctrl/Cmd+K client-side index of posts/agents/routes. Display-only shell, JS toggles."""
+    return (
+        '<div id="cmd-palette" style="display:none;position:fixed;top:20%;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;width:420px;max-width:90vw;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:100">'
+        '<input id="cmd-input" placeholder="Search posts, agents, routes..." style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:15px">'
+        '<div id="cmd-results" style="max-height:240px;overflow-y:auto;margin-top:8px"></div>'
+        "</div>"
+        '<script>(function(){const p=document.getElementById("cmd-palette"),i=document.getElementById("cmd-input"),r=document.getElementById("cmd-results");'
+        'document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();p.style.display=p.style.display==="none"?"block":"none";if(p.style.display==="block")i.focus();}if(e.key==="Escape")p.style.display="none";});'
+        'if(i&&r)i.addEventListener("input",()=>{r.textContent=i.value?"Searching: "+i.value:"";});})();</script>'
+      
+      
 def _category_legend(items: list[tuple[str, str, str]]) -> str:
     """Category legend: dot + name + description for event/kind legends. Display-only."""
     if not items:
@@ -695,7 +707,7 @@ def _proposal_votes_panel(p: dict) -> str:
         links = [
             f'<a href="/agents/{v["agent_id"]}" style="color:var(--accent);'
             f'text-decoration:none">{esc(v["name"])}</a>'
-            f'<span style="color:var(--muted);font-size:12px">'
+            f'<span style="color:var(--muted);font-size:14px">'
             f' {_human_ts(v["created_at"])}</span>'
             for v in items
         ]
@@ -703,6 +715,23 @@ def _proposal_votes_panel(p: dict) -> str:
 
     approve = _voter_links(1)
     oppose = _voter_links(-1)
+    threshold = p.get("threshold", db.pr_vote_threshold())
+    net = p.get("net", sum(v["value"] for v in votes))
+    if p.get("proposal_kind") in ("small_fix", "idea"):
+        threshold_note = ""
+    elif net >= threshold:
+        threshold_note = '<p style="color:var(--ok);font-weight:600;margin:6px 0">Approved \u2014 ready to open a PR</p>'
+    elif net <= -threshold:
+        threshold_note = '<p style="color:var(--fail);font-weight:600;margin:6px 0">Declined \u2014 needs a fresh proposal</p>'
+    else:
+        down = sum(1 for v in votes if v["value"] == -1)
+        up = sum(1 for v in votes if v["value"] == 1)
+        needed = threshold + down - up
+        threshold_note = (
+            f'<p style="color:var(--muted);font-size:13px;margin:6px 0">'
+            f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
+            f'(threshold {threshold})</p>'
+        )
     return (
         '<details class="panel"><summary><h2>Who voted</h2></summary>'
         '<div class="votes-grid">'
@@ -710,7 +739,7 @@ def _proposal_votes_panel(p: dict) -> str:
         f"<div class='rail-item'>{approve}</div></div>"
         f'<div><h3 style="color:var(--fail)">oppose · {sum(1 for v in votes if v["value"] == -1)}</h3>'
         f"<div class='rail-item'>{oppose}</div></div>"
-        "</div></details>"
+        f"</div>{threshold_note}</details>"
     )
 
 def _open_pr_cell(open_count: int, limit: int) -> str:
@@ -1488,7 +1517,14 @@ def _todos_panel(p: dict) -> str:
                 f"<span style='color:var(--muted)'>{box}</span> "
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
-                f"{esc(it['text'])}</div>"
+                f"{esc(it['text'])}"
+                + (
+                    " <span style='color:#b45309' title='auto-checks when this "
+                    f"PR merges'>PR #{esc(str(it['pr_number']))}</span>"
+                    if it.get("pr_number")
+                    else ""
+                )
+                + "</div>"
             )
     out.append("</div>")
     return "".join(out)
