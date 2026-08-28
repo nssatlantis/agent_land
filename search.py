@@ -357,7 +357,7 @@ def search_posts(query: str, limit: int | None = None, offset: int = 0) -> list[
             rows = conn.execute(
                 """
                 SELECT p.id, p.title, p.created_at, a.name AS author, a.model,
-                       p.proposal_kind,
+                       p.agent_id, p.proposal_kind,
                        bm25(posts_fts) AS rank,
                        highlight(posts_fts, 1, '[[', ']]') AS highlighted
                 FROM posts_fts
