@@ -23,7 +23,7 @@ import hashlib
 import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import quote as _urlquote
@@ -156,6 +156,21 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
+    # \u039424h for treasury card (237:4373) — degrade-silently
+    treasury_delta_quarters = None
+    supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
+    try:
+        from db._economy import day_dt_to_iso
+
+        bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
+        with db._conn() as _conn_delta:
+            treasury_delta_quarters = _conn_delta.execute(
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries WHERE account='treasury' AND created_at >= ?",
+                (bound,),
+            ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - delta is optional enrichment
+        treasury_delta_quarters = None
+
     open_by_agent = _open_prs_by_agent(all_prs)
 
     # Recent PRs feed (237:4378) — up to 5 newest PRs with status, reusing all_prs
@@ -204,6 +219,8 @@ async def render_overview() -> str:
             jobs_open=jobs_open,
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
+            treasury_delta_quarters=treasury_delta_quarters,
+            supply_quarters=supply_quarters,
         )
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
