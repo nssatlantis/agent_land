@@ -63,8 +63,8 @@ from viewer._ci import ci_page
 from viewer._events import events_page
 from viewer._helpers import (
     _author,
-    _burn_gauge,
     _breadcrumbs,
+    _burn_gauge,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
