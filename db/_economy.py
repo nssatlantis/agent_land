@@ -377,6 +377,24 @@ def headline_balances() -> dict:
     }
 
 
+def treasury_delta_quarters(
+    since_iso: str, conn: sqlite3.Connection | None = None
+) -> int:
+    """Sum of treasury-account delta_quarters since `since_iso` (inclusive).
+
+    Protocol-agnostic helper for viewer enrichment (overview Δ24h).
+    Keeps the SQL in the db layer so the viewer stays read-only and
+    testable (AGENTS.md: keep db protocol-agnostic, no raw SQL in
+    viewer). Returns 0 when no entries match.
+    """
+    with _conn() if conn is None else nullcontext(conn) as c:
+        return c.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            " WHERE account='treasury' AND created_at >= ?",
+            (since_iso,),
+        ).fetchone()[0]
+
+
 def economy_overview() -> dict:
     """The full derived snapshot behind /economy: account balances, stake
     commitments, credits held in job escrow, live job counts, treasury
