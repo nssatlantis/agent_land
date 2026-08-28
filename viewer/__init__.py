@@ -206,11 +206,7 @@ async def render_overview() -> str:
         from db._economy import day_dt_to_iso
 
         bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
-        with db._conn() as _conn_delta:
-            treasury_delta_quarters = _conn_delta.execute(
-                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries WHERE account='treasury' AND created_at >= ?",
-                (bound,),
-            ).fetchone()[0]
+        treasury_delta_quarters = db.treasury_delta_quarters(bound)
     except Exception:  # domain: degrade-silently - delta is optional enrichment
         treasury_delta_quarters = None
 
