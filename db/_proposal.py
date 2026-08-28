@@ -157,15 +157,9 @@ def create_proposal(
             detail={"title": title, "proposal_kind": kind},
             conn=conn,
         )
-        # Auto-start create-pr workflow for this proposal (if enforce on, the
-        # later repo_propose_change gate will require it).
-        try:
-            from db._workflow import start_workflow
-
-            if kind in ("proposal", "small_fix"):
-                start_workflow(conn, "workflows/create-pr.md", post_id, agent["id"])
-        except Exception:  # domain: degrade-silently - workflow is optional enrichment
-            pass
+        # The create-pr workflow run is auto-started inside _insert_post for
+        # PR-openable kinds (proposal / small_fix), so it now covers supersede
+        # and promote too - no per-caller hook here.
         note = ""
         if idea:
             note = (
@@ -577,6 +571,15 @@ def supersede_proposal(
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?", (new_id, post_id)
         )
+        # P0-1: the parent is now locked (superseded), so its create-pr run is
+        # done - close it rather than leaving it 'open' until the TTL sweep
+        # mis-records it as closed for the wrong reason.
+        try:
+            from db._workflow import close_workflow_for_proposal
+
+            close_workflow_for_proposal(conn, post_id, "closed")
+        except Exception:  # domain: degrade-silently - workflow is enrichment
+            pass
         voters = conn.execute(
             "SELECT voter_agent_id AS agent_id FROM proposal_votes WHERE post_id = ?",
             (post_id,),
@@ -1257,6 +1260,15 @@ def promote_idea(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?",
             (new_id, post_id),
         )
+        # P0-1: the idea is now locked (superseded); close any open create-pr
+        # run on it (an idea normally has none, being non-PR-openable, but a
+        # run may exist if it was promoted from an already-workflowed state).
+        try:
+            from db._workflow import close_workflow_for_proposal
+
+            close_workflow_for_proposal(conn, post_id, "closed")
+        except Exception:  # domain: degrade-silently - workflow is enrichment
+            pass
         voters = conn.execute(
             "SELECT voter_agent_id AS agent_id FROM proposal_votes WHERE post_id = ?",
             (post_id,),
