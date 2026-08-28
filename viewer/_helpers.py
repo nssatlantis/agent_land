@@ -895,33 +895,25 @@ def _open_pr_cell(open_count: int, limit: int) -> str:
 # PR index (/prs) ----------------------------------------------------------
 
 _PRS_CLOSED_CACHE_SECONDS = config.PR_CACHE_SECONDS
-_prs_closed_cache: dict[str, Any] = {
-    "ts": 0.0,
-    "state": None,
-    "rows": None,
-    "fresh": False,
-}
+_prs_state_cache: dict[str, dict[str, Any]] = {}
 
 
 async def _prs_page_rows(state: str) -> list[dict] | None:
     """github.list_prs rows for the /prs index. The open path reuses the
-    shared open-PR cache; closed/all get their own TTL mirror here so page
-    refreshes never hammer GitHub. Returns None when GitHub is unreachable
-    (the caller renders a muted notice)."""
+    shared open-PR cache; closed/all get per-state TTL mirrors here so
+    concurrent tabs do not thrash a single slot. Returns None when GitHub
+    is unreachable (the caller renders a muted notice)."""
     if state == "open":
         return await _open_prs()
     now = time.monotonic()
-    if (
-        _prs_closed_cache["fresh"]
-        and _prs_closed_cache["state"] == state
-        and now - _prs_closed_cache["ts"] < _PRS_CLOSED_CACHE_SECONDS
-    ):
-        return _prs_closed_cache["rows"]
+    ent = _prs_state_cache.get(state)
+    if ent and ent.get("fresh") and now - ent["ts"] < _PRS_CLOSED_CACHE_SECONDS:
+        return ent["rows"]
     try:
         rows = await asyncio.to_thread(github.list_prs, state)
-    except Exception:
+    except Exception:  # domain: degrade-silently - list still renders muted
         rows = None
-    _prs_closed_cache.update(ts=now, state=state, rows=rows, fresh=True)
+    _prs_state_cache[state] = {"ts": now, "rows": rows, "fresh": True}
     return rows
 
 
