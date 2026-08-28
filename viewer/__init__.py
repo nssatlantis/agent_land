@@ -1645,6 +1645,25 @@ _ECONOMY_FLOW_LABELS = (
 )
 
 
+def _economy_wallet_banner(view_agent, ledger):
+    if not view_agent:
+        return ""
+    _name = (
+        ledger["entries"][0]["agent_name"] if ledger["entries"] else f"#{view_agent}"
+    )
+    _bal = (ledger["summary"] or {}).get("balance_quarters")
+    _bal_txt = (
+        f"Balance <b>{esc(_quarters_to_str(_bal))}</b> cr &middot; "
+        if _bal is not None
+        else ""
+    )
+    return (
+        f'<div class="panel"><h2>Wallet &middot; {esc(_name)}</h2>'
+        + f'<p style="color:var(--muted)">{_bal_txt}'
+        '<a href="/economy">&larr; All citizens</a></p></div>'
+    )
+
+
 def economy_page(request: Request) -> HTMLResponse:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
