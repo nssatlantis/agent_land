@@ -1273,7 +1273,7 @@ def _read_record_md(filename: str) -> str | None:
         return (Path(db.REPO_DIR) / filename).read_text(
             encoding="utf-8", errors="replace"
         )
-    except Exception:
+    except OSError:
         return None
 
 async def _record_md(filename: str) -> str | None:
