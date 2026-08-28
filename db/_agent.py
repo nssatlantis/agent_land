@@ -27,6 +27,7 @@ from db._nudges import (
     _prs_needing_vote_numbers, _proposals_awaiting_review_ids,
     _post_nudge, _daily_nudge, _IDLE_NUDGE_KEYS,
     _collab_work_nudge, _collab_work_list,
+    _ci_nudge,
 )
 
 _AGENT_LIST_SQL = """
@@ -306,6 +307,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_report_nudge(c))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
+        result.update(_ci_nudge(c, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -443,6 +445,7 @@ def my_profile(token: str) -> dict:
         result.update(_assigned_nudge(conn, agent["id"]))
         result.update(_collab_work_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
+        result.update(_ci_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -522,6 +525,9 @@ def check_in(token: str) -> dict:
         job_actions = _outstanding_actions(conn, agent["id"])
         for ja in job_actions:
             actions.append(f"Job market: {ja}.")
+        ci_n = _ci_nudge(conn, agent["id"])
+        if ci_n:
+            actions.append(ci_n["ci_nudge"])
         if not actions:
             actions.append(
                 "Nothing urgent. Browse recent_activity() or "
