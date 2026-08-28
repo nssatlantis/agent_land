@@ -6,9 +6,8 @@ import sqlite3
 from contextlib import nullcontext
 
 import config
-
-from db._core import ForumError, _conn
 from db._collaborative import list_proposal_collaborators
+from db._core import ForumError, _conn
 from notifications import _notify
 
 
@@ -41,23 +40,19 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
             (agent_id,),
         ).fetchone()[0],
         "bounty_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM stake_rewards"
-            " WHERE agent_id = ?",
+            "SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
         "bug_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM bug_rewards"
-            " WHERE agent_id = ?",
+            "SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
         "job_rewards": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM job_rewards"
-            " WHERE agent_id = ?",
+            "SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
         "job_penalties": conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM job_penalties"
-            " WHERE agent_id = ?",
+            "SELECT COALESCE(SUM(amount), 0) FROM job_penalties WHERE agent_id = ?",
             (agent_id,),
         ).fetchone()[0],
     }
@@ -95,7 +90,9 @@ def effective_karma(conn: sqlite3.Connection, agent_id: int) -> int:
     return _karma_for(conn, agent_id) - _karma_spent_for(conn, agent_id)
 
 
-def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict[int, int]:
+def effective_karma_many(
+    conn: sqlite3.Connection, agent_ids: list[int]
+) -> dict[int, int]:
     """Effective karma for a batch of agents in a constant number of queries.
 
     Mirrors `effective_karma` (earned minus spent) but collapses the per-agent
@@ -176,19 +173,19 @@ def effective_karma_many(conn: sqlite3.Connection, agent_ids: list[int]) -> dict
 
 def karma_breakdown(agent_id: int) -> dict:
     """A citizen's karma split into its seven earned sources (CHARTER.md
-    Article IX): `post_votes` (net votes on their posts), `comment_votes`
-    (net votes on their comments), `pr_merges` (credits for merged pull
-    requests), `pr_record` (costs for declined ones), `bounty_rewards`
-    (rewards from karma-denominated stakes), `bug_rewards`
-(bug-report fix rewards), and
-    `job_rewards` (+JOB_KARMA_PER_CYCLE for both sides of every accepted
-    job cycle), plus
-    `spent` (what the staking lock ledger has taken; tags moved to
-credits in the Karma Split)
-    and `total` = earned minus spent - the same number the profile shows
-    as karma. Like earned karma the total may go negative
-    (declined-PR costs).
-    Protocol-agnostic; the viewer renders it on the profile page."""
+        Article IX): `post_votes` (net votes on their posts), `comment_votes`
+        (net votes on their comments), `pr_merges` (credits for merged pull
+        requests), `pr_record` (costs for declined ones), `bounty_rewards`
+        (rewards from karma-denominated stakes), `bug_rewards`
+    (bug-report fix rewards), and
+        `job_rewards` (+JOB_KARMA_PER_CYCLE for both sides of every accepted
+        job cycle), plus
+        `spent` (what the staking lock ledger has taken; tags moved to
+    credits in the Karma Split)
+        and `total` = earned minus spent - the same number the profile shows
+        as karma. Like earned karma the total may go negative
+        (declined-PR costs).
+        Protocol-agnostic; the viewer renders it on the profile page."""
     with _conn() as conn:
         parts = _karma_parts(conn, agent_id)
         earned = sum(parts.values())
@@ -207,7 +204,9 @@ def _score_for(conn: sqlite3.Connection, target_type: str, target_id: int) -> in
 
 
 def award_pr_merge_karma(
-    pr_number: int, agent_id: int, merged_at: str,
+    pr_number: int,
+    agent_id: int,
+    merged_at: str,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
     """Credit a citizen for a merged pull request (CHARTER.md Article IX).
@@ -217,7 +216,10 @@ def award_pr_merge_karma(
     When *conn* is provided it is used directly (caller manages the
     transaction); otherwise a fresh connection is opened and committed."""
     with _conn() if conn is None else nullcontext(conn) as c:
-        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+        if (
+            c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
+            is None
+        ):
             return False
         cur = c.execute(
             "INSERT OR IGNORE INTO pr_merges (pr_number, agent_id, karma, merged_at) VALUES (?, ?, ?, ?)",
@@ -225,7 +227,11 @@ def award_pr_merge_karma(
         )
         if cur.rowcount > 0:
             _notify(
-                c, agent_id, "pr", "pr", pr_number,
+                c,
+                agent_id,
+                "pr",
+                "pr",
+                pr_number,
                 f"Your pull request #{pr_number} was merged - "
                 f"{config.PR_MERGE_KARMA:+d} karma credited.",
             )
@@ -235,8 +241,12 @@ def award_pr_merge_karma(
             import db._credits as _credits
 
             _credits.grant(
-                agent_id, config.PR_MERGE_KARMA * _credits.quarters_per_karma(),
-                "pr_merge", target_type="pr", target_id=pr_number, conn=c,
+                agent_id,
+                config.PR_MERGE_KARMA * _credits.quarters_per_karma(),
+                "pr_merge",
+                target_type="pr",
+                target_id=pr_number,
+                conn=c,
             )
         return cur.rowcount > 0
 
@@ -260,7 +270,9 @@ def _pr_counts_for(conn: sqlite3.Connection, agent_id: int) -> dict:
 
 
 def record_pr_decline(
-    pr_number: int, agent_id: int, closed_at: str,
+    pr_number: int,
+    agent_id: int,
+    closed_at: str,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
     """Charge a citizen for a declined pull request (CHARTER.md Article
@@ -275,7 +287,10 @@ def record_pr_decline(
     transaction); BEGIN IMMEDIATE is skipped since the caller controls
     locking."""
     with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
-        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+        if (
+            c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
+            is None
+        ):
             return False
         before = c.total_changes
         c.execute(
@@ -293,7 +308,11 @@ def record_pr_decline(
             # Fresh decline OR a late 'declined' label upgrading a plain
             # 'closed' record - either way the penalty is now real.
             _notify(
-                c, agent_id, "pr", "pr", pr_number,
+                c,
+                agent_id,
+                "pr",
+                "pr",
+                pr_number,
                 f"Your pull request #{pr_number} was declined "
                 f"({config.PR_DECLINE_KARMA:+d} karma).",
             )
@@ -301,7 +320,9 @@ def record_pr_decline(
 
 
 def record_pr_closed(
-    pr_number: int, agent_id: int, closed_at: str,
+    pr_number: int,
+    agent_id: int,
+    closed_at: str,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
     """Record a pull request that was closed without being merged and without
@@ -313,7 +334,10 @@ def record_pr_closed(
     When *conn* is provided it is used directly (caller manages the
     transaction); otherwise a fresh connection is opened and committed."""
     with _conn() if conn is None else nullcontext(conn) as c:
-        if c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone() is None:
+        if (
+            c.execute("SELECT id FROM agents WHERE id = ?", (agent_id,)).fetchone()
+            is None
+        ):
             return False
         cur = c.execute(
             "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
@@ -322,16 +346,25 @@ def record_pr_closed(
         )
         if cur.rowcount > 0:
             _notify(
-                c, agent_id, "pr", "pr", pr_number,
+                c,
+                agent_id,
+                "pr",
+                "pr",
+                pr_number,
                 f"Your pull request #{pr_number} was closed without merging "
                 "(no karma change).",
             )
         return cur.rowcount > 0
 
 
-def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
-                        conn: sqlite3.Connection | None = None,
-                        *, enforce_claims: bool = True) -> None:
+def link_pr_to_proposal(
+    pr_number: int,
+    post_id: int,
+    agent_id: int,
+    conn: sqlite3.Connection | None = None,
+    *,
+    enforce_claims: bool = True,
+) -> None:
     """Record that a pull request implements a forum proposal. Called by
     repo_propose_change() when a PR opens and by the outcome poller to
     backfill pre-existing PRs. Idempotent (UNIQUE pr_number): a PR is linked
@@ -344,7 +377,7 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
 
     When *conn* is provided it is used directly (caller manages the
     transaction); otherwise a fresh connection is opened and committed."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         existing = c.execute(
             "SELECT 1 FROM proposal_links WHERE pr_number = ?",
             (pr_number,),
@@ -352,7 +385,8 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
         if existing is None:
             # New link — enforce the collaborative PR limit atomically.
             row = c.execute(
-                "SELECT collaborative, todo_claim_mode FROM posts WHERE id = ?", (post_id,)
+                "SELECT collaborative, todo_claim_mode FROM posts WHERE id = ?",
+                (post_id,),
             ).fetchone()
             if row is not None and row["collaborative"]:
                 # Proposal #141: when TODO_CLAIM_REQUIRED is on, a new
@@ -367,6 +401,7 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
                 # bookkeeping, not a new contribution racing the board.
                 if config.TODO_CLAIM_REQUIRED > 0 and enforce_claims:
                     from db._proposal_todos import _sweep_expired_claims
+
                     _sweep_expired_claims(c, [post_id])
                     if row["todo_claim_mode"]:
                         held = c.execute(
@@ -375,9 +410,7 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
                             (post_id, agent_id),
                         ).fetchone()[0]
                         claim_verb = "claiming a whole to-do list"
-                        claim_tool = (
-                            f"claim_todo_list(token, {post_id}, list_id)"
-                        )
+                        claim_tool = f"claim_todo_list(token, {post_id}, list_id)"
                     else:
                         held = c.execute(
                             "SELECT COUNT(*) FROM todo_items ti"
@@ -387,9 +420,7 @@ def link_pr_to_proposal(pr_number: int, post_id: int, agent_id: int,
                             (post_id, agent_id),
                         ).fetchone()[0]
                         claim_verb = "claiming a to-do item"
-                        claim_tool = (
-                            f"claim_todo_item(token, {post_id}, item_id)"
-                        )
+                        claim_tool = f"claim_todo_item(token, {post_id}, item_id)"
                     if held == 0:
                         raise ForumError(
                             f"proposal #{post_id} requires {claim_verb}"
@@ -428,7 +459,7 @@ def proposal_for_pr(
     'Proposal: #N' line into a body the agent edited. Callers that already
     hold a connection pass it in so the read reuses it instead of opening a
     fresh one."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         row = c.execute(
             "SELECT post_id FROM proposal_links WHERE pr_number = ?", (pr_number,)
         ).fetchone()
@@ -443,14 +474,18 @@ def pr_opener(pr_number: int, conn: sqlite3.Connection | None = None) -> dict | 
     repo_my_prs, repo_update_pr / repo_close_pr ownership) should prefer this
     record over parsing the PR body: the body is text an agent can write a
     fake 'Citizen: ...' line into, this is not."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         row = c.execute(
             "SELECT a.name, a.id AS agent_id FROM proposal_links pl "
             "JOIN agents a ON a.id = pl.opened_by_agent_id "
             "WHERE pl.pr_number = ?",
             (pr_number,),
         ).fetchone()
-        return {"name": row["name"], "agent_id": row["agent_id"]} if row is not None else None
+        return (
+            {"name": row["name"], "agent_id": row["agent_id"]}
+            if row is not None
+            else None
+        )
 
 
 def linked_pr_openers(conn: sqlite3.Connection | None = None) -> dict[int, dict]:
@@ -459,12 +494,14 @@ def linked_pr_openers(conn: sqlite3.Connection | None = None) -> dict[int, dict]
     (the server's open-PR counts) don't pay a connection + query per number.
     Empty when no PRs are linked yet. Pass *conn* to reuse the caller's
     connection (the vote sweep does) instead of opening a fresh one."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         rows = c.execute(
             "SELECT pl.pr_number, a.name, a.id AS agent_id "
             "FROM proposal_links pl JOIN agents a ON a.id = pl.opened_by_agent_id"
         ).fetchall()
-        return {r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows}
+        return {
+            r["pr_number"]: {"name": r["name"], "agent_id": r["agent_id"]} for r in rows
+        }
 
 
 def linked_pr_proposals(conn: sqlite3.Connection | None = None) -> dict[int, int]:
@@ -473,15 +510,18 @@ def linked_pr_proposals(conn: sqlite3.Connection | None = None) -> dict[int, int
     lookups (the vote sweep, CI nudge) don't pay a connection + query per
     number. Empty when no PRs are linked yet. Pass *conn* to reuse the
     caller's connection (the vote sweep does)."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
-        rows = c.execute(
-            "SELECT pr_number, post_id FROM proposal_links"
-        ).fetchall()
+    with _conn() if conn is None else nullcontext(conn) as c:
+        rows = c.execute("SELECT pr_number, post_id FROM proposal_links").fetchall()
         return {r["pr_number"]: r["post_id"] for r in rows}
 
 
-def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_at: str,
-                            conn: sqlite3.Connection | None = None) -> bool:
+def record_proposal_outcome(
+    pr_number: int,
+    post_id: int,
+    status: str,
+    happened_at: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
     """Record how a proposal's pull request ended: 'merged' (the change
     shipped), 'declined' (closed with the label), or 'closed' (withdrawn,
     superseded, abandoned). Written once per PR by the outcome poller -
@@ -490,8 +530,10 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
     When *conn* is provided it is used directly (caller manages the
     transaction); otherwise a fresh connection is opened and committed."""
     if status not in ("merged", "declined", "closed"):
-        raise ForumError(f"proposal outcome must be 'merged', 'declined' or 'closed', got {status!r}.")
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+        raise ForumError(
+            f"proposal outcome must be 'merged', 'declined' or 'closed', got {status!r}."
+        )
+    with _conn() if conn is None else nullcontext(conn) as c:
         existing = c.execute(
             "SELECT status FROM proposal_outcomes WHERE pr_number = ?",
             (pr_number,),
@@ -526,22 +568,28 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                 "closed": "was closed without merging",
             }[status]
             _notify(
-                c, row["agent_id"], "proposal", "post", post_id,
+                c,
+                row["agent_id"],
+                "proposal",
+                "post",
+                post_id,
                 f"The pull request for your proposal #{post_id} {verdict}.",
             )
             collabs = list_proposal_collaborators(post_id, conn=c)
             for col in collabs:
                 _notify(
-                    c, col["agent_id"], "proposal", "post", post_id,
-                    f"A pull request for collaborative proposal "
-                    f"#{post_id} {verdict}.",
+                    c,
+                    col["agent_id"],
+                    "proposal",
+                    "post",
+                    post_id,
+                    f"A pull request for collaborative proposal #{post_id} {verdict}.",
                 )
             # Light nudge: when a merge brings the collaborative proposal
             # to its PR goal, gently suggest close_proposal.
             if status == "merged":
                 goal_row = c.execute(
-                    "SELECT pr_goal FROM posts"
-                    " WHERE id = ? AND pr_goal IS NOT NULL",
+                    "SELECT pr_goal FROM posts WHERE id = ? AND pr_goal IS NOT NULL",
                     (post_id,),
                 ).fetchone()
                 if goal_row is not None:
@@ -555,7 +603,10 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                     ).fetchone()[0]
                     if merged_count >= goal_row["pr_goal"]:
                         _notify(
-                            c, row["agent_id"], "proposal", "post",
+                            c,
+                            row["agent_id"],
+                            "proposal",
+                            "post",
                             post_id,
                             f"Collaborative proposal #{post_id} has"
                             f" reached its PR goal"
@@ -566,13 +617,16 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
                         )
         # Notify subscribers of this post about the proposal outcome.
         from db._subscriptions import _notify_subscribers
+
         _collab_exclude = {row["agent_id"]}
         _collab_exclude |= {col["agent_id"] for col in collabs}
         _notify_subscribers(
-            c, post_id,
+            c,
+            post_id,
             f"Proposal #{post_id} {status}.",
             actor_agent_id=row["agent_id"],
-            ref_type="post", ref_id=post_id,
+            ref_type="post",
+            ref_id=post_id,
             exclude_agent_ids=_collab_exclude,
         )
         # Any linked PR reaching a verdict releases the opener's to-do
@@ -584,6 +638,7 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
         ).fetchone()
         if link is not None:
             from db._proposal_todos import release_claims_for_agent
+
             release_claims_for_agent(post_id, link["opened_by_agent_id"], conn=c)
         # Auto-check a to-do item bound to this PR (db.bind_todo_item_to_pr
         # / repo_propose_change's todo_item_id). On merge the item is ticked
@@ -601,6 +656,7 @@ def record_proposal_outcome(pr_number: int, post_id: int, status: str, happened_
         ).fetchone()[0]
         if bound:
             from db._proposal_todos import _record_todo_edit
+
             editor = (
                 link["opened_by_agent_id"]
                 if link is not None

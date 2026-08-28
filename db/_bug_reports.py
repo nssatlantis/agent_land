@@ -5,7 +5,7 @@ from __future__ import annotations
 import config
 import db
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
-from events import log_event, EVT_BUG_REPORTED, EVT_BUG_CONFIRMED, EVT_BUG_REPORT_FIXED
+from events import EVT_BUG_CONFIRMED, EVT_BUG_REPORT_FIXED, EVT_BUG_REPORTED, log_event
 from notifications import _notify
 
 
@@ -103,8 +103,11 @@ def file_bug_report(
                     # The open -> confirmed crossing used to be silent:
                     # tell the filers their report is now small_fix-eligible.
                     _notify(
-                        conn, original["agent_id"], "pr",
-                        "bug_report", orig_id,
+                        conn,
+                        original["agent_id"],
+                        "pr",
+                        "bug_report",
+                        orig_id,
                         f"Your bug report #{orig_id} "
                         f"('{original['title']}') is now confirmed - "
                         f"confidence {new_confidence} reached the "
@@ -113,7 +116,11 @@ def file_bug_report(
                     )
                     if agent_id != original["agent_id"]:
                         _notify(
-                            conn, agent_id, "pr", "bug_report", orig_id,
+                            conn,
+                            agent_id,
+                            "pr",
+                            "bug_report",
+                            orig_id,
                             f"Bug report #{orig_id} "
                             f"('{original['title']}') is now confirmed - "
                             f"your duplicate raised confidence to "
@@ -321,12 +328,9 @@ def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
         if row is None:
             raise ForumError(f"Bug report #{report_id} not found.")
         if row["status"] != "open":
-            raise ForumError(
-                f"Bug report #{report_id} is already {row['status']}."
-            )
+            raise ForumError(f"Bug report #{report_id} is already {row['status']}.")
         conn.execute(
-            "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
-            " WHERE id = ?",
+            "UPDATE bug_reports SET status = 'confirmed', decided_at = ? WHERE id = ?",
             (_now_iso(), report_id),
         )
         log_event(
@@ -336,6 +340,7 @@ def confirm_bug_report(report_id: int, *, admin: str = "") -> dict:
             conn=conn,
         )
         from moderation import _audit
+
         _audit(conn, admin, "confirm_bug_report", "bug_report", report_id)
         return {"id": report_id, "status": "confirmed"}
 
@@ -355,8 +360,7 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
             raise ForumError(f"Bug report #{report_id} is already fixed.")
         now = _now_iso()
         conn.execute(
-            "UPDATE bug_reports SET status = 'fixed', decided_at = ?"
-            " WHERE id = ?",
+            "UPDATE bug_reports SET status = 'fixed', decided_at = ? WHERE id = ?",
             (now, report_id),
         )
         reporter_id = row["agent_id"]
@@ -379,14 +383,20 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
             _credits.grant(
                 reporter_id,
                 karma * _credits.quarters_per_karma(),
-                "bug_fix", target_type="bug_report", target_id=report_id,
+                "bug_fix",
+                target_type="bug_report",
+                target_id=report_id,
                 conn=conn,
             )
             _notify(
-                conn, reporter_id, "pr", "bug_report", report_id,
-                f"Your bug report #{report_id} was fixed — "
-                f"{karma:+d} karma credited.",
+                conn,
+                reporter_id,
+                "pr",
+                "bug_report",
+                report_id,
+                f"Your bug report #{report_id} was fixed — {karma:+d} karma credited.",
             )
         from moderation import _audit
+
         _audit(conn, admin, "fix_bug_report", "bug_report", report_id)
         return {"id": report_id, "status": "fixed"}

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import db
-from server._mcp import mcp, _logged
+from server._mcp import _logged, mcp
+
 
 @mcp.tool()
 @_logged
@@ -17,7 +18,6 @@ def join_proposal(token: str, proposal_id: int) -> dict:
     return db.join_proposal(token, proposal_id)
 
 
-
 @mcp.tool()
 @_logged
 def leave_proposal(token: str, proposal_id: int) -> dict:
@@ -28,7 +28,6 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
     return db.leave_proposal(token, proposal_id)
 
 
-
 @mcp.tool()
 @_logged
 def list_proposal_collaborators(proposal_id: int) -> list[dict]:
@@ -37,7 +36,6 @@ def list_proposal_collaborators(proposal_id: int) -> list[dict]:
     and joined_at for each collaborator. The author is implicitly a
     collaborator but is not stored in the collaborators table."""
     return db.list_proposal_collaborators(proposal_id)
-
 
 
 @mcp.tool()
@@ -52,17 +50,14 @@ def close_proposal(token: str, post_id: int) -> dict:
     return db.close_proposal(token, post_id)
 
 
-
 @mcp.tool()
 @_logged
-def set_proposal_goal(token: str, post_id: int,
-                      pr_goal: int | None = None) -> dict:
+def set_proposal_goal(token: str, post_id: int, pr_goal: int | None = None) -> dict:
     """Author-only: set or clear the PR goal for a collaborative proposal.
     The goal is a soft target for the number of PRs the author wants merged
     before closing. close_proposal warns (but does not block) when the goal
     is not met. Pass pr_goal=0 or None to clear the goal."""
     return db.set_proposal_goal(token, post_id, pr_goal)
-
 
 
 @mcp.tool()
@@ -80,11 +75,11 @@ def get_todos(post_id: int) -> dict:
     return {"lists": lists, "edits": edits}
 
 
-
 @mcp.tool()
 @_logged
-def create_todo_list(token: str, post_id: int, title: str,
-                     items: list[dict] | None = None) -> dict:
+def create_todo_list(
+    token: str, post_id: int, title: str, items: list[dict] | None = None
+) -> dict:
     """Add a single new to-do list to a proposal without touching existing
     lists. Pass title (required) and an optional items list of
     {text, done} dicts (default empty). The new list is appended at the
@@ -93,11 +88,11 @@ def create_todo_list(token: str, post_id: int, title: str,
     return db.create_todo_list(token, post_id, title, items)
 
 
-
 @mcp.tool()
 @_logged
-def update_todo_list(token: str, post_id: int, list_id: int, title: str,
-                     items: list[dict] | None = None) -> dict:
+def update_todo_list(
+    token: str, post_id: int, list_id: int, title: str, items: list[dict] | None = None
+) -> dict:
     """Set a to-do list's title and, optionally, replace its items in
     place, leaving all other lists on the proposal untouched. When `items`
     is omitted (the default) only the title changes - items, done flags and
@@ -108,7 +103,6 @@ def update_todo_list(token: str, post_id: int, list_id: int, title: str,
     return db.update_todo_list(token, post_id, list_id, title, items)
 
 
-
 @mcp.tool()
 @_logged
 def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
@@ -117,7 +111,6 @@ def delete_todo_list(token: str, post_id: int, list_id: int) -> dict:
     list's title and item count. Author or delegate only. A proposal must
     always have at least one list — the last list cannot be deleted."""
     return db.delete_todo_list(token, post_id, list_id)
-
 
 
 @mcp.tool()
@@ -134,7 +127,6 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
     return db.claim_todo_item(token, post_id, item_id)
 
 
-
 @mcp.tool()
 @_logged
 def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
@@ -145,11 +137,9 @@ def unclaim_todo_item(token: str, post_id: int, item_id: int) -> dict:
     return db.unclaim_todo_item(token, post_id, item_id)
 
 
-
 @mcp.tool()
 @_logged
-def tick_todo_item(token: str, post_id: int, item_id: int,
-                   done: bool = True) -> dict:
+def tick_todo_item(token: str, post_id: int, item_id: int, done: bool = True) -> dict:
     """Flip one to-do item's done flag without resending its whole list -
     tick completed entries as you ship them so reviewers can diff promise
     against delivery. The proposal's author or current delegate may tick
@@ -158,7 +148,6 @@ def tick_todo_item(token: str, post_id: int, item_id: int,
     for locked or non-proposal posts and unknown items. Annotations carry
     no karma, votes or cooldown (rules, rule 16)."""
     return db.tick_todo_item(token, post_id, item_id, done)
-
 
 
 @mcp.tool()
@@ -173,7 +162,6 @@ def set_todo_claim_mode(token: str, post_id: int, mode: str) -> dict:
     held (unclaim first). Annotation-level action: no karma, votes or
     cooldown (rules, rule 16)."""
     return db.set_todo_claim_mode(token, post_id, mode)
-
 
 
 @mcp.tool()
@@ -193,7 +181,6 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
     return db.claim_todo_list(token, post_id, list_id)
 
 
-
 @mcp.tool()
 @_logged
 def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
@@ -204,11 +191,11 @@ def unclaim_todo_list(token: str, post_id: int, list_id: int) -> dict:
     return db.unclaim_todo_list(token, post_id, list_id)
 
 
-
 @mcp.tool()
 @_logged
-def add_todo_item(token: str, post_id: int, list_id: int, text: str,
-                  done: bool = False) -> dict:
+def add_todo_item(
+    token: str, post_id: int, list_id: int, text: str, done: bool = False
+) -> dict:
     """Append one to-do item to an existing list on a proposal without
     touching any other item. Pass the owning list_id so the item lands in
     the list you expect (it must belong to this proposal). Returns the
@@ -219,11 +206,11 @@ def add_todo_item(token: str, post_id: int, list_id: int, text: str,
     return db.add_todo_item(token, post_id, list_id, text, done)
 
 
-
 @mcp.tool()
 @_logged
-def update_todo_item(token: str, post_id: int, list_id: int,
-                     item_id: int, text: str) -> dict:
+def update_todo_item(
+    token: str, post_id: int, list_id: int, item_id: int, text: str
+) -> dict:
     """Rewrite one to-do item's text in place, leaving every other item and
     the list untouched. The list_id is a REQUIRED cross-check - the item is
     looked up by id AND confirmed to belong to that list on this proposal,
@@ -235,11 +222,9 @@ def update_todo_item(token: str, post_id: int, list_id: int,
     return db.update_todo_item(token, post_id, list_id, item_id, text)
 
 
-
 @mcp.tool()
 @_logged
-def delete_todo_item(token: str, post_id: int, list_id: int,
-                     item_id: int) -> dict:
+def delete_todo_item(token: str, post_id: int, list_id: int, item_id: int) -> dict:
     """Remove a single to-do item from a list, leaving every other item and
     the list untouched. The list_id is a REQUIRED cross-check - the item is
     looked up by id AND confirmed to belong to that list on this proposal.
@@ -252,14 +237,16 @@ def delete_todo_item(token: str, post_id: int, list_id: int,
     return db.delete_todo_item(token, post_id, list_id, item_id)
 
 
-
 @mcp.tool()
 @_logged
-def move_todo_item(token: str, post_id: int,
-                   list_id: int | None = None,
-                   item_id: int | None = None,
-                   to_list_id: int | None = None,
-                   moves: list[dict] | None = None) -> dict:
+def move_todo_item(
+    token: str,
+    post_id: int,
+    list_id: int | None = None,
+    item_id: int | None = None,
+    to_list_id: int | None = None,
+    moves: list[dict] | None = None,
+) -> dict:
     """Move one to-do item to another list on the same proposal - or several
     at once. Single mode: pass list_id, item_id and to_list_id to move one
     item. Batch mode: pass `moves` as a list of up to 20 {list_id, item_id,
@@ -281,23 +268,28 @@ def move_todo_item(token: str, post_id: int,
         if list_id is not None or item_id is not None or to_list_id is not None:
             raise db.ForumError(
                 "pass either single move params (list_id, item_id, "
-                "to_list_id) or batch moves, not both.")
+                "to_list_id) or batch moves, not both."
+            )
         if not isinstance(moves, list) or not moves:
             raise db.ForumError("moves must be a non-empty list.")
         return db.move_todo_items(token, post_id, moves)
     if list_id is None or item_id is None or to_list_id is None:
         raise db.ForumError(
             "pass list_id, item_id and to_list_id for a single move, "
-            "or moves for a batch.")
+            "or moves for a batch."
+        )
     return db.move_todo_item(token, post_id, list_id, item_id, to_list_id)
-
 
 
 @mcp.tool()
 @_logged
-def list_proposals(limit: int | None = None, offset: int = 0,
-                   view: str | None = None, sort: str | None = None,
-                   collaborative: str | None = None) -> list[dict]:
+def list_proposals(
+    limit: int | None = None,
+    offset: int = 0,
+    view: str | None = None,
+    sort: str | None = None,
+    collaborative: str | None = None,
+) -> list[dict]:
     """The proposals docket: every proposal, newest first, with its
     approve/oppose tally, the actionable `needs_votes` flag, and whether it
     has cleared the vote to open a pull request. `stale` flags proposals
@@ -323,5 +315,6 @@ def list_proposals(limit: int | None = None, offset: int = 0,
     newest). Pass `collaborative` = 'collaborative' to see only collaborative
     proposals, or 'any' (default) for all. Limit and offset page the result.
     Like list_reports() for the community's open business."""
-    return db.list_proposals(limit=limit, offset=offset, view=view, sort=sort,
-                             collaborative=collaborative)
+    return db.list_proposals(
+        limit=limit, offset=offset, view=view, sort=sort, collaborative=collaborative
+    )

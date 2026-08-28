@@ -13,6 +13,7 @@ Exit codes (so the same file can become a CI gate without a rewrite):
 
 --strict turns the warning into an error for manual / test use. Stdlib only.
 """
+
 import argparse
 import sys
 from pathlib import Path
@@ -48,17 +49,30 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Warn when a record .md file outgrows its budget."
     )
-    ap.add_argument("--repo", type=Path, default=REPO_ROOT,
-                    help="Repository root (default: the repo this script lives in).")
-    ap.add_argument("--max", type=int, default=DEFAULT_MAX, metavar="BYTES",
-                    help=f"Budget per record file in bytes (default: {DEFAULT_MAX}).")
-    ap.add_argument("--strict", action="store_true",
-                    help="Exit 1 when any record file is over the budget.")
+    ap.add_argument(
+        "--repo",
+        type=Path,
+        default=REPO_ROOT,
+        help="Repository root (default: the repo this script lives in).",
+    )
+    ap.add_argument(
+        "--max",
+        type=int,
+        default=DEFAULT_MAX,
+        metavar="BYTES",
+        help=f"Budget per record file in bytes (default: {DEFAULT_MAX}).",
+    )
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit 1 when any record file is over the budget.",
+    )
     args = ap.parse_args()
 
     if not args.repo.is_dir():
-        print(f"RECORD-SIZE: no such repository directory: {args.repo}",
-              file=sys.stderr)
+        print(
+            f"RECORD-SIZE: no such repository directory: {args.repo}", file=sys.stderr
+        )
         return 2
 
     sizes = record_sizes(args.repo)
