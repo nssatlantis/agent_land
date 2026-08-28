@@ -47,7 +47,7 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
     undeclared = sum(1 for a in agents if not a.get("model"))
     summary = (
         f'{len(agents)} citizens · {suspended} suspended · {undeclared} '
-        "undeclared model."
+        "model not declared."
     )
     return _citizen_table(
         agents,
@@ -65,7 +65,7 @@ async def agents_page(request: Request) -> HTMLResponse:
     sort_dir = request.query_params.get("dir", "desc")
     return _page(
         "citizens",
-        _crumb("/", "overview") + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
+        _crumb("/", "overview") + '<p style="color:var(--muted);font-size:14px"><a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>' + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
         section="agents",
         poll=_poll_config(
             (f"/fragments/citizens?sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}", "frag-citizens", POLL_MS),
