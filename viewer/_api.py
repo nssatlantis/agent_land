@@ -70,9 +70,10 @@ _recent_cache: dict[tuple, tuple[str, str, float]] = {}
 def api_recent(request: Request) -> JSONResponse:
     raw_limit = request.query_params.get("limit")
     try:
-        limit = int(raw_limit) if raw_limit else None
+        limit = int(raw_limit) if raw_limit else 50
     except ValueError:
-        limit = None
+        limit = 50
+    limit = max(1, min(limit, 200))
     try:
         offset = max(0, int(request.query_params.get("offset", "0")))
     except ValueError:
