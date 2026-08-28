@@ -140,7 +140,9 @@ def _ci_acquire_slot() -> int:
         try:
             idx = q.get(block=False)
         except queue.Empty as exc:
-            raise db.ForumError("a CI run is already in progress; try again when it finishes") from exc
+            raise db.ForumError(
+                "a CI run is already in progress; try again when it finishes"
+            ) from exc
         # Validate against current pool — handles race where caller held old
         # queue ref across a shrink rebuild and got a retired index (>=live).
         # _CI_SLOTS length is the live pool size; protect read with _CI_LOCK.
@@ -152,7 +154,9 @@ def _ci_acquire_slot() -> int:
             return idx
         # Retired idx from old queue — discard and try next; if now empty, saturated.
         if q.empty():
-            raise db.ForumError("a CI run is already in progress; try again when it finishes") from None
+            raise db.ForumError(
+                "a CI run is already in progress; try again when it finishes"
+            ) from None
 
 
 def _ci_release_slot(idx: int) -> None:
@@ -160,6 +164,7 @@ def _ci_release_slot(idx: int) -> None:
     q = _ci_ensure_pool()
     if 0 <= idx < max(1, int(config.CI_RUN_CONCURRENCY)):
         q.put(idx)
+
 
 # checks value -> (native event kind, suite script path relative to the tree)
 # agents may choose which harness to run; each kind has its own daily bucket
@@ -175,12 +180,21 @@ _CHECKS: dict[str, tuple[str, str]] = {
 # Only these variables (matched case-insensitively) pass into native child
 # test processes.  Everything else - tokens above all - stays sealed out.
 _ENV_KEEP = {
-    "PATH", "PATHEXT", "LANG", "LC_ALL", "SYSTEMROOT", "COMSPEC",
-    "TMPDIR", "TEMP", "TMP",
+    "PATH",
+    "PATHEXT",
+    "LANG",
+    "LC_ALL",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
     # Docker daemon discovery for the branch-mode client - without these
     # a non-default daemon (remote/TLS) fails with a misleading build
     # error instead of connecting.  No secrets: paths and an endpoint.
-    "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+    "DOCKER_HOST",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
     # Benchmark opt-in: pass through without secrets so BENCH_WRITE_BASELINE=1
     # can persist baseline when explicitly requested; default is read-only.
     "BENCH_WRITE_BASELINE",
@@ -224,7 +238,10 @@ def _runner_dir_for_slot(slot: int) -> str:
 
 def _git(tree: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", tree, *args], capture_output=True, text=True, timeout=180,
+        ["git", "-C", tree, *args],
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
 
 
@@ -255,14 +272,18 @@ def _try_clone_from_local(tree: str, base: str) -> bool:
     try:
         res = subprocess.run(
             ["git", "clone", "--branch", base, "--single-branch", local_path, tree],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
         if res.returncode != 0:
             return False
         # Rewire origin to canonical GitHub URL for later fetches
         subprocess.run(
             ["git", "-C", tree, "remote", "set-url", "origin", origin_url],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         return True
     except Exception:
@@ -279,9 +300,10 @@ def _ensure_clone(tree: str) -> None:
         github._seed_identity(tree)
         return
     clone = subprocess.run(
-        ["git", "clone", "--branch", base, "--single-branch",
-         github._repo_url(), tree],
-        capture_output=True, text=True, timeout=600,
+        ["git", "clone", "--branch", base, "--single-branch", github._repo_url(), tree],
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
     if clone.returncode != 0:
         raise db.ForumError(
@@ -353,8 +375,10 @@ def _prepare_pr_tree(pr_number: int, slot: int | None = None) -> tuple[str, str,
     merge = _git(tree, "merge", "--no-edit", pr_sha)
     if merge.returncode != 0:
         conflicted = [
-            line.strip() for line in
-            _git(tree, "diff", "--name-only", "--diff-filter=U").stdout.splitlines()
+            line.strip()
+            for line in _git(
+                tree, "diff", "--name-only", "--diff-filter=U"
+            ).stdout.splitlines()
             if line.strip()
         ]
         abort = _git(tree, "merge", "--abort")
@@ -400,6 +424,7 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
                 ) from None
             # Reuse the strict engine from github._writes — same errors.
             import github._writes as _writes  # local import to avoid cycle
+
             new_text, _log = _writes._apply_edits(path, text, c["edits"])
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", encoding="utf-8", newline="\n") as fh:
@@ -409,7 +434,9 @@ def _apply_local_changes(tree: str, changes: list[dict]) -> None:
         raise db.ForumError(f"change for {path!r} has no content or edits.")
 
 
-def _prepare_local_tree(changes: list[dict], slot: int | None = None) -> tuple[str, str, dict]:
+def _prepare_local_tree(
+    changes: list[dict], slot: int | None = None
+) -> tuple[str, str, dict]:
     """Refresh onto origin/main in `slot`'s runner tree, overlay `changes`,
     and return (tree, head_sha, info). No merge, no fetch of a PR head —
     this is the pre-push rehearsal path. The tree is left dirty with the
@@ -423,7 +450,7 @@ def _prepare_local_tree(changes: list[dict], slot: int | None = None) -> tuple[s
     _apply_local_changes(tree, changes)
     # Head is main plus overlay; hash the overlay for an auditable sha.
     overlay_hash = hashlib.sha256(
-        "|".join(f"{c['path']}:{c.get('content','')[:64]}" for c in changes).encode()
+        "|".join(f"{c['path']}:{c.get('content', '')[:64]}" for c in changes).encode()
     ).hexdigest()[:12]
     head_sha = f"{main_sha[:12]}+local-{overlay_hash}"
     return tree, head_sha, {"conflict": False, "base": main_sha, "local": True}
@@ -447,22 +474,26 @@ def _gate(kind_event: str, agent_id: int) -> None:
     cooldown = config.CI_RUN_COOLDOWN_SECONDS
     if cooldown > 0:
         recent = events.query_events(
-            agent_id=agent_id, kind=kind_event,
-            since=_iso(now - timedelta(seconds=cooldown)), limit=1,
+            agent_id=agent_id,
+            kind=kind_event,
+            since=_iso(now - timedelta(seconds=cooldown)),
+            limit=1,
         )
         if recent:
             elapsed = now - datetime.strptime(
                 recent[0]["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
             ).replace(tzinfo=timezone.utc)
-            wait = int(timedelta(seconds=cooldown).total_seconds()
-                       - elapsed.total_seconds())
+            wait = int(
+                timedelta(seconds=cooldown).total_seconds() - elapsed.total_seconds()
+            )
             raise db.ForumError(
                 f"CI run cooldown: try again in about {max(wait, 1)} seconds"
             )
     cap = config.CI_RUN_DAILY_CAP
     if cap > 0:
         todays = events.query_events(
-            agent_id=agent_id, kind=kind_event,
+            agent_id=agent_id,
+            kind=kind_event,
             since=_iso(now.replace(hour=0, minute=0, second=0, microsecond=0)),
             limit=cap + 1,
         )
@@ -505,15 +536,19 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
     if ok_all:
         summary = {"passed_files": int(ok_all.group(1)), "failed_files": 0}
     elif failed:
-        summary = {"passed_files": int(failed.group(2)) - int(failed.group(1)),
-                   "failed_files": int(failed.group(1))}
+        summary = {
+            "passed_files": int(failed.group(2)) - int(failed.group(1)),
+            "failed_files": int(failed.group(1)),
+        }
     # db_benchmark (tests/test_benchmark.py) — compact high-signal summary
     # Most info / least text: parse the timing table medians + regression
     # marker, so callers get a one-object summary without scanning the tail.
     if summary is None and "[Timing -" in output:
         try:
             timings: dict[str, float] = {}
-            for m in re.finditer(r"^\s{2}(\w+)\s+[\d.]+ / ([\d.]+) / [\d.]+", output, re.M):
+            for m in re.finditer(
+                r"^\s{2}(\w+)\s+[\d.]+ / +([\d.]+) / +[\d.]+", output, re.M
+            ):
                 label = m.group(1)
                 try:
                     timings[label] = float(m.group(2))
@@ -521,7 +556,11 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
                     pass  # domain:degrade-silently - malformed timing line, skip
             reg_m = re.search(r"REGRESSIONS DETECTED:\s*(\d+)", output)
             regressions = int(reg_m.group(1)) if reg_m else 0
-            ok_bench = "All checks passed." in output and regressions == 0 and "FAIL" not in output.split("[Timing -")[0]
+            ok_bench = (
+                "All checks passed." in output
+                and regressions == 0
+                and "FAIL" not in output.split("[Timing -")[0]
+            )
             # fall back to exit-code-agnostic ok when harness prints success
             if not ok_bench and "All checks passed." in output and regressions == 0:
                 ok_bench = True
@@ -578,10 +617,36 @@ def _ensure_tree_traversable(tree: str) -> None:
     intentional and harmless."""
     if os.name != "posix":
         return
-    dirs = ["find", tree, "-name", ".git", "-prune", "-o",
-            "-type", "d", "-exec", "chmod", "a+rx", "{}", "+"]
-    files = ["find", tree, "-name", ".git", "-prune", "-o",
-             "-type", "f", "-exec", "chmod", "a+r", "{}", "+"]
+    dirs = [
+        "find",
+        tree,
+        "-name",
+        ".git",
+        "-prune",
+        "-o",
+        "-type",
+        "d",
+        "-exec",
+        "chmod",
+        "a+rx",
+        "{}",
+        "+",
+    ]
+    files = [
+        "find",
+        tree,
+        "-name",
+        ".git",
+        "-prune",
+        "-o",
+        "-type",
+        "f",
+        "-exec",
+        "chmod",
+        "a+r",
+        "{}",
+        "+",
+    ]
     for cmd in (dirs, files):
         try:
             subprocess.run(cmd, capture_output=True, timeout=120)
@@ -598,10 +663,18 @@ def _prune_stale_images(keep_tag: str) -> None:
     prefix = config.CI_RUN_IMAGE_BASE + ":"
     try:
         ls = subprocess.run(
-            ["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}",
-             "--filter",
-             f"reference={config.CI_RUN_IMAGE_BASE}:*"],
-            capture_output=True, text=True, timeout=60,
+            [
+                "docker",
+                "image",
+                "ls",
+                "--format",
+                "{{.Repository}}:{{.Tag}}",
+                "--filter",
+                f"reference={config.CI_RUN_IMAGE_BASE}:*",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         if ls.returncode != 0:
             # domain: degrade-silently - listing is housekeeping; stale
@@ -612,7 +685,9 @@ def _prune_stale_images(keep_tag: str) -> None:
             if tag and tag != keep_tag and tag.startswith(prefix):
                 subprocess.run(
                     ["docker", "rmi", "-f", tag],
-                    capture_output=True, text=True, timeout=120,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
                 )
     except Exception:
         # domain: degrade-silently - image GC must never fail a run.
@@ -629,7 +704,9 @@ def _ensure_image(tree: str, rev: str) -> str:
     data = _requirements_at(tree, rev)
     tag = _image_tag(_digest(data))
     probe = subprocess.run(
-        ["docker", "image", "inspect", tag], capture_output=True, timeout=60,
+        ["docker", "image", "inspect", tag],
+        capture_output=True,
+        timeout=60,
     )
     if probe.returncode == 0:
         return tag
@@ -643,7 +720,9 @@ def _ensure_image(tree: str, rev: str) -> str:
         shutil.copyfile(dockerfile, os.path.join(context, "Dockerfile"))
         build = subprocess.run(
             ["docker", "build", "-t", tag, context],
-            capture_output=True, text=True, timeout=900,
+            capture_output=True,
+            text=True,
+            timeout=900,
         )
         if build.returncode != 0:
             raise db.ForumError(
@@ -662,26 +741,43 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
     the container even though the killed client detaches from it."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
     argv = [
-        "docker", "run", "--rm",
-        "--name", name,
-        "--network", "none",
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        name,
+        "--network",
+        "none",
         "--read-only",
-        "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges",
-        "--user", "1000:1000",
-        "--cpus", str(config.CI_RUN_SANDBOX_CPUS),
-        "--memory", f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        "1000:1000",
+        "--cpus",
+        str(config.CI_RUN_SANDBOX_CPUS),
+        "--memory",
+        f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
         # memory-swap = memory + swap extra; 256M swap lets a brief peak spill to swap
         # instead of OOM-killing, while still bounding total host pressure (2 slots × 1G).
-        "--memory-swap", f"{config.CI_RUN_SANDBOX_MEMORY_MB + config.CI_RUN_SANDBOX_SWAP_MB}m",
-        "--pids-limit", str(config.CI_RUN_SANDBOX_PIDS),
-        "--tmpfs", f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
-        "--env", "PYTHONDONTWRITEBYTECODE=1",
-        "--env", "HOME=/tmp",
-        "--volume", f"{tree}:/repo:ro",
-        "--workdir", "/repo",
+        "--memory-swap",
+        f"{config.CI_RUN_SANDBOX_MEMORY_MB + config.CI_RUN_SANDBOX_SWAP_MB}m",
+        "--pids-limit",
+        str(config.CI_RUN_SANDBOX_PIDS),
+        "--tmpfs",
+        f"/tmp:rw,size={config.CI_RUN_SANDBOX_TMP_SIZE_MB * 1024 * 1024}",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "--env",
+        "HOME=/tmp",
+        "--volume",
+        f"{tree}:/repo:ro",
+        "--workdir",
+        "/repo",
         image_tag,
-        "python3", script_rel,
+        "python3",
+        script_rel,
     ]
     return argv, name
 
@@ -690,12 +786,14 @@ def _stop_sandbox(name: str) -> None:
     """Best-effort container stop when the client is killed on timeout -
     a detached --rm container would otherwise keep burning its cgroup."""
     subprocess.run(
-        ["docker", "kill", name], capture_output=True, text=True, timeout=30,
+        ["docker", "kill", name],
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
 
 
-def _drain(pipe, chunks: list, start_holder: dict, retain: int,
-           state: dict) -> None:
+def _drain(pipe, chunks: list, start_holder: dict, retain: int, state: dict) -> None:
     """Read the child's merged stdout/stderr in chunks so a hostile suite
     cannot balloon host memory through the pipe buffer.  At most *retain*
     bytes are retained (the contiguous tail), while state['total'] counts
@@ -734,8 +832,12 @@ def _drain(pipe, chunks: list, start_holder: dict, retain: int,
 
 
 def _execute(
-    argv: list[str], tree: str, timeout: int, tail_cap: int,
-    max_retained: int, env: dict | None = None,
+    argv: list[str],
+    tree: str,
+    timeout: int,
+    tail_cap: int,
+    max_retained: int,
+    env: dict | None = None,
     container_name: str | None = None,
 ) -> dict:
     started = time.monotonic()
@@ -743,14 +845,18 @@ def _execute(
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
     proc = subprocess.Popen(
-        argv, cwd=tree, env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        argv,
+        cwd=tree,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         **popen_kwargs,
     )
     chunks: list = []
     state: dict = {"total": 0, "start": 0}
     reader = threading.Thread(
-        target=_drain, args=(proc.stdout, chunks, state, max_retained, state),
+        target=_drain,
+        args=(proc.stdout, chunks, state, max_retained, state),
         daemon=True,
     )
     reader.start()
@@ -803,8 +909,11 @@ def _execute(
     retained_bytes = b"".join(parts)
     retained_text = retained_bytes.decode("utf-8", errors="replace")
     retained_text = retained_text.replace("\r\n", "\n").replace("\r", "\n")
-    tail = retained_bytes[-tail_cap:].decode("utf-8", errors="replace") \
-        if truncated else retained_text
+    tail = (
+        retained_bytes[-tail_cap:].decode("utf-8", errors="replace")
+        if truncated
+        else retained_text
+    )
     summary, failed_files = _parse_summary(retained_text)
     result: dict = {
         "ok": proc.returncode == 0 and not timed_out,
@@ -821,7 +930,13 @@ def _execute(
     return result
 
 
-def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = None, files: list[dict] | None = None) -> dict:
+def run_checks(
+    agent_id: int,
+    name: str,
+    checks: str,
+    pr_number: int | None = None,
+    files: list[dict] | None = None,
+) -> dict:
     entry = _CHECKS.get(checks)
     if entry is None:
         valid = ", ".join(sorted(_CHECKS))
@@ -846,7 +961,11 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             )
         kind_event = events.EVT_CI_LOCAL_RUN
     elif branch_mode:
-        if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number < 1:
+        if (
+            isinstance(pr_number, bool)
+            or not isinstance(pr_number, int)
+            or pr_number < 1
+        ):
             raise db.ForumError("pr_number must be a positive integer")
         if not config.CI_RUN_BRANCH_ENABLED:
             raise db.ForumError("branch-mode CI runs are disabled on this server")
@@ -867,7 +986,9 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
     # existing single-slot test: if it is held, treat as saturated.
     if _RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod — real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
-        raise db.ForumError("a CI run is already in progress; try again when it finishes")
+        raise db.ForumError(
+            "a CI run is already in progress; try again when it finishes"
+        )
     try:
         slot = _ci_acquire_slot()
     except db.ForumError:
@@ -895,21 +1016,33 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             if merge_info["conflict"]:
                 duration = round(time.monotonic() - started, 2)
                 payload = {
-                    "checks": checks, "mode": "branch", "pr_number": pr_number,
-                    "ok": False, "merge_conflict": True,
+                    "checks": checks,
+                    "mode": "branch",
+                    "pr_number": pr_number,
+                    "ok": False,
+                    "merge_conflict": True,
                     "conflict_files": merge_info["files"],
-                    "base_sha": head_sha, "head_sha": head_sha,
-                    "timed_out": False, "exit_code": None,
+                    "base_sha": head_sha,
+                    "head_sha": head_sha,
+                    "timed_out": False,
+                    "exit_code": None,
                     "duration_seconds": duration,
-                    "output_tail": "", "output_truncated": False,
+                    "output_tail": "",
+                    "output_truncated": False,
                 }
                 try:
                     events.log_event(
-                        kind_event, actor_agent_id=agent_id, actor_name=name,
-                        detail={"checks": checks, "mode": "branch",
-                                 "merge_conflict": True, "pr_number": pr_number,
-                                 "head_sha": head_sha,
-                                 "duration_seconds": duration},
+                        kind_event,
+                        actor_agent_id=agent_id,
+                        actor_name=name,
+                        detail={
+                            "checks": checks,
+                            "mode": "branch",
+                            "merge_conflict": True,
+                            "pr_number": pr_number,
+                            "head_sha": head_sha,
+                            "duration_seconds": duration,
+                        },
                     )
                 except Exception:
                     # domain: degrade-silently - same contract as the
@@ -931,9 +1064,13 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             container_name = None
             env = _child_env(tmp_root)
         pieces = _execute(
-            argv, tree, config.CI_RUN_TIMEOUT_SECONDS,
-            config.CI_RUN_TAIL_BYTES, config.CI_RUN_MAX_RETAINED_BYTES,
-            env=env, container_name=container_name,
+            argv,
+            tree,
+            config.CI_RUN_TIMEOUT_SECONDS,
+            config.CI_RUN_TAIL_BYTES,
+            config.CI_RUN_MAX_RETAINED_BYTES,
+            env=env,
+            container_name=container_name,
         )
         if local_mode:
             mode = "local"
@@ -943,29 +1080,34 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             mode = "native"
         result: dict = {"checks": checks, "mode": mode}
         if local_mode:
-            result["base_sha"] = (merge_info.get("base") or head_sha)
+            result["base_sha"] = merge_info.get("base") or head_sha
             result["merge_conflict"] = False
             result["local"] = True
         elif branch_mode:
             assert pr_number is not None
             result["pr_number"] = pr_number
-            result["base_sha"] = (merge_info.get("base") or head_sha)
+            result["base_sha"] = merge_info.get("base") or head_sha
             result["merge_conflict"] = False
         result.update(pieces)
         result["head_sha"] = head_sha
-        detail = {"checks": checks, "mode": result["mode"], "ok": pieces["ok"],
-                  "timed_out": pieces["timed_out"],
-                  "exit_code": pieces["exit_code"],
-                  "duration_seconds": pieces["duration_seconds"],
-                  "head_sha": head_sha}
+        detail = {
+            "checks": checks,
+            "mode": result["mode"],
+            "ok": pieces["ok"],
+            "timed_out": pieces["timed_out"],
+            "exit_code": pieces["exit_code"],
+            "duration_seconds": pieces["duration_seconds"],
+            "head_sha": head_sha,
+        }
         if local_mode:
             detail["local"] = True
             detail["base_sha"] = result.get("base_sha")
         elif branch_mode:
             detail["pr_number"] = pr_number
         try:
-            events.log_event(kind_event, actor_agent_id=agent_id, actor_name=name,
-                             detail=detail)
+            events.log_event(
+                kind_event, actor_agent_id=agent_id, actor_name=name, detail=detail
+            )
         except Exception:
             # domain: degrade-silently - the audit row is best-effort; the
             # caller still receives the full run result either way.
@@ -992,7 +1134,9 @@ def run_checks(agent_id: int, name: str, checks: str, pr_number: int | None = No
             # domain: degrade-silently - releasing a retired slot is best-effort
             pass
         # Legacy lock release for tests that still hold it — no-op normally
-        if _RUN_LOCK.locked():  # legacy: release test-held lock if any; always False in prod
+        if (
+            _RUN_LOCK.locked()
+        ):  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
             except RuntimeError:
@@ -1014,13 +1158,17 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     if not config.CI_RUN_BRANCH_ENABLED:
         raise db.ForumError("branch-mode CI runs are disabled on this server")
     if not _docker_available():
-        raise db.ForumError("the sandboxed CI runner needs docker on the server host; it is not installed or not on PATH")
+        raise db.ForumError(
+            "the sandboxed CI runner needs docker on the server host; it is not installed or not on PATH"
+        )
     kind_event = events.EVT_CI_BRANCH_RUN
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_poller_")
     started = time.monotonic()
     if _RUN_LOCK.locked():  # legacy: only set by tests; always False in prod — real gate is _ci_acquire_slot
         shutil.rmtree(tmp_root, ignore_errors=True)
-        raise db.ForumError("a CI run is already in progress; try again when it finishes")
+        raise db.ForumError(
+            "a CI run is already in progress; try again when it finishes"
+        )
     try:
         slot = _ci_acquire_slot()
     except db.ForumError:
@@ -1034,20 +1182,33 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
         if merge_info["conflict"]:
             duration = round(time.monotonic() - started, 2)
             payload = {
-                "checks": checks, "mode": "branch", "pr_number": pr_number,
-                "ok": False, "merge_conflict": True,
+                "checks": checks,
+                "mode": "branch",
+                "pr_number": pr_number,
+                "ok": False,
+                "merge_conflict": True,
                 "conflict_files": merge_info["files"],
-                "base_sha": head_sha, "head_sha": head_sha,
-                "timed_out": False, "exit_code": None,
+                "base_sha": head_sha,
+                "head_sha": head_sha,
+                "timed_out": False,
+                "exit_code": None,
                 "duration_seconds": duration,
-                "output_tail": "", "output_truncated": False,
+                "output_tail": "",
+                "output_truncated": False,
             }
             try:
                 events.log_event(
-                    kind_event, actor_agent_id=None, actor_name="poller",
-                    detail={"checks": checks, "mode": "branch",
-                             "merge_conflict": True, "pr_number": pr_number,
-                             "head_sha": head_sha, "duration_seconds": duration},
+                    kind_event,
+                    actor_agent_id=None,
+                    actor_name="poller",
+                    detail={
+                        "checks": checks,
+                        "mode": "branch",
+                        "merge_conflict": True,
+                        "pr_number": pr_number,
+                        "head_sha": head_sha,
+                        "duration_seconds": duration,
+                    },
                 )
             except Exception:
                 pass
@@ -1057,23 +1218,38 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
         argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
         env = _child_env(tmp_root)
         pieces = _execute(
-            argv, tree, config.CI_RUN_TIMEOUT_SECONDS,
-            config.CI_RUN_TAIL_BYTES, config.CI_RUN_MAX_RETAINED_BYTES,
-            env=env, container_name=container_name,
+            argv,
+            tree,
+            config.CI_RUN_TIMEOUT_SECONDS,
+            config.CI_RUN_TAIL_BYTES,
+            config.CI_RUN_MAX_RETAINED_BYTES,
+            env=env,
+            container_name=container_name,
         )
-        result: dict = {"checks": checks, "mode": "branch", "pr_number": pr_number,
-                         "base_sha": (merge_info.get("base") or head_sha),
-                         "merge_conflict": False}
+        result: dict = {
+            "checks": checks,
+            "mode": "branch",
+            "pr_number": pr_number,
+            "base_sha": (merge_info.get("base") or head_sha),
+            "merge_conflict": False,
+        }
         result.update(pieces)
         result["head_sha"] = head_sha
-        detail = {"checks": checks, "mode": "branch", "ok": pieces["ok"],
-                  "timed_out": pieces["timed_out"], "exit_code": pieces["exit_code"],
-                  "duration_seconds": pieces["duration_seconds"],
-                  "head_sha": head_sha, "pr_number": pr_number,
-                  "poller_triggered": True}
+        detail = {
+            "checks": checks,
+            "mode": "branch",
+            "ok": pieces["ok"],
+            "timed_out": pieces["timed_out"],
+            "exit_code": pieces["exit_code"],
+            "duration_seconds": pieces["duration_seconds"],
+            "head_sha": head_sha,
+            "pr_number": pr_number,
+            "poller_triggered": True,
+        }
         try:
-            events.log_event(kind_event, actor_agent_id=None, actor_name="poller",
-                             detail=detail)
+            events.log_event(
+                kind_event, actor_agent_id=None, actor_name="poller", detail=detail
+            )
         except Exception:
             pass
         try:
@@ -1087,7 +1263,9 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
             _ci_release_slot(slot)
         except Exception:
             pass
-        if _RUN_LOCK.locked():  # legacy: release test-held lock if any; always False in prod
+        if (
+            _RUN_LOCK.locked()
+        ):  # legacy: release test-held lock if any; always False in prod
             try:
                 _RUN_LOCK.release()
             except RuntimeError:

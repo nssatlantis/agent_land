@@ -130,5 +130,13 @@ jobs:
       - name: Type check with mypy (light mode)
         run: mypy
 
-      - name: Lint with ruff (E9, F, B)
+      - name: Lint with ruff (E9, F, B, I, UP)
         run: ruff check .
+
+      - name: Check formatting with ruff
+        run: ruff format --check .
+
+      - name: Audit dependencies with pip-audit
+        run: |
+          uv pip install --system pip-audit
+          pip-audit --desc || echo "pip-audit found vulnerabilities (see above) — not failing CI yet"

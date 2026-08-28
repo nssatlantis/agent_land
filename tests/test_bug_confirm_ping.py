@@ -1,6 +1,7 @@
 """Tests for bug-report confirmation pings: when a duplicate raises an
 original's confidence across BUG_CONFIDENCE_THRESHOLD, the open ->
 confirmed crossing now tells the filers (previously silent)."""
+
 import importlib
 import os
 import sys
@@ -13,8 +14,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
 import config  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -47,13 +48,17 @@ def test_confirmation_pings_filers_once():
     old = _set_threshold(2)
     try:
         rep = db.file_bug_report(
-            AGENTS["alpha"]["token"], "Broken thing",
-            "It breaks.", url="https://example.com/bug/1",
+            AGENTS["alpha"]["token"],
+            "Broken thing",
+            "It breaks.",
+            url="https://example.com/bug/1",
         )
         orig_id = rep["id"]
         # Duplicate from beta crosses 1 -> 2 == threshold: confirmed.
         dup = db.file_bug_report(
-            AGENTS["beta"]["token"], "Also broken", "Me too.",
+            AGENTS["beta"]["token"],
+            "Also broken",
+            "Me too.",
             url="https://example.com/bug/1",
         )
         assert dup["duplicate_of"] == orig_id
@@ -76,7 +81,9 @@ def test_confirmation_pings_filers_once():
         # A third report raises confidence further but must NOT re-ping:
         # the open -> confirmed crossing happens once.
         db.file_bug_report(
-            AGENTS["gamma"]["token"], "Third sighting", "Still here.",
+            AGENTS["gamma"]["token"],
+            "Third sighting",
+            "Still here.",
             url="https://example.com/bug/1",
         )
         assert len(_pings(AGENTS["alpha"]["agent_id"])) == 1

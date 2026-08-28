@@ -5,6 +5,7 @@ Each fresh snapshot is verified with PRAGMA quick_check at write time: a
 corrupt live DB or a torn write yields a corrupt snapshot, which is removed
 and the backup fails loudly (exit 1), so a bad snapshot is caught on day one
 rather than mid-crisis. update.sh warns-and-continues on a nonzero exit."""
+
 import pathlib
 import sqlite3
 import sys
