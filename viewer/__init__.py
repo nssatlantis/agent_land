@@ -179,11 +179,10 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
-    # GitHub stale state (237:4374) — degrade-silently
+    _sync = {}
+    # GitHub stale state (237:4374) — degrade-silently (viewer_status._git_sync_status has 60s fetch cache)
     try:
-        from viewer import _status as _vs
-
-        _sync = _vs._git_sync_status()
+        _sync = viewer_status._git_sync_status()
         if _sync.get("error"):
             _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git status: {esc(str(_sync["error"]))} \u2014 unreachable</div>'
         elif _sync.get("stale"):
@@ -194,10 +193,11 @@ async def render_overview() -> str:
             _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: ahead by {_sync["commits_ahead"]} (local commits not yet on origin)</div>'
         else:
             _stale_html = '<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: in sync with origin/main</div>'
-        if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
-            _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
     except Exception:  # domain: degrade-silently - staleness is optional enrichment
         _stale_html = ""
+        _sync = {}
+    if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
+        _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
     # \u039424h for treasury card (237:4373) — degrade-silently
     treasury_delta_quarters = None
     supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
