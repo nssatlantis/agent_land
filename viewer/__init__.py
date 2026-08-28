@@ -371,7 +371,7 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
             total = len(
                 db.list_posts(tag=tag, proposal_kind=kind, sort=sort)
             )
-        except db.ForumError:
+        except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
             total = 0
     elif tag:
         total = db.post_tag_count(tag)
@@ -413,7 +413,7 @@ def _posts_list(request: Request) -> str:
                 offset=(page - 1) * POSTS_PER_PAGE,
                 **kwargs2,
             )
-        except db.ForumError:
+        except db.ForumError:  # domain: tag filter - unknown tag -> empty list
             posts = []
     else:
         kwargs: dict = {"sort": sort}
@@ -484,7 +484,7 @@ def posts_page(request: Request) -> HTMLResponse:
                     )
                 else:
                     tag_total = db.post_tag_count(tag)
-            except db.ForumError:
+            except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
                 tag_total = 0
             tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
