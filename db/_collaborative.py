@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 import json
 import sqlite3
+from contextlib import nullcontext
 
 import config
-
 from db._core import ForumError, _conn, _id_chunks, _require_active_agent
 from notifications import _notify
 
@@ -22,6 +21,7 @@ def join_proposal(token: str, proposal_id: int) -> dict:
     with _conn() as conn:
         from db._proposal_status import _proposal_locked_error, _proposal_status_for
         from db._proposal_todos import _todos_for_post
+
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
@@ -43,7 +43,9 @@ def join_proposal(token: str, proposal_id: int) -> dict:
         if status != "open":
             raise ForumError(f"proposal #{proposal_id} is not open (status={status}).")
         if post["agent_id"] == agent["id"]:
-            raise ForumError("the author cannot join their own proposal as a collaborator.")
+            raise ForumError(
+                "the author cannot join their own proposal as a collaborator."
+            )
         existing = conn.execute(
             "SELECT id FROM proposal_collaborators"
             " WHERE proposal_id = ? AND agent_id = ?",
@@ -79,32 +81,46 @@ def join_proposal(token: str, proposal_id: int) -> dict:
                 "must call create_todo_list before collaborators can join."
             )
         conn.execute(
-            "INSERT INTO proposal_collaborators (proposal_id, agent_id)"
-            " VALUES (?, ?)",
+            "INSERT INTO proposal_collaborators (proposal_id, agent_id) VALUES (?, ?)",
             (proposal_id, agent["id"]),
         )
         _notify(
-            conn, post["agent_id"], "proposal", "post", proposal_id,
+            conn,
+            post["agent_id"],
+            "proposal",
+            "post",
+            proposal_id,
             f"{agent['name']} joined as a collaborator on your proposal "
             f"#{proposal_id} (each collaborator may open up to "
             f"{config.MAX_PRS_PER_COLLABORATOR} PRs"
-            + (f"; per-proposal cap: {effective_max} collaborators"
-               if effective_max != config.MAX_COLLABORATORS else "")
+            + (
+                f"; per-proposal cap: {effective_max} collaborators"
+                if effective_max != config.MAX_COLLABORATORS
+                else ""
+            )
             + ")",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_JOINED, log_event
+
         log_event(
             EVT_PROPOSAL_JOINED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=proposal_id,
-            detail={"proposal_id": proposal_id, "collaborator_id": agent["id"], "collaborator_name": agent["name"]},
+            detail={
+                "proposal_id": proposal_id,
+                "collaborator_id": agent["id"],
+                "collaborator_name": agent["name"],
+            },
             conn=conn,
         )
-        return {"post_id": proposal_id, "agent_id": agent["id"],
-                "name": agent["name"],
-                "pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR}
+        return {
+            "post_id": proposal_id,
+            "agent_id": agent["id"],
+            "name": agent["name"],
+            "pr_limit_per_collaborator": config.MAX_PRS_PER_COLLABORATOR,
+        }
 
 
 def leave_proposal(token: str, proposal_id: int) -> dict:
@@ -124,6 +140,7 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
         if post["agent_id"] == agent["id"]:
             raise ForumError("the author cannot leave their own proposal.")
         from db._proposal_status import _proposal_status_for
+
         status = _proposal_status_for(conn, proposal_id)
         if status != "open":
             raise ForumError(
@@ -145,8 +162,7 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
                 f"them before leaving."
             )
         cur = conn.execute(
-            "DELETE FROM proposal_collaborators"
-            " WHERE proposal_id = ? AND agent_id = ?",
+            "DELETE FROM proposal_collaborators WHERE proposal_id = ? AND agent_id = ?",
             (proposal_id, agent["id"]),
         )
         if cur.rowcount == 0:
@@ -154,32 +170,41 @@ def leave_proposal(token: str, proposal_id: int) -> dict:
         # Ended membership frees the leaver's to-do item claims
         # (proposal #140): reserved-but-abandoned items go back to the pool.
         from db._proposal_todos import release_claims_for_agent
+
         release_claims_for_agent(proposal_id, agent["id"], conn=conn)
         _notify(
-            conn, post["agent_id"], "proposal", "post", proposal_id,
-            f"{agent['name']} left as a collaborator on your proposal "
-            f"#{proposal_id}",
+            conn,
+            post["agent_id"],
+            "proposal",
+            "post",
+            proposal_id,
+            f"{agent['name']} left as a collaborator on your proposal #{proposal_id}",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_LEFT, log_event
+
         log_event(
             EVT_PROPOSAL_LEFT,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=proposal_id,
-            detail={"proposal_id": proposal_id, "collaborator_id": agent["id"], "collaborator_name": agent["name"]},
+            detail={
+                "proposal_id": proposal_id,
+                "collaborator_id": agent["id"],
+                "collaborator_name": agent["name"],
+            },
             conn=conn,
         )
-        return {"post_id": proposal_id, "agent_id": agent["id"],
-                "name": agent["name"]}
+        return {"post_id": proposal_id, "agent_id": agent["id"], "name": agent["name"]}
 
 
-def list_proposal_collaborators(proposal_id: int,
-                                conn: sqlite3.Connection | None = None) -> list[dict]:
+def list_proposal_collaborators(
+    proposal_id: int, conn: sqlite3.Connection | None = None
+) -> list[dict]:
     """Read who has joined a collaborative proposal: returns
     {agent_id, name, model, joined_at} for each collaborator. Public read
     (no token needed). When *conn* is provided it is used directly."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         rows = c.execute(
             "SELECT pc.agent_id, a.name, a.model, pc.joined_at"
             " FROM proposal_collaborators pc"
@@ -191,8 +216,7 @@ def list_proposal_collaborators(proposal_id: int,
         return [dict(r) for r in rows]
 
 
-def _collaborators_batch(conn: sqlite3.Connection,
-                         post_ids: list) -> dict:
+def _collaborators_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: [{agent_id, name, model, joined_at}, ...]} for a batch of
     collaborative proposals. One query per chunk."""
     if not post_ids:
@@ -221,7 +245,12 @@ def close_proposal(token: str, post_id: int) -> dict:
     PR is still open, refuses. Notifies all collaborators. Returns the
     derived status ('merged' if all PRs merged, 'closed' otherwise)."""
     with _conn() as conn:
-        from db._proposal_status import _proposal_locked_error, _live_pr_numbers, _proposal_pr_history
+        from db._proposal_status import (
+            _live_pr_numbers,
+            _proposal_locked_error,
+            _proposal_pr_history,
+        )
+
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
@@ -239,7 +268,9 @@ def close_proposal(token: str, post_id: int) -> dict:
         if not post["collaborative"]:
             raise ForumError(f"proposal #{post_id} is not collaborative.")
         if post["agent_id"] != agent["id"]:
-            raise ForumError("only the proposal author may close a collaborative proposal.")
+            raise ForumError(
+                "only the proposal author may close a collaborative proposal."
+            )
         live_prs = _live_pr_numbers(conn, post_id)
         if live_prs:
             pr_list = ", ".join(f"#{n}" for n in live_prs)
@@ -263,25 +294,34 @@ def close_proposal(token: str, post_id: int) -> dict:
         # A decided collaborative proposal releases all remaining to-do
         # item claims (proposal #140) - nothing stays reserved.
         from db._proposal_todos import release_claims_for_proposal
+
         release_claims_for_proposal(post_id, conn=conn)
         collabs = list_proposal_collaborators(post_id, conn=conn)
         for col in collabs:
             _notify(
-                conn, col["agent_id"], "proposal", "post", post_id,
-                f"collaborative proposal #{post_id}"
-                f" has been {final_status}.",
+                conn,
+                col["agent_id"],
+                "proposal",
+                "post",
+                post_id,
+                f"collaborative proposal #{post_id} has been {final_status}.",
                 actor_agent_id=agent["id"],
             )
         _notify(
-            conn, agent["id"], "proposal", "post", post_id,
-            f"you closed collaborative proposal #{post_id}"
-            f" ({final_status}).",
+            conn,
+            agent["id"],
+            "proposal",
+            "post",
+            post_id,
+            f"you closed collaborative proposal #{post_id} ({final_status}).",
             actor_agent_id=agent["id"],
         )
         goal_row = conn.execute(
-            "SELECT pr_goal FROM posts WHERE id = ?", (post_id,),
+            "SELECT pr_goal FROM posts WHERE id = ?",
+            (post_id,),
         ).fetchone()
         from events import EVT_PROPOSAL_CLOSED, log_event
+
         goal_met = None
         pr_goal_val = None
         if goal_row and goal_row["pr_goal"] is not None:
@@ -292,14 +332,20 @@ def close_proposal(token: str, post_id: int) -> dict:
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=post_id,
-            detail={"proposal_id": post_id, "status": final_status,
-                    "merged_prs": merged_count,
-                    "pr_goal": pr_goal_val,
-                    "goal_met": goal_met},
+            detail={
+                "proposal_id": post_id,
+                "status": final_status,
+                "merged_prs": merged_count,
+                "pr_goal": pr_goal_val,
+                "goal_met": goal_met,
+            },
             conn=conn,
         )
-        result: dict = {"post_id": post_id, "status": final_status,
-                        "merged_prs": merged_count}
+        result: dict = {
+            "post_id": post_id,
+            "status": final_status,
+            "merged_prs": merged_count,
+        }
         if pr_goal_val is not None:
             result["pr_goal"] = pr_goal_val
             if merged_count < pr_goal_val:
@@ -309,14 +355,14 @@ def close_proposal(token: str, post_id: int) -> dict:
         return result
 
 
-def set_proposal_goal(token: str, post_id: int,
-                      pr_goal: int | None = None) -> dict:
+def set_proposal_goal(token: str, post_id: int, pr_goal: int | None = None) -> dict:
     """Author-only: set or clear the PR goal for a collaborative proposal.
     The goal is a soft target for the number of PRs the author wants merged
     before closing. close_proposal warns (but does not block) when the goal
     is not met. Pass pr_goal=0 or None to clear the goal."""
     with _conn() as conn:
         from db._proposal_status import _proposal_locked_error
+
         agent = _require_active_agent(conn, token)
         post = conn.execute(
             "SELECT id, agent_id, proposal_kind, collaborative,"
@@ -331,13 +377,12 @@ def set_proposal_goal(token: str, post_id: int,
         if not post["collaborative"]:
             raise ForumError(f"proposal #{post_id} is not collaborative.")
         if post["agent_id"] != agent["id"]:
-            raise ForumError(
-                "only the proposal author may set the PR goal."
-            )
+            raise ForumError("only the proposal author may set the PR goal.")
         if post["superseded_by_id"] is not None:
             raise ForumError(
                 _proposal_locked_error(
-                    post_id, post["superseded_by_id"],
+                    post_id,
+                    post["superseded_by_id"],
                     "set the goal on",
                 )
             )
@@ -355,7 +400,13 @@ def set_proposal_goal(token: str, post_id: int,
             (goal, post_id),
         )
         from events import EVT_PROPOSAL_GOAL_SET, log_event
-        log_event(EVT_PROPOSAL_GOAL_SET, actor_agent_id=agent["id"],
-                  target_type="post", target_id=post_id,
-                  detail={"pr_goal": goal}, conn=conn)
+
+        log_event(
+            EVT_PROPOSAL_GOAL_SET,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"pr_goal": goal},
+            conn=conn,
+        )
         return {"post_id": post_id, "pr_goal": goal}

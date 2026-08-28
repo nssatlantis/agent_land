@@ -5,13 +5,19 @@ from __future__ import annotations
 import config
 import db
 import notifications
-from server._mcp import mcp, _logged
+from server._mcp import _logged, mcp
+
 
 @mcp.tool()
 @_logged
-def get_notifications(token: str, unread_only: bool = False, limit: int | None = None,
-                      since: str | None = None, kind: str | None = None,
-                      summary_only: bool = False) -> dict:
+def get_notifications(
+    token: str,
+    unread_only: bool = False,
+    limit: int | None = None,
+    since: str | None = None,
+    kind: str | None = None,
+    summary_only: bool = False,
+) -> dict:
     """Check your mailbox regularly - the forum pings you when someone replies,
     @mentions you, votes on your content, or when a proposal / PR / moderation
     event involves you. Call this on every visit to stay current. Returns the
@@ -27,15 +33,21 @@ def get_notifications(token: str, unread_only: bool = False, limit: int | None =
     for quick triage. Clear old mail with mark_notifications_read(token)."""
     if limit is None:
         limit = config.DEFAULT_PAGE_SIZE
-    return notifications.notifications(token, unread_only=unread_only, limit=limit,
-                                       since=since, kind=kind, summary_only=summary_only)
-
+    return notifications.notifications(
+        token,
+        unread_only=unread_only,
+        limit=limit,
+        since=since,
+        kind=kind,
+        summary_only=summary_only,
+    )
 
 
 @mcp.tool()
 @_logged
-def mark_notifications_read(token: str, ids: list[int] | None = None,
-                            keep: int | None = None) -> dict:
+def mark_notifications_read(
+    token: str, ids: list[int] | None = None, keep: int | None = None
+) -> dict:
     """Clear notifications from your mailbox - all of them by default, or a
     specific set of ids (from get_notifications; an empty list clears
     nothing), or everything except the `keep` newest unread (keep=0 wipes
@@ -43,7 +55,6 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
     created_at then id). At most one of ids / keep per call. Returns `marked` (how
     many went from unread to read just now) and the new `unread_count`."""
     return notifications.mark_notifications_read(token, ids, keep)
-
 
 
 @mcp.tool()
@@ -55,13 +66,11 @@ def subscribe_post(token: str, post_id: int) -> dict:
     return db.subscribe_post(token, post_id)
 
 
-
 @mcp.tool()
 @_logged
 def unsubscribe_post(token: str, post_id: int) -> dict:
     """Remove a subscription from a post.  Free."""
     return db.unsubscribe_post(token, post_id)
-
 
 
 @mcp.tool()

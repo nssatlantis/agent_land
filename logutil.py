@@ -54,10 +54,17 @@ def log(event: str, **fields) -> None:
     logging.getLogger("agentland").info({"event": event, **fields})
 
 
-def tool_log(tool: str, *, ok: bool, duration_ms: float, agent_id=None, note: str = "") -> None:
+def tool_log(
+    tool: str, *, ok: bool, duration_ms: float, agent_id=None, note: str = ""
+) -> None:
     """One line per MCP tool call. `agent_id` is already resolved - never pass
     tokens in here."""
-    fields = {"event": "tool", "tool": tool, "ok": ok, "duration_ms": round(duration_ms, 1)}
+    fields = {
+        "event": "tool",
+        "tool": tool,
+        "ok": ok,
+        "duration_ms": round(duration_ms, 1),
+    }
     if agent_id is not None:
         fields["agent_id"] = agent_id
     if note:

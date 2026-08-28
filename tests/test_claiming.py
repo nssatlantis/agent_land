@@ -1,4 +1,5 @@
 """Test proposal claiming system."""
+
 import importlib
 import os
 import sys
@@ -12,7 +13,9 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import (
-    db, expect_error, setup,
+    db,
+    expect_error,
+    setup,
 )
 
 
@@ -24,9 +27,12 @@ def main():
         info = {row[1] for row in _conn.execute("PRAGMA table_info(posts)").fetchall()}
     assert "claimable" in info, "posts table must have a claimable column"
     with db._conn() as _conn:
-        tables = {row[0] for row in _conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()}
+        tables = {
+            row[0]
+            for row in _conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
     assert "proposal_claims" in tables, "proposal_claims table must exist"
     print("  claiming schema: ok")
 
@@ -122,7 +128,9 @@ def main():
     db.claim_proposal(agents["gamma"]["token"], pid)
     assert "claimed by" in expect_error(
         db.require_proposal_approval,
-        agents["alpha"]["token"], pid, "open a PR",
+        agents["alpha"]["token"],
+        pid,
+        "open a PR",
     ), "author blocked by claim should be refused"
     print("  author blocked by claim: ok")
 
@@ -137,21 +145,24 @@ def main():
     # which is fine - we're testing the claim gate specifically)
     err = expect_error(
         db.require_proposal_approval,
-        agents["alpha"]["token"], pid, "open a PR",
+        agents["alpha"]["token"],
+        pid,
+        "open a PR",
     )
     # should NOT contain "claimed by" error
-    assert "claimed by" not in (err or ""), \
-        "author should not be blocked after unclaim"
+    assert "claimed by" not in (err or ""), "author should not be blocked after unclaim"
     print("  author unblocked after unclaim: ok")
 
     # --- turn off claimable clears existing claim ------------------------
     db.claim_proposal(agents["delta"]["token"], pid)
     db.set_claimable(agents["alpha"]["token"], pid, False)
     post = db.get_post(pid)
-    assert post["proposal"]["delegate_id"] is None, \
+    assert post["proposal"]["delegate_id"] is None, (
         "turning off claimable should clear delegate_id"
-    assert post["proposal"]["claim_name"] is None, \
+    )
+    assert post["proposal"]["claim_name"] is None, (
         "turning off claimable should clear claim"
+    )
     print("  turn off claimable clears claim: ok")
 
     # --- list_proposals includes claim fields ----------------------------
@@ -183,6 +194,7 @@ def main():
 
     # --- require_claim_for_todo gate (direct unit tests) ------------------
     import config
+
     _saved_flag = os.environ.get("FORUM_TODO_CLAIM_REQUIRED")
 
     def _set_flag(value):
@@ -200,11 +212,15 @@ def main():
         importlib.reload(config)
 
     cp = db.create_proposal(
-        agents["alpha"]["token"], "Claim Gate Test", "body", collaborative=True,
+        agents["alpha"]["token"],
+        "Claim Gate Test",
+        "body",
+        collaborative=True,
     )
     cpid = cp["post_id"]
     db.set_todos_for_post(
-        agents["alpha"]["token"], cpid,
+        agents["alpha"]["token"],
+        cpid,
         [{"title": "W", "items": [{"text": "task1"}, {"text": "task2"}]}],
     )
     with db._conn() as _conn:
@@ -257,9 +273,7 @@ def main():
         db.unclaim_todo_item(gate_token, cpid, item1_id)
         db.claim_todo_item(gate_token, cpid, item2_id)
         with db._conn() as _conn:
-            _conn.execute(
-                "UPDATE todo_items SET done = 1 WHERE id = ?", (item2_id,)
-            )
+            _conn.execute("UPDATE todo_items SET done = 1 WHERE id = ?", (item2_id,))
         try:
             with db._conn() as conn:
                 db.require_claim_for_todo(conn, cpid, gate_agent_id)
@@ -274,7 +288,8 @@ def main():
         with db._conn() as _conn:
             _conn.execute(
                 "UPDATE todo_items SET claimed_at = '2000-01-01T00:00:00.000Z'"
-                " WHERE id = ?", (item1_id,)
+                " WHERE id = ?",
+                (item1_id,),
             )
         try:
             with db._conn() as conn:
@@ -291,6 +306,7 @@ def main():
 
     # --- teardown --------------------------------------------------------
     import shutil
+
     shutil.rmtree(_TMP, ignore_errors=True)
     print("test_claiming: all assertions passed")
 
