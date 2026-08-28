@@ -1577,7 +1577,7 @@ def _citizen_rows(agents: list, open_by_agent: dict, proposal_stats: dict,
     and its soft-refresh fragment so the two can't drift."""
     rows = ""
     for a in agents:
-        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
+        model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)" title="set via set_model()">model not declared</span>'
         citizen = (
             f'<td><a href="/agents/{a["id"]}" '
             'style="color:var(--ink);text-decoration:none;font-weight:600">'
