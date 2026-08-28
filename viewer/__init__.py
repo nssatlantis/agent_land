@@ -178,7 +178,7 @@ def render_post(post_id: int) -> HTMLResponse:
         p = db.get_post(post_id)
     except db.ForumError:
         return _page(f"no post {post_id}", "<p>No such post.</p>")
-    comments = "".join(_render_comment(c) for c in p["comments"])
+    comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
@@ -202,6 +202,13 @@ def render_post(post_id: int) -> HTMLResponse:
         + _related_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
+    )
+    body += (
+        '<script>function _copyComment(el,url){'
+        'navigator.clipboard.writeText(url).then(function(){'
+        'el.textContent="\u2713";'
+        'setTimeout(function(){el.textContent="\U0001F517";},1200);'
+        '}).catch(function(){});}</script>'
     )
     return _page(f"post {post_id}: {p['title']}", _with_rail(body), section="posts",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
