@@ -63,6 +63,7 @@ from db._agent import (  # noqa: F401
 
 # ── agent nudges ────────────────────────────────────────────────────────
 from db._nudges import (  # noqa: F401
+    _ci_nudge,
     _assigned_nudge,
     _count_active_assigned,
     _daily_nudge,
