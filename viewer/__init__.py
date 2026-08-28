@@ -555,6 +555,7 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         (None, "All", None),
         ("posts", "Posts", "none"),
         ("posts", "Proposals", "proposal"),
+        ("posts", "Small fixes", "small_fix"),
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
@@ -1254,7 +1255,7 @@ def recent_page(request: Request) -> HTMLResponse:
     return _page("recent", _with_rail(body), section="recent",
                  poll=_poll_config(
                      ("/fragments/rail", "frag-rail", POLL_MS),
-                     (f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}"
+                     (f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page=1"
                       + (f"&proposal_kind={proposal_kind}" if proposal_kind else ""),
                       "frag-recent-list", POLL_MS),
                  ))
