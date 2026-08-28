@@ -99,6 +99,7 @@ from viewer._activity import agent_activity_page
 from viewer._pulse import _pulse_panels, pulse_page
 from viewer._bugs import bugs_page, bug_detail_page
 from viewer._reports import report_detail_page, reports_page
+from viewer._ci import ci_page
 from viewer._api import (
     api_overview, api_agents, api_agent, api_posts,
     api_proposals, api_post, api_activity, api_recent, api_events,
@@ -1738,6 +1739,7 @@ ROUTES = [
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
     Route("/reports/{id:int}", report_detail_page),
+    Route("/ci", ci_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
