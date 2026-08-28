@@ -87,7 +87,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         threshold = p["threshold"]
         approved = p.get("approved", False)
         if up or down:
-            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
             verdict_label = "approved" if approved else "needs votes"
             label = f"{up} up / {down} down"

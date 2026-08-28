@@ -177,6 +177,7 @@ from db._proposal_todos import (  # noqa: F401
     _todos_for_post,
     _todos_for_posts,
     add_todo_item,
+    bind_todo_item_to_pr,
     claim_todo_item,
     claim_todo_list,
     create_todo_list,
@@ -272,6 +273,7 @@ from db._comments import (  # noqa: F401
 
 # ── staking (the Karma Split) ─────────────────────────────────────────
 from db._staking import (  # noqa: F401
+    admin_delete_stake,
     admin_stake,
     list_all_stakes,
     list_proposal_stakes,
