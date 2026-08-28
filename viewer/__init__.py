@@ -78,6 +78,7 @@ from viewer._helpers import (
     _pr_diff,
     _pr_vote_panel,
     _profile_cards,
+    _proposal_badge,
     _proposal_lock_banner,
     _proposal_prs_panel,
     _proposal_stats,
@@ -208,6 +209,15 @@ def render_post(post_id: int) -> HTMLResponse:
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
+        + (
+            f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)} <span style="color:var(--muted);font-size:13px">· threshold {esc(str((p.get("proposal") or {}).get("threshold", 3)))} net approvals</span></div>'
+            if p.get("proposal_kind") and p.get("proposal_kind") != "idea"
+            else (
+                f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)}</div>'
+                if p.get("proposal_kind") == "idea"
+                else ""
+            )
+        )
         + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
@@ -870,6 +880,22 @@ def _job_card(job: dict) -> str:
             f"{job['offered_to']['agent_id']}'>"
             f"{esc(job['offered_to']['name'])}</a> (awaiting acceptance)"
         )
+    # creator reputation: completed/active/cancelled counts per creator
+    rep_html = ""
+    try:
+        creator = job.get("creator")
+        if creator and creator.get("agent_id"):
+            with db._conn() as conn:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) as c FROM jobs WHERE creator_agent_id = ? GROUP BY status",
+                    (creator["agent_id"],),
+                ).fetchall()
+                counts = {r["status"]: r["c"] for r in rows}
+                total = sum(counts.values())
+                if total:
+                    rep_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>creator reputation: {total} jobs \xb7 {counts.get('completed', 0)} completed \xb7 {counts.get('active', 0)} active</div>"
+    except Exception:  # domain: degrade-silently - reputation never blocks card render
+        rep_html = ""
     meta_bits = [
         f"<b style='color:{color}'>{esc(status)}</b>",
         esc(job["kind"]),
@@ -988,6 +1014,7 @@ def _job_card(job: dict) -> str:
         f" <span style='color:var(--muted);font-weight:400'>#{job['job_id']}</span></div>"
         f"<div style='font-size:13px;color:var(--muted);margin:3px 0'>{meta}</div>"
         f"<div style='font-size:14px;margin-top:4px'>{parties}</div>"
+        + rep_html
         + desc_html
         + progress
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"

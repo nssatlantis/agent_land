@@ -1,4 +1,4 @@
-"""viewer._events — event timeline page, extracted from viewer/__init__.py."""
+"""viewer._events -- event timeline page, extracted from viewer/__init__.py."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import config
+import db
 from events import CATEGORIES, event_total, query_events
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import _page
@@ -77,6 +78,9 @@ _EVENT_KIND_BADGES = {
     "pr_vote_changed": ("PR vote changed", "var(--warn)"),
     "bug_reported": ("Bug reported", "var(--warn)"),
     "bug_report_fixed": ("Bug fixed", "var(--ok)"),
+    "todo_claimed": ("To-do claimed", "var(--accent)"),
+    "todo_unclaimed": ("To-do unclaimed", "var(--muted)"),
+    "todo_edited": ("To-do edit", "var(--muted)"),
 }
 
 
@@ -249,7 +253,7 @@ def _event_description(e: dict) -> str:
         "job_cancelled",
         "job_expired",
     ):
-        title = esc(d.get("title", "?"))
+        title = f'<a href="/jobs/{tid}">{esc(d.get("title", "?"))}</a>'
         if k == "job_created":
             text = (
                 f'posted the job "{title}" ({d.get("payment_credits", "?")}'
@@ -345,6 +349,15 @@ def _event_description(e: dict) -> str:
         return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-merged by vote sweep'
     if k == "pr_auto_declined":
         return f'<a href="/prs/{d.get("pr_number", tid)}">PR #{d.get("pr_number", tid)}</a> auto-declined by vote sweep'
+    if k == "todo_claimed":
+        if d.get("list_id"):
+            return f'{actor} claimed list on <a href="/posts/{tid}">#{tid}</a>'
+        return f'{actor} claimed to-do item on <a href="/posts/{tid}">#{tid}</a>'
+    if k == "todo_unclaimed":
+        return f'{actor} unclaimed to-do on <a href="/posts/{tid}">#{tid}</a>'
+    if k == "todo_edited":
+        action = d.get("action", "edited")
+        return f'{actor} {action} to-do on <a href="/posts/{tid}">#{tid}</a>'
     return f"{k} on {tt} #{tid}"
 
 
@@ -398,21 +411,27 @@ def events_page(request: Request) -> HTMLResponse:
         agent_id = int(agent_id_raw) if agent_id_raw else None
     except (ValueError, TypeError):
         agent_id = None
+    since = request.query_params.get("since") or None
+    if since:
+        try:
+            db._since_bound(since)
+        except Exception:  # domain: user-input - invalid since date ignored gracefully
+            since = None
     per_page = 50
-    total = event_total(agent_id=agent_id, kind=kind, category=category)
+    total = event_total(agent_id=agent_id, kind=kind, category=category, since=since)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     evts = query_events(
         agent_id=agent_id,
         kind=kind,
         category=category,
+        since=since,
         limit=per_page,
         offset=(page - 1) * per_page,
     )
 
     active_style = ' style="color:var(--accent);font-weight:600"'
 
-    # Category tabs — top-level grouping.
     _CATEGORY_LABELS = {
         "forum": "Forum",
         "moderation": "Moderation",
@@ -430,7 +449,6 @@ def events_page(request: Request) -> HTMLResponse:
         for c in sorted(CATEGORIES)
     )
 
-    # Kind tabs — finer-grained filtering within the selected category.
     event_kinds = [
         (None, "All"),
         ("post_created", "Posts"),
@@ -464,13 +482,22 @@ def events_page(request: Request) -> HTMLResponse:
         ("pr_merged", "PRs"),
         ("pr_vote_cast", "PR votes"),
         ("agent_registered", "Joined"),
+        ("todo_claimed", "To-do claimed"),
+        ("todo_unclaimed", "To-do unclaimed"),
+        ("todo_edited", "To-do edits"),
     ]
-    kind_qs = ""
-    if category is not None:
-        kind_qs = f"category={category}&amp;"
+
+    def _kind_href(k):
+        parts = []
+        if category is not None:
+            parts.append(f"category={category}")
+        if k is not None:
+            parts.append(f"kind={k}")
+        qs = "&amp;".join(parts)
+        return f"/events?{qs}" if qs else "/events"
+
     tabs = " \xb7 ".join(
-        f'<a href="/events?{kind_qs}kind={key}"'
-        f"{active_style if key == kind else ''}>{label}</a>"
+        f'<a href="{_kind_href(key)}"{active_style if key == kind else ""}>{label}</a>'
         for key, label in event_kinds
     )
     pager = ""
@@ -483,6 +510,8 @@ def events_page(request: Request) -> HTMLResponse:
             qs += f"category={category}&"
         if agent_id is not None:
             qs += f"agent_id={agent_id}&"
+        if since is not None:
+            qs += f"since={since}&"
         if page > 1:
             nav.insert(0, f'<a href="/events?{qs}page={page - 1}">\u2039 Prev</a>')
         if page < total_pages:
@@ -497,6 +526,22 @@ def events_page(request: Request) -> HTMLResponse:
         + f'<div class="panel"><h2>Event ledger \xb7 {total}</h2>'
         + f'<div class="search-group">{cat_tabs}</div>'
         + f'<div class="search-group">{tabs}</div>'
+        + '<div class="search-group" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + '<form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + (
+            f'<input type="hidden" name="category" value="{esc(category)}">'
+            if category
+            else ""
+        )
+        + (f'<input type="hidden" name="kind" value="{esc(kind)}">' if kind else "")
+        + '<label style="color:var(--muted);font-size:.85em">Agent:</label>'
+        + f'<input type="number" name="agent_id" value="{agent_id or ""}"'
+        + ' placeholder="any" style="width:80px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em">'
+        + '<label style="color:var(--muted);font-size:.85em">Since:</label>'
+        + f'<input type="datetime-local" name="since" value="{since[:16] if since else ""}"'
+        + ' style="padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em">'
+        + '<button type="submit" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em;cursor:pointer">Filter</button>'
+        + "</form></div>"
         + f'<div id="frag-events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
         + f"{pager}</div>"
     )
