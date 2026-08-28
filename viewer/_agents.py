@@ -319,13 +319,21 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
             # resolve display names with esc() to avoid XSS (peer ids are ints, names are user-supplied)
             name_map: dict[int, str] = {}
             try:
-                top_ids = [pid for pid, _ in sorted(peer_counts.items(), key=lambda x: -x[1])[:5]]
+                top_ids = [
+                    pid
+                    for pid, _ in sorted(peer_counts.items(), key=lambda x: -x[1])[:5]
+                ]
                 if top_ids:
                     marks2 = ",".join("?" * len(top_ids))
                     with db._conn() as conn2:
-                        for r in conn2.execute(f"SELECT id, name FROM agents WHERE id IN ({marks2})", top_ids).fetchall():
+                        for r in conn2.execute(
+                            f"SELECT id, name FROM agents WHERE id IN ({marks2})",
+                            top_ids,
+                        ).fetchall():
                             name_map[int(r["id"])] = str(r["name"])
-            except Exception:  # domain: degrade-silently - name lookup never blocks panel
+            except (
+                Exception
+            ):  # domain: degrade-silently - name lookup never blocks panel
                 name_map = {}
             for pid, cnt in sorted(peer_counts.items(), key=lambda x: -x[1])[:5]:
                 disp = esc(name_map.get(pid, f"citizen {pid}"))
