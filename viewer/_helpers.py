@@ -159,6 +159,25 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
+    """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
+    if md:
+        return f'<div class="panel"><h2>{esc(heading)}</h2>{intro}{_markdown(md)}</div>'
+    return f'<div class="panel"><h2>{esc(heading)}</h2><p style="color:var(--muted)">{esc(notice)}</p></div>'
+  
+  
+def _timeline_card(badge_label: str, badge_cls: str, body_html: str, meta_html: str | None = None, preview: str | None = None, when: str | None = None) -> str:
+    """Shared timeline card for events/recent/activity. body_html/meta_html are pre-escaped caller HTML; badge/preview/when are esc'd. Display-only."""
+    badge = f'<span class="recent-badge {esc(badge_cls)}">{esc(badge_label)}</span>'
+    when_html = f'<span class="muted" style="font-size:14px">{esc(when)}</span>' if when else ""
+    meta = f'<div class="recent-meta">{meta_html}</div>' if meta_html else ""
+    prev = f'<div class="recent-preview">{esc(preview[:280])}</div>' if preview else ""
+    return (
+        f'<div class="recent-card"><div class="recent-top">{badge} {when_html}</div>'
+        f'<div class="recent-body">{body_html}</div>{meta}{prev}</div>'
+    )
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
@@ -588,18 +607,42 @@ def _pr_vote_panel(pr_number: int) -> str:
         f'Threshold: <strong>{threshold}</strong>'
         f'</p>'
     )
-    # --- eligibility ---
-    if net >= threshold:
-        bar += '<p style="color:var(--ok);font-weight:600;margin:4px 0">Eligible to merge</p>'
-    elif net <= -threshold:
-        bar += '<p style="color:var(--fail);font-weight:600;margin:4px 0">Eligible to decline</p>'
+    # --- eligibility (gated: small_fix && CI pass) ---
+    is_small_fix = False
+    ci_ok = False
+    try:
+        pid = db.proposal_for_pr(pr_number)
+        if pid:
+            post = db.get_post(pid)
+            t = post.get("proposal") or {}
+            is_small_fix = bool(post.get("small_fix") or t.get("small_fix") or post.get("proposal_kind") == "small_fix" or t.get("proposal_kind") == "small_fix")
+        chk = github.pr_checks(pr_number)
+        ci_ok = bool(chk and chk.get("state") == "success")
+    except Exception:
+        # domain: degrade-silently - eligibility still renders without gate
+        pass
+    if is_small_fix and ci_ok:
+        if net >= threshold:
+            bar += '<p style="color:var(--ok);font-weight:600;margin:4px 0">Eligible to merge</p>'
+        elif net <= -threshold:
+            bar += '<p style="color:var(--fail);font-weight:600;margin:4px 0">Eligible to decline</p>'
+        else:
+            needed = threshold + down - up
+            bar += (
+                f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+                f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
+                f'(threshold {threshold}'
+                f'{", opposing votes increase the bar" if down else ""})'
+                f'</p>'
+            )
     else:
         needed = threshold + down - up
+        hint = " (requires small_fix + CI pass)" if not (is_small_fix and ci_ok) else ""
         bar += (
             f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
             f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
             f'(threshold {threshold}'
-            f'{", opposing votes increase the bar" if down else ""})'
+            f'{", opposing votes increase the bar" if down else ""}){hint}'
             f'</p>'
         )
     # --- voter list ---
@@ -728,9 +771,16 @@ def _prs_votes_cell(number: int) -> str:
     up = tally.get("up", 0)
     down = tally.get("down", 0)
     net = tally.get("net", 0)
-    return (f'<span style="color:var(--ok)">+{up}</span>/'
+    try:
+        bar = db.pr_vote_threshold()
+    except Exception:  # domain:degrade-silently - votes still render if threshold fetch hiccups
+        bar = None
+    base = (f'<span style="color:var(--ok)">+{up}</span>/'
             f'<span style="color:var(--fail)">&minus;{down}</span> '
             f'<span style="color:var(--muted)">net {net}</span>')
+    if bar is not None:
+        base += f'<div style="color:var(--muted);font-size:11px">Net \u2265 {bar} to merge</div>'
+    return base
 
 
 def _prs_hold_chip(r: dict, state: str) -> str:
@@ -788,8 +838,18 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
         base_ref = esc(r.get("base") or "")
         when = _human_ts(r.get(ts_field) or r.get("created_at") or "")
         link = f'<a href="/prs/{num}" style="color:var(--accent)">#{num}</a>'
+        # PR body snippet — best-effort, degrade-silently (untrusted input escaped)
+        body_snip = ""
+        try:
+            detail = github.get_pr(num)
+            b = detail.get("body") if detail else None
+            if b:
+                body_snip = f'<div style="color:var(--muted);font-size:12px;margin-top:4px">{esc(_truncate(b, 140))}</div>'
+        except Exception:  # domain:degrade-silently - PR body is optional enrichment, list still renders
+            body_snip = ""
         title_cell = (f'<a href="{gh}" style="color:var(--ink);'
                       f'text-decoration:none">{title}</a>'
+                      f'{body_snip}'
                       f'<div style="color:var(--muted);font-size:13px">'
                       f'{href_ref} &rarr; {base_ref}</div>')
         trs.append(

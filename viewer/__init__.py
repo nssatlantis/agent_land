@@ -646,6 +646,19 @@ def _job_card(job: dict) -> str:
         f"cycle {min(job['cycles_done'] + 1, job['total_cycles'])}"
         f"/{job['total_cycles']}",
     ]
+    # expiry countdown + urgency indicator (new/active X days, near-expiry warning)
+    try:
+        created = job.get("created_at")
+        if created:
+            age = _human_ts(created)
+            if status in ("open", "offered"):
+                meta_bits.append(f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {esc(age)}</span>")
+            elif status == "active":
+                meta_bits.append(f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {esc(age)}</span>")
+            elif status in ("cancelled", "expired"):
+                meta_bits.append(f"<span style='color:var(--muted)'>{esc(age)}</span>")
+    except Exception:  # domain: degrade-silently - badge never blocks card render
+        pass
     if job["official"]:
         meta_bits.append("OFFICIAL")
     if job["scope"]:
@@ -664,6 +677,10 @@ def _job_card(job: dict) -> str:
             cycles_html += f"<div style='font-size:13px;color:var(--muted);margin-top:3px'>cycle {c['cycle_no']}: <b>awaiting</b> <span style='color:var(--muted)'>(awaiting submission)</span></div>"
             continue
         bits = [f"cycle {c['cycle_no']}: <b>{esc(c['status'])}</b>"]
+        if c["submitted_at"]:
+            bits.append(f"submitted {_human_ts(c['submitted_at'])}")
+        if c["decided_at"]:
+            bits.append(f"decided {_human_ts(c['decided_at'])}")
         if c["evidence"]:
             bits.append(f"evidence {esc(c['evidence'])}")
         # Advisory multi-PR chips: evidence_pr_numbers is the structured reference
@@ -677,24 +694,8 @@ def _job_card(job: dict) -> str:
                 nid = int(n)
                 sha = pr_shas[idx] if idx < len(pr_shas) and isinstance(pr_shas[idx], str) and pr_shas[idx] else ""
                 sha_tip = f' title="{sha[:7]}"' if sha else ""
-                # Best-effort CI badge — advisory only, never blocks render
+                # P0 sync-loop fix: per-row blocking github.pr_checks removed — chip without badge (batch/cached async via viewer/_helpers if needed)
                 badge = ""
-                try:
-                    chk = github.pr_checks(nid)
-                    st = (chk.get("state") or "").lower()
-                    if st == "success":
-                        col = "var(--ok)"
-                    elif st == "failure":
-                        col = "var(--warn)"
-                    elif st in ("pending", "unknown"):
-                        col = "var(--muted)"
-                    else:
-                        col = ""
-                    if col:
-                        badge = f'<span style="background:{col};width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:4px;vertical-align:middle"></span>'
-                except Exception:
-                    # domain: degrade-silently - pr_checks unavailable, chip without badge
-                    badge = ""
                 chip_parts.append(
                     f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
                 )
@@ -703,6 +704,16 @@ def _job_card(job: dict) -> str:
         if c["feedback"]:
             bits.append(f"feedback: {esc(c['feedback'])}")
         cycles_html += "<div style='font-size:13px;color:var(--muted);margin-top:3px'>" + " &middot; ".join(bits) + "</div>"
+    # progress bar: done/total cycles
+    try:
+        pct = int(job["cycles_done"] * 100 / max(1, job["total_cycles"]))
+    except Exception:  # domain: degrade-silently - arithmetic on job counts never blocks render
+        pct = 0
+    progress = (
+        f"<div style='background:var(--line);height:6px;border-radius:3px;overflow:hidden;margin-top:6px'>"
+        f"<div style='background:var(--accent);height:100%;width:{pct}%'></div></div>"
+        f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>{job['cycles_done']}/{job['total_cycles']} cycles done \xb7 {pct}%</div>"
+    )
     desc_html = (
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
         if job["description"] else ""
@@ -714,6 +725,7 @@ def _job_card(job: dict) -> str:
         f"<div style='font-size:13px;color:var(--muted);margin:3px 0'>{meta}</div>"
         f"<div style='font-size:14px;margin-top:4px'>{parties}</div>"
         + desc_html
+        + progress
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
         + "</div>"
@@ -1221,6 +1233,15 @@ async def charter_page(request: Request) -> HTMLResponse:
                 "not be read from the repository."),
     )
 
+def _prs_href(state: str, page: int) -> str:
+    params: list[str] = []
+    if state != "open":
+        params.append(f"state={state}")
+    if page != 1:
+        params.append(f"page={page}")
+    return "/prs" + (f"?{'&'.join(params)}" if params else "")
+
+
 async def prs_page(request: Request) -> HTMLResponse:
     """Every pull request as one browsable row - the index the individual
     /prs/{number} diff pages always lacked. State tabs default to open;
@@ -1229,9 +1250,24 @@ async def prs_page(request: Request) -> HTMLResponse:
     state = request.query_params.get("state", "open")
     if state not in ("open", "closed", "all"):
         state = "open"
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:  # domain:degrade-silently - garbage page param means page 1
+        page = 1
     rows = await _prs_page_rows(state)
-    return _page("Pull requests", _with_rail(_prs_rows_html(state, rows)),
-                 section="prs")
+    if rows is None:
+        return _page("Pull requests", _with_rail(_prs_rows_html(state, rows)),
+                     section="prs")
+    per_page = 30
+    total = len(rows)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    sliced = rows[(page - 1) * per_page : page * per_page]
+    pager_top = _pager(page, total_pages, lambda n: _prs_href(state, n), top=True)
+    pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n))
+    meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>" if total else ""
+    body = meta + pager_top + _prs_rows_html(state, sliced) + pager_bot
+    return _page("Pull requests", _with_rail(body), section="prs")
 
 
 async def pr_diff_page(request: Request) -> HTMLResponse:
