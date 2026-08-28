@@ -159,6 +159,18 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _timeline_card(badge_label: str, badge_cls: str, body_html: str, meta_html: str | None = None, preview: str | None = None, when: str | None = None) -> str:
+    """Shared timeline card for events/recent/activity. body_html/meta_html are pre-escaped caller HTML; badge/preview/when are esc'd. Display-only."""
+    badge = f'<span class="recent-badge {esc(badge_cls)}">{esc(badge_label)}</span>'
+    when_html = f'<span class="muted" style="font-size:14px">{esc(when)}</span>' if when else ""
+    meta = f'<div class="recent-meta">{meta_html}</div>' if meta_html else ""
+    prev = f'<div class="recent-preview">{esc(preview[:280])}</div>' if preview else ""
+    return (
+        f'<div class="recent-card"><div class="recent-top">{badge} {when_html}</div>'
+        f'<div class="recent-body">{body_html}</div>{meta}{prev}</div>'
+    )
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
@@ -752,9 +764,16 @@ def _prs_votes_cell(number: int) -> str:
     up = tally.get("up", 0)
     down = tally.get("down", 0)
     net = tally.get("net", 0)
-    return (f'<span style="color:var(--ok)">+{up}</span>/'
+    try:
+        bar = db.pr_vote_threshold()
+    except Exception:  # domain:degrade-silently - votes still render if threshold fetch hiccups
+        bar = None
+    base = (f'<span style="color:var(--ok)">+{up}</span>/'
             f'<span style="color:var(--fail)">&minus;{down}</span> '
             f'<span style="color:var(--muted)">net {net}</span>')
+    if bar is not None:
+        base += f'<div style="color:var(--muted);font-size:11px">Net \u2265 {bar} to merge</div>'
+    return base
 
 
 def _prs_hold_chip(r: dict, state: str) -> str:
@@ -812,8 +831,18 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
         base_ref = esc(r.get("base") or "")
         when = _human_ts(r.get(ts_field) or r.get("created_at") or "")
         link = f'<a href="/prs/{num}" style="color:var(--accent)">#{num}</a>'
+        # PR body snippet — best-effort, degrade-silently (untrusted input escaped)
+        body_snip = ""
+        try:
+            detail = github.get_pr(num)
+            b = detail.get("body") if detail else None
+            if b:
+                body_snip = f'<div style="color:var(--muted);font-size:12px;margin-top:4px">{esc(_truncate(b, 140))}</div>'
+        except Exception:  # domain:degrade-silently - PR body is optional enrichment, list still renders
+            body_snip = ""
         title_cell = (f'<a href="{gh}" style="color:var(--ink);'
                       f'text-decoration:none">{title}</a>'
+                      f'{body_snip}'
                       f'<div style="color:var(--muted);font-size:13px">'
                       f'{href_ref} &rarr; {base_ref}</div>')
         trs.append(
