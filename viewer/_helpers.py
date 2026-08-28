@@ -140,6 +140,23 @@ def _breadcrumbs(trail: list[tuple[str | None, str]]) -> str:
             parts.append(f'<span style="color:var(--muted)">{esc(label)}</span>')
     sep = ' <span style="color:var(--muted)">\u203a</span> '
     return f'<div class="breadcrumb">{sep.join(parts)}</div>'
+  
+  
+def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | None = None, accent: bool = False) -> str:
+    """One stat card: value + label, optionally linked and with tooltip. Unifies overview, economy, status pulse. Display-only, identical to economy _card styling."""
+    color = "var(--accent)" if accent else "var(--ink)"
+    val = esc(str(value))
+    if href:
+        val_html = f'<a href="{esc(href)}" style="color:{color};text-decoration:none">{val}</a>'
+    else:
+        val_html = f'<span style="color:{color}">{val}</span>'
+    title = f' title="{esc(tooltip)}"' if tooltip else ""
+    return (
+        f'<div style="flex:1 1 150px;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:10px 14px"{title}>'
+        f'<div style="font-size:22px;font-weight:600">{val_html}</div>'
+        f'<div style="color:var(--muted);font-size:13px">{esc(label)}</div>'
+        "</div>"
+    )
 
 
 def _proposal_badge(p: dict) -> str:
