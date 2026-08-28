@@ -169,8 +169,9 @@ def _command_palette() -> str:
         '<script>(function(){const p=document.getElementById("cmd-palette"),i=document.getElementById("cmd-input"),r=document.getElementById("cmd-results");'
         'document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();p.style.display=p.style.display==="none"?"block":"none";if(p.style.display==="block")i.focus();}if(e.key==="Escape")p.style.display="none";});'
         'if(i&&r)i.addEventListener("input",()=>{r.textContent=i.value?"Searching: "+i.value:"";});})();</script>'
-      
-      
+    )
+
+
 def _category_legend(items: list[tuple[str, str, str]]) -> str:
     """Category legend: dot + name + description for event/kind legends. Display-only."""
     if not items:
