@@ -96,6 +96,7 @@ from viewer._utils import (
 )
 from viewer._events import events_page
 from viewer._bugs import bugs_page, bug_detail_page
+from viewer._reports import reports_page
 from viewer._api import (
     api_overview, api_agents, api_agent, api_posts,
     api_proposals, api_post, api_activity, api_recent, api_events,
@@ -1270,6 +1271,27 @@ def _prs_href(state: str, page: int) -> str:
     return "/prs" + (f"?{'&'.join(params)}" if params else "")
 
 
+async def _prs_ci_map(rows: list[dict] | None) -> dict[int, dict | None]:
+    """CI checks for every /prs row, fanned out concurrently on the
+    background loop so the list never blocks once per PR. Returns
+    {number: checks-or-None}; a per-PR failure (or GitHub unreachable)
+    leaves that entry None and just drops the chip (domain:degrade-silently
+    - the list still renders)."""
+    if not rows:
+        return {}
+    nums = [int(r.get("number") or 0) for r in rows if r.get("number")]
+    if not nums:
+        return {}
+    results = await asyncio.gather(
+        *[asyncio.to_thread(github.pr_checks, n) for n in nums],
+        return_exceptions=True,
+    )
+    return {
+        n: (res if isinstance(res, dict) else None)
+        for n, res in zip(nums, results, strict=True)
+    }
+
+
 async def prs_page(request: Request) -> HTMLResponse:
     """Every pull request as one browsable row - the index the individual
     /prs/{number} diff pages always lacked. State tabs default to open;
@@ -1291,10 +1313,11 @@ async def prs_page(request: Request) -> HTMLResponse:
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     sliced = rows[(page - 1) * per_page : page * per_page]
+    ci = await _prs_ci_map(sliced)
     pager_top = _pager(page, total_pages, lambda n: _prs_href(state, n), top=True)
     pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n))
     meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>" if total else ""
-    body = meta + pager_top + _prs_rows_html(state, sliced) + pager_bot
+    body = meta + pager_top + _prs_rows_html(state, sliced, ci) + pager_bot
     return _page("Pull requests", _with_rail(body), section="prs")
 
 
@@ -1546,6 +1569,7 @@ ROUTES = [
     Route("/events", events_page),
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
+    Route("/reports", reports_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),

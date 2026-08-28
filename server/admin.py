@@ -302,11 +302,20 @@ def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
     if stakes:
         for b in stakes:
             remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
+            # per_pr is stored in quarters for credits; display in credits
+            from db._credits import format_credits as _fmt
+
+            per_pr_display = _fmt(b["per_pr"]) if b.get("currency") == "credits" else str(b["per_pr"])
             existing += (
-                f'<div style="font-size:13px;color:var(--muted);margin:2px 0">'
-                f'{esc(b.get("staker_name") or "system")}: {b["per_pr"]} {b.get("currency", "karma")} \u00d7 {b["max_prs"]} PRs'
+                f'<div style="font-size:13px;color:var(--muted);margin:2px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+                f'<span>{esc(b.get("staker_name") or "system")}: {per_pr_display} {b.get("currency", "karma")} \u00d7 {b["max_prs"]} PRs'
                 f' (paid:{b["paid_count"]} locked:{b["locked_count"]} remain:{remaining})'
-                f' [{b["status"]}]</div>'
+                f' [{b["status"]}]</span>'
+                f'<form method="post" action="/admin/proposals/{proposal_id}/stakes/{b["id"]}/delete" style="display:inline">'
+                f"{_csrf_field(request)}"
+                '<button type="submit" style="font-size:11px;color:#c53030;border:1px solid #feb2b2;background:#fff5f5;padding:1px 6px;border-radius:4px" '
+                'onclick="return confirm(\'Delete stake #{b[\"id\"]}?\')">delete</button></form>'
+                f'</div>'
             )
     return (
         f'<div style="margin:4px 0;padding:4px 0;border-top:1px solid var(--border)">'
@@ -316,9 +325,9 @@ def _stake_form(request, proposal_id: int, stakes: list | None = None) -> str:
         f' style="display:inline">{_csrf_field(request)}'
         '<label style="font-size:13px;color:var(--muted)">per PR: '
         '<input name="per_pr" type="number" min="0.25" step="0.25"'
-        ' value="1" style="width:60px"'
+        ' value="0.25" style="width:60px"'
         ' onchange="this.step=this.form.currency.value==\'karma\''
-        '? \'1\' : \'0.25\'; this.min=this.step"></label> '
+        '? \'1\' : \'0.25\'; this.min=this.step; if(this.form.currency.value==\'karma\' && parseFloat(this.value)<1) this.value=1; if(this.form.currency.value==\'credits\' && this.value==\'1\' && this.defaultValue==\'1\') this.value=\'0.25\'"></label> '
         '<label style="font-size:13px;color:var(--muted)">currency: '
         '<select name="currency" style="font-size:13px">'
         '<option value="credits">credits</option>'
@@ -1088,6 +1097,24 @@ async def create_stake(request):
                             status_code=303)
 
 
+async def delete_stake(request):
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    try:
+        stake_id = int(request.path_params["stake_id"])
+    except (TypeError, ValueError):  # domain:fail-loudly - bad path param surfaces as flash
+        return _flash(request, "bad stake id.")
+    try:
+        db.admin_delete_stake(_admin_user(request), stake_id)
+    except db.ForumError as exc:  # domain:fail-loudly - delete gate refusal surfaces as flash
+        return _flash(request, str(exc))
+    return RedirectResponse(request.headers.get("referer") or "/admin",
+                            status_code=303)
+
+
 def _render_jobs(request) -> str:
     """The job-market governance panel: create OFFICIAL positions
     (treasury-paid, longer cycles, karma floor waived for the sponsor)
@@ -1808,6 +1835,7 @@ ROUTES = [
     Route("/admin/posts/{id:int}/delete", delete_post, methods=["POST"]),
     Route("/admin/posts/{id:int}/settings", admin_update_post_settings, methods=["POST"]),
     Route("/admin/proposals/{id:int}/stake", create_stake, methods=["POST"]),
+    Route("/admin/proposals/{id:int}/stakes/{stake_id:int}/delete", delete_stake, methods=["POST"]),
     Route("/admin/reports/{id:int}/resolve", resolve_report, methods=["POST"]),
     Route("/admin/economy/adjust", economy_adjust, methods=["POST"]),
     Route("/admin/jobs", jobs_manager_page),
