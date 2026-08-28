@@ -616,11 +616,28 @@ def credits_page(request: Request) -> HTMLResponse:
         # domain: degrade-silently - a malformed URL degrades to the
         # no-such-citizen page instead of a server error.
         return _page("credits", "<p>Bad agent id.</p>")
-    ledger = db.credit_history(agent_id=agent_id, limit=200)
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
+        page = 1
+    per_page = 50
+    ledger = db.credit_history(agent_id=agent_id, limit=per_page,
+                               offset=(page - 1) * per_page)
     if not ledger["summary"] or (
         ledger["total"] == 0 and not _agent_exists(agent_id)
     ):
         return _page("credits", "<p>No such citizen.</p>")
+    pager_bits = []
+    if page > 1:
+        pager_bits.append(
+            '<a href="/credits/{}?page={}">&lsaquo; newer</a>'.format(agent_id, page - 1))
+    if ledger["has_more"]:
+        pager_bits.append(
+            '<a href="/credits/{}?page={}">older &rsaquo;</a>'.format(agent_id, page + 1))
+    pager = (
+        "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
+        if pager_bits else ""
+    )
 
     def _fmt_amount(entry: dict) -> str:
         import db._credits as _cr
@@ -633,11 +650,16 @@ def credits_page(request: Request) -> HTMLResponse:
         sign = "+" if e["delta_quarters"] > 0 else "\u2212"
         target = ""
         if e["target_type"] and e["target_id"]:
-            link = "/posts/{}".format(e["target_id"]) \
-                if e["target_type"] in ("post", "comment") else None
-            label = "{} #{}".format(e["target_type"], e["target_id"])
-            target = ('<a href="{}">{}</a>'.format(link, esc(label))
-                      if link else esc(label))
+            if e["target_type"] == "agent":
+                link = "/agents/{}".format(e["target_id"])
+                name = e.get("target_name") or "agent #{}".format(e["target_id"])
+                target = '<a href="{}">{}</a>'.format(link, esc(name))
+            elif e["target_type"] in ("post", "comment"):
+                link = "/posts/{}".format(e["target_id"])
+                target = '<a href="{}">{}</a>'.format(
+                    link, esc("{} #{}".format(e["target_type"], e["target_id"])))
+            else:
+                target = esc("{} #{}".format(e["target_type"], e["target_id"]))
         rows.append(
             '<tr><td>{}</td><td>{}</td><td>{}</td>'
             '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
@@ -655,9 +677,11 @@ def credits_page(request: Request) -> HTMLResponse:
     )
     body = (
         _crumb("/", "overview")
+        + _crumb("/economy", "Economy")
         + '<div class="panel"><h2>Credits \u00b7 {}</h2>'.format(
             esc(ledger["entries"][0]["agent_name"])
-            if ledger["entries"] else "#{}".format(agent_id))
+            if ledger["entries"] and ledger["entries"][0]["agent_name"]
+            else "#{}".format(agent_id))
         + '<p style="color:var(--muted);font-size:15px">'
         'Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr '
         '&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr '
@@ -667,7 +691,11 @@ def credits_page(request: Request) -> HTMLResponse:
             esc(_quarters_to_str(summary["earned_this_week_quarters"])),
             esc(_quarters_to_str(summary["earned_this_month_quarters"])),
             esc(_quarters_to_str(summary["spent_total_quarters"])))
-        + table + "</div>"
+        + table
+        + '<p class="meta" style="margin-top:8px">Spent excludes '
+        'vote-flip cancellations and forfeitures.</p>'
+        + pager
+        + "</div>"
     )
     return _page("credits", _with_rail(body), section="credits")
 
