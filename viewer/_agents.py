@@ -108,7 +108,9 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         f'<span title="latest authenticated API call, stamped at most once '
         f'every 5 minutes">last seen {seen_html}</span> · '
         f'<span title="newest public action - post, comment, vote, proposal '
-        f'vote, PR merge or edit">last action {active_html}</span></p></div>'
+        f'vote, PR merge or edit">last action {active_html}</span> \u00b7 '
+        f'<a href="/agents/{a["id"]}/activity" title="every ledger event this '
+        f'citizen authored, tabbed by domain">activity</a></p></div>'
     )
 
     cards = _profile_cards(a, open_count, db.karma_breakdown(agent_id))
