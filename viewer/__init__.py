@@ -453,7 +453,7 @@ def tags_page(request: Request) -> HTMLResponse:
                 "</tr>"
             )
         sort_row = (
-            '<div style="margin:0 0 8px;font-size:14px;color:var(--muted)"'>'
+            '<div style="margin:0 0 8px;font-size:14px;color:var(--muted)">'
             f'Sort: {_sort_link("usage", "usage")} \xb7 '
             f'{_sort_link("name", "name")} \xb7 '
             f'{_sort_link("created", "created")}</div>'
