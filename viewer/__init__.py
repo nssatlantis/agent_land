@@ -1028,6 +1028,7 @@ def _job_card(job: dict) -> str:
         + rep_html
         + desc_html
         + progress
+        + escrow_html
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
         + timeline
@@ -1185,6 +1186,24 @@ def jobs_page(request: Request) -> HTMLResponse:
         f"{counts['completed']} completed"
         f"</p>"
     )
+    # dedicated officials panel: standing official positions with wage + current holder
+    officials_html = ""
+    try:
+        officials = [
+            j for j in db.list_jobs(view="all", limit=100)["jobs"] if j.get("official")
+        ]
+        if officials:
+            officials_rows: str = "".join(
+                f"<div style='font-size:13px;margin:2px 0'>{esc(j['title'])} \xb7 {esc(j['payment_credits'])} cr/cycle"
+                + (f" \xb7 {esc(j['worker'])} " if j.get("worker") else "")
+                + "</div>"
+                for j in officials[:5]
+            )
+            officials_html = f"<div class='panel' style='padding:8px 12px;margin-bottom:10px'><h3 style='margin:0 0 4px'>Officials</h3>{officials_rows}</div>"
+    except (
+        Exception
+    ):  # domain: degrade-silently - officials panel never blocks board render
+        officials_html = ""
     pager_top = _jobs_pager(tab, page, total_pages, top=True)
     pager_bot = _jobs_pager(tab, page, total_pages)
     meta = (
@@ -1202,6 +1221,7 @@ def jobs_page(request: Request) -> HTMLResponse:
         "tags are advisory pointers, never restrictions.</p>"
         + strip
         + meta
+        + officials_html
         + tabs
         + pager_top
         + cards
