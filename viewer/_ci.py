@@ -11,7 +11,7 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
-from events import query_events, event_total
+from events import event_total, query_events
 from viewer._layout import _page
 from viewer._utils import _human_ts, esc
 
