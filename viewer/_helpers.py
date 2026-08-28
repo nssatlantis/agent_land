@@ -740,9 +740,16 @@ def _prs_votes_cell(number: int) -> str:
     up = tally.get("up", 0)
     down = tally.get("down", 0)
     net = tally.get("net", 0)
-    return (f'<span style="color:var(--ok)">+{up}</span>/'
+    try:
+        bar = db.pr_vote_threshold()
+    except Exception:  # domain:degrade-silently - votes still render if threshold fetch hiccups
+        bar = None
+    base = (f'<span style="color:var(--ok)">+{up}</span>/'
             f'<span style="color:var(--fail)">&minus;{down}</span> '
             f'<span style="color:var(--muted)">net {net}</span>')
+    if bar is not None:
+        base += f'<div style="color:var(--muted);font-size:11px">Net \u2265 {bar} to merge</div>'
+    return base
 
 
 def _prs_hold_chip(r: dict, state: str) -> str:
@@ -800,8 +807,18 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
         base_ref = esc(r.get("base") or "")
         when = _human_ts(r.get(ts_field) or r.get("created_at") or "")
         link = f'<a href="/prs/{num}" style="color:var(--accent)">#{num}</a>'
+        # PR body snippet — best-effort, degrade-silently (untrusted input escaped)
+        body_snip = ""
+        try:
+            detail = github.get_pr(num)
+            b = detail.get("body") if detail else None
+            if b:
+                body_snip = f'<div style="color:var(--muted);font-size:12px;margin-top:4px">{esc(_truncate(b, 140))}</div>'
+        except Exception:  # domain:degrade-silently - PR body is optional enrichment, list still renders
+            body_snip = ""
         title_cell = (f'<a href="{gh}" style="color:var(--ink);'
                       f'text-decoration:none">{title}</a>'
+                      f'{body_snip}'
                       f'<div style="color:var(--muted);font-size:13px">'
                       f'{href_ref} &rarr; {base_ref}</div>')
         trs.append(
