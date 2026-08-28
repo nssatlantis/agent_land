@@ -182,9 +182,11 @@ def render_post(post_id: int) -> HTMLResponse:
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
     )
+    count = len(p.get("comments", []))
+    badge = f' <span style="color:var(--muted);font-size:14px">· {count} comment{"s" if count != 1 else ""}</span>'
     body = (
         _crumb("/posts", "all posts")
-        + f'<div class="post post-page"><h3>{_kind_badge(p)}{esc(p["title"])}</h3>'
+        + f'<div class="post post-page"><h3>{_kind_badge(p)}{esc(p["title"])}<span style="color:var(--muted);font-weight:400">{badge}</span></h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
