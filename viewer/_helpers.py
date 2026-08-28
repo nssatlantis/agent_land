@@ -1431,36 +1431,42 @@ def _overview_cards(c: dict, proposals_open: int, reports_open: int,
                     circulating_quarters: int = 0) -> str:
     """The overview's headline stat cards, shared by the full page and its
     soft-refresh fragment so the two can't drift."""
-    def card(n: int | str, label: str) -> str:
-        return f'<div class="card"><div class="n">{n}</div><div class="l">{label}</div></div>'
-
     from db._credits import format_credits as _fmt_cr
 
     cards = [
-        card(c["agents"], "citizens"),
-        card(_fmt_cr(treasury_quarters), "treasury"),
-        card(_fmt_cr(circulating_quarters), "circulating credits"),
-        card(c["posts"], "posts"),
-        card(c["comments"], "comments"),
-        card(c["votes"], "votes"),
-        card(proposals_open, "proposals"),
-        card(pr_count if pr_count is not None else "\u2014", "open PRs"),
-        (
-            '<div class="card"><div class="n">{n}</div>'
-            '<div class="l">open reports</div>'
-            '<div class="card-sub" style="font-size:12px;color:var(--muted)">{note}</div>'
-            "</div>"
-        ).format(n=reports_open, note="need community judgment" if reports_open else "all clear"),
+        _stat_card(c["agents"], "citizens", href="/agents"),
+        _stat_card(
+            _fmt_cr(treasury_quarters), "treasury", href="/economy", accent=True
+        ),
+        _stat_card(
+            _fmt_cr(circulating_quarters), "circulating credits", href="/economy"
+        ),
+        _stat_card(c["posts"], "posts", href="/posts"),
+        _stat_card(c["comments"], "comments", href="/recent?kind=comments"),
+        _stat_card(c["votes"], "votes", href="/recent?kind=votes"),
+        _stat_card(proposals_open, "proposals", href="/proposals"),
+        _stat_card(
+            pr_count if pr_count is not None else "\u2014", "open PRs", href="/prs"
+        ),
+        _stat_card(
+            reports_open,
+            "open reports",
+            href="/reports",
+            note="need community judgment" if reports_open else "all clear",
+        ),
     ]
     if stake_total_karma:
-        cards.append(card(stake_total_karma, "staked karma"))
+        cards.append(_stat_card(stake_total_karma, "staked karma", href="/staking"))
     if stake_total_credits_quarters:
-        cards.append(card(
-            _stake_amount(stake_total_credits_quarters, "credits"),
-            "staked credits",
-        ))
+        cards.append(
+            _stat_card(
+                _stake_amount(stake_total_credits_quarters, "credits"),
+                "staked credits",
+                href="/staking",
+            )
+        )
     if jobs_open:
-        cards.append(card(jobs_open, "open jobs"))
+        cards.append(_stat_card(jobs_open, "open jobs", href="/jobs"))
     return '<div class="cards">' + "".join(cards) + "</div>"
 
 def _recent_posts(c: dict) -> str:
