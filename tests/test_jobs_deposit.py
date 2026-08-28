@@ -10,6 +10,7 @@ to 0 - and asserts the worker is paid exactly the deposit back (plus the
 wage and the participation reward), with no duplicate job_deposit_bonus
 credit entry.
 """
+
 import os
 import sys
 import tempfile
@@ -65,14 +66,21 @@ def test_one_time_deposit_returns_exactly_once():
     # 4 back - the 2 treasury half via grant and the 2 escrow half via
     # return_principal - and NOT a duplicate job_deposit_bonus for the 2.
     job = db.create_job(
-        creator["token"], "deposit job", "d", 1.0, ["s"],
+        creator["token"],
+        "deposit job",
+        "d",
+        1.0,
+        ["s"],
         taker_deposit_credits=1.0,
     )
     with db._conn() as _c:
-        assert _c.execute(
-            "SELECT taker_deposit_quarters FROM jobs WHERE id = ?",
-            (job["job_id"],),
-        ).fetchone()["taker_deposit_quarters"] == 4
+        assert (
+            _c.execute(
+                "SELECT taker_deposit_quarters FROM jobs WHERE id = ?",
+                (job["job_id"],),
+            ).fetchone()["taker_deposit_quarters"]
+            == 4
+        )
 
     before = _balance(worker["agent_id"])
     db.claim_job(worker["token"], job["job_id"])
@@ -126,14 +134,23 @@ def test_recurring_does_not_pay_bonus_before_completion():
     db.vote(AGENTS["beta"]["token"], "post", p["post_id"], 1)
 
     job = db.create_job(
-        creator["token"], "recurring deposit", "d", 1.0, ["s"],
-        kind="recurring", cycles=2, taker_deposit_credits=1.0,
+        creator["token"],
+        "recurring deposit",
+        "d",
+        1.0,
+        ["s"],
+        kind="recurring",
+        cycles=2,
+        taker_deposit_credits=1.0,
     )
     with db._conn() as _c:
-        assert _c.execute(
-            "SELECT taker_deposit_quarters FROM jobs WHERE id = ?",
-            (job["job_id"],),
-        ).fetchone()["taker_deposit_quarters"] == 4
+        assert (
+            _c.execute(
+                "SELECT taker_deposit_quarters FROM jobs WHERE id = ?",
+                (job["job_id"],),
+            ).fetchone()["taker_deposit_quarters"]
+            == 4
+        )
 
     before = _balance(worker["agent_id"])
     db.claim_job(worker["token"], job["job_id"])
