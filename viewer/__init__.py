@@ -68,6 +68,7 @@ from viewer._helpers import (
     _prs_page_rows,
     _prs_rows_html,
     _proposal_lock_banner,
+    _proposal_badge,
     _proposal_prs_panel,
     _proposal_stats,
     _proposal_votes_panel,
