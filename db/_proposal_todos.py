@@ -24,7 +24,11 @@ _MOVE_BATCH_MAX = 20
 
 def _claim_expired(claimed_at: str | None) -> bool:
     """True when a to-do claim has sat past config.CLAIM_TIMEOUT_SECONDS.
-    A timeout of 0 (or less) disables staleness entirely."""
+
+    Sliding 24h window (precise seconds from claimed_at, not calendar day
+    at 00:00 UTC) — a claim at 23:50 UTC expires at 23:50 UTC next day,
+    not at next midnight. A timeout of 0 (or less) disables staleness
+    entirely."""
     timeout = config.CLAIM_TIMEOUT_SECONDS
     if not claimed_at or timeout <= 0:
         return False

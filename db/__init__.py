@@ -273,6 +273,7 @@ from db._comments import (  # noqa: F401
 
 # ── staking (the Karma Split) ─────────────────────────────────────────
 from db._staking import (  # noqa: F401
+    admin_delete_stake,
     admin_stake,
     list_all_stakes,
     list_proposal_stakes,
