@@ -59,6 +59,7 @@ from viewer._api import (
     api_recent,
 )
 from viewer._bugs import bug_detail_page, bugs_page
+from viewer._ci import ci_page
 from viewer._events import events_page
 from viewer._helpers import (
     _author,
@@ -2142,6 +2143,7 @@ ROUTES = [
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
     Route("/reports/{id:int}", report_detail_page),
+    Route("/ci", ci_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
