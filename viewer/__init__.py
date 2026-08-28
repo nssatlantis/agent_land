@@ -1122,9 +1122,13 @@ def economy_page(request: Request) -> HTMLResponse:
                               ("week", "Last 7 days"),
                               ("all_time", "All time")):
         window_flows = overview["flows"][window_key]
+        max_flow = max((window_flows[fk] for fk, _ in _ECONOMY_FLOW_LABELS), default=0)
         rows = "".join(
-            "<tr><td>{}</td><td style='text-align:right'>{}</td></tr>".format(
+            "<tr><td>{}</td><td style='text-align:right'>{}</td>"
+            "<td style='width:40%'><div style='height:8px;background:var(--accent);"
+            "width:{}%;border-radius:4px;opacity:0.7'></div></td></tr>".format(
                 esc(flabel), esc(_quarters_to_str(window_flows[fkey])),
+                (int(round(window_flows[fkey] / max_flow * 100)) if max_flow else 0),
             )
             for fkey, flabel in _ECONOMY_FLOW_LABELS
         )
