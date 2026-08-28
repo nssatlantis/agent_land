@@ -229,7 +229,7 @@ def render_post(post_id: int) -> HTMLResponse:
         f"{comments or empty_comments}</div>"
     )
     return _page(
-        '''<script>
+        """<script>
 function _copyComment(post_id, c_id) {
   var text = location.origin + "/posts/" + post_id + "#c" + c_id;
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -243,7 +243,8 @@ function _copyComment(post_id, c_id) {
     document.body.removeChild(ta);
   }
 }
-</script>''' + f"post {post_id}: {p['title']}",
+</script>"""
+        + f"post {post_id}: {p['title']}",
         _with_rail(body),
         section="posts",
         poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
