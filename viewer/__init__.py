@@ -92,6 +92,7 @@ from viewer._helpers import (
     _render_comment,
     _score_badge,
     _side_rail,
+    _stake_amount,
     _stake_page_rows,
     _stake_panel,
     _stake_summary_card,
