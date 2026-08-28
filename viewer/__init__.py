@@ -1290,8 +1290,14 @@ def staking_page(request: Request) -> HTMLResponse:
         for s in all_stakes
         if s.get("currency") == "credits"
     )
-    counts = {None: len(all_stakes), "active": 0, "completed": 0,
-              "withdrawn": 0, "refunded": 0, "abandoned": 0}
+    counts = {
+        None: len(all_stakes),
+        "active": 0,
+        "completed": 0,
+        "withdrawn": 0,
+        "refunded": 0,
+        "abandoned": 0,
+    }
     for s in all_stakes:
         if s["status"] in counts:
             counts[s["status"]] += 1
@@ -1323,8 +1329,8 @@ def staking_page(request: Request) -> HTMLResponse:
         "locked when a PR is opened, paid on merge in the staked denomination, "
         "refunded on failure.</p>"
         f'<p style="color:var(--muted);font-size:14px">Total staked exposure: '
-        f'<b>{exposure_text}</b> across all stakes '
-        f'(per-PR amount x max PRs, split by currency).</p>'
+        f"<b>{exposure_text}</b> across all stakes "
+        f"(per-PR amount x max PRs, split by currency).</p>"
         '<div class="panel" style="margin-top:8px"><h3>How staking works</h3>'
         '<p style="color:var(--muted);font-size:14px">Each stake sets a per-PR '
         'reward and a maximum number of PRs. The amount is locked when a PR is '
