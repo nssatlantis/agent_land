@@ -1860,6 +1860,7 @@ def economy_page(request: Request) -> HTMLResponse:
         or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
+    _agent_q = ("&agent=" + str(view_agent)) if view_agent else ""
     if page > 1:
         pager_bits.append(f'<a href="/economy?page={page - 1}">&lsaquo; newer</a>')
     if ledger["has_more"]:
