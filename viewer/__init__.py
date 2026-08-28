@@ -1044,6 +1044,7 @@ def economy_page(request: Request) -> HTMLResponse:
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
