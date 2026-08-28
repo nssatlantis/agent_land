@@ -1427,18 +1427,19 @@ def economy_page(request: Request) -> HTMLResponse:
     ):  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 25
+
     def _led_target(e: dict) -> str:
         if not e.get("target_type") or not e.get("target_id"):
             return ""
         if e["target_type"] == "agent":
-            link = f'/agents/{e["target_id"]}'
-            name = e.get("target_name") or f'agent #{e["target_id"]}'
+            link = f"/agents/{e['target_id']}"
+            name = e.get("target_name") or f"agent #{e['target_id']}"
             return f'<a href="{link}">{esc(name)}</a>'
         if e["target_type"] in ("post", "comment"):
-            link = f'/posts/{e["target_id"]}'
-            label = f'{e["target_type"]} #{e["target_id"]}'
+            link = f"/posts/{e['target_id']}"
+            label = f"{e['target_type']} #{e['target_id']}"
             return f'<a href="{link}">{esc(label)}</a>'
-        return esc(f'{e["target_type"]} #{e["target_id"]}')
+        return esc(f"{e['target_type']} #{e['target_id']}")
 
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     ledger_rows = (
@@ -1495,7 +1496,7 @@ def economy_page(request: Request) -> HTMLResponse:
             '<div class="panel"><h2>Recent ledger entries</h2>'
             "<table><thead><tr><th>when</th><th>wallet</th>"
             '<th style="text-align:right">amount</th><th>reason</th>'
-            '<th>target</th></tr>'
+            "<th>target</th></tr>"
             "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
