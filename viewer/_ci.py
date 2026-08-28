@@ -139,7 +139,8 @@ def ci_page(request: Request) -> HTMLResponse:
     tabs = ('<div class="tabs">' f'<a href="/ci?mode=native" class="{native_cls}">Native</a>' f'<a href="/ci?mode=branch" class="{branch_cls}">PR merges</a>' "</div>")
     try:
         stats_evts = query_events(kind=kind, limit=500, offset=0)
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # domain:degrade-silently - stats query failure loses richness, not data
         stats_evts = evts
     top_strip = _ci_top_strip(stats_evts)
     def _href_for_page(n: int) -> str:
