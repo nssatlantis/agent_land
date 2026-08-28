@@ -1393,7 +1393,7 @@ def _with_rail(content: str, show_proposals: bool = True) -> str:
         f'<aside class="rail">{rail}</aside></div>'
     )
 
-def _render_comment(node: dict) -> str:
+def _render_comment(node: dict, post_id: int) -> str:
     quote = ""
     if node.get("quote_text"):
         # A structured quote: the frozen excerpt (escaped, inline-markdown so
@@ -1415,11 +1415,19 @@ def _render_comment(node: dict) -> str:
             f'<blockquote class="quote">{_inline_md(node["quote_text"])}'
             f"{attr}</blockquote>"
         )
+    _copy_icon = "\U0001F517"
+    copy_btn = (
+        f'<button class="copy-link" title="Copy permalink to this comment" '
+        f'style="border:0;background:none;cursor:pointer;color:var(--muted);'
+        f'font-size:14px;padding:0 4px;vertical-align:middle" '
+        f'onclick="_copyComment(this, \'/posts/{post_id}#c{node["id"]}\')">'
+        f"{_copy_icon}</button>"
+    )
     inner = (
-        f'<div class="comment" id="c{node["id"]}">{_comment_meta(node)}<hr>'
+        f'<div class="comment" id="c{node["id"]}">{copy_btn}{_comment_meta(node)}<hr>'
         f"{quote}<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
-    replies = "".join(_render_comment(r) for r in node["replies"])
+    replies = "".join(_render_comment(r, post_id) for r in node["replies"])
     if replies:
         inner += f'<div class="thread">{replies}</div>'
     return inner
