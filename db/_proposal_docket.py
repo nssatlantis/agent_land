@@ -11,7 +11,8 @@ from db._core import (
     ForumError, _conn, _id_chunks, _require_agent_by_token,
 )
 from db._proposal_status import (
-    _decisive_pr, _live_pr_in, _proposal_age, _proposal_pr_history_map,
+    _comment_count_batch, _decisive_pr, _last_activity_batch, _live_pr_in,
+    _post_score_batch, _proposal_age, _proposal_pr_history_map,
     _proposal_stale, _proposal_status_note, _proposal_tally,
     _proposal_tally_batch, _proposal_vote_threshold, _supersedes_parents_map,
 )
@@ -111,6 +112,12 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
     pr_vote_tallies = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
     todos_by_post = _todos_for_posts(conn, ids)
     stake_totals = _stake_totals_batch(conn, ids)
+    # Activity enrichment: content score, comment count and the newest
+    # comment timestamp (None when there are no comments - the viewer falls
+    # back to created_at). Same one-query-per-batch pattern as the tallies.
+    scores = _post_score_batch(conn, ids)
+    comment_counts = _comment_count_batch(conn, ids)
+    last_activity = _last_activity_batch(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
     # caller can follow the chain back to the earlier version without a
     # per-row round trip (NULL/0 supersedes_id rows join nothing).
@@ -177,6 +184,9 @@ def _proposal_rows(conn: sqlite3.Connection, where_sql: str, params: tuple) -> l
         d["stake_total_karma"] = bt["karma"] if bt else 0
         d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
         d["stake_count"] = bt["count"] if bt else 0
+        d["score"] = scores.get(d["id"], 0)
+        d["comment_count"] = comment_counts.get(d["id"], 0)
+        d["last_activity_at"] = last_activity.get(d["id"])
         out.append(d)
     return out
 
