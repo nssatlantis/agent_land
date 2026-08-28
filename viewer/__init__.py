@@ -1001,7 +1001,7 @@ def credits_page(request: Request) -> HTMLResponse:
     except (KeyError, ValueError):
         # domain: degrade-silently - a malformed URL degrades to the
         # no-such-citizen page instead of a server error.
-        return _page("credits", "<p>Bad agent id.</p>")
+        return _page("credits", "<p>Bad agent id.</p>", status_code=404)
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except (
@@ -1013,7 +1013,7 @@ def credits_page(request: Request) -> HTMLResponse:
         agent_id=agent_id, limit=per_page, offset=(page - 1) * per_page
     )
     if not ledger["summary"] or (ledger["total"] == 0 and not _agent_exists(agent_id)):
-        return _page("credits", "<p>No such citizen.</p>")
+        return _page("credits", "<p>No such citizen.</p>", status_code=404)
     pager_bits = []
     if page > 1:
         pager_bits.append(
@@ -1670,6 +1670,32 @@ _ECONOMY_FLOW_LABELS = (
 )
 
 
+def _economy_wallet_banner(view_agent, ledger):
+    if not view_agent:
+        return ""
+    from db._credits import format_credits as _fmtc
+
+    with db._conn() as conn:
+        _row = conn.execute(
+            "SELECT name FROM agents WHERE id = ?", (view_agent,)
+        ).fetchone()
+    if not _row:
+        return (
+            '<div style="margin:8px 0;padding:8px 12px;'
+            'border:1px solid var(--muted);border-radius:8px">'
+            "No such citizen.</div>"
+        )
+    _name = _row["name"] or f"agent #{view_agent}"
+    _bal_txt = _fmtc(ledger["summary"]["balance_quarters"])
+    return (
+        '<div style="margin:8px 0;padding:8px 12px;border:1px solid var(--muted);border-radius:8px">'
+        f'<div style="font-size:15px;font-weight:600">Wallet · {esc(_name)}</div>'
+        f'<div style="color:var(--muted)">{_bal_txt}</div>'
+        f'<div style="margin-top:4px"><a href="/economy">← All citizens</a></div>'
+        "</div>"
+    )
+
+
 def economy_page(request: Request) -> HTMLResponse:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
@@ -1826,6 +1852,14 @@ def economy_page(request: Request) -> HTMLResponse:
         page = 1
     per_page = 25
 
+    raw_agent = request.query_params.get("agent")
+    view_agent = None
+    if raw_agent:
+        try:
+            view_agent = int(raw_agent)
+        except ValueError:  # domain: degrade-silently - a garbage agent param just shows the full ledger
+            view_agent = None
+
     def _led_target(e: dict) -> str:
         if not e.get("target_type") or not e.get("target_id"):
             return ""
@@ -1839,7 +1873,13 @@ def economy_page(request: Request) -> HTMLResponse:
             return f'<a href="{link}">{esc(label)}</a>'
         return esc(f"{e['target_type']} #{e['target_id']}")
 
-    ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
+    ledger = (
+        db.credit_history(
+            agent_id=view_agent, limit=per_page, offset=(page - 1) * per_page
+        )
+        if view_agent
+        else db.credit_history(limit=per_page, offset=(page - 1) * per_page)
+    )
     ledger_rows = (
         "".join(
             f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
@@ -1852,10 +1892,15 @@ def economy_page(request: Request) -> HTMLResponse:
         or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
+    _agent_q = ("&agent=" + str(view_agent)) if view_agent else ""
     if page > 1:
-        pager_bits.append(f'<a href="/economy?page={page - 1}">&lsaquo; newer</a>')
+        pager_bits.append(
+            f'<a href="/economy?page={page - 1}{_agent_q}">&lsaquo; newer</a>'
+        )
     if ledger["has_more"]:
-        pager_bits.append(f'<a href="/economy?page={page + 1}">older &rsaquo;</a>')
+        pager_bits.append(
+            f'<a href="/economy?page={page + 1}{_agent_q}">older &rsaquo;</a>'
+        )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
         if pager_bits
@@ -1891,6 +1936,7 @@ def economy_page(request: Request) -> HTMLResponse:
         + holders_rows
         + "</tbody></table></div>"
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
+        + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
             "<table><thead><tr><th>when</th><th>wallet</th>"
@@ -2191,6 +2237,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f"PR #{number} diff",
             _with_rail(_crumb("/prs", "pull requests") + panel),
             section="prs",
+            status_code=404,
         )
     if diff is None:
         panel = (
