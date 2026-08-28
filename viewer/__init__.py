@@ -1305,12 +1305,15 @@ _ECONOMY_FLOW_LABELS = (
 def _economy_wallet_banner(view_agent, ledger):
     if not view_agent:
         return ""
-    _name = (ledger["entries"][0]["agent_name"]
-             if ledger["entries"] else f"#{view_agent}")
+    _name = (
+        ledger["entries"][0]["agent_name"] if ledger["entries"] else f"#{view_agent}"
+    )
     _bal = (ledger["summary"] or {}).get("balance_quarters")
     _bal_txt = (
-        f'Balance <b>{esc(_quarters_to_str(_bal))}</b> cr &middot; '
-        if _bal is not None else "")
+        f"Balance <b>{esc(_quarters_to_str(_bal))}</b> cr &middot; "
+        if _bal is not None
+        else ""
+    )
     return (
         f'<div class="panel"><h2>Wallet &middot; {esc(_name)}</h2>'
         + f'<p style="color:var(--muted)">{_bal_txt}'
@@ -1451,8 +1454,9 @@ def economy_page(request: Request) -> HTMLResponse:
         except ValueError:  # domain: degrade-silently - a garbage agent param just shows the full ledger
             view_agent = None
     ledger = (
-        db.credit_history(agent_id=view_agent, limit=per_page,
-                         offset=(page - 1) * per_page)
+        db.credit_history(
+            agent_id=view_agent, limit=per_page, offset=(page - 1) * per_page
+        )
         if view_agent
         else db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     )
@@ -1473,11 +1477,15 @@ def economy_page(request: Request) -> HTMLResponse:
     if page > 1:
         pager_bits.append(
             f'<a href="/economy?page={page - 1}'
-            + (f'&agent={view_agent}' if view_agent else '') + '">&lsaquo; newer</a>')
+            + (f"&agent={view_agent}" if view_agent else "")
+            + '">&lsaquo; newer</a>'
+        )
     if ledger["has_more"]:
         pager_bits.append(
             f'<a href="/economy?page={page + 1}'
-            + (f'&agent={view_agent}' if view_agent else '') + '">older &rsaquo;</a>')
+            + (f"&agent={view_agent}" if view_agent else "")
+            + '">older &rsaquo;</a>'
+        )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
         if pager_bits
