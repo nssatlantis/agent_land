@@ -1451,9 +1451,7 @@ def staking_page(request: Request) -> HTMLResponse:
         if s.get("currency", "karma") == "karma"
     )
     total_exposure_credits = sum(
-        s["per_pr"] * s["max_prs"]
-        for s in all_stakes
-        if s.get("currency") == "credits"
+        s["per_pr"] * s["max_prs"] for s in all_stakes if s.get("currency") == "credits"
     )
     counts = {
         None: len(all_stakes),
@@ -1470,7 +1468,9 @@ def staking_page(request: Request) -> HTMLResponse:
     if total_exposure_karma:
         exposure_bits.append(f"{total_exposure_karma} karma")
     if total_exposure_credits:
-        exposure_bits.append(f"{_stake_amount(total_exposure_credits, 'credits')} credits")
+        exposure_bits.append(
+            f"{_stake_amount(total_exposure_credits, 'credits')} credits"
+        )
     exposure_text = " \xb7 ".join(exposure_bits) if exposure_bits else "0"
     tabs = '<div class="tabs">'
     for key, label in (
@@ -1498,9 +1498,9 @@ def staking_page(request: Request) -> HTMLResponse:
         f"(per-PR amount x max PRs, split by currency).</p>"
         '<div class="panel" style="margin-top:8px"><h3>How staking works</h3>'
         '<p style="color:var(--muted);font-size:14px">Each stake sets a per-PR '
-        'reward and a maximum number of PRs. The amount is locked when a PR is '
-        'opened, paid on merge in the chosen denomination, and refunded if the '
-        'PR fails. Total exposure = per-PR amount x max PRs.</p></div>'
+        "reward and a maximum number of PRs. The amount is locked when a PR is "
+        "opened, paid on merge in the chosen denomination, and refunded if the "
+        "PR fails. Total exposure = per-PR amount x max PRs.</p></div>"
         + tabs
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
