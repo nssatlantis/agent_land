@@ -2189,10 +2189,12 @@ async def charter_page(request: Request) -> HTMLResponse:
     )
 
 
-def _prs_href(state: str, page: int) -> str:
+def _prs_href(state: str, page: int, author: str = "") -> str:
     params: list[str] = []
     if state != "open":
         params.append(f"state={state}")
+    if author:
+        params.append(f"author={_urlquote(author)}")
     if page != 1:
         params.append(f"page={page}")
     return "/prs" + (f"?{'&'.join(params)}" if params else "")
@@ -2227,11 +2229,29 @@ async def prs_page(request: Request) -> HTMLResponse:
     state = request.query_params.get("state", "open")
     if state not in ("open", "closed", "all"):
         state = "open"
+    author = (request.query_params.get("author") or "").strip()
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:  # domain:degrade-silently - garbage page param means page 1
         page = 1
     rows = await _prs_page_rows(state)
+    if rows is not None and author:
+        try:
+            filtered: list[dict] = []
+            for r in rows:
+                cit = r.get("citizen") or {}
+                if str(cit.get("agent_id") or "") == author:
+                    filtered.append(r)
+                    continue
+                if (cit.get("name") or "").lower() == author.lower():
+                    filtered.append(r)
+                    continue
+                if (r.get("author") or "").lower() == author.lower():
+                    filtered.append(r)
+                    continue
+            rows = filtered
+        except Exception:  # domain: degrade-silently - author filter never blocks list
+            pass
     if rows is None:
         return _page(
             "Pull requests", _with_rail(_prs_rows_html(state, rows)), section="prs"
@@ -2242,14 +2262,18 @@ async def prs_page(request: Request) -> HTMLResponse:
     page = min(page, total_pages)
     sliced = rows[(page - 1) * per_page : page * per_page]
     ci = await _prs_ci_map(sliced)
-    pager_top = _pager(page, total_pages, lambda n: _prs_href(state, n), top=True)
-    pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n))
+    pager_top = _pager(
+        page, total_pages, lambda n: _prs_href(state, n, author), top=True
+    )
+    pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n, author))
     meta = (
         f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>"
         if total
         else ""
     )
-    body = meta + pager_top + _prs_rows_html(state, sliced, ci) + pager_bot
+    body = (
+        meta + pager_top + _prs_rows_html(state, sliced, ci, author) + pager_bot
+    )
     return _page("Pull requests", _with_rail(body), section="prs")
 
 
