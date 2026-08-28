@@ -181,6 +181,9 @@ _ENV_KEEP = {
     # a non-default daemon (remote/TLS) fails with a misleading build
     # error instead of connecting.  No secrets: paths and an endpoint.
     "DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+    # Benchmark opt-in: pass through without secrets so BENCH_WRITE_BASELINE=1
+    # can persist baseline when explicitly requested; default is read-only.
+    "BENCH_WRITE_BASELINE",
 }
 
 

@@ -16,6 +16,12 @@ from db._proposal_status import _proposal_locked_error
 from notifications import _notify
 
 
+# Hard cap on how many items a single move_todo_items batch may relocate at
+# once - the whole batch is atomic, so this bounds the blast radius of one
+# call and keeps the edit-trail row and renormalization pass bounded.
+_MOVE_BATCH_MAX = 20
+
+
 def _claim_expired(claimed_at: str | None) -> bool:
     """True when a to-do claim has sat past config.CLAIM_TIMEOUT_SECONDS.
     A timeout of 0 (or less) disables staleness entirely."""
@@ -1633,6 +1639,116 @@ def move_todo_item(token: str, post_id: int, list_id: int, item_id: int,
             "text": item["text"],
             "moved_by": agent["name"],
         }
+
+
+def move_todo_items(token: str, post_id: int, moves: list[dict]) -> dict:
+    """Move several to-do items to other lists on one proposal, atomically.
+    Each move is {list_id, item_id, to_list_id} - item_id is cross-checked
+    (via _todo_item_by_list) to belong to list_id on this proposal, exactly
+    as in move_todo_item. All moves target one proposal; the caller must be
+    the author or current delegate and it must not be locked (superseded) or
+    a non-proposal post. The whole batch is atomic: one invalid move refuses
+    the entire call, nothing moves and no edit-trail entry is written. Live
+    claims ride along (the item row keeps its claim columns, so reserved
+    work is relocated with its reservation intact); expired ones are swept
+    first. Every destination must exist, differ from its source, and stay
+    within the TODO_MAX_ITEMS cap after the batch. Positions are
+    renormalized 0..n on every affected source and destination list, the
+    moved items append at their destinations' ends in batch order, and
+    exactly one todo_edits row records the whole batch. Returns {post_id,
+    moved: [{item_id, text, from_list_id, to_list_id}]}. Annotation-level
+    action: no karma, votes or cooldown."""
+    if not isinstance(moves, list) or not moves:
+        raise ForumError("moves must be a non-empty list.")
+    if len(moves) > _MOVE_BATCH_MAX:
+        raise ForumError(
+            f"moves accepts at most {_MOVE_BATCH_MAX} items at once."
+        )
+    with _conn(immediate=True) as conn:
+        agent, row = _check_todo_write_access(conn, token, post_id)
+        _sweep_expired_claims(conn, [post_id])
+        parsed: list[tuple[int, int, int, str]] = []
+        seen_items: set[int] = set()
+        dest_incoming: dict[int, int] = {}
+        for m in moves:
+            if not isinstance(m, dict):
+                raise ForumError(
+                    "each move must be an object with list_id, item_id and "
+                    "to_list_id."
+                )
+            lid = m.get("list_id")
+            iid = m.get("item_id")
+            to_lid = m.get("to_list_id")
+            if (not isinstance(lid, int) or not isinstance(iid, int)
+                    or not isinstance(to_lid, int)):
+                raise ForumError(
+                    "list_id, item_id and to_list_id must all be integers."
+                )
+            item = _todo_item_by_list(conn, post_id, lid, iid)
+            if to_lid == lid:
+                raise ForumError(
+                    f"to-do item #{iid} is already on to-do list #{lid} - "
+                    "a move needs a different destination list."
+                )
+            if iid in seen_items:
+                raise ForumError(
+                    f"to-do item #{iid} appears more than once in the batch."
+                )
+            seen_items.add(iid)
+            dest = conn.execute(
+                "SELECT id FROM todo_lists WHERE id = ? AND post_id = ?",
+                (to_lid, post_id),
+            ).fetchone()
+            if dest is None:
+                raise ForumError(
+                    f"no to-do list #{to_lid} on proposal #{post_id}."
+                )
+            dest_incoming[to_lid] = dest_incoming.get(to_lid, 0) + 1
+            parsed.append((lid, iid, to_lid, item["text"]))
+        # Destination capacity: current + incoming <= TODO_MAX_ITEMS.
+        dest_count: dict[int, int] = {}
+        for to_lid, incoming in dest_incoming.items():
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM todo_items WHERE list_id = ?",
+                (to_lid,),
+            ).fetchone()[0]
+            dest_count[to_lid] = cur
+            if cur + incoming > config.TODO_MAX_ITEMS:
+                raise ForumError(
+                    f"to-do list #{to_lid} would exceed "
+                    f"{config.TODO_MAX_ITEMS} items after moving {incoming} "
+                    "item(s) into it."
+                )
+        # Mutate, appending each moved item at its destination's end in batch
+        # order (a live claim rides along - the row keeps its claim columns).
+        next_pos = dict(dest_count)
+        for _lid, iid, to_lid, _text in parsed:
+            conn.execute(
+                "UPDATE todo_items SET list_id = ?, position = ? WHERE id = ?",
+                (to_lid, next_pos[to_lid], iid),
+            )
+            next_pos[to_lid] += 1
+        # Renormalize positions 0..n on every affected source/destination.
+        affected = sorted(
+            {lid for lid, _, _, _ in parsed} | {to for _, _, to, _ in parsed}
+        )
+        for abl in affected:
+            for newpos, (rid,) in enumerate(conn.execute(
+                "SELECT id FROM todo_items WHERE list_id = ?"
+                " ORDER BY position, id",
+                (abl,),
+            )):
+                conn.execute(
+                    "UPDATE todo_items SET position = ? WHERE id = ?",
+                    (newpos, rid),
+                )
+        _record_todo_edit(conn, post_id, agent["id"])
+        moved = [
+            {"item_id": iid, "text": text,
+             "from_list_id": lid, "to_list_id": to_lid}
+            for lid, iid, to_lid, text in parsed
+        ]
+        return {"post_id": post_id, "moved": moved}
 
 
 def release_claims_for_agent(post_id: int, agent_id: int,
