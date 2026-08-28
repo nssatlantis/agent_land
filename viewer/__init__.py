@@ -654,7 +654,8 @@ def credits_global_page(request: Request) -> HTMLResponse:
     the week's top holders and biggest movers.  Read-only - balances are
     community information."""
     category = request.query_params.get("reason")
-    if category not in (_key for _key, _ in _CREDITS_GLOBAL_CATEGORIES):
+    valid_categories = set(_key for _key, _ in _CREDITS_GLOBAL_CATEGORIES)
+    if category not in valid_categories:
         category = "all"
     try:
         page = max(1, int(request.query_params.get("page", "1")))

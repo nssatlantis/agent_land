@@ -969,7 +969,8 @@ def history(
     balance down to its entries.  Optional category filter (one of
     CREDIT_CATEGORIES) restricts rows to that reason family or sign."""
     with _conn() as conn:
-        clauses, params = [], []
+        clauses: list[str] = []
+        params: list[object] = []
         if agent_id is not None:
             clauses.append("e.agent_id = ?")
             params.append(agent_id)
