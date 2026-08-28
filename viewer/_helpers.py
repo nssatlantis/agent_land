@@ -186,6 +186,8 @@ def _proposal_badge(p: dict) -> str:
     merge, so it can be retried), or whether it has cleared the gate to open
     a pull request. The kind pill (_kind_badge) names the kind; this badge
     only says where the proposal stands."""
+    if p.get("proposal_kind") == "idea":
+        return '<span class="verdict-chip vc-dim">idea</span>'
     if not p.get("proposal_kind"):
         return ""
     t = p.get("proposal") or {}
