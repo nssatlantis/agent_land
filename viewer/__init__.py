@@ -1171,7 +1171,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             "check the number, or browse the open PRs from the pull requests page.</p></div>"
         )
         return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
-                     section="status")
+                     section="prs")
     if diff is None:
         panel = (
             '<div class="panel"><h2>PR diff</h2>'
@@ -1179,7 +1179,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             "GitHub may be unreachable.</p></div>"
         )
         return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
-                     section="status")
+                     section="prs")
     title = esc(diff.get("title") or "")
     head = esc(diff.get("head") or "")
     base = esc(diff.get("base") or "")
@@ -1237,7 +1237,7 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f'</p></div>'
         )
     body = _crumb("/prs", "pull requests") + header + hold_banner + vote_panel + proposal_link + sections
-    return _page(f"PR #{number}", _with_rail(body), section="status")
+    return _page(f"PR #{number}", _with_rail(body), section="prs")
 
 # ------------------------------------------------- search, feed, status --
 
