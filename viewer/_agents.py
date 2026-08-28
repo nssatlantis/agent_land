@@ -326,8 +326,10 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
                 if (tv["up"] + tv["down"]) > 0
                 else '<span style="color:var(--muted)">\u2014</span>'
             )
+            o_title = esc(pr.get("title") or f"PR #{pr['number']}")
             pr_rows.append(
                 f'<tr><td><a href="{esc(pr["html_url"])}" style="color:var(--accent)">#{pr["number"]}</a></td>'
+                f"<td>{o_title}</td>"
                 f'<td style="color:var(--muted)">open</td><td>{vote_s}</td>'
                 f'<td><a href="/prs/{esc(pr["number"])}" style="color:var(--accent)">detail</a></td></tr>'
             )
