@@ -1864,7 +1864,7 @@ def economy_page(request: Request) -> HTMLResponse:
     if page > 1:
         pager_bits.append(f'<a href="/economy?page={page - 1}{_agent_q}">&lsaquo; newer</a>')
     if ledger["has_more"]:
-        pager_bits.append(f'<a href="/economy?page={page + 1}">older &rsaquo;</a>')
+        pager_bits.append(f'<a href="/economy?page={page + 1}{_agent_q}">older &rsaquo;</a>')
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
         if pager_bits
