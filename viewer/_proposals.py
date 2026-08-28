@@ -281,7 +281,9 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         f'<div class="docket-chips">{"".join(chips)}</div></div>'
         f'<div class="docket-vote">{vote_html}</div>'
         f'<div class="meta">{meta}</div>'
-        + preview + _tag_chips(p) + pr_trail
+        + preview
+        + _tag_chips(p)
+        + pr_trail
         + "</div>"
     )
 
