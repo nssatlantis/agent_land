@@ -1259,7 +1259,9 @@ def main():
     # and the lock path legitimately abandons a stake whose wallet has fallen
     # below per_pr - the test must not trip on that, only on stacking.
     ss_earn = db.create_comment(
-        agents["alpha"]["token"], post_id, "staker earns surplus karma",
+        agents["alpha"]["token"],
+        post_id,
+        "staker earns surplus karma",
     )
     for nm in ("beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "fresh"):
         db.vote(agents[nm]["token"], "comment", ss_earn["comment_id"], 1)
@@ -1282,16 +1284,18 @@ def main():
         assert len(ss_stakes) == 2, "alpha should hold two stakes on one proposal"
         # Both stakes lock for the same PR, each at its own per_pr.
         locked = staking_mod.lock_stakes_for_pr(
-            conn, ss_pid, 9600, agents["gamma"]["agent_id"],
+            conn,
+            ss_pid,
+            9600,
+            agents["gamma"]["agent_id"],
         )
         assert locked == 2, "both same-staker stakes must lock for one PR"
         # Alpha is debited once per stake: 2 + 3 = 5 total, not doubled.
-        assert db.effective_karma(conn, agents["alpha"]["agent_id"]) == ek_alpha_pre - 5, (
-            "staker should be debited the SUM of both stakes once (2+3), not doubled"
-        )
+        assert (
+            db.effective_karma(conn, agents["alpha"]["agent_id"]) == ek_alpha_pre - 5
+        ), "staker should be debited the SUM of both stakes once (2+3), not doubled"
         locks = conn.execute(
-            "SELECT stake_id, amount, status FROM stake_locks"
-            " WHERE pr_number = 9600",
+            "SELECT stake_id, amount, status FROM stake_locks WHERE pr_number = 9600",
         ).fetchall()
         assert len(locks) == 2, "exactly one lock per stake for the PR"
         assert sum(l["amount"] for l in locks) == 5, (
@@ -1313,7 +1317,10 @@ def main():
         # Per-stake capacity is consumed independently: the max_prs=2 stake
         # still back a second PR, the max_prs=1 stake is now spent.
         second = staking_mod.lock_stakes_for_pr(
-            conn, ss_pid, 9601, agents["gamma"]["agent_id"],
+            conn,
+            ss_pid,
+            9601,
+            agents["gamma"]["agent_id"],
         )
         assert second == 1, "only the max_prs=2 stake has capacity for a second PR"
         staking_mod.pay_stake_rewards(conn, 9601)
@@ -1326,8 +1333,7 @@ def main():
     # Alpha's total spend across all three locks: stake1 2x2 + stake2 1x3 = 7.
     # Rewards flow to the opener (gamma), never back to the staker.
     assert ek(agents["alpha"]["agent_id"]) == ek_alpha_pre - 7, (
-        "staker should be debited exactly once per stake per PR (2+2+3), "
-        "never doubled"
+        "staker should be debited exactly once per stake per PR (2+2+3), never doubled"
     )
     assert ek(agents["gamma"]["agent_id"]) == ek_gamma_pre + 7, (
         "opener should receive the stacked total across all stakes (5 + 2)"

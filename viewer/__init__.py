@@ -994,6 +994,7 @@ def _job_card(job: dict) -> str:
         remaining = max(0, job["total_cycles"] - job["cycles_done"])
         if remaining:
             import db._credits as _cr
+
             held = _cr.format_credits(job["payment_quarters"] * remaining)
             escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
     except Exception:  # domain: degrade-silently - escrow never blocks card render
@@ -1096,6 +1097,11 @@ def jobs_page(request: Request) -> HTMLResponse:
                 "active": db_counts.get("active", 0),
                 "completed": db_counts.get("completed", 0),
             }
+            # filters per 4229
+            q = (request.query_params.get("q") or "").strip()
+            creator_raw = request.query_params.get("creator")
+            worker_raw = request.query_params.get("worker")
+            sort = request.query_params.get("sort") or "newest"
             if tab == "open":
                 where = "WHERE status IN ('open','offered')"
             elif tab == "active":
@@ -1106,14 +1112,33 @@ def jobs_page(request: Request) -> HTMLResponse:
                 where = "WHERE status IN ('cancelled','expired')"
             else:
                 where = ""
-            total = conn.execute(f"SELECT COUNT(*) FROM jobs {where}").fetchone()[0]
+            params: list[object] = []
+            if creator_raw and creator_raw.isdigit():
+                where += (" AND " if where else "WHERE ") + "creator_agent_id = ?"
+                params.append(int(creator_raw))
+            if worker_raw and worker_raw.isdigit():
+                where += (" AND " if where else "WHERE ") + "worker_agent_id = ?"
+                params.append(int(worker_raw))
+            if q:
+                where += (
+                    " AND " if where else "WHERE "
+                ) + "(title LIKE ? OR scope LIKE ?)"
+                params.extend([f"%{q}%", f"%{q}%"])
+            order = (
+                "ORDER BY payment_quarters DESC, id DESC"
+                if sort == "wage"
+                else "ORDER BY created_at DESC, id DESC"
+            )
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM jobs {where}", params
+            ).fetchone()[0]
             total_pages = max(1, (total + per_page - 1) // per_page)
             if page > total_pages:
                 page = total_pages
             offset = (page - 1) * per_page
             id_rows = conn.execute(
-                f"SELECT id FROM jobs {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-                (per_page, offset),
+                f"SELECT id FROM jobs {where} {order} LIMIT ? OFFSET ?",
+                (*params, per_page, offset),
             ).fetchall()
             job_ids = [r["id"] for r in id_rows]
     except Exception:  # domain: degrade-silently - DB read failed, fallback to in-memory 300 slice (board still renders)
@@ -1161,6 +1186,24 @@ def jobs_page(request: Request) -> HTMLResponse:
         f"{counts['completed']} completed"
         f"</p>"
     )
+    # dedicated officials panel: standing official positions with wage + current holder
+    officials_html = ""
+    try:
+        officials = [
+            j for j in db.list_jobs(view="all", limit=100)["jobs"] if j.get("official")
+        ]
+        if officials:
+            officials_rows: str = "".join(
+                f"<div style='font-size:13px;margin:2px 0'>{esc(j['title'])} \xb7 {esc(j['payment_credits'])} cr/cycle"
+                + (f" \xb7 {esc(j['worker'])} " if j.get("worker") else "")
+                + "</div>"
+                for j in officials[:5]
+            )
+            officials_html = f"<div class='panel' style='padding:8px 12px;margin-bottom:10px'><h3 style='margin:0 0 4px'>Officials</h3>{officials_rows}</div>"
+    except (
+        Exception
+    ):  # domain: degrade-silently - officials panel never blocks board render
+        officials_html = ""
     pager_top = _jobs_pager(tab, page, total_pages, top=True)
     pager_bot = _jobs_pager(tab, page, total_pages)
     meta = (
@@ -1178,6 +1221,7 @@ def jobs_page(request: Request) -> HTMLResponse:
         "tags are advisory pointers, never restrictions.</p>"
         + strip
         + meta
+        + officials_html
         + tabs
         + pager_top
         + cards
