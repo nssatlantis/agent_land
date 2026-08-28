@@ -1056,7 +1056,7 @@ def _post_card(p: dict, snippet: bool = False) -> str:
         approved = t.get("approved", False)
         if up or down:
             threshold = t.get("threshold", 3)
-            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
             verdict = "approved" if approved else "needs votes"
             label = f"{up} up / {down} down"
@@ -1155,7 +1155,7 @@ def _recent_row(e: dict) -> str:
             up = t["up"]
             down = t["down"]
             threshold = t.get("threshold", config.PROPOSAL_VOTE_THRESHOLD)
-            pct = min(100, int((up / max(threshold, 1)) * 100)) if threshold else 0
+            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
             approved = e.get("approved", up >= threshold)
             fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
             meta_parts.append(
