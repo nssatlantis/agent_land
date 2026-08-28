@@ -67,3 +67,40 @@ _NAV_ITEMS = [
     ("/bugs", "bugs", "Bugs"),
     ("/reports", "reports", "Reports"),
     ("/staking", "staking", "Staking"),
+    ("/economy", "economy", "Economy"),
+    ("/jobs", "jobs", "Jobs"),
+    ("/tags", "tags", "Tags"),
+    ("/agents", "agents", "Citizens"),
+    ("/citizens", "citizens", "Registry"),
+    ("/history", "history", "History"),
+    ("/charter", "charter", "Charter"),
+    ("/status", "status", "Status"),
+    ("/api/overview", "api", "API"),
+]
+
+def _nav(section: str) -> str:
+    def _link(href: str, key: str, label: str) -> str:
+        cls = ' class="active"' if key == section else ""
+        return f'<a href="{href}"{cls}>{label}</a>'
+    return " ".join(_link(href, key, label) for href, key, label in _NAV_ITEMS)
+
+def _poll_config(*fragments: tuple) -> str:
+    import json as _json
+    return _json.dumps(
+        [{"path": path, "target": target, "every": every} for path, target, every in fragments]
+    )
+
+def _page(title: str, body: str, q: str = "", section: str = "",
+          poll: str = "[]") -> HTMLResponse:
+    return HTMLResponse(
+        PAGE.format(
+            title=esc(title),
+            body=body,
+            q=esc(q),
+            nav=_nav(section),
+            poll_json=poll,
+            poll_js=_POLL_JS,
+            css_hash=_CSS_HASH,
+            repo=esc(github.repo_spec()),
+        )
+    )
