@@ -1518,6 +1518,20 @@ def jobs_page(request: Request) -> HTMLResponse:
     )
 
 
+STAKING_PER_PAGE = 30
+
+
+def _staking_href(status: str | None, currency: str | None, n: int) -> str:
+    params: list[str] = []
+    if status:
+        params.append(f"status={status}")
+    if currency:
+        params.append(f"currency={currency}")
+    if n > 1:
+        params.append(f"page={n}")
+    return "/staking" + ("?" + "&".join(params) if params else "")
+
+
 def _agent_exists(agent_id: int) -> bool:
     with db._conn() as conn:
         return (
@@ -1575,7 +1589,18 @@ def _staking_body(request: Request) -> str:
     currency = request.query_params.get("currency")
     if currency not in (None, "karma", "credits"):
         currency = None
-    stakes = db.list_all_stakes(status=status, currency=currency)
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - bad page param means page 1
+        page = 1
+    filtered_stakes = db.list_all_stakes(status=status, currency=currency)
+    total_filtered = len(filtered_stakes)
+    total_pages = max(1, (total_filtered + STAKING_PER_PAGE - 1) // STAKING_PER_PAGE)
+    page = min(page, total_pages)
+    stakes = filtered_stakes[(page - 1) * STAKING_PER_PAGE : page * STAKING_PER_PAGE]
     tabs = '<div class="tabs">'
     for key, label in (
         (None, "All"),
@@ -1626,7 +1651,11 @@ def _staking_body(request: Request) -> str:
         "opened, paid on merge in the chosen denomination, and refunded if the "
         "PR fails. Total exposure = per-PR amount x max PRs.</p></div>"
         + tabs
+        + _pager(
+            page, total_pages, lambda n: _staking_href(status, currency, n), top=True
+        )
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
+        + _pager(page, total_pages, lambda n: _staking_href(status, currency, n))
         + "</div>"
     )
     return body
