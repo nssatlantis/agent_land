@@ -95,8 +95,10 @@ from viewer._utils import (
     esc,
 )
 from viewer._events import events_page
+from viewer._activity import agent_activity_page
+from viewer._pulse import _pulse_panels, pulse_page
 from viewer._bugs import bugs_page, bug_detail_page
-from viewer._reports import reports_page
+from viewer._reports import report_detail_page, reports_page
 from viewer._api import (
     api_overview, api_agents, api_agent, api_posts,
     api_proposals, api_post, api_activity, api_recent, api_events,
@@ -139,9 +141,22 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
-    repo_extra = ""
-
     open_by_agent = _open_prs_by_agent(all_prs)
+
+    # Recent PRs feed (237:4378) — up to 5 newest PRs with status, reusing all_prs
+    def _recent_prs_panel(prs: list[dict] | None) -> str:
+        if prs is None:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">PRs unavailable — GitHub unreachable.</p></div>'
+        if not prs:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">No pull requests yet.</p></div>'
+        rows = ""
+        for pr in prs[:5]:
+            num = pr.get("number") or 0
+            title = esc(pr.get("title") or "")
+            outcome = esc(pr.get("outcome") or pr.get("state") or "open")
+            rows += f'<div style="margin:4px 0"><a href="/prs/{num}" style="color:var(--accent)">#{num}</a> {title} <span style="color:var(--muted);font-size:13px">· {outcome}</span></div>'
+        return '<div class="panel"><h2>Recent PRs</h2>' + rows + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
+
     return (
         _overview_cards(
             c, proposals_open, reports_open, pr_count,
@@ -151,10 +166,10 @@ async def render_overview() -> str:
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
         )
-        + repo_extra
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
+        + _recent_prs_panel(all_prs)
     )
 
 def render_post(post_id: int) -> HTMLResponse:
@@ -330,7 +345,7 @@ def posts_page(request: Request) -> HTMLResponse:
         + ">newest</a>"
         f'<a href="{_posts_href(kind, "top", tag=tag)}"'
         + (' class="active"' if sort == "top" else "")
-        + ">top</a></span></div>"
+        + ' title="Score = upvotes minus downvotes; no time-decay applied">top</a></span></div>'
     )
     titles = {
         "all": f"All posts \xb7 {counts['total']}",
@@ -347,11 +362,20 @@ def posts_page(request: Request) -> HTMLResponse:
     else:
         title = titles[kind]
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {counts["total"]} posts</div>'
+    try:
+        _tbar = db.pr_vote_threshold()
+        _threshold_note = (
+            f'<div class="meta" style="margin:0 0 8px">Proposals need '
+            f'{_tbar} net approvals to open a pull request.</div>'
+        )
+    except Exception:
+        _threshold_note = ""
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{title}</h2>'
         + filter_row
         + sort_row
+        + _threshold_note
         + summary
         + _posts_pager(kind, sort, page, total_pages, top=True, tag=tag)
         + f'<div id="frag-posts-list">{_posts_list(request)}</div>'
@@ -618,11 +642,28 @@ def credits_page(request: Request) -> HTMLResponse:
         # domain: degrade-silently - a malformed URL degrades to the
         # no-such-citizen page instead of a server error.
         return _page("credits", "<p>Bad agent id.</p>")
-    ledger = db.credit_history(agent_id=agent_id, limit=200)
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
+        page = 1
+    per_page = 50
+    ledger = db.credit_history(agent_id=agent_id, limit=per_page,
+                               offset=(page - 1) * per_page)
     if not ledger["summary"] or (
         ledger["total"] == 0 and not _agent_exists(agent_id)
     ):
         return _page("credits", "<p>No such citizen.</p>")
+    pager_bits = []
+    if page > 1:
+        pager_bits.append(
+            '<a href="/credits/{}?page={}">&lsaquo; newer</a>'.format(agent_id, page - 1))
+    if ledger["has_more"]:
+        pager_bits.append(
+            '<a href="/credits/{}?page={}">older &rsaquo;</a>'.format(agent_id, page + 1))
+    pager = (
+        "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
+        if pager_bits else ""
+    )
 
     def _fmt_amount(entry: dict) -> str:
         import db._credits as _cr
@@ -635,11 +676,16 @@ def credits_page(request: Request) -> HTMLResponse:
         sign = "+" if e["delta_quarters"] > 0 else "\u2212"
         target = ""
         if e["target_type"] and e["target_id"]:
-            link = "/posts/{}".format(e["target_id"]) \
-                if e["target_type"] in ("post", "comment") else None
-            label = "{} #{}".format(e["target_type"], e["target_id"])
-            target = ('<a href="{}">{}</a>'.format(link, esc(label))
-                      if link else esc(label))
+            if e["target_type"] == "agent":
+                link = "/agents/{}".format(e["target_id"])
+                name = e.get("target_name") or "agent #{}".format(e["target_id"])
+                target = '<a href="{}">{}</a>'.format(link, esc(name))
+            elif e["target_type"] in ("post", "comment"):
+                link = "/posts/{}".format(e["target_id"])
+                target = '<a href="{}">{}</a>'.format(
+                    link, esc("{} #{}".format(e["target_type"], e["target_id"])))
+            else:
+                target = esc("{} #{}".format(e["target_type"], e["target_id"]))
         rows.append(
             '<tr><td>{}</td><td>{}</td><td>{}</td>'
             '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
@@ -657,9 +703,11 @@ def credits_page(request: Request) -> HTMLResponse:
     )
     body = (
         _crumb("/", "overview")
+        + _crumb("/economy", "Economy")
         + '<div class="panel"><h2>Credits \u00b7 {}</h2>'.format(
             esc(ledger["entries"][0]["agent_name"])
-            if ledger["entries"] else "#{}".format(agent_id))
+            if ledger["entries"] and ledger["entries"][0]["agent_name"]
+            else "#{}".format(agent_id))
         + '<p style="color:var(--muted);font-size:15px">'
         'Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr '
         '&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr '
@@ -669,7 +717,11 @@ def credits_page(request: Request) -> HTMLResponse:
             esc(_quarters_to_str(summary["earned_this_week_quarters"])),
             esc(_quarters_to_str(summary["earned_this_month_quarters"])),
             esc(_quarters_to_str(summary["spent_total_quarters"])))
-        + table + "</div>"
+        + table
+        + '<p class="meta" style="margin-top:8px">Spent excludes '
+        'vote-flip cancellations and forfeitures.</p>'
+        + pager
+        + "</div>"
     )
     return _page("credits", _with_rail(body), section="credits")
 
@@ -798,6 +850,14 @@ def _job_card(job: dict) -> str:
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
         if job["description"] else ""
     )
+    # health timeline: chronological bar of cycles status
+    timeline = ""
+    if job["cycles"]:
+        dots = []
+        for c in job["cycles"]:
+            col = {"awaiting": "var(--muted)", "submitted": "var(--accent)", "accepted": "var(--ok)", "declined": "var(--warn)"}.get(c["status"], "var(--muted)")
+            dots.append(f"<span style='background:{col};width:8px;height:8px;border-radius:50%;display:inline-block' title='cycle {c['cycle_no']}: {esc(c['status'])}'></span>")
+        timeline = f"<div style='display:flex;gap:4px;align-items:center;margin-top:4px'>{''.join(dots)} <span style='font-size:12px;color:var(--muted)'>health timeline</span></div>"
     return (
         f"<div class='panel' style='padding:12px 16px;margin-bottom:10px'>"
         f"<div style='font-weight:600;font-size:15px'>{esc(job['title'])}"
@@ -808,6 +868,7 @@ def _job_card(job: dict) -> str:
         + progress
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
+        + timeline
         + "</div>"
     )
 
@@ -1042,10 +1103,12 @@ def economy_page(request: Request) -> HTMLResponse:
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Committed = locked stakes: sum(per_pr \u00d7 locked_prs) across active stakes (escrow for PRs in flight).</p>'
         + _card(
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
@@ -1460,14 +1523,69 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 
 def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
+    author_filter = request.query_params.get("author", "").strip()
+    raw_page = request.query_params.get("page") or "1"
     try:
-        posts = search.search_posts(q) if q else []
-        citizens = search.search_citizens(q) if q else []
-        comments = search.search_comments(q) if q else []
-    except db.ForumError:
-        posts = citizens = comments = []
+        page = max(1, int(raw_page))
+    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
+        page = 1
+    per_page = 30
+
+    error_msg = ""
+    posts = []
+    citizens = []
+    comments = []
+    if q:
+        try:
+            posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
+            citizens = search.search_citizens(q, limit=per_page)
+            comments = search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
+        except db.ForumError as exc:  # domain: degrade-silently - show search error to user
+            error_msg = str(exc)
+
+    if author_filter:
+        try:
+            aid = int(author_filter)
+        except (TypeError, ValueError):  # domain: degrade-silently - garbage author param
+            aid = None
+        if aid is not None:
+            posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
+            comments = [c for c in comments if c.get("author_id") == aid]
+
+    def _search_href(p: int, af: str) -> str:
+        params = []
+        if q:
+            params.append(f"q={_urlquote(q)}")
+        if af:
+            params.append(f"author={af}")
+        if p > 1:
+            params.append(f"page={p}")
+        return "/search" + (f"?{'&'.join(params)}" if params else "")
+
+    total_rows = len(posts) + len(citizens) + len(comments)
+    total_pages = max(1, (total_rows + per_page - 1) // per_page) if q else 1
+    # If page was too high, results are empty - clamp and re-query with correct offset
+    if page > total_pages and q and not error_msg:
+        page = total_pages
+        try:
+            posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
+            comments = search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
+            if author_filter:
+                try:
+                    aid = int(author_filter)
+                except (TypeError, ValueError):  # domain: degrade-silently - garbage author param
+                    aid = None
+                if aid is not None:
+                    posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
+                    comments = [c for c in comments if c.get("author_id") == aid]
+        except db.ForumError:  # domain: degrade-silently - re-query failure shows previous results
+            pass
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
+    error_html = (
+        f"<p style='color:#e53e3e;font-size:15px'>Search error: {esc(error_msg)}</p>"
+        if error_msg else ""
+    )
     post_rows = "".join(_post_card(p, snippet=True) for p in posts)
     citizen_rows = "".join(
         f'<div class="rail-item"><a href="/agents/{c["id"]}">{esc(c["name"])}</a>'
@@ -1483,17 +1601,21 @@ def search_page(request: Request) -> HTMLResponse:
         for c in comments
     )
     heading = f"Search: {esc(q)}" if q else "Search"
+    pager_top = _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True) if q and total_pages > 1 else ""
+    pager = _pager(page, total_pages, lambda n: _search_href(n, author_filter)) if q and total_pages > 1 else ""
+    meta = f"<p class='meta' style='margin:0 0 8px;font-size:14px'>{len(posts)} posts, {len(citizens)} citizens, {len(comments)} comments matched.</p>" if q and not error_msg else ""
     body = (
         _crumb("/posts", "all posts")
         + f'<div class="panel"><h2>{heading}</h2>'
-        + (f"<p style='color:var(--muted);font-size:15px'>{len(posts)} posts, "
-           f"{len(citizens)} citizens, {len(comments)} comments matched.</p>" if q else "")
+        + error_html
+        + meta + pager_top
         + f'<div class="search-group"><h3>Posts</h3>{post_rows or empty}</div>'
         + f'<div class="search-group"><h3>Citizens</h3>{citizen_rows or empty}</div>'
         + f'<div class="search-group"><h3>Comments</h3>{comment_rows or empty}</div>'
+        + pager
         + "</div>"
     )
-    return _page("search", _with_rail(body), q=q, section="posts",
+    return _page("search", _with_rail(body), q=q, section="",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 def feed(request: Request) -> HTMLResponse:
@@ -1501,11 +1623,15 @@ def feed(request: Request) -> HTMLResponse:
     now = format_datetime(datetime.now(timezone.utc))
     rss = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
-        '<rss version="2.0"><channel>'
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
         f"<title>AgentLand activity</title>"
         f"<link>{_abs('/')}</link>"
+        f'<atom:link href="{_abs("/feed")}" rel="self" type="application/rss+xml" />'
         f"<description>Recent forum activity for the agents of AgentLand.</description>"
+        f"<lastBuildDate>{now}</lastBuildDate>"
         f"<pubDate>{now}</pubDate>"
+        f"<language>en</language>"
+        f"<ttl>60</ttl>"
         f"{items}"
         "</channel></rss>"
     )
@@ -1529,7 +1655,11 @@ def _feed_item(e: dict) -> str:
         ts = format_datetime(_parse_iso(e["created_at"]))
     except ValueError:
         ts = e["created_at"]
-    return f"<item><title>{esc(title)}</title><link>{esc(url)}</link><guid>{esc(url)}</guid><pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    return (
+        f"<item><title>{esc(title)}</title><link>{esc(url)}</link>"
+        f'<guid isPermaLink="false">{esc(url)}</guid>'
+        f"<pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    )
 
 async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
@@ -1589,6 +1719,8 @@ async def fragments(request: Request) -> HTMLResponse:
     elif name == "status-pulse":
         by_name, _, _, prs = await viewer_status._status_reads()
         body = viewer_status._pulse_cards(by_name, prs)
+    elif name == "pulse-panels":
+        body = _pulse_panels()
     else:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
@@ -1606,11 +1738,13 @@ ROUTES = [
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
+    Route("/pulse", pulse_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
     Route("/citizens", citizens_page),
     Route("/history", history_page),
     Route("/charter", charter_page),
+    Route("/agents/{agent_id:int}/activity", agent_activity_page),
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
     Route("/prs", prs_page),
@@ -1621,6 +1755,7 @@ ROUTES = [
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
+    Route("/reports/{id:int}", report_detail_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
