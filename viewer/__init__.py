@@ -194,11 +194,12 @@ async def render_overview() -> str:
             _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: ahead by {_sync["commits_ahead"]} (local commits not yet on origin)</div>'
         else:
             _stale_html = '<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: in sync with origin/main</div>'
-        if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
-            _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
     except Exception:  # domain: degrade-silently - staleness is optional enrichment
         _stale_html = ""
-    # \u039424h for treasury card (237:4373) — degrade-silently
+        _sync = {}
+    if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
+        _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
+    # \u039424h for treasury card (237:4373) — degrade-silently, db-layer helper (AGENTS.md: no raw SQL in viewer)
     treasury_delta_quarters = None
     supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
     try:
