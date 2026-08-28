@@ -2524,8 +2524,8 @@ async def fragments(request: Request) -> HTMLResponse:
             stakes = db.list_all_stakes(status=None, currency=sfilter)
             total = len(stakes)
             start = (spage - 1) * config.STAKING_PER_PAGE
-            body = _stake_page_rows(stakes[start:start + config.STAKING_PER_PAGE], heading=f"Stakes \u00b7 {total}")
-        except Exception:  # domain: degrade-silently
+            body = _stake_page_rows(stakes[start:start + config.STAKING_PER_PAGE])
+        except Exception:  # domain: degrade-silently - staking fragment is optional enrichment
             body = '<div class="panel"><p style="color:var(--muted)">Staking fragment unavailable</p></div>'
     else:
         return HTMLResponse("", status_code=404)
