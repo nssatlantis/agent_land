@@ -858,7 +858,7 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
             chk = github.pr_checks(num)
             if chk:
                 ci_html = _ci_chip(chk)
-        except Exception:
+        except Exception:  # domain:degrade-silently - CI chip is optional, list still renders
             ci_html = ""
         trs.append(
             "<tr>"
