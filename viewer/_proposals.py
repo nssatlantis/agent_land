@@ -193,6 +193,36 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'{len(list_claims)} of {len(todos)} lists claimed by '
                 f'{", ".join(claimers.values())}</div>'
             )
+    # Per-checklist burn-down: one mini progress bar per to-do list, so the
+    # docket shows shipping momentum inside each claimed area too.
+    if p.get("collaborative") and not p.get("locked") and todos:
+        burn_chips = []
+        for lst in todos:
+            items = lst.get("items") or []
+            total = len(items)
+            if not total:
+                continue
+            done = sum(1 for it in items if it.get("done"))
+            bpct = min(100, int((done / max(total, 1)) * 100))
+            tip = esc(f"{lst.get('title', 'list')}: {done}/{total} done")
+            cname = lst.get("claimed_by")
+            if cname:
+                tip += esc(f" — claimed by {cname}")
+            burn_chips.append(
+                f'<span class="burn-chip" title="{tip}" '
+                f'style="margin-right:6px;white-space:nowrap">'
+                f'{esc(lst.get("title", "list"))} '
+                f'<span style="color:var(--muted)">{done}/{total}</span> '
+                f'<span class="vote-track" style="display:inline-block;width:40px;vertical-align:middle">'
+                f'<div class="vote-fill vote-ok" style="width:{bpct}%"></div></span>'
+                f'</span>'
+            )
+        if burn_chips:
+            pr_trail += (
+                f'<div class="pr-trail" style="margin-top:4px">'
+                f'<span class="pr-label">Burn-down:</span> '
+                + " ".join(burn_chips) + "</div>"
+            )
     stale_cls = " stale-card" if p.get("stale") else ""
     stake_chip = ""
     sk = p.get("stake_total_karma", 0)
