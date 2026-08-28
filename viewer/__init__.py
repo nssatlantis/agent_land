@@ -1375,7 +1375,7 @@ def search_page(request: Request) -> HTMLResponse:
             posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
             citizens = search.search_citizens(q, limit=per_page)
             comments = search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
-        except db.ForumError as exc:
+        except db.ForumError as exc:  # domain: degrade-silently - show search error to user
             error_msg = str(exc)
 
     if author_filter:
@@ -1408,12 +1408,12 @@ def search_page(request: Request) -> HTMLResponse:
             if author_filter:
                 try:
                     aid = int(author_filter)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError):  # domain: degrade-silently - garbage author param
                     aid = None
                 if aid is not None:
                     posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
                     comments = [c for c in comments if c.get("author_id") == aid]
-        except db.ForumError:
+        except db.ForumError:  # domain: degrade-silently - re-query failure shows previous results
             pass
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
