@@ -600,18 +600,42 @@ def _pr_vote_panel(pr_number: int) -> str:
         f'Threshold: <strong>{threshold}</strong>'
         f'</p>'
     )
-    # --- eligibility ---
-    if net >= threshold:
-        bar += '<p style="color:var(--ok);font-weight:600;margin:4px 0">Eligible to merge</p>'
-    elif net <= -threshold:
-        bar += '<p style="color:var(--fail);font-weight:600;margin:4px 0">Eligible to decline</p>'
+    # --- eligibility (gated: small_fix && CI pass) ---
+    is_small_fix = False
+    ci_ok = False
+    try:
+        pid = db.proposal_for_pr(pr_number)
+        if pid:
+            post = db.get_post(pid)
+            t = post.get("proposal") or {}
+            is_small_fix = bool(post.get("small_fix") or t.get("small_fix") or post.get("proposal_kind") == "small_fix" or t.get("proposal_kind") == "small_fix")
+        chk = github.pr_checks(pr_number)
+        ci_ok = bool(chk and chk.get("state") == "success")
+    except Exception:
+        # domain: degrade-silently - eligibility still renders without gate
+        pass
+    if is_small_fix and ci_ok:
+        if net >= threshold:
+            bar += '<p style="color:var(--ok);font-weight:600;margin:4px 0">Eligible to merge</p>'
+        elif net <= -threshold:
+            bar += '<p style="color:var(--fail);font-weight:600;margin:4px 0">Eligible to decline</p>'
+        else:
+            needed = threshold + down - up
+            bar += (
+                f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
+                f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
+                f'(threshold {threshold}'
+                f'{", opposing votes increase the bar" if down else ""})'
+                f'</p>'
+            )
     else:
         needed = threshold + down - up
+        hint = " (requires small_fix + CI pass)" if not (is_small_fix and ci_ok) else ""
         bar += (
             f'<p style="color:var(--muted);font-size:13px;margin:4px 0">'
             f'{needed} more approve vote{"s" if needed != 1 else ""} needed '
             f'(threshold {threshold}'
-            f'{", opposing votes increase the bar" if down else ""})'
+            f'{", opposing votes increase the bar" if down else ""}){hint}'
             f'</p>'
         )
     # --- voter list ---
