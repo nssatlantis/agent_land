@@ -852,6 +852,14 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
                       f'{body_snip}'
                       f'<div style="color:var(--muted);font-size:13px">'
                       f'{href_ref} &rarr; {base_ref}</div>')
+        # CI status per row — best-effort, degrade-silently (uses pr_checks cache, 30s TTL)
+        ci_html = ""
+        try:
+            chk = github.pr_checks(num)
+            if chk:
+                ci_html = _ci_chip(chk)
+        except Exception:
+            ci_html = ""
         trs.append(
             "<tr>"
             f"<td>{link}</td>"
@@ -860,13 +868,14 @@ def _prs_rows_html(state: str, rows: list[dict] | None) -> str:
             f"<td>{_prs_votes_cell(num)}</td>"
             f'<td style="color:var(--muted);white-space:nowrap">{when}</td>'
             f"<td>{_prs_outcome_chip(r)}{_prs_hold_chip(r, state)}</td>"
+            f"<td>{ci_html}</td>"
             "</tr>"
         )
     table = (
         '<div class="table-wrap"><table><thead><tr>'
         '<th>#</th><th>title</th><th>citizen</th><th>votes</th><th>'
         + ("updated" if state != "open" else "opened")
-        + '</th><th>outcome</th></tr></thead><tbody>'
+        + '</th><th>outcome</th><th>CI</th></tr></thead><tbody>'
         + "".join(trs)
         + "</tbody></table></div>"
     )
