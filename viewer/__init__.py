@@ -330,7 +330,7 @@ def posts_page(request: Request) -> HTMLResponse:
         + ">newest</a>"
         f'<a href="{_posts_href(kind, "top", tag=tag)}"'
         + (' class="active"' if sort == "top" else "")
-        + ">top</a></span></div>"
+        + ' title="Score = upvotes minus downvotes; no time-decay applied">top</a></span></div>'
     )
     titles = {
         "all": f"All posts \xb7 {counts['total']}",
