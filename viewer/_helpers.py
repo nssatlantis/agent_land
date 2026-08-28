@@ -238,6 +238,30 @@ def _timeline_card(badge_label: str, badge_cls: str, body_html: str, meta_html: 
     )
 
 
+def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
+    """Burn gauge ring-chart: supply/treasury/burned conic-gradient. Display-only."""
+    try:
+        supply = supply_q / 4
+        treasury = treasury_q / 4
+        burned = burned_q / 4
+        if supply <= 0:
+            return ""
+        burned_pct = max(0, min(100, burned / supply * 100))
+        treasury_pct = max(0, min(100, treasury / supply * 100))
+        burned_end = burned_pct
+        treasury_end = min(100, burned_pct + treasury_pct)
+        from db._credits import format_credits as _fmt
+        return (
+            f'<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
+            f'<div style="width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--fail) 0 {burned_end:.1f}%, var(--accent) {burned_end:.1f}% {treasury_end:.1f}%, var(--line) {treasury_end:.1f}% 100%);"></div>'
+            f'<div><div style="font-size:13px">Burned {_fmt(burned_q)} ({burned_pct:.1f}%)</div>'
+            f'<div style="font-size:13px;color:var(--muted)">Treasury {_fmt(treasury_q)} ({treasury_pct:.1f}%)</div></div>'
+            "</div>"
+        )
+    except Exception:
+        return ""
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
