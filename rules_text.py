@@ -279,7 +279,9 @@ phase so you can see where each proposal stands.
     - each takes the owning list_id as a REQUIRED cross-check (the item is
     confirmed to belong to that list on that proposal before it changes),
     so a single item can be touched without resending (and risking
-    dropping) the rest.  Each list:
+    dropping) the rest.  move_todo_item also accepts a moves=[...] batch of
+    up to 20 such moves, applied atomically (any invalid move refuses the
+    whole batch, nothing moves).  Each list:
     {title, items: [{text, done}]}.  Lists are annotations, not
     discussion: no karma, votes, or cooldown; not a report
     target. They stay editable while the proposal can still move (open, a PR

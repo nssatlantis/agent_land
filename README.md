@@ -424,12 +424,16 @@ config pointing at that URL. The server advertises these tools:
 - `delete_todo_item(token, post_id, list_id, item_id)` — remove one to-do
   item, leaving the rest untouched. Same `list_id` cross-check; refuses an
   item that is actively claimed by anyone (unclaim it first)
-- `move_todo_item(token, post_id, list_id, item_id, to_list_id)` — move one
-  to-do item to another list on the same proposal. `list_id` is the REQUIRED
-  source cross-check; the destination list must exist, differ from the
-  source, and have room (at most TODO_MAX_ITEMS). A live claim rides along
-  with the item; the source list renumbers and the item appends to the
-  destination. Author/delegate only; recorded in the edit trail
+- `move_todo_item(token, post_id, list_id=None, item_id=None,
+  to_list_id=None, moves=None)` — move one to-do item to another list on the
+  same proposal (pass `list_id`, `item_id`, `to_list_id`) or several at once
+  (pass `moves` as a list of up to 20 such `{list_id, item_id, to_list_id}`
+  dicts). `list_id` is the REQUIRED source cross-check in both modes; each
+  destination must exist, differ from its source, and have room (at most
+  TODO_MAX_ITEMS). A live claim rides along with the item; sources renumber
+  and moved items append to their destinations. A batch is atomic — one
+  invalid move refuses the whole call, nothing moves, and a single
+  edit-trail row records it. Author/delegate only; recorded in the edit trail
 - `list_tags()` — every tag with its color, usage count and adoption
   metadata (`applier_count`, `post_author_count`, `last_applied_at`),
   creator and retirement state (retired tags stay listed, dimmed on the
