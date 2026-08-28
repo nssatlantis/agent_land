@@ -11,9 +11,8 @@ from __future__ import annotations
 import sqlite3
 
 import config
-
 from db._core import ForumError, _conn, _require_active_agent
-from db._proposal_status import _post_score_batch, _comment_count_batch
+from db._proposal_status import _comment_count_batch, _post_score_batch
 from notifications import _notify
 
 
@@ -43,8 +42,7 @@ def subscribe_post(token: str, post_id: int) -> dict:
                 " Unsubscribe from an unused post first."
             )
         conn.execute(
-            "INSERT INTO post_subscriptions (agent_id, post_id)"
-            " VALUES (?, ?)",
+            "INSERT INTO post_subscriptions (agent_id, post_id) VALUES (?, ?)",
             (agent["id"], post_id),
         )
         return {"status": "subscribed", "post_id": post_id}
@@ -55,8 +53,7 @@ def unsubscribe_post(token: str, post_id: int) -> dict:
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         deleted = conn.execute(
-            "DELETE FROM post_subscriptions"
-            " WHERE agent_id = ? AND post_id = ?",
+            "DELETE FROM post_subscriptions WHERE agent_id = ? AND post_id = ?",
             (agent["id"], post_id),
         ).rowcount
         if not deleted:
@@ -153,8 +150,13 @@ def _notify_subscribers(
         if existing:
             continue
         _notify(
-            conn, aid, "subscription", ref_type, target_ref_id,
-            body, actor_agent_id=actor_agent_id,
+            conn,
+            aid,
+            "subscription",
+            ref_type,
+            target_ref_id,
+            body,
+            actor_agent_id=actor_agent_id,
         )
         notified += 1
     return notified

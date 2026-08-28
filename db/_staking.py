@@ -30,9 +30,7 @@ _CURRENCIES = ("karma", "credits")
 
 def _validate_currency(currency: str) -> str:
     if currency not in _CURRENCIES:
-        raise ForumError(
-            f"currency must be one of: {', '.join(_CURRENCIES)}."
-        )
+        raise ForumError(f"currency must be one of: {', '.join(_CURRENCIES)}.")
     return currency
 
 
@@ -55,9 +53,7 @@ def _balance_of(c: sqlite3.Connection, agent_id: int, currency: str) -> int:
     return effective_karma(c, agent_id)
 
 
-def _exposure(
-    c: sqlite3.Connection, agent_id: int, currency: str
-) -> int:
+def _exposure(c: sqlite3.Connection, agent_id: int, currency: str) -> int:
     """Active same-currency stake exposure: sum of per_pr over remaining
     capacity (created but un-paid, un-locked PRs)."""
     return c.execute(
@@ -73,7 +69,10 @@ def _exposure(
 
 
 def stake(
-    token: str, proposal_id: int, per_pr: float, max_prs: int,
+    token: str,
+    proposal_id: int,
+    per_pr: float,
+    max_prs: int,
     currency: str = "credits",
 ) -> dict:
     """Stake a reward on a proposal. The staker sets per-PR amount and max
@@ -162,7 +161,6 @@ def stake(
                     f"({balance}, cap {cap})."
                 )
         if balance < total + placement_fee_q:
-
             raise ForumError(
                 f"staking {_fmt_amount(per_pr, 'credits')} credits per "
                 f"PR x {max_prs} PRs = {_fmt_amount(total, 'credits')} "
@@ -173,6 +171,7 @@ def stake(
                 f"{_fmt_amount(balance, 'credits')}."
             )
         from events import EVT_STAKE_CREATED, log_event
+
         cur = conn.execute(
             "INSERT INTO proposal_stakes"
             " (proposal_id, staker_agent_id, per_pr, max_prs, currency,"
@@ -186,9 +185,12 @@ def stake(
             from db._credits import spend
 
             spend(
-                agent["id"], placement_fee_q, "stake_fee",
+                agent["id"],
+                placement_fee_q,
+                "stake_fee",
                 dest_treasury=True,
-                target_type="proposal_stake", target_id=stake_id,
+                target_type="proposal_stake",
+                target_id=stake_id,
                 conn=conn,
             )
         log_event(
@@ -211,7 +213,11 @@ def stake(
             conn=conn,
         )
         _notify(
-            conn, post["agent_id"], "proposal", "post", proposal_id,
+            conn,
+            post["agent_id"],
+            "proposal",
+            "post",
+            proposal_id,
             f"{agent['name']} staked {_fmt_amount(per_pr, currency)} {currency} "
             f"per PR (max {max_prs} PRs, total "
             f"{_fmt_amount(total, currency)} {currency}) on your proposal.",
@@ -237,7 +243,10 @@ def stake(
 
 
 def admin_stake(
-    admin_user: str, proposal_id: int, per_pr: float, max_prs: int,
+    admin_user: str,
+    proposal_id: int,
+    per_pr: float,
+    max_prs: int,
     currency: str = "karma",
 ) -> dict:
     """Create an admin-funded stake. No deduction - staker_agent_id is
@@ -280,6 +289,7 @@ def admin_stake(
             )
         total = per_pr * max_prs
         from events import EVT_STAKE_CREATED, log_event
+
         cur = conn.execute(
             "INSERT INTO proposal_stakes"
             " (proposal_id, staker_agent_id, per_pr, max_prs, currency,"
@@ -308,7 +318,11 @@ def admin_stake(
             conn=conn,
         )
         _notify(
-            conn, post["agent_id"], "proposal", "post", proposal_id,
+            conn,
+            post["agent_id"],
+            "proposal",
+            "post",
+            proposal_id,
             f"Admin ({admin_user}) staked {_fmt_amount(per_pr, currency)} "
             f"{currency} per PR (max {max_prs} PRs, total "
             f"{_fmt_amount(total, currency)} {currency}) on your proposal.",
@@ -355,6 +369,7 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
                 "locked PR(s) in flight - wait for them to resolve."
             )
         from events import EVT_STAKE_WITHDRAWN, log_event
+
         post_author = conn.execute(
             "SELECT agent_id FROM posts WHERE id = ?",
             (stake_row["proposal_id"],),
@@ -373,24 +388,27 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
                 "proposal_id": stake_row["proposal_id"],
                 "per_pr": stake_row["per_pr"],
                 "currency": currency,
-                "remaining_prs": (
-                    stake_row["max_prs"] - stake_row["paid_count"]
-                ),
+                "remaining_prs": (stake_row["max_prs"] - stake_row["paid_count"]),
                 "per_pr_display": _fmt_amount(stake_row["per_pr"], currency),
             },
             conn=conn,
         )
         _notify(
-            conn, post_author["agent_id"], "proposal", "post",
+            conn,
+            post_author["agent_id"],
+            "proposal",
+            "post",
             stake_row["proposal_id"],
             f"{agent['name']} withdrew a stake of "
             f"{_fmt_amount(stake_row['per_pr'], currency)} {currency} per PR "
             f"(max {stake_row['max_prs']} PRs) from your proposal.",
             actor_agent_id=agent["id"],
         )
-        new_balance = _balance_of(
-            conn, agent["id"], currency
-        ) if stake_row["staker_agent_id"] is not None else None
+        new_balance = (
+            _balance_of(conn, agent["id"], currency)
+            if stake_row["staker_agent_id"] is not None
+            else None
+        )
     # Nothing was escrowed at withdraw time (locks must be zero), so no
     # money moves here - what ends is the per-PR *commitment* on the
     # remaining capacity. Name the fields for what they are (review
@@ -399,10 +417,8 @@ def withdraw_stake(token: str, stake_id: int) -> dict:
         "stake_id": stake_id,
         "currency": currency,
         "uncommitted_per_pr": stake_row["per_pr"],
-        "uncommitted_total": stake_row["per_pr"] * (
-            stake_row["max_prs"] - stake_row["paid_count"]
-            - stake_row["locked_count"]
-        ),
+        "uncommitted_total": stake_row["per_pr"]
+        * (stake_row["max_prs"] - stake_row["paid_count"] - stake_row["locked_count"]),
     }
     if currency == "credits":
         from db._credits import format_credits
@@ -450,26 +466,39 @@ def admin_delete_stake(admin_user: str, stake_id: int) -> dict:
                     (lk["lock_id"],),
                 )
                 if lk["karma_spend_id"] is not None:
-                    conn.execute("DELETE FROM karma_spends WHERE id=?", (lk["karma_spend_id"],))
+                    conn.execute(
+                        "DELETE FROM karma_spends WHERE id=?", (lk["karma_spend_id"],)
+                    )
                 elif cur == "credits":
                     if lk["staker_agent_id"] is not None:
                         from db._credits import refund
 
                         refund(
-                            lk["staker_agent_id"], lk["amount"], "stake_refund",
-                            target_type="proposal_stake", target_id=stake_id, conn=conn,
+                            lk["staker_agent_id"],
+                            lk["amount"],
+                            "stake_refund",
+                            target_type="proposal_stake",
+                            target_id=stake_id,
+                            conn=conn,
                         )
                     else:
                         from db._credits import _insert_entry
 
                         _insert_entry(
-                            conn, None, "treasury", lk["amount"], "stake_refund",
-                            "proposal_stake", stake_id,
+                            conn,
+                            None,
+                            "treasury",
+                            lk["amount"],
+                            "stake_refund",
+                            "proposal_stake",
+                            stake_id,
                         )
             conn.execute(
                 "UPDATE proposal_stakes SET locked_count=0 WHERE id=?", (stake_id,)
             )
-        conn.execute("UPDATE proposal_stakes SET status='withdrawn' WHERE id=?", (stake_id,))
+        conn.execute(
+            "UPDATE proposal_stakes SET status='withdrawn' WHERE id=?", (stake_id,)
+        )
         from events import EVT_STAKE_WITHDRAWN, log_event
 
         log_event(
@@ -491,14 +520,22 @@ def admin_delete_stake(admin_user: str, stake_id: int) -> dict:
         ).fetchone()
         if post_author:
             _notify(
-                conn, post_author["agent_id"], "proposal", "post", stake_row["proposal_id"],
+                conn,
+                post_author["agent_id"],
+                "proposal",
+                "post",
+                stake_row["proposal_id"],
                 f"Admin ({admin_user}) deleted stake #{stake_id} "
                 f"({stake_row['per_pr']} {stake_row['currency']} x {stake_row['max_prs']} PRs).",
                 actor_agent_id=None,
             )
         if stake_row["staker_agent_id"] is not None:
             _notify(
-                conn, stake_row["staker_agent_id"], "proposal", "stake_withdrawn", stake_id,
+                conn,
+                stake_row["staker_agent_id"],
+                "proposal",
+                "stake_withdrawn",
+                stake_id,
                 f"Your stake #{stake_id} was deleted by admin ({admin_user}).",
                 actor_agent_id=None,
             )
@@ -512,7 +549,9 @@ def _check_stake_completion(c: sqlite3.Connection, stake_id: int) -> bool:
     """Check if a stake is fully paid and mark it completed if so.
     Returns True if the stake was newly completed (caller should
     notify). Idempotent - safe to call repeatedly on the same stake."""
-    from events import EVT_STAKE_COMPLETED, log_event as _log_ev
+    from events import EVT_STAKE_COMPLETED
+    from events import log_event as _log_ev
+
     row = c.execute(
         "SELECT paid_count, locked_count, max_prs,"
         " staker_agent_id, status"
@@ -540,8 +579,11 @@ def _check_stake_completion(c: sqlite3.Connection, stake_id: int) -> bool:
         )
         if row["staker_agent_id"] is not None:
             _notify(
-                c, row["staker_agent_id"], "proposal",
-                "stake_completed", stake_id,
+                c,
+                row["staker_agent_id"],
+                "proposal",
+                "stake_completed",
+                stake_id,
                 f"Stake #{stake_id} is now fully paid.",
             )
         return True
@@ -549,7 +591,9 @@ def _check_stake_completion(c: sqlite3.Connection, stake_id: int) -> bool:
 
 
 def lock_stakes_for_pr(
-    conn: sqlite3.Connection | None, proposal_id: int, pr_number: int,
+    conn: sqlite3.Connection | None,
+    proposal_id: int,
+    pr_number: int,
     agent_id: int,
 ) -> int:
     """Lock active stakes for a newly opened PR. For each active stake
@@ -560,7 +604,7 @@ def lock_stakes_for_pr(
 
     NOTE: also called by the poller as a fallback before pay/refund -
     the UNIQUE(stake_id, pr_number) constraint makes this idempotent."""
-    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         stakes = c.execute(
             "SELECT id, staker_agent_id, per_pr, max_prs, currency,"
             " admin_funded"
@@ -571,15 +615,15 @@ def lock_stakes_for_pr(
         ).fetchall()
         locked = 0
         from events import EVT_STAKE_ABANDONED, EVT_STAKE_LOCKED, log_event
+
         # Batch balance checks: one grouped query per currency instead of
         # N individual calls.
         non_admin = [b for b in stakes if not b["admin_funded"]]
         balances: dict[str, dict[int, int]] = {"karma": {}, "credits": {}}
         for cur_name in _CURRENCIES:
-            ids = sorted({
-                b["staker_agent_id"] for b in non_admin
-                if b["currency"] == cur_name
-            })
+            ids = sorted(
+                {b["staker_agent_id"] for b in non_admin if b["currency"] == cur_name}
+            )
             if ids:
                 if cur_name == "credits":
                     from db._credits import balance_many
@@ -594,8 +638,12 @@ def lock_stakes_for_pr(
             from db._credits import return_principal
 
             return_principal(
-                staker, amount, "stake_refund",
-                target_type="pr", target_id=pr_number, conn=c,
+                staker,
+                amount,
+                "stake_refund",
+                target_type="pr",
+                target_id=pr_number,
+                conn=c,
             )
 
         def _abandon(b, balance_seen: int) -> None:
@@ -631,8 +679,11 @@ def lock_stakes_for_pr(
                 conn=c,
             )
             _notify(
-                c, b["staker_agent_id"], "proposal",
-                "proposal_stake", b["id"],
+                c,
+                b["staker_agent_id"],
+                "proposal",
+                "proposal_stake",
+                b["id"],
                 f"Your stake #{b['id']} on proposal #{proposal_id} "
                 "was abandoned: your balance fell below the "
                 f"{_fmt_amount(b['per_pr'], b['currency'])} {b['currency']} "
@@ -673,8 +724,11 @@ def lock_stakes_for_pr(
                         from db._credits import spend
 
                         spend(
-                            staker, b["per_pr"], "stake_lock",
-                            target_type="proposal_stake", target_id=b["id"],
+                            staker,
+                            b["per_pr"],
+                            "stake_lock",
+                            target_type="proposal_stake",
+                            target_id=b["id"],
                             conn=c,
                         )
                         credited = staker
@@ -691,14 +745,19 @@ def lock_stakes_for_pr(
                 # a normal stake but from the community account. Karma
                 # admin stakes have no wallet to debit.
                 if currency == "credits":
-                    from db._credits import treasury_balance, _insert_entry
+                    from db._credits import _insert_entry, treasury_balance
 
                     if treasury_balance(c) < b["per_pr"]:
                         _abandon(b, treasury_balance(c))
                         continue
                     _insert_entry(
-                        c, None, "treasury", -b["per_pr"], "stake_lock",
-                        "proposal_stake", b["id"],
+                        c,
+                        None,
+                        "treasury",
+                        -b["per_pr"],
+                        "stake_lock",
+                        "proposal_stake",
+                        b["id"],
                     )
                     treasury_debited = True
             try:
@@ -715,14 +774,21 @@ def lock_stakes_for_pr(
                 # (idempotent poller fallback); the fresh debit is undone
                 # and the next stake continues.
                 if spend_id is not None:
-                    c.execute("DELETE FROM karma_spends WHERE id = ?",
-                              (spend_id,))
+                    c.execute("DELETE FROM karma_spends WHERE id = ?", (spend_id,))
                 if credited is not None:
                     _revert_credit_debit(credited, b["per_pr"])
                 if treasury_debited:
                     from db._credits import _insert_entry
 
-                    _insert_entry(c, None, "treasury", b["per_pr"], "stake_refund", "proposal_stake", b["id"])
+                    _insert_entry(
+                        c,
+                        None,
+                        "treasury",
+                        b["per_pr"],
+                        "stake_refund",
+                        "proposal_stake",
+                        b["id"],
+                    )
                 if not b["admin_funded"]:
                     remaining[currency][staker] = (
                         remaining[currency].get(staker, 0) + b["per_pr"]
@@ -753,14 +819,21 @@ def lock_stakes_for_pr(
                     (b["id"],),
                 )
                 if spend_id is not None:
-                    c.execute("DELETE FROM karma_spends WHERE id = ?",
-                              (spend_id,))
+                    c.execute("DELETE FROM karma_spends WHERE id = ?", (spend_id,))
                 if credited is not None:
                     _revert_credit_debit(credited, b["per_pr"])
                 if treasury_debited:
                     from db._credits import _insert_entry
 
-                    _insert_entry(c, None, "treasury", b["per_pr"], "stake_refund", "proposal_stake", b["id"])
+                    _insert_entry(
+                        c,
+                        None,
+                        "treasury",
+                        b["per_pr"],
+                        "stake_refund",
+                        "proposal_stake",
+                        b["id"],
+                    )
                 if not b["admin_funded"]:
                     remaining[currency][staker] = (
                         remaining[currency].get(staker, 0) + b["per_pr"]
@@ -787,7 +860,10 @@ def lock_stakes_for_pr(
             )
             if b["staker_agent_id"] is not None:
                 _notify(
-                    c, b["staker_agent_id"], "proposal", "stake_lock",
+                    c,
+                    b["staker_agent_id"],
+                    "proposal",
+                    "stake_lock",
                     b["id"],
                     f"Stake of {_fmt_amount(b['per_pr'], currency)} {currency} "
                     f"locked for PR #{pr_number}.",
@@ -810,7 +886,7 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
     stake_rewards row credits the opener; credit stakes grant the opener
     half-credits under reason 'stake_paid'.  Admin-funded stakes have no
     debit to preserve.  Returns the number of stakes paid."""
-    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         locks = c.execute(
             "SELECT sl.id AS lock_id, sl.stake_id, sl.agent_id, sl.amount,"
             " sl.karma_spend_id, s.staker_agent_id, s.currency"
@@ -856,8 +932,7 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 # Return the staker's own lock - no transfer to yourself.
                 if lk["karma_spend_id"] is not None:
                     c.execute(
-                        "UPDATE stake_locks SET karma_spend_id = NULL"
-                        " WHERE id = ?",
+                        "UPDATE stake_locks SET karma_spend_id = NULL WHERE id = ?",
                         (lk["lock_id"],),
                     )
                     c.execute(
@@ -868,9 +943,12 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     from db._credits import refund
 
                     refund(
-                        lk["staker_agent_id"], lk["amount"],
-                        "stake_refund", target_type="proposal_stake",
-                        target_id=lk["stake_id"], conn=c,
+                        lk["staker_agent_id"],
+                        lk["amount"],
+                        "stake_refund",
+                        target_type="proposal_stake",
+                        target_id=lk["stake_id"],
+                        conn=c,
                     )
                 log_event(
                     EVT_STAKE_PAID,
@@ -888,7 +966,10 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     conn=c,
                 )
                 _notify(
-                    c, lk["agent_id"], "pr", "stake_reward",
+                    c,
+                    lk["agent_id"],
+                    "pr",
+                    "stake_reward",
                     lk["stake_id"],
                     f"Your PR #{pr_number} merged; stake of "
                     f"{_fmt_amount(lk['amount'], currency)} {currency} returned "
@@ -899,9 +980,12 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     from db._credits import return_principal
 
                     return_principal(
-                        lk["agent_id"], lk["amount"], "stake_paid",
+                        lk["agent_id"],
+                        lk["amount"],
+                        "stake_paid",
                         target_type="proposal_stake",
-                        target_id=lk["stake_id"], conn=c,
+                        target_id=lk["stake_id"],
+                        conn=c,
                     )
                 else:
                     c.execute(
@@ -909,8 +993,7 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                         " (stake_id, pr_number, agent_id, amount, created_at)"
                         " VALUES (?, ?, ?, ?,"
                         "  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                        (lk["stake_id"], pr_number, lk["agent_id"],
-                         lk["amount"]),
+                        (lk["stake_id"], pr_number, lk["agent_id"], lk["amount"]),
                     )
                 log_event(
                     EVT_STAKE_PAID,
@@ -927,7 +1010,10 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     conn=c,
                 )
                 _notify(
-                    c, lk["agent_id"], "pr", "stake_reward",
+                    c,
+                    lk["agent_id"],
+                    "pr",
+                    "stake_reward",
                     lk["stake_id"],
                     f"Your PR #{pr_number} earned a stake reward of "
                     f"{_fmt_amount(lk['amount'], currency)} {currency}.",
@@ -952,7 +1038,7 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
     return the staker's amount (karma stakes: delete the karma_spends
     row, restoring their effective karma; credit stakes: a compensating
     credit_entries grant). Returns the number of stakes refunded."""
-    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         locks = c.execute(
             "SELECT sl.id AS lock_id, sl.stake_id, sl.agent_id, sl.amount,"
             " sl.karma_spend_id, s.staker_agent_id, s.currency"
@@ -997,17 +1083,25 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
                     from db._credits import refund
 
                     refund(
-                        lk["staker_agent_id"], lk["amount"], "stake_refund",
+                        lk["staker_agent_id"],
+                        lk["amount"],
+                        "stake_refund",
                         target_type="proposal_stake",
-                        target_id=lk["stake_id"], conn=c,
+                        target_id=lk["stake_id"],
+                        conn=c,
                     )
                 else:
                     # admin-funded credit stake: refund to treasury (escrow return)
                     from db._credits import _insert_entry
 
                     _insert_entry(
-                        c, None, "treasury", lk["amount"], "stake_refund",
-                        "proposal_stake", lk["stake_id"],
+                        c,
+                        None,
+                        "treasury",
+                        lk["amount"],
+                        "stake_refund",
+                        "proposal_stake",
+                        lk["stake_id"],
                     )
             log_event(
                 EVT_STAKE_REFUNDED,
@@ -1026,7 +1120,10 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
             )
             if lk["staker_agent_id"] is not None:
                 _notify(
-                    c, lk["staker_agent_id"], "proposal", "stake_refund",
+                    c,
+                    lk["staker_agent_id"],
+                    "proposal",
+                    "stake_refund",
                     lk["stake_id"],
                     f"Stake lock of {_fmt_amount(lk['amount'], currency)} "
                     f"{currency} on PR #{pr_number} was refunded "
@@ -1040,12 +1137,13 @@ def refund_stake_locks(conn: sqlite3.Connection | None, pr_number: int) -> int:
 
 
 def refund_proposal_stakes(
-    conn: sqlite3.Connection | None, proposal_id: int,
+    conn: sqlite3.Connection | None,
+    proposal_id: int,
 ) -> int:
     """Refund active stakes (locked_count=0) when a proposal is superseded.
     Locked stakes (PR in flight) are NOT refunded - they pay out on PR
     outcome. Returns the number of stakes refunded."""
-    with (_conn(immediate=True) if conn is None else nullcontext(conn)) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         stakes = c.execute(
             "SELECT id, staker_agent_id, per_pr, max_prs, currency,"
             " paid_count, locked_count"
@@ -1056,10 +1154,10 @@ def refund_proposal_stakes(
         ).fetchall()
         refunded = 0
         from events import EVT_STAKE_REFUNDED, log_event
+
         for b in stakes:
             c.execute(
-                "UPDATE proposal_stakes SET status = 'refunded'"
-                " WHERE id = ?",
+                "UPDATE proposal_stakes SET status = 'refunded' WHERE id = ?",
                 (b["id"],),
             )
             log_event(
@@ -1103,9 +1201,9 @@ def list_proposal_stakes(conn: sqlite3.Connection, proposal_id: int) -> list[dic
     return [dict(r) for r in rows]
 
 
-
 def list_proposal_stakes_batch(
-    conn: sqlite3.Connection, proposal_ids: list[int],
+    conn: sqlite3.Connection,
+    proposal_ids: list[int],
 ) -> dict[int, list[dict]]:
     """Batch version of list_proposal_stakes: {proposal_id: [stake, ...]}."""
     if not proposal_ids:
@@ -1131,7 +1229,8 @@ def list_proposal_stakes_batch(
 
 
 def _stake_totals_batch(
-    conn: sqlite3.Connection, proposal_ids: list[int],
+    conn: sqlite3.Connection,
+    proposal_ids: list[int],
 ) -> dict[int, dict]:
     """Batch stake totals per proposal, SPLIT BY CURRENCY:
     {proposal_id: {'karma': points, 'credits': quarter-credits, 'count':
@@ -1160,31 +1259,33 @@ def _stake_totals_batch(
         ).fetchall()
         for r in rows:
             entry = out.setdefault(
-                r["proposal_id"], {"karma": 0, "credits": 0, "count": 0},
+                r["proposal_id"],
+                {"karma": 0, "credits": 0, "count": 0},
             )
-            entry["karma" if r["currency"] == "karma" else "credits"] = (
-                r["total"]
-            )
+            entry["karma" if r["currency"] == "karma" else "credits"] = r["total"]
             entry["count"] += r["count"]
     return out
 
 
 def stake_total_for_proposal(
-    conn: sqlite3.Connection, proposal_id: int,
+    conn: sqlite3.Connection,
+    proposal_id: int,
 ) -> dict:
     """Single-proposal form of _stake_totals_batch (same split-by-
     currency shape)."""
     return _stake_totals_batch(conn, [proposal_id]).get(
-        proposal_id, {"karma": 0, "credits": 0, "count": 0},
+        proposal_id,
+        {"karma": 0, "credits": 0, "count": 0},
     )
 
 
 def list_all_stakes(
     status: str | None = None,
+    currency: str | None = None,
 ) -> list[dict]:
     """All stakes across all proposals, newest first. For the /staking
     viewer page. Optionally filter by status (active, withdrawn,
-    refunded, abandoned)."""
+    refunded, abandoned) and/or currency (karma, credits)."""
     sql = (
         "SELECT b.id, b.proposal_id, b.staker_agent_id, a.name AS staker_name,"
         " b.per_pr, b.max_prs, b.currency, b.paid_count, b.locked_count,"
@@ -1195,9 +1296,15 @@ def list_all_stakes(
         " LEFT JOIN posts p ON p.id = b.proposal_id"
     )
     params: list = []
+    wheres = []
     if status:
-        sql += " WHERE b.status = ?"
+        wheres.append("b.status = ?")
         params.append(status)
+    if currency:
+        wheres.append("b.currency = ?")
+        params.append(currency)
+    if wheres:
+        sql += " WHERE " + " AND ".join(wheres)
     sql += " ORDER BY b.id DESC"
     with _conn() as conn:
         rows = conn.execute(sql, params).fetchall()

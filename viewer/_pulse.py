@@ -16,7 +16,6 @@ from viewer._helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import esc
 
-
 # ---------------------------------------------------------- pulse panels --
 
 _FUNNEL_VIEWS = ("all", "needs_votes", "approved", "review", "merged")
@@ -28,9 +27,12 @@ _FUNNEL_LABELS = {
     "merged": "merged",
 }
 _FUNNEL_CHIP_VIEWS = (
-    ("stale", "stale"), ("small_fix", "small fixes"),
-    ("collaborative", "collaborative"), ("unclaimed", "unclaimed"),
-    ("staking", "staking"), ("ideas", "ideas"),
+    ("stale", "stale"),
+    ("small_fix", "small fixes"),
+    ("collaborative", "collaborative"),
+    ("unclaimed", "unclaimed"),
+    ("staking", "staking"),
+    ("ideas", "ideas"),
 )
 
 
@@ -69,7 +71,7 @@ def _activity_trend() -> str:
     trend_color = "var(--ok)" if delta >= 0 else "var(--fail)"
     delta_html = (
         f'<span style="color:{trend_color};font-weight:600">{delta:+d}</span>'
-        f' last 7d vs the 7 before'
+        f" last 7d vs the 7 before"
     )
     headline = aggregates.recent_activity_total()
     return (
@@ -92,7 +94,7 @@ def _governance_funnel() -> str:
             cells.append('<span class="muted">\u2192</span>')
         cells.append(
             f'<a class="funnel-chip" href="/proposals?view={view}">'
-            f'<b>{counts.get(view, 0)}</b> {_FUNNEL_LABELS[view]}</a>'
+            f"<b>{counts.get(view, 0)}</b> {_FUNNEL_LABELS[view]}</a>"
         )
     chips = " ".join(
         f'<a class="tag" style="color:var(--muted)" href="/proposals?view={view}">{label}</a>'
@@ -125,8 +127,8 @@ def _economy_strip() -> str:
         f'<div class="card"><div class="n">{esc(eo["circulating_credits"])}</div><div class="l">circulating</div></div>'
         f"</div>"
         f'<p class="meta">24h net <span style="color:{color};font-weight:600">{delta:+d}</span> quarters '
-        f'(minted {minted} \xb7 burned {burned}) \xb7 committed to stakes {esc(committed)} \xb7 '
-        f'job escrow {esc(escrow)} \xb7 jobs {jobs_active} active / {jobs_open} open</p></div>'
+        f"(minted {minted} \xb7 burned {burned}) \xb7 committed to stakes {esc(committed)} \xb7 "
+        f"job escrow {esc(escrow)} \xb7 jobs {jobs_active} active / {jobs_open} open</p></div>"
     )
 
 
@@ -138,6 +140,7 @@ def _pulse_panels() -> str:
 
 # ------------------------------------------------------------- full page --
 
+
 def pulse_page(request: Request) -> HTMLResponse:
     """The /pulse society dashboard: activity trend, governance funnel and
     economy strip beside the side rail, soft-refreshed on a heavy 30s poll
@@ -145,7 +148,9 @@ def pulse_page(request: Request) -> HTMLResponse:
     body = (
         _crumb("/", "overview")
         + '<div class="panel" style="border:none;background:none">'
-        + '<div id="frag-pulse-panels">' + _pulse_panels() + "</div></div>"
+        + '<div id="frag-pulse-panels">'
+        + _pulse_panels()
+        + "</div></div>"
     )
     return _page(
         "pulse",

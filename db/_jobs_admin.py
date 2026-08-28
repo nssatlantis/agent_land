@@ -10,7 +10,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
-
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
 from db._jobs_ops import (
     _apply_review,
@@ -30,7 +29,10 @@ def _detail_or_raise(conn: sqlite3.Connection, job_id: int) -> dict:
 
 
 def admin_review_job(
-    admin: str, job_id: int, action: str, feedback: str = "",
+    admin: str,
+    job_id: int,
+    action: str,
+    feedback: str = "",
     punish: bool = False,
 ) -> dict:
     """Admin panel review for OFFICIAL jobs with no citizen sponsor
@@ -57,7 +59,8 @@ def admin_review_job(
 
     with _conn(immediate=True) as conn:
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
@@ -67,20 +70,20 @@ def admin_review_job(
                 "positions - use review_job() instead."
             )
         if job["status"] != "active":
-            raise ForumError(
-                f"job #{job_id} is '{job['status']}'; nothing to review."
-            )
+            raise ForumError(f"job #{job_id} is '{job['status']}'; nothing to review.")
         cycle_no = job["cycles_done"] + 1
         cycle = conn.execute(
             "SELECT * FROM job_cycles WHERE job_id = ? AND cycle_no = ?",
             (job["id"], cycle_no),
         ).fetchone()
         if cycle is None or cycle["status"] != "submitted":
-            raise ForumError(
-                f"cycle {cycle_no} has no submission awaiting review."
-            )
+            raise ForumError(f"cycle {cycle_no} has no submission awaiting review.")
         _apply_review(
-            conn, job, cycle, action, feedback,
+            conn,
+            job,
+            cycle,
+            action,
+            feedback,
             actor_id=None,
             actor_name=None,
             admin_name=admin,
@@ -97,7 +100,10 @@ def admin_review_job(
 
 
 def admin_review_job_as(
-    admin: str, job_id: int, action: str, feedback: str = "",
+    admin: str,
+    job_id: int,
+    action: str,
+    feedback: str = "",
     punish: bool = False,
 ) -> dict:
     """Admin review on behalf of the sponsor for OFFICIAL jobs *with* a
@@ -127,7 +133,8 @@ def admin_review_job_as(
     admin = (str(admin) or "unknown").strip() or "unknown"
     with _conn(immediate=True) as conn:
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
@@ -138,18 +145,14 @@ def admin_review_job_as(
                 " for sponsorless or review_job for citizen jobs."
             )
         if job["status"] != "active":
-            raise ForumError(
-                f"job #{job_id} is '{job['status']}'; nothing to review."
-            )
+            raise ForumError(f"job #{job_id} is '{job['status']}'; nothing to review.")
         cycle_no = job["cycles_done"] + 1
         cycle = conn.execute(
             "SELECT * FROM job_cycles WHERE job_id = ? AND cycle_no = ?",
             (job["id"], cycle_no),
         ).fetchone()
         if cycle is None or cycle["status"] != "submitted":
-            raise ForumError(
-                f"cycle {cycle_no} has no submission awaiting review."
-            )
+            raise ForumError(f"cycle {cycle_no} has no submission awaiting review.")
         creator_id = job["creator_agent_id"]
         worker_id = job["worker_agent_id"]
         assert worker_id is not None and creator_id is not None
@@ -162,7 +165,11 @@ def admin_review_job_as(
         if sponsor_row is None or _account_status_for(sponsor_row) != "active":
             raise ForumError("sponsor citizen is not active.")
         _apply_review(
-            conn, job, cycle, action, feedback,
+            conn,
+            job,
+            cycle,
+            action,
+            feedback,
             actor_id=creator_id,
             actor_name=None,
             admin_name=admin,
@@ -183,13 +190,14 @@ def cancel_job(token: str, job_id: int) -> dict:
     (wage x cycles not yet accepted) returns to your wallet; the worker
     keeps everything already accepted. A claimed job's worker is notified -
     cancel mid-work costs reputation even when it costs nothing else."""
-    from notifications import _notify
     from events import EVT_JOB_CANCELLED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         agent = _require_active_agent(conn, token)
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
@@ -197,25 +205,41 @@ def cancel_job(token: str, job_id: int) -> dict:
             raise ForumError("only the job's creator may cancel it.")
         if job["status"] not in ("open", "offered", "active"):
             raise ForumError(
-                f"job #{job_id} is '{job['status']}' and cannot be "
-                "cancelled."
+                f"job #{job_id} is '{job['status']}' and cannot be cancelled."
             )
         remaining = _remaining_escrow(job)
         if remaining > 0:
             from db._credits import return_principal
 
             return_principal(
-                agent["id"], remaining, "job_cancelled",
-                target_type="job", target_id=job["id"], conn=conn,
+                agent["id"],
+                remaining,
+                "job_cancelled",
+                target_type="job",
+                target_id=job["id"],
+                conn=conn,
             )
-        treasury_remaining = int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        treasury_remaining = (
+            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        )
         if treasury_remaining > 0:
             from db._credits import _insert_entry
-            _insert_entry(conn, None, "treasury", treasury_remaining, "job_cancelled_treasury_return", "job", job["id"])
-            conn.execute("UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?", (job["id"],))
+
+            _insert_entry(
+                conn,
+                None,
+                "treasury",
+                treasury_remaining,
+                "job_cancelled_treasury_return",
+                "job",
+                job["id"],
+            )
+            conn.execute(
+                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                (job["id"],),
+            )
         conn.execute(
-            "UPDATE jobs SET status = 'cancelled', decided_at = ?"
-            " WHERE id = ?",
+            "UPDATE jobs SET status = 'cancelled', decided_at = ? WHERE id = ?",
             (_now_iso(), job["id"]),
         )
         log_event(
@@ -236,12 +260,17 @@ def cancel_job(token: str, job_id: int) -> dict:
             tail = (
                 f" - {_fmt_q(remaining)} credits of unearned escrow were "
                 "returned to its creator."
-                if remaining > 0 else
-                " (an official position - nothing was escrowed)."
-                if job["official"] else "."
+                if remaining > 0
+                else " (an official position - nothing was escrowed)."
+                if job["official"]
+                else "."
             )
             _notify(
-                conn, job["worker_agent_id"], "jobs", "job", job["id"],
+                conn,
+                job["worker_agent_id"],
+                "jobs",
+                "job",
+                job["id"],
                 f"{agent['name']} cancelled the job '{job['title']}' "
                 f"(#{job['id']}){tail} Your accepted cycles stay paid.",
                 actor_agent_id=agent["id"],
@@ -257,36 +286,53 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
     worker and the creator are both told; the event carries the admin
     name so the audit trail answers 'who closed this'."""
     admin = (str(admin) or "unknown").strip() or "unknown"
-    from notifications import _notify
     from events import EVT_JOB_CANCELLED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         job = conn.execute(
-            "SELECT * FROM jobs WHERE id = ?", (int(job_id),),
+            "SELECT * FROM jobs WHERE id = ?",
+            (int(job_id),),
         ).fetchone()
         if job is None:
             raise ForumError(f"no job with id {job_id}.")
         if job["status"] not in ("open", "offered", "active"):
             raise ForumError(
-                f"job #{job_id} is '{job['status']}' and cannot be "
-                "cancelled."
+                f"job #{job_id} is '{job['status']}' and cannot be cancelled."
             )
         remaining = _remaining_escrow(job)
         if remaining > 0:
             from db._credits import return_principal
 
             return_principal(
-                job["creator_agent_id"], remaining, "job_cancelled",
-                target_type="job", target_id=job["id"], conn=conn,
+                job["creator_agent_id"],
+                remaining,
+                "job_cancelled",
+                target_type="job",
+                target_id=job["id"],
+                conn=conn,
             )
-        treasury_remaining = int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        treasury_remaining = (
+            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        )
         if treasury_remaining > 0:
             from db._credits import _insert_entry
-            _insert_entry(conn, None, "treasury", treasury_remaining, "job_cancelled_treasury_return", "job", job["id"])
-            conn.execute("UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?", (job["id"],))
+
+            _insert_entry(
+                conn,
+                None,
+                "treasury",
+                treasury_remaining,
+                "job_cancelled_treasury_return",
+                "job",
+                job["id"],
+            )
+            conn.execute(
+                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                (job["id"],),
+            )
         conn.execute(
-            "UPDATE jobs SET status = 'cancelled', decided_at = ?"
-            " WHERE id = ?",
+            "UPDATE jobs SET status = 'cancelled', decided_at = ? WHERE id = ?",
             (_now_iso(), job["id"]),
         )
         log_event(
@@ -308,13 +354,18 @@ def admin_cancel_job(admin: str, job_id: int) -> dict:
         for aid in {job["creator_agent_id"], job["worker_agent_id"]}:
             if aid is not None:
                 _notify(
-                    conn, aid, "jobs", "job", job["id"],
+                    conn,
+                    aid,
+                    "jobs",
+                    "job",
+                    job["id"],
                     f"Admin moderation ({admin}) closed the job "
                     f"'{job['title']}' (#{job['id']})"
                     + (
                         f" - {_fmt_q(remaining)} credits of unearned "
                         "escrow returned to its creator."
-                        if remaining > 0 else "."
+                        if remaining > 0
+                        else "."
                     ),
                 )
         return _detail_or_raise(conn, job["id"])
@@ -328,8 +379,8 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     cancelling AFTER deletion would strand the credits in ownerless
     limbo. Jobs they were working on return to the open board with the
     creator notified. Returns how many jobs were closed."""
-    from notifications import _notify
     from events import EVT_JOB_CANCELLED, log_event
+    from notifications import _notify
 
     rows = conn.execute(
         "SELECT * FROM jobs WHERE creator_agent_id = ?"
@@ -343,17 +394,34 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
             from db._credits import return_principal
 
             return_principal(
-                agent_id, remaining, "job_cancelled",
-                target_type="job", target_id=job["id"], conn=conn,
+                agent_id,
+                remaining,
+                "job_cancelled",
+                target_type="job",
+                target_id=job["id"],
+                conn=conn,
             )
-        treasury_remaining = int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        treasury_remaining = (
+            int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+        )
         if treasury_remaining > 0:
             from db._credits import _insert_entry
-            _insert_entry(conn, None, "treasury", treasury_remaining, "job_cancelled_treasury_return", "job", job["id"])
-            conn.execute("UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?", (job["id"],))
+
+            _insert_entry(
+                conn,
+                None,
+                "treasury",
+                treasury_remaining,
+                "job_cancelled_treasury_return",
+                "job",
+                job["id"],
+            )
+            conn.execute(
+                "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                (job["id"],),
+            )
         conn.execute(
-            "UPDATE jobs SET status = 'cancelled', decided_at = ?"
-            " WHERE id = ?",
+            "UPDATE jobs SET status = 'cancelled', decided_at = ? WHERE id = ?",
             (_now_iso(), job["id"]),
         )
         log_event(
@@ -371,7 +439,8 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
         )
         closed += 1
     gone_name = conn.execute(
-        "SELECT name FROM agents WHERE id = ?", (agent_id,),
+        "SELECT name FROM agents WHERE id = ?",
+        (agent_id,),
     ).fetchone()
     released = conn.execute(
         "SELECT id, title, creator_agent_id FROM jobs"
@@ -380,8 +449,7 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
     ).fetchall()
     for r in released:
         conn.execute(
-            "UPDATE jobs SET worker_agent_id = NULL, status = 'open'"
-            " WHERE id = ?",
+            "UPDATE jobs SET worker_agent_id = NULL, status = 'open' WHERE id = ?",
             (r["id"],),
         )
         conn.execute(
@@ -391,7 +459,11 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
             (r["id"],),
         )
         _notify(
-            conn, r["creator_agent_id"], "jobs", "job", r["id"],
+            conn,
+            r["creator_agent_id"],
+            "jobs",
+            "job",
+            r["id"],
             f"Your job '{r['title']}' (#{r['id']}) is back on the open"
             " board - its worker "
             f"{gone_name['name'] if gone_name else 'the assigned citizen'}"
@@ -404,24 +476,33 @@ def cancel_jobs_of_agent(conn: sqlite3.Connection, agent_id: int) -> int:
         (agent_id,),
     )
     conn.execute(
-        "DELETE FROM job_rewards WHERE agent_id = ?", (agent_id,),
+        "DELETE FROM job_rewards WHERE agent_id = ?",
+        (agent_id,),
     )
-    own = [r["id"] for r in conn.execute(
-        "SELECT id FROM jobs WHERE creator_agent_id = ?", (agent_id,),
-    ).fetchall()]
+    own = [
+        r["id"]
+        for r in conn.execute(
+            "SELECT id FROM jobs WHERE creator_agent_id = ?",
+            (agent_id,),
+        ).fetchall()
+    ]
     if own:
         marks = ",".join("?" * len(own))
         conn.execute(
-            f"DELETE FROM job_rewards WHERE job_id IN ({marks})", own,
+            f"DELETE FROM job_rewards WHERE job_id IN ({marks})",
+            own,
         )
         conn.execute(
-            f"DELETE FROM job_cycles WHERE job_id IN ({marks})", own,
+            f"DELETE FROM job_cycles WHERE job_id IN ({marks})",
+            own,
         )
         conn.execute(
-            f"DELETE FROM job_steps WHERE job_id IN ({marks})", own,
+            f"DELETE FROM job_steps WHERE job_id IN ({marks})",
+            own,
         )
         conn.execute(
-            f"DELETE FROM jobs WHERE id IN ({marks})", own,
+            f"DELETE FROM jobs WHERE id IN ({marks})",
+            own,
         )
     return closed
 
@@ -438,8 +519,8 @@ def sweep_expired_jobs() -> int:
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=config.JOB_EXPIRY_DAYS)
     ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    from notifications import _notify
     from events import EVT_JOB_EXPIRED, log_event
+    from notifications import _notify
 
     with _conn(immediate=True) as conn:
         stale = conn.execute(
@@ -453,17 +534,34 @@ def sweep_expired_jobs() -> int:
                 from db._credits import return_principal
 
                 return_principal(
-                    job["creator_agent_id"], remaining, "job_expired",
-                    target_type="job", target_id=job["id"], conn=conn,
+                    job["creator_agent_id"],
+                    remaining,
+                    "job_expired",
+                    target_type="job",
+                    target_id=job["id"],
+                    conn=conn,
                 )
-            treasury_remaining = int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+            treasury_remaining = (
+                int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+            )
             if treasury_remaining > 0:
                 from db._credits import _insert_entry
-                _insert_entry(conn, None, "treasury", treasury_remaining, "job_expired_treasury_return", "job", job["id"])
-                conn.execute("UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?", (job["id"],))
+
+                _insert_entry(
+                    conn,
+                    None,
+                    "treasury",
+                    treasury_remaining,
+                    "job_expired_treasury_return",
+                    "job",
+                    job["id"],
+                )
+                conn.execute(
+                    "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+                    (job["id"],),
+                )
             conn.execute(
-                "UPDATE jobs SET status = 'expired', decided_at = ?"
-                " WHERE id = ?",
+                "UPDATE jobs SET status = 'expired', decided_at = ? WHERE id = ?",
                 (_now_iso(), job["id"]),
             )
             log_event(
@@ -480,12 +578,15 @@ def sweep_expired_jobs() -> int:
             refund_tail = (
                 f" - {_fmt_q(remaining)} credits of escrow were refunded "
                 "to your wallet."
-                if remaining > 0 else
-                " No escrow was held (official position)."
+                if remaining > 0
+                else " No escrow was held (official position)."
             )
             if job["creator_agent_id"] is not None:
                 _notify(
-                    conn, job["creator_agent_id"], "jobs", "job",
+                    conn,
+                    job["creator_agent_id"],
+                    "jobs",
+                    "job",
                     job["id"],
                     f"Your job '{job['title']}' (#{job['id']}) expired "
                     f"unclaimed after {config.JOB_EXPIRY_DAYS} days"
@@ -496,7 +597,8 @@ def sweep_expired_jobs() -> int:
 
 
 def _outstanding_actions(
-    conn: sqlite3.Connection, agent_id: int,
+    conn: sqlite3.Connection,
+    agent_id: int,
 ) -> list[str]:
     """Every job action currently waiting on *agent_id*, as short phrases.
     The single predicate source shared by _nudges._job_nudge (profile
@@ -551,9 +653,9 @@ def send_job_digests() -> int:
     from notifications import _notify
 
     sent = 0
-    day_ago = (
-        datetime.now(timezone.utc) - timedelta(hours=24)
-    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
     with _conn() as conn:
         agents = conn.execute(
             "SELECT id, banned, suspended_until FROM agents"

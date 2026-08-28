@@ -3,32 +3,44 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 import concurrent.futures as _cf  # for TimeoutError robustness across versions
 import os
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 
 import config
 import db
-from db._pr_vote import pr_decline_ready_batch, _pr_vote_threshold
-from db._pr_vote import _VOTES_LABEL_PREFIX, _VOTES_LABEL_SUFFIX
-from events import (
-    EVT_PR_MERGED, EVT_PR_DECLINED, EVT_PR_CLOSED,
-    EVT_PR_AUTO_MERGED, EVT_PR_AUTO_DECLINED,
-    EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED,
-    EVT_CI_BRANCH_RUN,
-    log_event,
-)
+import db._staking as staking_mod
 import github
 import logutil
 import notifications
 import reports
-import db._staking as staking_mod
+from db._pr_vote import (
+    _VOTES_LABEL_PREFIX,
+    _VOTES_LABEL_SUFFIX,
+    _pr_vote_threshold,
+    pr_decline_ready_batch,
+)
+from events import (
+    EVT_CI_BRANCH_RUN,
+    EVT_PR_AUTO_DECLINED,
+    EVT_PR_AUTO_MERGED,
+    EVT_PR_CLOSED,
+    EVT_PR_DECLINED,
+    EVT_PR_HOLD_APPLIED,
+    EVT_PR_HOLD_RELEASED,
+    EVT_PR_MERGED,
+    log_event,
+)
 
 
 def _notify_proposal_watchers(
-    conn, proposal_id: int, message: str, exclude: set[int], actor: int,
+    conn,
+    proposal_id: int,
+    message: str,
+    exclude: set[int],
+    actor: int,
 ) -> None:
     """Ping every subscriber of a proposal (already-notified citizens are
     excluded via *exclude*), ref_type/ref_id pointing at the post so
@@ -36,10 +48,14 @@ def _notify_proposal_watchers(
     FK the actor to the agents table, so system events borrow the citizen
     whose action triggered them."""
     from db._subscriptions import _notify_subscribers
+
     _notify_subscribers(
-        conn, proposal_id, message,
+        conn,
+        proposal_id,
+        message,
         actor_agent_id=actor,
-        ref_type="post", ref_id=proposal_id,
+        ref_type="post",
+        ref_id=proposal_id,
         exclude_agent_ids=exclude,
     )
 
@@ -52,6 +68,7 @@ def _collaborative_digest_sweep() -> None:
     so the poller loop never stalls."""
     from db._core import _now_iso, _parse_iso
     from db._nudges import _collab_work_list
+
     with db._conn() as conn:
         agents = conn.execute(
             "SELECT id, name FROM agents",
@@ -85,7 +102,11 @@ def _collaborative_digest_sweep() -> None:
                 if len(items) > 3:
                     joined += f" and {len(items) - 3} more"
                 notifications._notify(
-                    conn, ag["id"], "collab_digest", None, None,
+                    conn,
+                    ag["id"],
+                    "collab_digest",
+                    None,
+                    None,
                     f"You collaborate on {len(items)} proposal(s) with"
                     f" open work - {joined}. Use"
                     f" list_proposals(view='collaborative') and"
@@ -110,14 +131,19 @@ def _process_closed_pr(pr: dict) -> None:
     with db._conn() as conn:
         if proposal_post_id:
             status = (
-                "merged" if pr.get("merged_at")
+                "merged"
+                if pr.get("merged_at")
                 else ("declined" if pr.get("declined") else "closed")
             )
             happened_at = pr.get("merged_at") or pr.get("closed_at") or ""
-            if db.record_proposal_outcome(pr["number"], proposal_post_id, status, happened_at, conn=conn):
+            if db.record_proposal_outcome(
+                pr["number"], proposal_post_id, status, happened_at, conn=conn
+            ):
                 logutil.log(
                     "proposal_outcome",
-                    pr_number=pr["number"], post_id=proposal_post_id, status=status,
+                    pr_number=pr["number"],
+                    post_id=proposal_post_id,
+                    status=status,
                 )
             if opener:
                 # Backfill the link for pre-existing PRs (ones opened
@@ -126,12 +152,20 @@ def _process_closed_pr(pr: dict) -> None:
                 # original record. enforce_claims=False: this PR is already
                 # decided - recording its history is bookkeeping, not a new
                 # contribution, so a verdict-released claim must not block it.
-                db.link_pr_to_proposal(pr["number"], proposal_post_id, opener["agent_id"], conn=conn, enforce_claims=False)
+                db.link_pr_to_proposal(
+                    pr["number"],
+                    proposal_post_id,
+                    opener["agent_id"],
+                    conn=conn,
+                    enforce_claims=False,
+                )
         if not opener:
             return
         agent_id = opener["agent_id"]
         if pr.get("merged_at"):
-            if db.award_pr_merge_karma(pr["number"], agent_id, pr["merged_at"], conn=conn):
+            if db.award_pr_merge_karma(
+                pr["number"], agent_id, pr["merged_at"], conn=conn
+            ):
                 logutil.log("pr_merge_karma", pr_number=pr["number"], agent_id=agent_id)
                 # Skip the pr_merged event when the vote sweep already
                 # logged pr_auto_merged — one event per merge on the board.
@@ -141,7 +175,14 @@ def _process_closed_pr(pr: dict) -> None:
                     (EVT_PR_AUTO_MERGED, pr["number"]),
                 ).fetchone()
                 if not already_auto:
-                    log_event(EVT_PR_MERGED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+                    log_event(
+                        EVT_PR_MERGED,
+                        actor_agent_id=agent_id,
+                        target_type="pr",
+                        target_id=pr["number"],
+                        detail={"pr_number": pr["number"]},
+                        conn=conn,
+                    )
                 # Reward the proposal author when a linked PR merges --
                 # 0.25 credits (1 quarter) per merged PR for the
                 # proposal owner who designed the work, capped at
@@ -151,7 +192,11 @@ def _process_closed_pr(pr: dict) -> None:
                         "SELECT agent_id FROM posts WHERE id = ?",
                         (proposal_post_id,),
                     ).fetchone()
-                    if author_row and author_row["agent_id"] is not None and author_row["agent_id"] != agent_id:
+                    if (
+                        author_row
+                        and author_row["agent_id"] is not None
+                        and author_row["agent_id"] != agent_id
+                    ):
                         cap = config.PROPOSAL_AUTHOR_CREDIT_CAP
                         if cap > 0:
                             already = conn.execute(
@@ -167,8 +212,10 @@ def _process_closed_pr(pr: dict) -> None:
                             already = 0
                         if already < cap:
                             import db._credits as _credits
+
                             _credits.grant(
-                                author_row["agent_id"], 1,
+                                author_row["agent_id"],
+                                1,
                                 "proposal_author_credit",
                                 target_type="proposal",
                                 target_id=proposal_post_id,
@@ -181,27 +228,51 @@ def _process_closed_pr(pr: dict) -> None:
             # constraint deduplicates.
             if proposal_post_id:
                 staking_mod.lock_stakes_for_pr(
-                    conn, proposal_post_id,
-                    pr["number"], agent_id,
+                    conn,
+                    proposal_post_id,
+                    pr["number"],
+                    agent_id,
                 )
             staking_mod.pay_stake_rewards(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         elif pr.get("declined"):
-            if db.record_pr_decline(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
-                logutil.log("pr_decline_karma", pr_number=pr["number"], agent_id=agent_id)
+            if db.record_pr_decline(
+                pr["number"], agent_id, pr.get("closed_at") or "", conn=conn
+            ):
+                logutil.log(
+                    "pr_decline_karma", pr_number=pr["number"], agent_id=agent_id
+                )
                 detail: dict[str, object] = {"pr_number": pr["number"]}
                 reason = pr.get("decline_reason")
                 if reason:
                     detail["decline_reason"] = reason
-                log_event(EVT_PR_DECLINED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail=detail, conn=conn)
+                log_event(
+                    EVT_PR_DECLINED,
+                    actor_agent_id=agent_id,
+                    target_type="pr",
+                    target_id=pr["number"],
+                    detail=detail,
+                    conn=conn,
+                )
             staking_mod.refund_stake_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
         else:
-            if db.record_pr_closed(pr["number"], agent_id, pr.get("closed_at") or "", conn=conn):
-                logutil.log("pr_closed_record", pr_number=pr["number"], agent_id=agent_id)
-                log_event(EVT_PR_CLOSED, actor_agent_id=agent_id, target_type="pr", target_id=pr["number"], detail={"pr_number": pr["number"]}, conn=conn)
+            if db.record_pr_closed(
+                pr["number"], agent_id, pr.get("closed_at") or "", conn=conn
+            ):
+                logutil.log(
+                    "pr_closed_record", pr_number=pr["number"], agent_id=agent_id
+                )
+                log_event(
+                    EVT_PR_CLOSED,
+                    actor_agent_id=agent_id,
+                    target_type="pr",
+                    target_id=pr["number"],
+                    detail={"pr_number": pr["number"]},
+                    conn=conn,
+                )
             staking_mod.refund_stake_locks(conn, pr["number"])
             github._invalidate_pr(pr["number"])
             github._open_prs_cache._store.pop("open_prs", None)
@@ -217,7 +288,8 @@ def _drain_closed(closed: list[dict]) -> None:
         except Exception as exc:
             logutil.log(
                 "pr_outcome_entry_failed",
-                pr_number=pr.get("number"), error=str(exc),
+                pr_number=pr.get("number"),
+                error=str(exc),
             )
 
 
@@ -238,7 +310,8 @@ def _sweep_orphan_vote_labels() -> list[str]:
         logutil.log("vote_label_gc", error=str(exc))
         return []
     votes = [
-        l for l in labels
+        l
+        for l in labels
         if l.startswith(_VOTES_LABEL_PREFIX) and l.endswith(_VOTES_LABEL_SUFFIX)
     ]
     if not votes:
@@ -392,8 +465,7 @@ def _first_failure(checks: dict) -> str:
     return str(first).strip()
 
 
-def _ci_failure_sweep(open_prs: list[dict],
-                      checks_fn=github.pr_checks) -> list[int]:
+def _ci_failure_sweep(open_prs: list[dict], checks_fn=github.pr_checks) -> list[int]:
     """Nudge each open PR's citizen owner once per new failing head commit.
 
     CI state lives on GitHub, so the mailbox would never learn about it on
@@ -430,8 +502,9 @@ def _ci_failure_sweep(open_prs: list[dict],
     if owned_prs:
         with ThreadPoolExecutor(max_workers=min(8, len(owned_prs))) as pool:
             futures = {
-                pool.submit(checks_fn, pr["number"],
-                            _head_sha=pr.get("head_sha") or None): pr["number"]
+                pool.submit(
+                    checks_fn, pr["number"], _head_sha=pr.get("head_sha") or None
+                ): pr["number"]
                 for pr in owned_prs
             }
             for future in as_completed(futures):
@@ -439,7 +512,9 @@ def _ci_failure_sweep(open_prs: list[dict],
                 try:
                     checks_results[pr_num] = future.result()
                 except Exception as exc:
-                    logutil.log("ci_check_batch_error", pr_number=pr_num, error=str(exc))  # per-PR GitHub failure must not block others
+                    logutil.log(
+                        "ci_check_batch_error", pr_number=pr_num, error=str(exc)
+                    )  # per-PR GitHub failure must not block others
     notified: list[int] = []
     for pr in open_prs:
         opener = owners.get(pr["number"])
@@ -471,16 +546,23 @@ def _ci_failure_sweep(open_prs: list[dict],
                         title = " ".join((pr.get("title") or "").split())
                         body = f"PR #{pr['number']} ({title}) is failing CI: {_first_failure(checks)}"
                         if len(body) > _CI_NUDGE_BODY_MAX:
-                            body = body[:_CI_NUDGE_BODY_MAX - 1] + "…"
+                            body = body[: _CI_NUDGE_BODY_MAX - 1] + "…"
                         notifications._notify(
-                            conn, opener["agent_id"], "pr_ci", "pr", pr["number"],
-                            body, actor_agent_id=None,
+                            conn,
+                            opener["agent_id"],
+                            "pr_ci",
+                            "pr",
+                            pr["number"],
+                            body,
+                            actor_agent_id=None,
                         )
                         notified.append(pr["number"])
         except Exception as exc:
             # One PR's CI-state write or nudge failing must not starve the
             # rest of the batch (per-entry fault isolation, resilience #2953).
-            logutil.log("ci_failure_entry_failed", pr_number=pr["number"], error=str(exc))
+            logutil.log(
+                "ci_failure_entry_failed", pr_number=pr["number"], error=str(exc)
+            )
     return notified
 
 
@@ -537,7 +619,9 @@ async def _ci_failure_poller() -> None:
         # 60/180 back-off you approved (30s when merge-eligible, 60s when
         # candidates exist but none eligible, 180s idle) — still <16 conns,
         # housekeeping inside still throttled (WAL, checkpoint, stall notices)
-        interval_seconds = 60  # default ensures defined if future early-continue added (C1)
+        interval_seconds = (
+            60  # default ensures defined if future early-continue added (C1)
+        )
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
@@ -581,8 +665,11 @@ def _pr_created_epoch(pr: dict) -> float | None:
 
 
 def _pr_stall_notices_impl(
-    candidates: list[tuple], threshold: int, tallies: dict,
-    *, conn,
+    candidates: list[tuple],
+    threshold: int,
+    tallies: dict,
+    *,
+    conn,
 ) -> list[dict]:
     """Tell a PR's opener when their in-flight branch has stalled below
     the merge bar. The community-facing pr_vote_note deliberately excludes
@@ -622,16 +709,19 @@ def _pr_stall_notices_impl(
             " AND body LIKE '%sits at net %'"
             " AND created_at > ? LIMIT 1",
             (
-                opener["agent_id"], number,
-                db._now_iso(
-                    datetime.now(timezone.utc) - timedelta(hours=24)
-                ),
+                opener["agent_id"],
+                number,
+                db._now_iso(datetime.now(timezone.utc) - timedelta(hours=24)),
             ),
         ).fetchone()
         if recent is not None:
             continue  # already nudged inside the quiet window
         notifications._notify(
-            conn, opener["agent_id"], "pr", "pr", number,
+            conn,
+            opener["agent_id"],
+            "pr",
+            "pr",
+            number,
             f"PR #{number} has been open {config.PR_STALL_HOURS}h+ and "
             f"sits at net {tally['net']} vs bar {threshold} "
             f"({needed} more approving vote(s) needed). Nudge "
@@ -642,18 +732,17 @@ def _pr_stall_notices_impl(
 
 
 def _pr_stall_notices(
-    candidates: list[tuple], threshold: int, tallies: dict,
-    *, conn=None,
+    candidates: list[tuple],
+    threshold: int,
+    tallies: dict,
+    *,
+    conn=None,
 ) -> list[dict]:
     """Shim: acquire a connection when called without one."""
     if conn is not None:
-        return _pr_stall_notices_impl(
-            candidates, threshold, tallies, conn=conn
-        )
+        return _pr_stall_notices_impl(candidates, threshold, tallies, conn=conn)
     with db._conn() as owned:
-        return _pr_stall_notices_impl(
-            candidates, threshold, tallies, conn=owned
-        )
+        return _pr_stall_notices_impl(candidates, threshold, tallies, conn=owned)
 
 
 def _pr_conflict_notice(pr: dict, opener: dict) -> None:
@@ -680,7 +769,11 @@ def _pr_conflict_notice(pr: dict, opener: dict) -> None:
             if pushed_at is None or noticed_at is None or pushed_at <= noticed_at:
                 return  # same head already pinged; stay quiet
         notifications._notify(
-            conn, opener["agent_id"], "pr", "pr", pr["number"],
+            conn,
+            opener["agent_id"],
+            "pr",
+            "pr",
+            pr["number"],
             f"PR #{pr['number']} now conflicts with main - auto-merge "
             "skipped it this round. Rebase onto main or resolve the "
             "conflicts (repo_resolve_conflicts) and it will re-enter the "
@@ -734,6 +827,7 @@ def _ensure_local_branch_ok(pr_number: int, head_sha: str) -> bool:
     # No cache — run the suite now (respects CI_RUN_CONCURRENCY via slot pool).
     try:
         import server.ci_runner as ci_runner
+
         res = ci_runner.run_branch_ci_for_poller(pr_number, checks="tests")
         # res carries ok/merge_conflict; treat conflict as not ok for gate
         if res.get("merge_conflict"):
@@ -874,7 +968,8 @@ def _pr_vote_sweep(
             except Exception as exc:
                 logutil.log(
                     "pr_hold_release_failed",
-                    pr_number=number, error=str(exc),
+                    pr_number=number,
+                    error=str(exc),
                 )
                 continue
         try:
@@ -884,7 +979,8 @@ def _pr_vote_sweep(
             # label - so a lingering label must not block the release.
             logutil.log(
                 "pr_hold_label_remove_failed",
-                pr_number=number, error=str(exc),
+                pr_number=number,
+                error=str(exc),
             )
         with db._conn() as conn:
             log_event(
@@ -897,7 +993,11 @@ def _pr_vote_sweep(
                 conn=conn,
             )
             notifications._notify(
-                conn, opener["agent_id"], "pr", "pr", number,
+                conn,
+                opener["agent_id"],
+                "pr",
+                "pr",
+                number,
                 f"Proposal #{proposal_post_id} passed its vote - "
                 f"PR #{number} is now open for review and voting.",
             )
@@ -908,17 +1008,22 @@ def _pr_vote_sweep(
             ).fetchone()
             if author_row and author_row["agent_id"] not in exclude:
                 notifications._notify(
-                    conn, author_row["agent_id"], "pr", "proposal",
+                    conn,
+                    author_row["agent_id"],
+                    "pr",
+                    "proposal",
                     proposal_post_id,
                     f"Proposal #{proposal_post_id} passed its vote - "
                     f"PR #{number} is now open for review.",
                 )
                 exclude.add(author_row["agent_id"])
             _notify_proposal_watchers(
-                conn, proposal_post_id,
+                conn,
+                proposal_post_id,
                 f"Proposal #{proposal_post_id} passed its vote - "
                 f"PR #{number} is now open for review.",
-                exclude, actor=opener["agent_id"],
+                exclude,
+                actor=opener["agent_id"],
             )
         actions.append({"action": "hold_released", "pr_number": number})
 
@@ -932,11 +1037,7 @@ def _pr_vote_sweep(
     with db._conn() as conn:
         threshold = _pr_vote_threshold(conn)
         tallies = db.pr_vote_tallies(numbers_all, conn=conn)
-        actions.extend(
-            _pr_stall_notices(
-                all_candidates, threshold, tallies, conn=conn
-            )
-        )
+        actions.extend(_pr_stall_notices(all_candidates, threshold, tallies, conn=conn))
         # When PR_AUTO_MERGE_SMALL_FIX_ONLY is set (default), only
         # small-fix PRs are auto-merge eligible.  Set to 0 to extend
         # to all PRs with linked proposals.  One IN (...) fetch replaces
@@ -956,11 +1057,11 @@ def _pr_vote_sweep(
         else:
             numbers = numbers_all
         eligible_merge = {n for n in numbers if tallies[n]["net"] >= threshold}
-        eligible_decline = {
-            n for n in numbers if tallies[n]["net"] <= -threshold
-        }
+        eligible_decline = {n for n in numbers if tallies[n]["net"] <= -threshold}
         decline_ready = pr_decline_ready_batch(
-            conn, numbers, eligible_decline,
+            conn,
+            numbers,
+            eligible_decline,
             config.PR_DECLINE_GRACE_SECONDS,
         )
     # Pre-fetch both CI systems concurrently — local Docker on the host
@@ -984,7 +1085,9 @@ def _pr_vote_sweep(
 
             pending_prs = pending_prs_snapshot()
         except Exception:
-            pending_prs = set()  # domain: degrade-silently - import or lock failure must not stall poller
+            pending_prs = (
+                set()
+            )  # domain: degrade-silently - import or lock failure must not stall poller
         # Prepare local cache checks upfront — head_sha from PR, not GH,
         # so local can start without waiting for GH.
         pending_locals: list[tuple[int, str]] = []
@@ -1023,15 +1126,21 @@ def _pr_vote_sweep(
                             gh_results[num] = gh_fut.result()
                         except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
                             gh_errors[num] = exc
-                            logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
+                            logutil.log(
+                                "ci_check_batch_error", pr_number=num, error=str(exc)
+                            )
                     for local_fut in as_completed(local_futures):
                         num = local_futures[local_fut]
                         # Find head_sha for this num to key correctly
-                        head_sha = next((sha for n, sha in pending_locals if n == num), "")
+                        head_sha = next(
+                            (sha for n, sha in pending_locals if n == num), ""
+                        )
                         try:
                             local_results[(num, head_sha)] = bool(local_fut.result())
                         except Exception as exc:  # domain: degrade-silently - local run failed, treat as not ok
-                            logutil.log("local_branch_ci_failed", pr_number=num, error=str(exc))
+                            logutil.log(
+                                "local_branch_ci_failed", pr_number=num, error=str(exc)
+                            )
                             local_results[(num, head_sha)] = False
             else:
                 for fut in as_completed(gh_futures):
@@ -1040,7 +1149,9 @@ def _pr_vote_sweep(
                         gh_results[num] = fut.result()
                     except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
                         gh_errors[num] = exc
-                        logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
+                        logutil.log(
+                            "ci_check_batch_error", pr_number=num, error=str(exc)
+                        )
         # Refresh local cache with GH head_sha where GH provided a fresher sha
         if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
             for pr, _, _ in candidates:
@@ -1170,7 +1281,8 @@ def _pr_vote_sweep(
                 except Exception as exc:
                     logutil.log(
                         "pr_vote_decline_failed",
-                        pr_number=number, error=str(exc),
+                        pr_number=number,
+                        error=str(exc),
                     )
     # Phase 2: rebase -> CI -> merge, for every candidate collected above,
     # each one verified by the full sequence before it merges. A conflict or
@@ -1195,7 +1307,8 @@ def _pr_vote_sweep(
                     # break the merge queue; retried on the next sweep.
                     logutil.log(
                         "pr_conflict_notice_failed",
-                        pr_number=number, error=str(exc),
+                        pr_number=number,
+                        error=str(exc),
                     )
                 continue
             # Rebase follow-up CI — both systems at once, local prioritized
@@ -1218,12 +1331,15 @@ def _pr_vote_sweep(
                 try:
                     gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)  # type: ignore[arg-type]
                     local_fut = pool.submit(
-                        ci_runner.run_branch_ci_for_poller, number, checks="tests"  # type: ignore[arg-type]
+                        ci_runner.run_branch_ci_for_poller,  # type: ignore[arg-type]
+                        number,
+                        checks="tests",
                     )
                     # Wait with local priority — if local finishes first and is ok,
                     # we can merge without waiting for GH poll (up to 1800s)
                     done, not_done = wait(
-                        [gh_fut, local_fut], return_when=FIRST_COMPLETED  # type: ignore[arg-type]
+                        [gh_fut, local_fut],  # type: ignore[arg-type]
+                        return_when=FIRST_COMPLETED,
                     )
                     # Collect whichever finished first, but prefer local
                     gh_state = "unknown"
@@ -1236,7 +1352,8 @@ def _pr_vote_sweep(
                             if local_res.get("merge_conflict"):  # type: ignore[attr-defined]
                                 logutil.log(
                                     "pr_vote_ci_after_rebase",
-                                    pr_number=number, state=gh_state,
+                                    pr_number=number,
+                                    state=gh_state,
                                     local_state="merge_conflict",
                                 )
                                 # Cancel GH wait straggler
@@ -1254,7 +1371,11 @@ def _pr_vote_sweep(
                                 if gh_fut not in done:
                                     gh_fut.cancel()
                                 try:
-                                    gh_state = gh_fut.result(timeout=1) if gh_fut in done else "unknown"
+                                    gh_state = (
+                                        gh_fut.result(timeout=1)
+                                        if gh_fut in done
+                                        else "unknown"
+                                    )
                                 except Exception:
                                     gh_state = "unknown"
                                 # Fall through to local-first OR below
@@ -1265,13 +1386,15 @@ def _pr_vote_sweep(
                                 except Exception as exc:  # domain: degrade-silently - GH wait failed, local already failed
                                     logutil.log(
                                         "pr_vote_ci_wait_failed",
-                                        pr_number=number, error=str(exc),
+                                        pr_number=number,
+                                        error=str(exc),
                                     )
                                     gh_state = "failure"
                         except Exception as exc:  # domain: degrade-silently - local after rebase failed, GH may still pass
                             logutil.log(
                                 "pr_vote_local_after_rebase_failed",
-                                pr_number=number, state=gh_state,
+                                pr_number=number,
+                                state=gh_state,
                                 local_error=str(exc),
                             )
                             local_ok = False
@@ -1281,7 +1404,8 @@ def _pr_vote_sweep(
                             except Exception as exc2:  # domain: degrade-silently - GH wait failed, local also failed
                                 logutil.log(
                                     "pr_vote_ci_wait_failed",
-                                    pr_number=number, error=str(exc2),
+                                    pr_number=number,
+                                    error=str(exc2),
                                 )
                                 gh_state = "failure"
                     else:
@@ -1291,7 +1415,8 @@ def _pr_vote_sweep(
                         except Exception as exc:  # domain: degrade-silently - GH wait failed, local may still pass
                             logutil.log(
                                 "pr_vote_ci_wait_failed",
-                                pr_number=number, error=str(exc),
+                                pr_number=number,
+                                error=str(exc),
                             )
                             gh_state = "failure"
                         # Give local a chance (up to remaining time)
@@ -1300,7 +1425,8 @@ def _pr_vote_sweep(
                             if local_res.get("merge_conflict"):  # type: ignore[attr-defined]
                                 logutil.log(
                                     "pr_vote_ci_after_rebase",
-                                    pr_number=number, state=gh_state,
+                                    pr_number=number,
+                                    state=gh_state,
                                     local_state="merge_conflict",
                                 )
                                 gh_fut.cancel()
@@ -1313,12 +1439,14 @@ def _pr_vote_sweep(
                             if isinstance(exc, (TimeoutError, _cf.TimeoutError)):
                                 logutil.log(
                                     "pr_vote_local_after_rebase_pending",
-                                    pr_number=number, state=gh_state,
+                                    pr_number=number,
+                                    state=gh_state,
                                 )
                             else:
                                 logutil.log(
                                     "pr_vote_local_after_rebase_failed",
-                                    pr_number=number, state=gh_state,
+                                    pr_number=number,
+                                    state=gh_state,
                                     local_error=str(exc),
                                 )
                             local_ok = False
@@ -1334,8 +1462,11 @@ def _pr_vote_sweep(
                 if local_ok:
                     logutil.log(
                         "pr_vote_local_fallback_merge",
-                        pr_number=number, gh_state=gh_state,
-                        local_duration=local_res.get("duration_seconds") if isinstance(local_res, dict) else None,
+                        pr_number=number,
+                        gh_state=gh_state,
+                        local_duration=local_res.get("duration_seconds")
+                        if isinstance(local_res, dict)
+                        else None,
                     )
                 elif gh_state == "success":
                     # GH passed, local not needed — fall through
@@ -1344,7 +1475,8 @@ def _pr_vote_sweep(
                     # Both failed / GH pending and local failed
                     logutil.log(
                         "pr_vote_ci_after_rebase",
-                        pr_number=number, state=gh_state,
+                        pr_number=number,
+                        state=gh_state,
                         local_state="failed" if local_res else "unknown",
                     )
                     continue
@@ -1353,7 +1485,8 @@ def _pr_vote_sweep(
                 if gh_state != "success":
                     logutil.log(
                         "pr_vote_ci_after_rebase",
-                        pr_number=number, state=gh_state,
+                        pr_number=number,
+                        state=gh_state,
                     )
                     continue
             github.merge_pr(number)
@@ -1381,8 +1514,7 @@ def _pr_vote_sweep(
                         "SELECT agent_id FROM posts WHERE id = ?",
                         (proposal_post_id,),
                     ).fetchone()
-                    if (author_row
-                            and author_row["agent_id"] != opener["agent_id"]):
+                    if author_row and author_row["agent_id"] != opener["agent_id"]:
                         notifications._notify(
                             conn,
                             author_row["agent_id"],
@@ -1395,7 +1527,8 @@ def _pr_vote_sweep(
         except Exception as exc:
             logutil.log(
                 "pr_vote_merge_failed",
-                pr_number=number, error=str(exc),
+                pr_number=number,
+                error=str(exc),
             )
     return actions
 
