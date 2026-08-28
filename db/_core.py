@@ -895,6 +895,14 @@ def init_db() -> None:
             " ON todo_items(claimed_by_agent_id)"
             " WHERE claimed_by_agent_id IS NOT NULL"
         )
+        # One item per PR: global uniqueness for the nullable pr_number
+        # binding (Option A). Partial unique index is the race-proof backstop
+        # for the application guard in bind_todo_item_to_pr; WHERE pr_number
+        # IS NOT NULL lets many NULLs coexist.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_todo_items_pr_number"
+            " ON todo_items(pr_number) WHERE pr_number IS NOT NULL"
+        )
         # Whole-list claiming on collaborative proposals (todo_claim_mode=1,
         # see claim_todo_list): the same per-item claim pattern, but the claim
         # rides the todo_lists row and covers the whole category. Existing

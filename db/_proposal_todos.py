@@ -1454,10 +1454,28 @@ def bind_todo_item_to_pr(token: str, post_id: int, item_id: int,
                 f"{row['pr_number']} - one item per PR; clear that binding "
                 "first."
             )
-        conn.execute(
-            "UPDATE todo_items SET pr_number = ? WHERE id = ?",
+        # One item per PR globally (Option A): a PR may be bound to at most
+        # one to-do item. The application guard gives a friendly ForumError;
+        # the partial unique index below is the race-proof backstop.
+        dup = conn.execute(
+            "SELECT ti.id FROM todo_items ti WHERE ti.pr_number = ? AND ti.id != ?",
             (pr_number, item_id),
-        )
+        ).fetchone()
+        if dup is not None:
+            raise ForumError(
+                f"PR #{pr_number} is already bound to to-do item #{dup['id']} — one item per PR."
+            )
+        try:
+            conn.execute(
+                "UPDATE todo_items SET pr_number = ? WHERE id = ?",
+                (pr_number, item_id),
+            )
+        except sqlite3.IntegrityError as exc:  # domain:fail-loudly - unique index race is a user-visible binding error, translate to ForumError
+            # The partial unique index fired under a race — translate to the
+            # same friendly error the guard above would have raised.
+            raise ForumError(
+                f"PR #{pr_number} is already bound to another to-do item — one item per PR."
+            ) from exc
         _record_todo_edit(conn, post_id, agent["id"])
         return {
             "post_id": post_id,
