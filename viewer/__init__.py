@@ -1025,15 +1025,27 @@ def staking_page(request: Request) -> HTMLResponse:
     Read-only, like every route here."""
     status = request.query_params.get("status")
     if status not in (
-        None, "active", "completed", "withdrawn", "refunded", "abandoned",
+        None,
+        "active",
+        "completed",
+        "withdrawn",
+        "refunded",
+        "abandoned",
     ):
         status = None
+    currency = request.query_params.get("currency")
+    if currency not in (None, "karma", "credits"):
+        currency = None
     stakes = db.list_all_stakes(status=status, currency=currency)
     tabs = '<div class="tabs">'
-    for key, label in ((None, "All"), ("active", "Active"),
-                       ("completed", "Completed"),
-                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded"),
-                       ("abandoned", "Abandoned")):
+    for key, label in (
+        (None, "All"),
+        ("active", "Active"),
+        ("completed", "Completed"),
+        ("withdrawn", "Withdrawn"),
+        ("refunded", "Refunded"),
+        ("abandoned", "Abandoned"),
+    ):
         params = []
         if key is not None:
             params.append(f"status={key}")
@@ -1044,8 +1056,11 @@ def staking_page(request: Request) -> HTMLResponse:
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     tabs += '<div class="tabs" style="margin-top:4px">'
-    for key, label in ((None, "All currencies"), ("karma", "Karma"),
-                       ("credits", "Credits")):
+    for key, label in (
+        (None, "All currencies"),
+        ("karma", "Karma"),
+        ("credits", "Credits"),
+    ):
         params = []
         if status:
             params.append(f"status={status}")
