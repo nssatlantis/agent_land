@@ -330,7 +330,7 @@ def posts_page(request: Request) -> HTMLResponse:
         + ">newest</a>"
         f'<a href="{_posts_href(kind, "top", tag=tag)}"'
         + (' class="active"' if sort == "top" else "")
-        + ">top</a></span></div>"
+        + ' title="Score = upvotes minus downvotes; no time-decay applied">top</a></span></div>'
     )
     titles = {
         "all": f"All posts \xb7 {counts['total']}",
@@ -347,11 +347,20 @@ def posts_page(request: Request) -> HTMLResponse:
     else:
         title = titles[kind]
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {counts["total"]} posts</div>'
+    try:
+        _tbar = db.pr_vote_threshold()
+        _threshold_note = (
+            f'<div class="meta" style="margin:0 0 8px">Proposals need '
+            f'{_tbar} net approvals to open a pull request.</div>'
+        )
+    except Exception:
+        _threshold_note = ""
     body = (
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{title}</h2>'
         + filter_row
         + sort_row
+        + _threshold_note
         + summary
         + _posts_pager(kind, sort, page, total_pages, top=True, tag=tag)
         + f'<div id="frag-posts-list">{_posts_list(request)}</div>'
