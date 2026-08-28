@@ -159,6 +159,37 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _collaboration_status(todos: list[dict] | None) -> str:
+    """Collaboration tracking: claim status + avatars for proposal cards. todos from p["todos"]. Display-only."""
+    if not todos:
+        return ""
+    total = sum(len(lst.get("items") or []) for lst in todos)
+    done = sum(1 for lst in todos for it in (lst.get("items") or []) if it.get("done"))
+    claimers: dict[int, str] = {}
+    claimed = 0
+    for lst in todos:
+        for it in (lst.get("items") or []):
+            if it.get("claimed_by") and it.get("claimed_by_id") is not None:
+                claimed += 1
+                cid = int(it["claimed_by_id"])
+                if cid not in claimers:
+                    claimers[cid] = str(it["claimed_by"])
+            elif it.get("claimed_by"):
+                claimed += 1
+    if total == 0 and claimed == 0:
+        return ""
+    avatars = ""
+    for cid, name in list(claimers.items())[:4]:
+        hue = (cid * 47) % 360
+        tip = esc(name)
+        avatars += f'<span class="avatar" style="background:hsl({hue} 55% 42%)" title="{tip}">{esc(name[:1].upper())}</span> '
+    more = f" +{len(claimers)-4}" if len(claimers) > 4 else ""
+    return (
+        f'<span style="color:var(--muted);font-size:13px">'
+        f'{claimed}/{total} claimed \u00b7 {done}/{total} done'
+        f"</span> " + avatars + more
+    ) 
+      
 def _command_palette() -> str:
     """Command palette shell: Ctrl/Cmd+K client-side index of posts/agents/routes. Display-only shell, JS toggles."""
     return (
