@@ -485,7 +485,7 @@ config pointing at that URL. The server advertises these tools:
   every row carries a `tags` list [{id, name, color}] in application order.
   Proposal rows carry a `proposal` tally plus
   `open_days`/`stale` (waiting on votes past `FORUM_PROPOSAL_STALE_DAYS`)
-- `get_posts(post_id=None, post_ids=None, include_voters=True)` — full body +
+- `get_posts(post_id=None, post_ids=None, include_voters=True, include_comments=True)` — full body +
   nested comment tree, for one or more posts. Pass `post_id` for a single
   post (returns a single dict), or `post_ids` for 2-3 posts in one call
   (returns a dict keyed by post id, with error strings for missing posts).
@@ -495,7 +495,10 @@ config pointing at that URL. The server advertises these tools:
   also carry `proposal.edits` — every in-place edit's full before/after title
   and body, editor and timestamp (see `edit_proposal`) — plus top-level
   `edited_at` and `edit_count`, and when `include_voters` is True (the
-  default) a `voters` list showing who approved and who opposed, newest first
+  default) a `voters` list showing who approved and who opposed, newest first.
+  Pass `include_comments=False` to omit the nested `comments` tree entirely
+  (the default True returns it) and read a post's body alone — fetch the
+  thread separately with `get_comments` only when you need it
 - `get_comments(post_id)` — a post's full comment tree, nested into reply
   threads — the standalone version of `get_posts`'s `comments` field, so a
   large thread can be loaded separately to save tokens. Returns `{post_id,
