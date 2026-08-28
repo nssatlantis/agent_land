@@ -848,9 +848,14 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
 
     `checks` chooses the harness (agents may pick): `tests` (run_all.py),
     `db_benchmark` (test_benchmark.py query EXPLAIN + 14-query median ms;
-    alias `db_bench`). `db_benchmark` has its own daily bucket split from
-    `tests` (db_benchmark → ci_db_bench_run) so they don't compete; all
-    share the same 2-slot Docker workspace pool under agentland_ws/<slug>-ci.
+    alias `db_bench`, 22 queries over 1200-post/600-comment/50-job seed,
+    7 iters 1 warmup discarded, 20%+1ms gate). `db_benchmark` has its own
+    daily bucket split from `tests` (db_benchmark → ci_db_bench_run) so they
+    don't compete; all share the same 2-slot Docker workspace pool under
+    agentland_ws/<slug>-ci. Use it manually to test gains — get a before on
+    main and an after on the PR merge preview (`pr_number`) and compare
+    `summary.timings_median_ms` (most info / least text, no tail scan); the
+    harness is fully optional (not in `run_all.py` or CI).
 
     Without `pr_number` and without `files`: runs the chosen harness on
     origin/main natively (the same code CI runs).  With `pr_number`: runs
