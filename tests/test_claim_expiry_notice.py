@@ -1,6 +1,7 @@
 """Tests for claim-expiry notifications: when _sweep_expired_claims
 releases a timed-out claim, the former claimer is told (grouped per
 claimer + proposal), so a silently released claim no longer looks held."""
+
 import importlib
 import os
 import sys
@@ -14,8 +15,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
 import config  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -49,12 +50,15 @@ def _expiry_notices(agent_id):
 
 def test_expiry_notice_grouped_per_claimer():
     cp = db.create_proposal(
-        AGENTS["alpha"]["token"], "Expiry notice board", "b",
+        AGENTS["alpha"]["token"],
+        "Expiry notice board",
+        "b",
         collaborative=True,
     )
     cpid = cp["post_id"]
     db.set_todos_for_post(
-        AGENTS["alpha"]["token"], cpid,
+        AGENTS["alpha"]["token"],
+        cpid,
         [{"title": "W", "items": [{"text": "task1"}, {"text": "task2"}]}],
     )
     with db._conn() as conn:
@@ -99,11 +103,15 @@ def test_expiry_notice_grouped_per_claimer():
 def test_live_claim_and_disabled_timeout_stay_silent():
     saved = config.CLAIM_TIMEOUT_SECONDS
     cp = db.create_proposal(
-        AGENTS["alpha"]["token"], "Quiet board", "b", collaborative=True,
+        AGENTS["alpha"]["token"],
+        "Quiet board",
+        "b",
+        collaborative=True,
     )
     cpid = cp["post_id"]
     db.set_todos_for_post(
-        AGENTS["alpha"]["token"], cpid,
+        AGENTS["alpha"]["token"],
+        cpid,
         [{"title": "W", "items": [{"text": "live task"}]}],
     )
     with db._conn() as conn:

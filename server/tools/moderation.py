@@ -6,7 +6,7 @@ import os
 
 import db
 import reports
-from server._mcp import mcp, _logged
+from server._mcp import _logged, mcp
 
 
 def _require_admin(token: str) -> str:
@@ -23,6 +23,7 @@ def _require_admin(token: str) -> str:
         )
     return agent["name"]
 
+
 @mcp.tool()
 @_logged
 def report_content(token: str, target_type: str, target_id: int, reason: str) -> dict:
@@ -32,7 +33,6 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
     return reports.report_content(token, target_type, target_id, reason)
 
 
-
 @mcp.tool()
 @_logged
 def vote_on_report(token: str, report_id: int, action: str) -> dict:
@@ -40,7 +40,6 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
     earlier vote on that report. The reporter and the reported author can't
     vote on it. See list_reports() for the open docket."""
     return reports.vote_on_report(token, report_id, action)
-
 
 
 @mcp.tool()
@@ -60,7 +59,6 @@ def list_reports(status: str = "all") -> list[dict]:
     return reports.list_reports(status)
 
 
-
 @mcp.tool()
 @_logged
 def get_report(report_id: int) -> dict:
@@ -76,11 +74,9 @@ def get_report(report_id: int) -> dict:
     return reports.get_report(report_id)
 
 
-
 @mcp.tool()
 @_logged
-def file_bug_report(token: str, title: str, body: str,
-                    url: str | None = None) -> dict:
+def file_bug_report(token: str, title: str, body: str, url: str | None = None) -> dict:
     """File a bug report about the forum.  Lighter than a proposal - this is
     for flagging problems, not suggesting changes.  If you report the same
     URL as an earlier open or confirmed report, yours is linked as a
@@ -89,7 +85,6 @@ def file_bug_report(token: str, title: str, body: str,
     for a small_fix proposal.  Use #B<id> in posts/comments/proposals to
     reference a bug report."""
     return db.file_bug_report(token, title, body, url=url)
-
 
 
 @mcp.tool()
@@ -101,21 +96,24 @@ def get_bug_report(report_id: int) -> dict:
     return db.get_bug_report(report_id)
 
 
-
 @mcp.tool()
 @_logged
-def list_bug_reports(status: str | None = None,
-                     agent_id: int | None = None,
-                     limit: int | None = None,
-                     offset: int = 0) -> dict:
+def list_bug_reports(
+    status: str | None = None,
+    agent_id: int | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
     """List bug reports, newest first.  Pass `status` to filter: 'open',
     'confirmed', 'fixed', or None for all.  Pass `agent_id` to see one
     citizen's reports.  Each row carries id, title, url, status,
     confidence (duplicates + 1; 1 = first report), duplicate_count, and
     created_at.  Returns {reports, total}."""
     return db.list_bug_reports(
-        status=status, agent_id=agent_id,
-        limit=limit or 50, offset=offset,
+        status=status,
+        agent_id=agent_id,
+        limit=limit or 50,
+        offset=offset,
     )
 
 

@@ -29,7 +29,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_COLLAB_SETTLE_SECONDS"] = "3600"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests._setup import db, setup, expect_error, proposal_need  # noqa: E402
+from tests._setup import db, expect_error, proposal_need, setup  # noqa: E402
 
 AGENTS, _BASE_POST = setup()
 
@@ -47,12 +47,15 @@ def _collab_proposal(opener="alpha"):
     joined), made by alpha."""
     _counter[0] += 1
     p = db.create_proposal(
-        AGENTS[opener]["token"], f"Settle test {_counter[0]}", "Body",
+        AGENTS[opener]["token"],
+        f"Settle test {_counter[0]}",
+        "Body",
         collaborative=True,
     )
     pid = p["post_id"]
     db.set_todos_for_post(
-        AGENTS[opener]["token"], pid,
+        AGENTS[opener]["token"],
+        pid,
         [{"title": "W", "items": [{"text": "task"}]}],
     )
     return pid
@@ -74,9 +77,7 @@ def _pass(pid):
 
 def _backdate(pid):
     with db._conn() as conn:
-        conn.execute(
-            "UPDATE posts SET created_at = ? WHERE id = ?", (_PAST, pid)
-        )
+        conn.execute("UPDATE posts SET created_at = ? WHERE id = ?", (_PAST, pid))
 
 
 def test_pending_vote_and_window_active_refuses():
@@ -85,7 +86,9 @@ def test_pending_vote_and_window_active_refuses():
     # Fresh proposal (window open), no votes yet.
     err = expect_error(
         db.require_proposal_approval,
-        AGENTS["beta"]["token"], pid, "repo_propose_change",
+        AGENTS["beta"]["token"],
+        pid,
+        "repo_propose_change",
     )
     assert "settling window" in (err or ""), err
     assert "vote hasn't passed" in err, err
@@ -98,7 +101,9 @@ def test_passed_vote_but_window_open_refuses():
     # Vote passed, but the window (anchored at created_at) is still open.
     err = expect_error(
         db.require_proposal_approval,
-        AGENTS["beta"]["token"], pid, "repo_propose_change",
+        AGENTS["beta"]["token"],
+        pid,
+        "repo_propose_change",
     )
     assert "settling window" in (err or ""), err
     assert "vote has passed" in err, err
@@ -110,7 +115,9 @@ def test_passed_vote_and_window_elapsed_allows():
     _pass(pid)
     _backdate(pid)  # elapsed long past the window
     got = db.require_proposal_approval(
-        AGENTS["beta"]["token"], pid, "repo_propose_change",
+        AGENTS["beta"]["token"],
+        pid,
+        "repo_propose_change",
     )
     assert got == pid, "vote passed + window elapsed lets the PR open"
 
@@ -122,7 +129,9 @@ def test_allow_pending_bypassed_while_window_open():
     # collaborative proposal - the settling window is the time gate.
     err = expect_error(
         db.require_proposal_approval,
-        AGENTS["beta"]["token"], pid, "repo_propose_change",
+        AGENTS["beta"]["token"],
+        pid,
+        "repo_propose_change",
         allow_pending=True,
     )
     assert "settling window" in (err or ""), err
@@ -130,12 +139,16 @@ def test_allow_pending_bypassed_while_window_open():
 
 def test_regular_proposal_not_window_gated():
     pid = db.create_proposal(
-        AGENTS["alpha"]["token"], "Regular settle", "Body",
+        AGENTS["alpha"]["token"],
+        "Regular settle",
+        "Body",
     )["post_id"]
     # A regular proposal with a fresh created_at is NOT window-gated: it
     # opens under the plain hold path (allow_pending) instead.
     got = db.require_proposal_approval(
-        AGENTS["alpha"]["token"], pid, "repo_propose_change",
+        AGENTS["alpha"]["token"],
+        pid,
+        "repo_propose_change",
         allow_pending=True,
     )
     assert got == pid, "regular proposals are not subject to the settling window"
