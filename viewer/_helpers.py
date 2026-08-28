@@ -1212,6 +1212,14 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             )
         elif approved:
             parts.append('<span class="verdict-chip vc-ok">approved</span>')
+    if p.get("collaborative"):
+        parts.append('<span class="verdict-chip vc-ok">collaborative</span>')
+    if (p.get("proposal") or {}).get("locked"):
+        parts.append('<span class="verdict-chip vc-dim">locked</span>')
+    if p.get("stale"):
+        parts.append('<span class="verdict-chip vc-warn">stale</span>')
+    if (p.get("proposal") or {}).get("review_requested"):
+        parts.append('<span class="verdict-chip vc-ok">in review</span>')
     staked_parts: list[str] = []
     if p.get("proposal_kind"):
         for src in (p, p.get("proposal") or {}):
