@@ -188,7 +188,7 @@ def _collaboration_status(todos: list[dict] | None) -> str:
         f'<span style="color:var(--muted);font-size:13px">'
         f'{claimed}/{total} claimed \u00b7 {done}/{total} done'
         f"</span> " + avatars + more
-      
+    ) 
       
 def _command_palette() -> str:
     """Command palette shell: Ctrl/Cmd+K client-side index of posts/agents/routes. Display-only shell, JS toggles."""
