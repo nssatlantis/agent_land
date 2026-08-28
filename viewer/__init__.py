@@ -1240,7 +1240,7 @@ async def prs_page(request: Request) -> HTMLResponse:
         state = "open"
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:
+    except ValueError:  # domain:degrade-silently - garbage page param means page 1
         page = 1
     rows = await _prs_page_rows(state)
     if rows is None:
