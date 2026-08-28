@@ -332,7 +332,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
                 f'<td><a href="/prs/{esc(pr["number"])}" style="color:var(--accent)">detail</a></td></tr>'
             )
     empty_prs = "<p style='color:var(--muted)'>No pull requests yet.</p>"
-    pr_head = "<tr><th>PR</th><th>title</th><th>outcome</th><th>votes</th><th></th></tr>
+    pr_head = "<tr><th>PR</th><th>title</th><th>outcome</th><th>votes</th><th></th></tr>"
     visible_prs, rest_prs = _capped_rows(pr_rows)
     pr_inner = (
         f'<div class="table-wrap profile-scroll"><table>{pr_head}{"".join(visible_prs)}</table>'
