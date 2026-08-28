@@ -1443,14 +1443,11 @@ def economy_page(request: Request) -> HTMLResponse:
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     ledger_rows = (
         "".join(
-            "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
-            "<td>{}</td><td>{}</td></tr>".format(
-                esc(e["created_at"][:19].replace("T", " ")),
-                esc(e["agent_name"]),
-                esc(("+" if e["delta_quarters"] > 0 else "") + e["credits"]),
-                esc(e["reason"]),
-                _led_target(e),
-            )
+            f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
+            f"<td>{esc(e['agent_name'])}</td>"
+            f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
+            f"<td>{esc(e['reason'])}</td>"
+            f"<td>{_led_target(e)}</td></tr>"
             for e in ledger["entries"]
         )
         or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
