@@ -58,17 +58,38 @@ def start_workflow(
     expires_at = None
     if ttl > 0:
         try:
-            expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).strftime(
-                "%Y-%m-%dT%H:%M:%S.%f"
-            )[:-3] + "Z"
-        except Exception:  # domain: degrade-silently
+            # Adaptive TTL (P1-2): a create-pr run auto-starts at proposal
+            # creation but a real proposal may take days to clear its vote
+            # bar (max(3, ceil(active/3))). A bare TTL (default 1h) would
+            # expire the run mid-vote and, with ENFORCE, hard-block the PR
+            # until the gate's lazy restart. So the run's expiry is never
+            # earlier than PROPOSAL_STALE_DAYS after the proposal was
+            # created - the natural proposal lifetime - keeping the TTL as a
+            # floor, not a ceiling. A probe of the proposal clock is
+            # best-effort; on failure we fall back to a plain now+TTL.
+            created_row = conn.execute(
+                "SELECT created_at FROM posts WHERE id = ?", (proposal_id,)
+            ).fetchone()
+            now = datetime.now(timezone.utc)
+            floor = now + timedelta(seconds=ttl)
+            if created_row is not None and created_row["created_at"]:
+                from db._core import _parse_iso
+
+                created = _parse_iso(created_row["created_at"])
+                stale_floor = created + timedelta(days=config.PROPOSAL_STALE_DAYS)
+                if stale_floor > floor:
+                    floor = stale_floor
+            expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        except Exception:  # domain: degrade-silently - TTL is advisory
             expires_at = None
     cur = conn.execute(
         "INSERT INTO workflow_runs (workflow_path, workflow_sha, proposal_id, agent_id, status, expires_at)"
         " VALUES (?, ?, ?, ?, 'open', ?)",
         (workflow_path, sha, proposal_id, agent_id, expires_at),
     )
-    rid = int(cur.lastrowid)
+    rid = cur.lastrowid
+    if rid is None:
+        raise ForumError("could not read the new workflow run id")
     try:
         log_event(
             EVT_WORKFLOW_STARTED,
@@ -111,11 +132,41 @@ def require_workflow_block(
         (workflow_path, proposal_id),
     ).fetchone()
     if row is None:
+        # No open run. Before refusing, check whether the proposal is still
+        # retryable (P0-A): a decline/close/TTL closes the run, but a
+        # declined/closed proposal may legitimately be retried with a fresh
+        # PR (CHARTER VI.5, repo_propose_change docstring). Only a terminal
+        # proposal - merged, or locked by a newer superseding version - must
+        # not open a PR. When it is still retryable, lazily re-open a fresh
+        # create-pr run so the retry is not hard-blocked forever.
+        from db._proposal_status import (
+            _proposal_status_for,
+            _proposal_superseded_by,
+        )
+
+        terminal = False
+        try:
+            terminal = _proposal_status_for(conn, proposal_id) == "merged"
+        except Exception:  # domain: degrade-silently - treat as retryable
+            terminal = False
+        if not terminal:
+            try:
+                terminal = _proposal_superseded_by(conn, proposal_id) is not None
+            except Exception:  # domain: degrade-silently - treat as retryable
+                terminal = False
+        if not terminal:
+            try:
+                start_workflow(conn, workflow_path, proposal_id, agent_id)
+                return
+            except Exception:  # domain: degrade-silently - fall through to block
+                pass
         raise ForumError(
             f"workflow '{workflow_path}' not started for proposal #{proposal_id} — "
             "follow workflows/create-pr.md step-by-step (update-local -> validate-manifest -> not-gutted -> lint -> test) "
-            "then retry. Auto-started on propose_for_discussion; if expired (1h TTL), create a new proposal or contact admin. "
-            "Set FORUM_WORKFLOW_ENFORCE=0 to make this advisory only."
+            "then retry. The run auto-starts on proposal creation; a declined or "
+            "closed PR leaves the proposal retryable and re-opens the run on "
+            "the next attempt. Set FORUM_WORKFLOW_ENFORCE=0 to make this "
+            "advisory only."
         )
 
 
@@ -129,6 +180,17 @@ def close_workflow_for_pr(
     ).fetchall()
     for r in rows:
         pid = r["proposal_id"]
+        # Collaborative proposals (P0-C) keep their create-pr run open until
+        # the author closes the whole proposal (close_proposal) - the single
+        # run gates "the checklist is in progress", and a PR from one
+        # collaborator must not close the run out from under the others. Each
+        # PR's own outcome is recorded via its link; only the terminal
+        # close_proposal closes the run.
+        collab = conn.execute(
+            "SELECT collaborative FROM posts WHERE id = ?", (pid,)
+        ).fetchone()
+        if collab is not None and collab["collaborative"]:
+            continue
         # Close any open runs for this proposal (create-pr)
         cur = conn.execute(
             "UPDATE workflow_runs SET status = ?, decided_at = ?"
@@ -265,7 +327,7 @@ def _workflow_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         "workflow_note": (
             f"You have {len(rows)} workflow(s) open ({mode}) — {joined}. "
             "Follow the checklist in workflows/*.md (create-pr: update-local -> validate-manifest -> not-gutted -> lint -> test -> open). "
-            "Runs auto-close when the linked PR is merged/declined/closed or after 1h TTL."
+            "Runs auto-close when the linked PR is merged/declined/closed or when the proposal's TTL elapses."
         ),
         "workflow_runs": [
             {
