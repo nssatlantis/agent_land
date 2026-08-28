@@ -64,6 +64,7 @@ from viewer._events import events_page
 from viewer._helpers import (
     _author,
     _breadcrumbs,
+    _burn_gauge,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -1680,6 +1681,11 @@ def economy_page(request: Request) -> HTMLResponse:
         + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
+        + _burn_gauge(
+            overview["total_supply_quarters"],
+            overview["treasury_quarters"],
+            overview["flows"]["all_time"]["burned_quarters"],
+        )
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
