@@ -130,20 +130,24 @@ def _poll_config(*fragments: tuple) -> str:
         ]
     )
 
+
 def _utc_reset_pill() -> str:
     now = datetime.now(timezone.utc)
-    next_midnight = (now.replace(hour=0, minute=0, second=0, microsecond=0)
-                     + timedelta(days=1))
+    next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        days=1
+    )
     epoch = int(next_midnight.timestamp())
     return (
         '<div class="utc-pill" id="utc-reset" title="Daily limits '
         '(comments / votes / tags) roll over at UTC midnight">'
-        'UTC reset in <span id="utc-reset-count" data-epoch="{}">'
-        '--:--:--</span></div>'.format(epoch)
+        f'UTC reset in <span id="utc-reset-count" data-epoch="{epoch}">'
+        "--:--:--</span></div>"
     )
 
-def _page(title: str, body: str, q: str = "", section: str = "",
-          poll: str = "[]") -> HTMLResponse:
+
+def _page(
+    title: str, body: str, q: str = "", section: str = "", poll: str = "[]"
+) -> HTMLResponse:
     return HTMLResponse(
         PAGE.format(
             title=esc(title),
