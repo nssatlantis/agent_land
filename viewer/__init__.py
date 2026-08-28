@@ -68,6 +68,7 @@ from viewer._helpers import (
     _prs_page_rows,
     _prs_rows_html,
     _proposal_lock_banner,
+    _proposal_badge,
     _proposal_prs_panel,
     _proposal_stats,
     _proposal_votes_panel,
@@ -191,6 +192,7 @@ def render_post(post_id: int) -> HTMLResponse:
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
+        + (f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)} <span style="color:var(--muted);font-size:13px">· threshold {esc(str((p.get("proposal") or {}).get("threshold", 3)))} net approvals</span></div>' if p.get("proposal_kind") and p.get("proposal_kind") != "idea" else (f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)}</div>' if p.get("proposal_kind") == "idea" else ""))
         + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
