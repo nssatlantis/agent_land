@@ -6,6 +6,7 @@ claiming (claim_todo_item, the default) and whole-list claiming
 held claim of one kind blocks switching to the other; the pre-open claim
 gate and the PR-link gate both accept a list claim in list mode.
 """
+
 import importlib
 import os
 import sys
@@ -19,8 +20,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup, expect_error  # noqa: E402
 import config  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -58,7 +59,8 @@ def _make_collab(mode="list", joiner="beta", nlists=2):
     )
     pid = prop["post_id"]
     db.set_todos_for_post(
-        AGENTS["alpha"]["token"], pid,
+        AGENTS["alpha"]["token"],
+        pid,
         [
             {"title": "A", "items": [{"text": "a1"}]},
             {"title": "B", "items": [{"text": "b1"}]},
@@ -192,7 +194,9 @@ def test_mode_switch_blocked_by_claims():
     db.unclaim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
     assert db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "item")["changed"]
     # item claims block flipping to list
-    db.claim_todo_item(AGENTS["beta"]["token"], pid, db.get_todos_for_post(pid)[0]["items"][0]["id"])
+    db.claim_todo_item(
+        AGENTS["beta"]["token"], pid, db.get_todos_for_post(pid)[0]["items"][0]["id"]
+    )
     assert "still has 1 item claim" in expect_error(
         db.set_todo_claim_mode, AGENTS["alpha"]["token"], pid, "list"
     )
@@ -218,8 +222,9 @@ def test_mode_switch_sweeps_expired_claim():
         res = db.set_todo_claim_mode(AGENTS["alpha"]["token"], pid, "item")
         assert res["changed"], "expired claim swept so mode switch succeeds"
         todos = db.get_todos_for_post(pid)
-        assert not any("claimed_by" in l for l in todos), \
+        assert not any("claimed_by" in l for l in todos), (
             "the expired list claim is gone after the switch"
+        )
     finally:
         _restore_flag("FORUM_CLAIM_TIMEOUT_SECONDS", old)
     print("  mode switch sweeps expired claim: ok")
@@ -304,14 +309,18 @@ def test_rewrite_drops_expired_list_claim():
     old = _set_flag("FORUM_CLAIM_TIMEOUT_SECONDS", "1")
     try:
         db.set_todos_for_post(
-            AGENTS["alpha"]["token"], pid,
-            [{"title": "A", "items": [{"text": "a1"}]},
-             {"title": "B", "items": [{"text": "b1"}]}],
+            AGENTS["alpha"]["token"],
+            pid,
+            [
+                {"title": "A", "items": [{"text": "a1"}]},
+                {"title": "B", "items": [{"text": "b1"}]},
+            ],
         )
         todos = db.get_todos_for_post(pid)
         owned = [l for l in todos if l["title"] == "A"][0]
-        assert "claimed_by" not in owned, \
+        assert "claimed_by" not in owned, (
             "an expired list claim is not restored by a rewrite"
+        )
     finally:
         _restore_flag("FORUM_CLAIM_TIMEOUT_SECONDS", old)
     print("  rewrite does not restore expired list claim: ok")
@@ -329,8 +338,9 @@ def test_close_proposal_releases_list_claims():
     res = db.close_proposal(AGENTS["alpha"]["token"], pid)
     assert res["status"] in ("merged", "closed")
     todos = db.get_todos_for_post(pid)
-    assert not any("claimed_by" in l for l in todos), \
+    assert not any("claimed_by" in l for l in todos), (
         "closing the proposal releases its list claims"
+    )
     print("  close_proposal releases list claims: ok")
 
 
@@ -358,19 +368,26 @@ def test_rewrite_preserves_list_claim():
     # A bulk rewrite that keeps the same list title keeps the claim (it is
     # matched by title, mirroring how item claims re-attach by text).
     db.set_todos_for_post(
-        AGENTS["alpha"]["token"], pid,
-        [{"title": "A", "items": [{"text": "a1"}, {"text": "a1b"}]},
-         {"title": "B", "items": [{"text": "b1"}]}],
+        AGENTS["alpha"]["token"],
+        pid,
+        [
+            {"title": "A", "items": [{"text": "a1"}, {"text": "a1b"}]},
+            {"title": "B", "items": [{"text": "b1"}]},
+        ],
     )
     todos = db.get_todos_for_post(pid)
     lst = [l for l in todos if l["title"] == "A"][0]
-    assert lst.get("claimed_by") == AGENTS["beta"]["name"], \
+    assert lst.get("claimed_by") == AGENTS["beta"]["name"], (
         "list claim survives a same-title rewrite"
+    )
     # Renaming the category drops the claim (by-title match finds nothing).
     db.set_todos_for_post(
-        AGENTS["alpha"]["token"], pid,
-        [{"title": "A-prime", "items": [{"text": "a1"}]},
-         {"title": "B", "items": [{"text": "b1"}]}],
+        AGENTS["alpha"]["token"],
+        pid,
+        [
+            {"title": "A-prime", "items": [{"text": "a1"}]},
+            {"title": "B", "items": [{"text": "b1"}]},
+        ],
     )
     todos = db.get_todos_for_post(pid)
     lst = [l for l in todos if l["title"] == "A-prime"][0]
@@ -385,23 +402,28 @@ def test_supersede_preserves_list_claim_and_goal():
     db.claim_todo_list(AGENTS["beta"]["token"], pid, list_ids[0])
     db.set_proposal_goal(AGENTS["alpha"]["token"], pid, pr_goal=3)
     res = db.supersede_proposal(
-        AGENTS["alpha"]["token"], pid,
-        title="List claim v2", body="revised body",
+        AGENTS["alpha"]["token"],
+        pid,
+        title="List claim v2",
+        body="revised body",
     )
     new_pid = res["post_id"]
     # claim mode carried over
     todos = db.get_todos_for_post(new_pid)
-    assert all(lst["claim_mode"] == "list" for lst in todos), \
+    assert all(lst["claim_mode"] == "list" for lst in todos), (
         "list claim mode survives supersede"
+    )
     # whole-list claim restored by title
     lst = [l for l in todos if l["title"] == "A"][0]
-    assert lst.get("claimed_by") == AGENTS["beta"]["name"], \
+    assert lst.get("claimed_by") == AGENTS["beta"]["name"], (
         "a held list claim survives supersede"
+    )
     new_l = db.list_proposal_collaborators(new_pid)
     assert AGENTS["beta"]["agent_id"] in [c["agent_id"] for c in new_l]
     # PR goal carried over
-    assert db.get_post(new_pid)["proposal"]["pr_goal"] == 3, \
+    assert db.get_post(new_pid)["proposal"]["pr_goal"] == 3, (
         "PR goal survives supersede"
+    )
 
 
 def main():

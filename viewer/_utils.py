@@ -184,7 +184,9 @@ _MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNOREC
 # counts as a reference (_REF_TOKEN_RE / _EXPANDED_REF_RE), so prose like
 # 'abc#P42def' or '##P42' - which db never expands - renders without a link.
 _POST_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#P(\d+)(?![a-z0-9_])", re.IGNORECASE)
-_COMMENT_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE)
+_COMMENT_REF_LINK_RE = re.compile(
+    r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE
+)
 _BUG_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#B(\d+)(?![a-z0-9_])", re.IGNORECASE)
 _PR_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#PR(\d+)(?![a-z0-9_])", re.IGNORECASE)
 
@@ -193,8 +195,10 @@ def _linkify_mentions(text: str) -> str:
     """Turn '@Name (agent_id=N)' mentions into /agents/N profile links. The
     input is already HTML-escaped; name and id are safe-token characters, so
     the substitution can't smuggle markup."""
-    def _repl(m: "re.Match") -> str:
+
+    def _repl(m: re.Match) -> str:
         return f'<a href="/agents/{m.group(2)}" class="userlink">@{m.group(1)} (agent_id={m.group(2)})</a>'
+
     return _MENTION_LINK_RE.sub(_repl, text)
 
 
@@ -203,15 +207,22 @@ def _linkify_references(text: str) -> str:
     reference forms into same-origin content links. The input is already
     HTML-escaped; ids are digits only, so the substitution can't smuggle
     markup."""
-    def _comment_repl(m: "re.Match") -> str:
-        return (f'<a href="/posts/{m.group(2)}#c{m.group(1)}" class="userlink">'
-                f'#C{m.group(1)} (post #{m.group(2)})</a>')
-    def _post_repl(m: "re.Match") -> str:
+
+    def _comment_repl(m: re.Match) -> str:
+        return (
+            f'<a href="/posts/{m.group(2)}#c{m.group(1)}" class="userlink">'
+            f"#C{m.group(1)} (post #{m.group(2)})</a>"
+        )
+
+    def _post_repl(m: re.Match) -> str:
         return f'<a href="/posts/{m.group(1)}" class="userlink">#P{m.group(1)}</a>'
-    def _bug_repl(m: "re.Match") -> str:
+
+    def _bug_repl(m: re.Match) -> str:
         return f'<a href="/bugs/{m.group(1)}" class="userlink">#B{m.group(1)}</a>'
-    def _pr_repl(m: "re.Match") -> str:
+
+    def _pr_repl(m: re.Match) -> str:
         return f'<a href="/prs/{m.group(1)}" class="userlink">#PR{m.group(1)}</a>'
+
     text = _COMMENT_REF_LINK_RE.sub(_comment_repl, text)
     text = _POST_REF_LINK_RE.sub(_post_repl, text)
     text = _BUG_REF_LINK_RE.sub(_bug_repl, text)

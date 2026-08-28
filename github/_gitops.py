@@ -32,14 +32,14 @@ _CONTEXT_LINES = 3
 
 def _parse_conflict_markers(text: str) -> list[dict]:
     """Parse git conflict markers from a file's content.  Returns a list of
-    conflict regions, each with ``line`` (1-based start of ``<<<<<<<``),
-    ``ours``, ``theirs``, ``context_before`` and ``context_after``.
+        conflict regions, each with ``line`` (1-based start of ``<<<<<<<``),
+        ``ours``, ``theirs``, ``context_before`` and ``context_after``.
 
-    Handles standard git markers (``<<<<<<<``, ``=======``, ``>>>>>>>``)
-    and diff3-style markers (``|||||||`` base section between ``<<<<<<<``
-    and the first ``=======``).  Uses ``startswith`` with a trailing space (to allow ``<<<<<<< HEAD``)
-or exact match (for bare ``<<<<<<<``), so code lines that begin with a
-marker-like prefix but lack the space separator are not false-positived."""
+        Handles standard git markers (``<<<<<<<``, ``=======``, ``>>>>>>>``)
+        and diff3-style markers (``|||||||`` base section between ``<<<<<<<``
+        and the first ``=======``).  Uses ``startswith`` with a trailing space (to allow ``<<<<<<< HEAD``)
+    or exact match (for bare ``<<<<<<<``), so code lines that begin with a
+    marker-like prefix but lack the space separator are not false-positived."""
     lines = text.splitlines()
     regions: list[dict] = []
     i = 0
@@ -60,20 +60,24 @@ marker-like prefix but lack the space separator are not false-positived."""
             # skip =======
             i += 1
             theirs_lines: list[str] = []
-            while i < len(lines) and not (lines[i] == ">>>>>>>" or lines[i].startswith(">>>>>>> ")):
+            while i < len(lines) and not (
+                lines[i] == ">>>>>>>" or lines[i].startswith(">>>>>>> ")
+            ):
                 theirs_lines.append(lines[i])
                 i += 1
             # skip >>>>>>>
             i += 1
-            ctx_before = lines[max(0, start - _CONTEXT_LINES):start]
-            ctx_after = lines[i:i + _CONTEXT_LINES]
-            regions.append({
-                "line": start + 1,  # 1-based
-                "ours": "\n".join(ours_lines),
-                "theirs": "\n".join(theirs_lines),
-                "context_before": "\n".join(ctx_before),
-                "context_after": "\n".join(ctx_after),
-            })
+            ctx_before = lines[max(0, start - _CONTEXT_LINES) : start]
+            ctx_after = lines[i : i + _CONTEXT_LINES]
+            regions.append(
+                {
+                    "line": start + 1,  # 1-based
+                    "ours": "\n".join(ours_lines),
+                    "theirs": "\n".join(theirs_lines),
+                    "context_before": "\n".join(ctx_before),
+                    "context_after": "\n".join(ctx_after),
+                }
+            )
         else:
             i += 1
     return regions
@@ -91,9 +95,7 @@ def _repo_url(with_token: bool = False) -> str:
     return f"https://x-access-token:{encoded}@github.com/{GITHUB_REPO}.git"
 
 
-def _git(
-    repo_dir: str, *args: str, check: bool = True
-) -> subprocess.CompletedProcess:
+def _git(repo_dir: str, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     """Run a git command in *repo_dir*.  Raises RepoError on failure.
     Sets GIT_TERMINAL_PROMPT=0 so git never prompts for credentials.
     Scrubs the GitHub token from any output so it never leaks into
@@ -136,7 +138,7 @@ def _git(
 # are IN-MEMORY - a queue of slot tokens. Deployment is single-process, so
 # process death resets everything cleanly and no stale lockfile can exist.
 
-_workspace_queue: "queue.Queue[int] | None" = None
+_workspace_queue: queue.Queue[int] | None = None
 _ws_slots: list[dict] = []
 _ws_lock = threading.Lock()
 
@@ -156,7 +158,7 @@ def _ws_root() -> str:
     return root
 
 
-def _ws_ensure_pool() -> "queue.Queue[int]":
+def _ws_ensure_pool() -> queue.Queue[int]:
     """Size the slot pool to the CURRENT configured value - the knob takes
     effect immediately, no restart needed. Growth appends fresh slots;
     shrinking truncates the slot list and rebuilds the token queue, so
@@ -172,11 +174,14 @@ def _ws_ensure_pool() -> "queue.Queue[int]":
         if _workspace_queue is None:
             base = _ws_root()
             _ws_slots = [
-                {"dir": os.path.join(base, f"slot{i}"), "last_fetch": 0.0,
-                 "dirty": False}
+                {
+                    "dir": os.path.join(base, f"slot{i}"),
+                    "last_fetch": 0.0,
+                    "dirty": False,
+                }
                 for i in range(desired)
             ]
-            q: "queue.Queue[int]" = queue.Queue()
+            q: queue.Queue[int] = queue.Queue()
             for i in range(desired):
                 q.put(i)
             _workspace_queue = q
@@ -185,12 +190,15 @@ def _ws_ensure_pool() -> "queue.Queue[int]":
             if desired > len(_ws_slots):
                 for i in range(len(_ws_slots), desired):
                     _ws_slots.append(
-                        {"dir": os.path.join(base, f"slot{i}"),
-                         "last_fetch": 0.0, "dirty": False}
+                        {
+                            "dir": os.path.join(base, f"slot{i}"),
+                            "last_fetch": 0.0,
+                            "dirty": False,
+                        }
                     )
             else:
                 del _ws_slots[desired:]
-            rebuilt: "queue.Queue[int]" = queue.Queue()
+            rebuilt: queue.Queue[int] = queue.Queue()
             for i in range(len(_ws_slots)):
                 rebuilt.put(i)
             _workspace_queue = rebuilt
@@ -252,8 +260,14 @@ def _try_clone_from_local(parent: str, dest_name: str) -> bool:
         # Ensure we have the origin/main ref locally — the seed may be on a
         # different branch if update.sh is mid-checkout; fetch origin/main explicitly
         # is cheap when already up-to-date and heals a stale seed.
-        _git(dest, "fetch", "--prune", "origin",
-             "+refs/heads/*:refs/remotes/origin/*", check=False)
+        _git(
+            dest,
+            "fetch",
+            "--prune",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+            check=False,
+        )
         return True
     except Exception:
         # domain: degrade-silently - local seed failed, fallback to origin clone
@@ -274,8 +288,7 @@ def _ws_fresh_clone(slot: dict) -> None:
         slot["last_fetch"] = time.monotonic()
         slot["dirty"] = False
         return
-    _git(parent, "clone", _repo_url(with_token=False),
-         os.path.basename(slot["dir"]))
+    _git(parent, "clone", _repo_url(with_token=False), os.path.basename(slot["dir"]))
     _seed_identity(slot["dir"])
     slot["last_fetch"] = time.monotonic()
     slot["dirty"] = False
@@ -297,8 +310,13 @@ def _ws_normalize(slot: dict) -> None:
     stale = (time.monotonic() - slot["last_fetch"]) > config.GIT_WORKSPACE_FETCH_TTL
     try:
         if stale:
-            _git(slot["dir"], "fetch", "--prune", "origin",
-                 "+refs/heads/*:refs/remotes/origin/*")
+            _git(
+                slot["dir"],
+                "fetch",
+                "--prune",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+            )
             slot["last_fetch"] = time.monotonic()
         _ws_git_scrub(slot["dir"])
         # Heal slots created before identity seeding existed (and keep the
@@ -317,8 +335,14 @@ def _ws_git_scrub(dir_: str) -> None:
     anonymous remote URL: a previous operation's push auth must not
     outlive it on a warm slot, and a slot whose process died between
     set-url and push is healed here on the next acquire."""
-    _git(dir_, "checkout", "-B", GITHUB_BASE_BRANCH,
-         f"origin/{GITHUB_BASE_BRANCH}", check=False)
+    _git(
+        dir_,
+        "checkout",
+        "-B",
+        GITHUB_BASE_BRANCH,
+        f"origin/{GITHUB_BASE_BRANCH}",
+        check=False,
+    )
     listing = _git(dir_, "branch", "--format=%(refname:short)", check=False)
     if listing.returncode == 0:
         for name in listing.stdout.split():
@@ -327,8 +351,7 @@ def _ws_git_scrub(dir_: str) -> None:
                 _git(dir_, "branch", "-D", name, check=False)
     _git(dir_, "reset", "--hard", check=False)
     _git(dir_, "clean", "-fdq", check=False)
-    _git(dir_, "remote", "set-url", "origin",
-         _repo_url(with_token=False), check=False)
+    _git(dir_, "remote", "set-url", "origin", _repo_url(with_token=False), check=False)
 
 
 @contextmanager
@@ -448,8 +471,14 @@ def _push_auth(repo_dir: str):
     try:
         yield
     finally:
-        _git(repo_dir, "remote", "set-url", "origin",
-             _repo_url(with_token=False), check=False)
+        _git(
+            repo_dir,
+            "remote",
+            "set-url",
+            "origin",
+            _repo_url(with_token=False),
+            check=False,
+        )
 
 
 def _push_ref(branch: str) -> str:
@@ -464,9 +493,7 @@ def _safe_path(repo_dir: str, file_path: str) -> str:
     real_repo = os.path.realpath(repo_dir)
     fpath = os.path.realpath(os.path.join(repo_dir, file_path))
     if not (fpath == real_repo or fpath.startswith(real_repo + os.sep)):
-        raise RepoError(
-            f"path {file_path!r} escapes the repository root"
-        )
+        raise RepoError(f"path {file_path!r} escapes the repository root")
     return fpath
 
 
@@ -474,9 +501,7 @@ def _detect_conflict_files(repo_dir: str) -> list[str]:
     """Return the list of unmerged (conflicted) files after a failed merge.
     Uses ``git diff --name-only --diff-filter=U`` to distinguish real merge
     conflicts from other merge failures."""
-    result = _git(
-        repo_dir, "diff", "--name-only", "--diff-filter=U", check=False
-    )
+    result = _git(repo_dir, "diff", "--name-only", "--diff-filter=U", check=False)
     return [f for f in result.stdout.strip().splitlines() if f]
 
 
@@ -490,7 +515,9 @@ def _has_conflict_markers(text: str) -> bool:
 
 
 def rebase_pr_onto_main(
-    number: int, *, _pr: dict | None = None,
+    number: int,
+    *,
+    _pr: dict | None = None,
 ) -> dict:
     """Rebase a PR's head branch onto main via local git.
 
@@ -515,7 +542,9 @@ def rebase_pr_onto_main(
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         _seed_identity(repo_dir)
         result = _git(
-            repo_dir, "rebase", f"origin/{GITHUB_BASE_BRANCH}",
+            repo_dir,
+            "rebase",
+            f"origin/{GITHUB_BASE_BRANCH}",
             check=False,
         )
         if result.returncode != 0:
@@ -530,8 +559,11 @@ def rebase_pr_onto_main(
         # Push rebased branch with authenticated remote.
         with _push_auth(repo_dir):
             _git(
-                repo_dir, "push", "--force-with-lease",
-                "origin", f"HEAD:{head}",
+                repo_dir,
+                "push",
+                "--force-with-lease",
+                "origin",
+                f"HEAD:{head}",
             )
         new_sha = _git(repo_dir, "rev-parse", "HEAD").stdout.strip()
         _core._invalidate_pr(number)
@@ -560,8 +592,12 @@ def detect_merge_conflicts(number: int) -> dict:
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
-            repo_dir, "merge", "--no-commit", "--no-ff",
-            f"origin/{base}", check=False,
+            repo_dir,
+            "merge",
+            "--no-commit",
+            "--no-ff",
+            f"origin/{base}",
+            check=False,
         )
         # Distinguish clean merge, conflict, and other failure
         conflicted = _detect_conflict_files(repo_dir)
@@ -578,29 +614,29 @@ def detect_merge_conflicts(number: int) -> dict:
             stderr = result.stderr
             if _core.GITHUB_TOKEN:
                 stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(
-                f"merge failed (not a conflict): {stderr.strip()}"
-            )
+            raise RepoError(f"merge failed (not a conflict): {stderr.strip()}")
         # Conflicts — read each conflicted file for structured data
         conflicts: list[dict[str, Any]] = []
         for fpath in conflicted:
             try:
                 safe = _safe_path(repo_dir, fpath)
-                text = Path(safe).read_text(
-                    encoding="utf-8", errors="replace"
-                )
+                text = Path(safe).read_text(encoding="utf-8", errors="replace")
             except (OSError, RepoError):
-                conflicts.append({
-                    "file": fpath,
-                    "error": "could not read conflicted file",
-                    "regions": [],
-                })
+                conflicts.append(
+                    {
+                        "file": fpath,
+                        "error": "could not read conflicted file",
+                        "regions": [],
+                    }
+                )
                 continue
             regions = _parse_conflict_markers(text)
-            conflicts.append({
-                "file": fpath,
-                "regions": regions,
-            })
+            conflicts.append(
+                {
+                    "file": fpath,
+                    "regions": regions,
+                }
+            )
         _abort_merge(repo_dir)
         return {
             "status": "conflicts",
@@ -627,23 +663,14 @@ def apply_merge_resolutions(
     """
     _core._ensure_token()
     if not resolutions:
-        raise RepoError(
-            "resolutions must be a non-empty list of {file, content}."
-        )
+        raise RepoError("resolutions must be a non-empty list of {file, content}.")
     for i, r in enumerate(resolutions):
         if not isinstance(r, dict):
-            raise RepoError(
-                f"resolutions[{i}] must be a dict, "
-                f"got {type(r).__name__}."
-            )
+            raise RepoError(f"resolutions[{i}] must be a dict, got {type(r).__name__}.")
         if not isinstance(r.get("file"), str) or not r["file"]:
-            raise RepoError(
-                f"resolutions[{i}] 'file' must be a non-empty string."
-            )
+            raise RepoError(f"resolutions[{i}] 'file' must be a non-empty string.")
         if not isinstance(r.get("content"), str):
-            raise RepoError(
-                f"resolutions[{i}] 'content' must be a string."
-            )
+            raise RepoError(f"resolutions[{i}] 'content' must be a string.")
         if _has_conflict_markers(r["content"]):
             raise RepoError(
                 f"resolutions[{i}] for {r['file']!r}: content still "
@@ -659,8 +686,12 @@ def apply_merge_resolutions(
         _git(repo_dir, "fetch", "origin", base, head)
         _git(repo_dir, "checkout", "-b", "pr_head", f"origin/{head}")
         result = _git(
-            repo_dir, "merge", "--no-commit", "--no-ff",
-            f"origin/{base}", check=False,
+            repo_dir,
+            "merge",
+            "--no-commit",
+            "--no-ff",
+            f"origin/{base}",
+            check=False,
         )
         conflicted = _detect_conflict_files(repo_dir)
         if result.returncode == 0 and not conflicted:
@@ -674,9 +705,7 @@ def apply_merge_resolutions(
             stderr = result.stderr
             if _core.GITHUB_TOKEN:
                 stderr = stderr.replace(_core.GITHUB_TOKEN, "<redacted>")
-            raise RepoError(
-                f"merge failed (not a conflict): {stderr.strip()}"
-            )
+            raise RepoError(f"merge failed (not a conflict): {stderr.strip()}")
         # Validate coverage: provided files must exactly equal conflicted
         provided = {r["file"] for r in resolutions}
         if provided != set(conflicted):
@@ -700,14 +729,16 @@ def apply_merge_resolutions(
             _git(repo_dir, "add", r["file"])
         # Commit the merge under the resolving citizen's identity (the
         # trailer records the same attribution in the message).
-        commit_msg = (
-            f"Merge main into {head} — resolve conflicts\n"
-            f"\nCitizen: {citizen}"
-        )
+        commit_msg = f"Merge main into {head} — resolve conflicts\n\nCitizen: {citizen}"
         _git(
-            repo_dir, "-c", f"user.name={citizen}",
-            "-c", f"user.email={citizen}@agentland.dev",
-            "commit", "-m", commit_msg,
+            repo_dir,
+            "-c",
+            f"user.name={citizen}",
+            "-c",
+            f"user.email={citizen}@agentland.dev",
+            "commit",
+            "-m",
+            commit_msg,
         )
         # Authenticate for push, then push
         with _push_auth(repo_dir):
@@ -723,7 +754,6 @@ def apply_merge_resolutions(
             "commit_sha": commit_sha,
             "files_resolved": sorted(provided),
             "message": (
-                f"Merged main into {head} with "
-                f"{len(provided)} file(s) resolved."
+                f"Merged main into {head} with {len(provided)} file(s) resolved."
             ),
         }

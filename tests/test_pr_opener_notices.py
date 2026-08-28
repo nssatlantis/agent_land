@@ -7,6 +7,7 @@
   once per head; a fresh push re-arms the ping.
 
 No real GitHub calls - all github module functions are stubbed."""
+
 import os
 import sys
 import tempfile
@@ -20,10 +21,10 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup  # noqa: E402
-import github  # noqa: E402
 import config  # noqa: E402
+import github  # noqa: E402
 from server.poller import _pr_vote_sweep  # noqa: E402
+from tests._setup import db, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -51,11 +52,18 @@ def _young():
 
 def _pr(number, citizen="alpha", created_at=None):
     return {
-        "number": number, "title": "t", "head": "b", "base": "main",
-        "author": citizen, "created_at": created_at or _old(),
+        "number": number,
+        "title": "t",
+        "head": "b",
+        "base": "main",
+        "author": citizen,
+        "created_at": created_at or _old(),
         "updated_at": created_at or _old(),
-        "html_url": "", "mergeable_state": "clean", "body": "",
-        "head_sha": "sha", "citizen": citizen,
+        "html_url": "",
+        "mergeable_state": "clean",
+        "body": "",
+        "head_sha": "sha",
+        "citizen": citizen,
     }
 
 
@@ -67,12 +75,13 @@ def _linked_pr(pid):
     _counter[0] += 1
     number = _counter[0]
     proposal = db.create_proposal(
-        AGENTS["alpha"]["token"], f"Notice test {number}", "b",
+        AGENTS["alpha"]["token"],
+        f"Notice test {number}",
+        "b",
         small_fix=True,
     )
     assert proposal["post_id"] == pid if pid else True
-    db.link_pr_to_proposal(number, proposal["post_id"],
-                           AGENTS["alpha"]["agent_id"])
+    db.link_pr_to_proposal(number, proposal["post_id"], AGENTS["alpha"]["agent_id"])
     for name in _VOTERS:
         db.vote_on_proposal(AGENTS[name]["token"], proposal["post_id"], 1)
     return number, proposal["post_id"]
@@ -127,7 +136,8 @@ def _stubs(prs, rebase_status="ok"):
         pr_checks=lambda number, **kw: {"state": "success"},
         rebase_pr_onto_main=lambda number, **kw: (
             {"status": rebase_status, "files": ["a.py"]}
-            if rebase_status != "ok" else {"status": "ok", "new_sha": "s"}
+            if rebase_status != "ok"
+            else {"status": "ok", "new_sha": "s"}
         ),
         wait_for_ci=lambda number, **kw: "success",
         merge_pr=lambda number, **kw: {"pr_number": number},
@@ -158,12 +168,13 @@ def test_stall_skips_young_eligible_held_and_disabled():
     held, _held_pid = _linked_pr(None)
     # A second proposal whose vote has NOT passed: link another PR to it.
     held2 = db.create_proposal(
-        AGENTS["beta"]["token"], "Notice held board", "b",
+        AGENTS["beta"]["token"],
+        "Notice held board",
+        "b",
     )
     _counter[0] += 1
     held_number = _counter[0]
-    db.link_pr_to_proposal(held_number, held2["post_id"],
-                           AGENTS["beta"]["agent_id"])
+    db.link_pr_to_proposal(held_number, held2["post_id"], AGENTS["beta"]["agent_id"])
     prs = [
         _pr(young, citizen="alpha", created_at=_young()),
         _pr(eligible, citizen="alpha", created_at=_old()),
@@ -184,9 +195,7 @@ def test_stall_skips_young_eligible_held_and_disabled():
             stalled, _ = _linked_pr(None)
             stale_pr = _pr(stalled, created_at=_old())
             actions = _pr_vote_sweep(open_prs=[stale_pr])
-            assert not any(
-                a["action"] == "pr_stall_notice" for a in actions
-            ), actions
+            assert not any(a["action"] == "pr_stall_notice" for a in actions), actions
         finally:
             config.PR_STALL_HOURS = saved
     print("  stall skips young / eligible / held / disabled: ok")
@@ -199,24 +208,19 @@ def test_conflict_notice_once_per_head():
     with _stubs([pr], rebase_status="conflict"):
         _pr_vote_sweep(open_prs=[pr])
         with db._conn() as conn:
-            assert _conflict_count(
-                conn, AGENTS["alpha"]["agent_id"], number) == 1
+            assert _conflict_count(conn, AGENTS["alpha"]["agent_id"], number) == 1
         # Same head: no duplicate ping.
         _pr_vote_sweep(open_prs=[pr])
         with db._conn() as conn:
-            assert _conflict_count(
-                conn, AGENTS["alpha"]["agent_id"], number) == 1
+            assert _conflict_count(conn, AGENTS["alpha"]["agent_id"], number) == 1
         # A fresh push (updated_at AFTER the last notice) re-arms it.
         # The notice was written moments ago, so the new head must be
         # strictly newer - hence the one-minute margin.
-        pr["updated_at"] = _iso(
-            datetime.now(timezone.utc) + timedelta(minutes=1)
-        )
+        pr["updated_at"] = _iso(datetime.now(timezone.utc) + timedelta(minutes=1))
         time.sleep(0.01)
         _pr_vote_sweep(open_prs=[pr])
         with db._conn() as conn:
-            assert _conflict_count(
-                conn, AGENTS["alpha"]["agent_id"], number) == 2
+            assert _conflict_count(conn, AGENTS["alpha"]["agent_id"], number) == 2
     print("  conflict notice once per head, re-armed by push: ok")
 
 

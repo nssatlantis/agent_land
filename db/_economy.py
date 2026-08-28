@@ -34,7 +34,6 @@ from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 
 import config
-
 from db._core import ForumError, _conn, _now_iso
 
 _ADMIN_ADJUST_REASONS = ("admin_mint", "admin_burn")
@@ -53,9 +52,7 @@ def day_dt_to_iso(d: datetime) -> str:
     return d.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def _approved_proposal_check(
-    conn: sqlite3.Connection, proposal_id: int
-) -> dict:
+def _approved_proposal_check(conn: sqlite3.Connection, proposal_id: int) -> dict:
     """Validate that `proposal_id` is a non-superseded proposal whose
     vote has passed (net >= the live threshold) - the cap-exempt
     community path. Decided proposals qualify too: an approved mint is
@@ -67,8 +64,7 @@ def _approved_proposal_check(
     )
 
     row = conn.execute(
-        "SELECT id, agent_id, proposal_kind, superseded_by_id"
-        " FROM posts WHERE id = ?",
+        "SELECT id, agent_id, proposal_kind, superseded_by_id FROM posts WHERE id = ?",
         (proposal_id,),
     ).fetchone()
     if row is None or row["proposal_kind"] is None:
@@ -110,7 +106,8 @@ def economy_admin_adjust(
         raise ForumError("a reason is required for every mint/burn.")
     reason = reason[:200]
     quarters = exact_from_credits(
-        amount_credits, what="the mint/burn amount",
+        amount_credits,
+        what="the mint/burn amount",
     )
     with _conn(immediate=True) as conn:
         # Clamp, don't skip: a negative knob (config typo) must shut the
@@ -125,7 +122,8 @@ def economy_admin_adjust(
             # whatever the admin configured (review M2).
             try:
                 cap_q = exact_from_credits(
-                    cap, what="FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
+                    cap,
+                    what="FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
                 )
             except ForumError as exc:
                 raise ForumError(
@@ -174,16 +172,18 @@ def _chain_hash(prev_hash: str, row: sqlite3.Row) -> str:
     """One link of the running hash chain over a ledger row's IMMUTABLE
     fields.  agent_id is deliberately excluded: delete_agent anonymizes it
     in place, and rewriting history must never break a seal."""
-    payload = "|".join((
-        prev_hash,
-        str(row["id"]),
-        row["account"],
-        str(row["delta_quarters"]),
-        row["reason"],
-        row["target_type"] or "",
-        str(row["target_id"] if row["target_id"] is not None else ""),
-        row["created_at"],
-    ))
+    payload = "|".join(
+        (
+            prev_hash,
+            str(row["id"]),
+            row["account"],
+            str(row["delta_quarters"]),
+            row["reason"],
+            row["target_type"] or "",
+            str(row["target_id"] if row["target_id"] is not None else ""),
+            row["created_at"],
+        )
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -221,8 +221,7 @@ def write_checkpoint(conn: sqlite3.Connection | None = None) -> dict:
             " (created_at, last_entry_id, entry_count, total_supply_q,"
             "  treasury_q, running_hash)"
             " VALUES (?, ?, ?, ?, ?, ?)",
-            (_now_iso(), last_id, stats["n"], stats["s"], treasury_q,
-             running),
+            (_now_iso(), last_id, stats["n"], stats["s"], treasury_q, running),
         )
         return {
             "last_entry_id": last_id,
@@ -243,8 +242,7 @@ def maybe_checkpoint(conn: sqlite3.Connection | None = None) -> bool:
     try:
         with _conn() as c:
             latest = c.execute(
-                "SELECT created_at FROM economy_checkpoints"
-                " ORDER BY id DESC LIMIT 1"
+                "SELECT created_at FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
             ).fetchone()
         if latest is not None:
             from db._core import _parse_iso
@@ -264,9 +262,7 @@ def maybe_checkpoint(conn: sqlite3.Connection | None = None) -> bool:
         return False
 
 
-def _verify_checkpoint(
-    conn: sqlite3.Connection, seal: sqlite3.Row
-) -> dict:
+def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
     """Verify the latest seal for real: replay the ENTIRE _chain_hash
     chain from genesis through the seal's range, comparing the running
     hash at every stored seal boundary along the way, then check the
@@ -301,9 +297,7 @@ def _verify_checkpoint(
         if row["id"] in boundaries and boundaries[row["id"]] != running:
             chain_ok = False
             break
-    sums_ok = (
-        n == seal["entry_count"] and supply == seal["total_supply_q"]
-    )
+    sums_ok = n == seal["entry_count"] and supply == seal["total_supply_q"]
     return {
         "ok": chain_ok and sums_ok,
         "chain_ok": chain_ok,
@@ -318,9 +312,7 @@ def _verify_checkpoint(
 # -- the economy overview --------------------------------------------------
 
 
-def _flow_rows(
-    conn: sqlite3.Connection, since_iso: str | None
-) -> dict[str, int]:
+def _flow_rows(conn: sqlite3.Connection, since_iso: str | None) -> dict[str, int]:
     """Treasury-side ledger movements grouped by reason, optionally since a
     timestamp: mints, burns, fees, forfeit intake, payout draw-downs and
     tag/spend intake are all visible as the treasury side of their pairs."""
@@ -347,10 +339,10 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
         "fees_in_quarters": flows.get("transfer_fee_intake", 0),
         "forfeit_intake_quarters": flows.get("forfeit_intake", 0),
         "spend_intake_quarters": sum(
-            v for k, v in flows.items()
+            v
+            for k, v in flows.items()
             if k.endswith("_intake")
-            and k not in ("transfer_fee_intake", "forfeit_intake",
-                          "transfer_intake")
+            and k not in ("transfer_fee_intake", "forfeit_intake", "transfer_intake")
         ),
         "transfer_intake_quarters": flows.get("transfer_intake", 0),
         # Positive magnitudes: the ledger side is negative (the treasury
@@ -427,8 +419,7 @@ def economy_overview() -> dict:
         jobs_open, jobs_engaged = open_active_job_counts(conn)
 
         windows: dict[str, dict] = {}
-        for name, delta in (("day", timedelta(days=1)),
-                            ("week", timedelta(days=7))):
+        for name, delta in (("day", timedelta(days=1)), ("week", timedelta(days=7))):
             bound = day_dt_to_iso(now_dt - delta)
             flows = _summarize_flows(_flow_rows(conn, bound))
             flows["window_start"] = bound
