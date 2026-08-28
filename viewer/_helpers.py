@@ -159,6 +159,13 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
+    """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
+    if md:
+        return f'<div class="panel"><h2>{esc(heading)}</h2>{intro}{_markdown(md)}</div>'
+    return f'<div class="panel"><h2>{esc(heading)}</h2><p style="color:var(--muted)">{esc(notice)}</p></div>'
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
