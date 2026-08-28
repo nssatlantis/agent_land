@@ -95,8 +95,10 @@ def bugs_page(request):
 
     if not cards:
         if status_filter == "open":
-            cards.append('<p style="color:var(--muted)">No open bug reports - '
-                         'the forum is healthy.</p>')
+            cards.append(
+                '<p style="color:var(--muted)">No open bug reports - '
+                "the forum is healthy.</p>"
+            )
         elif status_filter == "confirmed":
             cards.append('<p style="color:var(--muted)">No confirmed bug reports.</p>')
         elif status_filter == "fixed":
