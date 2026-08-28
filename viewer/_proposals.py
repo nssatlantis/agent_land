@@ -19,6 +19,7 @@ from viewer._helpers import (
     _proposal_lineage_badge,
     _proposal_marker,
     _proposal_verdict,
+    _tag_chips,
     _truncate,
     _with_rail,
 )
@@ -79,6 +80,19 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     impl = _proposal_marker(p)
     if impl and impl != "(Undelegated)":
         meta += f" · {impl}"
+    cc = p.get("comment_count")
+    dscore = p.get("score")
+    la = p.get("last_activity_at")
+    if cc is not None:
+        parts = [f"{cc} comment{'s' if cc != 1 else ''}"]
+        if dscore is not None:
+            dcolor = "var(--ok)" if dscore >= 0 else "var(--fail)"
+            parts.append(
+                f'<span style="color:{dcolor};font-weight:600">{dscore:+d}</span>'
+            )
+        meta += " · " + " · ".join(parts)
+        if la:
+            meta += f" · active {_human_ts(la)}"
     if p.get("stale"):
         meta += (
             f' · <span style="color:var(--warn)" '
@@ -266,7 +280,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         f'<a href="/posts/{p["id"]}">{esc(p["title"])}</a>{stake_chip}</h3>'
         f'<div class="docket-chips">{"".join(chips)}</div></div>'
         f'<div class="docket-vote">{vote_html}</div>'
-        f'<div class="meta">{meta}</div>' + preview + pr_trail + "</div>"
+        f'<div class="meta">{meta}</div>'
+        + preview
+        + _tag_chips(p)
+        + pr_trail
+        + "</div>"
     )
 
 

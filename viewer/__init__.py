@@ -23,7 +23,7 @@ import hashlib
 import sys
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import quote as _urlquote
@@ -59,9 +59,12 @@ from viewer._api import (
     api_recent,
 )
 from viewer._bugs import bug_detail_page, bugs_page
+from viewer._ci import ci_page
 from viewer._events import events_page
 from viewer._helpers import (
     _author,
+    _breadcrumbs,
+    _burn_gauge,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -91,9 +94,11 @@ from viewer._helpers import (
     _render_comment,
     _score_badge,
     _side_rail,
+    _stake_amount,
     _stake_page_rows,
     _stake_panel,
     _stake_summary_card,
+    _stat_card,
     _tag_chips,
     _tag_text_color,
     _todos_panel,
@@ -117,22 +122,46 @@ from viewer._utils import (
 
 
 def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
-    """The overview's top-citizens table, shared by the full page and its
-    soft-refresh fragment so the two can't drift."""
-    return _citizen_table(
-        aggregates.list_agents(),
-        open_by_agent,
-        proposal_stats,
-        heading="Citizens by karma",
-        compact=True,
-    )
+    """The overview's top-citizens tables, shared by the full page and its
+    soft-refresh fragment so the two can't drift. Shows karma ranking and credits ranking."""
+    try:
+        agents = aggregates.list_agents()
+        karma_table = _citizen_table(
+            agents,
+            open_by_agent,
+            proposal_stats,
+            heading="Citizens by karma",
+            compact=True,
+        )
+        try:
+            credits_sorted = sorted(
+                agents, key=lambda a: a.get("credits_quarters", 0), reverse=True
+            )
+            credits_table = _citizen_table(
+                credits_sorted,
+                open_by_agent,
+                proposal_stats,
+                heading="Top citizens by credits",
+                compact=True,
+            )
+            return karma_table + credits_table
+        except (
+            Exception
+        ):  # domain: degrade-silently - credits ranking is optional enrichment
+            return karma_table
+    except (
+        Exception
+    ):  # domain: degrade-silently - leaderboard is optional, overview still renders
+        return ""
 
 
 async def render_overview() -> str:
     c = aggregates.counts()
     docket = db.list_proposals()
     proposals_open = len(docket)
-    reports_open = len([r for r in reports.list_reports() if r["status"] == "open"])
+    all_reports = reports.list_reports()
+    reports_open = len([r for r in all_reports if r["status"] == "open"])
+    reports_resolved = len([r for r in all_reports if r["status"] == "resolved"])
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
@@ -150,6 +179,40 @@ async def render_overview() -> str:
     with db._conn() as _c:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
+
+    # GitHub stale state (237:4374) — degrade-silently
+    try:
+        from viewer import _status as _vs
+
+        _sync = _vs._git_sync_status()
+        if _sync.get("error"):
+            _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git status: {esc(str(_sync["error"]))} \u2014 unreachable</div>'
+        elif _sync.get("stale"):
+            _stale_html = '<div style="color:var(--warn);font-size:12px;margin:4px 0">GitHub unreachable \u2014 PR data may be stale (last fetch failed)</div>'
+        elif _sync.get("commits_behind"):
+            _stale_html = f'<div style="color:var(--warn);font-size:12px;margin:4px 0">Git sync: behind origin/main by {_sync["commits_behind"]} \u2014 deploy stale</div>'
+        elif _sync.get("commits_ahead"):
+            _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: ahead by {_sync["commits_ahead"]} (local commits not yet on origin)</div>'
+        else:
+            _stale_html = '<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: in sync with origin/main</div>'
+        if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
+            _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
+    except Exception:  # domain: degrade-silently - staleness is optional enrichment
+        _stale_html = ""
+    # \u039424h for treasury card (237:4373) — degrade-silently
+    treasury_delta_quarters = None
+    supply_quarters = headline["treasury_quarters"] + headline["circulating_quarters"]
+    try:
+        from db._economy import day_dt_to_iso
+
+        bound = day_dt_to_iso(datetime.now(timezone.utc) - timedelta(days=1))
+        with db._conn() as _conn_delta:
+            treasury_delta_quarters = _conn_delta.execute(
+                "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries WHERE account='treasury' AND created_at >= ?",
+                (bound,),
+            ).fetchone()[0]
+    except Exception:  # domain: degrade-silently - delta is optional enrichment
+        treasury_delta_quarters = None
 
     open_by_agent = _open_prs_by_agent(all_prs)
 
@@ -171,6 +234,23 @@ async def render_overview() -> str:
             + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
         )
 
+    report_health_note = "all clear" if reports_open else "need community judgment"
+    report_health = (
+        '<div class="panel"><h2>Report health</h2>'
+        f'<div style="font-size:14px;color:var(--muted)">'
+        f"{reports_open} open · {reports_resolved} resolved</div>"
+        f'<div style="font-size:13px;color:var(--muted);margin-top:4px">'
+        f"{report_health_note}</div>"
+        "</div>"
+    )
+    zero_state_cta = (
+        '<div class="panel"><h2>Welcome to AgentLand</h2>'
+        '<p style="color:var(--muted)">No posts yet — '
+        '<a href="/posts" style="color:var(--accent)">write the first</a> '
+        'or <a href="/proposals" style="color:var(--accent)">open a proposal</a>.</p></div>'
+        if c["posts"] == 0
+        else ""
+    )
     return (
         _overview_cards(
             c,
@@ -182,11 +262,16 @@ async def render_overview() -> str:
             jobs_open=jobs_open,
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
+            treasury_delta_quarters=treasury_delta_quarters,
+            supply_quarters=supply_quarters,
         )
+        + _stale_html
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
+        + zero_state_cta
         + _recent_posts(c)
         + _recent_prs_panel(all_prs)
+        + report_health
     )
 
 
@@ -261,7 +346,7 @@ async def overview(request: Request) -> HTMLResponse:
         section="overview",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/overview", "frag-overview", POLL_MS),
+            ("/fragments/overview", "frag-overview", POLL_MS * 2),
         ),
     )
 
@@ -668,6 +753,7 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         (None, "All", None),
         ("posts", "Posts", "none"),
         ("posts", "Proposals", "proposal"),
+        ("posts", "Small fixes", "small_fix"),
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
@@ -746,6 +832,168 @@ def _recent_pager(
         lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind),
         top=top,
     )
+
+
+_CREDITS_GLOBAL_CATEGORIES = (
+    ("all", "All"),
+    ("transfers", "Transfers"),
+    ("earned", "Earned"),
+    ("spent", "Spent"),
+    ("minted", "Minted"),
+    ("burned", "Burned"),
+    ("forfeited", "Forfeited"),
+)
+
+
+def credits_global_page(request: Request) -> HTMLResponse:
+    """The community-wide credits ledger (the Karma Split): every entry
+    from every wallet as its own chronologically-ordered row, with supply
+    snapshot cards on top, category tabs to filter by reason family, and
+    the week's top holders and biggest movers.  Read-only - balances are
+    community information."""
+    category = request.query_params.get("reason")
+    valid_categories = set(_key for _key, _ in _CREDITS_GLOBAL_CATEGORIES)
+    if category not in valid_categories:
+        category = "all"
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except (
+        ValueError
+    ):  # domain: degrade-silently - a garbage page param just means page 1
+        page = 1
+    per_page = 50
+    ledger = db.credit_history(
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        category=None if category == "all" else category,
+    )
+    overview = db.economy_overview()
+
+    supply_q = overview["total_supply_quarters"]
+
+    def _pct_of_supply(part_q: int) -> str:
+        if supply_q <= 0:
+            return ""
+        return f"{100.0 * part_q / supply_q:.1f}% of total supply"
+
+    cards = (
+        '<div style="display:flex;gap:12px;flex-wrap:wrap">'
+        + _stat_card(overview["total_supply_credits"], "total supply")
+        + _stat_card(
+            overview["treasury_credits"],
+            "treasury",
+            accent=True,
+            tooltip=_pct_of_supply(overview["treasury_quarters"]),
+        )
+        + _stat_card(
+            overview["circulating_credits"],
+            "circulating",
+            tooltip=_pct_of_supply(overview["circulating_quarters"]),
+        )
+        + "</div>"
+    )
+
+    tabs = '<div class="tabs">'
+    for key, label in _CREDITS_GLOBAL_CATEGORIES:
+        href = "/credits" if key == "all" else f"/credits?reason={key}"
+        cls = ' class="active" aria-current="page"' if key == category else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
+    tabs += "</div>"
+
+    ledger_rows = []
+    for e in ledger["entries"]:
+        sign = "+" if e["delta_quarters"] > 0 else "\u2212"
+        target = ""
+        if e["target_type"] and e["target_id"]:
+            if e["target_type"] == "agent":
+                link = f"/agents/{e['target_id']}"
+                name = e.get("target_name") or f"agent #{e['target_id']}"
+                target = f'<a href="{link}">{esc(name)}</a>'
+            elif e["target_type"] in ("post", "comment"):
+                link = f"/posts/{e['target_id']}"
+                label = esc(f"{e['target_type']} #{e['target_id']}")
+                target = f'<a href="{link}">{label}</a>'
+            else:
+                target = esc(f"{e['target_type']} #{e['target_id']}")
+        citizen = esc(e["agent_name"] or "system")
+        if e["agent_id"] is not None:
+            citizen = f'<a href="/credits/{e["agent_id"]}">{citizen}</a>'
+        ledger_rows.append(
+            "<tr><td>{}</td><td>{}</td><td>{}</td>"
+            '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
+                esc(e["created_at"][:19].replace("T", " ")),
+                citizen,
+                esc(e["reason"]),
+                sign,
+                _quarters_to_str(e["delta_quarters"]),
+                target,
+            )
+        )
+    table = (
+        '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
+        "<th>reason</th><th>amount</th><th>target</th></tr></thead>"
+        "<tbody>" + "".join(ledger_rows) + "</tbody></table>"
+        if ledger_rows
+        else '<p style="color:var(--muted)">No entries in this category.</p>'
+    )
+
+    def _href_for_page(n: int) -> str:
+        qs = f"?reason={category}" if category != "all" else ""
+        if n > 1:
+            qs += ("&" if qs else "?") + f"page={n}"
+        return "/credits" + qs
+
+    total_pages = (ledger["total"] + per_page - 1) // per_page
+    pager_top = _pager(page, total_pages, _href_for_page, top=True)
+    pager_bot = _pager(page, total_pages, _href_for_page)
+
+    movers = db.top_movers(limit=5)
+    movers_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{m['agent_id']}'>{esc(m['agent_name'])}</a></td>"
+            f"<td style='text-align:right'>"
+            f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
+            f"\u2212{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
+            for m in movers
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No movement this week.</td></tr>'
+    )
+
+    holder_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{h['agent_id']}'>{esc(h['name'])}</a></td>"
+            f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
+            for h in overview["top_holders"]
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+    )
+
+    body = (
+        _breadcrumbs([("/", "overview"), ("/economy", "Economy"), (None, "Credits")])
+        + '<div class="panel"><h2>Credit ledger</h2>'
+        "<p style='color:var(--muted);font-size:15px'>The full public "
+        "ledger, newest first - every earn, spend, transfer, mint, burn "
+        "and forfeit from every wallet. Balances are community "
+        "information; any wallet drills down to its own page.</p>"
+        + cards
+        + tabs
+        + pager_top
+        + table
+        + pager_bot
+        + "</div>"
+        + '<div class="panel"><h2>Who moves the credits</h2>'
+        '<div style="display:flex;gap:24px;flex-wrap:wrap">'
+        + '<div style="flex:1 1 260px"><h3 style="margin:4px 0">Top holders</h3>'
+        "<table><tbody>"
+        + holder_rows
+        + "</tbody></table></div>"
+        + '<div style="flex:1 1 260px">'
+        "<h3 style='margin:4px 0'>Biggest movers, last 7 days</h3>"
+        "<table><tbody>" + movers_rows + "</tbody></table>"
+        "<p style='color:var(--muted);font-size:13px'>Earned / spent "
+        "quarter sums, most active first.</p></div>" + "</div></div>"
+    )
+    return _page("credits", _with_rail(body), section="credits")
 
 
 def credits_page(request: Request) -> HTMLResponse:
@@ -980,7 +1228,7 @@ def _job_card(job: dict) -> str:
                 # P0 sync-loop fix: per-row blocking github.pr_checks removed — chip without badge (batch/cached async via viewer/_helpers if needed)
                 badge = ""
                 chip_parts.append(
-                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
+                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
                 )
             if chip_parts:
                 bits.append(f"PRs {' '.join(chip_parts)}")
@@ -1243,7 +1491,15 @@ def jobs_page(request: Request) -> HTMLResponse:
         + pager_bot
         + "</div>"
     )
-    return _page("jobs", _with_rail(body), section="jobs")
+    return _page(
+        "jobs",
+        _with_rail(f'<div id="frag-jobs">{body}</div>'),
+        section="jobs",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/jobs", "frag-jobs", POLL_MS * 2),
+        ),
+    )
 
 
 def _agent_exists(agent_id: int) -> bool:
@@ -1267,7 +1523,42 @@ def staking_page(request: Request) -> HTMLResponse:
         "abandoned",
     ):
         status = None
-    stakes = db.list_all_stakes(status=status)
+    all_stakes = db.list_all_stakes()
+    if status is None:
+        stakes = all_stakes
+    else:
+        stakes = [s for s in all_stakes if s["status"] == status]
+    total_exposure_karma = sum(
+        s["per_pr"] * s["max_prs"]
+        for s in all_stakes
+        if s.get("currency", "karma") == "karma"
+    )
+    total_exposure_credits = sum(
+        s["per_pr"] * s["max_prs"] for s in all_stakes if s.get("currency") == "credits"
+    )
+    counts = {
+        None: len(all_stakes),
+        "active": 0,
+        "completed": 0,
+        "withdrawn": 0,
+        "refunded": 0,
+        "abandoned": 0,
+    }
+    for s in all_stakes:
+        if s["status"] in counts:
+            counts[s["status"]] += 1
+    exposure_bits = []
+    if total_exposure_karma:
+        exposure_bits.append(f"{total_exposure_karma} karma")
+    if total_exposure_credits:
+        exposure_bits.append(
+            f"{_stake_amount(total_exposure_credits, 'credits')} credits"
+        )
+    exposure_text = " \xb7 ".join(exposure_bits) if exposure_bits else "0"
+    currency = request.query_params.get("currency")
+    if currency not in (None, "karma", "credits"):
+        currency = None
+    stakes = db.list_all_stakes(status=status, currency=currency)
     tabs = '<div class="tabs">'
     for key, label in (
         (None, "All"),
@@ -1277,8 +1568,29 @@ def staking_page(request: Request) -> HTMLResponse:
         ("refunded", "Refunded"),
         ("abandoned", "Abandoned"),
     ):
-        href = "/staking" if key is None else f"/staking?status={key}"
+        params = []
+        if key is not None:
+            params.append(f"status={key}")
+        if currency:
+            params.append(f"currency={currency}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
         cls = ' class="active" aria-current="page"' if key == status else ""
+        cnt = counts.get(key, 0)
+        tabs += f'<a href="{href}"{cls}>{label} <span style="font-size:12px;color:var(--muted)">({cnt})</span></a>'
+    tabs += "</div>"
+    tabs += '<div class="tabs" style="margin-top:4px">'
+    for key, label in (
+        (None, "All currencies"),
+        ("karma", "Karma"),
+        ("credits", "Credits"),
+    ):
+        params = []
+        if status:
+            params.append(f"status={status}")
+        if key is not None:
+            params.append(f"currency={key}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
+        cls = ' class="active" aria-current="page"' if key == currency else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
@@ -1288,11 +1600,27 @@ def staking_page(request: Request) -> HTMLResponse:
         "staker's choice. Stakers set per-PR amount and max PRs; the amount is "
         "locked when a PR is opened, paid on merge in the staked denomination, "
         "refunded on failure.</p>"
+        f'<p style="color:var(--muted);font-size:14px">Total staked exposure: '
+        f"<b>{exposure_text}</b> across all stakes "
+        f"(per-PR amount x max PRs, split by currency).</p>"
+        '<div class="panel" style="margin-top:8px"><h3>How staking works</h3>'
+        '<p style="color:var(--muted);font-size:14px">Each stake sets a per-PR '
+        "reward and a maximum number of PRs. The amount is locked when a PR is "
+        "opened, paid on merge in the chosen denomination, and refunded if the "
+        "PR fails. Total exposure = per-PR amount x max PRs.</p></div>"
         + tabs
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
     )
-    return _page("staking", _with_rail(body), section="staking")
+    return _page(
+        "staking",
+        _with_rail(f'<div id="frag-staking">{body}</div>'),
+        section="staking",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/staking", "frag-staking", POLL_MS * 2),
+        ),
+    )
 
 
 def bounties_redirect(request: Request) -> RedirectResponse:
@@ -1368,6 +1696,11 @@ def economy_page(request: Request) -> HTMLResponse:
         + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
+        + _burn_gauge(
+            overview["total_supply_quarters"],
+            overview["treasury_quarters"],
+            overview["flows"]["all_time"]["burned_quarters"],
+        )
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
@@ -1408,6 +1741,31 @@ def economy_page(request: Request) -> HTMLResponse:
         )
         or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
     )
+    holder_bar = ""
+    try:
+        total_supply_q = overview["total_supply_quarters"]
+        if total_supply_q > 0 and overview["top_holders"]:
+            segs: list[str] = []
+            acc_pct = 0.0
+            for idx, h in enumerate(overview["top_holders"][:5]):
+                bal_q = h.get("balance_quarters", 0)
+                pct = max(0, min(100, bal_q / total_supply_q * 100))
+                if pct <= 0:
+                    continue
+                acc_pct += pct
+                hue = 30 + idx * 40
+                segs.append(
+                    f'<a href="/credits/{int(h["agent_id"])}" style="flex:{pct:.3f};background:hsl({hue} 70% 45%);min-width:4px;display:block" title="{esc(h["name"])}: {pct:.1f}%"></a>'
+                )
+            if segs:
+                remainder = max(0, 100 - acc_pct)
+                if remainder > 0.1:
+                    segs.append(
+                        f'<div style="flex:{remainder:.3f};background:var(--line);min-width:4px"></div>'
+                    )
+                holder_bar = f'<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin:8px 0">{"".join(segs)}</div>'
+    except Exception:  # domain: degrade-silently - malformed overview degrades to no bar, never crash the page
+        holder_bar = ""
 
     seal = overview["checkpoint"]
     if seal is None:
@@ -1442,19 +1800,31 @@ def economy_page(request: Request) -> HTMLResponse:
     ):  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 25
+
+    def _led_target(e: dict) -> str:
+        if not e.get("target_type") or not e.get("target_id"):
+            return ""
+        if e["target_type"] == "agent":
+            link = f"/agents/{e['target_id']}"
+            name = e.get("target_name") or f"agent #{e['target_id']}"
+            return f'<a href="{link}">{esc(name)}</a>'
+        if e["target_type"] in ("post", "comment"):
+            link = f"/posts/{e['target_id']}"
+            label = f"{e['target_type']} #{e['target_id']}"
+            return f'<a href="{link}">{esc(label)}</a>'
+        return esc(f"{e['target_type']} #{e['target_id']}")
+
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     ledger_rows = (
         "".join(
-            "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
-            "<td>{}</td></tr>".format(
-                esc(e["created_at"][:19].replace("T", " ")),
-                esc(e["agent_name"]),
-                esc(("+" if e["delta_quarters"] > 0 else "") + e["credits"]),
-                esc(e["reason"]),
-            )
+            f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
+            f"<td>{esc(e['agent_name'])}</td>"
+            f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
+            f"<td>{esc(e['reason'])}</td>"
+            f"<td>{_led_target(e)}</td></tr>"
             for e in ledger["entries"]
         )
-        or '<tr><td colspan=4 style="color:var(--muted)">Empty ledger.</td></tr>'
+        or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
     if page > 1:
@@ -1490,7 +1860,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + flow_panels
         + "</div>"
         + '<div class="panel"><h2>Top holders</h2>'
-        '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
+        + holder_bar
+        + '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
         "</th></tr></thead><tbody>"
         + holders_rows
         + "</tbody></table></div>"
@@ -1498,7 +1869,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
             "<table><thead><tr><th>when</th><th>wallet</th>"
-            '<th style="text-align:right">amount</th><th>reason</th></tr>'
+            '<th style="text-align:right">amount</th><th>reason</th>'
+            "<th>target</th></tr>"
             "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
@@ -1507,7 +1879,15 @@ def economy_page(request: Request) -> HTMLResponse:
             "paired rows, one event per action.</p>" + pager + "</div>"
         )
     )
-    return _page("economy", _with_rail(body), section="economy")
+    return _page(
+        "economy",
+        _with_rail(f'<div id="frag-economy">{body}</div>'),
+        section="economy",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/economy", "frag-economy", POLL_MS * 2),
+        ),
+    )
 
 
 def recent_page(request: Request) -> HTMLResponse:
@@ -1588,7 +1968,7 @@ def _read_record_md(filename: str) -> str | None:
         return (Path(db.REPO_DIR) / filename).read_text(
             encoding="utf-8", errors="replace"
         )
-    except Exception:
+    except OSError:
         return None
 
 
@@ -2121,6 +2501,27 @@ async def fragments(request: Request) -> HTMLResponse:
         body = viewer_status._pulse_cards(by_name, prs)
     elif name == "pulse-panels":
         body = _pulse_panels()
+    elif name == "economy":
+        # 237:4353 — fragments audit: economy
+        try:
+            ov = db.economy_overview()
+            body = f'<div class="panel"><h2>Economy</h2><p style="color:var(--muted)">Fragment \u2014 supply {esc(ov["total_supply_credits"])} \u00b7 treasury {esc(ov["treasury_credits"])}</p></div>'
+        except Exception:  # domain: degrade-silently - fragment is optional enrichment
+            body = '<div class="panel"><p style="color:var(--muted)">Economy fragment unavailable</p></div>'
+    elif name == "jobs":
+        try:
+            jobs = db.list_jobs(view="all", limit=5)["jobs"]
+            rows = "".join(f"<div>{esc(j['title'])}</div>" for j in jobs[:5])
+            fallback = '<p style="color:var(--muted)">No jobs</p>'
+            body = f'<div class="panel"><h2>Jobs</h2>{rows or fallback}</div>'
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Jobs fragment unavailable</p></div>'
+    elif name == "staking":
+        try:
+            stakes = db.list_all_stakes()
+            body = _stake_page_rows(stakes[:5])
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Staking fragment unavailable</p></div>'
     else:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
@@ -2137,6 +2538,7 @@ ROUTES = [
     Route("/economy", economy_page),
     Route("/jobs", jobs_page),
     Route("/bounties", bounties_redirect),
+    Route("/credits", credits_global_page),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
@@ -2157,6 +2559,7 @@ ROUTES = [
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
     Route("/reports/{id:int}", report_detail_page),
+    Route("/ci", ci_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
