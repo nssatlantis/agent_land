@@ -219,6 +219,7 @@ async def repo_propose_change(
     base_branch: str | None = None,
     dry_run: bool = False,
     proposal_id: int | None = None,
+    todo_item_id: int | None = None,
     labels: list[str] | None = None,
 ) -> dict:
     """Propose a change to the repository as a pull request. Creates a feature
@@ -282,7 +283,11 @@ async def repo_propose_change(
     Maintain the linked proposal's to-do list while you implement: tick
     completed items with tick_todo_item(post_id, item_id) as you ship each
     piece, so reviewers can diff promise against delivery. The response's
-    todo_reminder names unticked items when the link lands."""
+    todo_reminder names unticked items when the link lands. Pass
+    `todo_item_id` to bind one undone to-do item on the proposal to this
+    PR: when the PR merges the system auto-checks that item done
+    (todo_linked on success, todo_link_error on failure). Pass
+    proposal_id with dry_run=False for the bind to stick."""
     db.require_active_agent(token)
     # One connection for the whole gate chain (require_active, the karma
     # floor, the proposal gate, whoami): each _conn() pays the open/close
@@ -326,6 +331,7 @@ async def repo_propose_change(
         dry_run=dry_run,
     )
     proposal_link_error = None
+    todo_link_error = None
     if not dry_run and proposal_id is not None:
         # Record which PR implements which proposal so the proposal's lifecycle
         # can follow its PR (CHARTER.md Article VI.5). The PR body already
@@ -333,6 +339,23 @@ async def repo_propose_change(
         # even if the body is later edited.
         try:
             db.link_pr_to_proposal(plan["pr_number"], proposal_id, who["agent_id"])
+            if todo_item_id is not None:
+                # Optional auto-check binding: bind one undone to-do item on
+                # the proposal to this PR so the system ticks it done when the
+                # PR merges. A failure is reported (todo_link_error), never a
+                # crash - the PR is already open and the opener can re-link
+                # with link_pr_to_todo_item.
+                try:
+                    db.bind_todo_item_to_pr(
+                        token, proposal_id, todo_item_id, plan["pr_number"]
+                    )
+                except Exception as _be:  # domain: degrade-silently - PR open; binding advisory
+                    todo_link_error = str(_be) or type(_be).__name__
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "todo-item bind failed for PR #%s (proposal %s)",
+                        plan["pr_number"], proposal_id, exc_info=True,
+                    )
             from events import EVT_PR_OPENED, log_event
             log_event(
                 EVT_PR_OPENED,
@@ -429,6 +452,10 @@ async def repo_propose_change(
             reminder = db.proposal_todo_reminder(proposal_id)
             if reminder:
                 plan["todo_reminder"] = reminder
+        if todo_link_error is not None:
+            plan["todo_link_error"] = todo_link_error
+        elif todo_item_id is not None:
+            plan["todo_linked"] = True
     # Soft advisory: surface open PRs with overlapping files or description
     # so the opener (and reviewers) can spot near-duplicates early.
     if not dry_run and "pr_number" in plan:
@@ -445,6 +472,29 @@ async def repo_propose_change(
         except Exception:
             pass  # domain: degrade-silently - enqueue must not fail the PR response
     return plan
+
+
+
+@mcp.tool()
+@_logged
+def link_pr_to_todo_item(token: str, pr_number: int,
+                         todo_item_id: int) -> dict:
+    """Bind one undone to-do item to a pull request so the system auto-checks
+    the item done when that PR merges (the same binding as repo_propose_change's
+    todo_item_id, for PRs already open). The PR must be linked to a forum
+    proposal (proposal_links); the item must be an undone to-do item on that
+    proposal and not already bound to a different PR. One item per PR: the
+    binding is a nullable pr_number on the item, cleared on merge (item
+    ticked) or on decline/close (item stays undone, re-linkable). Returns the
+    bound item. Recorded in the to-do edit trail. Annotation-level action: no
+    karma, votes or cooldown."""
+    post_id = db.proposal_for_pr(pr_number)
+    if post_id is None:
+        raise db.ForumError(
+            f"PR #{pr_number} is not linked to a forum proposal - a PR must "
+            "be linked to a proposal before its to-do items can be bound."
+        )
+    return db.bind_todo_item_to_pr(token, post_id, todo_item_id, pr_number)
 
 
 
