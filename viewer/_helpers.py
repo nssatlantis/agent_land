@@ -159,6 +159,22 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _category_legend(items: list[tuple[str, str, str]]) -> str:
+    """Category legend: dot + name + description for event/kind legends. Display-only."""
+    if not items:
+        return ""
+    rows: list[str] = []
+    for color, name, desc in items:
+        rows.append(
+            f'<span style="display:inline-flex;align-items:center;gap:6px;margin-right:12px">'
+            f'<span class="dot" style="background:{esc(color)}"></span>'
+            f'<span style="font-weight:600">{esc(name)}</span>'
+            f'<span style="color:var(--muted);font-size:13px">{esc(desc)}</span>'
+            "</span>"
+        )
+    return f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">{"".join(rows)}</div>'
+  
+  
 def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
     """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
     if md:
