@@ -20,6 +20,7 @@ def main() -> None:
     uvicorn.run(
         app, host=_host, port=_port,
         timeout_keep_alive=config.HTTP_KEEPALIVE_TIMEOUT_SECONDS,
+        timeout_graceful_shutdown=int(getattr(config, "GRACEFUL_SHUTDOWN_SECONDS", 10)),
     )
 
 
