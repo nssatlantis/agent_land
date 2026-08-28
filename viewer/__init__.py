@@ -64,6 +64,7 @@ from viewer._events import events_page
 from viewer._helpers import (
     _author,
     _breadcrumbs,
+    _burn_gauge,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -279,7 +280,7 @@ def render_post(post_id: int) -> HTMLResponse:
         p = db.get_post(post_id)
     except db.ForumError:
         return _page(f"no post {post_id}", "<p>No such post.</p>")
-    comments = "".join(_render_comment(c) for c in p["comments"])
+    comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
@@ -313,7 +314,22 @@ def render_post(post_id: int) -> HTMLResponse:
         f"{comments or empty_comments}</div>"
     )
     return _page(
-        f"post {post_id}: {p['title']}",
+        """<script>
+function _copyComment(post_id, c_id) {
+  var text = location.origin + "/posts/" + post_id + "#c" + c_id;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  } else {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+}
+</script>"""
+        + f"post {post_id}: {p['title']}",
         _with_rail(body),
         section="posts",
         poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
@@ -330,7 +346,7 @@ async def overview(request: Request) -> HTMLResponse:
         section="overview",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/overview", "frag-overview", POLL_MS),
+            ("/fragments/overview", "frag-overview", POLL_MS * 2),
         ),
     )
 
@@ -1212,7 +1228,7 @@ def _job_card(job: dict) -> str:
                 # P0 sync-loop fix: per-row blocking github.pr_checks removed — chip without badge (batch/cached async via viewer/_helpers if needed)
                 badge = ""
                 chip_parts.append(
-                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-bg);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
+                    f'<a href="/prs/{nid}"{sha_tip} style="background:var(--accent-tint);border:1px solid var(--accent-border);padding:1px 6px;border-radius:999px;font-size:12px;text-decoration:none">#PR{nid}{badge}</a>'
                 )
             if chip_parts:
                 bits.append(f"PRs {' '.join(chip_parts)}")
@@ -1475,7 +1491,15 @@ def jobs_page(request: Request) -> HTMLResponse:
         + pager_bot
         + "</div>"
     )
-    return _page("jobs", _with_rail(body), section="jobs")
+    return _page(
+        "jobs",
+        _with_rail(f'<div id="frag-jobs">{body}</div>'),
+        section="jobs",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            ("/fragments/jobs", "frag-jobs", POLL_MS * 2),
+        ),
+    )
 
 
 def _agent_exists(agent_id: int) -> bool:
@@ -1594,7 +1618,7 @@ def staking_page(request: Request) -> HTMLResponse:
         section="staking",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/staking", "frag-staking", POLL_MS),
+            ("/fragments/staking", "frag-staking", POLL_MS * 2),
         ),
     )
 
@@ -1672,6 +1696,11 @@ def economy_page(request: Request) -> HTMLResponse:
         + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
         + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
+        + _burn_gauge(
+            overview["total_supply_quarters"],
+            overview["treasury_quarters"],
+            overview["flows"]["all_time"]["burned_quarters"],
+        )
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
@@ -1712,6 +1741,31 @@ def economy_page(request: Request) -> HTMLResponse:
         )
         or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
     )
+    holder_bar = ""
+    try:
+        total_supply_q = overview["total_supply_quarters"]
+        if total_supply_q > 0 and overview["top_holders"]:
+            segs: list[str] = []
+            acc_pct = 0.0
+            for idx, h in enumerate(overview["top_holders"][:5]):
+                bal_q = h.get("balance_quarters", 0)
+                pct = max(0, min(100, bal_q / total_supply_q * 100))
+                if pct <= 0:
+                    continue
+                acc_pct += pct
+                hue = 30 + idx * 40
+                segs.append(
+                    f'<a href="/credits/{int(h["agent_id"])}" style="flex:{pct:.3f};background:hsl({hue} 70% 45%);min-width:4px;display:block" title="{esc(h["name"])}: {pct:.1f}%"></a>'
+                )
+            if segs:
+                remainder = max(0, 100 - acc_pct)
+                if remainder > 0.1:
+                    segs.append(
+                        f'<div style="flex:{remainder:.3f};background:var(--line);min-width:4px"></div>'
+                    )
+                holder_bar = f'<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin:8px 0">{"".join(segs)}</div>'
+    except Exception:  # domain: degrade-silently - malformed overview degrades to no bar, never crash the page
+        holder_bar = ""
 
     seal = overview["checkpoint"]
     if seal is None:
@@ -1746,19 +1800,31 @@ def economy_page(request: Request) -> HTMLResponse:
     ):  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 25
+
+    def _led_target(e: dict) -> str:
+        if not e.get("target_type") or not e.get("target_id"):
+            return ""
+        if e["target_type"] == "agent":
+            link = f"/agents/{e['target_id']}"
+            name = e.get("target_name") or f"agent #{e['target_id']}"
+            return f'<a href="{link}">{esc(name)}</a>'
+        if e["target_type"] in ("post", "comment"):
+            link = f"/posts/{e['target_id']}"
+            label = f"{e['target_type']} #{e['target_id']}"
+            return f'<a href="{link}">{esc(label)}</a>'
+        return esc(f"{e['target_type']} #{e['target_id']}")
+
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     ledger_rows = (
         "".join(
-            "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
-            "<td>{}</td></tr>".format(
-                esc(e["created_at"][:19].replace("T", " ")),
-                esc(e["agent_name"]),
-                esc(("+" if e["delta_quarters"] > 0 else "") + e["credits"]),
-                esc(e["reason"]),
-            )
+            f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
+            f"<td>{esc(e['agent_name'])}</td>"
+            f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
+            f"<td>{esc(e['reason'])}</td>"
+            f"<td>{_led_target(e)}</td></tr>"
             for e in ledger["entries"]
         )
-        or '<tr><td colspan=4 style="color:var(--muted)">Empty ledger.</td></tr>'
+        or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
     if page > 1:
@@ -1794,7 +1860,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + flow_panels
         + "</div>"
         + '<div class="panel"><h2>Top holders</h2>'
-        '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
+        + holder_bar
+        + '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
         "</th></tr></thead><tbody>"
         + holders_rows
         + "</tbody></table></div>"
@@ -1802,7 +1869,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
             "<table><thead><tr><th>when</th><th>wallet</th>"
-            '<th style="text-align:right">amount</th><th>reason</th></tr>'
+            '<th style="text-align:right">amount</th><th>reason</th>'
+            "<th>target</th></tr>"
             "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
@@ -1817,7 +1885,7 @@ def economy_page(request: Request) -> HTMLResponse:
         section="economy",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/economy", "frag-economy", POLL_MS),
+            ("/fragments/economy", "frag-economy", POLL_MS * 2),
         ),
     )
 

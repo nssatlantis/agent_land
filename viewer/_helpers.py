@@ -271,6 +271,31 @@ def _timeline_card(
     )
 
 
+def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
+    """Burn gauge ring-chart: supply/treasury/burned conic-gradient. Display-only."""
+    try:
+        supply = supply_q / 4
+        treasury = treasury_q / 4
+        burned = burned_q / 4
+        if supply <= 0:
+            return ""
+        burned_pct = max(0, min(100, burned / supply * 100))
+        treasury_pct = max(0, min(100, treasury / supply * 100))
+        burned_end = burned_pct
+        treasury_end = min(100, burned_pct + treasury_pct)
+        from db._credits import format_credits as _fmt
+
+        return (
+            f'<div style="display:flex;align-items:center;gap:12px;margin:8px 0">'
+            f'<div style="width:64px;height:64px;border-radius:50%;background:conic-gradient(var(--fail) 0 {burned_end:.1f}%, var(--accent) {burned_end:.1f}% {treasury_end:.1f}%, var(--line) {treasury_end:.1f}% 100%);"></div>'
+            f'<div><div style="font-size:13px">Burned {_fmt(burned_q)} ({burned_pct:.1f}%)</div>'
+            f'<div style="font-size:13px;color:var(--muted)">Treasury {_fmt(treasury_q)} ({treasury_pct:.1f}%)</div></div>'
+            "</div>"
+        )
+    except Exception:  # domain: degrade-silently - malformed overview values degrade to an empty gauge, never crash the page
+        return ""
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
@@ -1256,10 +1281,20 @@ def _kind_badge(p: dict) -> str:
 
 def _tag_text_color(hex_color: str) -> str:
     """Contrast-safe text color for a tag chip based on relative luminance."""
-    h = hex_color.lstrip("#")
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    return "#fff" if luminance < 128 else "#1a202c"
+    try:
+        h = hex_color.lstrip("#")
+        if len(h) != 6:
+            raise ValueError(f"bad hex len {len(h)}")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return "#fff" if luminance < 128 else "#1a202c"
+    except (
+        ValueError,
+        IndexError,
+        AttributeError,
+        TypeError,
+    ):  # domain: degrade-silently - malformed hex color falls back to dark text, chip still renders
+        return "#1a202c"
 
 
 def _tag_chips(p: dict) -> str:
@@ -1557,7 +1592,7 @@ def _with_rail(content: str, show_proposals: bool = True) -> str:
     )
 
 
-def _render_comment(node: dict) -> str:
+def _render_comment(node: dict, post_id: int = 0) -> str:
     quote = ""
     if node.get("quote_text"):
         # A structured quote: the frozen excerpt (escaped, inline-markdown so
@@ -1579,11 +1614,16 @@ def _render_comment(node: dict) -> str:
             f'<blockquote class="quote">{_inline_md(node["quote_text"])}'
             f"{attr}</blockquote>"
         )
+    copy_icon = "&#128279;"
+    copy_btn = (
+        f'<button class="copy-link" title="Copy permalink" '
+        f'onclick="_copyComment({post_id},{node["id"]})">{copy_icon}</button>'
+    )
     inner = (
-        f'<div class="comment" id="c{node["id"]}">{_comment_meta(node)}<hr>'
+        f'<div class="comment" id="c{node["id"]}">{copy_btn}{_comment_meta(node)}<hr>'
         f"{quote}<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
-    replies = "".join(_render_comment(r) for r in node["replies"])
+    replies = "".join(_render_comment(r, post_id) for r in node["replies"])
     if replies:
         inner += f'<div class="thread">{replies}</div>'
     return inner
