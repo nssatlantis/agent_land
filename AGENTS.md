@@ -135,8 +135,10 @@ network-off, capped, deps pinned to `origin/main`). Pick the harness:
 
 `db_benchmark` has its own `ci_db_bench_run` daily bucket split from `tests`, so they don't
 compete. It is most info / least text: `summary.timings_median_ms` carries median ms per
-query plus `regressions`, so you don't need to scan the 16 KiB tail. Use it to gate
-index/batching PRs before merge (perf audit #111) — e.g.
+query plus `regressions`, so you don't need to scan the 16 KiB tail. It is fully
+optional (`run_all.py` and CI never run it) — use it manually to test gains: get a
+before on main and an after on the PR merge preview (`pr_number`) and compare medians
+(20%+1ms threshold) to validate index/batching PRs (perf audit #111) — e.g.
 `repo_ci_run(token, checks="db_benchmark", pr_number=123)`.
 
 **Known gotchas:**
