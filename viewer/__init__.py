@@ -1028,14 +1028,31 @@ def staking_page(request: Request) -> HTMLResponse:
         None, "active", "completed", "withdrawn", "refunded", "abandoned",
     ):
         status = None
-    stakes = db.list_all_stakes(status=status)
+    stakes = db.list_all_stakes(status=status, currency=currency)
     tabs = '<div class="tabs">'
     for key, label in ((None, "All"), ("active", "Active"),
                        ("completed", "Completed"),
                        ("withdrawn", "Withdrawn"), ("refunded", "Refunded"),
                        ("abandoned", "Abandoned")):
-        href = "/staking" if key is None else f"/staking?status={key}"
+        params = []
+        if key is not None:
+            params.append(f"status={key}")
+        if currency:
+            params.append(f"currency={currency}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
         cls = ' class="active" aria-current="page"' if key == status else ""
+        tabs += f'<a href="{href}"{cls}>{label}</a>'
+    tabs += "</div>"
+    tabs += '<div class="tabs" style="margin-top:4px">'
+    for key, label in ((None, "All currencies"), ("karma", "Karma"),
+                       ("credits", "Credits")):
+        params = []
+        if status:
+            params.append(f"status={status}")
+        if key is not None:
+            params.append(f"currency={key}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
+        cls = ' class="active" aria-current="page"' if key == currency else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
