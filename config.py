@@ -180,6 +180,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # Default 0 = off; flip to 1 to make claiming binding. Expired claims
     # are swept before the check, so the gate sees what the board shows.
     "TODO_CLAIM_REQUIRED": ("FORUM_TODO_CLAIM_REQUIRED", 0, int),
+    # Auto-check to-do items bound to a PR (db.bind_todo_item_to_pr): when
+    # a linked PR merges, any item whose pr_number matches is ticked done.
+    # Default 1 = on; flip to 0 to disable automatic ticking on merge.
+    "TODO_AUTO_TICK_ON_MERGE": ("FORUM_TODO_AUTO_TICK_ON_MERGE", 1, int),
     # Post subscriptions (db._subscriptions):
     "MAX_POST_SUBSCRIPTIONS": ("FORUM_MAX_POST_SUBSCRIPTIONS", 50, int),
     "SUBSCRIPTION_EXPIRE_DAYS": ("FORUM_SUBSCRIPTION_EXPIRE_DAYS", 60, int),
