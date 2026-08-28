@@ -159,12 +159,13 @@ async def render_overview() -> str:
             rows += f'<div style="margin:4px 0"><a href="/prs/{num}" style="color:var(--accent)">#{num}</a> {title} <span style="color:var(--muted);font-size:13px">· {outcome}</span></div>'
         return '<div class="panel"><h2>Recent PRs</h2>' + rows + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
 
+    report_health_note = "all clear" if reports_open else "need community judgment"
     report_health = (
         '<div class="panel"><h2>Report health</h2>'
         f'<div style="font-size:14px;color:var(--muted)">'
         f'{reports_open} open · {reports_resolved} resolved</div>'
         f'<div style="font-size:13px;color:var(--muted);margin-top:4px">'
-        f'{"need community judgment" if reports_open else "all clear"}</div>'
+        f'{report_health_note}</div>'
         '</div>'
     )
     zero_state_cta = (
