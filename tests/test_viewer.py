@@ -16,6 +16,15 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402
+from viewer import (  # noqa: E402
+    _economy_body,
+    _frag_path,
+    _jobs_body,
+    _staking_body,
+    economy_page,
+    jobs_page,
+    staking_page,
+)
 from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
 from viewer._helpers import (
     _ci_chip,
@@ -628,6 +637,78 @@ def test_activity_body_renders_summary_and_rows():
     assert 'href="/agents/1"' in html, "profile link present"
 
 
+class _Req:
+    """Minimal Request stand-in for the page/fragment handlers - they only
+    read .query_params, like the _Req fakes in test_ci_viewer.py."""
+
+    def __init__(self, params: dict | None = None):
+        from starlette.datastructures import QueryParams
+
+        self.query_params = QueryParams(params or {})
+
+
+def _frag_div(page_html: str, name: str) -> str:
+    """The inner HTML of one live-region div (<div id="frag-NAME">...) as it
+    is embedded in the full page. Walks open/close <div> tags so nested
+    panels inside the body don't truncate the extraction."""
+    marker = f'<div id="frag-{name}">'
+    start = page_html.index(marker) + len(marker)
+    depth = 1
+    end = start
+    while depth > 0:
+        nxt_open = page_html.find("<div", end)
+        nxt_close = page_html.find("</div>", end)
+        if nxt_close == -1:
+            raise AssertionError(f"unbalanced frag-{name} div")
+        if nxt_open != -1 and nxt_open < nxt_close:
+            depth += 1
+            end = nxt_open + len("<div")
+        else:
+            depth -= 1
+            end = nxt_close + len("</div>")
+    return page_html[start : end - len("</div>")]
+
+
+def test_fragments_match_full_page_bodies():
+    """The fragment endpoints must render the exact same body as their full
+    page embeds - the #556/#557 regression made them return stubs that wiped
+    /jobs, /staking and /economy on first soft-refresh poll."""
+    for name, page_fn, body_fn in (
+        ("jobs", jobs_page, _jobs_body),
+        ("staking", staking_page, _staking_body),
+        ("economy", economy_page, _economy_body),
+    ):
+        req = _Req()
+        page_html = page_fn(req).body.decode("utf-8")
+        assert body_fn(req) == _frag_div(page_html, name), (
+            f"frag-{name} body drifted from its full page"
+        )
+
+
+def test_fragments_echo_query_params():
+    """The fragment poll URL echoes the page's current query string so the
+    soft refresh keeps the tab/page/filters the user is on."""
+    req = _Req({"status": "active", "page": "2", "q": "chronicle"})
+    path = _frag_path(req, "jobs")
+    assert path.startswith("/fragments/jobs?")
+    assert "status=active" in path
+    assert "page=2" in path
+    assert "chronicle" in path
+    assert _frag_path(_Req(), "jobs") == "/fragments/jobs"
+
+
+def test_fragments_body_preserves_query_selection():
+    """A filtered fragment body must carry the selection through (the jobs
+    tabs reflect the active status param), not reset to the default view."""
+    req = _Req({"status": "closed"})
+    html = _jobs_body(req)
+    assert 'href="/jobs?status=closed" class="active"' in html, (
+        "closed-filtered tab not active in fragment body"
+    )
+    assert 'href="/jobs?status=active"' in html, "other tabs still present"
+    assert _frag_path(req, "jobs") == "/fragments/jobs?status=closed"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -664,4 +745,7 @@ if __name__ == "__main__":
     test_pulse_panels_render_live_fragments()
     test_activity_tabs_expose_all_domains()
     test_activity_body_renders_summary_and_rows()
+    test_fragments_match_full_page_bodies()
+    test_fragments_echo_query_params()
+    test_fragments_body_preserves_query_selection()
     print("\n== test_viewer: all passed ==")
