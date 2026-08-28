@@ -366,7 +366,12 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
         sort = "newest"
     counts = db.post_kind_counts()
     tag = (request.query_params.get("tag") or "").strip()
-    if tag:
+    if tag and kind != "all":
+        try:
+            total = len(db.list_posts(tag=tag, proposal_kind=kind, sort=sort))
+        except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
+            total = 0
+    elif tag:
         total = db.post_tag_count(tag)
     else:
         total = {
@@ -398,13 +403,15 @@ def _posts_list(request: Request) -> str:
     tag = (request.query_params.get("tag") or "").strip()
     if tag:
         try:
+            kwargs2: dict = {"sort": sort, "tag": tag}
+            if kind != "all":
+                kwargs2["proposal_kind"] = kind
             posts = db.list_posts(
                 limit=POSTS_PER_PAGE,
                 offset=(page - 1) * POSTS_PER_PAGE,
-                sort=sort,
-                tag=tag,
+                **kwargs2,
             )
-        except db.ForumError:
+        except db.ForumError:  # domain: tag filter - unknown tag -> empty list
             posts = []
     else:
         kwargs: dict = {"sort": sort}
@@ -458,40 +465,50 @@ def posts_page(request: Request) -> HTMLResponse:
     tag = (request.query_params.get("tag") or "").strip()
     tag_found = db.tag_exists(tag) if tag else False
 
+    tag_row = ""
     if tag:
         tag_label = esc(tag)
         if not tag_found:
-            filter_row = (
+            tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">'
                 f'Unknown tag: <span style="color:var(--muted)">{tag_label}</span>'
-                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+                f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear</a></div>'
             )
         else:
-            tag_total = db.post_tag_count(tag)
-            filter_row = (
+            try:
+                if kind != "all":
+                    tag_total = len(
+                        db.list_posts(tag=tag, proposal_kind=kind, sort=sort)
+                    )
+                else:
+                    tag_total = db.post_tag_count(tag)
+            except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
+                tag_total = 0
+            tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
                 f'style="background:#2b6cb022;border:1px solid #2b6cb0;color:{_tag_text_color("#2b6cb0")}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
                 f"{'post' if tag_total == 1 else 'posts'}</span>"
-                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+                f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear tag</a> \xb7 '
+                f'<a href="/posts?tag={_urlquote(tag)}" style="color:var(--muted);font-size:14px">clear kind</a></div>'
             )
-    else:
-        filter_row = (
-            '<div class="tabs">'
-            + "".join(
-                f'<a href="{_posts_href(key, sort, tag=tag)}"'
-                + (' class="active" aria-current="page"' if key == kind else "")
-                + f">{label} \xb7 {n}</a>"
-                for key, label, n in (
-                    ("all", "All", counts["total"]),
-                    ("none", "Posts", counts["posts"]),
-                    ("proposal", "Proposals", counts["proposals"]),
-                    ("small_fix", "Small fixes", counts["small_fixes"]),
-                )
+    tabs_row = (
+        '<div class="tabs">'
+        + "".join(
+            f'<a href="{_posts_href(key, sort, tag=tag)}"'
+            + (' class="active" aria-current="page"' if key == kind else "")
+            + f">{label} \xb7 {n}</a>"
+            for key, label, n in (
+                ("all", "All", counts["total"]),
+                ("none", "Posts", counts["posts"]),
+                ("proposal", "Proposals", counts["proposals"]),
+                ("small_fix", "Small fixes", counts["small_fixes"]),
             )
-            + "</div>"
         )
+        + "</div>"
+    )
+    filter_row = tag_row + tabs_row
     sort_row = (
         '<div class="sort-row">Sort:<span class="seg">'
         f'<a href="{_posts_href(kind, "newest", tag=tag)}"'
