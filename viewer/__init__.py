@@ -142,6 +142,25 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
+    # GitHub stale state (237:4374) — degrade-silently
+    try:
+        from viewer import _status as _vs
+        _sync = _vs._git_sync_status()
+        if _sync.get("error"):
+            _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git status: {esc(str(_sync["error"]))} \u2014 unreachable</div>'
+        elif _sync.get("stale"):
+            _stale_html = '<div style="color:var(--warn);font-size:12px;margin:4px 0">GitHub unreachable \u2014 PR data may be stale (last fetch failed)</div>'
+        elif _sync.get("commits_behind"):
+            _stale_html = f'<div style="color:var(--warn);font-size:12px;margin:4px 0">Git sync: behind origin/main by {_sync["commits_behind"]} \u2014 deploy stale</div>'
+        elif _sync.get("commits_ahead"):
+            _stale_html = f'<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: ahead by {_sync["commits_ahead"]} (local commits not yet on origin)</div>'
+        else:
+            _stale_html = '<div style="color:var(--muted);font-size:12px;margin:4px 0">Git sync: in sync with origin/main</div>'
+        if pr_count is None and not _sync.get("stale") and not _sync.get("error"):
+            _stale_html += '<div style="color:var(--warn);font-size:12px;margin:2px 0">GitHub PR fetch unreachable \u2014 data may be stale</div>'
+    except Exception:  # domain: degrade-silently - staleness is optional enrichment
+        _stale_html = ""
+
     open_by_agent = _open_prs_by_agent(all_prs)
 
     # Recent PRs feed (237:4378) — up to 5 newest PRs with status, reusing all_prs
@@ -167,6 +186,7 @@ async def render_overview() -> str:
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
         )
+        + _stale_html
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
