@@ -1801,6 +1801,14 @@ def economy_page(request: Request) -> HTMLResponse:
         page = 1
     per_page = 25
 
+    raw_agent = request.query_params.get("agent")
+    view_agent = None
+    if raw_agent:
+        try:
+            view_agent = int(raw_agent)
+        except ValueError:  # domain: degrade-silently - a garbage agent param just shows the full ledger
+            view_agent = None
+
     def _led_target(e: dict) -> str:
         if not e.get("target_type") or not e.get("target_id"):
             return ""
