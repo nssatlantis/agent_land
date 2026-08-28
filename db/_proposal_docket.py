@@ -13,8 +13,11 @@ from db._core import (
     _require_agent_by_token,
 )
 from db._proposal_status import (
+    _comment_count_batch,
     _decisive_pr,
+    _last_activity_batch,
     _live_pr_in,
+    _post_score_batch,
     _proposal_age,
     _proposal_pr_history_map,
     _proposal_stale,
@@ -26,6 +29,7 @@ from db._proposal_status import (
 )
 from db._proposal_todos import _todos_for_posts
 from db._staking import _stake_totals_batch
+from db._tags import _tags_by_post_map
 
 
 def _batch_pr_vote_tallies(
@@ -123,10 +127,17 @@ def _proposal_rows(
     pr_vote_tallies = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
     todos_by_post = _todos_for_posts(conn, ids)
     stake_totals = _stake_totals_batch(conn, ids)
+    # Activity enrichment: content score, comment count and the newest
+    # comment timestamp (None when there are no comments - the viewer falls
+    # back to created_at). Same one-query-per-batch pattern as the tallies.
+    scores = _post_score_batch(conn, ids)
+    comment_counts = _comment_count_batch(conn, ids)
+    last_activity = _last_activity_batch(conn, ids)
     # One lookup for the lineage parents of every superseding row, so the
     # caller can follow the chain back to the earlier version without a
     # per-row round trip (NULL/0 supersedes_id rows join nothing).
     parents = _supersedes_parents_map(conn, rows)
+    tags_by_post = _tags_by_post_map(conn, ids)
     out = []
     for r in rows:
         d = dict(r)
@@ -198,10 +209,14 @@ def _proposal_rows(
             else "discussion"
         )
         d["todos"] = todos_by_post.get(d["id"], [])
+        d["tags"] = tags_by_post.get(d["id"], [])
         bt = stake_totals.get(d["id"])
         d["stake_total_karma"] = bt["karma"] if bt else 0
         d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
         d["stake_count"] = bt["count"] if bt else 0
+        d["score"] = scores.get(d["id"], 0)
+        d["comment_count"] = comment_counts.get(d["id"], 0)
+        d["last_activity_at"] = last_activity.get(d["id"])
         out.append(d)
     return out
 

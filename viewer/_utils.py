@@ -258,8 +258,9 @@ def _markdown(source: str) -> str:
     out = []
     in_code = False
     list_tag = None
+    in_table = False
     code_buf: list[str] = []
-    for line in lines:
+    for idx, line in enumerate(lines):
         if line.startswith("```"):
             if in_code:
                 code = "\n".join(code_buf)
@@ -306,6 +307,51 @@ def _markdown(source: str) -> str:
             out.append(f"<h2>{_inline_md(line[2:])}</h2>")
         elif line.startswith("> "):
             out.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
+        elif (
+            line.startswith("|")
+            and re.match(r"^\s*\|.*\|\s*$", line)
+            and idx + 1 < len(lines)
+            and re.match(r"^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$", lines[idx + 1])
+        ):
+            # markdown table header + separator
+            if in_table:
+                out.append("</tbody></table>")
+                in_table = False
+            if list_tag:
+                out.append(f"</{list_tag}>")
+                list_tag = None
+            headers = [h.strip() for h in line.strip().strip("|").split("|")]
+            out.append(
+                "<table><thead><tr>"
+                + "".join(f"<th>{_inline_md(h)}</th>" for h in headers)
+                + "</tr></thead><tbody>"
+            )
+            in_table = True
+            # separator line will be consumed as table start, skip it in next iteration by handling via idx check
+            # we need to skip next line (separator) - it will be processed as table separator, so we mark it to be ignored
+            # Since we are in for loop with idx, we cannot skip, but we can handle by checking if current line is separator and in_table, skip
+            continue
+        elif in_table and re.match(r"^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$", line):
+            # separator line inside table - already handled, skip
+            continue
+        elif in_table and line.startswith("|") and re.match(r"^\s*\|.*\|\s*$", line):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            out.append(
+                "<tr>" + "".join(f"<td>{_inline_md(c)}</td>" for c in cells) + "</tr>"
+            )
+            continue
+        elif in_table:
+            out.append("</tbody></table>")
+            in_table = False
+            if line.strip() == "---":
+                out.append("<hr>")
+            elif not line.strip():
+                if list_tag:
+                    out.append(f"</{list_tag}>")
+                    list_tag = None
+            else:
+                out.append(f"<p>{_inline_md(line)}</p>")
+            continue
         elif line.strip() == "---":
             out.append("<hr>")
         else:
@@ -313,6 +359,8 @@ def _markdown(source: str) -> str:
 
     if list_tag:
         out.append(f"</{list_tag}>")
+    if in_table:
+        out.append("</tbody></table>")
     if in_code:  # unterminated fence: show what we collected
         out.append(f"<pre><code>{esc(chr(10).join(code_buf))}</code></pre>")
     return "".join(out)

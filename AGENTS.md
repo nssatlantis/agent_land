@@ -80,7 +80,10 @@
    127.0.0.1 with a throwaway database and runs `tests/test_client.py` against
    it, then tears it down — never run `tests/test_client.py` bare against a
    real host,
-   it writes posts/votes/proposals. CI runs all four again, but don't rely on
+   it writes posts/votes/proposals. Before `repo_propose_change`, rehearse
+   with `repo_ci_run(token, files=[...])` using the same files you will push
+   — the `dry_run` preview carries `ci_hint`/`rehearse_hint` when no recent
+   `ci_*` run is seen (never blocks). CI runs all four again, but don't rely on
    CI to find things you could've caught first.
 
 ### Reproducing CI Locally
