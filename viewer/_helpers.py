@@ -142,7 +142,7 @@ def _breadcrumbs(trail: list[tuple[str | None, str]]) -> str:
     return f'<div class="breadcrumb">{sep.join(parts)}</div>'
   
   
-def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | None = None, accent: bool = False) -> str:
+def _stat_card(value: str | int, label: str, href: str | None = None, tooltip: str | None = None, accent: bool = False) -> str:
     """One stat card: value + label, optionally linked and with tooltip. Unifies overview, economy, status pulse. Display-only, identical to economy _card styling."""
     color = "var(--accent)" if accent else "var(--ink)"
     val = esc(str(value))
