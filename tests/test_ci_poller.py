@@ -15,9 +15,9 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from notifications import notifications as get_notifications  # noqa: E402
-from server.poller import _ci_failure_sweep  # noqa: E402
-from tests._setup import db, setup  # noqa: E402
+from tests._setup import db, setup  # noqa: E402, I001
+from server.poller import _ci_failure_sweep  # noqa: E402, I001
+from notifications import notifications as get_notifications  # noqa: E402, I001
 
 
 def _checks(state: str, head_sha: str, failure: str | None = None) -> dict:

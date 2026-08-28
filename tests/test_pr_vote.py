@@ -10,12 +10,12 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import events  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402, I001
+import events  # noqa: E402, I001
 
 # Voting now syncs a cosmetic GitHub label; stub it so the suite never hits
 # the GitHub API.  Individual tests may override these with recorders.
-import github as _github_mod  # noqa: E402
-from tests._setup import db, expect_error, setup  # noqa: E402
+import github as _github_mod  # noqa: E402, I001
 
 _github_mod.add_pr_label = lambda *a, **k: None
 _github_mod.remove_pr_label = lambda *a, **k: None

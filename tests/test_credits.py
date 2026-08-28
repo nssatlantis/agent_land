@@ -16,8 +16,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import events  # noqa: E402
-from tests._setup import config, db, setup  # noqa: E402
+from tests._setup import config, db, setup  # noqa: E402, I001
+import events  # noqa: E402, I001
 
 db.init_db()
 

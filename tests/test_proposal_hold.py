@@ -26,11 +26,11 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_COLLAB_SETTLE_SECONDS"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import github  # noqa: E402
-from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED, log_event  # noqa: E402
-from notifications import notifications  # noqa: E402
-from server.poller import _pr_vote_sweep  # noqa: E402
-from tests._setup import db, expect_error, proposal_need, setup  # noqa: E402
+from tests._setup import db, expect_error, proposal_need, setup  # noqa: E402, I001
+import github  # noqa: E402, I001
+from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED, log_event  # noqa: E402, I001
+from notifications import notifications  # noqa: E402, I001
+from server.poller import _pr_vote_sweep  # noqa: E402, I001
 
 AGENTS, _BASE_POST = setup()
 

@@ -547,7 +547,7 @@ def _parse_summary(output: str) -> tuple[dict | None, list[str]]:
         try:
             timings: dict[str, float] = {}
             for m in re.finditer(
-                r"^\s{2}(\w+)\s+[\d.]+ / ([\d.]+) / [\d.]+", output, re.M
+                r"^\s{2}(\w+)\s+[\d.]+ / +([\d.]+) / +[\d.]+", output, re.M
             ):
                 label = m.group(1)
                 try:

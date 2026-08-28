@@ -20,8 +20,8 @@ os.environ["FORUM_DB_PATH"] = str(_TMP / "forum.db")
 os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import search  # noqa: E402
-from tests._setup import config, db, init  # noqa: E402
+from tests._setup import config, db, init  # noqa: E402, I001
+import search  # noqa: E402, I001
 
 
 def _make_tag(name, description=None, retired=0):

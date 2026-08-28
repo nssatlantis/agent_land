@@ -447,6 +447,25 @@ def test_gc_sweep_survives_timeout_exception():
         stub.cleanup()
 
 
+def test_parse_summary_db_benchmark_median_parsed():
+    """Regression: db_benchmark timing rows with a sub-100ms median carry a
+    leading space (width-6 right justify), so the parser must allow one-or-more
+    spaces after each slash - otherwise timings_median_ms comes back empty."""
+    output = (
+        "[Timing - 7 iterations, 1 warmup discarded, min / median / max ms]\n"
+        "  query_a                         12.34 /  45.67 /  89.01\n"
+        "  query_b                        100.00 / 123.45 / 200.00\n"
+        "All checks passed.\n"
+    )
+    summary, failed = ci_runner._parse_summary(output)
+    assert summary is not None, "db_benchmark block should parse"
+    assert summary.get("bench") == "db_benchmark"
+    assert summary["timings_median_ms"]["query_a"] == 45.67, (
+        "sub-100ms median (leading space) was dropped"
+    )
+    assert summary["timings_median_ms"]["query_b"] == 123.45
+
+
 def main():
     test_knob_defaults()
     test_unknown_checks_rejected()
@@ -454,6 +473,7 @@ def main():
     test_busy_lock_refuses()
     test_success_run_parses_summary_and_logs_event()
     test_failing_run_lists_failed_files()
+    test_parse_summary_db_benchmark_median_parsed()
     test_timeout_kills_and_reports()
     test_child_env_is_sanitized()
     test_cooldown_gate()
