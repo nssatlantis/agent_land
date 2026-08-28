@@ -4,11 +4,13 @@ Pins the windowed optimization against the pre-change reference: short bodies
 and typical long highlighted bodies must be byte-equal; whitespace-heavy
 windows are allowed a few-char divergence (still a valid snippet).
 """
+
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import db  # noqa: F401
 import config
+import db  # noqa: F401
 import search
 
 
@@ -28,13 +30,17 @@ def _reference_bounded_snippet(text: str, width: int | None = None) -> str:
 def test_bounded_snippet_typical_long():
     # Long highlighted body: 12k chars, highlight near middle
     body = ("word " * 2000) + "[[match]]" + (" word" * 2000)  # ~12k
-    assert search._bounded_snippet(body, width=240) == _reference_bounded_snippet(body, width=240)
+    assert search._bounded_snippet(body, width=240) == _reference_bounded_snippet(
+        body, width=240
+    )
     print("  typical long: ok")
 
 
 def test_bounded_snippet_short():
     short = "short [[match]] body"
-    assert search._bounded_snippet(short, width=240) == _reference_bounded_snippet(short, width=240)
+    assert search._bounded_snippet(short, width=240) == _reference_bounded_snippet(
+        short, width=240
+    )
     print("  short: ok")
 
 
@@ -59,7 +65,9 @@ def test_bounded_snippet_whitespace_heavy():
 
 def test_bounded_snippet_no_marker():
     no_mark = "a " * 1000
-    assert search._bounded_snippet(no_mark, width=240) == _reference_bounded_snippet(no_mark, width=240)
+    assert search._bounded_snippet(no_mark, width=240) == _reference_bounded_snippet(
+        no_mark, width=240
+    )
     print("  no marker: ok")
 
 

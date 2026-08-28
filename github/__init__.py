@@ -34,141 +34,139 @@ from typing import Any
 
 import config
 
-from . import _core
-from . import _reads
-from . import _checks
-from . import _writes as _writes
+from . import _checks, _core, _reads
 from . import _gitops as _gitops
-
-# ── core infrastructure ─────────────────────────────────────────────────
-from ._core import (  # noqa: F401
-    GITHUB_REPO,
-    GITHUB_BASE_BRANCH,
-    RepoError,
-    _TTLCache,
-    _CACHE_FAILURES,
-    _headers,
-    _bg_loop,
-    _build_client,
-    _get_client,
-    _sync,
-    _on_bg,
-    _shutdown_client,
-    _arequest,
-    _arequest_text,
-    clear_cache,
-    _validate_path,
-    _pr_cache,
-    _tree_cache,
-    _open_prs_cache,
-)
-
-# ── reads: listings, composites, stamps ─────────────────────────────────
-from ._reads import (  # noqa: F401
-    repo_spec,
-    base_branch,
-    list_tree,
-    alist_tree,
-    read_file,
-    aread_file,
-    _slice_line_range,
-    _MAX_READ_FILE_LINES,
-    _CITIZEN_RE,
-    _PROPOSAL_RE,
-    _TRAILING_CITIZEN_RE,
-    _TRAILING_PROPOSAL_RE,
-    strip_trailing_citizen,
-    strip_trailing_proposal,
-    _MD_ESCAPES,
-    _escape_md,
-    pr_proposal_header,
-    _PROPOSAL_HEADER_RE,
-    strip_proposal_header,
-    open_prs,
-    list_repo_labels,
-    open_pr_labels,
-    list_prs,
-    alist_prs,
-    recently_closed_prs,
-    arecently_closed_prs,
-    _pr_outcome,
-    _parse_decline_reason,
-    get_pr,
-    pr_diff,
-    pr_files,
-    pr_comments,
-    pr_commits,
-    _paginated_get,
-    _apaginated_get,
-    _PR_PAGE_SIZE,
-)
+from . import _writes as _writes
 
 # ── checks: CI tiered chain ─────────────────────────────────────────────
 from ._checks import (  # noqa: F401
+    _FAILURE_MARKERS,
     _MAX_CHECK_RUNS,
     _MAX_FAILURE_LINES,
     _MAX_LOG_TAIL_BYTES,
-    _FAILURE_MARKERS,
-    _extract_failure_lines,
+    _REBASE_CI_POLL_INTERVAL,
+    _REBASE_CI_TIMEOUT,
+    _achecks_impl,
+    _afetch_annotations,
+    _afetch_job_log,
+    _afetch_jobs,
+    _afrom_actions,
+    _afrom_check_runs,
+    _checks_from_actions,
+    _checks_from_check_runs,
     _ci_state,
     _dedup_failures,
-    _checks_from_check_runs,
-    _checks_from_actions,
+    _extract_failure_lines,
     _thin_annotation,
-    _afetch_annotations,
-    _afrom_check_runs,
-    _afetch_jobs,
-    _afetch_job_log,
-    _afrom_actions,
-    _achecks_impl,
     pr_checks,
     wait_for_ci,
-    _REBASE_CI_TIMEOUT,
-    _REBASE_CI_POLL_INTERVAL,
 )
 
-# ── writes: proposals, updates, lifecycle, edit engine ──────────────────
-from ._writes import (  # noqa: F401
-    propose_change,
-    update_pr,
-    close_pr,
-    merge_pr,
-    comment_on_pr,
-    decline_pr,
-    set_pr_labels,
-    list_pr_labels,
-    add_pr_label,
-    remove_pr_label,
-    delete_pr_label_definition,
-    update_pr_title,
-    pr_has_label,
-    _content_manifest,
-    _patch_log,
-    _validate_edits,
-    _decode_content_text,
-    _apply_edits,
-    _resolve_edits,
-    _branch_name,
+# ── core infrastructure ─────────────────────────────────────────────────
+from ._core import (  # noqa: F401
+    _CACHE_FAILURES,
+    GITHUB_BASE_BRANCH,
+    GITHUB_REPO,
+    RepoError,
+    _arequest,
+    _arequest_text,
+    _bg_loop,
+    _build_client,
+    _get_client,
+    _headers,
+    _on_bg,
+    _open_prs_cache,
+    _pr_cache,
+    _shutdown_client,
+    _sync,
+    _tree_cache,
+    _TTLCache,
+    _validate_path,
+    clear_cache,
 )
 
 # ── gitops: workspace pool, conflicts, rebases ──────────────────────────
 from ._gitops import (  # noqa: F401
     _CONTEXT_LINES,
-    _parse_conflict_markers,
-    _ws_mode_persistent,
-    _rm_readonly,
-    _ws_fresh_clone,
-    _ws_normalize,
-    _GIT_IDENTITY_NAME,
     _GIT_IDENTITY_EMAIL,
-    _clone_repo,
+    _GIT_IDENTITY_NAME,
     _abort_merge,
-    _push_ref,
+    _clone_repo,
     _detect_conflict_files,
     _has_conflict_markers,
-    detect_merge_conflicts,
+    _parse_conflict_markers,
+    _push_ref,
+    _rm_readonly,
+    _ws_fresh_clone,
+    _ws_mode_persistent,
+    _ws_normalize,
     apply_merge_resolutions,
+    detect_merge_conflicts,
     rebase_pr_onto_main,
+)
+
+# ── reads: listings, composites, stamps ─────────────────────────────────
+from ._reads import (  # noqa: F401
+    _CITIZEN_RE,
+    _MAX_READ_FILE_LINES,
+    _MD_ESCAPES,
+    _PR_PAGE_SIZE,
+    _PROPOSAL_HEADER_RE,
+    _PROPOSAL_RE,
+    _TRAILING_CITIZEN_RE,
+    _TRAILING_PROPOSAL_RE,
+    _apaginated_get,
+    _escape_md,
+    _paginated_get,
+    _parse_decline_reason,
+    _pr_outcome,
+    _slice_line_range,
+    alist_prs,
+    alist_tree,
+    aread_file,
+    arecently_closed_prs,
+    base_branch,
+    get_pr,
+    list_prs,
+    list_repo_labels,
+    list_tree,
+    open_pr_labels,
+    open_prs,
+    pr_comments,
+    pr_commits,
+    pr_diff,
+    pr_files,
+    pr_proposal_header,
+    read_file,
+    recently_closed_prs,
+    repo_spec,
+    strip_proposal_header,
+    strip_trailing_citizen,
+    strip_trailing_proposal,
+)
+
+# ── writes: proposals, updates, lifecycle, edit engine ──────────────────
+from ._writes import (  # noqa: F401
+    _apply_edits,
+    _branch_name,
+    _content_manifest,
+    _decode_content_text,
+    _patch_log,
+    _resolve_edits,
+    _validate_edits,
+    add_pr_label,
+    close_pr,
+    comment_on_pr,
+    decline_pr,
+    delete_pr_label_definition,
+    list_pr_labels,
+    merge_pr,
+    pr_has_label,
+    propose_change,
+    remove_pr_label,
+    set_pr_labels,
+    update_pr,
+    update_pr_title,
 )
 
 # Rebindable seams: NOT statically imported - resolved live against the
@@ -215,13 +213,12 @@ def __getattr__(name: str) -> Any:
     """PEP 562 live delegation for the rebindable seams in _DYNAMIC."""
     owner = _DYNAMIC.get(name)
     if owner is None:
-        raise AttributeError(
-            f"module {__name__!r} has no attribute {name!r}"
-        )
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     return getattr(globals()[owner], name)
 
 
 # ------------------------------------------------- async surface (twins) --
+
 
 def _atwin(sync_fn):
     """Give a composite flow an async face: run the whole sync function on
@@ -428,8 +425,12 @@ async def apr_commits(number: int) -> dict:
             {
                 "sha": c["sha"],
                 "message": (c.get("commit") or {}).get("message") or "",
-                "author_name": ((c.get("commit") or {}).get("author") or {}).get("name"),
-                "author_date": ((c.get("commit") or {}).get("author") or {}).get("date"),
+                "author_name": ((c.get("commit") or {}).get("author") or {}).get(
+                    "name"
+                ),
+                "author_date": ((c.get("commit") or {}).get("author") or {}).get(
+                    "date"
+                ),
             }
             for c in commits
         ],
@@ -468,8 +469,9 @@ async def apr_diff(number: int) -> dict:
     return result
 
 
-async def apr_checks(number: int, *, _pr: dict | None = None,
-                     _head_sha: str | None = None) -> dict:
+async def apr_checks(
+    number: int, *, _pr: dict | None = None, _head_sha: str | None = None
+) -> dict:
     """Native-await twin of pr_checks - the tiered chain (check-runs ->
     Actions logs -> combined status) is preserved, and within a tier every
     per-run annotation / jobs-list / log download fans out concurrently.

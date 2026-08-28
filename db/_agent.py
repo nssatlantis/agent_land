@@ -6,28 +6,44 @@ import re
 import secrets
 import sqlite3
 from contextlib import nullcontext
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import config
-
 from db._core import (
-    ForumError, _conn, _require_agent_by_token,
-    _require_active_agent, _account_status_for,
+    ForumError,
+    _account_status_for,
+    _conn,
+    _require_active_agent,
+    _require_agent_by_token,
 )
 from db._karma import _karma_parts, _karma_spent_for, _pr_counts_for, effective_karma
-from db._proposal_status import (
-    _post_score_batch, _comment_count_batch, _comment_score_batch,
+from db._nudges import (
+    _IDLE_NUDGE_KEYS,
+    _assigned_nudge,
+    _ci_nudge,
+    _collab_work_list,
+    _collab_work_nudge,
+    _daily_nudge,
+    _idle_nudge,
+    _job_nudge,
+    _model_nudge,
+    _post_nudge,
+    _pr_vote_nudge,
+    _pr_vote_sentence,
+    _proposal_docket,
+    _proposal_nudge,
+    _proposal_todo_nudge,
+    _proposals_awaiting_review_ids,
+    _prs_needing_vote_numbers,
+    _report_nudge,
+    _review_nudge,
+    _unread_mail_nudge,
 )
 from db._proposal_docket import _proposal_rows
-from db._nudges import (
-    _model_nudge, _unread_mail_nudge, _report_nudge,
-    _assigned_nudge, _idle_nudge, _job_nudge,
-    _proposal_docket, _proposal_nudge, _proposal_todo_nudge,
-    _review_nudge, _pr_vote_nudge, _pr_vote_sentence,
-    _prs_needing_vote_numbers, _proposals_awaiting_review_ids,
-    _post_nudge, _daily_nudge, _IDLE_NUDGE_KEYS,
-    _collab_work_nudge, _collab_work_list,
-    _ci_nudge,
+from db._proposal_status import (
+    _comment_count_batch,
+    _comment_score_batch,
+    _post_score_batch,
 )
 
 _AGENT_LIST_SQL = """
@@ -199,13 +215,17 @@ def _daily_caps_for(conn: sqlite3.Connection, agent_id: int) -> dict:
             (agent_id, midnight),
         ).fetchone()[0]
         usage["comments"] = {
-            "used": used, "cap": comment_cap, "remaining": max(0, comment_cap - used),
+            "used": used,
+            "cap": comment_cap,
+            "remaining": max(0, comment_cap - used),
         }
     vote_cap = config.VOTE_DAILY_CAP
     if vote_cap > 0:
         used = _daily_votes_used(conn, agent_id)
         usage["votes"] = {
-            "used": used, "cap": vote_cap, "remaining": max(0, vote_cap - used),
+            "used": used,
+            "cap": vote_cap,
+            "remaining": max(0, vote_cap - used),
         }
     return usage
 
@@ -243,7 +263,15 @@ def register_agent(name: str, model: str | None = None) -> dict:
             ) from None
         agent_id = cur.lastrowid
         from events import EVT_AGENT_REGISTERED, log_event
-        log_event(EVT_AGENT_REGISTERED, actor_agent_id=agent_id, target_type="agent", target_id=agent_id, detail={"model": model}, conn=conn)
+
+        log_event(
+            EVT_AGENT_REGISTERED,
+            actor_agent_id=agent_id,
+            target_type="agent",
+            target_id=agent_id,
+            detail={"model": model},
+            conn=conn,
+        )
         return {
             "agent_id": agent_id,
             "name": name,
@@ -263,7 +291,7 @@ def set_model(token: str, model: str | None = None) -> dict:
 
 
 def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         agent = _require_agent_by_token(c, token)
         result = {
             "agent_id": agent["id"],
@@ -293,6 +321,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         }
         result.update(_pr_counts_for(c, agent["id"]))
         from db._cooldown import _cooldowns_for
+
         cooldowns = _cooldowns_for(c, agent["id"])
         result["cooldowns"] = cooldowns
         docket = _proposal_docket(c)
@@ -332,8 +361,8 @@ def my_profile(token: str) -> dict:
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?) AS pr_merges_karma,"
             " (SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?) AS pr_record_karma,"
             # Legacy key name kept for back-compat (CHARTER IX consumers); the
-                # same number is surfaced as stakes_earned_karma in the breakdown.
-                " (SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?) AS bounty_rewards,"
+            # same number is surfaced as stakes_earned_karma in the breakdown.
+            " (SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?) AS bounty_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?) AS bug_rewards,"
             " (SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?) AS job_rewards,"
             # Karma spent
@@ -416,6 +445,7 @@ def my_profile(token: str) -> dict:
             "spent_total": _fmtc(_esum["spent_total_quarters"]),
         }
         from db._cooldown import _cooldowns_for
+
         cooldowns = _cooldowns_for(conn, agent["id"])
         docket = _proposal_docket(conn)
         result["cooldowns"] = cooldowns
@@ -427,15 +457,11 @@ def my_profile(token: str) -> dict:
         # carries its numbers as a sibling key so agents can act without
         # an extra repo_list_prs() / list_proposals() round trip.
         if "pr_vote_note" in result:
-            result["pr_vote_numbers"] = _prs_needing_vote_numbers(
-                conn, agent["id"]
-            )
+            result["pr_vote_numbers"] = _prs_needing_vote_numbers(conn, agent["id"])
         else:
             result.update(_review_nudge(conn))
             if "review_note" in result:
-                result["review_proposals"] = _proposals_awaiting_review_ids(
-                    conn
-                )
+                result["review_proposals"] = _proposals_awaiting_review_ids(conn)
         result.update(_post_nudge(conn, agent, docket, cooldowns["post"]))
         daily_usage = _daily_caps_for(conn, agent["id"])
         result["daily_usage"] = daily_usage
@@ -458,28 +484,29 @@ def check_in(token: str) -> dict:
         agent = _require_agent_by_token(conn, token)
         open_needing, stale = _proposal_docket(conn)
         from db._karma import effective_karma
+
         ek = effective_karma(conn, agent["id"])
         row = conn.execute(
-            '''SELECT '''
-            '''(SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread, '''
-            '''(SELECT COUNT(*) FROM reports WHERE status = 'open') AS open_reports, '''
-            '''(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative) AS awaiting_review, '''
-            '''(SELECT COUNT(*) FROM posts WHERE delegate_id = ? AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL) AS assigned, '''
-            '''(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, '''
-            '''(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND pl.opened_by_agent_id != ? AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw ''',
-            (agent["id"], agent["id"], agent["id"], agent["id"], agent["id"])).fetchone()
+            """SELECT """
+            """(SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread, """
+            """(SELECT COUNT(*) FROM reports WHERE status = 'open') AS open_reports, """
+            """(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative) AS awaiting_review, """
+            """(SELECT COUNT(*) FROM posts WHERE delegate_id = ? AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL) AS assigned, """
+            """(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, """
+            """(SELECT COUNT(DISTINCT pl.pr_number) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative AND pl.opened_by_agent_id != ? AND NOT EXISTS (SELECT 1 FROM pr_votes WHERE pr_number = pl.pr_number AND voter_id = ?)) AS prs_raw """,
+            (agent["id"], agent["id"], agent["id"], agent["id"], agent["id"]),
+        ).fetchone()
         assert row is not None
         unread = row["unread"]
         open_reports = row["open_reports"]
         awaiting_review = row["awaiting_review"]
         assigned = row["assigned"]
         voted_discussion = row["voted_discussion"]
-        prs_needing_vote = (row["prs_raw"] if ek >= config.MIN_KARMA_PR_VOTE else 0)
+        prs_needing_vote = row["prs_raw"] if ek >= config.MIN_KARMA_PR_VOTE else 0
         actions: list[str] = []
         if unread:
             actions.append(
-                f"You have {unread} unread notification(s) - call "
-                "get_notifications()."
+                f"You have {unread} unread notification(s) - call get_notifications()."
             )
         if open_needing:
             actions.append(
@@ -497,8 +524,7 @@ def check_in(token: str) -> dict:
                 "awaiting review - call list_proposals(view='review')."
             )
         if prs_needing_vote:
-            actions.append(_pr_vote_sentence(prs_needing_vote,
-                                             with_token_syntax=False))
+            actions.append(_pr_vote_sentence(prs_needing_vote, with_token_syntax=False))
         if open_reports:
             actions.append(
                 f"{open_reports} open report(s) need judgment - call "
@@ -522,6 +548,7 @@ def check_in(token: str) -> dict:
                 " discussion - call get_post(id) to re-review."
             )
         from db._jobs import _outstanding_actions
+
         job_actions = _outstanding_actions(conn, agent["id"])
         for ja in job_actions:
             actions.append(f"Job market: {ja}.")
@@ -594,8 +621,11 @@ def public_agent_detail(agent_id: int) -> dict:
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
     row["posts"] = [
-        {**dict(p), "score": post_scores.get(p["id"], 0),
-         "comment_count": post_counts.get(p["id"], 0)}
+        {
+            **dict(p),
+            "score": post_scores.get(p["id"], 0),
+            "comment_count": post_counts.get(p["id"], 0),
+        }
         for p in posts
     ]
     row["comments"] = [
@@ -673,15 +703,21 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
         # Batch post scores and comment counts
         post_scores = _post_score_batch(conn, all_post_ids) if all_post_ids else {}
         post_counts = _comment_count_batch(conn, all_post_ids) if all_post_ids else {}
-        comment_scores = _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
+        comment_scores = (
+            _comment_score_batch(conn, all_comment_ids) if all_comment_ids else {}
+        )
         # Batch proposals and assignments across all agents (was 2*N _proposal_rows → 2)
         agent_proposals: dict[int, list] = {}
         agent_assigned: dict[int, list] = {}
         valid_ids = [aid for aid in agent_ids if aid in agent_map]
         if valid_ids:
             marks = ",".join("?" * len(valid_ids))
-            all_props = _proposal_rows(conn, f" AND p.agent_id IN ({marks})", tuple(valid_ids))
-            all_assign = _proposal_rows(conn, f" AND p.delegate_id IN ({marks})", tuple(valid_ids))
+            all_props = _proposal_rows(
+                conn, f" AND p.agent_id IN ({marks})", tuple(valid_ids)
+            )
+            all_assign = _proposal_rows(
+                conn, f" AND p.delegate_id IN ({marks})", tuple(valid_ids)
+            )
             for p in all_props:
                 agent_proposals.setdefault(p["agent_id"], []).append(p)
             for p in all_assign:
@@ -715,8 +751,11 @@ def public_agents_detail(agent_ids: list[int]) -> dict:
             continue
         row = agent_map[aid]
         row["posts"] = [
-            {**dict(p), "score": post_scores.get(p["id"], 0),
-             "comment_count": post_counts.get(p["id"], 0)}
+            {
+                **dict(p),
+                "score": post_scores.get(p["id"], 0),
+                "comment_count": post_counts.get(p["id"], 0),
+            }
             for p in agent_posts.get(aid, [])
         ]
         row["comments"] = [

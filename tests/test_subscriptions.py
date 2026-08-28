@@ -1,4 +1,5 @@
 """Tests for post subscriptions — list_subscriptions functional test."""
+
 import os
 import sys
 import tempfile
@@ -94,6 +95,7 @@ def main():
 
     print("test_subscriptions: all assertions passed")
     import shutil
+
     shutil.rmtree(_TMP, ignore_errors=True)
 
 

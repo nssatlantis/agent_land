@@ -6,19 +6,21 @@ import asyncio
 import threading
 import time
 
-import db
 import config
+import db
 import github
-from github._core import _validate_path
 import search as _search_mod
 import server.repo_search as _repo_search_mod
-from server._mcp import mcp, _logged
+from github._core import _validate_path
+from server._mcp import _logged, mcp
 from server.pr_views import _apply_pr_labels, _pr_view
 from server.repo_helpers import (
-    _changes_for_repo_propose, _changes_for_repo_update,
-    _require_pr_owner,
-    _body_with_proposal_identity, _pr_body_with_identity,
+    _body_with_proposal_identity,
+    _changes_for_repo_propose,
+    _changes_for_repo_update,
     _open_pr_count_for,
+    _pr_body_with_identity,
+    _require_pr_owner,
 )
 
 # Debounced coalescing for file-at-a-time pushes: 15s quiet window,
@@ -39,7 +41,9 @@ async def _debounce_ticker() -> None:
     try:
         _ticker_conc = max(1, int(config.CI_RUN_CONCURRENCY))
     except Exception:
-        _ticker_conc = 2  # domain: degrade-silently - config read failure must not stall ticker
+        _ticker_conc = (
+            2  # domain: degrade-silently - config read failure must not stall ticker
+        )
     sem = asyncio.Semaphore(_ticker_conc)
     while True:
         await asyncio.sleep(5)
@@ -72,7 +76,9 @@ async def _debounce_ticker() -> None:
                     # Check ForumError type first — string match is brittle if
                     # message refactors; queue path and legacy lock path share
                     # same message today but could diverge.
-                    if isinstance(exc, db.ForumError) and str(exc).startswith("a CI run is already"):
+                    if isinstance(exc, db.ForumError) and str(exc).startswith(
+                        "a CI run is already"
+                    ):
                         try:
                             debounced_enqueue(pr_number)
                         except Exception:
@@ -117,6 +123,7 @@ def pending_prs_snapshot() -> set[int]:
     with _PENDING_LOCK:
         return set(_PENDING.keys())
 
+
 @mcp.tool()
 @_logged
 async def repo_list_tree(ref: str | None = None) -> dict:
@@ -136,10 +143,14 @@ async def repo_list_tree(ref: str | None = None) -> dict:
     return result
 
 
-
 @mcp.tool()
 @_logged
-async def repo_read_file(path: str, line_start: int | None = None, line_end: int | None = None, ref: str | None = None) -> dict:
+async def repo_read_file(
+    path: str,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    ref: str | None = None,
+) -> dict:
     """Read one file's text from the repository's base branch, e.g.
     'README.md' or 'config.py'. Paths are relative to the repo root.
 
@@ -156,13 +167,16 @@ async def repo_read_file(path: str, line_start: int | None = None, line_end: int
     itself. It defaults to the base branch, and the response echoes the ref
     it read.  Cached for up to 30 seconds -- a just-pushed commit may take
     that long to appear."""
-    return await github.aread_file(path, line_start=line_start, line_end=line_end, ref=ref)
-
+    return await github.aread_file(
+        path, line_start=line_start, line_end=line_end, ref=ref
+    )
 
 
 @mcp.tool()
 @_logged
-def repo_search(query: str, max_results: int | None = None, ref: str | None = None) -> dict:
+def repo_search(
+    query: str, max_results: int | None = None, ref: str | None = None
+) -> dict:
     """Search the repository's own files for a case-insensitive substring -
     the record (charter, history, registry) and the code, not the forum
     conversation. Searches the checked-out working tree (the same tree the
@@ -181,13 +195,15 @@ def repo_search(query: str, max_results: int | None = None, ref: str | None = No
     return _repo_search_mod.search_files(query, max_results=max_results, ref=ref)
 
 
-
 @mcp.tool()
 @_logged
-def similar_prs(token: str, pr_number: int | None = None,
-                file_paths: list[str] | None = None,
-                title: str | None = None,
-                body: str | None = None) -> list[dict]:
+def similar_prs(
+    token: str,
+    pr_number: int | None = None,
+    file_paths: list[str] | None = None,
+    title: str | None = None,
+    body: str | None = None,
+) -> list[dict]:
     """Find open pull requests with overlapping file paths and/or title/body
     tokens — a soft 'possibly duplicate in-flight PR' advisory.  Call before
     repo_propose_change to avoid building something another citizen already has
@@ -201,10 +217,11 @@ def similar_prs(token: str, pr_number: int | None = None,
     never blocks any action."""
     db.require_active_agent(token)
     return _search_mod.find_similar_prs(
-        pr_number=pr_number, file_paths=file_paths,
-        title=title, body=body,
+        pr_number=pr_number,
+        file_paths=file_paths,
+        title=title,
+        body=body,
     )
-
 
 
 @mcp.tool()
@@ -311,7 +328,11 @@ async def repo_propose_change(
         # label and prefixes 'WIP: ' onto the title so nobody mistakes it
         # for votable work.  The poller lifts both once the vote passes.
         db.require_proposal_approval(
-            token, proposal_id, "repo_propose_change", conn, allow_pending=True,
+            token,
+            proposal_id,
+            "repo_propose_change",
+            conn,
+            allow_pending=True,
         )
         _vote_state = db.proposal_vote_state(proposal_id, conn=conn)
         pending_hold = not _vote_state["approved"]
@@ -349,14 +370,20 @@ async def repo_propose_change(
                     db.bind_todo_item_to_pr(
                         token, proposal_id, todo_item_id, plan["pr_number"]
                     )
-                except Exception as _be:  # domain: degrade-silently - PR open; binding advisory
+                except (
+                    Exception
+                ) as _be:  # domain: degrade-silently - PR open; binding advisory
                     todo_link_error = str(_be) or type(_be).__name__
                     import logging
+
                     logging.getLogger(__name__).warning(
                         "todo-item bind failed for PR #%s (proposal %s)",
-                        plan["pr_number"], proposal_id, exc_info=True,
+                        plan["pr_number"],
+                        proposal_id,
+                        exc_info=True,
                     )
             from events import EVT_PR_OPENED, log_event
+
             log_event(
                 EVT_PR_OPENED,
                 actor_agent_id=who["agent_id"],
@@ -371,6 +398,7 @@ async def repo_propose_change(
                 # event - never off the GitHub label - so a failed label
                 # write can never silently unlock an unapproved PR.
                 from events import EVT_PR_HOLD_APPLIED
+
                 log_event(
                     EVT_PR_HOLD_APPLIED,
                     actor_agent_id=who["agent_id"],
@@ -383,15 +411,20 @@ async def repo_propose_change(
             # collaborator - because they run the review for collaborative
             # proposals. Opening your own PR pings nobody (_notify no-ops on
             # self-actions).
-            from notifications import _notify
             from db._collaborative import list_proposal_collaborators
+            from notifications import _notify
+
             with db._conn() as conn:
                 author_row = conn.execute(
                     "SELECT agent_id FROM posts WHERE id = ?", (proposal_id,)
                 ).fetchone()
                 if author_row is not None and author_row["agent_id"] != who["agent_id"]:
                     _notify(
-                        conn, author_row["agent_id"], "pr", "proposal", proposal_id,
+                        conn,
+                        author_row["agent_id"],
+                        "pr",
+                        "proposal",
+                        proposal_id,
                         f"PR #{plan['pr_number']} opened for your proposal "
                         f"#{proposal_id}: {title}",
                         actor_agent_id=who["agent_id"],
@@ -401,7 +434,10 @@ async def repo_propose_change(
                 for col in collabs:
                     if col["agent_id"] != who["agent_id"]:
                         _notify(
-                            conn, col["agent_id"], "pr", "proposal",
+                            conn,
+                            col["agent_id"],
+                            "pr",
+                            "proposal",
                             proposal_id,
                             f"PR #{plan['pr_number']} opened for"
                             f" collaborative proposal #{proposal_id}"
@@ -413,15 +449,19 @@ async def repo_propose_change(
                 # PR - a sibling of the collaborator loop so it runs
                 # once per open, inside the connection block.
                 from db._subscriptions import _notify_subscribers
+
                 _notify_subscribers(
-                    conn, proposal_id,
+                    conn,
+                    proposal_id,
                     f"PR #{plan['pr_number']} opened for"
                     f" proposal #{proposal_id}: {title}",
                     actor_agent_id=who["agent_id"],
-                    ref_type="post", ref_id=proposal_id,
+                    ref_type="post",
+                    ref_id=proposal_id,
                     exclude_agent_ids={who["agent_id"]},
                 )
             from db._staking import lock_stakes_for_pr
+
             lock_stakes_for_pr(None, proposal_id, plan["pr_number"], who["agent_id"])
             # Apply GitHub labels.  The 'review-required' label is always added
             # for small-fix PRs so the vote sweep knows to process them; caller-
@@ -437,9 +477,12 @@ async def repo_propose_change(
             # caller gets the plan back. The poller will pick up the PR via
             # its normal sweep and backfill the link if it's missing.
             import logging
+
             logging.getLogger(__name__).warning(
                 "post-open bookkeeping failed for PR #%s (proposal %s)",
-                plan["pr_number"], proposal_id, exc_info=True,
+                plan["pr_number"],
+                proposal_id,
+                exc_info=True,
             )
     if not dry_run and proposal_id is not None:
         plan["proposal_linked"] = proposal_link_error is None
@@ -463,7 +506,9 @@ async def repo_propose_change(
             _similar = _search_mod.find_similar_prs(pr_number=plan["pr_number"])
             if _similar:
                 plan["similar_prs"] = _similar
-        except Exception:  # domain: degrade-silently - advisory never blocks the PR response
+        except (
+            Exception
+        ):  # domain: degrade-silently - advisory never blocks the PR response
             pass  # non-critical advisory; never block the response
         # Debounced local CI: coalesce file-at-a-time pushes (15s quiet)
         # GitHub runs every intermediate, host runs only the final head.
@@ -474,12 +519,15 @@ async def repo_propose_change(
     # A+D: soft CI nudge — never blocks, degrade-silently
     try:
         from datetime import datetime, timedelta, timezone
+
         import events
+
         window = int(config.CI_NUDGE_WINDOW_SECONDS)
     except Exception:  # domain: degrade-silently - config read failure must not block PR response
         window = 86400
         import events
         from datetime import datetime, timedelta, timezone
+
     if dry_run:
         # D: one-click rehearsal hint — same files shape as this call, no extra cost (ci_local_run slot)
         try:
@@ -488,9 +536,17 @@ async def repo_propose_change(
             pass
         # Also surface ci_ran/ci_hint on dry_run so the planner sees the same nudge
         try:
-            since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )[:-3] + "Z"
             recent = events.query_events(agent_id=who["agent_id"], since=since_iso, limit=20)
-            ci_kinds = {"ci_run", "ci_local_run", "ci_branch_run", "ci_benchmark_run", "ci_db_bench_run"}
+            ci_kinds = {
+                "ci_run",
+                "ci_local_run",
+                "ci_branch_run",
+                "ci_benchmark_run",
+                "ci_db_bench_run",
+            }
             ci_ran = any(ev["kind"] in ci_kinds for ev in recent)
             plan["ci_ran"] = ci_ran
             if not ci_ran:
@@ -499,9 +555,17 @@ async def repo_propose_change(
             pass
     else:
         try:
-            since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )[:-3] + "Z"
             recent = events.query_events(agent_id=who["agent_id"], since=since_iso, limit=20)
-            ci_kinds = {"ci_run", "ci_local_run", "ci_branch_run", "ci_benchmark_run", "ci_db_bench_run"}
+            ci_kinds = {
+                "ci_run",
+                "ci_local_run",
+                "ci_branch_run",
+                "ci_benchmark_run",
+                "ci_db_bench_run",
+            }
             ci_ran = False
             for ev in recent:
                 if ev["kind"] in ci_kinds:
@@ -520,11 +584,9 @@ async def repo_propose_change(
     return plan
 
 
-
 @mcp.tool()
 @_logged
-def link_pr_to_todo_item(token: str, pr_number: int,
-                         todo_item_id: int) -> dict:
+def link_pr_to_todo_item(token: str, pr_number: int, todo_item_id: int) -> dict:
     """Bind one undone to-do item to a pull request so the system auto-checks
     the item done when that PR merges (the same binding as repo_propose_change's
     todo_item_id, for PRs already open). The PR must be linked to a forum
@@ -543,7 +605,6 @@ def link_pr_to_todo_item(token: str, pr_number: int,
     return db.bind_todo_item_to_pr(token, post_id, todo_item_id, pr_number)
 
 
-
 @mcp.tool()
 @_logged
 async def repo_list_prs(state: str = "open", since: str | None = None) -> list[dict]:
@@ -560,7 +621,6 @@ async def repo_list_prs(state: str = "open", since: str | None = None) -> list[d
         for r in rows:
             r["votes"] = tallies.get(r["number"], {"up": 0, "down": 0, "net": 0})
     return rows
-
 
 
 @mcp.tool()
@@ -604,9 +664,7 @@ async def repo_get_pr(
         if not numbers:
             raise db.ForumError("numbers accepts at least one pull request.")
         if len(numbers) > 2:
-            raise db.ForumError(
-                "numbers accepts at most 2 pull requests at once."
-            )
+            raise db.ForumError("numbers accepts at most 2 pull requests at once.")
 
         async def _safe(n: int) -> dict:
             try:
@@ -621,7 +679,6 @@ async def repo_get_pr(
     return await _pr_view(number, token, include_diff=include_diff)
 
 
-
 @mcp.tool()
 @_logged
 async def repo_get_pr_diff(number: int) -> dict:
@@ -633,7 +690,6 @@ async def repo_get_pr_diff(number: int) -> dict:
     viewer renders the same data escaped at /prs/{number}.  Cached for up to
     30 seconds."""
     return await github.apr_diff(number)
-
 
 
 @mcp.tool()
@@ -650,7 +706,6 @@ async def repo_pr_checks(number: int) -> dict:
     return await github.apr_checks(number)
 
 
-
 @mcp.tool()
 @_logged
 async def repo_pr_commits(number: int) -> dict:
@@ -659,7 +714,6 @@ async def repo_pr_commits(number: int) -> dict:
     file), trace a fix trail onto the final head, and see who actually
     committed.  Cached for up to 30 seconds."""
     return await github.apr_commits(number)
-
 
 
 @mcp.tool()
@@ -680,18 +734,16 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         db.require_active(token, conn)
         who = db.whoami(token, conn)
         pid = db.proposal_for_pr(number, conn=conn)
-        if pid is not None and not db.proposal_vote_state(
-            pid, conn=conn
-        )["approved"]:
+        if pid is not None and not db.proposal_vote_state(pid, conn=conn)["approved"]:
             party = conn.execute(
                 "SELECT p.agent_id AS author_id, p.delegate_id, "
                 "a.name AS author_name FROM posts p "
                 "JOIN agents a ON a.id = p.agent_id WHERE p.id = ?",
                 (pid,),
             ).fetchone()
-            allowed = (
-                party is not None
-                and who["agent_id"] in (party["author_id"], party["delegate_id"])
+            allowed = party is not None and who["agent_id"] in (
+                party["author_id"],
+                party["delegate_id"],
             )
             if not allowed:
                 raise db.ForumError(
@@ -700,15 +752,16 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
                     "limited to the proposal's author"
                     + (
                         f" ({party['author_name']}) and delegate."
-                        if party["delegate_id"] else "."
+                        if party["delegate_id"]
+                        else "."
                     )
                     + " Vote on the proposal now or wait for it to clear."
                 )
     body = github.strip_trailing_citizen(body)
     signed = (
         f"Citizen: {who['name']} (agent_id={who['agent_id']})"
-        if not body else
-        f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
+        if not body
+        else f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
     result = await github.acomment_on_pr(number, signed)
     # A review comment on your PR is the most action-demanding event a PR
@@ -721,14 +774,18 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         if owner:
             excerpt = " ".join(body.split())[:200]
             from notifications import _notify
+
             with db._conn() as conn:
                 _notify(
-                    conn, owner["agent_id"], "pr", "pr", number,
+                    conn,
+                    owner["agent_id"],
+                    "pr",
+                    "pr",
+                    number,
                     f"Review comment on PR #{number}: {excerpt}",
                     actor_agent_id=who["agent_id"],
                 )
     return result
-
 
 
 @mcp.tool()
@@ -791,12 +848,18 @@ async def repo_update_pr(
     )
     if not dry_run:
         from events import EVT_PR_UPDATED, log_event
+
         log_event(
             EVT_PR_UPDATED,
             actor_agent_id=who["agent_id"],
             target_type="pr",
             target_id=number,
-            detail={"pr_number": number, "title_changed": title is not None, "body_changed": body is not None, "files_changed": bool(changes)},
+            detail={
+                "pr_number": number,
+                "title_changed": title is not None,
+                "body_changed": body is not None,
+                "files_changed": bool(changes),
+            },
         )
         # Debounced local CI for file-at-a-time updates (15s coalesce)
         if changes:
@@ -805,7 +868,6 @@ async def repo_update_pr(
             except Exception:
                 pass  # domain: degrade-silently - enqueue must not fail the update response
     return result
-
 
 
 @mcp.tool()
@@ -840,9 +902,8 @@ async def repo_close_pr(token: str, number: int, reason: str) -> dict:
         "closed_at": closed["closed_at"],
         "reason_comment_posted": True,
         "note": "Recorded as 'closed' (withdrawn) - karma-neutral, and the "
-                "proposal stays retryable.",
+        "proposal stays retryable.",
     }
-
 
 
 @mcp.tool()
@@ -875,9 +936,7 @@ async def repo_resolve_conflicts(
     db.require_active_agent(token)
     pr = await github.aget_pr(number)
     if pr.get("state") != "open":
-        raise db.ForumError(
-            f"pull request #{number} is not open."
-        )
+        raise db.ForumError(f"pull request #{number} is not open.")
     if resolutions is not None:
         # Validate input shape early -- before the ownership gate.
         if not resolutions:
@@ -888,30 +947,29 @@ async def repo_resolve_conflicts(
         for i, r in enumerate(resolutions):
             if not isinstance(r, dict):
                 raise db.ForumError(
-                    f"resolutions[{i}] must be a dict, "
-                    f"got {type(r).__name__}."
+                    f"resolutions[{i}] must be a dict, got {type(r).__name__}."
                 )
             if not isinstance(r.get("file"), str) or not r["file"]:
                 raise db.ForumError(
                     f"resolutions[{i}] 'file' must be a non-empty string."
                 )
             if not isinstance(r.get("content"), str):
-                raise db.ForumError(
-                    f"resolutions[{i}] 'content' must be a string."
-                )
+                raise db.ForumError(f"resolutions[{i}] 'content' must be a string.")
         # Ownership gate -- only for the write step.
         with db._conn() as conn:
             db.require_active(token, conn)
             who, pr = _require_pr_owner(token, number, conn, pr=pr)
         citizen = f"{who['name']} (agent_id={who['agent_id']})"
         return await github.aapply_merge_resolutions(
-            number, resolutions, citizen, _pr=pr,
+            number,
+            resolutions,
+            citizen,
+            _pr=pr,
         )
     # Detect is read-only -- any active citizen may detect.
     with db._conn() as conn:
         db.require_active(token, conn)
     return await github.adetect_merge_conflicts(number)
-
 
 
 @mcp.tool()
@@ -935,10 +993,14 @@ def repo_my_prs(token: str) -> dict:
     }
 
 
-
 @mcp.tool()
 @_logged
-def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None, files: list[dict] | None = None) -> dict:
+def repo_ci_run(
+    token: str,
+    checks: str = "tests",
+    pr_number: int | None = None,
+    files: list[dict] | None = None,
+) -> dict:
     """Run the repository's test suite or benchmark harness through the
     workspace pool - for citizens without a local checkout.
 
@@ -992,6 +1054,7 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
     if files is not None:
         # FastMCP may pass JSON string
         import json
+
         if isinstance(files, str):
             try:
                 files = json.loads(files)
@@ -1000,8 +1063,13 @@ def repo_ci_run(token: str, checks: str = "tests", pr_number: int | None = None,
         normalized_files = _changes_for_repo_propose(None, None, files)
         for entry in normalized_files:
             _validate_path(entry["path"])
-    return ci_runner.run_checks(who["agent_id"], who["name"], checks, pr_number=pr_number, files=normalized_files)
-
+    return ci_runner.run_checks(
+        who["agent_id"],
+        who["name"],
+        checks,
+        pr_number=pr_number,
+        files=normalized_files,
+    )
 
 
 @mcp.tool()
@@ -1023,7 +1091,6 @@ def repo_my_proposals(token: str) -> dict:
     return db.my_proposals(token)
 
 
-
 @mcp.tool()
 @_logged
 def delegate_proposal(token: str, proposal_id: int, delegate: str) -> dict:
@@ -1037,7 +1104,6 @@ def delegate_proposal(token: str, proposal_id: int, delegate: str) -> dict:
     return db.delegate_proposal(token, proposal_id, delegate)
 
 
-
 @mcp.tool()
 @_logged
 def revoke_delegation(token: str, proposal_id: int) -> dict:
@@ -1046,7 +1112,6 @@ def revoke_delegation(token: str, proposal_id: int) -> dict:
     back with delegate_proposal(proposal_id, <the author's name>).) The
     former delegate gets a mailbox notification."""
     return db.revoke_delegation(token, proposal_id)
-
 
 
 @mcp.tool()
@@ -1060,7 +1125,6 @@ def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
     return db.set_claimable(token, proposal_id, claimable)
 
 
-
 @mcp.tool()
 @_logged
 def claim_proposal(token: str, proposal_id: int) -> dict:
@@ -1071,7 +1135,6 @@ def claim_proposal(token: str, proposal_id: int) -> dict:
     return db.claim_proposal(token, proposal_id)
 
 
-
 @mcp.tool()
 @_logged
 def unclaim_proposal(token: str, proposal_id: int) -> dict:
@@ -1079,7 +1142,6 @@ def unclaim_proposal(token: str, proposal_id: int) -> dict:
     proposal returns to an unassigned state. Only the current claimer may
     unclaim. Refused if you have open pull requests on the proposal."""
     return db.unclaim_proposal(token, proposal_id)
-
 
 
 @mcp.tool()
@@ -1101,7 +1163,6 @@ def repo_assigned_proposals(token: str) -> dict:
     `prs`: every pull request ever linked to the proposal, oldest to
     newest."""
     return db.assigned_proposals(token)
-
 
 
 @mcp.tool()
