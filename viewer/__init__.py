@@ -93,6 +93,7 @@ from viewer._helpers import (
     _render_comment,
     _score_badge,
     _side_rail,
+    _stake_amount,
     _stake_page_rows,
     _stake_panel,
     _stake_summary_card,
@@ -1498,7 +1499,42 @@ def staking_page(request: Request) -> HTMLResponse:
         "abandoned",
     ):
         status = None
-    stakes = db.list_all_stakes(status=status)
+    all_stakes = db.list_all_stakes()
+    if status is None:
+        stakes = all_stakes
+    else:
+        stakes = [s for s in all_stakes if s["status"] == status]
+    total_exposure_karma = sum(
+        s["per_pr"] * s["max_prs"]
+        for s in all_stakes
+        if s.get("currency", "karma") == "karma"
+    )
+    total_exposure_credits = sum(
+        s["per_pr"] * s["max_prs"] for s in all_stakes if s.get("currency") == "credits"
+    )
+    counts = {
+        None: len(all_stakes),
+        "active": 0,
+        "completed": 0,
+        "withdrawn": 0,
+        "refunded": 0,
+        "abandoned": 0,
+    }
+    for s in all_stakes:
+        if s["status"] in counts:
+            counts[s["status"]] += 1
+    exposure_bits = []
+    if total_exposure_karma:
+        exposure_bits.append(f"{total_exposure_karma} karma")
+    if total_exposure_credits:
+        exposure_bits.append(
+            f"{_stake_amount(total_exposure_credits, 'credits')} credits"
+        )
+    exposure_text = " \xb7 ".join(exposure_bits) if exposure_bits else "0"
+    currency = request.query_params.get("currency")
+    if currency not in (None, "karma", "credits"):
+        currency = None
+    stakes = db.list_all_stakes(status=status, currency=currency)
     tabs = '<div class="tabs">'
     for key, label in (
         (None, "All"),
@@ -1508,8 +1544,29 @@ def staking_page(request: Request) -> HTMLResponse:
         ("refunded", "Refunded"),
         ("abandoned", "Abandoned"),
     ):
-        href = "/staking" if key is None else f"/staking?status={key}"
+        params = []
+        if key is not None:
+            params.append(f"status={key}")
+        if currency:
+            params.append(f"currency={currency}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
         cls = ' class="active" aria-current="page"' if key == status else ""
+        cnt = counts.get(key, 0)
+        tabs += f'<a href="{href}"{cls}>{label} <span style="font-size:12px;color:var(--muted)">({cnt})</span></a>'
+    tabs += "</div>"
+    tabs += '<div class="tabs" style="margin-top:4px">'
+    for key, label in (
+        (None, "All currencies"),
+        ("karma", "Karma"),
+        ("credits", "Credits"),
+    ):
+        params = []
+        if status:
+            params.append(f"status={status}")
+        if key is not None:
+            params.append(f"currency={key}")
+        href = "/staking" + ("?" + "&".join(params) if params else "")
+        cls = ' class="active" aria-current="page"' if key == currency else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
@@ -1519,6 +1576,14 @@ def staking_page(request: Request) -> HTMLResponse:
         "staker's choice. Stakers set per-PR amount and max PRs; the amount is "
         "locked when a PR is opened, paid on merge in the staked denomination, "
         "refunded on failure.</p>"
+        f'<p style="color:var(--muted);font-size:14px">Total staked exposure: '
+        f"<b>{exposure_text}</b> across all stakes "
+        f"(per-PR amount x max PRs, split by currency).</p>"
+        '<div class="panel" style="margin-top:8px"><h3>How staking works</h3>'
+        '<p style="color:var(--muted);font-size:14px">Each stake sets a per-PR '
+        "reward and a maximum number of PRs. The amount is locked when a PR is "
+        "opened, paid on merge in the chosen denomination, and refunded if the "
+        "PR fails. Total exposure = per-PR amount x max PRs.</p></div>"
         + tabs
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
