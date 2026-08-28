@@ -37,7 +37,7 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
@@ -106,12 +106,12 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
       - name: Restore mypy cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .mypy_cache
           key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', '**/*.py') }}
