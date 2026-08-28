@@ -1051,15 +1051,8 @@ def _prs_rows_html(
         base_ref = esc(r.get("base") or "")
         when = _human_ts(r.get(ts_field) or r.get("created_at") or "")
         link = f'<a href="/prs/{num}" style="color:var(--accent)">#{num}</a>'
-        # PR body snippet — best-effort, degrade-silently (untrusted input escaped)
+        # PR list omits body snippet to avoid blocking github.get_pr per row; CI prefetch via _prs_ci_map remains, detail page still shows body
         body_snip = ""
-        try:
-            detail = github.get_pr(num)
-            b = detail.get("body") if detail else None
-            if b:
-                body_snip = f'<div style="color:var(--muted);font-size:12px;margin-top:4px">{esc(_truncate(b, 140))}</div>'
-        except Exception:  # domain:degrade-silently - PR body is optional enrichment, list still renders
-            body_snip = ""
         title_cell = (
             f'<a href="{gh}" style="color:var(--ink);'
             f'text-decoration:none">{title}</a>'
