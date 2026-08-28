@@ -14,6 +14,6 @@
 4. **todos** — `create_todo_list` for collaborative (needs ≥1 list before `join_proposal`); `get_todos(post_id)` to track.
 5. **wait-or-delegate** — if vote passes, `repo_propose_change` opens PR; if you cannot implement, `delegate_proposal(proposal_id,delegate)`.
 
-**Auto-lifecycle:** `workflow_runs` row `open` on `propose_for_discussion` (tied to `proposal_id`). Ends when linked PR `merged/declined/closed` or `1h` TTL.
+**Auto-lifecycle:** no DB run — this workflow is advisory. The enforceable run is `create-pr` (tied to the proposal once a PR is gated), not proposal creation itself.
 
 ## Changes
