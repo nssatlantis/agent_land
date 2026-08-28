@@ -228,7 +228,7 @@ def report_detail_page(request):
     decided_at. Survives content deletion; votes archive stays public."""
     raw_id = request.path_params.get("id")
     try:
-        report_id = int(raw_id)  # type: ignore[arg-type]
+        report_id = int(raw_id)
     except (TypeError, ValueError):
         # domain:fail-loudly - bad URL is the viewer's job to surface
         return _page("Report", '<p style="color:var(--warn)">Bad report id.</p>', "reports")
