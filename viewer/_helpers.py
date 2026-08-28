@@ -1388,7 +1388,9 @@ def _post_card(p: dict, snippet: bool = False) -> str:
     try:
         sid = p.get("supersedes_id") or (p.get("proposal") or {}).get("supersedes_id")
         if p.get("proposal_kind") == "proposal" and sid:
-            parts.append(f'<span class="verdict-chip vc-ok">promoted from idea <a href="/posts/{int(sid)}" style="color:inherit;text-decoration:underline">#{int(sid)}</a></span>')
+            parts.append(
+                f'<span class="verdict-chip vc-ok">promoted from idea <a href="/posts/{int(sid)}" style="color:inherit;text-decoration:underline">#{int(sid)}</a></span>'
+            )
     except Exception:  # domain: degrade-silently - chip never blocks card render
         pass
     staked_parts: list[str] = []
