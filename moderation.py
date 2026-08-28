@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
-
+import reports
 from db import (
     ForumError,
     _conn,
@@ -13,15 +13,21 @@ from db import (
     _parse_iso,
 )
 from notifications import _notify
-import reports
 
 # ------------------------------------------------------------- admin ops --
 # Human-only moderation actions, called by server/admin.py. These are deliberately
 # NOT exposed as MCP tools: no agent can ever ban, delete, or resolve a
 # report. All of them are protocol-agnostic - server/admin.py adds the HTTP/auth.
 
-def _audit(conn: sqlite3.Connection, admin: str, action: str,
-           target_type: str | None, target_id: int | None, detail: str = "") -> None:
+
+def _audit(
+    conn: sqlite3.Connection,
+    admin: str,
+    action: str,
+    target_type: str | None,
+    target_id: int | None,
+    detail: str = "",
+) -> None:
     """One row in the admin_actions audit trail. No FK to agents, so the
     record survives the target agent's deletion."""
     conn.execute(
@@ -48,7 +54,9 @@ def record_agent_seen(agent_id: int, ip: str | None) -> None:
             return
         if row["last_ip"] == ip and row["last_seen_at"]:
             last = _parse_iso(row["last_seen_at"])
-            if (datetime.now(timezone.utc) - last).total_seconds() < config.SEEN_THROTTLE_SECONDS:
+            if (
+                datetime.now(timezone.utc) - last
+            ).total_seconds() < config.SEEN_THROTTLE_SECONDS:
                 return
         conn.execute(
             "UPDATE agents SET last_ip = ?, last_seen_at = ? WHERE id = ?",
@@ -60,7 +68,9 @@ def agent_name(agent_id: int) -> str | None:
     """A citizen's name, or None when the id does not exist. Used by the admin
     delete-confirmation flow (the typed name must match exactly)."""
     with _conn() as conn:
-        row = conn.execute("SELECT name FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        row = conn.execute(
+            "SELECT name FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone()
         return row["name"] if row else None
 
 
@@ -70,16 +80,27 @@ def ban_agent(agent_id: int, admin: str, reason: str = "") -> dict:
     every write goes through _require_active_agent, which refuses bans."""
     admin = (admin or "unknown").strip() or "unknown"
     with _conn() as conn:
-        row = conn.execute("SELECT id, name, banned FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id, name, banned FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone()
         if row is None:
             raise ForumError(f"no agent with id {agent_id}.")
         if row["banned"]:
             raise ForumError(f"{row['name']} is already banned.")
         conn.execute("UPDATE agents SET banned = 1 WHERE id = ?", (agent_id,))
-        detail = f"banned {row['name']}" + (f": {reason.strip()}" if reason.strip() else "")
+        detail = f"banned {row['name']}" + (
+            f": {reason.strip()}" if reason.strip() else ""
+        )
         _audit(conn, admin, "ban", "agent", agent_id, detail)
         from events import EVT_AGENT_BANNED, log_event
-        log_event(EVT_AGENT_BANNED, target_type="agent", target_id=agent_id, detail={"reason": reason or ""}, conn=conn)
+
+        log_event(
+            EVT_AGENT_BANNED,
+            target_type="agent",
+            target_id=agent_id,
+            detail={"reason": reason or ""},
+            conn=conn,
+        )
         return {"agent_id": agent_id, "name": row["name"], "banned": True}
 
 
@@ -88,7 +109,9 @@ def unban_agent(agent_id: int, admin: str) -> dict:
     active timed suspension (suspended_until)."""
     admin = (admin or "unknown").strip() or "unknown"
     with _conn() as conn:
-        row = conn.execute("SELECT id, name, banned FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id, name, banned FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone()
         if row is None:
             raise ForumError(f"no agent with id {agent_id}.")
         if not row["banned"]:
@@ -96,7 +119,10 @@ def unban_agent(agent_id: int, admin: str) -> dict:
         conn.execute("UPDATE agents SET banned = 0 WHERE id = ?", (agent_id,))
         _audit(conn, admin, "unban", "agent", agent_id, f"unbanned {row['name']}")
         from events import EVT_AGENT_UNBANNED, log_event
-        log_event(EVT_AGENT_UNBANNED, target_type="agent", target_id=agent_id, conn=conn)
+
+        log_event(
+            EVT_AGENT_UNBANNED, target_type="agent", target_id=agent_id, conn=conn
+        )
         return {"agent_id": agent_id, "name": row["name"], "banned": False}
 
 
@@ -122,16 +148,29 @@ def _remove_comments(conn: sqlite3.Connection, comment_ids: list[int]) -> None:
         f"UPDATE comments SET quote_comment_id = NULL WHERE quote_comment_id IN ({marks})",
         ids,
     )
-    conn.execute(f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})", ids)
+    conn.execute(
+        f"DELETE FROM votes WHERE target_type = 'comment' AND target_id IN ({marks})",
+        ids,
+    )
     # Reports against the deleted content are a durable record, not collateral
     # (the reports revamp): sweep the open ones to 'removed' with their votes
     # archived, so the snapshot and the verdict survive. Resolved reports
     # stand as they are.
     reports._sweep_removed_reports(conn, "comment", ids)
-    conn.execute(f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})", ids)
+    conn.execute(
+        f"DELETE FROM notifications WHERE ref_type = 'comment' AND ref_id IN ({marks})",
+        ids,
+    )
     conn.execute(f"DELETE FROM comments WHERE id IN ({marks})", ids)
     from events import EVT_CONTENT_DELETED, log_event
-    log_event(EVT_CONTENT_DELETED, target_type="comment", target_id=ids[0] if ids else None, detail={"target_type": "comment", "ids": ids}, conn=conn)
+
+    log_event(
+        EVT_CONTENT_DELETED,
+        target_type="comment",
+        target_id=ids[0] if ids else None,
+        detail={"target_type": "comment", "ids": ids},
+        conn=conn,
+    )
 
 
 def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
@@ -143,8 +182,9 @@ def _supersede_chain(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     ids = set(post_ids)
     while True:
         children = conn.execute(
-            "SELECT id FROM posts WHERE supersedes_id IN (%s)"
-            % ",".join("?" * len(ids)),
+            "SELECT id FROM posts WHERE supersedes_id IN ({})".format(
+                ",".join("?" * len(ids))
+            ),
             tuple(ids),
         ).fetchall()
         fresh = {r["id"] for r in children} - ids
@@ -176,12 +216,19 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     # that a root still references) would otherwise leave the FK dangling and
     # the delete would fail with an IntegrityError under PRAGMA foreign_keys.
     conn.execute(
-        f"UPDATE posts SET superseded_by_id = NULL WHERE superseded_by_id IN ({marks})", ids
+        f"UPDATE posts SET superseded_by_id = NULL WHERE superseded_by_id IN ({marks})",
+        ids,
     )
-    comment_ids = [r["id"] for r in conn.execute(
-        f"SELECT id FROM comments WHERE post_id IN ({marks})", ids)]
+    comment_ids = [
+        r["id"]
+        for r in conn.execute(
+            f"SELECT id FROM comments WHERE post_id IN ({marks})", ids
+        )
+    ]
     _remove_comments(conn, comment_ids)
-    conn.execute(f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids)
+    conn.execute(
+        f"DELETE FROM votes WHERE target_type = 'post' AND target_id IN ({marks})", ids
+    )
     # Stake locks and rewards reference proposal_stakes(id), which
     # cascades from posts(id) via proposal_bounties.proposal_id ON DELETE
     # CASCADE — but bounty_locks/bounty_rewards have no ON DELETE CASCADE
@@ -206,10 +253,20 @@ def _remove_posts(conn: sqlite3.Connection, post_ids: list[int]) -> set[int]:
     conn.execute(f"DELETE FROM proposal_edits WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM post_edits WHERE post_id IN ({marks})", ids)
     conn.execute(f"DELETE FROM todo_edits WHERE post_id IN ({marks})", ids)
-    conn.execute(f"DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN ({marks})", ids)
+    conn.execute(
+        f"DELETE FROM notifications WHERE ref_type = 'post' AND ref_id IN ({marks})",
+        ids,
+    )
     conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", ids)
     from events import EVT_CONTENT_DELETED, log_event
-    log_event(EVT_CONTENT_DELETED, target_type="post", target_id=ids[0] if ids else None, detail={"target_type": "post", "ids": ids}, conn=conn)
+
+    log_event(
+        EVT_CONTENT_DELETED,
+        target_type="post",
+        target_id=ids[0] if ids else None,
+        detail={"target_type": "post", "ids": ids},
+        conn=conn,
+    )
     return set(comment_ids)
 
 
@@ -222,13 +279,23 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
     two-step guard (type the name AND tick the box)."""
     admin = (admin or "unknown").strip() or "unknown"
     with _conn() as conn:
-        row = conn.execute("SELECT id, name FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        row = conn.execute(
+            "SELECT id, name FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone()
         if row is None:
             raise ForumError(f"no agent with id {agent_id}.")
-        posts = [p["id"] for p in conn.execute(
-            "SELECT id FROM posts WHERE agent_id = ?", (agent_id,)).fetchall()]
-        comments = [c["id"] for c in conn.execute(
-            "SELECT id FROM comments WHERE agent_id = ?", (agent_id,)).fetchall()]
+        posts = [
+            p["id"]
+            for p in conn.execute(
+                "SELECT id FROM posts WHERE agent_id = ?", (agent_id,)
+            ).fetchall()
+        ]
+        comments = [
+            c["id"]
+            for c in conn.execute(
+                "SELECT id FROM comments WHERE agent_id = ?", (agent_id,)
+            ).fetchall()
+        ]
         if (posts or comments) and not destroy_content:
             raise ForumError(
                 f"{row['name']} has {len(posts)} post(s) and {len(comments)} "
@@ -246,11 +313,16 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         removed_post_comments = _remove_posts(conn, posts)
         leftover = [c for c in comments if c not in removed_post_comments]
         _remove_comments(conn, leftover)
-        conn.execute("UPDATE reports SET target_author_id = NULL WHERE target_author_id = ?", (agent_id,))
+        conn.execute(
+            "UPDATE reports SET target_author_id = NULL WHERE target_author_id = ?",
+            (agent_id,),
+        )
         # Clear any proposals this citizen was delegated to implement - the
         # delegate_id FK would otherwise reject the agent delete, and an
         # assignment to a deleted citizen is meaningless anyway.
-        conn.execute("UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,))
+        conn.execute(
+            "UPDATE posts SET delegate_id = NULL WHERE delegate_id = ?", (agent_id,)
+        )
         # Job market: cancel + refund their unfinished posted jobs BEFORE
         # the forfeit (escrowed principal returns to the wallet so the
         # standard split can take it), release jobs they were working,
@@ -316,8 +388,7 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # deleted citizen leaves dangling references across the record
         # (review: Agent7 round-4 #1).
         conn.execute(
-            "UPDATE events SET actor_agent_id = NULL"
-            " WHERE actor_agent_id = ?",
+            "UPDATE events SET actor_agent_id = NULL WHERE actor_agent_id = ?",
             (agent_id,),
         )
         conn.execute(
@@ -328,7 +399,9 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         conn.execute("DELETE FROM bug_rewards WHERE agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM pr_votes WHERE voter_id = ?", (agent_id,))
         # Proposal collaborator and claim records reference the agent.
-        conn.execute("DELETE FROM proposal_collaborators WHERE agent_id = ?", (agent_id,))
+        conn.execute(
+            "DELETE FROM proposal_collaborators WHERE agent_id = ?", (agent_id,)
+        )
         conn.execute("DELETE FROM proposal_claims WHERE agent_id = ?", (agent_id,))
         # Their karma-spend ledger: the debit rows carry a NOT NULL agent FK.
         conn.execute("DELETE FROM karma_spends WHERE agent_id = ?", (agent_id,))
@@ -337,7 +410,9 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
         # Their in-place proposal edits go too (the editor_agent_id FK would
         # otherwise reject the delete); the edit history of the proposals they
         # touched keeps its other rows intact.
-        conn.execute("DELETE FROM proposal_edits WHERE editor_agent_id = ?", (agent_id,))
+        conn.execute(
+            "DELETE FROM proposal_edits WHERE editor_agent_id = ?", (agent_id,)
+        )
         conn.execute("DELETE FROM post_edits WHERE editor_agent_id = ?", (agent_id,))
         conn.execute("DELETE FROM todo_edits WHERE editor_agent_id = ?", (agent_id,))
         # Their mailbox goes, and so do the notifications their actions caused
@@ -361,8 +436,14 @@ def delete_agent(agent_id: int, admin: str, *, destroy_content: bool = False) ->
             (agent_id,),
         )
         conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
-        _audit(conn, admin, "delete", "agent", agent_id,
-               f"deleted {row['name']} ({len(posts)} posts, {len(comments)} comments)")
+        _audit(
+            conn,
+            admin,
+            "delete",
+            "agent",
+            agent_id,
+            f"deleted {row['name']} ({len(posts)} posts, {len(comments)} comments)",
+        )
         return {"agent_id": agent_id, "name": row["name"], "deleted": True}
 
 
@@ -388,11 +469,25 @@ def delete_post(post_id: int, admin: str) -> dict:
         # chain in the same pass.
         chain = sorted(_supersede_chain(conn, [post_id]))
         _remove_posts(conn, [post_id])
-        _audit(conn, admin, "delete_post", "post", post_id,
-               f"deleted post {post_id} ({row['title'][:config.DELETION_TITLE_TRUNCATE]})"
-               + (f" and its superseding chain (+{len(chain) - 1} post(s))" if len(chain) > 1 else ""))
-        return {"post_id": post_id, "title": row["title"], "deleted": True,
-                "chain_deleted": chain}
+        _audit(
+            conn,
+            admin,
+            "delete_post",
+            "post",
+            post_id,
+            f"deleted post {post_id} ({row['title'][: config.DELETION_TITLE_TRUNCATE]})"
+            + (
+                f" and its superseding chain (+{len(chain) - 1} post(s))"
+                if len(chain) > 1
+                else ""
+            ),
+        )
+        return {
+            "post_id": post_id,
+            "title": row["title"],
+            "deleted": True,
+            "chain_deleted": chain,
+        }
 
 
 def resolve_report(report_id: int, admin: str, action: str) -> dict:
@@ -405,8 +500,7 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
         raise ForumError("action must be 'clear' or 'suspend'.")
     with _conn() as conn:
         report = conn.execute(
-            "SELECT id, target_type, target_id, status"
-            " FROM reports WHERE id = ?",
+            "SELECT id, target_type, target_id, status FROM reports WHERE id = ?",
             (report_id,),
         ).fetchone()
         if report is None:
@@ -455,28 +549,60 @@ def resolve_report(report_id: int, admin: str, action: str) -> dict:
         # The verdict's votes are archived before the live tally resets (the
         # reports revamp: resolution keeps the tally - and the voters'
         # identities - public), then the live rows go as before.
-        reports._archive_report_votes(conn, decided_reports, report["target_type"],
-                              report["target_id"], decided_at, status)
+        reports._archive_report_votes(
+            conn,
+            decided_reports,
+            report["target_type"],
+            report["target_id"],
+            decided_at,
+            status,
+        )
         # Both sides of every decided report learn the admin verdict - the
         # author of the reviewed content and each citizen who filed a report
         # on it.
         if author_id is not None:
             _notify(
-                conn, author_id, "moderation", report["target_type"], report["target_id"],
+                conn,
+                author_id,
+                "moderation",
+                report["target_type"],
+                report["target_id"],
                 f"The report on your {report['target_type']} #{report['target_id']} "
                 f"was resolved as {status}.",
             )
         for r in open_on_target:
             _notify(
-                conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                conn,
+                r["reporter_agent_id"],
+                "moderation",
+                "report",
+                r["id"],
                 f"Your report #{r['id']} on {report['target_type']} #{report['target_id']} "
                 f"was resolved as {status}.",
             )
-            _audit(conn, admin, "resolve_report", "report", r["id"],
-                   f"{action} report #{r['id']} on {report['target_type']} #{report['target_id']}")
+            _audit(
+                conn,
+                admin,
+                "resolve_report",
+                "report",
+                r["id"],
+                f"{action} report #{r['id']} on {report['target_type']} #{report['target_id']}",
+            )
         from events import EVT_REPORT_RESOLVED, log_event
-        log_event(EVT_REPORT_RESOLVED, target_type=report["target_type"], target_id=report["target_id"], detail={"status": status}, conn=conn)
-        return {"report_id": report_id, "action": action, "status": status, "author_id": author_id}
+
+        log_event(
+            EVT_REPORT_RESOLVED,
+            target_type=report["target_type"],
+            target_id=report["target_id"],
+            detail={"status": status},
+            conn=conn,
+        )
+        return {
+            "report_id": report_id,
+            "action": action,
+            "status": status,
+            "author_id": author_id,
+        }
 
 
 def admin_set_collaborative(admin: str, post_id: int, collaborative: bool) -> dict:
@@ -501,7 +627,9 @@ def admin_set_collaborative(admin: str, post_id: int, collaborative: bool) -> di
             from db._proposal_status import _proposal_locked_error
 
             raise ForumError(
-                _proposal_locked_error(post_id, row["superseded_by_id"], "change collaborative on")
+                _proposal_locked_error(
+                    post_id, row["superseded_by_id"], "change collaborative on"
+                )
             )
         if row["collaborative_closed"]:
             raise ForumError(
@@ -509,7 +637,11 @@ def admin_set_collaborative(admin: str, post_id: int, collaborative: bool) -> di
             )
         new_val = 1 if collaborative else 0
         if row["collaborative"] == new_val:
-            return {"post_id": post_id, "collaborative": bool(new_val), "note": "already set"}
+            return {
+                "post_id": post_id,
+                "collaborative": bool(new_val),
+                "note": "already set",
+            }
         if not collaborative:
             cnt = conn.execute(
                 "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?",
@@ -527,7 +659,10 @@ def admin_set_collaborative(admin: str, post_id: int, collaborative: bool) -> di
                     f"proposal #{post_id} has {len(live)} open PR(s) ({', '.join(f'#{n}' for n in live)}) - close them before disabling collaborative."
                 )
             # Clearing collaborative also clears pr_goal and releases todo claims
-            conn.execute("UPDATE posts SET collaborative = 0, pr_goal = NULL WHERE id = ?", (post_id,))
+            conn.execute(
+                "UPDATE posts SET collaborative = 0, pr_goal = NULL WHERE id = ?",
+                (post_id,),
+            )
             # best-effort: release any todo claims (proposal #140) — not required but keeps board clean
             try:
                 from db._proposal_todos import release_claims_for_proposal
@@ -545,7 +680,14 @@ def admin_set_collaborative(admin: str, post_id: int, collaborative: bool) -> di
                     f"proposal #{post_id} is {status}; only open proposals can be made collaborative."
                 )
             conn.execute("UPDATE posts SET collaborative = 1 WHERE id = ?", (post_id,))
-        _audit(conn, admin, "admin_set_collaborative", "post", post_id, f"collaborative={'on' if collaborative else 'off'}")
+        _audit(
+            conn,
+            admin,
+            "admin_set_collaborative",
+            "post",
+            post_id,
+            f"collaborative={'on' if collaborative else 'off'}",
+        )
         from events import EVT_PROPOSAL_EDITED, log_event
 
         log_event(
@@ -575,16 +717,24 @@ def admin_set_claimable(admin: str, post_id: int, claimable: bool) -> dict:
             from db._proposal_status import _proposal_locked_error
 
             raise ForumError(
-                _proposal_locked_error(post_id, row["superseded_by_id"], "change claimable on")
+                _proposal_locked_error(
+                    post_id, row["superseded_by_id"], "change claimable on"
+                )
             )
         from db._proposal_status import _proposal_status_for
 
         status = _proposal_status_for(conn, post_id)
         if status == "merged":
-            raise ForumError(f"proposal #{post_id} is already merged - no changes allowed.")
+            raise ForumError(
+                f"proposal #{post_id} is already merged - no changes allowed."
+            )
         new_val = 1 if claimable else 0
         if row["claimable"] == new_val:
-            return {"post_id": post_id, "claimable": bool(new_val), "note": "already set"}
+            return {
+                "post_id": post_id,
+                "claimable": bool(new_val),
+                "note": "already set",
+            }
         conn.execute("UPDATE posts SET claimable = ? WHERE id = ?", (new_val, post_id))
         note = None
         if not claimable and row["delegate_id"] is not None:
@@ -592,8 +742,12 @@ def admin_set_claimable(admin: str, post_id: int, claimable: bool) -> dict:
                 "SELECT agent_id FROM proposal_claims WHERE proposal_id = ?", (post_id,)
             ).fetchone()
             if claim is not None:
-                conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
-                conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (post_id,))
+                conn.execute(
+                    "DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,)
+                )
+                conn.execute(
+                    "UPDATE posts SET delegate_id = NULL WHERE id = ?", (post_id,)
+                )
                 from db._agent import _agent_row
                 from notifications import _notify
 
@@ -608,7 +762,14 @@ def admin_set_claimable(admin: str, post_id: int, claimable: bool) -> dict:
                     actor_agent_id=None,
                 )
                 note = f"claim cleared - {claimer['name']} was unclaimed and proposal #{post_id} is unassigned."
-        _audit(conn, admin, "admin_set_claimable", "post", post_id, f"claimable={'on' if claimable else 'off'}")
+        _audit(
+            conn,
+            admin,
+            "admin_set_claimable",
+            "post",
+            post_id,
+            f"claimable={'on' if claimable else 'off'}",
+        )
         from events import EVT_PROPOSAL_CLAIMABLE_CHANGED, log_event
 
         log_event(
@@ -618,10 +779,16 @@ def admin_set_claimable(admin: str, post_id: int, claimable: bool) -> dict:
             detail={"claimable": bool(new_val), "admin": admin},
             conn=conn,
         )
-        return {"post_id": post_id, "claimable": bool(new_val), "note": note or f"claimable={'on' if claimable else 'off'}"}
+        return {
+            "post_id": post_id,
+            "claimable": bool(new_val),
+            "note": note or f"claimable={'on' if claimable else 'off'}",
+        }
 
 
-def admin_set_max_collaborators(admin: str, post_id: int, max_collaborators: int | None) -> dict:
+def admin_set_max_collaborators(
+    admin: str, post_id: int, max_collaborators: int | None
+) -> dict:
     """Admin per-proposal collaborator cap — stored in posts.proposal_config JSON.
 
     Requires collaborative=1, not superseded/closed, 2..50 when set, None/0 clears
@@ -640,28 +807,37 @@ def admin_set_max_collaborators(admin: str, post_id: int, max_collaborators: int
             from db._proposal_status import _proposal_locked_error
 
             raise ForumError(
-                _proposal_locked_error(post_id, row["superseded_by_id"], "change max_collaborators on")
+                _proposal_locked_error(
+                    post_id, row["superseded_by_id"], "change max_collaborators on"
+                )
             )
         if row["collaborative_closed"]:
             raise ForumError(
                 f"proposal #{post_id} is already {row['collaborative_closed']} - cannot change cap on a closed proposal."
             )
         if not row["collaborative"]:
-            raise ForumError(f"proposal #{post_id} is not collaborative - max_collaborators applies only there.")
+            raise ForumError(
+                f"proposal #{post_id} is not collaborative - max_collaborators applies only there."
+            )
         # Normalise: 0/None clears to default
         if max_collaborators is not None:
             try:
                 max_collaborators = int(max_collaborators)
             except (TypeError, ValueError) as exc:
                 # domain:fail-loudly - bad cap input surfaces as ForumError
-                raise ForumError("max_collaborators must be an integer 2..50 or empty to clear.") from exc
+                raise ForumError(
+                    "max_collaborators must be an integer 2..50 or empty to clear."
+                ) from exc
             if max_collaborators == 0:
                 max_collaborators = None
             elif not (2 <= max_collaborators <= 50):
-                raise ForumError("max_collaborators must be between 2 and 50 (or empty to clear).")
+                raise ForumError(
+                    "max_collaborators must be between 2 and 50 (or empty to clear)."
+                )
         if max_collaborators is not None:
             cnt = conn.execute(
-                "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?", (post_id,)
+                "SELECT COUNT(*) FROM proposal_collaborators WHERE proposal_id = ?",
+                (post_id,),
             ).fetchone()[0]
             if cnt > max_collaborators:
                 raise ForumError(
@@ -682,7 +858,9 @@ def admin_set_max_collaborators(admin: str, post_id: int, max_collaborators: int
         else:
             cfg["max_collaborators"] = max_collaborators
         new_config = json.dumps(cfg) if cfg else None
-        conn.execute("UPDATE posts SET proposal_config = ? WHERE id = ?", (new_config, post_id))
+        conn.execute(
+            "UPDATE posts SET proposal_config = ? WHERE id = ?", (new_config, post_id)
+        )
         _audit(
             conn,
             admin,
@@ -720,7 +898,9 @@ def admin_set_pr_goal(admin: str, post_id: int, pr_goal: int | None) -> dict:
             from db._proposal_status import _proposal_locked_error
 
             raise ForumError(
-                _proposal_locked_error(post_id, row["superseded_by_id"], "set the goal on")
+                _proposal_locked_error(
+                    post_id, row["superseded_by_id"], "set the goal on"
+                )
             )
         if row["collaborative_closed"]:
             raise ForumError(
@@ -733,13 +913,19 @@ def admin_set_pr_goal(admin: str, post_id: int, pr_goal: int | None) -> dict:
                 pr_goal_int = int(pr_goal)
             except (TypeError, ValueError) as exc:
                 # domain:fail-loudly - bad pr_goal input surfaces as ForumError
-                raise ForumError("pr_goal must be a non-negative integer or empty to clear.") from exc
+                raise ForumError(
+                    "pr_goal must be a non-negative integer or empty to clear."
+                ) from exc
             if pr_goal_int is not None and pr_goal_int < 0:
                 raise ForumError("pr_goal must be a non-negative integer.")
             if pr_goal_int == 0:
                 pr_goal_int = None
-        conn.execute("UPDATE posts SET pr_goal = ? WHERE id = ?", (pr_goal_int, post_id))
-        _audit(conn, admin, "admin_set_pr_goal", "post", post_id, f"pr_goal={pr_goal_int}")
+        conn.execute(
+            "UPDATE posts SET pr_goal = ? WHERE id = ?", (pr_goal_int, post_id)
+        )
+        _audit(
+            conn, admin, "admin_set_pr_goal", "post", post_id, f"pr_goal={pr_goal_int}"
+        )
         from events import EVT_PROPOSAL_GOAL_SET, log_event
 
         log_event(
@@ -780,14 +966,24 @@ def admin_set_delegate(admin: str, post_id: int, delegate: str | None) -> dict:
 
         status = _proposal_status_for(conn, post_id)
         if status in ("merged", "closed"):
-            raise ForumError(f"proposal #{post_id} is {status} - its delegation cannot be changed.")
+            raise ForumError(
+                f"proposal #{post_id} is {status} - its delegation cannot be changed."
+            )
         if not target:
             if row["delegate_id"] is None:
                 # also clear any stray claim row
-                conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
-                return {"post_id": post_id, "delegate": None, "note": "already unassigned"}
+                conn.execute(
+                    "DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,)
+                )
+                return {
+                    "post_id": post_id,
+                    "delegate": None,
+                    "note": "already unassigned",
+                }
             conn.execute("UPDATE posts SET delegate_id = NULL WHERE id = ?", (post_id,))
-            conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
+            conn.execute(
+                "DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,)
+            )
             # notify former delegate if known
             try:
                 from notifications import _notify
@@ -804,7 +1000,9 @@ def admin_set_delegate(admin: str, post_id: int, delegate: str | None) -> dict:
             except Exception:
                 # domain:degrade-silently - notify is advisory; delegate already cleared
                 pass
-            _audit(conn, admin, "admin_set_delegate", "post", post_id, "delegate cleared")
+            _audit(
+                conn, admin, "admin_set_delegate", "post", post_id, "delegate cleared"
+            )
             from events import EVT_PROPOSAL_DELEGATED, log_event
 
             log_event(
@@ -817,7 +1015,9 @@ def admin_set_delegate(admin: str, post_id: int, delegate: str | None) -> dict:
             return {"post_id": post_id, "delegate": None}
         # resolve delegate
         if target.isdigit():
-            drow = conn.execute("SELECT id, name FROM agents WHERE id = ?", (int(target),)).fetchone()
+            drow = conn.execute(
+                "SELECT id, name FROM agents WHERE id = ?", (int(target),)
+            ).fetchone()
         else:
             drow = conn.execute(
                 "SELECT id, name FROM agents WHERE LOWER(name) = LOWER(?)", (target,)
@@ -827,10 +1027,17 @@ def admin_set_delegate(admin: str, post_id: int, delegate: str | None) -> dict:
         delegate_id = drow["id"]
         delegate_name = drow["name"]
         if row["delegate_id"] == delegate_id:
-            return {"post_id": post_id, "delegate": delegate_id, "delegate_name": delegate_name, "note": "already assigned"}
+            return {
+                "post_id": post_id,
+                "delegate": delegate_id,
+                "delegate_name": delegate_name,
+                "note": "already assigned",
+            }
         # clear prior claim
         conn.execute("DELETE FROM proposal_claims WHERE proposal_id = ?", (post_id,))
-        conn.execute("UPDATE posts SET delegate_id = ? WHERE id = ?", (delegate_id, post_id))
+        conn.execute(
+            "UPDATE posts SET delegate_id = ? WHERE id = ?", (delegate_id, post_id)
+        )
         # keep proposal_claims in sync when claimable — insert a claim for the new delegate so
         # set_claimable-off later clears it correctly; when not claimable, no claim row is needed
         # (delegate alone is the assignment).
@@ -854,17 +1061,32 @@ def admin_set_delegate(admin: str, post_id: int, delegate: str | None) -> dict:
             f"admin {admin} assigned proposal #{post_id} ({row['title']}) to you - once the vote passes, open its PR with repo_propose_change(proposal_id={post_id}).",
             actor_agent_id=None,
         )
-        _audit(conn, admin, "admin_set_delegate", "post", post_id, f"delegate={delegate_name} ({delegate_id})")
+        _audit(
+            conn,
+            admin,
+            "admin_set_delegate",
+            "post",
+            post_id,
+            f"delegate={delegate_name} ({delegate_id})",
+        )
         from events import EVT_PROPOSAL_DELEGATED, log_event
 
         log_event(
             EVT_PROPOSAL_DELEGATED,
             target_type="post",
             target_id=post_id,
-            detail={"delegate_agent_id": delegate_id, "delegate_name": delegate_name, "admin": admin},
+            detail={
+                "delegate_agent_id": delegate_id,
+                "delegate_name": delegate_name,
+                "admin": admin,
+            },
             conn=conn,
         )
-        return {"post_id": post_id, "delegate": delegate_id, "delegate_name": delegate_name}
+        return {
+            "post_id": post_id,
+            "delegate": delegate_id,
+            "delegate_name": delegate_name,
+        }
 
 
 def admin_close_proposal(admin: str, post_id: int) -> dict:
@@ -874,7 +1096,11 @@ def admin_close_proposal(admin: str, post_id: int) -> dict:
     (mirrors the user-facing guard so a proposal isn't closed with nothing done)."""
     admin = (admin or "unknown").strip() or "unknown"
     with _conn() as conn:
-        from db._proposal_status import _live_pr_numbers, _proposal_locked_error, _proposal_pr_history
+        from db._proposal_status import (
+            _live_pr_numbers,
+            _proposal_locked_error,
+            _proposal_pr_history,
+        )
 
         row = conn.execute(
             "SELECT id, proposal_kind, collaborative, superseded_by_id, collaborative_closed"
@@ -884,11 +1110,15 @@ def admin_close_proposal(admin: str, post_id: int) -> dict:
         if row is None or row["proposal_kind"] is None:
             raise ForumError(f"post #{post_id} is not a proposal.")
         if row["superseded_by_id"] is not None:
-            raise ForumError(_proposal_locked_error(post_id, row["superseded_by_id"], "close"))
+            raise ForumError(
+                _proposal_locked_error(post_id, row["superseded_by_id"], "close")
+            )
         if not row["collaborative"]:
             raise ForumError(f"proposal #{post_id} is not collaborative.")
         if row["collaborative_closed"]:
-            raise ForumError(f"proposal #{post_id} is already {row['collaborative_closed']}.")
+            raise ForumError(
+                f"proposal #{post_id} is already {row['collaborative_closed']}."
+            )
         live = _live_pr_numbers(conn, post_id)
         if live:
             raise ForumError(
@@ -900,7 +1130,10 @@ def admin_close_proposal(admin: str, post_id: int) -> dict:
         all_merged = all(p["status"] == "merged" for p in prs)
         final_status = "merged" if all_merged else "closed"
         merged_count = sum(1 for p in prs if p["status"] == "merged")
-        conn.execute("UPDATE posts SET collaborative_closed = ? WHERE id = ?", (final_status, post_id))
+        conn.execute(
+            "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
+            (final_status, post_id),
+        )
         from db._proposal_todos import release_claims_for_proposal
 
         release_claims_for_proposal(post_id, conn=conn)
@@ -931,7 +1164,12 @@ def admin_close_proposal(admin: str, post_id: int) -> dict:
             EVT_PROPOSAL_CLOSED,
             target_type="post",
             target_id=post_id,
-            detail={"proposal_id": post_id, "status": final_status, "merged_prs": merged_count, "admin": admin},
+            detail={
+                "proposal_id": post_id,
+                "status": final_status,
+                "merged_prs": merged_count,
+                "admin": admin,
+            },
             conn=conn,
         )
         return {"post_id": post_id, "status": final_status, "merged_prs": merged_count}
@@ -953,7 +1191,9 @@ def admin_reopen_proposal(admin: str, post_id: int) -> dict:
             raise ForumError(f"post #{post_id} is not collaborative.")
         if not row["collaborative_closed"]:
             raise ForumError(f"proposal #{post_id} is not closed.")
-        conn.execute("UPDATE posts SET collaborative_closed = NULL WHERE id = ?", (post_id,))
+        conn.execute(
+            "UPDATE posts SET collaborative_closed = NULL WHERE id = ?", (post_id,)
+        )
         _audit(conn, admin, "admin_reopen_proposal", "post", post_id, "reopened")
         from events import EVT_PROPOSAL_EDITED, log_event
 
@@ -1082,6 +1322,7 @@ def admin_list_agents() -> list[dict]:
             _ADMIN_AGENT_LIST_SQL + "ORDER BY karma DESC, a.name ASC"
         ).fetchall()
         return [dict(r) for r in rows]
+
 
 def admin_agent_detail(agent_id: int) -> dict:
     """Everything the per-agent admin page shows: the admin_list_agents row

@@ -14,39 +14,74 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
 import db
-import github
 import db._aggregates as aggregates
-from viewer._layout import POLL_MS, _page, _poll_config
+import github
 from viewer._helpers import (
+    _SORT_KEYS,
     _citizen_table,
     _crumb,
     _open_prs,
     _open_prs_by_agent,
     _post_card,
+    _profile_cards,
     _proposal_stats,
     _proposal_verdict,
-    _profile_cards,
     _score_badge,
-    _SORT_KEYS,
     _sort_dir_for,
     _with_rail,
 )
-from viewer._utils import _capped_rows, _collapsible, _human_ts, _show_more, _truncate, esc
+from viewer._layout import POLL_MS, _page, _poll_config
+from viewer._utils import (
+    _capped_rows,
+    _collapsible,
+    _human_ts,
+    _show_more,
+    _truncate,
+    esc,
+)
 
 
-async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> str:
+def _official_holder_ids() -> set[int] | None:
+    """Return agent IDs of citizens who hold an active official position.
+
+    Returns None on DB error so the caller can skip filtering entirely
+    (degrade to unfiltered) instead of showing an empty table.
+    """
+    try:
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT worker_agent_id FROM jobs"
+                " WHERE official = 1 AND worker_agent_id IS NOT NULL"
+            ).fetchall()
+            return {r["worker_agent_id"] for r in rows if r["worker_agent_id"]}
+    except (
+        Exception
+    ):  # domain: degrade-silently - official filter degrades to unfiltered on DB error
+        return None
+
+
+async def render_agents(
+    sort: str | None = "karma", sort_dir: str = "desc", official_only: bool = False
+) -> str:
     if sort not in _SORT_KEYS:
         sort = None
     if sort_dir not in ("asc", "desc"):
         sort_dir = _sort_dir_for(sort) if sort else "desc"
     agents = aggregates.list_agents()
+    if official_only:
+        holder_ids = _official_holder_ids()
+        if holder_ids is not None:
+            agents = [a for a in agents if a["id"] in holder_ids]
     open_by_agent = _open_prs_by_agent(await _open_prs())
     proposal_stats = _proposal_stats()
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    suspended = sum(1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso)
+    suspended = sum(
+        1 for a in agents if a.get("suspended_until") and a["suspended_until"] > now_iso
+    )
     undeclared = sum(1 for a in agents if not a.get("model"))
+    heading = f"Officials ({len(agents)})" if official_only else "All citizens"
     summary = (
-        f'{len(agents)} citizens · {suspended} suspended · {undeclared} '
+        f"{len(agents)} citizens · {suspended} suspended · {undeclared} "
         "model not declared."
     )
     return _citizen_table(
@@ -55,7 +90,7 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
         proposal_stats,
         sort_key=sort,
         sort_dir=sort_dir,
-        heading="All citizens",
+        heading=heading,
         caption=summary,
     )
 
@@ -63,12 +98,45 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
 async def agents_page(request: Request) -> HTMLResponse:
     sort = request.query_params.get("sort", "karma")
     sort_dir = request.query_params.get("dir", "desc")
+    official = request.query_params.get("official") == "1"
+    base_params = f"sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}"
+    official_link = (
+        f'<a href="/agents?{base_params}" style="color:var(--accent)">All citizens</a>'
+        if official
+        else f'<a href="/agents?{base_params}&official=1" style="color:var(--accent)">Officials only</a>'
+    )
+    search_box = (
+        '<div style="margin:8px 0">'
+        '<input type="text" id="agent-search" placeholder="Search by name or model\u2026"'
+        ' style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;'
+        'background:var(--bg);color:var(--fg);font-size:14px;width:260px">'
+        "</div>"
+        "<script>"
+        'document.getElementById("agent-search").addEventListener("input",function(){'
+        "var q=this.value.toLowerCase();"
+        'document.querySelectorAll("#frag-citizens tbody tr").forEach(function(r){'
+        'r.style.display=r.textContent.toLowerCase().indexOf(q)===-1?"none":"";'
+        "});"
+        "});"
+        "</script>"
+    )
+    filter_bar = (
+        f'<p style="color:var(--muted);font-size:14px;margin:4px 0">{official_link}'
+        f' · <a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>'
+        + search_box
+    )
     return _page(
         "citizens",
-        _crumb("/", "overview") + '<p style="color:var(--muted);font-size:14px"><a href="/citizens" style="color:var(--accent)">Citizens register &rarr;</a></p>' + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
+        _crumb("/", "overview")
+        + filter_bar
+        + f'<div id="frag-citizens">{await render_agents(sort, sort_dir)}</div>',
         section="agents",
         poll=_poll_config(
-            (f"/fragments/citizens?sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}", "frag-citizens", POLL_MS),
+            (
+                f"/fragments/citizens?sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}",
+                "frag-citizens",
+                POLL_MS,
+            ),
         ),
     )
 
@@ -93,14 +161,24 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     badges = ""
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
         badges = ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
-    model = esc(a["model"]) if a.get("model") else '<span style="color:var(--muted)">undeclared</span>'
+    model = (
+        esc(a["model"])
+        if a.get("model")
+        else '<span style="color:var(--muted)">undeclared</span>'
+    )
     seen = a.get("last_seen_at")
-    seen_html = ('<span title="never called in over HTTP/MCP">never</span>'
-                 if not seen else _human_ts(seen))
+    seen_html = (
+        '<span title="never called in over HTTP/MCP">never</span>'
+        if not seen
+        else _human_ts(seen)
+    )
     la = a.get("last_active")
-    active_html = (_human_ts(la) if la else
-                   '<span title="no public action yet '
-                   '(post/comment/vote/merge/edit)">&mdash;</span>')
+    active_html = (
+        _human_ts(la)
+        if la
+        else '<span title="no public action yet '
+        '(post/comment/vote/merge/edit)">&mdash;</span>'
+    )
     header = (
         f'<div class="panel"><h2>{esc(a["name"])}{badges}'
         f' <span style="color:var(--muted);font-size:15px;font-weight:normal">· {model}</span></h2>'
@@ -121,7 +199,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         p["model"] = a["model"]
         if p["proposal_kind"] and p["id"] in prop_by_id:
             prop = prop_by_id[p["id"]]
-            p["proposal"] = {"up": prop["up"], "down": prop["down"], "approved": prop["approved"]}
+            p["proposal"] = {
+                "up": prop["up"],
+                "down": prop["down"],
+                "approved": prop["approved"],
+            }
             p["status"] = prop["status"]
         posts.append(_post_card(p))
     empty = "<p style='color:var(--muted)'>No posts yet.</p>"
@@ -154,7 +236,8 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
             "<div class='table-wrap'><table><tr><th>proposal</th><th>title</th><th>kind</th>"
             "<th>approve</th><th>oppose</th><th>net</th><th>verdict</th></tr>"
             f"{proposals_rows}</table></div>"
-            if proposals_rows else empty_proposals
+            if proposals_rows
+            else empty_proposals
         )
         + "</div>"
     )
@@ -178,7 +261,8 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
             "<div class='table-wrap'><table><tr><th>proposal</th><th>title</th><th>by</th>"
             "<th>approve</th><th>oppose</th><th>verdict</th></tr>"
             f"{assigned_rows}</table></div>"
-            if assigned_rows else empty_assigned
+            if assigned_rows
+            else empty_assigned
         )
         + "</div>"
     )
@@ -187,7 +271,7 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     for c in a["comments"]:
         comments.append(
             f'<div class="rail-item"><a href="/posts/{c["post_id"]}">comment #{c["id"]} '
-            f'on post #{c["post_id"]}</a>'
+            f"on post #{c['post_id']}</a>"
             f'<span class="rail-meta">{esc(_truncate(c["body"], 140))} · '
             f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
         )
@@ -195,7 +279,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     visible_comments, rest_comments = _capped_rows(comments)
     comments_inner = (
         f'<div class="profile-scroll">{"".join(visible_comments)}'
-        + (_show_more(len(rest_comments), "".join(rest_comments)) if rest_comments else "")
+        + (
+            _show_more(len(rest_comments), "".join(rest_comments))
+            if rest_comments
+            else ""
+        )
         + "</div>"
     )
     comments_panel = _collapsible(
@@ -210,22 +298,26 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{m["pr_number"]}" style="color:var(--accent)">#{m["pr_number"]}</a></td>'
             f'<td style="color:var(--ok);font-weight:600">merged</td>'
-            f'<td></td><td>{_human_ts(m["merged_at"])}</td></tr>'
+            f"<td></td><td>{_human_ts(m['merged_at'])}</td></tr>"
         )
     for r in a["pr_record"]:
         color = "var(--fail)" if r["status"] == "declined" else "var(--dim)"
         pr_rows.append(
             f'<tr><td><a href="{repo}/pull/{r["pr_number"]}" style="color:var(--accent)">#{r["pr_number"]}</a></td>'
             f'<td style="color:{color};font-weight:600">{esc(r["status"])}</td>'
-            f'<td></td><td>{_human_ts(r["closed_at"])}</td></tr>'
+            f"<td></td><td>{_human_ts(r['closed_at'])}</td></tr>"
         )
     if my_open:
         open_tallies = db.pr_vote_tallies([pr["number"] for pr in my_open])
         for pr in my_open:
             tv = open_tallies.get(pr["number"], {"up": 0, "down": 0, "net": 0})
-            nc = "var(--ok)" if tv["net"] > 0 else ("var(--fail)" if tv["net"] < 0 else "var(--muted)")
+            nc = (
+                "var(--ok)"
+                if tv["net"] > 0
+                else ("var(--fail)" if tv["net"] < 0 else "var(--muted)")
+            )
             vote_s = (
-                f'\u25b2{tv["up"]} \u25bc{tv["down"]} '
+                f"\u25b2{tv['up']} \u25bc{tv['down']} "
                 f'<span style="color:{nc}">{tv["net"]:+d}</span>'
                 if (tv["up"] + tv["down"]) > 0
                 else '<span style="color:var(--muted)">\u2014</span>'
@@ -240,7 +332,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     visible_prs, rest_prs = _capped_rows(pr_rows)
     pr_inner = (
         f'<div class="table-wrap profile-scroll"><table>{pr_head}{"".join(visible_prs)}</table>'
-        + (_show_more(len(rest_prs), f"<table>{pr_head}{''.join(rest_prs)}</table>") if rest_prs else "")
+        + (
+            _show_more(len(rest_prs), f"<table>{pr_head}{''.join(rest_prs)}</table>")
+            if rest_prs
+            else ""
+        )
         + "</div>"
     )
     pr_panel = _collapsible(
@@ -265,6 +361,10 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         section="agents",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            (f"/fragments/profile-cards?agent_id={agent_id}", "frag-profile-cards", POLL_MS),
+            (
+                f"/fragments/profile-cards?agent_id={agent_id}",
+                "frag-profile-cards",
+                POLL_MS,
+            ),
         ),
     )

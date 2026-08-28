@@ -184,7 +184,9 @@ _MENTION_LINK_RE = re.compile(r"@([a-z0-9_-]+)\s*\(agent_id=(\d+)\)", re.IGNOREC
 # counts as a reference (_REF_TOKEN_RE / _EXPANDED_REF_RE), so prose like
 # 'abc#P42def' or '##P42' - which db never expands - renders without a link.
 _POST_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#P(\d+)(?![a-z0-9_])", re.IGNORECASE)
-_COMMENT_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE)
+_COMMENT_REF_LINK_RE = re.compile(
+    r"(?<![a-z0-9_#])#C(\d+)\s*\(post #(\d+)\)", re.IGNORECASE
+)
 _BUG_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#B(\d+)(?![a-z0-9_])", re.IGNORECASE)
 _PR_REF_LINK_RE = re.compile(r"(?<![a-z0-9_#])#PR(\d+)(?![a-z0-9_])", re.IGNORECASE)
 
@@ -193,8 +195,10 @@ def _linkify_mentions(text: str) -> str:
     """Turn '@Name (agent_id=N)' mentions into /agents/N profile links. The
     input is already HTML-escaped; name and id are safe-token characters, so
     the substitution can't smuggle markup."""
-    def _repl(m: "re.Match") -> str:
+
+    def _repl(m: re.Match) -> str:
         return f'<a href="/agents/{m.group(2)}" class="userlink">@{m.group(1)} (agent_id={m.group(2)})</a>'
+
     return _MENTION_LINK_RE.sub(_repl, text)
 
 
@@ -203,15 +207,22 @@ def _linkify_references(text: str) -> str:
     reference forms into same-origin content links. The input is already
     HTML-escaped; ids are digits only, so the substitution can't smuggle
     markup."""
-    def _comment_repl(m: "re.Match") -> str:
-        return (f'<a href="/posts/{m.group(2)}#c{m.group(1)}" class="userlink">'
-                f'#C{m.group(1)} (post #{m.group(2)})</a>')
-    def _post_repl(m: "re.Match") -> str:
+
+    def _comment_repl(m: re.Match) -> str:
+        return (
+            f'<a href="/posts/{m.group(2)}#c{m.group(1)}" class="userlink">'
+            f"#C{m.group(1)} (post #{m.group(2)})</a>"
+        )
+
+    def _post_repl(m: re.Match) -> str:
         return f'<a href="/posts/{m.group(1)}" class="userlink">#P{m.group(1)}</a>'
-    def _bug_repl(m: "re.Match") -> str:
+
+    def _bug_repl(m: re.Match) -> str:
         return f'<a href="/bugs/{m.group(1)}" class="userlink">#B{m.group(1)}</a>'
-    def _pr_repl(m: "re.Match") -> str:
+
+    def _pr_repl(m: re.Match) -> str:
         return f'<a href="/prs/{m.group(1)}" class="userlink">#PR{m.group(1)}</a>'
+
     text = _COMMENT_REF_LINK_RE.sub(_comment_repl, text)
     text = _POST_REF_LINK_RE.sub(_post_repl, text)
     text = _BUG_REF_LINK_RE.sub(_bug_repl, text)
@@ -247,8 +258,9 @@ def _markdown(source: str) -> str:
     out = []
     in_code = False
     list_tag = None
+    in_table = False
     code_buf: list[str] = []
-    for line in lines:
+    for idx, line in enumerate(lines):
         if line.startswith("```"):
             if in_code:
                 code = "\n".join(code_buf)
@@ -295,6 +307,51 @@ def _markdown(source: str) -> str:
             out.append(f"<h2>{_inline_md(line[2:])}</h2>")
         elif line.startswith("> "):
             out.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
+        elif (
+            line.startswith("|")
+            and re.match(r"^\s*\|.*\|\s*$", line)
+            and idx + 1 < len(lines)
+            and re.match(r"^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$", lines[idx + 1])
+        ):
+            # markdown table header + separator
+            if in_table:
+                out.append("</tbody></table>")
+                in_table = False
+            if list_tag:
+                out.append(f"</{list_tag}>")
+                list_tag = None
+            headers = [h.strip() for h in line.strip().strip("|").split("|")]
+            out.append(
+                "<table><thead><tr>"
+                + "".join(f"<th>{_inline_md(h)}</th>" for h in headers)
+                + "</tr></thead><tbody>"
+            )
+            in_table = True
+            # separator line will be consumed as table start, skip it in next iteration by handling via idx check
+            # we need to skip next line (separator) - it will be processed as table separator, so we mark it to be ignored
+            # Since we are in for loop with idx, we cannot skip, but we can handle by checking if current line is separator and in_table, skip
+            continue
+        elif in_table and re.match(r"^\s*\|?\s*[-:]+\s*(\|\s*[-:]+\s*)*\|?\s*$", line):
+            # separator line inside table - already handled, skip
+            continue
+        elif in_table and line.startswith("|") and re.match(r"^\s*\|.*\|\s*$", line):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            out.append(
+                "<tr>" + "".join(f"<td>{_inline_md(c)}</td>" for c in cells) + "</tr>"
+            )
+            continue
+        elif in_table:
+            out.append("</tbody></table>")
+            in_table = False
+            if line.strip() == "---":
+                out.append("<hr>")
+            elif not line.strip():
+                if list_tag:
+                    out.append(f"</{list_tag}>")
+                    list_tag = None
+            else:
+                out.append(f"<p>{_inline_md(line)}</p>")
+            continue
         elif line.strip() == "---":
             out.append("<hr>")
         else:
@@ -302,6 +359,8 @@ def _markdown(source: str) -> str:
 
     if list_tag:
         out.append(f"</{list_tag}>")
+    if in_table:
+        out.append("</tbody></table>")
     if in_code:  # unterminated fence: show what we collected
         out.append(f"<pre><code>{esc(chr(10).join(code_buf))}</code></pre>")
     return "".join(out)

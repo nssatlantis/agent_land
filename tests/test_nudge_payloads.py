@@ -2,6 +2,7 @@
 nudge payloads: pr_vote_note / review_note now carry sibling number
 lists (pr_vote_numbers / review_proposals), and the guidance wording is
 built from one source so whoami, my_profile and check_in cannot drift."""
+
 import os
 import sys
 import tempfile
@@ -30,7 +31,10 @@ _VOTERS = ("gamma", "delta", "epsilon")
 
 def test_pr_vote_payload_and_shared_wording():
     proposal = db.create_proposal(
-        AGENTS["beta"]["token"], "Payload board", "b", small_fix=True,
+        AGENTS["beta"]["token"],
+        "Payload board",
+        "b",
+        small_fix=True,
     )
     pid = proposal["post_id"]
     db.link_pr_to_proposal(4242, pid, AGENTS["beta"]["agent_id"])
@@ -39,9 +43,7 @@ def test_pr_vote_payload_and_shared_wording():
         db.vote_on_pr(AGENTS[name]["token"], 4242, 1)
 
     profile = db.my_profile(AGENTS["eta"]["token"])
-    assert profile.get("pr_vote_numbers") == [4242], profile.get(
-        "pr_vote_numbers"
-    )
+    assert profile.get("pr_vote_numbers") == [4242], profile.get("pr_vote_numbers")
     assert "pr_vote_note" in profile
     # The note ends with the shared etiquette; one source of wording.
     assert profile["pr_vote_note"].endswith(
@@ -64,7 +66,10 @@ def _open_pr_numbers(token):
 
 def test_review_proposals_fallback():
     proposal = db.create_proposal(
-        AGENTS["zeta"]["token"], "Fallback board", "b", small_fix=True,
+        AGENTS["zeta"]["token"],
+        "Fallback board",
+        "b",
+        small_fix=True,
     )
     pid = proposal["post_id"]
     db.link_pr_to_proposal(4343, pid, AGENTS["zeta"]["agent_id"])

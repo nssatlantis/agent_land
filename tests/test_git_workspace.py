@@ -45,8 +45,9 @@ def _mk_remote(tmp):
     with open(os.path.join(seed, "README.md"), "w") as f:
         f.write("seed\n")
     _git("-C", seed, "add", "-A")
-    _git("-C", seed, "-c", "user.email=a@b", "-c", "user.name=t",
-         "commit", "-m", "seed")
+    _git(
+        "-C", seed, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-m", "seed"
+    )
     _git("-C", seed, "push", bare, "main")
     return bare
 
@@ -149,8 +150,9 @@ def test_warm_reuse_scrub_and_no_refetch_within_ttl():
         # pays zero network cost while the fetch TTL holds.
         with gh._workspace() as d2:
             assert d1 == d2, "warm slot must be reused"
-            assert not os.path.exists(os.path.join(d2, "JUNK.txt")), \
+            assert not os.path.exists(os.path.join(d2, "JUNK.txt")), (
                 "dirty-slot scrub must remove leftovers"
+            )
         assert sb.verbs.count("clone") == 1, sb.verbs
         assert "fetch" not in sb.verbs, sb.verbs
     finally:
@@ -165,13 +167,10 @@ def test_ttl_expiry_triggers_refetch():
             pass
         # Force staleness deterministically - relying on TTL=0 races the
         # monotonic clock (two calls inside one tick compare equal).
-        gh._ws_slots[0]["last_fetch"] -= (
-            config.GIT_WORKSPACE_FETCH_TTL + 1
-        )
+        gh._ws_slots[0]["last_fetch"] -= config.GIT_WORKSPACE_FETCH_TTL + 1
         with gh._workspace():
             pass
-        assert "fetch" in sb.verbs, \
-            f"TTL expiry must refetch: {sb.verbs}"
+        assert "fetch" in sb.verbs, f"TTL expiry must refetch: {sb.verbs}"
     finally:
         sb.close()
     print("  TTL expiry triggers refetch: ok")
@@ -228,7 +227,10 @@ def test_flow_leftover_branches_never_poison_the_slot():
         def local_branches(d):
             return subprocess.run(
                 ["git", "branch", "--format=%(refname:short)"],
-                cwd=d, check=True, capture_output=True, text=True,
+                cwd=d,
+                check=True,
+                capture_output=True,
+                text=True,
             ).stdout.split()
 
         # Op 2 + 3 (+1 more for good measure): next citizens' flows must find
@@ -237,8 +239,9 @@ def test_flow_leftover_branches_never_poison_the_slot():
         for _ in range(3):
             with gh._workspace() as dx:
                 assert dx == d, "warm slot expected"
-                assert "pr_head" not in local_branches(dx), \
+                assert "pr_head" not in local_branches(dx), (
                     "acquire must start with stray flow branches scrubbed"
+                )
                 _git("checkout", "-b", "pr_head", "origin/main", cwd=dx)
     finally:
         sb.close()
@@ -259,15 +262,16 @@ def test_corrupted_slot_self_heals():
         os.chmod(ro, 0o444)
         shutil.rmtree(os.path.join(d, ".git"), onerror=_rm_ro)
         with gh._workspace() as d2:
-            assert os.path.isdir(os.path.join(d2, ".git")), \
+            assert os.path.isdir(os.path.join(d2, ".git")), (
                 "corruption must trigger a fresh clone"
+            )
             assert os.path.isfile(os.path.join(d2, "README.md"))
-            assert not os.path.exists(ro), \
+            assert not os.path.exists(ro), (
                 "self-heal must clear leftovers from the dead operation"
+            )
     finally:
         sb.close()
     print("  corrupted slot self-heals via fresh clone: ok")
-
 
 
 def test_push_auth_restores_anonymous_remote():
@@ -279,6 +283,7 @@ def test_push_auth_restores_anonymous_remote():
     saved_token_fn = gh_core._ensure_token
     gh_core._ensure_token = lambda: None
     try:
+
         def url(d):
             return gh._git(d, "config", "--get", "remote.origin.url").stdout.strip()
 
@@ -370,6 +375,7 @@ def test_slots_carry_commit_identity():
         print("  slots carry commit identity (fresh + legacy heal): ok")
     finally:
         sb.close()
+
 
 def main():
     test_temp_mode_keeps_legacy_contract()
