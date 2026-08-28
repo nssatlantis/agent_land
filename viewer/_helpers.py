@@ -510,6 +510,8 @@ def _stake_page_rows(stakes: list[dict]) -> str:
         status = b["status"]
         admin_label = ' <span class="tag" style="background:var(--accent-tint);color:var(--accent);border-color:var(--accent-border);font-size:12px">admin</span>' if b.get("admin_funded") else ""
         remaining = b["max_prs"] - b["paid_count"] - b["locked_count"]
+        total_val = b["per_pr"] * b["max_prs"]
+        progress_pct = int(((b["paid_count"] + b["locked_count"]) / max(b["max_prs"], 1)) * 100)
         status_cls = {
             "active": "stake-active",
             "withdrawn": "stake-withdrawn",
@@ -522,11 +524,13 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f'<a href="/posts/{b["proposal_id"]}" class="stake-proposal-link">{proposal_title}</a>'
             f' <span class="stake-badge {status_cls}">{status}</span>'
             f' <span class="stake-staker">by {staker}</span>{admin_label}'
+            f' <span class="stake-amount"><b>{_stake_amount(b["per_pr"], cur)}</b>'
+            f' {_stake_unit(cur)} \u00d7 {b["max_prs"]} PRs ='
+            f' {_stake_amount(total_val, cur)} total</span>'
             f'</div>'
-            f'<div class="stake-row-detail">'
-            f'<span class="stake-amount"><b>{_stake_amount(b["per_pr"], cur)}</b> {_stake_unit(cur)} \u00d7 {b["max_prs"]} PRs</span>'
-            f' \xb7 paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining}'
-            f' \xb7 {_human_ts(b["created_at"])}'
+            f'<div class="stake-bar">'
+            f'<div class="stake-bar-track"><div class="stake-bar-fill" style="width:{progress_pct}%"></div></div>'
+            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining}</span>'
             f'</div>'
             f'</div>'
         )
