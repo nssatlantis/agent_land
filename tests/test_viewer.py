@@ -3,6 +3,7 @@
 Covers the key HTML fragment builders that render proposal votes, PR trails,
 CI status, bounty panels, and lock banners — all pure functions that take
 dicts and return HTML strings."""
+
 import os
 import sys
 import tempfile
@@ -15,25 +16,27 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402
+from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
 from viewer._helpers import (
     _ci_chip,
-    _prs_citizen_cell,
-    _prs_outcome_chip,
-    _prs_rows_html,
-    _proposal_lock_banner,
-    _proposal_prs_panel,
-    _proposal_votes_panel,
-    _proposal_stats,
-    _open_prs_by_agent,
     _collaborators_panel,
     _open_pr_cell,
+    _open_prs_by_agent,
     _profile_cards,
+    _proposal_lock_banner,
+    _proposal_prs_panel,
+    _proposal_stats,
+    _proposal_votes_panel,
+    _prs_citizen_cell,
     _prs_hold_chip,
+    _prs_outcome_chip,
+    _prs_rows_html,
     _todos_panel,
 )  # noqa: E402
+from viewer._proposals import _docket_card  # noqa: E402
+from viewer._pulse import _pulse_panels  # noqa: E402
 from viewer._status import _process_rows  # noqa: E402
 from viewer._utils import _rows  # noqa: E402
-from viewer._proposals import _docket_card  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -171,9 +174,7 @@ def test_proposal_stats_empty():
 
 
 def test_proposal_stats_with_proposals():
-    db.create_proposal(
-        AGENTS["alpha"]["token"], "Stats test", "Body", small_fix=True
-    )
+    db.create_proposal(AGENTS["alpha"]["token"], "Stats test", "Body", small_fix=True)
     docket = db.list_proposals()
     stats = _proposal_stats(docket)
     assert isinstance(stats, dict)
@@ -215,8 +216,12 @@ def test_collaborators_panel():
             ]
         },
         "collaborators": [
-            {"agent_id": 2, "name": "beta", "model": "m",
-             "joined_at": "2026-08-20T12:00:00.000Z"},
+            {
+                "agent_id": 2,
+                "name": "beta",
+                "model": "m",
+                "joined_at": "2026-08-20T12:00:00.000Z",
+            },
         ],
     }
     html = _collaborators_panel(p)
@@ -244,11 +249,19 @@ def test_open_pr_cell():
 
 
 def test_prs_rows_html_escapes_untrusted():
-    rows = [{"number": 1, "title": "<script>alert(1)</script>",
-             "head": 'x"><svg', "base": "main", "html_url": "https://x/1",
-             "created_at": "2026-08-23T00:00:00Z",
-             "citizen": {"name": "<b>evil</b>", "agent_id": 9},
-             "state": "open", "outcome": None}]
+    rows = [
+        {
+            "number": 1,
+            "title": "<script>alert(1)</script>",
+            "head": 'x"><svg',
+            "base": "main",
+            "html_url": "https://x/1",
+            "created_at": "2026-08-23T00:00:00Z",
+            "citizen": {"name": "<b>evil</b>", "agent_id": 9},
+            "state": "open",
+            "outcome": None,
+        }
+    ]
     html = _prs_rows_html("open", rows)
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
@@ -257,8 +270,12 @@ def test_prs_rows_html_escapes_untrusted():
 
 
 def test_prs_outcome_chip_classes():
-    for outcome, cls in (("merged", "pr-merged"), ("open", "pr-open"),
-                         ("declined", "pr-declined"), ("closed", "pr-closed")):
+    for outcome, cls in (
+        ("merged", "pr-merged"),
+        ("open", "pr-open"),
+        ("declined", "pr-declined"),
+        ("closed", "pr-closed"),
+    ):
         chip = _prs_outcome_chip({"outcome": outcome})
         assert cls in chip
         assert outcome in chip
@@ -276,10 +293,19 @@ def test_prs_rows_html_empty_and_unreachable():
 
 
 def test_prs_rows_html_votes_tabs_and_history():
-    rows = [{"number": 5, "title": "t", "head": "h", "base": "main",
-             "html_url": "", "created_at": "2026-08-23T00:00:00Z",
-             "updated_at": "2026-08-23T01:00:00Z", "state": "closed",
-             "outcome": "merged"}]
+    rows = [
+        {
+            "number": 5,
+            "title": "t",
+            "head": "h",
+            "base": "main",
+            "html_url": "",
+            "created_at": "2026-08-23T00:00:00Z",
+            "updated_at": "2026-08-23T01:00:00Z",
+            "state": "closed",
+            "outcome": "merged",
+        }
+    ]
     html = _prs_rows_html("closed", rows)
     assert "+0" in html and "net 0" in html
     assert 'class="active"' in html and "/prs?state=closed" in html
@@ -288,9 +314,18 @@ def test_prs_rows_html_votes_tabs_and_history():
 
 
 def test_prs_rows_html_ci_from_map():
-    rows = [{"number": 1, "title": "t", "head": "h", "base": "main",
-             "html_url": "", "created_at": "2026-08-23T00:00:00Z",
-             "state": "open", "outcome": None}]
+    rows = [
+        {
+            "number": 1,
+            "title": "t",
+            "head": "h",
+            "base": "main",
+            "html_url": "",
+            "created_at": "2026-08-23T00:00:00Z",
+            "state": "open",
+            "outcome": None,
+        }
+    ]
     passing = {"state": "success", "failures": [], "runs": [{"name": "test"}]}
     html = _prs_rows_html("open", rows, {1: passing})
     assert "CI: passing" in html
@@ -303,8 +338,15 @@ def test_prs_rows_html_ci_from_map():
 
 
 def test_profile_cards_tag_stats():
-    a = {"karma": 5, "post_count": 1, "comment_count": 0, "votes_cast": 3,
-         "proposal_count": 1, "prs_merged": 0, "prs_declined": 0}
+    a = {
+        "karma": 5,
+        "post_count": 1,
+        "comment_count": 0,
+        "votes_cast": 3,
+        "proposal_count": 1,
+        "prs_merged": 0,
+        "prs_declined": 0,
+    }
     html = _profile_cards(a, open_count=0)
     assert "tags created" in html and "tag applies" in html
     assert html.count('class="card"') == 12  # 8 original + tags(2) + jobs + credits
@@ -317,15 +359,19 @@ def test_profile_cards_tag_stats():
 
 def test_prs_hold_chip_states():
     prop = db.create_proposal(
-        AGENTS["alpha"]["token"], "Hold chip board", "b",
+        AGENTS["alpha"]["token"],
+        "Hold chip board",
+        "b",
     )
     pid = prop["post_id"]
     db.link_pr_to_proposal(9101, pid, AGENTS["alpha"]["agent_id"])
-    assert _prs_hold_chip({"number": 9101}, "open"), \
+    assert _prs_hold_chip({"number": 9101}, "open"), (
         "a held PR (proposal below the bar) shows the chip"
+    )
     assert _prs_hold_chip({"number": 9101}, "closed") == ""
-    assert _prs_hold_chip({"number": 999999}, "open") == "", \
+    assert _prs_hold_chip({"number": 999999}, "open") == "", (
         "an unlinked number stays quiet"
+    )
     # Four farmed approvals clear any live bar (ceil(active/3) <= 4):
     # once the proposal's vote passes, the hold lifts.
     farm = db.create_post(AGENTS["alpha"]["token"], "chip farm", "b")
@@ -335,8 +381,9 @@ def test_prs_hold_chip_states():
         db.vote(AGENTS["alpha"]["token"], "comment", c["comment_id"], 1)
     for name in voters:
         db.vote_on_proposal(AGENTS[name]["token"], pid, 1)
-    assert _prs_hold_chip({"number": 9101}, "open") == "", \
+    assert _prs_hold_chip({"number": 9101}, "open") == "", (
         "the chip lifts the moment the proposal's vote passes"
+    )
 
 
 def test_todos_panel_shows_list_and_item_ids():
@@ -345,10 +392,14 @@ def test_todos_panel_shows_list_and_item_ids():
     assert _todos_panel({}) == ""
     # Proposal with to-do lists -> both list and item ids are visible.
     lists = [
-        {"id": 12, "title": "Bugs", "items": [
-            {"id": 34, "text": "fix the stale read", "done": False},
-            {"id": 7, "text": "write a regression test", "done": True},
-        ]},
+        {
+            "id": 12,
+            "title": "Bugs",
+            "items": [
+                {"id": 34, "text": "fix the stale read", "done": False},
+                {"id": 7, "text": "write a regression test", "done": True},
+            ],
+        },
     ]
     html = _todos_panel({"todos": lists})
     assert "To-do lists" in html
@@ -369,41 +420,55 @@ def test_todos_panel_list_mode_shows_list_level_claims():
     # are suppressed; instead every list header carries a dot - grey for an
     # unclaimed list, blue with an inline claimer link for a claimed one.
     lists_claimed = [
-        {"id": 1, "title": "Chores", "claim_mode": "list",
-         "claimed_by": "beta", "claimed_by_id": 2,
-         "claimed_at": "2026-08-27T12:00:00.000Z",
-         "items": [
-             {"id": 2, "text": "mow", "done": False},
-             {"id": 3, "text": "water", "done": True},
-         ]},
+        {
+            "id": 1,
+            "title": "Chores",
+            "claim_mode": "list",
+            "claimed_by": "beta",
+            "claimed_by_id": 2,
+            "claimed_at": "2026-08-27T12:00:00.000Z",
+            "items": [
+                {"id": 2, "text": "mow", "done": False},
+                {"id": 3, "text": "water", "done": True},
+            ],
+        },
     ]
     html = _todos_panel({"todos": lists_claimed})
     assert "whole list claimed by beta" in html, "list-claim tooltip present"
     assert "claimed by" in html, "claimer name is visible without hover"
     assert 'href="/agents/2"' in html, "claimer name links to their profile"
-    assert "title='unclaimed'" not in html, \
+    assert "title='unclaimed'" not in html, (
         "no grey per-item dot for items under a claimed list"
+    )
     # An unclaimed list in list mode shows the grey LIST-level dot (tooltip
     # 'unclaimed list', distinct from the item-level 'unclaimed' tooltip)
     # and no per-item dots.
     lists_unclaimed = [
-        {"id": 5, "title": "Backlog", "claim_mode": "list",
-         "items": [{"id": 6, "text": "later", "done": False}]},
+        {
+            "id": 5,
+            "title": "Backlog",
+            "claim_mode": "list",
+            "items": [{"id": 6, "text": "later", "done": False}],
+        },
     ]
     html2 = _todos_panel({"todos": lists_unclaimed})
-    assert "unclaimed list" in html2, \
+    assert "unclaimed list" in html2, (
         "an open list shows its unclaimed state at list level"
+    )
     assert "claimed by" not in html2
-    assert "title='unclaimed'" not in html2, \
+    assert "title='unclaimed'" not in html2, (
         "grey per-item dots suppressed for unclaimed lists too"
+    )
     # Item mode (default) keeps the grey unclaimed dots - unchanged.
     lists_item = [
-        {"id": 7, "title": "Bugs", "items": [
-            {"id": 8, "text": "stale read", "done": False}]},
+        {
+            "id": 7,
+            "title": "Bugs",
+            "items": [{"id": 8, "text": "stale read", "done": False}],
+        },
     ]
     html3 = _todos_panel({"todos": lists_item})
-    assert "title='unclaimed'" in html3, \
-        "item mode still shows the grey unclaimed dot"
+    assert "title='unclaimed'" in html3, "item mode still shows the grey unclaimed dot"
 
 
 def test_docket_card_shows_list_claim_summary():
@@ -422,7 +487,10 @@ def test_docket_card_shows_list_claim_summary():
         "agent_id": 1,
         "created_at": "2026-08-27T12:00:00.000Z",
         "body_preview": "preview",
-        "up": 0, "down": 0, "threshold": 3, "net": 0,
+        "up": 0,
+        "down": 0,
+        "threshold": 3,
+        "net": 0,
         "stale": False,
         "collaborative": True,
         "collaborative_closed": None,
@@ -430,9 +498,15 @@ def test_docket_card_shows_list_claim_summary():
         "pr_goal": None,
         "prs": [],
         "todos": [
-            {"id": 1, "title": "Chores", "claim_mode": "list",
-             "claimed_by": "beta", "claimed_by_id": 2,
-             "claimed_at": "2026-08-27T12:00:00.000Z", "items": []},
+            {
+                "id": 1,
+                "title": "Chores",
+                "claim_mode": "list",
+                "claimed_by": "beta",
+                "claimed_by_id": 2,
+                "claimed_at": "2026-08-27T12:00:00.000Z",
+                "items": [],
+            },
             {"id": 2, "title": "Backlog", "claim_mode": "list", "items": []},
         ],
     }
@@ -442,19 +516,35 @@ def test_docket_card_shows_list_claim_summary():
     assert 'href="/agents/2"' in html, "the claimer links to their profile"
     assert "beta" in html
     # No claims -> no claims line, even on a collaborative proposal.
-    p2 = dict(p, todos=[
-        {"id": 1, "title": "Chores", "claim_mode": "list", "items": []},
-    ])
-    assert "Claims:" not in _docket_card(p2), \
-        "nothing claimed stays quiet"
+    p2 = dict(
+        p,
+        todos=[
+            {"id": 1, "title": "Chores", "claim_mode": "list", "items": []},
+        ],
+    )
+    assert "Claims:" not in _docket_card(p2), "nothing claimed stays quiet"
     # Item-claim mode stays quiet on the docket too.
-    p3 = dict(p, todos=[
-        {"id": 1, "title": "Bugs", "items": [
-            {"id": 2, "text": "stale read", "done": False,
-             "claimed_by": "beta", "claimed_by_id": 2}]},
-    ])
-    assert "Claims:" not in _docket_card(p3), \
+    p3 = dict(
+        p,
+        todos=[
+            {
+                "id": 1,
+                "title": "Bugs",
+                "items": [
+                    {
+                        "id": 2,
+                        "text": "stale read",
+                        "done": False,
+                        "claimed_by": "beta",
+                        "claimed_by_id": 2,
+                    }
+                ],
+            },
+        ],
+    )
+    assert "Claims:" not in _docket_card(p3), (
         "item-mode per-item claims don't mint a lists-claimed line"
+    )
 
 
 def test_process_rows_no_double_escape():
@@ -495,6 +585,49 @@ def test_process_rows_slow_block_last_renders_span():
     assert "&lt;span" not in html, "no double-escaped span should render"
 
 
+def test_pulse_panels_render_live_fragments():
+    """The /pulse panels build without error against the seeded db and
+    carry the funnel views, the activity headline and the economy strip."""
+    html = _pulse_panels()
+    assert "Activity trend" in html
+    assert "actions on record" in html
+    assert "Governance pipeline" in html
+    for view in ("all", "needs_votes", "approved", "review", "merged"):
+        assert f"/proposals?view={view}" in html, f"funnel link {view} missing"
+    assert "Economy" in html
+    assert "circulating" in html
+
+
+def test_activity_tabs_expose_all_domains():
+    """The activity page offers every ledger domain as a tab, with the
+    active one highlighted."""
+    html = _activity_tabs(1, "posts")
+    for key, label in (
+        ("all", "All"),
+        ("posts", "Posts"),
+        ("comments", "Comments"),
+        ("votes", "Votes"),
+        ("prs", "PRs"),
+        ("economy", "Economy"),
+    ):
+        assert f"?tab={key}" in html, f"{key} tab link missing"
+        assert label in html, f"{label} tab label missing"
+    assert 'style="color:var(--accent);font-weight:600"' in html, "active tab styled"
+
+
+def test_activity_body_renders_summary_and_rows():
+    """_activity_body against the live db: summary cards plus event rows or
+    a friendly empty state."""
+    a = db.agent_card(1)
+    html = _activity_body(a, "all", 1)
+    assert "karma" in html
+    assert "posts" in html
+    assert "comments" in html
+    assert "votes cast" in html
+    assert "proposals" in html
+    assert 'href="/agents/1"' in html, "profile link present"
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -528,4 +661,7 @@ if __name__ == "__main__":
     test_docket_card_shows_list_claim_summary()
     test_process_rows_no_double_escape()
     test_process_rows_slow_block_last_renders_span()
+    test_pulse_panels_render_live_fragments()
+    test_activity_tabs_expose_all_domains()
+    test_activity_body_renders_summary_and_rows()
     print("\n== test_viewer: all passed ==")

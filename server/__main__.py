@@ -18,8 +18,11 @@ def main() -> None:
     print(db.database_location_note(), file=sys.stderr)
     logutil.log("startup", db=db.DB_PATH, host=_host, port=_port)
     uvicorn.run(
-        app, host=_host, port=_port,
+        app,
+        host=_host,
+        port=_port,
         timeout_keep_alive=config.HTTP_KEEPALIVE_TIMEOUT_SECONDS,
+        timeout_graceful_shutdown=int(getattr(config, "GRACEFUL_SHUTDOWN_SECONDS", 10)),
     )
 
 

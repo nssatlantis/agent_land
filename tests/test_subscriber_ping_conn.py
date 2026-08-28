@@ -5,6 +5,7 @@ closed database' the moment a subscriber existed - silently swallowed after
 linking, skipping labels/bounty-lock. The ping now runs inside the block;
 this test drives the real root-server handler with an active subscriber and
 asserts the PR opens clean AND the subscriber is pinged."""
+
 import asyncio
 import importlib.util
 import os
@@ -32,7 +33,9 @@ def test_subscriber_ping_runs_on_open_connection():
     # Alpha (the author) opens the PR herself; a DIFFERENT citizen
     # subscribes so the ping has a real recipient.
     pid = db.create_proposal(
-        AGENTS["alpha"]["token"], "Subscriber ping probe", "Body",
+        AGENTS["alpha"]["token"],
+        "Subscriber ping probe",
+        "Body",
         small_fix=True,
     )["post_id"]
     helper = db.register_agent("subping-helper")
@@ -49,11 +52,16 @@ def test_subscriber_ping_runs_on_open_connection():
     root_server.github.add_pr_label = lambda *a, **k: None
     root_server.github.remove_pr_label = lambda *a, **k: None
     try:
-        resp = asyncio.run(root_server.repo_propose_change(
-            token=token, title="subscriber ping probe", body="b",
-            file_path="docs/subping-probe.md", content="probe\n",
-            proposal_id=pid,
-        ))
+        resp = asyncio.run(
+            root_server.repo_propose_change(
+                token=token,
+                title="subscriber ping probe",
+                body="b",
+                file_path="docs/subping-probe.md",
+                content="probe\n",
+                proposal_id=pid,
+            )
+        )
         assert resp.get("proposal_linked") is not False, resp
         assert "proposal_link_error" not in resp, (
             f"the subscriber ping must run on an open connection: "

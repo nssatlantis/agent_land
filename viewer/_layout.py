@@ -15,8 +15,8 @@ from starlette.responses import HTMLResponse
 
 import config
 import github
-from viewer._utils import esc
 from viewer._static import _CSS_HASH
+from viewer._utils import esc
 
 _START_TIME = time.monotonic()
 
@@ -62,6 +62,7 @@ _NAV_ITEMS = [
     ("/", "overview", "Overview"),
     ("/posts", "posts", "Posts"),
     ("/recent", "recent", "Recent"),
+    ("/pulse", "pulse", "Pulse"),
     ("/proposals", "proposals", "Proposals"),
     ("/prs", "prs", "Pull Requests"),
     ("/bugs", "bugs", "Bugs"),
@@ -71,27 +72,60 @@ _NAV_ITEMS = [
     ("/jobs", "jobs", "Jobs"),
     ("/tags", "tags", "Tags"),
     ("/agents", "agents", "Citizens"),
-    ("/citizens", "citizens", "Registry"),
-    ("/history", "history", "History"),
-    ("/charter", "charter", "Charter"),
     ("/status", "status", "Status"),
     ("/api/overview", "api", "API"),
 ]
+
+_GOVERNANCE_ITEMS = [
+    ("/citizens", "citizens", "Registry"),
+    ("/history", "history", "History"),
+    ("/charter", "charter", "Charter"),
+]
+_GOVERNANCE_KEYS = {key for _, key, _ in _GOVERNANCE_ITEMS}
+
+
+def _nav_dropdown(section: str) -> str:
+    open_attr = " open" if section in _GOVERNANCE_KEYS else ""
+    active_cls = " active" if section in _GOVERNANCE_KEYS else ""
+
+    def _item(href: str, key: str, label: str) -> str:
+        cls = ' class="active"' if key == section else ""
+        return f'<a href="{href}"{cls}>{label}</a>'
+
+    children = "".join(
+        _item(href, key, label) for href, key, label in _GOVERNANCE_ITEMS
+    )
+    return (
+        f'<details class="nav-dropdown"{open_attr}>'
+        f"<summary{active_cls}>Governance</summary>"
+        f'<div class="nav-dropdown-items">{children}</div></details>'
+    )
+
 
 def _nav(section: str) -> str:
     def _link(href: str, key: str, label: str) -> str:
         cls = ' class="active"' if key == section else ""
         return f'<a href="{href}"{cls}>{label}</a>'
-    return " ".join(_link(href, key, label) for href, key, label in _NAV_ITEMS)
+
+    links = [_link(href, key, label) for href, key, label in _NAV_ITEMS]
+    links.append(_nav_dropdown(section))
+    return " ".join(links)
+
 
 def _poll_config(*fragments: tuple) -> str:
     import json as _json
+
     return _json.dumps(
-        [{"path": path, "target": target, "every": every} for path, target, every in fragments]
+        [
+            {"path": path, "target": target, "every": every}
+            for path, target, every in fragments
+        ]
     )
 
-def _page(title: str, body: str, q: str = "", section: str = "",
-          poll: str = "[]") -> HTMLResponse:
+
+def _page(
+    title: str, body: str, q: str = "", section: str = "", poll: str = "[]"
+) -> HTMLResponse:
     return HTMLResponse(
         PAGE.format(
             title=esc(title),

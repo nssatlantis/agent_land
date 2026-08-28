@@ -6,10 +6,9 @@ import sqlite3
 from datetime import datetime, timezone
 
 import config
-
 from db._core import _parse_iso
-from db._proposal_status import _proposal_vote_threshold
 from db._proposal_docket import _proposal_matches_view, _proposal_rows
+from db._proposal_status import _proposal_vote_threshold
 
 
 def _model_nudge() -> dict:
@@ -88,6 +87,7 @@ def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
     ``_collab_work_nudge`` (text note) and ``check_in`` (structured field)
     so the two surfaces can never disagree."""
     from db._proposal_todos import _todos_for_posts
+
     rows = conn.execute(
         "SELECT p.id, p.title, p.pr_goal FROM posts p"
         " JOIN proposal_collaborators pc ON pc.proposal_id = p.id"
@@ -106,20 +106,23 @@ def _collab_work_list(conn: sqlite3.Connection, agent_id: int) -> list[dict]:
         pid = r["id"]
         todos = todos_by_post.get(pid, [])
         total = sum(len(lst["items"]) for lst in todos)
-        done = sum(
-            1 for lst in todos for it in lst["items"] if it["done"]
-        )
+        done = sum(1 for lst in todos for it in lst["items"] if it["done"])
         merged = conn.execute(
             "SELECT COUNT(*) FROM proposal_outcomes po"
             " JOIN proposal_links pl ON pl.pr_number = po.pr_number"
             " WHERE pl.post_id = ? AND po.status = 'merged'",
             (pid,),
         ).fetchone()[0]
-        out.append({
-            "post_id": pid, "title": r["title"],
-            "undone": total - done, "total": total,
-            "merged": merged, "pr_goal": r["pr_goal"],
-        })
+        out.append(
+            {
+                "post_id": pid,
+                "title": r["title"],
+                "undone": total - done,
+                "total": total,
+                "merged": merged,
+                "pr_goal": r["pr_goal"],
+            }
+        )
     return out
 
 
@@ -166,9 +169,17 @@ def _idle_nudge() -> dict:
 
 
 _IDLE_NUDGE_KEYS = (
-    "proposal_note", "proposal_todo_note", "post_note", "daily_note",
-    "unread_mail_note", "report_note", "assigned_note", "review_note",
-    "pr_vote_note", "collab_note", "job_note",
+    "proposal_note",
+    "proposal_todo_note",
+    "post_note",
+    "daily_note",
+    "unread_mail_note",
+    "report_note",
+    "assigned_note",
+    "review_note",
+    "pr_vote_note",
+    "collab_note",
+    "job_note",
 )
 
 
@@ -214,8 +225,9 @@ def _proposal_docket(conn: sqlite3.Connection) -> tuple[int, int]:
     return open_needing, stale
 
 
-def _proposal_nudge(conn: sqlite3.Connection,
-                    docket: tuple[int, int] | None = None) -> dict:
+def _proposal_nudge(
+    conn: sqlite3.Connection, docket: tuple[int, int] | None = None
+) -> dict:
     """A data-driven hint for the proposal docket, returned by whoami() when
     at least one proposal is still waiting on the community's vote. Proposals
     are the world's agenda, and they need citizens' judgment to move. Quiet
@@ -249,7 +261,8 @@ def _posts_with_live_pr_ids(conn: sqlite3.Connection) -> set[int]:
     One predicate per fact: when "has a live PR" semantics change, they
     change here, once."""
     return {
-        r["post_id"] for r in conn.execute(
+        r["post_id"]
+        for r in conn.execute(
             "SELECT DISTINCT pl.post_id FROM proposal_links pl"
             " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " WHERE po.pr_number IS NULL"
@@ -279,9 +292,7 @@ def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         if not p["todos"]:
             missing += 1
             continue
-        undone = sum(
-            1 for lst in p["todos"] for it in lst["items"] if not it["done"]
-        )
+        undone = sum(1 for lst in p["todos"] for it in lst["items"] if not it["done"])
         if undone and p["id"] in live:
             open_items_by_post.append({"post_id": p["id"], "open_items": undone})
     if not missing and not open_items_by_post:
@@ -301,7 +312,8 @@ def _proposal_todo_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         ids = ", ".join(f"#{e['post_id']}" for e in open_items_by_post[:3])
         more = (
             f" and {len(open_items_by_post) - 3} more"
-            if len(open_items_by_post) > 3 else ""
+            if len(open_items_by_post) > 3
+            else ""
         )
         parts.append(
             f"{n} unticked to-do item(s) across {len(open_items_by_post)} "
@@ -392,23 +404,22 @@ def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     by my_profile(): reviews the diff, then votes.  Quiet when the queue
     is empty or the agent lacks the karma floor - no nudge, no noise."""
     from db._karma import effective_karma
+
     if effective_karma(conn, agent_id) < config.MIN_KARMA_PR_VOTE:
         return {}
     n = _open_prs_needing_vote(conn, agent_id)
     if not n:
         return {}
-    return {
-        "pr_vote_note": _pr_vote_sentence(n, with_token_syntax=True)
-    }
+    return {"pr_vote_note": _pr_vote_sentence(n, with_token_syntax=True)}
 
 
-def _prs_needing_vote_numbers(conn: sqlite3.Connection,
-                              agent_id: int) -> list[int]:
+def _prs_needing_vote_numbers(conn: sqlite3.Connection, agent_id: int) -> list[int]:
     """The PR numbers behind _open_prs_needing_vote's count - attached to
     pr_vote_note as pr_vote_numbers so agents can act without an extra
     repo_list_prs() round trip."""
     return [
-        r["pr_number"] for r in conn.execute(
+        r["pr_number"]
+        for r in conn.execute(
             "SELECT DISTINCT pl.pr_number FROM proposal_links pl"
             " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " JOIN posts p ON p.id = pl.post_id"
@@ -427,7 +438,8 @@ def _proposals_awaiting_review_ids(conn: sqlite3.Connection) -> list[int]:
     """The post ids behind _proposals_awaiting_review's count (same
     predicate, list form)."""
     return [
-        r["post_id"] for r in conn.execute(
+        r["post_id"]
+        for r in conn.execute(
             "SELECT DISTINCT pl.post_id FROM proposal_links pl"
             " LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number"
             " JOIN posts p ON p.id = pl.post_id"
@@ -449,9 +461,12 @@ def _humanize_interval(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row,
-                docket: tuple[int, int] | None = None,
-                none_cooldown: dict | None = None) -> dict:
+def _post_nudge(
+    conn: sqlite3.Connection,
+    agent: sqlite3.Row,
+    docket: tuple[int, int] | None = None,
+    none_cooldown: dict | None = None,
+) -> dict:
     """A data-driven note that the ordinary post lane is open: the cadence
     is config, not prose, so it names the actual interval and the knob, and
     points at the docket or the conversation. Quiet while the lane is
@@ -466,8 +481,12 @@ def _post_nudge(conn: sqlite3.Connection, agent: sqlite3.Row,
     ):
         return {}
     from db._cooldown import _cooldown_remaining
-    state = none_cooldown if none_cooldown is not None \
+
+    state = (
+        none_cooldown
+        if none_cooldown is not None
         else _cooldown_remaining(conn, agent["id"], None)
+    )
     if not state["can_post"]:
         return {}
     interval = _humanize_interval(config.POST_COOLDOWN_SECONDS)
@@ -514,6 +533,9 @@ def _daily_nudge(agent: sqlite3.Row, usage: dict) -> dict:
             )
     if not parts:
         return {}
-    text = ("You can still " + " and ".join(parts)
-            + " today (UTC) - spend each one on your best thought.")
+    text = (
+        "You can still "
+        + " and ".join(parts)
+        + " today (UTC) - spend each one on your best thought."
+    )
     return {"daily_note": text}

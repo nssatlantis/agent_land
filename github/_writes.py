@@ -70,7 +70,9 @@ def propose_change(
     body = (body or "").strip()
     citizen = (citizen or "").strip()
     if not citizen:
-        raise RepoError("citizen identity is required - server.py passes it from the forum token.")
+        raise RepoError(
+            "citizen identity is required - server.py passes it from the forum token."
+        )
 
     planned: list[dict] = []
     for c in changes:
@@ -107,12 +109,18 @@ def propose_change(
     resolved: list[dict] = []
     for p in planned:
         if "edits" in p:
-            data = _core._request("GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True)
+            data = _core._request(
+                "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
+            )
             content, log = _resolve_edits(p["path"], data, p["edits"])
-            resolved.append({
-                "path": p["path"], "content": content, "sha": data.get("sha"),
-                "patch_log": log,
-            })
+            resolved.append(
+                {
+                    "path": p["path"],
+                    "content": content,
+                    "sha": data.get("sha"),
+                    "patch_log": log,
+                }
+            )
         else:
             resolved.append({"path": p["path"], "content": p["content"]})
 
@@ -138,7 +146,9 @@ def propose_change(
     for p in resolved:
         if "sha" in p:
             continue
-        data = _core._request("GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True)
+        data = _core._request(
+            "GET", f"contents/{p['path']}?ref={base_branch}", ok_404=True
+        )
         existing_sha[p["path"]] = data.get("sha") if data else None
 
     base_ref = _core._request("GET", f"git/ref/heads/{base_branch}")
@@ -220,7 +230,9 @@ def update_pr(
     """
     citizen = (citizen or "").strip()
     if not citizen:
-        raise RepoError("citizen identity is required - server.py passes it from the forum token.")
+        raise RepoError(
+            "citizen identity is required - server.py passes it from the forum token."
+        )
     if not changes and title is None and body is None:
         raise RepoError("at least one change, title or body is required.")
 
@@ -264,7 +276,9 @@ def update_pr(
 
     pr = _pr or _core._request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
-        raise RepoError(f"pull request #{number} is not open - only open pull requests can be updated.")
+        raise RepoError(
+            f"pull request #{number} is not open - only open pull requests can be updated."
+        )
     head = pr["head"]
     branch = head["ref"] if isinstance(head, dict) else head
     current_title = pr.get("title") or ""
@@ -277,13 +291,17 @@ def update_pr(
     base_branch_name = pr["base"]["ref"] if isinstance(pr.get("base"), dict) else "main"
     for p in planned:
         if "edits" in p:
-            data = _core._request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            data = _core._request(
+                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+            )
             content, log = _resolve_edits(p["path"], data, p["edits"])
             p["content"] = content
             p["sha"] = data.get("sha")
             p["patch_log"] = log
         elif p.get("reset"):
-            data = _core._request("GET", f"contents/{p['path']}?ref={base_branch_name}", ok_404=True)
+            data = _core._request(
+                "GET", f"contents/{p['path']}?ref={base_branch_name}", ok_404=True
+            )
             if data is None:
                 raise RepoError(
                     f"cannot reset {p['path']!r} - file does not exist on "
@@ -295,11 +313,14 @@ def update_pr(
                     "on the base branch."
                 )
             import base64 as _b64
+
             p["content"] = _b64.b64decode(data["content"]).decode("utf-8")
             p["base_sha"] = data.get("sha")
             # Get the PR-branch sha so the PUT overwrites correctly (or
             # creates if the file was deleted in the PR).
-            pr_data = _core._request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            pr_data = _core._request(
+                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+            )
             p["sha"] = pr_data.get("sha") if pr_data else None
 
     plan = {
@@ -323,26 +344,38 @@ def update_pr(
             "branch": branch,
         }
         if p.get("delete"):
-            data = _core._request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            data = _core._request(
+                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+            )
             sha = data.get("sha") if data else None
             if sha is None:
-                raise RepoError(f"no file at {p['path']!r} on branch {branch!r} to delete.")
-            _core._request("DELETE", f"contents/{p['path']}", {**commit_body, "sha": sha})
+                raise RepoError(
+                    f"no file at {p['path']!r} on branch {branch!r} to delete."
+                )
+            _core._request(
+                "DELETE", f"contents/{p['path']}", {**commit_body, "sha": sha}
+            )
         elif "edits" in p or p.get("reset"):
             # Resolved in the pre-pass: content and sha are already current.
             put_body = {
                 **commit_body,
-                "content": base64.b64encode(p["content"].encode("utf-8")).decode("ascii"),
+                "content": base64.b64encode(p["content"].encode("utf-8")).decode(
+                    "ascii"
+                ),
             }
             if p.get("sha"):
                 put_body["sha"] = p["sha"]
             _core._request("PUT", f"contents/{p['path']}", put_body)
         else:
-            data = _core._request("GET", f"contents/{p['path']}?ref={branch}", ok_404=True)
+            data = _core._request(
+                "GET", f"contents/{p['path']}?ref={branch}", ok_404=True
+            )
             sha = data.get("sha") if data else None
             put_body = {
                 **commit_body,
-                "content": base64.b64encode(p["content"].encode("utf-8")).decode("ascii"),
+                "content": base64.b64encode(p["content"].encode("utf-8")).decode(
+                    "ascii"
+                ),
             }
             if sha:
                 put_body["sha"] = sha
@@ -376,17 +409,20 @@ def close_pr(number: int, *, _pr: dict | None = None) -> dict:
     }
 
 
-def merge_pr(number: int, *, method: str = "squash",
-             _pr: dict | None = None) -> dict:
+def merge_pr(number: int, *, method: str = "squash", _pr: dict | None = None) -> dict:
     """Merge a pull request. ``method`` is 'squash', 'merge', or 'rebase'.
     Raises RepoError if the PR is not open or the merge fails (e.g. conflicts,
     branch protection).  Returns {pr_number, merged, sha}."""
     pr = _pr or _core._request("GET", f"pulls/{number}")
     if pr.get("state") != "open":
         raise RepoError(f"pull request #{number} is not open.")
-    data = _core._request("PUT", f"pulls/{number}/merge", {
-        "merge_method": method,
-    })
+    data = _core._request(
+        "PUT",
+        f"pulls/{number}/merge",
+        {
+            "merge_method": method,
+        },
+    )
     _core._invalidate_pr(number)
     _core._open_prs_cache._store.pop("open_prs", None)
     return {
@@ -493,6 +529,7 @@ def pr_has_label(number: int, label: str) -> bool:
 
 # ---------------------------------------------------------------- helpers --
 
+
 def _content_manifest(planned: list[dict]) -> list[dict]:
     """Per-file byte count and sha256 of the content the server received, so
     a caller can assert its payload arrived intact before (or after) opening
@@ -540,14 +577,11 @@ def _validate_edits(path: str, edits) -> list[dict]:
     for i, op in enumerate(edits, 1):
         if not isinstance(op, dict):
             raise RepoError(
-                f"edit {i} for {path!r} must be a dict with 'find' and "
-                "'replace'."
+                f"edit {i} for {path!r} must be a dict with 'find' and 'replace'."
             )
         find = op.get("find")
         if not isinstance(find, str) or not find:
-            raise RepoError(
-                f"edit {i} for {path!r} needs a non-empty 'find' string."
-            )
+            raise RepoError(f"edit {i} for {path!r} needs a non-empty 'find' string.")
         if not isinstance(op.get("replace"), str):
             raise RepoError(
                 f"edit {i} for {path!r} needs a 'replace' string (empty to "
@@ -555,7 +589,8 @@ def _validate_edits(path: str, edits) -> list[dict]:
             )
         occurrence = op.get("occurrence")
         if "occurrence" in op and (
-            not isinstance(occurrence, int) or isinstance(occurrence, bool)
+            not isinstance(occurrence, int)
+            or isinstance(occurrence, bool)
             or occurrence < 1
         ):
             raise RepoError(
@@ -606,8 +641,11 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
                 "delete the matched block)."
             )
         occurrence = op.get("occurrence", 1)
-        if (not isinstance(occurrence, int) or isinstance(occurrence, bool)
-                or occurrence < 1):
+        if (
+            not isinstance(occurrence, int)
+            or isinstance(occurrence, bool)
+            or occurrence < 1
+        ):
             raise RepoError(
                 f"edit {i} for {path!r}: 'occurrence' must be a positive "
                 f"integer (1-based), got {occurrence!r}."
@@ -629,7 +667,7 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
         if "occurrence" not in op and len(hits) > 1:
             raise RepoError(
                 f"edit {i} for {path!r}: find text matched {len(hits)} times - "
-                "pass \"occurrence\": N (1-based) to pick one, or make the "
+                'pass "occurrence": N (1-based) to pick one, or make the '
                 "find text longer so it is unambiguous."
             )
         if occurrence > len(hits):
@@ -638,17 +676,21 @@ def _apply_edits(path: str, text: str, edits: list[dict]) -> tuple[str, list[dic
                 f"range - the find text matched {len(hits)} time(s)."
             )
         j = hits[occurrence - 1]
-        result = result[:j] + replace + result[j + len(find):]
-        log.append({
-            "find": find,
-            "replace": replace,
-            "occurrence": occurrence,
-            "matched": len(hits),
-        })
+        result = result[:j] + replace + result[j + len(find) :]
+        log.append(
+            {
+                "find": find,
+                "replace": replace,
+                "occurrence": occurrence,
+                "matched": len(hits),
+            }
+        )
     return result, log
 
 
-def _resolve_edits(path: str, data: dict | None, edits: list[dict]) -> tuple[str, list[dict]]:
+def _resolve_edits(
+    path: str, data: dict | None, edits: list[dict]
+) -> tuple[str, list[dict]]:
     """Resolve a patch-mode `edits` list against an already-fetched
     contents-API response (`data` for the file on the resolution ref, None
     when it does not exist): decode to UTF-8 text, apply the find-replace
