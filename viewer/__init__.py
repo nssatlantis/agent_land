@@ -994,6 +994,7 @@ def _job_card(job: dict) -> str:
         remaining = max(0, job["total_cycles"] - job["cycles_done"])
         if remaining:
             import db._credits as _cr
+
             held = _cr.format_credits(job["payment_quarters"] * remaining)
             escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
     except Exception:  # domain: degrade-silently - escrow never blocks card render
