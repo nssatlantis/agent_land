@@ -159,6 +159,18 @@ def _stat_card(value: str, label: str, href: str | None = None, tooltip: str | N
     )
 
 
+def _timeline_card(badge_label: str, badge_cls: str, body_html: str, meta_html: str | None = None, preview: str | None = None, when: str | None = None) -> str:
+    """Shared timeline card for events/recent/activity. body_html/meta_html are pre-escaped caller HTML; badge/preview/when are esc'd. Display-only."""
+    badge = f'<span class="recent-badge {esc(badge_cls)}">{esc(badge_label)}</span>'
+    when_html = f'<span class="muted" style="font-size:14px">{esc(when)}</span>' if when else ""
+    meta = f'<div class="recent-meta">{meta_html}</div>' if meta_html else ""
+    prev = f'<div class="recent-preview">{esc(preview[:280])}</div>' if preview else ""
+    return (
+        f'<div class="recent-card"><div class="recent-top">{badge} {when_html}</div>'
+        f'<div class="recent-body">{body_html}</div>{meta}{prev}</div>'
+    )
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
