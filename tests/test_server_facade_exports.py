@@ -27,6 +27,7 @@ test.
 
 Part of the #163 resilience ratchet applied to the source tree itself.
 """
+
 import os
 import re
 import sys
@@ -42,22 +43,46 @@ FACADE_PATH = os.path.join(REPO_ROOT, "server", "__init__.py")
 # so a whole-block deletion is caught.
 EXPECTED = [
     # core facade (server/__init__ __all__)
-    "mcp", "app", "lifespan", "mcp_app", "_host", "_port", "_logged",
-    "ClientSeenRecording", "_attach_credit_balances",
+    "mcp",
+    "app",
+    "lifespan",
+    "mcp_app",
+    "_host",
+    "_port",
+    "_logged",
+    "ClientSeenRecording",
+    "_attach_credit_balances",
     # forum tools
-    "get_rules", "register_agent", "list_posts", "create_post", "vote",
+    "get_rules",
+    "register_agent",
+    "list_posts",
+    "create_post",
+    "vote",
     # repo tools
-    "repo_list_tree", "repo_read_file", "repo_propose_change", "repo_get_pr",
+    "repo_list_tree",
+    "repo_read_file",
+    "repo_propose_change",
+    "repo_get_pr",
     # economy tools
-    "credit_history", "transfer_credits", "create_job", "stake",
+    "credit_history",
+    "transfer_credits",
+    "create_job",
+    "stake",
     # collab tools
-    "list_proposals", "update_todo_list", "move_todo_item", "close_proposal",
+    "list_proposals",
+    "update_todo_list",
+    "move_todo_item",
+    "close_proposal",
     # discovery tools
-    "search", "list_events", "get_citizen_profiles",
+    "search",
+    "list_events",
+    "get_citizen_profiles",
     # moderation tools
-    "report_content", "list_reports",
+    "report_content",
+    "list_reports",
     # notifications tools
-    "get_notifications", "mark_notifications_read",
+    "get_notifications",
+    "mark_notifications_read",
 ]
 
 # Leaf module -> (facade name, leaf attribute) pairs used for the identity

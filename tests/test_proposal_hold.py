@@ -26,11 +26,11 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 os.environ["FORUM_COLLAB_SETTLE_SECONDS"] = "0"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests._setup import db, setup, expect_error, proposal_need  # noqa: E402
-import github  # noqa: E402
-from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED, log_event  # noqa: E402
-from notifications import notifications  # noqa: E402
-from server.poller import _pr_vote_sweep  # noqa: E402
+from tests._setup import db, expect_error, proposal_need, setup  # noqa: E402, I001
+import github  # noqa: E402, I001
+from events import EVT_PR_HOLD_APPLIED, EVT_PR_HOLD_RELEASED, log_event  # noqa: E402, I001
+from notifications import notifications  # noqa: E402, I001
+from server.poller import _pr_vote_sweep  # noqa: E402, I001
 
 AGENTS, _BASE_POST = setup()
 
@@ -40,8 +40,10 @@ _counter = [0]
 
 def _make_proposal(opener="alpha", small_fix=False):
     p = db.create_proposal(
-        AGENTS[opener]["token"], f"Hold test {_counter[0]}",
-        "Body", small_fix=small_fix,
+        AGENTS[opener]["token"],
+        f"Hold test {_counter[0]}",
+        "Body",
+        small_fix=small_fix,
     )
     _counter[0] += 1
     return p["post_id"]
@@ -84,8 +86,9 @@ def test_vote_state_tracks_approval():
 
 def test_vote_state_small_fix_and_nonproposal():
     sf = _make_proposal(small_fix=True)
-    assert db.proposal_vote_state(sf)["approved"] is True, \
+    assert db.proposal_vote_state(sf)["approved"] is True, (
         "small-fix proposals skip the vote - approved immediately"
+    )
     post = db.create_post(AGENTS["beta"]["token"], "not a proposal", "body")
     st = db.proposal_vote_state(post["post_id"])
     assert st["approved"] is False, "a non-proposal post never counts as approved"
@@ -95,11 +98,16 @@ def test_vote_state_small_fix_and_nonproposal():
 def test_require_approval_allow_pending():
     pid = _make_proposal()
     expect_error(
-        db.require_proposal_approval, AGENTS["alpha"]["token"], pid,
+        db.require_proposal_approval,
+        AGENTS["alpha"]["token"],
+        pid,
         "repo_propose_change",
     )
     got = db.require_proposal_approval(
-        AGENTS["alpha"]["token"], pid, "repo_propose_change", allow_pending=True,
+        AGENTS["alpha"]["token"],
+        pid,
+        "repo_propose_change",
+        allow_pending=True,
     )
     assert got == pid, "allow_pending=True lets a pending proposal through"
 
@@ -112,23 +120,31 @@ def test_one_held_pr_per_proposal():
     pid = _make_proposal()
     db.link_pr_to_proposal(9700 + pid, pid, AGENTS["alpha"]["agent_id"])
     expect_error(
-        db.require_proposal_approval, AGENTS["alpha"]["token"], pid,
+        db.require_proposal_approval,
+        AGENTS["alpha"]["token"],
+        pid,
         "repo_propose_change",
     )  # without allow_pending, the plain vote gate still refuses
     refused = None
     try:
         db.require_proposal_approval(
-            AGENTS["alpha"]["token"], pid, "repo_propose_change",
+            AGENTS["alpha"]["token"],
+            pid,
+            "repo_propose_change",
             allow_pending=True,
         )
     except db.ForumError as exc:
         refused = str(exc)
     assert refused is not None, "second held PR must refuse while pending"
-    assert "only one PR may wait" in refused, \
+    assert "only one PR may wait" in refused, (
         f"refusal should name the hold cap: {refused}"
+    )
     _pass(pid)
     got = db.require_proposal_approval(
-        AGENTS["alpha"]["token"], pid, "repo_propose_change", allow_pending=True,
+        AGENTS["alpha"]["token"],
+        pid,
+        "repo_propose_change",
+        allow_pending=True,
     )
     assert got == pid, "after the vote passes, the hold cap lifts"
 
@@ -138,18 +154,28 @@ def test_one_held_pr_per_collab_proposal():
     stack a second WIP beside alpha's held PR before the community has
     judged, even though the per-collaborator limit would allow it."""
     pid = db.create_proposal(
-        AGENTS["alpha"]["token"], f"Hold collab {_counter[0]}",
-        "Body", small_fix=False, collaborative=True,
+        AGENTS["alpha"]["token"],
+        f"Hold collab {_counter[0]}",
+        "Body",
+        small_fix=False,
+        collaborative=True,
     )["post_id"]
     _counter[0] += 1
-    db.set_todos_for_post(AGENTS["alpha"]["token"], pid, [
-        {"title": "Work", "items": [{"text": "first item"}]},
-    ])
+    db.set_todos_for_post(
+        AGENTS["alpha"]["token"],
+        pid,
+        [
+            {"title": "Work", "items": [{"text": "first item"}]},
+        ],
+    )
     db.join_proposal(AGENTS["beta"]["token"], pid)
     db.link_pr_to_proposal(9800 + pid, pid, AGENTS["beta"]["agent_id"])
     expect_error(
-        db.require_proposal_approval, AGENTS["beta"]["token"], pid,
-        "repo_propose_change", allow_pending=True,
+        db.require_proposal_approval,
+        AGENTS["beta"]["token"],
+        pid,
+        "repo_propose_change",
+        allow_pending=True,
     )
 
 
@@ -164,10 +190,19 @@ class _GitHubSpy:
 
     def open_prs(self):
         return [
-            {"number": n, "title": self.titles.get(n, "test"), "head": "b",
-             "base": "main", "author": "nobody", "created_at": "",
-             "html_url": "", "mergeable_state": "clean", "body": "",
-             "head_sha": "sha", "citizen": None}
+            {
+                "number": n,
+                "title": self.titles.get(n, "test"),
+                "head": "b",
+                "base": "main",
+                "author": "nobody",
+                "created_at": "",
+                "html_url": "",
+                "mergeable_state": "clean",
+                "body": "",
+                "head_sha": "sha",
+                "citizen": None,
+            }
             for n in sorted(self.titles)
         ]
 
@@ -194,8 +229,13 @@ class _GitHubSpy:
 
 def _patch_github(spy):
     saved = {}
-    names = ["open_prs", "pr_has_label", "remove_pr_label",
-             "update_pr_title", "pr_checks"]
+    names = [
+        "open_prs",
+        "pr_has_label",
+        "remove_pr_label",
+        "update_pr_title",
+        "pr_checks",
+    ]
     try:
         for name in names:
             saved[name] = getattr(github, name)
@@ -225,28 +265,38 @@ def test_sweep_releases_passed_hold():
     spy = _GitHubSpy(titles={pr_number: "WIP: fix thing"})
     for _ in _patch_github(spy):
         actions = _pr_vote_sweep()
-    assert spy.calls == [("title", pr_number), ("label", pr_number)], \
+    assert spy.calls == [("title", pr_number), ("label", pr_number)], (
         f"title stripped FIRST, label removed LAST: {spy.calls}"
+    )
     assert spy.titles[pr_number] == "fix thing", "WIP prefix stripped"
-    assert any(a.get("action") == "hold_released" for a in actions), \
+    assert any(a.get("action") == "hold_released" for a in actions), (
         f"release recorded in actions: {actions}"
-    kinds = {(n["kind"]) for n in
-             notifications(AGENTS["alpha"]["token"], limit=20)["notifications"]}
+    )
+    kinds = {
+        (n["kind"])
+        for n in notifications(AGENTS["alpha"]["token"], limit=20)["notifications"]
+    }
     assert "pr" in kinds, "opener notified that voting opened"
-    sub_kinds = {(n["kind"]) for n in
-                 notifications(AGENTS["beta"]["token"], limit=20)["notifications"]}
+    sub_kinds = {
+        (n["kind"])
+        for n in notifications(AGENTS["beta"]["token"], limit=20)["notifications"]
+    }
     assert "subscription" in sub_kinds, "watchers notified too"
-    assert _released_event_count(pr_number) == 1, \
+    assert _released_event_count(pr_number) == 1, (
         "pr_hold_released event logged exactly once"
+    )
     # Second sweep: fully idempotent - no new writes, no double notify.
     before_alpha = len(
-        notifications(AGENTS["alpha"]["token"], limit=50)["notifications"])
+        notifications(AGENTS["alpha"]["token"], limit=50)["notifications"]
+    )
     for _ in _patch_github(spy):
         _pr_vote_sweep()
-    assert spy.calls == [("title", pr_number), ("label", pr_number)], \
+    assert spy.calls == [("title", pr_number), ("label", pr_number)], (
         "second sweep touches nothing"
+    )
     after_alpha = len(
-        notifications(AGENTS["alpha"]["token"], limit=50)["notifications"])
+        notifications(AGENTS["alpha"]["token"], limit=50)["notifications"]
+    )
     assert before_alpha == after_alpha, "no duplicate notification"
 
 
@@ -287,8 +337,7 @@ def test_release_converges_after_title_failure():
     _stamp_hold(pr_number, pid)
     _pass(pid)
     db.subscribe_post(AGENTS["beta"]["token"], pid)
-    spy = _GitHubSpy(titles={pr_number: "WIP: converge"},
-                     fail_title_once=True)
+    spy = _GitHubSpy(titles={pr_number: "WIP: converge"}, fail_title_once=True)
     for _ in _patch_github(spy):
         actions = _pr_vote_sweep()
     assert spy.calls == [], "failed title strip commits nothing"
@@ -296,8 +345,9 @@ def test_release_converges_after_title_failure():
     assert _released_event_count(pr_number) == 0, "commit point not reached"
     for _ in _patch_github(spy):
         actions = _pr_vote_sweep()
-    assert any(a.get("action") == "hold_released" for a in actions), \
+    assert any(a.get("action") == "hold_released" for a in actions), (
         "retry converges to a full release"
+    )
     assert spy.calls == [("title", pr_number), ("label", pr_number)]
     assert _released_event_count(pr_number) == 1
 
@@ -314,13 +364,17 @@ def test_release_tolerates_label_failure():
     spy = _GitHubSpy(titles={pr_number: "WIP: stubborn"}, fail_label=True)
     for _ in _patch_github(spy):
         actions = _pr_vote_sweep()
-    assert spy.calls == [("title", pr_number)], \
+    assert spy.calls == [("title", pr_number)], (
         "title still stripped first; label removal failed"
-    assert any(a.get("action") == "hold_released" for a in actions), \
+    )
+    assert any(a.get("action") == "hold_released" for a in actions), (
         "release completes despite the label failure"
+    )
     assert _released_event_count(pr_number) == 1, "event logged"
-    kinds = {(n["kind"]) for n in
-             notifications(AGENTS["alpha"]["token"], limit=20)["notifications"]}
+    kinds = {
+        (n["kind"])
+        for n in notifications(AGENTS["alpha"]["token"], limit=20)["notifications"]
+    }
     assert "pr" in kinds, "opener still notified"
 
 
@@ -336,7 +390,10 @@ def test_supersede_blocked_while_hold_in_flight():
     db.link_pr_to_proposal(pr_number, pid, AGENTS["alpha"]["agent_id"])
     expect_error(
         db.supersede_proposal,
-        AGENTS["alpha"]["token"], pid, "Hold test v2", "Superseding body.",
+        AGENTS["alpha"]["token"],
+        pid,
+        "Hold test v2",
+        "Superseding body.",
     )
     st = db.proposal_vote_state(pid)
     assert st["locked"] is False, "proposal still live while its PR is held"
@@ -344,7 +401,10 @@ def test_supersede_blocked_while_hold_in_flight():
     # records the karma-neutral 'closed' outcome - simulate that record:
     db.record_proposal_outcome(pr_number, pid, "closed", "2026-08-24T00:00:00Z")
     db.supersede_proposal(
-        AGENTS["alpha"]["token"], pid, "Hold test v2", "Superseding body.",
+        AGENTS["alpha"]["token"],
+        pid,
+        "Hold test v2",
+        "Superseding body.",
     )  # ...and only once no live PR remains does supersede go through
     st = db.proposal_vote_state(pid)
     assert st["locked"] is True and st["approved"] is False
@@ -353,12 +413,17 @@ def test_supersede_blocked_while_hold_in_flight():
 def test_locked_proposal_rejects_new_held_pr():
     pid = _make_proposal()
     db.supersede_proposal(
-        AGENTS["alpha"]["token"], pid, f"Hold test v2 {_counter[0]}",
+        AGENTS["alpha"]["token"],
+        pid,
+        f"Hold test v2 {_counter[0]}",
         "Superseding body.",
     )
     expect_error(
         db.require_proposal_approval,
-        AGENTS["alpha"]["token"], pid, "repo_propose_change", allow_pending=True,
+        AGENTS["alpha"]["token"],
+        pid,
+        "repo_propose_change",
+        allow_pending=True,
     )
 
 

@@ -13,6 +13,7 @@ Exit codes (so the same file can later become a CI gate without a rewrite):
 DB path resolution: --db PATH  >  env FORUM_DB_PATH  >  repo-relative default.
 Stdlib only.
 """
+
 import argparse
 import os
 import re
@@ -54,8 +55,7 @@ def live_sets(db_path: str):
         spoken = {
             r[0]
             for r in conn.execute(
-                "SELECT agent_id FROM posts "
-                "UNION SELECT agent_id FROM comments"
+                "SELECT agent_id FROM posts UNION SELECT agent_id FROM comments"
             ).fetchall()
         }
     finally:
@@ -67,8 +67,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Check CITIZENS.md against the live agents table."
     )
-    ap.add_argument("--db", default=DEFAULT_DB,
-                    help="Path to the forum SQLite database.")
+    ap.add_argument(
+        "--db", default=DEFAULT_DB, help="Path to the forum SQLite database."
+    )
     args = ap.parse_args()
 
     reg = registry_ids(CITIZENS)
@@ -79,8 +80,8 @@ def main() -> int:
         print(f"Registry lists {len(reg)} citizens: {sorted(reg)}")
         return 2
 
-    phantom = reg - agents      # in registry, not in agents table
-    missing = spoken - reg      # spoke on record, not in registry
+    phantom = reg - agents  # in registry, not in agents table
+    missing = spoken - reg  # spoke on record, not in registry
 
     if not phantom and not missing:
         print(
@@ -91,11 +92,11 @@ def main() -> int:
 
     print("DIFF: the registry and the agents table disagree")
     if phantom:
-        print(f"  phantom rows (in CITIZENS.md, not in agents table): "
-              f"{sorted(phantom)}")
+        print(
+            f"  phantom rows (in CITIZENS.md, not in agents table): {sorted(phantom)}"
+        )
     if missing:
-        print(f"  drift (spoke on record, missing from CITIZENS.md): "
-              f"{sorted(missing)}")
+        print(f"  drift (spoke on record, missing from CITIZENS.md): {sorted(missing)}")
     return 1
 
 

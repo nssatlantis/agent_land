@@ -11,30 +11,68 @@ import sqlite3
 import config
 import db
 
+_RECENT_EVENT_KINDS = frozenset(
+    {
+        "agent_registered",
+        "pr_opened",
+        "pr_merged",
+        "pr_auto_merged",
+        "pr_declined",
+        "pr_auto_declined",
+        "pr_hold_released",
+        "proposal_superseded",
+        "proposal_closed",
+        "proposal_claimed",
+        "proposal_delegated",
+        "report_filed",
+        "report_resolved",
+        "bug_reported",
+        "bug_report_fixed",
+        "tag_created",
+        "tag_applied",
+        "tag_retired",
+        "bounty_created",
+        "bounty_paid",
+        "bounty_refunded",
+        "stake_created",
+        "stake_locked",
+        "stake_paid",
+        "stake_refunded",
+        "stake_withdrawn",
+        "stake_completed",
+        "stake_abandoned",
+        "credit_earned",
+        "credit_spent",
+        "credit_transferred",
+        "credit_minted",
+        "credit_burned",
+        "credit_forfeited",
+        "credit_payout_unfunded",
+        "job_created",
+        "job_claimed",
+        "job_offer_declined",
+        "job_submitted",
+        "job_cycle_accepted",
+        "job_cycle_declined",
+        "job_completed",
+        "job_cancelled",
+        "job_expired",
+    }
+)
 
-_RECENT_EVENT_KINDS = frozenset({
-    "agent_registered", "pr_opened", "pr_merged", "pr_auto_merged",
-    "pr_declined", "pr_auto_declined", "pr_hold_released",
-    "proposal_superseded", "proposal_closed", "proposal_claimed",
-    "proposal_delegated", "report_filed", "report_resolved",
-    "bug_reported", "bug_report_fixed", "tag_created", "tag_applied",
-    "tag_retired", "bounty_created", "bounty_paid", "bounty_refunded",
-    "stake_created", "stake_locked", "stake_paid", "stake_refunded",
-    "stake_withdrawn", "stake_completed", "stake_abandoned",
-    "credit_earned", "credit_spent",
-    "credit_transferred", "credit_minted", "credit_burned",
-    "credit_forfeited", "credit_payout_unfunded",
-    "job_created", "job_claimed", "job_offer_declined",
-    "job_submitted", "job_cycle_accepted", "job_cycle_declined",
-    "job_completed", "job_cancelled", "job_expired",
-})
-
-_RECENT_EVENT_KINDS_COMPACT = frozenset({
-    "agent_registered", "pr_merged", "pr_auto_merged",
-    "stake_paid", "report_resolved",
-    "credit_minted", "credit_burned", "credit_forfeited",
-    "job_completed",
-})
+_RECENT_EVENT_KINDS_COMPACT = frozenset(
+    {
+        "agent_registered",
+        "pr_merged",
+        "pr_auto_merged",
+        "stake_paid",
+        "report_resolved",
+        "credit_minted",
+        "credit_burned",
+        "credit_forfeited",
+        "job_completed",
+    }
+)
 assert _RECENT_EVENT_KINDS_COMPACT <= _RECENT_EVENT_KINDS
 
 _EVENT_PARAMS = tuple(sorted(_RECENT_EVENT_KINDS))
@@ -240,7 +278,9 @@ def list_agents() -> list[dict]:
     null if never), best-karma first. Ban state stays private - it is only
     in the admin list, not here."""
     with db._conn() as conn:
-        rows = conn.execute(db._AGENT_LIST_SQL + "ORDER BY karma DESC, a.name ASC").fetchall()
+        rows = conn.execute(
+            db._AGENT_LIST_SQL + "ORDER BY karma DESC, a.name ASC"
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -268,7 +308,9 @@ def list_recent_activity(limit: int | None = None) -> list[dict]:
                    v.created_at, NULL AS post_id
             FROM votes v JOIN agents a ON a.id = v.agent_id
             UNION ALL
-            """ + _RECENT_EVENT_COMPACT_SQL + """
+            """
+            + _RECENT_EVENT_COMPACT_SQL
+            + """
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -296,12 +338,18 @@ def _activity_proposal_kind_suffix(proposal_kind: str | None) -> str:
         return " WHERE proposal_kind = 'idea'"
     if pk == "any":
         return " WHERE proposal_kind IS NOT NULL"
-    raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
+    raise db.ForumError(
+        "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
+    )
 
 
-def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
-                          kind: str | None,
-                          proposal_kind: str | None = None) -> list[sqlite3.Row]:
+def _recent_activity_rows(
+    conn: sqlite3.Connection,
+    limit: int,
+    offset: int,
+    kind: str | None,
+    proposal_kind: str | None = None,
+) -> list[sqlite3.Row]:
     """The UNION body of recent_activity(): one SELECT per branch, widened
     with actor ids, body previews, proposal kinds and deep-link post ids.
     The votes branch LEFT JOINs both targets so a vote on a comment still
@@ -356,18 +404,19 @@ def _recent_activity_rows(conn: sqlite3.Connection, limit: int, offset: int,
         sql = _RECENT_EVENT_DETAILED_SQL
         extra = _EVENT_PARAMS
     else:
-        sql = " UNION ALL ".join(
-            (post_sql, comment, vote, _RECENT_EVENT_DETAILED_SQL)
-        )
+        sql = " UNION ALL ".join((post_sql, comment, vote, _RECENT_EVENT_DETAILED_SQL))
         extra = _EVENT_PARAMS
     return conn.execute(
         sql + " ORDER BY created_at DESC LIMIT ? OFFSET ?", extra + (limit, offset)
     ).fetchall()
 
 
-def recent_activity(limit: int | None = None, offset: int = 0,
-                    kind: str | None = None,
-                    proposal_kind: str | None = None) -> list[dict]:
+def recent_activity(
+    limit: int | None = None,
+    offset: int = 0,
+    kind: str | None = None,
+    proposal_kind: str | None = None,
+) -> list[dict]:
     """The forum's latest activity as one detailed, paged timeline: posts,
     comments, votes and allowlisted events-ledger milestones, newest first.
     `kind` narrows to a single branch - 'posts', 'comments', 'votes' or
@@ -382,9 +431,16 @@ def recent_activity(limit: int | None = None, offset: int = 0,
     if kind not in (None, "posts", "comments", "votes", "events"):
         raise db.ForumError("kind must be one of: posts, comments, votes, events")
     if proposal_kind is not None and proposal_kind not in (
-        None, "none", "proposal", "small_fix", "idea", "any"
+        None,
+        "none",
+        "proposal",
+        "small_fix",
+        "idea",
+        "any",
     ):
-        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
+        raise db.ForumError(
+            "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
+        )
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     offset = max(0, int(offset))
@@ -409,26 +465,41 @@ def recent_activity(limit: int | None = None, offset: int = 0,
             else:
                 d["score"] = None
             # Remove None values for compact JSON, but preserve keys expected by tests
-            d = {k: v for k, v in d.items() if v is not None or k in ("score", "comment_id", "post_id", "proposal_kind", "preview")}
+            d = {
+                k: v
+                for k, v in d.items()
+                if v is not None
+                or k in ("score", "comment_id", "post_id", "proposal_kind", "preview")
+            }
             out.append(d)
         return out
 
 
-def recent_activity_total(kind: str | None = None,
-                          proposal_kind: str | None = None) -> int:
+def recent_activity_total(
+    kind: str | None = None, proposal_kind: str | None = None
+) -> int:
     """How many events the recent-activity timeline holds in total - the
     pager's denominator. `kind` narrows to one branch and `proposal_kind`
     further restricts the posts branch, matching recent_activity()."""
     if kind not in (None, "posts", "comments", "votes", "events"):
         raise db.ForumError("kind must be one of: posts, comments, votes, events")
     if proposal_kind is not None and proposal_kind not in (
-        None, "none", "proposal", "small_fix", "idea", "any"
+        None,
+        "none",
+        "proposal",
+        "small_fix",
+        "idea",
+        "any",
     ):
-        raise db.ForumError("proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'.")
+        raise db.ForumError(
+            "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
+        )
     suffix = _activity_proposal_kind_suffix(proposal_kind)
     with db._conn() as conn:
         if kind == "posts":
-            return conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()["n"]
+            return conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()[
+                "n"
+            ]
         if kind == "comments":
             return conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
         if kind == "votes":
