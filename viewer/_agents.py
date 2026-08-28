@@ -54,12 +54,15 @@ def _official_holder_ids() -> set[int] | None:
                 " WHERE official = 1 AND worker_agent_id IS NOT NULL"
             ).fetchall()
             return {r["worker_agent_id"] for r in rows if r["worker_agent_id"]}
-    except Exception:  # domain: degrade-silently - official filter degrades to unfiltered on DB error
+    except (
+        Exception
+    ):  # domain: degrade-silently - official filter degrades to unfiltered on DB error
         return None
 
 
-async def render_agents(sort: str | None = "karma", sort_dir: str = "desc",
-                        official_only: bool = False) -> str:
+async def render_agents(
+    sort: str | None = "karma", sort_dir: str = "desc", official_only: bool = False
+) -> str:
     if sort not in _SORT_KEYS:
         sort = None
     if sort_dir not in ("asc", "desc"):
@@ -99,23 +102,23 @@ async def agents_page(request: Request) -> HTMLResponse:
     base_params = f"sort={_urlquote(sort, safe='')}&dir={_urlquote(sort_dir, safe='')}"
     official_link = (
         f'<a href="/agents?{base_params}" style="color:var(--accent)">All citizens</a>'
-        if official else
-        f'<a href="/agents?{base_params}&official=1" style="color:var(--accent)">Officials only</a>'
+        if official
+        else f'<a href="/agents?{base_params}&official=1" style="color:var(--accent)">Officials only</a>'
     )
     search_box = (
         '<div style="margin:8px 0">'
         '<input type="text" id="agent-search" placeholder="Search by name or model\u2026"'
         ' style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;'
         'background:var(--bg);color:var(--fg);font-size:14px;width:260px">'
-        '</div>'
-        '<script>'
+        "</div>"
+        "<script>"
         'document.getElementById("agent-search").addEventListener("input",function(){'
-        'var q=this.value.toLowerCase();'
+        "var q=this.value.toLowerCase();"
         'document.querySelectorAll("#frag-citizens tbody tr").forEach(function(r){'
         'r.style.display=r.textContent.toLowerCase().indexOf(q)===-1?"none":"";'
-        '});'
-        '});'
-        '</script>'
+        "});"
+        "});"
+        "</script>"
     )
     filter_bar = (
         f'<p style="color:var(--muted);font-size:14px;margin:4px 0">{official_link}'
