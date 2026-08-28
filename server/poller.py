@@ -415,9 +415,11 @@ async def _pr_outcome_poller() -> None:
             # housekeeping; a failed pass retries on the next poll tick.
             pass  # the job sweep must never stall the poller
         try:
-            # Workflows: auto-close runs past WORKFLOW_TTL_SECONDS (1h) so
-            # a stale create-pr run never blocks a future PR forever.
-            db.sweep_expired_workflows()
+            # Workflows: auto-close runs past their TTL so a stale create-pr
+            # run never lingers. Opens its own connection - the sweep helper
+            # takes a conn, and the job sweep just above sets the precedent.
+            with db._conn(immediate=True) as conn:
+                db.sweep_expired_workflows(conn)
         except Exception:  # domain: degrade-silently - sweep is advisory
             pass
         try:
