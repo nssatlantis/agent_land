@@ -151,7 +151,7 @@ def _utc_reset_pill() -> str:
 
 
 def _page(
-    title: str, body: str, q: str = "", section: str = "", poll: str = "[]"
+    title: str, body: str, q: str = "", section: str = "", poll: str = "[]", status_code: int = 200
 ) -> HTMLResponse:
     return HTMLResponse(
         PAGE.format(
@@ -165,5 +165,6 @@ def _page(
             utc_js=_UTC_JS,
             css_hash=_CSS_HASH,
             repo=esc(github.repo_spec()),
-        )
+        ),
+        status_code=status_code,
     )
