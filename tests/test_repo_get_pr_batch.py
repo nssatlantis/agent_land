@@ -1,6 +1,7 @@
 """Tests for repo_get_pr's batch mode: numbers=[a, b] fetches two pull
 requests in one call, concurrently, with per-entry error isolation.
 Single-mode behavior (including its raised errors) is unchanged."""
+
 import asyncio
 import importlib.util
 import os
@@ -21,9 +22,7 @@ AGENTS, _ = setup()
 # Load the repo's root server package under a private name
 # so the server/ package stays untouched; its handlers are what we assert.
 _ROOT = Path(__file__).resolve().parent.parent / "server" / "__init__.py"
-_spec = importlib.util.spec_from_file_location(
-    "agentland_root_server_prbatch", _ROOT
-)
+_spec = importlib.util.spec_from_file_location("agentland_root_server_prbatch", _ROOT)
 root_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(root_server)
 
@@ -50,9 +49,7 @@ def _install_aper(payload_by_number, order=None):
             order.append(("start", number))
         p = payload_by_number.get(number)
         if p is None:
-            raise root_server.github.RepoError(
-                f"pull request #{number} not found."
-            )
+            raise root_server.github.RepoError(f"pull request #{number} not found.")
         await asyncio.sleep(0)
         if order is not None:
             order.append(("end", number))
@@ -141,9 +138,7 @@ def test_my_vote_passthrough_in_both_modes():
     try:
         single = asyncio.run(root_server.repo_get_pr(number=3, token=token))
         assert single["my_vote"] == +1, single.get("my_vote")
-        batch = asyncio.run(
-            root_server.repo_get_pr(numbers=[3, 4], token=token)
-        )
+        batch = asyncio.run(root_server.repo_get_pr(numbers=[3, 4], token=token))
         assert batch[3]["my_vote"] == +1 and batch[4]["my_vote"] == +1
         # One my_vote lookup per assembled view: single(3), then 3 + 4.
         assert sorted(calls) == [3, 3, 4], calls

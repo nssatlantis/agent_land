@@ -1,6 +1,7 @@
 """Tests for search.find_similar_comments — the soft 'possibly duplicate'
 hint on comment creation.  Uses a throwaway DB like every other db-level
 test."""
+
 import os
 import sys
 import tempfile
@@ -41,12 +42,16 @@ def _setup(threshold: str = "0.3", limit: str = "5", tag: str = ""):
     a = db.register_agent(f"alice{_DB_COUNTER}_{os.getpid()}", "test-model")
     b = db.register_agent(f"bob{_DB_COUNTER}_{os.getpid()}", "test-model")
     c = db.register_agent(f"carol{_DB_COUNTER}_{os.getpid()}", "test-model")
-    post = db.create_post(a["token"], f"Test post {tag}", "A test post body for comments.")
+    post = db.create_post(
+        a["token"], f"Test post {tag}", "A test post body for comments."
+    )
     post_id = post["post_id"]
-    c1 = db.create_comment(a["token"], post_id,
-                           "I think this is a great idea for the project")
-    c2 = db.create_comment(b["token"], post_id,
-                           "Completely unrelated topic about weather today")
+    c1 = db.create_comment(
+        a["token"], post_id, "I think this is a great idea for the project"
+    )
+    c2 = db.create_comment(
+        b["token"], post_id, "Completely unrelated topic about weather today"
+    )
     return a, b, c, post_id, c1, c2
 
 
@@ -54,7 +59,8 @@ def test_similar_comments_basic():
     """A near-duplicate comment is surfaced above the threshold."""
     a, b, carol, post_id, c1, c2 = _setup(threshold="0.3")
     result = db.create_comment(
-        carol["token"], post_id,
+        carol["token"],
+        post_id,
         "I think this is a great idea for the project community",
     )
     similar = result["similar"]
@@ -78,12 +84,15 @@ def test_similar_comments_empty_for_unique():
     """A completely unique comment returns an empty similar list."""
     a, b, carol, post_id, c1, c2 = _setup(threshold="0.5")
     result = db.create_comment(
-        carol["token"], post_id,
+        carol["token"],
+        post_id,
         "Quantum entanglement patterns in superconducting qubits at millikelvin temperatures",
     )
     similar = result["similar"]
     assert isinstance(similar, list)
-    assert len(similar) == 0, f"expected empty similar for unique comment, got {len(similar)}"
+    assert len(similar) == 0, (
+        f"expected empty similar for unique comment, got {len(similar)}"
+    )
     print("  empty for unique: ok")
 
 
@@ -91,10 +100,12 @@ def test_similar_comments_cross_post_excluded():
     """Comments on OTHER posts are not surfaced."""
     a, b, carol, post_id, c1, c2 = _setup(threshold="0.2", tag="cross")
     post2 = db.create_post(a["token"], "Second post cross", "Another body")
-    c3 = db.create_comment(a["token"], post2["post_id"],
-                           "I think this is a great idea for the project")
+    c3 = db.create_comment(
+        a["token"], post2["post_id"], "I think this is a great idea for the project"
+    )
     result = db.create_comment(
-        carol["token"], post_id,
+        carol["token"],
+        post_id,
         "I think this is a great idea for the project",
     )
     similar = result["similar"]
@@ -109,7 +120,8 @@ def test_similar_comments_respects_limit():
     """The limit config knob caps results."""
     a, b, carol, post_id, c1, c2 = _setup(threshold="0.2", limit="1")
     result = db.create_comment(
-        carol["token"], post_id,
+        carol["token"],
+        post_id,
         "I think this is a great idea for the project",
     )
     similar = result["similar"]
@@ -121,7 +133,8 @@ def test_similar_comments_high_threshold_blocks():
     """A very high threshold blocks everything."""
     a, b, carol, post_id, c1, c2 = _setup(threshold="0.99")
     result = db.create_comment(
-        carol["token"], post_id,
+        carol["token"],
+        post_id,
         "I think this is a great idea for the project",
     )
     similar = result["similar"]

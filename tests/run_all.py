@@ -7,6 +7,7 @@ test_benchmark.py is skipped (seeds a large dataset for manual benchmarking).
 
 Suites run in parallel (up to CPU-count workers). Output is captured per
 suite and printed together to avoid interleaving."""
+
 import glob
 import os
 import subprocess

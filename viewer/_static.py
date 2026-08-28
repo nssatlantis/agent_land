@@ -29,6 +29,25 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
            background:#fff; }
   nav a:hover { border-color:var(--accent); background:#f0f7ff; }
   nav a.active { color:#fff; background:var(--accent); border-color:var(--accent); }
+  nav details.nav-dropdown { position:relative; }
+  nav details.nav-dropdown > summary { cursor:pointer; list-style:none; user-select:none;
+    display:inline-block; color:var(--accent); font-size:18px; font-weight:700;
+    padding:5px 34px 5px 14px; border:1px solid var(--line); border-radius:8px; background:#fff;
+    position:relative; }
+  nav details.nav-dropdown > summary::-webkit-details-marker { display:none; }
+  nav details.nav-dropdown > summary::after { content:"▾"; position:absolute; right:12px;
+    top:50%; transform:translateY(-50%); color:var(--muted); font-size:14px; }
+  nav details.nav-dropdown:not([open]) > summary::after { content:"▸"; }
+  nav details.nav-dropdown > summary:hover { border-color:var(--accent); background:#f0f7ff; }
+  nav details.nav-dropdown > summary.active { color:#fff; background:var(--accent); border-color:var(--accent); }
+  nav details.nav-dropdown > summary.active::after { color:#e6f0ff; }
+  nav details.nav-dropdown .nav-dropdown-items { position:absolute; top:100%; left:0; z-index:40;
+    margin-top:6px; min-width:180px; background:#fff; border:1px solid var(--line); border-radius:8px;
+    box-shadow:0 6px 16px rgba(0,0,0,.10); padding:6px; display:flex; flex-direction:column; gap:2px; }
+  nav details.nav-dropdown .nav-dropdown-items a { display:block; border:none; background:transparent;
+    border-radius:6px; padding:6px 12px; text-align:left; }
+  nav details.nav-dropdown .nav-dropdown-items a:hover { background:#f0f7ff; }
+  nav details.nav-dropdown .nav-dropdown-items a.active { color:#fff; background:var(--accent); }
   button { font:inherit; font-size:16px; font-weight:700; color:var(--accent);
            background:#fff; border:1px solid var(--line); border-radius:8px;
            padding:5px 14px; cursor:pointer; }
@@ -311,6 +330,15 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
     nav a:hover { background:#334155; border-color:var(--accent); }
     nav a.active { color:#0f172a; background:var(--accent); border-color:var(--accent); }
     nav input, .top-search input { background:#1e293b; border-color:var(--line); color:var(--ink); }
+    nav details.nav-dropdown > summary { background:#1e293b; border-color:var(--line); color:var(--accent); }
+    nav details.nav-dropdown > summary:hover { background:#334155; border-color:var(--accent); }
+    nav details.nav-dropdown > summary.active { color:#0f172a; background:var(--accent); border-color:var(--accent); }
+    nav details.nav-dropdown > summary.active::after { color:#0f172a; }
+    nav details.nav-dropdown .nav-dropdown-items { background:#1e293b; border-color:var(--line);
+      box-shadow:0 6px 16px rgba(0,0,0,.4); }
+    nav details.nav-dropdown .nav-dropdown-items a:hover { background:#334155; }
+    nav details.nav-dropdown .nav-dropdown-items a.active { color:#0f172a; background:var(--accent); }
+    nav input { background:#1e293b; border-color:var(--line); color:var(--ink); }
     button { color:var(--accent); background:#1e293b; border-color:var(--line); }
     button:hover { border-color:var(--accent); background:#334155; }
     button:active { background:#1e3a5f; }
@@ -383,7 +411,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   }
 """
 
-_CSS_HASH = "7A3C2F9B51D6E804"
+_CSS_HASH = "9C53A1F8D7E644B2"
 
 
 def static_style_css(request) -> Response:
