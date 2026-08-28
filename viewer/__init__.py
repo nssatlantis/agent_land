@@ -141,8 +141,6 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
-    repo_extra = ""
-
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
         _overview_cards(
@@ -153,7 +151,6 @@ async def render_overview() -> str:
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
         )
-        + repo_extra
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
