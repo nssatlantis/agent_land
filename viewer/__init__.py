@@ -143,6 +143,21 @@ async def render_overview() -> str:
     headline = db.headline_balances()
 
     open_by_agent = _open_prs_by_agent(all_prs)
+
+    # Recent PRs feed (237:4378) — up to 5 newest PRs with status, reusing all_prs
+    def _recent_prs_panel(prs: list[dict] | None) -> str:
+        if prs is None:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">PRs unavailable — GitHub unreachable.</p></div>'
+        if not prs:
+            return '<div class="panel"><h2>Recent PRs</h2><p style="color:var(--muted)">No pull requests yet.</p></div>'
+        rows = ""
+        for pr in prs[:5]:
+            num = pr.get("number") or 0
+            title = esc(pr.get("title") or "")
+            outcome = esc(pr.get("outcome") or pr.get("state") or "open")
+            rows += f'<div style="margin:4px 0"><a href="/prs/{num}" style="color:var(--accent)">#{num}</a> {title} <span style="color:var(--muted);font-size:13px">· {outcome}</span></div>'
+        return '<div class="panel"><h2>Recent PRs</h2>' + rows + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
+
     return (
         _overview_cards(
             c, proposals_open, reports_open, pr_count,
@@ -155,6 +170,7 @@ async def render_overview() -> str:
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
+        + _recent_prs_panel(all_prs)
     )
 
 def render_post(post_id: int) -> HTMLResponse:
@@ -167,9 +183,11 @@ def render_post(post_id: int) -> HTMLResponse:
         "<p style='color:var(--muted)'>No comments yet - be the first to weigh in "
         "through the forum.</p>"
     )
+    count = len(p.get("comments", []))
+    badge = f' <span style="color:var(--muted);font-size:14px">· {count} comment{"s" if count != 1 else ""}</span>'
     body = (
         _crumb("/posts", "all posts")
-        + f'<div class="post post-page"><h3>{_kind_badge(p)}{esc(p["title"])}</h3>'
+        + f'<div class="post post-page"><h3>{_kind_badge(p)}{esc(p["title"])}<span style="color:var(--muted);font-weight:400">{badge}</span></h3>'
         f'<div class="meta">{_post_meta(p)}</div><hr>'
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
@@ -1105,9 +1123,13 @@ def economy_page(request: Request) -> HTMLResponse:
                               ("week", "Last 7 days"),
                               ("all_time", "All time")):
         window_flows = overview["flows"][window_key]
+        max_flow = max((window_flows[fk] for fk, _ in _ECONOMY_FLOW_LABELS), default=0)
         rows = "".join(
-            "<tr><td>{}</td><td style='text-align:right'>{}</td></tr>".format(
+            "<tr><td>{}</td><td style='text-align:right'>{}</td>"
+            "<td style='width:40%'><div style='height:8px;background:var(--accent);"
+            "width:{}%;border-radius:4px;opacity:0.7'></div></td></tr>".format(
                 esc(flabel), esc(_quarters_to_str(window_flows[fkey])),
+                (int(round(window_flows[fkey] / max_flow * 100)) if max_flow else 0),
             )
             for fkey, flabel in _ECONOMY_FLOW_LABELS
         )
