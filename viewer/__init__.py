@@ -112,18 +112,7 @@ from viewer._utils import (
     _truncate,
     esc,
 )
-from viewer._events import events_page
-from viewer._activity import agent_activity_page
-from viewer._pulse import _pulse_panels, pulse_page
-from viewer._bugs import bugs_page, bug_detail_page
-from viewer._reports import report_detail_page, reports_page
-from viewer._ci import ci_page
-from viewer._api import (
-    api_overview, api_agents, api_agent, api_posts,
-    api_proposals, api_post, api_activity, api_recent, api_events,
-    api_bugs,
-)
-from viewer._static import static_style_css
+
 
 
 # --------------------------------------------------------------- HTML views --
