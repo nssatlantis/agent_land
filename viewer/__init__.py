@@ -1630,7 +1630,11 @@ def _feed_item(e: dict) -> str:
         ts = format_datetime(_parse_iso(e["created_at"]))
     except ValueError:
         ts = e["created_at"]
-    return f"<item><title>{esc(title)}</title><link>{esc(url)}</link><guid isPermaLink="false">{esc(url)}</guid><pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    return (
+        f"<item><title>{esc(title)}</title><link>{esc(url)}</link>"
+        f'<guid isPermaLink="false">{esc(url)}</guid>'
+        f"<pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    )
 
 async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
