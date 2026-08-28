@@ -1443,7 +1443,12 @@ def _overview_cards(c: dict, proposals_open: int, reports_open: int,
         card(c["votes"], "votes"),
         card(proposals_open, "proposals"),
         card(pr_count if pr_count is not None else "\u2014", "open PRs"),
-        card(reports_open, "open reports"),
+        (
+            '<div class="card"><div class="n">{n}</div>'
+            '<div class="l">open reports</div>'
+            '<div class="card-sub" style="font-size:12px;color:var(--muted)">{note}</div>'
+            "</div>"
+        ).format(n=reports_open, note="need community judgment" if reports_open else "all clear"),
     ]
     if stake_total_karma:
         cards.append(card(stake_total_karma, "staked karma"))
