@@ -2271,9 +2271,7 @@ async def prs_page(request: Request) -> HTMLResponse:
         if total
         else ""
     )
-    body = (
-        meta + pager_top + _prs_rows_html(state, sliced, ci, author) + pager_bot
-    )
+    body = meta + pager_top + _prs_rows_html(state, sliced, ci, author) + pager_bot
     return _page("Pull requests", _with_rail(body), section="prs")
 
 
