@@ -728,9 +728,16 @@ def _prs_votes_cell(number: int) -> str:
     up = tally.get("up", 0)
     down = tally.get("down", 0)
     net = tally.get("net", 0)
-    return (f'<span style="color:var(--ok)">+{up}</span>/'
+    try:
+        bar = db.pr_vote_threshold()
+    except Exception:  # domain:degrade-silently - votes still render if threshold fetch hiccups
+        bar = None
+    base = (f'<span style="color:var(--ok)">+{up}</span>/'
             f'<span style="color:var(--fail)">&minus;{down}</span> '
             f'<span style="color:var(--muted)">net {net}</span>')
+    if bar is not None:
+        base += f'<div style="color:var(--muted);font-size:11px">Net \u2265 {bar} to merge</div>'
+    return base
 
 
 def _prs_hold_chip(r: dict, state: str) -> str:
