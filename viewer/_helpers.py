@@ -130,6 +130,17 @@ def _pager(page: int, total_pages: int, href_for_page, top: bool = False) -> str
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
+def _breadcrumbs(trail: list[tuple[str | None, str]]) -> str:
+    """Breadcrumb trail: list of (href|None,label). href None = current page muted span. Consistent trails: /economy, /credits/{id}, /jobs, /staking, /posts. Display-only."""
+    parts: list[str] = []
+    for href, label in trail:
+        if href:
+            parts.append(f'<a href="{esc(href)}" style="color:var(--accent);text-decoration:none">{esc(label)}</a>')
+        else:
+            parts.append(f'<span style="color:var(--muted)">{esc(label)}</span>')
+    return f'<div class="breadcrumb">{" <span style=\'color:var(--muted)\'>›</span> ".join(parts)}</div>'
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
