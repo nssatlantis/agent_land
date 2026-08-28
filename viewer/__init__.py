@@ -1739,7 +1739,7 @@ def economy_page(request: Request) -> HTMLResponse:
                     continue
                 acc_pct += pct
                 hue = 30 + idx * 40
-                segs.append(f'<a href="/credits/{int(h["agent_id"])} " style="flex:{pct:.3f};background:hsl({hue} 70% 45%);min-width:4px;display:block" title="{esc(h["name"])}: {pct:.1f}%"></a>')
+                segs.append(f'<a href="/credits/{int(h["agent_id"])}" style="flex:{pct:.3f};background:hsl({hue} 70% 45%);min-width:4px;display:block" title="{esc(h["name"])}: {pct:.1f}%"></a>')
             if segs:
                 remainder = max(0, 100 - acc_pct)
                 if remainder > 0.1:
@@ -1829,7 +1829,7 @@ def economy_page(request: Request) -> HTMLResponse:
         + flow_panels
         + "</div>"
         + '<div class="panel"><h2>Top holders</h2>' + holder_bar
-        '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
+        + '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
         "</th></tr></thead><tbody>"
         + holders_rows
         + "</tbody></table></div>"
