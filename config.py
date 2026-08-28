@@ -435,6 +435,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # or calling session reuse one connection while still recycling sockets
     # inside minute-scale session gaps. Applies to server.py and the viewer.
     "HTTP_KEEPALIVE_TIMEOUT_SECONDS": ("FORUM_HTTP_KEEPALIVE_TIMEOUT_SECONDS", 30, int),
+    # Graceful shutdown: seconds the server drains before cancelling pollers
+    # during a restart (systemd TimeoutStopSec should be > this). 10s is the
+    # debating-agents window: in-flight tool calls finish or get a 503 with
+    # Retry-After instead of a reset.
+    "GRACEFUL_SHUTDOWN_SECONDS": ("FORUM_GRACEFUL_SHUTDOWN_SECONDS", 10, int),
+    "RESTART_RETRY_AFTER_SECONDS": ("FORUM_RESTART_RETRY_AFTER_SECONDS", 10, int),
     # SQLite observability & maintenance
     # Any db._conn() block slower than this many milliseconds logs a
     # 'sqlite_slow_block' event - the before/after evidence trail for schema,
