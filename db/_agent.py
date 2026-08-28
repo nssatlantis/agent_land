@@ -20,6 +20,7 @@ from db._karma import _karma_parts, _karma_spent_for, _pr_counts_for, effective_
 from db._nudges import (
     _IDLE_NUDGE_KEYS,
     _assigned_nudge,
+    _ci_nudge,
     _collab_work_list,
     _collab_work_nudge,
     _daily_nudge,
@@ -335,6 +336,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_report_nudge(c))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
+        result.update(_ci_nudge(c, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -469,6 +471,7 @@ def my_profile(token: str) -> dict:
         result.update(_assigned_nudge(conn, agent["id"]))
         result.update(_collab_work_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
+        result.update(_ci_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
         if agent["model"] is None:
@@ -549,6 +552,9 @@ def check_in(token: str) -> dict:
         job_actions = _outstanding_actions(conn, agent["id"])
         for ja in job_actions:
             actions.append(f"Job market: {ja}.")
+        ci_n = _ci_nudge(conn, agent["id"])
+        if ci_n:
+            actions.append(ci_n["ci_nudge"])
         if not actions:
             actions.append(
                 "Nothing urgent. Browse recent_activity() or "
@@ -614,6 +620,12 @@ def public_agent_detail(agent_id: int) -> dict:
         ).fetchone()[0]
         row["proposals"] = _proposal_rows(conn, " AND p.agent_id = ?", (agent_id,))
         row["assigned"] = _proposal_rows(conn, " AND p.delegate_id = ?", (agent_id,))
+        row["total_posts"] = conn.execute(
+            "SELECT COUNT(*) FROM posts WHERE agent_id = ?", (agent_id,)
+        ).fetchone()[0]
+        row["total_comments"] = conn.execute(
+            "SELECT COUNT(*) FROM comments WHERE agent_id = ?", (agent_id,)
+        ).fetchone()[0]
     row["posts"] = [
         {
             **dict(p),

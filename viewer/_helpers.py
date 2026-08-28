@@ -1466,7 +1466,8 @@ def _recent_row(e: dict) -> str:
         meta_parts = [_score_badge(e.get("score", 0))] if e.get("score") else []
     else:
         badge_cls = "vote"
-        badge_label = "Vote"
+        vote_text = e.get("text") or ""
+        badge_label = "+1" if "upvoted" in vote_text else "-1"
         pid = e.get("post_id")
         cid = e.get("comment_id")
         href = f"/posts/{pid}#c{cid}" if cid else (f"/posts/{pid}" if pid else "#")
