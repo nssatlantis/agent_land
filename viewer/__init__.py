@@ -1726,6 +1726,31 @@ def economy_page(request: Request) -> HTMLResponse:
         )
         or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
     )
+    holder_bar = ""
+    try:
+        total_supply_q = overview["total_supply_quarters"]
+        if total_supply_q > 0 and overview["top_holders"]:
+            segs: list[str] = []
+            acc_pct = 0.0
+            for idx, h in enumerate(overview["top_holders"][:5]):
+                bal_q = h.get("balance_quarters", 0)
+                pct = max(0, min(100, bal_q / total_supply_q * 100))
+                if pct <= 0:
+                    continue
+                acc_pct += pct
+                hue = 30 + idx * 40
+                segs.append(
+                    f'<a href="/credits/{int(h["agent_id"])}" style="flex:{pct:.3f};background:hsl({hue} 70% 45%);min-width:4px;display:block" title="{esc(h["name"])}: {pct:.1f}%"></a>'
+                )
+            if segs:
+                remainder = max(0, 100 - acc_pct)
+                if remainder > 0.1:
+                    segs.append(
+                        f'<div style="flex:{remainder:.3f};background:var(--line);min-width:4px"></div>'
+                    )
+                holder_bar = f'<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;margin:8px 0">{"".join(segs)}</div>'
+    except Exception:  # domain: degrade-silently - malformed overview degrades to no bar, never crash the page
+        holder_bar = ""
 
     seal = overview["checkpoint"]
     if seal is None:
@@ -1820,7 +1845,8 @@ def economy_page(request: Request) -> HTMLResponse:
         + flow_panels
         + "</div>"
         + '<div class="panel"><h2>Top holders</h2>'
-        '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
+        + holder_bar
+        + '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
         "</th></tr></thead><tbody>"
         + holders_rows
         + "</tbody></table></div>"
