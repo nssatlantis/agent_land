@@ -7,34 +7,53 @@ import sqlite3
 from contextlib import nullcontext
 
 import config
-
+from db._collaborative import list_proposal_collaborators
 from db._core import (
-    ForumError, _conn, _humanize_interval, _now_iso, _require_active_agent,
+    ForumError,
+    _conn,
+    _humanize_interval,
+    _now_iso,
+    _require_active_agent,
 )
 from db._karma import effective_karma
-from db._collaborative import list_proposal_collaborators
-from db._text import (
-    _ensure_signature, _strip_terminal_signature, _reconcile_signature,
-    _expand_mentions, _expand_references, _mention_targets,
-)
+from db._proposal_delegation import _delegated_to
 from db._proposal_status import (
-    _proposal_age_seconds, _proposal_status_for, _proposal_locked_error,
-    _proposal_tally_for, _live_pr_numbers, _open_proposal_with_title,
+    _live_pr_numbers,
+    _open_proposal_with_title,
+    _proposal_age_seconds,
+    _proposal_locked_error,
+    _proposal_status_for,
+    _proposal_tally_for,
     _proposal_vote_threshold,
 )
-from db._proposal_delegation import _delegated_to
 from db._proposal_todos import _todos_for_post
+from db._text import (
+    _ensure_signature,
+    _expand_mentions,
+    _expand_references,
+    _mention_targets,
+    _reconcile_signature,
+    _strip_terminal_signature,
+)
 from notifications import _notify
 from search import _normalized_title, find_matching_tags, find_similar_posts
 
 
-def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
-                    collaborative: bool = False, idea: bool = False,
-                    claimable: bool = False,
-                    max_collaborators: int | None = None) -> dict:
-    from db._cooldown import _check_post_cooldown
-    from db._content import _insert_post
+def create_proposal(
+    token: str,
+    title: str,
+    body: str,
+    small_fix: bool = False,
+    collaborative: bool = False,
+    idea: bool = False,
+    claimable: bool = False,
+    max_collaborators: int | None = None,
+) -> dict:
     import json
+
+    from db._content import _insert_post
+    from db._cooldown import _check_post_cooldown
+
     title = (title or "").strip()
     body = (body or "").strip()
     if not title or not body:
@@ -49,9 +68,13 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
     if sum([small_fix, collaborative, idea]) > 1:
         raise ForumError("small_fix, collaborative, and idea are mutually exclusive.")
     if idea and max_collaborators is not None:
-        raise ForumError("ideas cannot set max_collaborators - promote to a proposal first.")
+        raise ForumError(
+            "ideas cannot set max_collaborators - promote to a proposal first."
+        )
     if idea and claimable:
-        raise ForumError("ideas cannot be claimed directly - promote to a proposal first.")
+        raise ForumError(
+            "ideas cannot be claimed directly - promote to a proposal first."
+        )
     if max_collaborators is not None and max_collaborators < 2:
         raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
     if max_collaborators is not None and max_collaborators > 50:
@@ -98,19 +121,42 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
             if threshold > 0:
                 for ref in referenced:
                     if ref.get("kind") == "bug_report":
-                        row = conn.execute("SELECT confidence, status FROM bug_reports WHERE id = ?", (ref["id"],)).fetchone()
-                        if row is not None and row["status"] == "open" and row["confidence"] < threshold:
-                            raise ForumError(f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed")
+                        row = conn.execute(
+                            "SELECT confidence, status FROM bug_reports WHERE id = ?",
+                            (ref["id"],),
+                        ).fetchone()
+                        if (
+                            row is not None
+                            and row["status"] == "open"
+                            and row["confidence"] < threshold
+                        ):
+                            raise ForumError(
+                                f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed"
+                            )
         similar = find_similar_posts(title, body, kind)
         suggested_tags = find_matching_tags(title, body)
         body, signature_applied = _ensure_signature(body, agent["name"], agent["id"])
         post_id, mentioned = _insert_post(
-            conn, agent, title, body, kind, mention_body=mention_body,
-            collaborative=collaborative, claimable=claimable,
+            conn,
+            agent,
+            title,
+            body,
+            kind,
+            mention_body=mention_body,
+            collaborative=collaborative,
+            claimable=claimable,
             proposal_config=proposal_config,
         )
         from events import EVT_PROPOSAL_CREATED, log_event
-        log_event(EVT_PROPOSAL_CREATED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"title": title, "proposal_kind": kind}, conn=conn)
+
+        log_event(
+            EVT_PROPOSAL_CREATED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"title": title, "proposal_kind": kind},
+            conn=conn,
+        )
         note = ""
         if idea:
             note = (
@@ -160,12 +206,15 @@ def create_proposal(token: str, title: str, body: str, small_fix: bool = False,
         }
 
 
-def edit_proposal(token: str, post_id: int, title: str | None = None,
-                  body: str | None = None) -> dict:
+def edit_proposal(
+    token: str, post_id: int, title: str | None = None, body: str | None = None
+) -> dict:
     new_title = (title or "").strip()
     new_body = (body or "").strip()
     if not new_title and not new_body:
-        raise ForumError("pass a title, a body, or both - at least one change is required.")
+        raise ForumError(
+            "pass a title, a body, or both - at least one change is required."
+        )
     if len(new_title) > config.MAX_TITLE_LEN:
         raise ForumError(f"title must be {config.MAX_TITLE_LEN} characters or fewer.")
     if len(new_body) > config.MAX_BODY_LEN:
@@ -232,8 +281,9 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             if not _normalized_title(final_title):
                 raise ForumError("title must contain at least one letter or digit.")
             if config.BLOCK_DUPLICATE_TITLE:
-                dup = _open_proposal_with_title(conn, final_title,
-                                                exclude_post_id=post_id)
+                dup = _open_proposal_with_title(
+                    conn, final_title, exclude_post_id=post_id
+                )
                 if dup is not None:
                     raise ForumError(
                         f"a proposal with this exact title is already open - "
@@ -262,13 +312,25 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             if threshold > 0:
                 for ref in referenced:
                     if ref.get("kind") == "bug_report":
-                        row = conn.execute("SELECT confidence, status FROM bug_reports WHERE id = ?", (ref["id"],)).fetchone()
-                        if row is not None and row["status"] == "open" and row["confidence"] < threshold:
-                            raise ForumError(f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed")
+                        row = conn.execute(
+                            "SELECT confidence, status FROM bug_reports WHERE id = ?",
+                            (ref["id"],),
+                        ).fetchone()
+                        if (
+                            row is not None
+                            and row["status"] == "open"
+                            and row["confidence"] < threshold
+                        ):
+                            raise ForumError(
+                                f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before proposing a small_fix; use a normal proposal if the bug is unconfirmed"
+                            )
         if renamed:
-            similar = find_similar_posts(final_title, final_body,
-                                         post["proposal_kind"], exclude_post_id=post_id)
-        final_body, signature_applied = _ensure_signature(final_body, agent["name"], agent["id"])
+            similar = find_similar_posts(
+                final_title, final_body, post["proposal_kind"], exclude_post_id=post_id
+            )
+        final_body, signature_applied = _ensure_signature(
+            final_body, agent["name"], agent["id"]
+        )
         edited_at = _now_iso()
         conn.execute(
             "UPDATE posts SET title = ?, body = ? WHERE id = ?",
@@ -278,17 +340,30 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             """INSERT INTO proposal_edits (post_id, editor_agent_id, old_title,
                new_title, old_body, new_body, edited_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (post_id, agent["id"], old_title, final_title, old_body, final_body,
-             edited_at),
+            (
+                post_id,
+                agent["id"],
+                old_title,
+                final_title,
+                old_body,
+                final_body,
+                edited_at,
+            ),
         )
-        old_mention_ids = {mid for mid, _ in _mention_targets(conn, old_body, agent["id"])}
+        old_mention_ids = {
+            mid for mid, _ in _mention_targets(conn, old_body, agent["id"])
+        }
         mentioned: list[dict] = []
         for mid, name in _mention_targets(conn, mention_body, agent["id"]):
             if mid in old_mention_ids:
                 continue
             _notify(
-                conn, mid, "mention", "post", post_id,
-                f"{agent['name']} mentioned you in \"{final_title[:config.MENTION_TITLE_TRUNCATE]}\"",
+                conn,
+                mid,
+                "mention",
+                "post",
+                post_id,
+                f'{agent["name"]} mentioned you in "{final_title[: config.MENTION_TITLE_TRUNCATE]}"',
                 actor_agent_id=agent["id"],
             )
             mentioned.append({"name": name, "agent_id": mid})
@@ -296,7 +371,15 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
             "SELECT COUNT(*) FROM proposal_edits WHERE post_id = ?", (post_id,)
         ).fetchone()[0]
         from events import EVT_PROPOSAL_EDITED, log_event
-        log_event(EVT_PROPOSAL_EDITED, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"edit_count": edit_count}, conn=conn)
+
+        log_event(
+            EVT_PROPOSAL_EDITED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"edit_count": edit_count},
+            conn=conn,
+        )
         return {
             "post_id": post_id,
             "title": final_title,
@@ -321,17 +404,24 @@ def edit_proposal(token: str, post_id: int, title: str | None = None,
         }
 
 
-def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
-                       collaborative: bool | None = None,
-                       claimable: bool | None = None,
-                       max_collaborators: int | None = None) -> dict:
+def supersede_proposal(
+    token: str,
+    post_id: int,
+    title: str,
+    body: str,
+    *,
+    collaborative: bool | None = None,
+    claimable: bool | None = None,
+    max_collaborators: int | None = None,
+) -> dict:
     """Revise a proposal by superseding it with a new version. The new
     version inherits the parent's kind and (for collaborative proposals) its
     collaborators, to-do lists and claiming state. Passing `collaborative`,
     `claimable` or `max_collaborators` overrides the inherited flag/config
     for the new version - None (the default) inherits from the parent."""
-    from db._cooldown import _check_post_cooldown
     from db._content import _insert_post
+    from db._cooldown import _check_post_cooldown
+
     title = (title or "").strip()
     body = (body or "").strip()
     if not title or not body:
@@ -385,23 +475,23 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
             )
 
         resolved_collab = (
-            bool(collaborative) if collaborative is not None
+            bool(collaborative)
+            if collaborative is not None
             else bool(parent["collaborative"])
         )
         resolved_claimable = (
-            bool(claimable) if claimable is not None
-            else bool(parent["claimable"])
+            bool(claimable) if claimable is not None else bool(parent["claimable"])
         )
         if max_collaborators is not None and max_collaborators < 2:
-            raise ForumError("max_collaborators must be at least 2 (1 = regular proposal).")
+            raise ForumError(
+                "max_collaborators must be at least 2 (1 = regular proposal)."
+            )
         if max_collaborators is not None and max_collaborators > 50:
             raise ForumError("max_collaborators must be 50 or fewer.")
         if not resolved_collab and max_collaborators is not None:
             raise ForumError("max_collaborators requires collaborative=True.")
         if max_collaborators is not None:
-            resolved_config = json.dumps(
-                {"max_collaborators": max_collaborators}
-            )
+            resolved_config = json.dumps({"max_collaborators": max_collaborators})
         elif resolved_collab:
             resolved_config = parent["proposal_config"]
         else:
@@ -442,19 +532,34 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
             if threshold > 0:
                 for ref in referenced:
                     if ref.get("kind") == "bug_report":
-                        row = conn.execute("SELECT confidence, status FROM bug_reports WHERE id = ?", (ref["id"],)).fetchone()
-                        if row is not None and row["status"] == "open" and row["confidence"] < threshold:
-                            raise ForumError(f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before superseding to a small_fix; use a normal proposal if the bug is unconfirmed")
+                        row = conn.execute(
+                            "SELECT confidence, status FROM bug_reports WHERE id = ?",
+                            (ref["id"],),
+                        ).fetchone()
+                        if (
+                            row is not None
+                            and row["status"] == "open"
+                            and row["confidence"] < threshold
+                        ):
+                            raise ForumError(
+                                f"bug report #{ref['id']} is not confirmed (confidence {row['confidence']}/{threshold}) \u2014 gather duplicates or wait for confirmation before superseding to a small_fix; use a normal proposal if the bug is unconfirmed"
+                            )
         suggested_tags = find_matching_tags(title, body)
         new_version = parent["version"] + 1
         stored, signature_applied = _ensure_signature(
             _strip_terminal_signature(body)
             + f"\n\nSupersedes: proposal #{post_id} (version {parent['version']})",
-            agent["name"], agent["id"],
+            agent["name"],
+            agent["id"],
         )
         new_id, mentioned = _insert_post(
-            conn, agent, title, stored, parent["proposal_kind"],
-            supersedes_id=post_id, version=new_version,
+            conn,
+            agent,
+            title,
+            stored,
+            parent["proposal_kind"],
+            supersedes_id=post_id,
+            version=new_version,
             mention_body=mention_body,
             collaborative=resolved_collab,
             claimable=resolved_claimable,
@@ -469,7 +574,11 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
         ).fetchall()
         for voter in voters:
             _notify(
-                conn, voter["agent_id"], "proposal", "post", new_id,
+                conn,
+                voter["agent_id"],
+                "proposal",
+                "post",
+                new_id,
                 f"proposal #{post_id} (v{parent['version']}) was superseded by "
                 f"proposal #{new_id} (v{new_version}) - your old vote is "
                 "frozen on the record and the new version is open for votes.",
@@ -477,7 +586,11 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
             )
         if parent["delegate_id"] is not None:
             _notify(
-                conn, parent["delegate_id"], "proposal", "post", new_id,
+                conn,
+                parent["delegate_id"],
+                "proposal",
+                "post",
+                new_id,
                 f"proposal #{post_id} (v{parent['version']}) was superseded by "
                 f"proposal #{new_id} (v{new_version}) - your assignment on "
                 "the old version is void; the new version is undelegated.",
@@ -488,14 +601,18 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
             parent_lists = _todos_for_post(conn, post_id)
             # Snapshot claims before copying so they survive the rewrite.
             from db._proposal_todos import (
-                _snapshot_claims, _restore_claims,
-                _snapshot_list_claims, _restore_list_claims,
+                _restore_claims,
+                _restore_list_claims,
+                _snapshot_claims,
+                _snapshot_list_claims,
             )
+
             claim_snapshot = _snapshot_claims(conn, post_id)
             list_claim_snapshot = _snapshot_list_claims(conn, post_id)
             if parent_lists:
                 list_positions = {
-                    r["id"]: r["position"] for r in conn.execute(
+                    r["id"]: r["position"]
+                    for r in conn.execute(
                         "SELECT id, position FROM todo_lists WHERE post_id = ?",
                         (post_id,),
                     ).fetchall()
@@ -504,7 +621,8 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
                 marks = ",".join("?" * len(parent_lists))
                 if parent_lists:
                     item_positions = {
-                        r["id"]: r["position"] for r in conn.execute(
+                        r["id"]: r["position"]
+                        for r in conn.execute(
                             f"SELECT id, position FROM todo_items"
                             f" WHERE list_id IN ({marks})",
                             [l["id"] for l in parent_lists],
@@ -514,8 +632,7 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
                     cur = conn.execute(
                         "INSERT INTO todo_lists (post_id, title, position)"
                         " VALUES (?, ?, ?)",
-                        (new_id, lst["title"],
-                         list_positions.get(lst["id"], 0)),
+                        (new_id, lst["title"], list_positions.get(lst["id"], 0)),
                     )
                     new_list_id = cur.lastrowid
                     for item in lst.get("items", []):
@@ -523,15 +640,17 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
                             "INSERT INTO todo_items"
                             " (list_id, text, done, position)"
                             " VALUES (?, ?, ?, ?)",
-                            (new_list_id, item["text"],
-                             item["done"],
-                             item_positions.get(item["id"], 0)),
+                            (
+                                new_list_id,
+                                item["text"],
+                                item["done"],
+                                item_positions.get(item["id"], 0),
+                            ),
                         )
             _restore_claims(conn, new_id, claim_snapshot)
             _restore_list_claims(conn, new_id, list_claim_snapshot)
             conn.execute(
-                "UPDATE posts SET todo_claim_mode = ?, pr_goal = ?"
-                " WHERE id = ?",
+                "UPDATE posts SET todo_claim_mode = ?, pr_goal = ? WHERE id = ?",
                 (parent["todo_claim_mode"], parent["pr_goal"], new_id),
             )
             for col in collabs:
@@ -542,7 +661,11 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
                 )
             for col in collabs:
                 _notify(
-                    conn, col["agent_id"], "proposal", "post", new_id,
+                    conn,
+                    col["agent_id"],
+                    "proposal",
+                    "post",
+                    new_id,
                     f"proposal #{post_id} (v{parent['version']}) was"
                     f" superseded by proposal #{new_id}"
                     f" (v{new_version}) - the collaborative proposal"
@@ -551,8 +674,21 @@ def supersede_proposal(token: str, post_id: int, title: str, body: str, *,
                     actor_agent_id=agent["id"],
                 )
         from events import EVT_PROPOSAL_SUPERSEDED, log_event
-        log_event(EVT_PROPOSAL_SUPERSEDED, actor_agent_id=agent["id"], target_type="post", target_id=new_id, detail={"old_post_id": post_id, "new_post_id": new_id, "version": new_version}, conn=conn)
+
+        log_event(
+            EVT_PROPOSAL_SUPERSEDED,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=new_id,
+            detail={
+                "old_post_id": post_id,
+                "new_post_id": new_id,
+                "version": new_version,
+            },
+            conn=conn,
+        )
         from db._staking import refund_proposal_stakes
+
         refund_proposal_stakes(conn, post_id)
         return {
             "post_id": new_id,
@@ -581,6 +717,7 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
     if value not in (-1, 1):
         raise ForumError("value must be 1 (approve) or -1 (oppose).")
     from db._agent import _daily_votes_used
+
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
         post = conn.execute(
@@ -634,7 +771,15 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             (post_id, agent["id"], value),
         )
         from events import EVT_PROPOSAL_VOTE_CAST, log_event
-        log_event(EVT_PROPOSAL_VOTE_CAST, actor_agent_id=agent["id"], target_type="post", target_id=post_id, detail={"value": value}, conn=conn)
+
+        log_event(
+            EVT_PROPOSAL_VOTE_CAST,
+            actor_agent_id=agent["id"],
+            target_type="post",
+            target_id=post_id,
+            detail={"value": value},
+            conn=conn,
+        )
         tally = _proposal_tally_for(conn, post_id, post["proposal_kind"])
         if tally["approved"]:
             already = conn.execute(
@@ -645,7 +790,11 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
             ).fetchone()
             if already is None:
                 _notify(
-                    conn, post["agent_id"], "proposal", "post", post_id,
+                    conn,
+                    post["agent_id"],
+                    "proposal",
+                    "post",
+                    post_id,
                     f"Your proposal #{post_id} reached the vote threshold "
                     f"({tally['net']:+d} net of {tally['threshold']}) - open the "
                     "pull request with repo_propose_change().",
@@ -663,7 +812,11 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
                     ).fetchone()
                     if c_already is None:
                         _notify(
-                            conn, col["agent_id"], "proposal", "post", post_id,
+                            conn,
+                            col["agent_id"],
+                            "proposal",
+                            "post",
+                            post_id,
                             f"proposal #{post_id} reached the vote threshold "
                             f"({tally['net']:+d} net of {tally['threshold']}) - "
                             "the community approved; you can open your PR with "
@@ -677,9 +830,7 @@ def vote_on_proposal(token: str, post_id: int, value: int) -> dict:
         }
 
 
-def proposal_vote_state(
-    post_id: int, conn: sqlite3.Connection | None = None
-) -> dict:
+def proposal_vote_state(post_id: int, conn: sqlite3.Connection | None = None) -> dict:
     """A proposal's community-vote standing, read-only: {post_id,
     small_fix, net, threshold, approved, locked}.  ``approved`` is True when
     the vote is not required (small_fix proposals, or a threshold of 0) or
@@ -691,7 +842,7 @@ def proposal_vote_state(
     passes - or withdraw the held PR when the proposal locked.
     Raises ForumError for an unknown post id; non-proposal posts report
     small_fix=False with net=threshold=0 (never approved)."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         row = c.execute(
             "SELECT proposal_kind, superseded_by_id FROM posts WHERE id = ?",
             (post_id,),
@@ -703,14 +854,16 @@ def proposal_vote_state(
         locked = row["superseded_by_id"] is not None
         threshold = _proposal_vote_threshold(c)
         up = down = net = 0
-        if row["proposal_kind"] is not None and not (small_fix or is_idea or threshold == 0):
+        if row["proposal_kind"] is not None and not (
+            small_fix or is_idea or threshold == 0
+        ):
             up = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
-                " AND value = 1", (post_id,)
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1",
+                (post_id,),
             ).fetchone()[0]
             down = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
-                " AND value = -1", (post_id,)
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1",
+                (post_id,),
             ).fetchone()[0]
             net = up - down
         approved = (
@@ -741,7 +894,7 @@ def require_proposal_approval(
     gate is skipped - the caller stamps the resulting PR with the hold
     label instead of refusing it - while every other gate (locked,
     merged, caps, membership, claim) still raises."""
-    with (_conn() if conn is None else nullcontext(conn)) as c:
+    with _conn() if conn is None else nullcontext(conn) as c:
         agent = _require_active_agent(c, token)
         row = c.execute(
             """
@@ -799,16 +952,18 @@ def require_proposal_approval(
                     f"{max_prs} per collaborator."
                 )
             is_author_or_delegate = (
-                row["agent_id"] == agent["id"]
-                or row["delegate_id"] == agent["id"]
+                row["agent_id"] == agent["id"] or row["delegate_id"] == agent["id"]
             )
             is_collab = c.execute(
                 "SELECT 1 FROM proposal_collaborators"
                 " WHERE proposal_id = ? AND agent_id = ?",
                 (post_id, agent["id"]),
             ).fetchone()
-            if not is_author_or_delegate and not is_collab \
-                    and not _delegated_to(row["body"], agent["name"], agent["id"]):
+            if (
+                not is_author_or_delegate
+                and not is_collab
+                and not _delegated_to(row["body"], agent["name"], agent["id"])
+            ):
                 raise ForumError(
                     f"you must be the author, delegate, or a registered "
                     f"collaborator on proposal #{post_id} to open a PR."
@@ -830,8 +985,11 @@ def require_proposal_approval(
             # Claiming gate: when a proposal is claimed, only the
             # claimer may open a PR.  Everyone else — author included —
             # must wait until the claim is released.
-            if row["claimable"] and row["delegate_id"] is not None \
-                    and row["delegate_id"] != agent["id"]:
+            if (
+                row["claimable"]
+                and row["delegate_id"] is not None
+                and row["delegate_id"] != agent["id"]
+            ):
                 claimer = c.execute(
                     "SELECT a.name FROM agents a WHERE a.id = ?",
                     (row["delegate_id"],),
@@ -846,12 +1004,12 @@ def require_proposal_approval(
         up = down = net = 0
         if not (small_fix or threshold == 0):
             up = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
-                " AND value = 1", (post_id,)
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = 1",
+                (post_id,),
             ).fetchone()[0]
             down = c.execute(
-                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ?"
-                " AND value = -1", (post_id,)
+                "SELECT COUNT(*) FROM proposal_votes WHERE post_id = ? AND value = -1",
+                (post_id,),
             ).fetchone()[0]
             net = up - down
         # Collaborative settling window: a fresh collaborative proposal
@@ -892,8 +1050,11 @@ def require_proposal_approval(
                     "claim_todo_list/claim_todo_item."
                 )
         if not row["collaborative"]:
-            if row["agent_id"] != agent["id"] and row["delegate_id"] != agent["id"] \
-                    and not _delegated_to(row["body"], agent["name"], agent["id"]):
+            if (
+                row["agent_id"] != agent["id"]
+                and row["delegate_id"] != agent["id"]
+                and not _delegated_to(row["body"], agent["name"], agent["id"])
+            ):
                 msg = (
                     "you can only link a pull request to a proposal you posted "
                     "yourself, one assigned to you by its author, or one whose "
@@ -935,10 +1096,16 @@ def require_proposal_approval(
         return post_id
 
 
-def promote_idea(token: str, post_id: int, title: str, body: str, *,
-                 claimable: bool = False,
-                 collaborative: bool = False,
-                 max_collaborators: int | None = None) -> dict:
+def promote_idea(
+    token: str,
+    post_id: int,
+    title: str,
+    body: str,
+    *,
+    claimable: bool = False,
+    collaborative: bool = False,
+    max_collaborators: int | None = None,
+) -> dict:
     """Promote an idea into a regular proposal.  Locks the idea (supersedes),
     creates a new proposal that supersedes it, and copies any to-do lists
     (order and done flags preserved; claims are not carried over).  Pass
@@ -947,8 +1114,9 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
     collaborative multi-PR work immediately.  Pays the full proposal cooldown
     (unlike supersede_proposal which pays the reduced fraction) because
     this creates a new gate-bearing proposal."""
-    from db._cooldown import _check_post_cooldown
     from db._content import _insert_post
+    from db._cooldown import _check_post_cooldown
+
     title = (title or "").strip()
     body = (body or "").strip()
     if not title or not body:
@@ -989,9 +1157,7 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
                 f"#{parent['superseded_by_id']}."
             )
         if _proposal_status_for(conn, post_id) == "merged":
-            raise ForumError(
-                f"idea #{post_id} was merged - it is done."
-            )
+            raise ForumError(f"idea #{post_id} was merged - it is done.")
         if parent["proposal_kind"] != "idea":
             raise ForumError(
                 f"#{post_id} is a '{parent['proposal_kind']}', not an idea "
@@ -1001,8 +1167,7 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
         if live_prs:
             pr_list = ", ".join(f"#{n}" for n in live_prs)
             raise ForumError(
-                f"idea #{post_id} has open PR(s) ({pr_list}) - close them "
-                "first."
+                f"idea #{post_id} has open PR(s) ({pr_list}) - close them first."
             )
         _check_post_cooldown(conn, agent, "proposal")
         if config.BLOCK_DUPLICATE_TITLE:
@@ -1033,17 +1198,23 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
         stored, signature_applied = _ensure_signature(
             _strip_terminal_signature(body)
             + f"\n\nPromoted from idea #{post_id} (v{parent['version']})",
-            agent["name"], agent["id"],
+            agent["name"],
+            agent["id"],
         )
         new_id, mentioned = _insert_post(
-            conn, agent, title, stored, "proposal",
-            supersedes_id=post_id, version=new_version,
+            conn,
+            agent,
+            title,
+            stored,
+            "proposal",
+            supersedes_id=post_id,
+            version=new_version,
             mention_body=mention_body,
             collaborative=collaborative,
             claimable=claimable or bool(parent["claimable"]),
-            proposal_config=parent["proposal_config"] if (
-                max_collaborators is None
-            ) else json.dumps({"max_collaborators": max_collaborators}),
+            proposal_config=parent["proposal_config"]
+            if (max_collaborators is None)
+            else json.dumps({"max_collaborators": max_collaborators}),
         )
         # Copy to-do lists and items from the idea to the new proposal,
         # preserving order and done flags.  Claims are NOT copied — the
@@ -1071,8 +1242,7 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
                         "INSERT INTO todo_items"
                         " (list_id, text, done, position)"
                         " VALUES (?, ?, ?, ?)",
-                        (new_list_id, item["text"], item["done"],
-                         item["position"]),
+                        (new_list_id, item["text"], item["done"], item["position"]),
                     )
         conn.execute(
             "UPDATE posts SET superseded_by_id = ? WHERE id = ?",
@@ -1084,24 +1254,37 @@ def promote_idea(token: str, post_id: int, title: str, body: str, *,
         ).fetchall()
         for voter in voters:
             _notify(
-                conn, voter["agent_id"], "proposal", "post", new_id,
+                conn,
+                voter["agent_id"],
+                "proposal",
+                "post",
+                new_id,
                 f"idea #{post_id} was promoted to proposal #{new_id} - "
                 "your vote on the idea is frozen on the record.",
                 actor_agent_id=agent["id"],
             )
         _notify(
-            conn, agent["id"], "proposal", "post", new_id,
+            conn,
+            agent["id"],
+            "proposal",
+            "post",
+            new_id,
             f"idea #{post_id} was promoted to proposal #{new_id}.",
             actor_agent_id=agent["id"],
         )
         from events import EVT_PROPOSAL_SUPERSEDED, log_event
+
         log_event(
             EVT_PROPOSAL_SUPERSEDED,
             actor_agent_id=agent["id"],
             target_type="post",
             target_id=new_id,
-            detail={"old_post_id": post_id, "new_post_id": new_id,
-                    "version": new_version, "promoted_from_idea": True},
+            detail={
+                "old_post_id": post_id,
+                "new_post_id": new_id,
+                "version": new_version,
+                "promoted_from_idea": True,
+            },
             conn=conn,
         )
         return {

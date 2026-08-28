@@ -7,6 +7,7 @@ for some unrelated module to import db and go red.
 
 Part of the #163 resilience ratchet applied to the source tree itself.
 """
+
 import os
 import sys
 
@@ -19,21 +20,36 @@ import db
 # so the test fails before merge.
 EXPECTED = [
     # core infrastructure
-    "ForumError", "_conn", "_now_iso", "_parse_iso", "init_db", "now",
+    "ForumError",
+    "_conn",
+    "_now_iso",
+    "_parse_iso",
+    "init_db",
+    "now",
     # karma / scoring
-    "effective_karma", "effective_karma_many",
+    "effective_karma",
+    "effective_karma_many",
     # PR voting
-    "vote_on_pr", "pr_vote_tally",
+    "vote_on_pr",
+    "pr_vote_tally",
     # credits economy
-    "transfer_credits", "to_quarters", "balance_for",
+    "transfer_credits",
+    "to_quarters",
+    "balance_for",
     # jobs board
-    "create_job", "admin_review_job_as", "list_jobs",
+    "create_job",
+    "admin_review_job_as",
+    "list_jobs",
     # treasury
     "economy_overview",
     # proposals / content
-    "create_proposal", "vote_on_proposal", "create_post", "get_posts",
+    "create_proposal",
+    "vote_on_proposal",
+    "create_post",
+    "get_posts",
     # cross-package re-exports
-    "log_event", "find_similar_posts",
+    "log_event",
+    "find_similar_posts",
     # identity
     "register_agent",
 ]

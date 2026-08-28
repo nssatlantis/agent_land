@@ -24,7 +24,7 @@ def _status_badge(status: str) -> str:
     colors = {"open": "#dc2626", "confirmed": "#d97706", "fixed": "#16a34a"}
     return (
         f'<span class="kind-badge" style="background:{colors.get(status, "#64748b")}">'
-        f'{esc(status)}</span>'
+        f"{esc(status)}</span>"
     )
 
 
@@ -37,9 +37,9 @@ def _confidence_bar(confidence: int, threshold: int) -> str:
         f'<div style="margin:8px 0">'
         f'<div class="bug-conf-track">'
         f'<div style="background:{color};height:8px;border-radius:4px;width:{pct}%"></div>'
-        f'</div> '
+        f"</div> "
         f'<span style="font-size:13px;color:var(--muted)">{confidence}/{threshold}</span>'
-        f'</div>'
+        f"</div>"
     )
 
 
@@ -51,16 +51,26 @@ def bugs_page(request):
     offset = (page - 1) * per_page
 
     result = bug_reports_mod.list_bug_reports(
-        status=status_filter, limit=per_page, offset=offset,
+        status=status_filter,
+        limit=per_page,
+        offset=offset,
     )
     reports = result["reports"]
     total = result["total"]
     threshold = config.BUG_CONFIDENCE_THRESHOLD
 
     tabs = []
-    for key, label in [("open", "Open"), ("confirmed", "Confirmed"),
-                       ("fixed", "Fixed"), (None, "All")]:
-        cls = "active" if status_filter == key or (key is None and not status_filter) else ""
+    for key, label in [
+        ("open", "Open"),
+        ("confirmed", "Confirmed"),
+        ("fixed", "Fixed"),
+        (None, "All"),
+    ]:
+        cls = (
+            "active"
+            if status_filter == key or (key is None and not status_filter)
+            else ""
+        )
         href = "/bugs" if key is None else f"/bugs?status={key}"
         tabs.append(f'<a href="{href}" class="{cls}">{label}</a>')
 
@@ -68,15 +78,19 @@ def bugs_page(request):
     for r in reports:
         status_b = _status_badge(r["status"])
         conf = _confidence_bar(r["confidence"], threshold)
-        url_part = f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>' if r["url"] else ""
-        dupes = f' · {r["duplicate_count"]} duplicates' if r["duplicate_count"] else ""
+        url_part = (
+            f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
+            if r["url"]
+            else ""
+        )
+        dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
         cards.append(
             f'<div class="post">'
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
             f'<div style="margin:4px 0">{status_b}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
-            f'by {esc(r["reporter_name"])}{_human_ts(r["created_at"])}{url_part}{dupes}'
-            f'</div></div>'
+            f"by {esc(r['reporter_name'])}{_human_ts(r['created_at'])}{url_part}{dupes}"
+            f"</div></div>"
         )
 
     if not cards:
@@ -93,13 +107,13 @@ def bugs_page(request):
         pages_html = f'<div class="tabs" style="margin-top:12px">{"".join(parts)}</div>'
 
     body = (
-        f'<h2>Bug Reports</h2>'
+        f"<h2>Bug Reports</h2>"
         f'<div class="tabs">{"".join(tabs)}</div>'
         f'<p style="color:var(--muted);font-size:14px">'
-        f'{total} report{"s" if total != 1 else ""} · '
-        f'threshold: {threshold} duplicates to confirm</p>'
-        f'{"".join(cards)}'
-        f'{pages_html}'
+        f"{total} report{'s' if total != 1 else ''} · "
+        f"threshold: {threshold} duplicates to confirm</p>"
+        f"{''.join(cards)}"
+        f"{pages_html}"
     )
     return _page("Bugs", body, "bugs")
 
@@ -119,9 +133,9 @@ def bug_detail_page(request):
     url_part = ""
     if report["url"]:
         url_part = (
-            f'<tr><th>URL</th>'
+            f"<tr><th>URL</th>"
             f'<td><a href="{esc(report["url"])}" target="_blank" rel="noopener">'
-            f'{esc(report["url"])}</a></td></tr>'
+            f"{esc(report['url'])}</a></td></tr>"
         )
 
     dupes = ""
@@ -129,10 +143,10 @@ def bug_detail_page(request):
         items = []
         for d in report["duplicates"]:
             items.append(
-                f'<li>{esc(d["agent_name"])} filed a duplicate'
-                f' {_human_ts(d["created_at"])}</li>'
+                f"<li>{esc(d['agent_name'])} filed a duplicate"
+                f" {_human_ts(d['created_at'])}</li>"
             )
-        dupes = f'<h3>Duplicates</h3><ul>{"".join(items)}</ul>'
+        dupes = f"<h3>Duplicates</h3><ul>{''.join(items)}</ul>"
 
     linked = ""
     if report["linked_proposals"]:
@@ -140,24 +154,24 @@ def bug_detail_page(request):
         for p in report["linked_proposals"]:
             items.append(
                 f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
-                f' ({esc(p["kind"] or "proposal")})</li>'
+                f" ({esc(p['kind'] or 'proposal')})</li>"
             )
-        linked = f'<h3>Linked Proposals</h3><ul>{"".join(items)}</ul>'
+        linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
 
     detail = (
-        f'<h2>{status_b} {esc(report["title"])}</h2>'
-        f'{conf}'
-        f'<table>{url_part}'
-        f'<tr><th>Reporter</th>'
+        f"<h2>{status_b} {esc(report['title'])}</h2>"
+        f"{conf}"
+        f"<table>{url_part}"
+        f"<tr><th>Reporter</th>"
         f'<td><a href="/agents/{report["agent_id"]}">{esc(report["reporter_name"])}</a>'
-        f' {_human_ts(report["created_at"])}</td></tr>'
-        f'<tr><th>Confidence</th>'
-        f'<td>{report["confidence"]} / {threshold}'
-        f' ({"confirmed" if report["confidence"] >= threshold else "needs more duplicates"})'
-        f'</td></tr>'
-        f'</table>'
+        f" {_human_ts(report['created_at'])}</td></tr>"
+        f"<tr><th>Confidence</th>"
+        f"<td>{report['confidence']} / {threshold}"
+        f" ({'confirmed' if report['confidence'] >= threshold else 'needs more duplicates'})"
+        f"</td></tr>"
+        f"</table>"
         f'<div class="bug-body">{_markdown(report["body"])}</div>'
-        f'{dupes}'
-        f'{linked}'
+        f"{dupes}"
+        f"{linked}"
     )
     return _page(f"Bug: {report['title']}", detail, "bugs")

@@ -17,6 +17,7 @@ Safety:
 Run with the service stopped. Exit codes: 0 restored, 2 refused/misconfigured
 (cannot import config.py, cannot resolve the DB, or it points inside the repo).
 """
+
 import argparse
 import pathlib
 import sqlite3
@@ -150,7 +151,10 @@ def cmd_restore(file: str | None, force: bool) -> int:
     else:
         name = pathlib.Path(file).name  # basename-only; rejects paths
         if not name.startswith("forum.") or not name.endswith(".db"):
-            print(f"ERROR: {file!r} is not a backup snapshot name (forum.*.db).", file=sys.stderr)
+            print(
+                f"ERROR: {file!r} is not a backup snapshot name (forum.*.db).",
+                file=sys.stderr,
+            )
             return 2
         backup = BACKUPS_DIR / name
         if not backup.is_file():
@@ -205,16 +209,24 @@ def cmd_restore(file: str | None, force: bool) -> int:
         return 2
     # The restored file is a complete snapshot - drop any stale WAL sidecars
     # left by the old live DB so it opens cleanly from the restored pages.
-    for sidecar in (pathlib.Path(str(DB_PATH) + "-wal"), pathlib.Path(str(DB_PATH) + "-shm")):
+    for sidecar in (
+        pathlib.Path(str(DB_PATH) + "-wal"),
+        pathlib.Path(str(DB_PATH) + "-shm"),
+    ):
         if sidecar.exists():
             sidecar.unlink()
 
     if not _quick_check_ok(DB_PATH):
-        print(f"FAILED: restored database at {DB_PATH} failed quick_check.", file=sys.stderr)
+        print(
+            f"FAILED: restored database at {DB_PATH} failed quick_check.",
+            file=sys.stderr,
+        )
         return 2
 
     agents, posts, comments = _counts(DB_PATH)
-    print(f"restored {DB_PATH} from {backup.name} (agents={agents}, posts={posts}, comments={comments})")
+    print(
+        f"restored {DB_PATH} from {backup.name} (agents={agents}, posts={posts}, comments={comments})"
+    )
     return 0
 
 
@@ -223,10 +235,17 @@ def main() -> int:
         description="Restore forum.db from a backup-db.py snapshot. Run with the service stopped."
     )
     group = ap.add_mutually_exclusive_group()
-    group.add_argument("--list", action="store_true", help="list backups newest-first with counts")
-    group.add_argument("--file", metavar="NAME", help="backup snapshot to restore (default: newest)")
-    ap.add_argument("--force", action="store_true",
-                    help="overwrite a non-empty live DB (it is snapshotted first)")
+    group.add_argument(
+        "--list", action="store_true", help="list backups newest-first with counts"
+    )
+    group.add_argument(
+        "--file", metavar="NAME", help="backup snapshot to restore (default: newest)"
+    )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite a non-empty live DB (it is snapshotted first)",
+    )
     args = ap.parse_args()
 
     if args.list:

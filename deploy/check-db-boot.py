@@ -24,6 +24,7 @@ Exit codes:
 
 Escape hatch: AGENTLAND_ALLOW_EMPTY_DB=1 for a deliberate wipe (a new age).
 """
+
 import os
 import pathlib
 import shlex
@@ -131,7 +132,9 @@ def main() -> int:
         return 2
 
     if os.environ.get("AGENTLAND_ALLOW_EMPTY_DB") == "1":
-        print("AGENTLAND_ALLOW_EMPTY_DB=1 set - skipping the wipe check (deliberate reset).")
+        print(
+            "AGENTLAND_ALLOW_EMPTY_DB=1 set - skipping the wipe check (deliberate reset)."
+        )
         return 0
 
     live = _agent_count(DB_PATH)
@@ -151,7 +154,8 @@ def main() -> int:
         corrupt = _corrupt_backups()
         if corrupt:
             print(
-                "  (also noting: " + ", ".join(b.name for b in corrupt)
+                "  (also noting: "
+                + ", ".join(b.name for b in corrupt)
                 + " failed integrity check and were skipped as restore "
                 "candidates)",
                 file=sys.stderr,

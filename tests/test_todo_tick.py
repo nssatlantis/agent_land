@@ -6,6 +6,7 @@ items sit behind a live PR, todo_open_items rides on repo_my_proposals /
 assigned rows, and proposal_todo_reminder feeds repo_propose_change's
 response.
 """
+
 import os
 import sys
 import tempfile
@@ -17,7 +18,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup, init  # noqa: E402
+from tests._setup import db, init, setup  # noqa: E402
 
 
 def main():
@@ -29,9 +30,13 @@ def main():
     # -- 1. tick_todo_item basics -----------------------------------------
     proposal = db.create_proposal(author["token"], "Tick loop", "Body.")
     pid = proposal["post_id"]
-    db.set_todos_for_post(author["token"], pid, [
-        {"title": "Work", "items": [{"text": "ship A"}, {"text": "ship B"}]},
-    ])
+    db.set_todos_for_post(
+        author["token"],
+        pid,
+        [
+            {"title": "Work", "items": [{"text": "ship A"}, {"text": "ship B"}]},
+        ],
+    )
     items = [it["id"] for it in db.get_todos_for_post(pid)[0]["items"]]
     out = db.tick_todo_item(author["token"], pid, items[0])
     assert out["done"] is True and out["item_id"] == items[0], out
@@ -41,8 +46,7 @@ def main():
     with db._conn() as conn:
         edits = db._todo_edits_for(conn, pid)
         n_events = conn.execute(
-            "SELECT COUNT(*) FROM events WHERE kind = 'todo_edited'"
-            " AND target_id = ?",
+            "SELECT COUNT(*) FROM events WHERE kind = 'todo_edited' AND target_id = ?",
             (pid,),
         ).fetchone()[0]
     assert len(edits) == 2, "tick records an edit trail entry"
@@ -66,8 +70,9 @@ def main():
         db.tick_todo_item(outsider["token"], pid, items[0])
         raise AssertionError("outsider tick should fail")
     except Exception as exc:
-        assert "author" in str(exc) or "delegate" in str(exc) or \
-            "claimer" in str(exc), exc
+        assert (
+            "author" in str(exc) or "delegate" in str(exc) or "claimer" in str(exc)
+        ), exc
 
     # Ordinary post refused; unknown item refused; bad done type refused.
     plain = db.create_post(outsider["token"], "Not a proposal", "Body.")
@@ -89,13 +94,19 @@ def main():
 
     # -- 3. Collaborative claimer may tick their own item -------------------
     collab = db.create_proposal(
-        author["token"], "Collab tick loop", "Body.", collaborative=True,
+        author["token"],
+        "Collab tick loop",
+        "Body.",
+        collaborative=True,
     )
     cpid = collab["post_id"]
-    db.set_todos_for_post(author["token"], cpid, [
-        {"title": "Split", "items": [{"text": "part one"},
-                                     {"text": "part two"}]},
-    ])
+    db.set_todos_for_post(
+        author["token"],
+        cpid,
+        [
+            {"title": "Split", "items": [{"text": "part one"}, {"text": "part two"}]},
+        ],
+    )
     db.join_proposal(helper["token"], cpid)
     citems = [it["id"] for it in db.get_todos_for_post(cpid)[0]["items"]]
     claim = db.claim_todo_item(helper["token"], cpid, citems[0])
@@ -123,10 +134,13 @@ def main():
     # (a) Unticked items + live PR fires, with the structured sibling.
     live = db.create_proposal(author["token"], "Live PR loop", "Body.")
     lpid = live["post_id"]
-    db.set_todos_for_post(author["token"], lpid, [
-        {"title": "Remainder", "items": [{"text": "polish"},
-                                         {"text": "tests"}]},
-    ])
+    db.set_todos_for_post(
+        author["token"],
+        lpid,
+        [
+            {"title": "Remainder", "items": [{"text": "polish"}, {"text": "tests"}]},
+        ],
+    )
     with db._conn() as conn:
         conn.execute(
             "INSERT INTO proposal_links (pr_number, post_id,"
@@ -136,22 +150,25 @@ def main():
     who = db.whoami(author["token"])
     prof = db.my_profile(author["token"])
     assert "proposal_todo_note" in who, list(who.keys())
-    assert "unticked to-do item" in who["proposal_todo_note"], \
-        who["proposal_todo_note"]
-    assert "tick_todo_item(post_id, item_id)" in who["proposal_todo_note"], \
-        who["proposal_todo_note"]
+    assert "unticked to-do item" in who["proposal_todo_note"], who["proposal_todo_note"]
+    assert "tick_todo_item(post_id, item_id)" in who["proposal_todo_note"], who[
+        "proposal_todo_note"
+    ]
     assert who["proposal_todo_note"] == prof["proposal_todo_note"]
     assert who.get("todo_open_items") == prof.get("todo_open_items"), who
     assert any(
-        e["post_id"] == lpid and e["open_items"] == 2
-        for e in who["todo_open_items"]
+        e["post_id"] == lpid and e["open_items"] == 2 for e in who["todo_open_items"]
     ), who.get("todo_open_items")
 
     # (b) Unticked items but no live PR stays quiet about that proposal.
     quiet = db.create_proposal(author["token"], "No PR yet", "Body.")
-    db.set_todos_for_post(author["token"], quiet["post_id"], [
-        {"title": "Plan", "items": [{"text": "someday"}]},
-    ])
+    db.set_todos_for_post(
+        author["token"],
+        quiet["post_id"],
+        [
+            {"title": "Plan", "items": [{"text": "someday"}]},
+        ],
+    )
     who2 = db.whoami(author["token"])
     assert not any(
         e["post_id"] == quiet["post_id"] for e in who2.get("todo_open_items", [])
@@ -184,14 +201,19 @@ def main():
     bare = db.create_proposal(author["token"], "No lists at all", "Body.")
     assert db.proposal_todo_reminder(bare["post_id"]) is None
     locked_pid = pid
-    db.set_todos_for_post(author["token"], v2["post_id"], [
-        {"title": "Again", "items": [{"text": "x"}]},
-    ])
+    db.set_todos_for_post(
+        author["token"],
+        v2["post_id"],
+        [
+            {"title": "Again", "items": [{"text": "x"}]},
+        ],
+    )
     assert db.proposal_todo_reminder(v2["post_id"]) is not None
     _ = locked_pid, bare
 
     # -- 8. Review etiquette names the to-do diff ----------------------------
     from db._nudges import _REVIEW_ETIQUETTE
+
     assert "to-do list" in _REVIEW_ETIQUETTE, _REVIEW_ETIQUETTE
     assert "get_todos" in _REVIEW_ETIQUETTE, _REVIEW_ETIQUETTE
 
