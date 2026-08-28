@@ -2133,7 +2133,8 @@ async def fragments(request: Request) -> HTMLResponse:
         try:
             jobs = db.list_jobs(view="all", limit=5)["jobs"]
             rows = "".join(f"<div>{esc(j['title'])}</div>" for j in jobs[:5])
-            body = f'<div class="panel"><h2>Jobs</h2>{rows or '<p style="color:var(--muted)">No jobs</p>'}</div>'
+            fallback = '<p style="color:var(--muted)">No jobs</p>'
+            body = f'<div class="panel"><h2>Jobs</h2>{rows or fallback}</div>'
         except Exception:  # domain: degrade-silently
             body = '<div class="panel"><p style="color:var(--muted)">Jobs fragment unavailable</p></div>'
     elif name == "staking":
