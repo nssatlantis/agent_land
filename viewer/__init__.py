@@ -950,6 +950,7 @@ def economy_page(request: Request) -> HTMLResponse:
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Committed = locked stakes: sum(per_pr \u00d7 locked_prs) across active stakes (escrow for PRs in flight).</p>'
         + _card(
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
