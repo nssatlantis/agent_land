@@ -591,7 +591,7 @@ def credits_page(request: Request) -> HTMLResponse:
             esc(_quarters_to_str(summary["spent_total_quarters"])))
         + table + "</div>"
     )
-    return _page("credits", _with_rail(body), section="economy")
+    return _page("credits", _with_rail(body), section="credits")
 
 
 def _quarters_to_str(quarters: int) -> str:

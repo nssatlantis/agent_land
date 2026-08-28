@@ -1,11 +1,13 @@
 """Tests for the per-item to-do tools: add_todo_item / update_todo_item /
-delete_todo_item.
+delete_todo_item / move_todo_item.
 
 These close the gap that forced agents onto the delete-by-omission bulk
-tools (update_todo_list / set_todos_for_post): an agent can now add, rename or
-remove exactly one item without resending (and risking dropping) the rest.
-Every operation requires the owning list_id as a cross-check - the item is
-looked up by id AND confirmed to belong to that list on that proposal.
+tools (update_todo_list / set_todos_for_post): an agent can now add, rename,
+remove or move exactly one item without resending (and risking dropping) the
+rest. Every operation requires the owning list_id as a cross-check - the item
+is looked up by id AND confirmed to belong to that list on that proposal.
+move_todo_item's batch mode (moves=[...]) relocates several items at once,
+atomically.
 """
 import os
 import sys
@@ -291,6 +293,162 @@ def main():
                        only["id"], cap_full["id"])
     assert "at most" in msg, f"full destination refused: {msg}"
     print("  move_todo_item refuses a full destination: ok")
+
+    # -- 15. move_todo_items batch: N items in one atomic call ------------
+    bat = db.create_proposal(alpha["token"], "Batch", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], bat, [
+        {"title": "Src", "items": [{"text": "B1"}, {"text": "B2"}, {"text": "B3"},
+                                   {"text": "B4"}]},
+        {"title": "Dst", "items": [{"text": "X"}]},
+    ])
+    bat_lists = db.get_todos_for_post(bat)
+    bat_src = [l for l in bat_lists if l["title"] == "Src"][0]
+    bat_dst = [l for l in bat_lists if l["title"] == "Dst"][0]
+    src_items = bat_src["items"]
+    batch = [
+        {"list_id": bat_src["id"], "item_id": it["id"],
+         "to_list_id": bat_dst["id"]}
+        for it in src_items
+    ]
+    out = db.move_todo_items(alpha["token"], bat, batch)
+    assert out["post_id"] == bat
+    assert [m["item_id"] for m in out["moved"]] == [it["id"] for it in src_items]
+    assert all(m["text"] for m in out["moved"])
+    bat_after = db.get_todos_for_post(bat)
+    bat_src2 = [l for l in bat_after if l["id"] == bat_src["id"]][0]
+    bat_dst2 = [l for l in bat_after if l["id"] == bat_dst["id"]][0]
+    assert bat_src2["items"] == [], "whole source emptied by the batch"
+    assert [i["text"] for i in bat_dst2["items"]] == \
+        ["X", "B1", "B2", "B3", "B4"], \
+        "moved items append at the destination end in batch order"
+    print("  move_todo_items batch relocates N items atomically: ok")
+
+    # -- 16. batch is atomic: one invalid move refuses the whole call -----
+    ato = db.create_proposal(alpha["token"], "Ato", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], ato, [
+        {"title": "S", "items": [{"text": "A1"}, {"text": "A2"}, {"text": "A3"}]},
+        {"title": "T", "items": []},
+    ])
+    ato_lists = db.get_todos_for_post(ato)
+    ato_s = [l for l in ato_lists if l["title"] == "S"][0]
+    ato_t = [l for l in ato_lists if l["title"] == "T"][0]
+    a1 = [i for i in ato_s["items"] if i["text"] == "A1"][0]
+    a2 = [i for i in ato_s["items"] if i["text"] == "A2"][0]
+    a3 = [i for i in ato_s["items"] if i["text"] == "A3"][0]
+    msg = expect_error(db.move_todo_items, alpha["token"], ato, [
+        {"list_id": ato_s["id"], "item_id": a1["id"],
+         "to_list_id": ato_t["id"]},
+        {"list_id": ato_s["id"], "item_id": a2["id"], "to_list_id": 999999},
+        {"list_id": ato_s["id"], "item_id": a3["id"],
+         "to_list_id": ato_t["id"]},
+    ])
+    assert "no to-do list" in msg
+    ato_after = db.get_todos_for_post(ato)
+    ato_s2 = [l for l in ato_after if l["id"] == ato_s["id"]][0]
+    ato_t2 = [l for l in ato_after if l["id"] == ato_t["id"]][0]
+    assert [i["text"] for i in ato_s2["items"]] == ["A1", "A2", "A3"], \
+        "nothing moved when the batch refused"
+    assert ato_t2["items"] == [], "destination untouched after a refused batch"
+    with db._conn() as conn:
+        ato_edits = db._todo_edits_for(conn, ato)
+    assert len(ato_edits) == 1, "a refused batch writes no edit-trail row"
+    print("  batch atomicity: one bad move refuses the whole call: ok")
+
+    # -- 17. batch carries live claims with the items ----------------------
+    batc = db.create_proposal(alpha["token"], "BatchClaim", "b",
+                              collaborative=True)["post_id"]
+    db.set_todos_for_post(alpha["token"], batc, [
+        {"title": "S", "items": [{"text": "held"}, {"text": "free"}]},
+        {"title": "T", "items": []},
+    ])
+    batc_lists = db.get_todos_for_post(batc)
+    batc_s = [l for l in batc_lists if l["title"] == "S"][0]
+    batc_t = [l for l in batc_lists if l["title"] == "T"][0]
+    held = [i for i in batc_s["items"] if i["text"] == "held"][0]
+    free = [i for i in batc_s["items"] if i["text"] == "free"][0]
+    db.join_proposal(beta["token"], batc)
+    db.claim_todo_item(beta["token"], batc, held["id"])
+    db.move_todo_items(alpha["token"], batc, [
+        {"list_id": batc_s["id"], "item_id": held["id"],
+         "to_list_id": batc_t["id"]},
+        {"list_id": batc_s["id"], "item_id": free["id"],
+         "to_list_id": batc_t["id"]},
+    ])
+    batc_after = db.get_todos_for_post(batc)
+    batc_t2 = [l for l in batc_after if l["id"] == batc_t["id"]][0]
+    landed = [i for i in batc_t2["items"] if i["text"] == "held"][0]
+    assert landed.get("claimed_by") == "beta", \
+        "a live claim rides along in a batch move"
+    print("  batch moves carry live claims with the items: ok")
+
+    # -- 18. batch guards: cap / empty / duplicate / same-list / non-int ---
+    bcap = db.create_proposal(alpha["token"], "BatchCap", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], bcap, [
+        {"title": "S1", "items": [{"text": f"s{n}"} for n in range(20)]},
+        {"title": "S2", "items": [{"text": "z"}]},
+        {"title": "T", "items": []},
+    ])
+    bcap_lists = db.get_todos_for_post(bcap)
+    s1 = [l for l in bcap_lists if l["title"] == "S1"][0]
+    s2 = [l for l in bcap_lists if l["title"] == "S2"][0]
+    t = [l for l in bcap_lists if l["title"] == "T"][0]
+    big = ([{"list_id": s1["id"], "item_id": it["id"],
+             "to_list_id": t["id"]} for it in s1["items"]]
+           + [{"list_id": s2["id"], "item_id": s2["items"][0]["id"],
+               "to_list_id": t["id"]}])
+    assert len(big) == 21
+    msg = expect_error(db.move_todo_items, alpha["token"], bcap, big)
+    assert "at most 20" in msg, f"batch cap enforced: {msg}"
+    msg = expect_error(db.move_todo_items, alpha["token"], bcap, [])
+    assert "non-empty" in msg, f"empty batch refused: {msg}"
+    first = s1["items"][0]
+    msg = expect_error(db.move_todo_items, alpha["token"], bcap, [
+        {"list_id": s1["id"], "item_id": first["id"], "to_list_id": t["id"]},
+        {"list_id": s1["id"], "item_id": first["id"], "to_list_id": t["id"]},
+    ])
+    assert "more than once" in msg, f"duplicate item refused: {msg}"
+    msg = expect_error(db.move_todo_items, alpha["token"], bcap, [
+        {"list_id": s1["id"], "item_id": first["id"], "to_list_id": s1["id"]},
+    ])
+    assert "already on" in msg, f"same-list move refused: {msg}"
+    msg = expect_error(db.move_todo_items, alpha["token"], bcap, [
+        {"list_id": s1["id"], "item_id": first["id"], "to_list_id": "T"},
+    ])
+    assert "integers" in msg, f"non-integer move refused: {msg}"
+    print("  batch guards cap/empty/duplicate/same-list/non-integer: ok")
+
+    # -- 19. batch destination capacity enforced across the batch -----------
+    bfull = db.create_proposal(alpha["token"], "BatchFull", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], bfull, [
+        {"title": "S",
+         "items": [{"text": f"s{n}"} for n in range(config.TODO_MAX_ITEMS)]},
+        {"title": "T", "items": [{"text": "taken"}]},
+    ])
+    bfull_lists = db.get_todos_for_post(bfull)
+    bfull_s = [l for l in bfull_lists if l["title"] == "S"][0]
+    bfull_t = [l for l in bfull_lists if l["title"] == "T"][0]
+    all_s = [{"list_id": bfull_s["id"], "item_id": it["id"],
+              "to_list_id": bfull_t["id"]} for it in bfull_s["items"]]
+    msg = expect_error(db.move_todo_items, alpha["token"], bfull, all_s)
+    assert "would exceed" in msg, f"batch destination capacity enforced: {msg}"
+    print("  batch destination capacity enforced across the batch: ok")
+
+    # -- 20. batch respects the author-or-delegate gate ---------------------
+    bg = db.create_proposal(alpha["token"], "BatchGate", "b")["post_id"]
+    db.set_todos_for_post(alpha["token"], bg, [
+        {"title": "S", "items": [{"text": "Q"}]}, {"title": "T", "items": []},
+    ])
+    bg_lists = db.get_todos_for_post(bg)
+    bg_s = [l for l in bg_lists if l["title"] == "S"][0]
+    bg_t = [l for l in bg_lists if l["title"] == "T"][0]
+    q = bg_s["items"][0]
+    assert "only the author or the current delegate" in expect_error(
+        db.move_todo_items, beta["token"], bg, [
+            {"list_id": bg_s["id"], "item_id": q["id"],
+             "to_list_id": bg_t["id"]},
+        ]
+    ), "non-delegate cannot run a batch move"
+    print("  batch move author-or-delegate gate holds: ok")
 
     print("\ntest_todo_item_ops: all assertions passed")
 
