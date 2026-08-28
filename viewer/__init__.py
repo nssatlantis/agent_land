@@ -48,6 +48,7 @@ import logutil
 from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _author,
+    _burn_gauge,
     _pager,
     _stake_panel,
     _stake_page_rows,
@@ -1092,6 +1093,7 @@ def economy_page(request: Request) -> HTMLResponse:
         )
         + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
+        + _burn_gauge(overview["total_supply_quarters"], overview["treasury_quarters"], overview["flows"]["all_time"]["burned_quarters"])
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
