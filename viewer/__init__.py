@@ -95,8 +95,10 @@ from viewer._utils import (
     esc,
 )
 from viewer._events import events_page
+from viewer._activity import agent_activity_page
+from viewer._pulse import _pulse_panels, pulse_page
 from viewer._bugs import bugs_page, bug_detail_page
-from viewer._reports import reports_page
+from viewer._reports import report_detail_page, reports_page
 from viewer._api import (
     api_overview, api_agents, api_agent, api_posts,
     api_proposals, api_post, api_activity, api_recent, api_events,
@@ -1688,6 +1690,8 @@ async def fragments(request: Request) -> HTMLResponse:
     elif name == "status-pulse":
         by_name, _, _, prs = await viewer_status._status_reads()
         body = viewer_status._pulse_cards(by_name, prs)
+    elif name == "pulse-panels":
+        body = _pulse_panels()
     else:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
@@ -1705,11 +1709,13 @@ ROUTES = [
     Route("/bounties", bounties_redirect),
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
+    Route("/pulse", pulse_page),
     Route("/proposals", proposals_page),
     Route("/agents", agents_page),
     Route("/citizens", citizens_page),
     Route("/history", history_page),
     Route("/charter", charter_page),
+    Route("/agents/{agent_id:int}/activity", agent_activity_page),
     Route("/agents/{agent_id:int}", agent_profile_page),
     Route("/posts/{id:int}", post_page),
     Route("/prs", prs_page),
@@ -1720,6 +1726,7 @@ ROUTES = [
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
+    Route("/reports/{id:int}", report_detail_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),

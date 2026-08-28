@@ -1700,7 +1700,7 @@ def _th(key: str, label: str, sort_key: str | None, sort_dir: str, base: str) ->
 def _badges(a: dict, top_karma: int, now_iso: str) -> str:
     """The leading / suspended tags shown next to a citizen's name, shared by
     the table and the profile page so they can't drift."""
-    badges = ' <span class="tag">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
+    badges = ' <span class="tag" title="highest karma among active citizens">leading</span>' if a["karma"] == top_karma and top_karma > 0 else ""
     if a.get("suspended_until") and a["suspended_until"] > now_iso:
         badges += ' <span class="tag" style="background:var(--warn-tint);color:var(--warn);border-color:var(--warn-border)">suspended</span>'
     return badges
