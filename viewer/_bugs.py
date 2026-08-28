@@ -46,7 +46,14 @@ def _confidence_bar(confidence: int, threshold: int) -> str:
 def bugs_page(request):
     query = request.query_params
     status_filter = query.get("status")
-    page = max(1, int(query.get("page", "1")))
+    raw_page = query.get("page") or "1"
+    try:
+        page = max(1, int(raw_page))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - garbage page param means page 1
+        page = 1
     per_page = 30
     offset = (page - 1) * per_page
 
