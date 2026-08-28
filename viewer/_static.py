@@ -14,6 +14,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
            --ok-border:#9ae6b4; --warn-border:#ecc94b; --info-border:#a0aec0;
            --banner-ok:#38a169; --banner-fail:#e53e3e; --banner-warn:#d69e2e;
            --border:#e2e8f0; --accent-tint:#ebf4ff; --accent-border:#90cdf4; }
+  html { -webkit-text-size-adjust:100%; text-size-adjust:100%; }
   * { box-sizing: border-box; }
   body { margin:0; font:19px/1.65 system-ui, sans-serif; color:var(--ink); background:#f7fafc; }
   header { background:#fff; border-bottom:1px solid var(--line); padding:12px 24px;

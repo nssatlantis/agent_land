@@ -175,8 +175,10 @@ def stake(
         from events import EVT_STAKE_CREATED, log_event
         cur = conn.execute(
             "INSERT INTO proposal_stakes"
-            " (proposal_id, staker_agent_id, per_pr, max_prs, currency)"
-            " VALUES (?, ?, ?, ?, ?)",
+            " (proposal_id, staker_agent_id, per_pr, max_prs, currency,"
+            "  created_at)"
+            " VALUES (?, ?, ?, ?, ?,"
+            "  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             (proposal_id, agent["id"], per_pr, max_prs, currency),
         )
         stake_id = cur.lastrowid
@@ -281,8 +283,9 @@ def admin_stake(
         cur = conn.execute(
             "INSERT INTO proposal_stakes"
             " (proposal_id, staker_agent_id, per_pr, max_prs, currency,"
-            "  admin_funded)"
-            " VALUES (?, NULL, ?, ?, ?, 1)",
+            "  admin_funded, created_at)"
+            " VALUES (?, NULL, ?, ?, ?, 1,"
+            "  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             (proposal_id, per_pr, max_prs, currency),
         )
         stake_id = cur.lastrowid
@@ -597,8 +600,9 @@ def lock_stakes_for_pr(
                 c.execute(
                     "INSERT INTO stake_locks"
                     " (stake_id, pr_number, agent_id, amount, status,"
-                    "  karma_spend_id)"
-                    " VALUES (?, ?, ?, ?, 'locked', ?)",
+                    "  karma_spend_id, created_at)"
+                    " VALUES (?, ?, ?, ?, 'locked', ?,"
+                    "  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                     (b["id"], pr_number, agent_id, b["per_pr"], spend_id),
                 )
             except sqlite3.IntegrityError:
@@ -789,8 +793,9 @@ def pay_stake_rewards(conn: sqlite3.Connection | None, pr_number: int) -> int:
                 else:
                     c.execute(
                         "INSERT INTO stake_rewards"
-                        " (stake_id, pr_number, agent_id, amount)"
-                        " VALUES (?, ?, ?, ?)",
+                        " (stake_id, pr_number, agent_id, amount, created_at)"
+                        " VALUES (?, ?, ?, ?,"
+                        "  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                         (lk["stake_id"], pr_number, lk["agent_id"],
                          lk["amount"]),
                     )

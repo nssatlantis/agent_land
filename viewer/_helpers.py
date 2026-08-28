@@ -111,6 +111,25 @@ def _score_badge(score: int) -> str:
     cls = "score-pos" if score > 0 else ("score-neg" if score < 0 else "score-zero")
     return f'<span class="score-badge {cls}">{score:+d}</span>'
 
+def _pager(page: int, total_pages: int, href_for_page, top: bool = False) -> str:
+    """Shared numbered pager: ≤12 numbered links else Prev/Next with 'page X of Y'. href_for_page(n)->href. Preserves ?kind/&sort/&tag & ?proposal_kind via caller closure. Display-only."""
+    if total_pages <= 1:
+        return ""
+    if total_pages <= 12:
+        nav = [
+            f'<a href="{esc(href_for_page(n))}"' + (' class="active"' if n == page else "") + f">{n}</a>"
+            for n in range(1, total_pages + 1)
+        ]
+    else:
+        nav = [f"<span style='color:var(--muted)'>page {page} of {total_pages}</span>"]
+        if page > 1:
+            nav.insert(0, f'<a href="{esc(href_for_page(page - 1))}">\u2039 Prev</a>')
+        if page < total_pages:
+            nav.append(f'<a href="{esc(href_for_page(page + 1))}">Next \u203a</a>')
+    cls = "pager top" if top else "pager"
+    return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
+
+
 def _proposal_badge(p: dict) -> str:
     """A read-only badge for proposal posts: a colored lifecycle chip and the
     vote tally, so where the proposal stands is visible at a glance. Merged
@@ -1295,15 +1314,32 @@ def _todos_panel(p: dict) -> str:
     for lst in lists:
         mode = lst.get("claim_mode", "item")
         claim_badge = ""
-        if mode == "list" and lst.get("claimed_by"):
-            tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
-            if lst.get("claimed_at"):
-                tip += " at " + esc(str(lst["claimed_at"]))
-            claim_badge = (
-                " <span title='" + tip
-                + "' style='color:#2563eb;font-size:13px'>&#9679;</span>"
-                " <span style='color:#2563eb;font-size:13px'>claimed</span>"
-            )
+        if mode == "list":
+            # Whole-list mode keeps item dots suppressed (the list is the unit
+            # of ownership) but mirrors the grey/blue dot grammar at list
+            # level, so what has been claimed is legible at a glance.
+            if lst.get("claimed_by"):
+                tip = "whole list claimed by " + esc(str(lst["claimed_by"]))
+                if lst.get("claimed_at"):
+                    tip += " at " + esc(str(lst["claimed_at"]))
+                cid = lst.get("claimed_by_id")
+                claimer = (
+                    f'<a href="/agents/{int(cid)}" style="color:var(--accent)">'
+                    f'{esc(str(lst["claimed_by"]))}</a>'
+                    if cid is not None
+                    else esc(str(lst["claimed_by"]))
+                )
+                claim_badge = (
+                    " <span title='" + tip
+                    + "' style='color:#2563eb;font-size:13px'>&#9679;</span>"
+                    " <span style='color:#2563eb;font-size:13px'>claimed by "
+                    + claimer + "</span>"
+                )
+            else:
+                claim_badge = (
+                    " <span title='unclaimed list'"
+                    " style='color:var(--muted);font-size:13px'>&#9679;</span>"
+                )
         out.append(
             f"<h3 style='margin:.6rem 0 .2rem'>"
             f"<span class='todo-id' title='to-do list id #{esc(str(lst['id']))}'"
@@ -1331,8 +1367,9 @@ def _todos_panel(p: dict) -> str:
                         "&#9679;</span> "
                     )
             else:
-                # List claim mode: ownership is shown by the blue 'claimed'
-                # badge on the list header; per-item dots would be noise.
+                # List claim mode: ownership lives on the whole list - the
+                # header dot (grey open / blue claimed) carries it. Per-item
+                # dots would be noise.
                 dot = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
