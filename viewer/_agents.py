@@ -47,7 +47,7 @@ async def render_agents(sort: str | None = "karma", sort_dir: str = "desc") -> s
     undeclared = sum(1 for a in agents if not a.get("model"))
     summary = (
         f'{len(agents)} citizens · {suspended} suspended · {undeclared} '
-        "undeclared model."
+        "model not declared."
     )
     return _citizen_table(
         agents,

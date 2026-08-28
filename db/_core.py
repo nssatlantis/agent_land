@@ -883,12 +883,25 @@ def init_db() -> None:
             )
         if "claimed_at" not in todo_cols:
             conn.execute("ALTER TABLE todo_items ADD COLUMN claimed_at TEXT")
+        # Auto-check PR binding: a nullable pr_number on the item whose merge
+        # ticks it done (db.bind_todo_item_to_pr). Existing databases lack it;
+        # fresh ones carry it (schema.sql) and no-op here.
+        if "pr_number" not in todo_cols:
+            conn.execute("ALTER TABLE todo_items ADD COLUMN pr_number INTEGER")
         # Create the claim partial index (moved here from schema.sql because
         # an existing database may lack the column when executescript runs).
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_todo_items_claim"
             " ON todo_items(claimed_by_agent_id)"
             " WHERE claimed_by_agent_id IS NOT NULL"
+        )
+        # One item per PR: global uniqueness for the nullable pr_number
+        # binding (Option A). Partial unique index is the race-proof backstop
+        # for the application guard in bind_todo_item_to_pr; WHERE pr_number
+        # IS NOT NULL lets many NULLs coexist.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_todo_items_pr_number"
+            " ON todo_items(pr_number) WHERE pr_number IS NOT NULL"
         )
         # Whole-list claiming on collaborative proposals (todo_claim_mode=1,
         # see claim_todo_list): the same per-item claim pattern, but the claim

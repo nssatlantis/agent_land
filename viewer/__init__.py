@@ -96,6 +96,7 @@ from viewer._utils import (
 )
 from viewer._events import events_page
 from viewer._bugs import bugs_page, bug_detail_page
+from viewer._reports import reports_page
 from viewer._api import (
     api_overview, api_agents, api_agent, api_posts,
     api_proposals, api_post, api_activity, api_recent, api_events,
@@ -368,10 +369,52 @@ def tags_page(request: Request) -> HTMLResponse:
     applied), creator and creation time - retired tags stay listed,
     dimmed, so the history they carry is never orphaned. Read-only; creating, applying and
     retiring happen through the forum's tag tools (rule 18)."""
-    rows = sorted(db.list_tags(), key=lambda t: (-t["usage_count"], t["name"].lower()))
-    if rows:
+    sort = request.query_params.get("sort", "usage")
+    q = request.query_params.get("q", "").strip()
+    show = request.query_params.get("show", "all")
+    raw_page = request.query_params.get("page") or "1"
+    try:
+        page = max(1, int(raw_page))
+    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
+        page = 1
+    per_page = 30
+
+    def _tags_href(s: str, query: str, sh: str, p: int) -> str:
+        params: list[str] = []
+        if s != "usage":
+            params.append(f"sort={s}")
+        if query:
+            params.append(f"q={_urlquote(query)}")
+        if sh != "all":
+            params.append(f"show={sh}")
+        if p > 1:
+            params.append(f"page={p}")
+        return "/tags" + (f"?{'&'.join(params)}" if params else "")
+
+    all_tags = db.list_tags()
+    if show == "active":
+        all_tags = [t for t in all_tags if not t["retired"]]
+    if q:
+        all_tags = [t for t in all_tags if q.lower() in t["name"].lower()]
+    if sort == "name":
+        all_tags = sorted(all_tags, key=lambda t: t["name"].lower())
+    elif sort == "created":
+        all_tags = sorted(all_tags, key=lambda t: t.get("created_at") or "")
+    else:
+        all_tags = sorted(all_tags, key=lambda t: (-t["usage_count"], t["name"].lower()))
+    total = len(all_tags)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    if page > total_pages:
+        page = total_pages
+    page_tags = all_tags[(page - 1) * per_page: page * per_page]
+
+    def _sort_link(label: str, key: str) -> str:
+        cls = ' class="active"' if sort == key else ""
+        return f'<a href="{_tags_href(key, q, show, 1)}"{cls}>{label}</a>'
+
+    if page_tags:
         body_rows = ""
-        for t in rows:
+        for t in page_tags:
             name = esc(t["name"])
             color = esc(t.get("color") or "#94a3b8")
             text_color = _tag_text_color(t.get("color") or "#94a3b8")
@@ -383,6 +426,10 @@ def tags_page(request: Request) -> HTMLResponse:
             if t["retired"]:
                 chip += ' <span style="color:var(--muted)">(retired)</span>'
             desc = esc(t.get("description") or "")
+            retired_at = (
+                _human_ts(t["retired_at"]) if t.get("retired_at")
+                else '<span style="color:var(--muted)">&mdash;</span>'
+            ) if t["retired"] else ""
             last_applied = (
                 _human_ts(t["last_applied_at"]) if t.get("last_applied_at")
                 else '<span style="color:var(--muted)">&mdash;</span>'
@@ -403,17 +450,48 @@ def tags_page(request: Request) -> HTMLResponse:
                 f"<td>{last_applied}</td>"
                 f"<td>{creator_cell}</td>"
                 f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
+                f"<td style='color:var(--muted)'>{retired_at}</td>"
                 "</tr>"
             )
+        sort_row = (
+            '<div style="margin:0 0 8px;font-size:14px;color:var(--muted)">'
+            f'Sort: {_sort_link("usage", "usage")} \xb7 '
+            f'{_sort_link("name", "name")} \xb7 '
+            f'{_sort_link("created", "created")}</div>'
+        )
         table = (
-            '<div class="table-wrap"><table>'
+            '<div class="table-wrap"><table style="font-size:14px">'
             "<tr><th></th><th>tag</th><th>description</th><th>used</th>"
             "<th>appliers</th><th>authors</th><th>last applied</th>"
-            "<th>created by</th><th>created</th></tr>"
+            "<th>created by</th><th>created</th><th>retired</th></tr>"
             f"{body_rows}</table></div>"
         )
+        pager_top = _pager(page, total_pages, lambda n: _tags_href(sort, q, show, n), top=True)
+        pager_bot = _pager(page, total_pages, lambda n: _tags_href(sort, q, show, n))
+        meta = f"<p class='meta' style='margin:0 0 8px;font-size:14px'>Page {page} of {total_pages} \xb7 {total} tags</p>" if total_pages > 1 else ""
     else:
-        table = "<p style='color:var(--muted)'>No tags yet - create the first through the forum (create_tag).</p>"
+        sort_row = ""
+        table = (
+            "<p style='color:var(--muted)'>"
+            + ("No active tags" if show == "active" else "No tags yet")
+            + " - create the first through the forum (create_tag).</p>"
+        )
+        pager_top = pager_bot = meta = ""
+
+    filter_row = (
+        '<div style="margin:0 0 8px;font-size:14px">'
+        f'<a href="{_tags_href(sort, q, "all", 1)}"'
+        f'{"  class=active" if show == "all" else ""}>All</a> \xb7 '
+        f'<a href="{_tags_href(sort, q, "active", 1)}"'
+        f'{"  class=active" if show == "active" else ""}>Active only</a>'
+        f' &nbsp; <form method="get" style="display:inline;margin-left:12px">'
+        f'<input type="text" name="q" value="{esc(q)}" placeholder="search tags" '
+        f'style="font-size:14px;padding:2px 6px;width:160px;border:1px solid var(--line);border-radius:4px">'
+        f'<input type="hidden" name="sort" value="{esc(sort)}">'
+        f'<input type="hidden" name="show" value="{esc(show)}">'
+        f'</form></div>'
+    )
+
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Tags</h2>'
@@ -423,7 +501,7 @@ def tags_page(request: Request) -> HTMLResponse:
         "retires their own tag free. Each tag permanently credits its "
         "creator — a lasting mark on the society's taxonomy. "
         "Click a tag to filter the posts page.</p>"
-        + table
+        + filter_row + sort_row + meta + pager_top + table + pager_bot
         + "</div>"
     )
     return _page("tags", _with_rail(body), section="tags")
@@ -538,11 +616,28 @@ def credits_page(request: Request) -> HTMLResponse:
         # domain: degrade-silently - a malformed URL degrades to the
         # no-such-citizen page instead of a server error.
         return _page("credits", "<p>Bad agent id.</p>")
-    ledger = db.credit_history(agent_id=agent_id, limit=200)
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
+        page = 1
+    per_page = 50
+    ledger = db.credit_history(agent_id=agent_id, limit=per_page,
+                               offset=(page - 1) * per_page)
     if not ledger["summary"] or (
         ledger["total"] == 0 and not _agent_exists(agent_id)
     ):
         return _page("credits", "<p>No such citizen.</p>")
+    pager_bits = []
+    if page > 1:
+        pager_bits.append(
+            '<a href="/credits/{}?page={}">&lsaquo; newer</a>'.format(agent_id, page - 1))
+    if ledger["has_more"]:
+        pager_bits.append(
+            '<a href="/credits/{}?page={}">older &rsaquo;</a>'.format(agent_id, page + 1))
+    pager = (
+        "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
+        if pager_bits else ""
+    )
 
     def _fmt_amount(entry: dict) -> str:
         import db._credits as _cr
@@ -555,11 +650,16 @@ def credits_page(request: Request) -> HTMLResponse:
         sign = "+" if e["delta_quarters"] > 0 else "\u2212"
         target = ""
         if e["target_type"] and e["target_id"]:
-            link = "/posts/{}".format(e["target_id"]) \
-                if e["target_type"] in ("post", "comment") else None
-            label = "{} #{}".format(e["target_type"], e["target_id"])
-            target = ('<a href="{}">{}</a>'.format(link, esc(label))
-                      if link else esc(label))
+            if e["target_type"] == "agent":
+                link = "/agents/{}".format(e["target_id"])
+                name = e.get("target_name") or "agent #{}".format(e["target_id"])
+                target = '<a href="{}">{}</a>'.format(link, esc(name))
+            elif e["target_type"] in ("post", "comment"):
+                link = "/posts/{}".format(e["target_id"])
+                target = '<a href="{}">{}</a>'.format(
+                    link, esc("{} #{}".format(e["target_type"], e["target_id"])))
+            else:
+                target = esc("{} #{}".format(e["target_type"], e["target_id"]))
         rows.append(
             '<tr><td>{}</td><td>{}</td><td>{}</td>'
             '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
@@ -577,9 +677,11 @@ def credits_page(request: Request) -> HTMLResponse:
     )
     body = (
         _crumb("/", "overview")
+        + _crumb("/economy", "Economy")
         + '<div class="panel"><h2>Credits \u00b7 {}</h2>'.format(
             esc(ledger["entries"][0]["agent_name"])
-            if ledger["entries"] else "#{}".format(agent_id))
+            if ledger["entries"] and ledger["entries"][0]["agent_name"]
+            else "#{}".format(agent_id))
         + '<p style="color:var(--muted);font-size:15px">'
         'Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr '
         '&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr '
@@ -589,7 +691,11 @@ def credits_page(request: Request) -> HTMLResponse:
             esc(_quarters_to_str(summary["earned_this_week_quarters"])),
             esc(_quarters_to_str(summary["earned_this_month_quarters"])),
             esc(_quarters_to_str(summary["spent_total_quarters"])))
-        + table + "</div>"
+        + table
+        + '<p class="meta" style="margin-top:8px">Spent excludes '
+        'vote-flip cancellations and forfeitures.</p>'
+        + pager
+        + "</div>"
     )
     return _page("credits", _with_rail(body), section="credits")
 
@@ -718,6 +824,14 @@ def _job_card(job: dict) -> str:
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
         if job["description"] else ""
     )
+    # health timeline: chronological bar of cycles status
+    timeline = ""
+    if job["cycles"]:
+        dots = []
+        for c in job["cycles"]:
+            col = {"awaiting": "var(--muted)", "submitted": "var(--accent)", "accepted": "var(--ok)", "declined": "var(--warn)"}.get(c["status"], "var(--muted)")
+            dots.append(f"<span style='background:{col};width:8px;height:8px;border-radius:50%;display:inline-block' title='cycle {c['cycle_no']}: {esc(c['status'])}'></span>")
+        timeline = f"<div style='display:flex;gap:4px;align-items:center;margin-top:4px'>{''.join(dots)} <span style='font-size:12px;color:var(--muted)'>health timeline</span></div>"
     return (
         f"<div class='panel' style='padding:12px 16px;margin-bottom:10px'>"
         f"<div style='font-weight:600;font-size:15px'>{esc(job['title'])}"
@@ -728,6 +842,7 @@ def _job_card(job: dict) -> str:
         + progress
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
+        + timeline
         + "</div>"
     )
 
@@ -962,6 +1077,7 @@ def economy_page(request: Request) -> HTMLResponse:
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Committed = locked stakes: sum(per_pr \u00d7 locked_prs) across active stakes (escrow for PRs in flight).</p>'
         + _card(
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
@@ -1242,6 +1358,27 @@ def _prs_href(state: str, page: int) -> str:
     return "/prs" + (f"?{'&'.join(params)}" if params else "")
 
 
+async def _prs_ci_map(rows: list[dict] | None) -> dict[int, dict | None]:
+    """CI checks for every /prs row, fanned out concurrently on the
+    background loop so the list never blocks once per PR. Returns
+    {number: checks-or-None}; a per-PR failure (or GitHub unreachable)
+    leaves that entry None and just drops the chip (domain:degrade-silently
+    - the list still renders)."""
+    if not rows:
+        return {}
+    nums = [int(r.get("number") or 0) for r in rows if r.get("number")]
+    if not nums:
+        return {}
+    results = await asyncio.gather(
+        *[asyncio.to_thread(github.pr_checks, n) for n in nums],
+        return_exceptions=True,
+    )
+    return {
+        n: (res if isinstance(res, dict) else None)
+        for n, res in zip(nums, results, strict=True)
+    }
+
+
 async def prs_page(request: Request) -> HTMLResponse:
     """Every pull request as one browsable row - the index the individual
     /prs/{number} diff pages always lacked. State tabs default to open;
@@ -1263,10 +1400,11 @@ async def prs_page(request: Request) -> HTMLResponse:
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     sliced = rows[(page - 1) * per_page : page * per_page]
+    ci = await _prs_ci_map(sliced)
     pager_top = _pager(page, total_pages, lambda n: _prs_href(state, n), top=True)
     pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n))
     meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>" if total else ""
-    body = meta + pager_top + _prs_rows_html(state, sliced) + pager_bot
+    body = meta + pager_top + _prs_rows_html(state, sliced, ci) + pager_bot
     return _page("Pull requests", _with_rail(body), section="prs")
 
 
@@ -1358,14 +1496,69 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 
 def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
+    author_filter = request.query_params.get("author", "").strip()
+    raw_page = request.query_params.get("page") or "1"
     try:
-        posts = search.search_posts(q) if q else []
-        citizens = search.search_citizens(q) if q else []
-        comments = search.search_comments(q) if q else []
-    except db.ForumError:
-        posts = citizens = comments = []
+        page = max(1, int(raw_page))
+    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
+        page = 1
+    per_page = 30
+
+    error_msg = ""
+    posts = []
+    citizens = []
+    comments = []
+    if q:
+        try:
+            posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
+            citizens = search.search_citizens(q, limit=per_page)
+            comments = search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
+        except db.ForumError as exc:  # domain: degrade-silently - show search error to user
+            error_msg = str(exc)
+
+    if author_filter:
+        try:
+            aid = int(author_filter)
+        except (TypeError, ValueError):  # domain: degrade-silently - garbage author param
+            aid = None
+        if aid is not None:
+            posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
+            comments = [c for c in comments if c.get("author_id") == aid]
+
+    def _search_href(p: int, af: str) -> str:
+        params = []
+        if q:
+            params.append(f"q={_urlquote(q)}")
+        if af:
+            params.append(f"author={af}")
+        if p > 1:
+            params.append(f"page={p}")
+        return "/search" + (f"?{'&'.join(params)}" if params else "")
+
+    total_rows = len(posts) + len(citizens) + len(comments)
+    total_pages = max(1, (total_rows + per_page - 1) // per_page) if q else 1
+    # If page was too high, results are empty - clamp and re-query with correct offset
+    if page > total_pages and q and not error_msg:
+        page = total_pages
+        try:
+            posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
+            comments = search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
+            if author_filter:
+                try:
+                    aid = int(author_filter)
+                except (TypeError, ValueError):  # domain: degrade-silently - garbage author param
+                    aid = None
+                if aid is not None:
+                    posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
+                    comments = [c for c in comments if c.get("author_id") == aid]
+        except db.ForumError:  # domain: degrade-silently - re-query failure shows previous results
+            pass
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
+    error_html = (
+        f"<p style='color:#e53e3e;font-size:15px'>Search error: {esc(error_msg)}</p>"
+        if error_msg else ""
+    )
     post_rows = "".join(_post_card(p, snippet=True) for p in posts)
     citizen_rows = "".join(
         f'<div class="rail-item"><a href="/agents/{c["id"]}">{esc(c["name"])}</a>'
@@ -1381,17 +1574,21 @@ def search_page(request: Request) -> HTMLResponse:
         for c in comments
     )
     heading = f"Search: {esc(q)}" if q else "Search"
+    pager_top = _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True) if q and total_pages > 1 else ""
+    pager = _pager(page, total_pages, lambda n: _search_href(n, author_filter)) if q and total_pages > 1 else ""
+    meta = f"<p class='meta' style='margin:0 0 8px;font-size:14px'>{len(posts)} posts, {len(citizens)} citizens, {len(comments)} comments matched.</p>" if q and not error_msg else ""
     body = (
         _crumb("/posts", "all posts")
         + f'<div class="panel"><h2>{heading}</h2>'
-        + (f"<p style='color:var(--muted);font-size:15px'>{len(posts)} posts, "
-           f"{len(citizens)} citizens, {len(comments)} comments matched.</p>" if q else "")
+        + error_html
+        + meta + pager_top
         + f'<div class="search-group"><h3>Posts</h3>{post_rows or empty}</div>'
         + f'<div class="search-group"><h3>Citizens</h3>{citizen_rows or empty}</div>'
         + f'<div class="search-group"><h3>Comments</h3>{comment_rows or empty}</div>'
+        + pager
         + "</div>"
     )
-    return _page("search", _with_rail(body), q=q, section="posts",
+    return _page("search", _with_rail(body), q=q, section="",
                  poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
 
 def feed(request: Request) -> HTMLResponse:
@@ -1518,6 +1715,7 @@ ROUTES = [
     Route("/events", events_page),
     Route("/bugs", bugs_page),
     Route("/bugs/{id:int}", bug_detail_page),
+    Route("/reports", reports_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
