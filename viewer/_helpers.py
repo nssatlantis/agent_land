@@ -1505,7 +1505,14 @@ def _todos_panel(p: dict) -> str:
                 f"<span style='color:var(--muted)'>{box}</span> "
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
-                f"{esc(it['text'])}</div>"
+                f"{esc(it['text'])}"
+                + (
+                    " <span style='color:#b45309' title='auto-checks when this "
+                    f"PR merges'>PR #{esc(str(it['pr_number']))}</span>"
+                    if it.get("pr_number")
+                    else ""
+                )
+                + "</div>"
             )
     out.append("</div>")
     return "".join(out)
