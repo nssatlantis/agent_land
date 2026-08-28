@@ -64,12 +64,47 @@ if [ ! -f "$DB_FILE" ]; then
 fi
 
 # DB safety #2: repo is disposable; data lives outside it.
+# A1: pip-if-changed — only install when requirements.txt changed (hash check)
+# A2: uv acceleration with pip fallback, cache in $DATA_DIR/.uv-cache
+REQ_HASH_FILE="$DATA_DIR/.requirements.sha256"
+PIP_BIN="$DATA_DIR/venv/bin/pip"
+UV_BIN="$DATA_DIR/venv/bin/uv"
+UV_CACHE="$DATA_DIR/.uv-cache"
 if git fetch origin main; then
     git checkout -f main
     git reset --hard origin/main
     git clean -xdf
-    "$DATA_DIR/venv/bin/pip" install -q -r requirements.txt \
-        || { echo "FATAL: pip install failed" >&2; exit 1; }
+    # --- pip-if-changed + uv ---
+    if [ -f "$REPO_DIR/requirements.txt" ]; then
+        NEW_HASH=$(sha256sum "$REPO_DIR/requirements.txt" 2>/dev/null | cut -d' ' -f1 || echo none)
+        OLD_HASH=$(cat "$REQ_HASH_FILE" 2>/dev/null || echo none)
+        if [ "$NEW_HASH" = "$OLD_HASH" ] && [ -x "$PIP_BIN" ]; then
+            echo "requirements.txt unchanged ($NEW_HASH) — skipping pip install" >&2
+        else
+            echo "requirements.txt changed ($OLD_HASH -> $NEW_HASH) — installing deps" >&2
+            mkdir -p "$UV_CACHE"
+            INSTALLED=0
+            if [ -x "$UV_BIN" ]; then
+                if "$UV_BIN" pip --python "$DATA_DIR/venv/bin/python" --cache-dir "$UV_CACHE" install -q -r requirements.txt; then
+                    INSTALLED=1
+                    echo "$NEW_HASH" > "$REQ_HASH_FILE"
+                else
+                    echo "WARNING: uv pip failed, falling back to pip" >&2
+                fi
+            fi
+            if [ "$INSTALLED" -eq 0 ]; then
+                if "$PIP_BIN" install -q -r requirements.txt; then
+                    echo "$NEW_HASH" > "$REQ_HASH_FILE"
+                else
+                    echo "FATAL: pip install failed" >&2
+                    exit 1
+                fi
+            fi
+        fi
+    else
+        # No requirements.txt (should not happen) — try pip anyway
+        "$PIP_BIN" install -q -r requirements.txt || { echo "FATAL: pip install failed" >&2; exit 1; }
+    fi
 else
     echo "WARNING: git fetch failed - starting with the existing code" >&2
 fi
@@ -80,7 +115,7 @@ fi
 # guard's first run (the data dir's old update.sh self-syncs only the original
 # three scripts, so on the transition deploy they would otherwise be missing).
 # tmp+mv keeps the overwrite atomic in case update.sh replaces itself.
-for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py check-record-size.py backfill-signatures.py check-registry-drift.py; do
+for f in update.sh check-update.sh backup-db.py restore-db.py check-db-boot.py backfill_events.py check-record-size.py backfill-signatures.py check-registry-drift.py update-prepare.sh; do
     cp "$REPO_DIR/deploy/$f" "$DATA_DIR/$f.tmp" && mv "$DATA_DIR/$f.tmp" "$DATA_DIR/$f"
     chmod 755 "$DATA_DIR/$f"
 done

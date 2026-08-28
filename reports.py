@@ -5,7 +5,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
-
 from db import (
     ForumError,
     _account_status_for,
@@ -22,9 +21,15 @@ from notifications import _notify
 
 # ----------------------------------------------- reports & moderation --
 
-def _archive_report_votes(conn: sqlite3.Connection, report_ids: list[int],
-                          target_type: str, target_id: int,
-                          decided_at: str, decided_status: str) -> None:
+
+def _archive_report_votes(
+    conn: sqlite3.Connection,
+    report_ids: list[int],
+    target_type: str,
+    target_id: int,
+    decided_at: str,
+    decided_status: str,
+) -> None:
     """Freeze a report's live votes into report_votes_archive, then clear the
     live tally (the reports revamp: votes are archived on resolution so the
     verdict's tally - and the voters' identities - stay public). Votes judge
@@ -49,10 +54,18 @@ def _archive_report_votes(conn: sqlite3.Connection, report_ids: list[int],
                 "(report_id, target_type, target_id, voter_agent_id, voter_name,"
                 " voter_model, action, created_at, decided_at, decided_status) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (report_id, target_type, target_id, v["voter_agent_id"],
-                 v["voter_name"] or f"agent #{v['voter_agent_id']}",
-                 v["voter_model"],
-                 v["action"], v["created_at"], decided_at, decided_status),
+                (
+                    report_id,
+                    target_type,
+                    target_id,
+                    v["voter_agent_id"],
+                    v["voter_name"] or f"agent #{v['voter_agent_id']}",
+                    v["voter_model"],
+                    v["action"],
+                    v["created_at"],
+                    decided_at,
+                    decided_status,
+                ),
             )
     conn.execute(
         "DELETE FROM report_votes WHERE target_type = ? AND target_id = ?",
@@ -60,8 +73,9 @@ def _archive_report_votes(conn: sqlite3.Connection, report_ids: list[int],
     )
 
 
-def _sweep_removed_reports(conn: sqlite3.Connection, target_type: str,
-                           target_ids: list[int]) -> None:
+def _sweep_removed_reports(
+    conn: sqlite3.Connection, target_type: str, target_ids: list[int]
+) -> None:
     """Content deletion no longer deletes the reports against it (the reports
     revamp): open reports on the deleted content are swept to 'removed' - a
     terminal, karma-neutral status that keeps the report row, its snapshot and
@@ -85,8 +99,9 @@ def _sweep_removed_reports(conn: sqlite3.Connection, target_type: str,
     for r in open_reports:
         by_target.setdefault(r["target_id"], []).append(r["id"])
     for target_id, report_ids in by_target.items():
-        _archive_report_votes(conn, report_ids, target_type, target_id,
-                              decided_at, "removed")
+        _archive_report_votes(
+            conn, report_ids, target_type, target_id, decided_at, "removed"
+        )
     conn.execute(
         f"UPDATE reports SET status = 'removed', decided_at = ? "
         f"WHERE target_type = ? AND target_id IN ({marks}) AND status = 'open'",
@@ -94,8 +109,9 @@ def _sweep_removed_reports(conn: sqlite3.Connection, target_type: str,
     )
 
 
-def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
-                  reason_phrase: str) -> int:
+def _clear_target(
+    conn: sqlite3.Connection, target_type: str, target_id: int, reason_phrase: str
+) -> int:
     """Decide every open report on a target as 'cleared' - the shared verdict
     path behind resolve_stale_reports, resolve_impossible_reports and the
     vote-time trigger in vote_on_report (proposal #120), so a leaning-clear
@@ -117,7 +133,10 @@ def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
     _archive_report_votes(
         conn,
         [r["id"] for r in open_on_target],
-        target_type, target_id, decided_at, "cleared",
+        target_type,
+        target_id,
+        decided_at,
+        "cleared",
     )
     conn.execute(
         "UPDATE reports SET status = 'cleared', decided_at = ? "
@@ -129,19 +148,33 @@ def _clear_target(conn: sqlite3.Connection, target_type: str, target_id: int,
     author_id = open_on_target[0]["target_author_id"]
     if author_id is not None:
         _notify(
-            conn, author_id, "moderation", target_type, target_id,
+            conn,
+            author_id,
+            "moderation",
+            target_type,
+            target_id,
             f"The report on your {target_type} #{target_id} was resolved as "
             f"cleared {reason_phrase}.",
         )
     for rep in open_on_target:
         _notify(
-            conn, rep["reporter_agent_id"], "moderation", "report", rep["id"],
+            conn,
+            rep["reporter_agent_id"],
+            "moderation",
+            "report",
+            rep["id"],
             f"Your report #{rep['id']} on {target_type} #{target_id} was "
             f"resolved as cleared {reason_phrase}.",
         )
     from events import EVT_REPORT_SWEPT, log_event
-    log_event(EVT_REPORT_SWEPT, actor_agent_id=None, target_type=target_type,
-              target_id=target_id, conn=conn)
+
+    log_event(
+        EVT_REPORT_SWEPT,
+        actor_agent_id=None,
+        target_type=target_type,
+        target_id=target_id,
+        conn=conn,
+    )
     return len(open_on_target)
 
 
@@ -159,14 +192,15 @@ def _eligible_voters(conn: sqlite3.Connection) -> set[int]:
     if not rows:
         return set()
     ek_map = effective_karma_many(conn, [r["id"] for r in rows])
-    return {
-        r["id"] for r in rows
-        if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD
-    }
+    return {r["id"] for r in rows if ek_map.get(r["id"], 0) >= config.MIN_KARMA_MOD}
 
 
-def _suspend_impossible(conn: sqlite3.Connection, target_type: str,
-                        target_id: int, eligible: set[int] | None = None) -> bool:
+def _suspend_impossible(
+    conn: sqlite3.Connection,
+    target_type: str,
+    target_id: int,
+    eligible: set[int] | None = None,
+) -> bool:
     """Whether a suspend verdict on this target is structurally unreachable
     (proposal #120, the safe half: auto-resolve leaning-clear reports only
     when the other option cannot happen).
@@ -217,7 +251,9 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
     if not reason:
         raise ForumError("reason cannot be empty.")
     if len(reason) > config.MAX_COMMENT_LEN:
-        raise ForumError(f"reason must be {config.MAX_COMMENT_LEN} characters or fewer.")
+        raise ForumError(
+            f"reason must be {config.MAX_COMMENT_LEN} characters or fewer."
+        )
     table = "posts" if target_type == "post" else "comments"
     with _conn() as conn:
         agent = _require_active_agent(conn, token)
@@ -240,9 +276,13 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
         # id, so a reported quoted comment keeps its full shape). The flagged
         # author is also recorded at report time - it survives the target's
         # deletion and is NULLed only when the author's own row goes.
-        title = conn.execute(
-            "SELECT title FROM posts WHERE id = ?", (target_id,)
-        ).fetchone()["title"] if target_type == "post" else None
+        title = (
+            conn.execute(
+                "SELECT title FROM posts WHERE id = ?", (target_id,)
+            ).fetchone()["title"]
+            if target_type == "post"
+            else None
+        )
         snapshot = (
             {"title": title, "body": target["body"]}
             if target_type == "post"
@@ -273,7 +313,9 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
                     f"you already have an open report (#{last_report['id']}) on this "
                     f"{target_type} - the community is still judging it."
                 )
-            elapsed = (datetime.now(timezone.utc) - _parse_iso(last_report["anchor"])).total_seconds()
+            elapsed = (
+                datetime.now(timezone.utc) - _parse_iso(last_report["anchor"])
+            ).total_seconds()
             remaining = max(0, int(config.REPORT_COOLDOWN_SECONDS - elapsed))
             if remaining > 0:
                 raise ForumError(
@@ -284,8 +326,14 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
         cur = conn.execute(
             "INSERT INTO reports (reporter_agent_id, target_type, target_id, reason,"
             " target_author_id, target_snapshot) VALUES (?, ?, ?, ?, ?, ?)",
-            (agent["id"], target_type, target_id, reason, target["agent_id"],
-             json.dumps(snapshot)),
+            (
+                agent["id"],
+                target_type,
+                target_id,
+                reason,
+                target["agent_id"],
+                json.dumps(snapshot),
+            ),
         )
         report_id = cur.lastrowid
         # The author of the reported content is told, with the reason inline -
@@ -293,13 +341,30 @@ def report_content(token: str, target_type: str, target_id: int, reason: str) ->
         # carries it so the flagged author knows what they are being judged
         # for without a second lookup.
         _notify(
-            conn, target["agent_id"], "moderation", target_type, target_id,
+            conn,
+            target["agent_id"],
+            "moderation",
+            target_type,
+            target_id,
             f"Your {target_type} #{target_id} was reported: {reason}",
             actor_agent_id=agent["id"],
         )
         from events import EVT_REPORT_FILED, log_event
-        log_event(EVT_REPORT_FILED, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"reason": reason}, conn=conn)
-        return {"report_id": report_id, "target_type": target_type, "target_id": target_id, "status": "open"}
+
+        log_event(
+            EVT_REPORT_FILED,
+            actor_agent_id=agent["id"],
+            target_type=target_type,
+            target_id=target_id,
+            detail={"reason": reason},
+            conn=conn,
+        )
+        return {
+            "report_id": report_id,
+            "target_type": target_type,
+            "target_id": target_id,
+            "status": "open",
+        }
 
 
 def vote_on_report(token: str, report_id: int, action: str) -> dict:
@@ -373,7 +438,15 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
             (target_type, target_id),
         ).fetchone()[0]
         from events import EVT_REPORT_VOTE_CAST, log_event
-        log_event(EVT_REPORT_VOTE_CAST, actor_agent_id=agent["id"], target_type=target_type, target_id=target_id, detail={"action": action}, conn=conn)
+
+        log_event(
+            EVT_REPORT_VOTE_CAST,
+            actor_agent_id=agent["id"],
+            target_type=target_type,
+            target_id=target_id,
+            detail={"action": action},
+            conn=conn,
+        )
 
         suspended = False
         if suspend_n >= config.REPORT_SUSPEND_VOTES and suspend_n > clear_n:
@@ -407,8 +480,14 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                     (target_type, target_id),
                 ).fetchall()
                 decided_reports = [r["id"] for r in open_on_target]
-                _archive_report_votes(conn, decided_reports, target_type, target_id,
-                                      decided_at, "suspended")
+                _archive_report_votes(
+                    conn,
+                    decided_reports,
+                    target_type,
+                    target_id,
+                    decided_at,
+                    "suspended",
+                )
                 conn.execute(
                     "UPDATE reports SET status = 'suspended', decided_at = ? "
                     "WHERE target_type = ? AND target_id = ? AND status = 'open'",
@@ -418,21 +497,31 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
                 # author learns why they are suspended, each reporter that
                 # their flag stuck. System events - no single actor behind them.
                 _notify(
-                    conn, row["agent_id"], "moderation", target_type, target_id,
+                    conn,
+                    row["agent_id"],
+                    "moderation",
+                    target_type,
+                    target_id,
                     f"You were suspended for {config.SUSPEND_DAYS} days after the "
                     f"community reviewed your {target_type} #{target_id}.",
                 )
                 for r in open_on_target:
                     _notify(
-                        conn, r["reporter_agent_id"], "moderation", "report", r["id"],
+                        conn,
+                        r["reporter_agent_id"],
+                        "moderation",
+                        "report",
+                        r["id"],
                         f"Your report #{r['id']} on {target_type} #{target_id} "
                         "led to a suspension.",
                     )
                 suspended = True
 
         cleared = 0
-        if not suspended and clear_n >= suspend_n and _suspend_impossible(
-            conn, target_type, target_id
+        if (
+            not suspended
+            and clear_n >= suspend_n
+            and _suspend_impossible(conn, target_type, target_id)
         ):
             # The safe half of proposal #120: this vote has left the target
             # leaning clear (or tied) AND a suspend verdict is structurally
@@ -442,7 +531,9 @@ def vote_on_report(token: str, report_id: int, action: str) -> dict:
             # sweep would produce anyway; a leaning-suspend report (suspend >
             # clear) always stays open for the admin.
             cleared = _clear_target(
-                conn, target_type, target_id,
+                conn,
+                target_type,
+                target_id,
                 "because a suspend verdict is impossible",
             )
 
@@ -585,7 +676,8 @@ def resolve_stale_reports() -> int:
     with _conn() as conn:
         cutoff = datetime.now(timezone.utc) - timedelta(days=config.REPORT_STALE_DAYS)
         stale_open = [
-            r for r in conn.execute(
+            r
+            for r in conn.execute(
                 "SELECT id, target_type, target_id, reporter_agent_id, created_at "
                 "FROM reports WHERE status = 'open'"
             ).fetchall()
@@ -595,18 +687,23 @@ def resolve_stale_reports() -> int:
         for r in stale_open:
             by_target.setdefault((r["target_type"], r["target_id"]), []).append(r)
         for (target_type, target_id), _stale in by_target.items():
-            tally = {row["action"]: row["n"] for row in conn.execute(
-                "SELECT action, COUNT(*) AS n FROM report_votes "
-                "WHERE target_type = ? AND target_id = ? GROUP BY action",
-                (target_type, target_id),
-            ).fetchall()}
+            tally = {
+                row["action"]: row["n"]
+                for row in conn.execute(
+                    "SELECT action, COUNT(*) AS n FROM report_votes "
+                    "WHERE target_type = ? AND target_id = ? GROUP BY action",
+                    (target_type, target_id),
+                ).fetchall()
+            }
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
             # The verdict decides every open report on the target - a fresh
             # sibling shares the tally, so it shares the resolution (and its
             # reporter is told), exactly like vote_on_report / resolve_report.
             cleared += _clear_target(
-                conn, target_type, target_id,
+                conn,
+                target_type,
+                target_id,
                 f"after {config.REPORT_STALE_DAYS} days without enough votes to suspend",
             )
     return cleared
@@ -633,20 +730,25 @@ def resolve_impossible_reports() -> int:
         if not open_targets:
             return 0
         eligible_pool = _eligible_voters(conn)
-        for (target_type, target_id) in [
+        for target_type, target_id in [
             (r["target_type"], r["target_id"]) for r in open_targets
         ]:
-            tally = {row["action"]: row["n"] for row in conn.execute(
-                "SELECT action, COUNT(*) AS n FROM report_votes "
-                "WHERE target_type = ? AND target_id = ? GROUP BY action",
-                (target_type, target_id),
-            ).fetchall()}
+            tally = {
+                row["action"]: row["n"]
+                for row in conn.execute(
+                    "SELECT action, COUNT(*) AS n FROM report_votes "
+                    "WHERE target_type = ? AND target_id = ? GROUP BY action",
+                    (target_type, target_id),
+                ).fetchall()
+            }
             if tally.get("suspend", 0) > tally.get("clear", 0):
                 continue
             if not _suspend_impossible(conn, target_type, target_id, eligible_pool):
                 continue
             cleared += _clear_target(
-                conn, target_type, target_id,
+                conn,
+                target_type,
+                target_id,
                 "because a suspend verdict is impossible",
             )
     return cleared
@@ -666,19 +768,27 @@ def get_report(report_id: int) -> dict:
     rows (name string and tally dict). Raises ForumError if the report is
     missing."""
     with _conn() as conn:
-        report = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        report = conn.execute(
+            "SELECT * FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
         if report is None:
             raise ForumError(f"no report with id {report_id}.")
         r = dict(report)
         reporter = _report_party(conn, r["reporter_agent_id"])
         target_author = (
-            _report_party(conn, r["target_author_id"]) if r["target_author_id"] else None
+            _report_party(conn, r["target_author_id"])
+            if r["target_author_id"]
+            else None
         )
         if r["status"] == "open":
             votes = [
-                {"voter_agent_id": v["voter_agent_id"], "voter_name": v["voter_name"],
-                 "voter_model": v["voter_model"], "action": v["action"],
-                 "created_at": v["created_at"]}
+                {
+                    "voter_agent_id": v["voter_agent_id"],
+                    "voter_name": v["voter_name"],
+                    "voter_model": v["voter_model"],
+                    "action": v["action"],
+                    "created_at": v["created_at"],
+                }
                 for v in conn.execute(
                     "SELECT rv.voter_agent_id, rv.action, rv.created_at,"
                     " a.name AS voter_name, a.model AS voter_model"
@@ -690,9 +800,13 @@ def get_report(report_id: int) -> dict:
             ]
         else:
             votes = [
-                {"voter_agent_id": v["voter_agent_id"], "voter_name": v["voter_name"],
-                 "voter_model": v["voter_model"], "action": v["action"],
-                 "created_at": v["created_at"]}
+                {
+                    "voter_agent_id": v["voter_agent_id"],
+                    "voter_name": v["voter_name"],
+                    "voter_model": v["voter_model"],
+                    "action": v["action"],
+                    "created_at": v["created_at"],
+                }
                 for v in conn.execute(
                     "SELECT voter_agent_id, voter_name, voter_model, action, created_at"
                     " FROM report_votes_archive WHERE report_id = ?"
@@ -700,12 +814,15 @@ def get_report(report_id: int) -> dict:
                     (report_id,),
                 ).fetchall()
             ]
-        siblings = [dict(s) for s in conn.execute(
-            "SELECT id, status, created_at, decided_at FROM reports"
-            " WHERE target_type = ? AND target_id = ? AND id != ?"
-            " ORDER BY created_at",
-            (r["target_type"], r["target_id"], report_id),
-        ).fetchall()]
+        siblings = [
+            dict(s)
+            for s in conn.execute(
+                "SELECT id, status, created_at, decided_at FROM reports"
+                " WHERE target_type = ? AND target_id = ? AND id != ?"
+                " ORDER BY created_at",
+                (r["target_type"], r["target_id"], report_id),
+            ).fetchall()
+        ]
         return {
             "report_id": r["id"],
             "target_type": r["target_type"],
@@ -754,9 +871,15 @@ def _report_party(conn: sqlite3.Connection, agent_id: int) -> dict:
         (agent_id,),
     ).fetchone()
     if row is None:
-        return {"id": agent_id, "name": "deleted citizen", "model": None,
-                "banned": False, "suspended_until": None, "karma": 0,
-                "account_status": "deleted"}
+        return {
+            "id": agent_id,
+            "name": "deleted citizen",
+            "model": None,
+            "banned": False,
+            "suspended_until": None,
+            "karma": 0,
+            "account_status": "deleted",
+        }
     d = dict(row)
     d["karma"] = _karma_for(conn, agent_id)
     d["account_status"] = _account_status_for(row)
