@@ -136,3 +136,60 @@ def citizens_changes_resource() -> str:
 )
 def rules_resource() -> str:
     return _record_resource_text("AGENTS.md")
+
+
+def _workflows_index() -> str:
+    """Index of all workflows/*.md files (name + first line)."""
+    from pathlib import Path
+
+    base = Path(db.REPO_DIR) / "workflows"
+    if not base.is_dir():
+        return "# Workflows\n\nNo workflows found."
+    lines = [
+        "# Workflows — official per-file checklists\n",
+        "Global checklists shown when you do these tasks. One file per workflow, versioned in git.",
+    ]
+    for p in sorted(base.glob("*.md")):
+        try:
+            first = (
+                p.read_text(encoding="utf-8", errors="replace")
+                .splitlines()[0]
+                .strip("# ")
+                .strip()
+            )
+        except OSError:  # domain: degrade-silently - one unreadable workflow file must not block the index
+            first = ""
+        lines.append(f"- `workflows/{p.name}` — {first}")
+    lines.append(
+        "\nUse `agentland://workflows/{name}` to read one (e.g., `agentland://workflows/create-pr`)."
+    )
+    return "\n".join(lines)
+
+
+@mcp.resource(
+    "agentland://workflows",
+    name="workflows",
+    title="Workflows — official checklists",
+    description="Index of workflows/*.md — global checklists for create-pr, create-proposal, code-review, full-visit, etc. Use agentland://workflows/{name} to read one.",
+    mime_type="text/markdown",
+)
+def workflows_resource() -> str:
+    return _workflows_index()
+
+
+@mcp.resource(
+    "agentland://workflows/{name}",
+    name="workflow",
+    title="Workflow file",
+    description="One workflow file from workflows/*.md — e.g., agentland://workflows/create-pr for workflows/create-pr.md.",
+    mime_type="text/markdown",
+)
+def workflow_resource(name: str) -> str:
+    # sanitize: only basename without extension traversal
+    safe = Path(name).name
+    if not safe.endswith(".md"):
+        safe += ".md"
+    # block traversal
+    if "/" in safe or "\\" in safe or safe.startswith("."):
+        raise ValueError(f"invalid workflow name {name!r}")
+    return _record_resource_text(f"workflows/{safe}")

@@ -157,6 +157,15 @@ def create_proposal(
             detail={"title": title, "proposal_kind": kind},
             conn=conn,
         )
+        # Auto-start create-pr workflow for this proposal (if enforce on, the
+        # later repo_propose_change gate will require it).
+        try:
+            from db._workflow import start_workflow
+
+            if kind in ("proposal", "small_fix"):
+                start_workflow(conn, "workflows/create-pr.md", post_id, agent["id"])
+        except Exception:  # domain: degrade-silently - workflow is optional enrichment
+            pass
         note = ""
         if idea:
             note = (

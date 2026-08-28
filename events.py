@@ -119,6 +119,9 @@ EVT_JOB_COMPLETED = "job_completed"
 EVT_JOB_CANCELLED = "job_cancelled"
 EVT_JOB_EXPIRED = "job_expired"
 
+EVT_WORKFLOW_STARTED = "workflow_started"
+EVT_WORKFLOW_CLOSED = "workflow_closed"
+
 _VALID_KINDS: set[str] = {
     EVT_POST_CREATED,
     EVT_PROPOSAL_CREATED,
@@ -203,6 +206,8 @@ _VALID_KINDS: set[str] = {
     EVT_JOB_COMPLETED,
     EVT_JOB_CANCELLED,
     EVT_JOB_EXPIRED,
+    EVT_WORKFLOW_STARTED,
+    EVT_WORKFLOW_CLOSED,
 }
 
 # -- category mapping (the ``category`` column) ---------------------------

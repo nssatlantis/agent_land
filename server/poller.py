@@ -159,6 +159,16 @@ def _process_closed_pr(pr: dict) -> None:
                     conn=conn,
                     enforce_claims=False,
                 )
+        # Workflows: auto-close create-pr run tied to this PR
+        try:
+            _wf_status = (
+                "merged"
+                if pr.get("merged_at")
+                else ("declined" if pr.get("declined") else "closed")
+            )
+            db.close_workflow_for_pr(conn, pr["number"], _wf_status)
+        except Exception:  # domain: degrade-silently
+            pass
         if not opener:
             return
         agent_id = opener["agent_id"]
@@ -404,6 +414,12 @@ async def _pr_outcome_poller() -> None:
             # domain: degrade-silently - the job sweep is advisory
             # housekeeping; a failed pass retries on the next poll tick.
             pass  # the job sweep must never stall the poller
+        try:
+            # Workflows: auto-close runs past WORKFLOW_TTL_SECONDS (1h) so
+            # a stale create-pr run never blocks a future PR forever.
+            db.sweep_expired_workflows()
+        except Exception:  # domain: degrade-silently - sweep is advisory
+            pass
         try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.

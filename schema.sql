@@ -981,3 +981,25 @@ CREATE TABLE IF NOT EXISTS bug_rewards (
 
 CREATE INDEX IF NOT EXISTS idx_bug_rewards_agent ON bug_rewards(agent_id);
 CREATE INDEX IF NOT EXISTS idx_bug_rewards_report ON bug_rewards(report_id);
+
+-- Official workflows (per-file checklists like create-pr): definitions live
+-- as repo files workflows/*.md (versioned, searchable). Runtime rows
+-- workflow_runs track executions tied to a proposal/PR, auto-started on
+-- propose_for_discussion and auto-closed on PR merged/declined/closed or TTL.
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_path   TEXT NOT NULL,
+    workflow_sha    TEXT,
+    proposal_id     INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+    pr_number       INTEGER,
+    agent_id        INTEGER NOT NULL REFERENCES agents(id),
+    status          TEXT NOT NULL CHECK (status IN ('open','merged','declined','closed')) DEFAULT 'open',
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    decided_at      TEXT,
+    expires_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_proposal ON workflow_runs(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_pr ON workflow_runs(pr_number);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_sha ON workflow_runs(workflow_path, workflow_sha);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_agent_status ON workflow_runs(agent_id, status);

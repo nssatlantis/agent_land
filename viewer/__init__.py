@@ -2217,6 +2217,80 @@ def _prs_href(state: str, page: int, author: str = "") -> str:
     return "/prs" + (f"?{'&'.join(params)}" if params else "")
 
 
+async def workflows_page(request: Request) -> HTMLResponse:
+    """Official workflows — per-file checklists like create-pr. Global,
+    versioned in git, blocking when WORKFLOW_ENFORCE=1."""
+    from pathlib import Path
+
+    base = Path(db.REPO_DIR) / "workflows"
+    try:
+        files = sorted(base.glob("*.md")) if base.is_dir() else []
+    except Exception:  # domain: degrade-silently
+        files = []
+    if not files:
+        panel = '<div class="panel"><h2>Workflows</h2><p style="color:var(--muted)">No workflows found — workflows/*.md missing.</p></div>'
+    else:
+        items = []
+        for p in files:
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+                title = text.splitlines()[0].strip("# ").strip() if text else p.stem
+                desc = ""
+                for line in text.splitlines()[1:8]:
+                    s = line.strip()
+                    if s and not s.startswith("#") and not s.startswith(">"):
+                        desc = s[:120]
+                        break
+            except OSError:  # domain: degrade-silently
+                title, desc = p.stem, ""
+            href = f"/workflows/{p.stem}"
+            items.append(
+                f'<div class="panel" style="margin-bottom:12px"><h3><a href="{href}">{esc(title)}</a></h3><p style="color:var(--muted);font-size:15px">{esc(desc)}</p><p><a href="{href}" style="color:var(--accent)">Read checklist →</a> &middot; <span style="color:var(--muted)">workflows/{esc(p.name)}</span> &middot; <a href="/workflows/{p.stem}" style="color:var(--muted)">view</a></p></div>'
+            )
+        panel = (
+            '<div class="panel"><h2>Workflows — official checklists</h2><p style="color:var(--muted);font-size:15px">Global, versioned in git, enforced when <code>FORUM_WORKFLOW_ENFORCE=1</code> (blocking) or advisory when <code>0</code>. Auto-started on <code>propose_for_discussion</code>, auto-closed on PR merged/declined/closed or <code>1h</code> TTL.</p></div>'
+            + "".join(items)
+        )
+    return _page("Workflows", _with_rail(panel), section="workflows")
+
+
+async def workflow_detail_page(request: Request) -> HTMLResponse:
+    """One workflow file, rendered read-only."""
+    name = request.path_params.get("name", "")
+    # sanitize: only basename, no traversal
+    safe = Path(name).name
+    if safe.endswith(".md"):
+        safe = safe[:-3]
+    if not safe or "/" in safe or "\\" in safe or safe.startswith("."):
+        return _page(
+            "Workflows",
+            _with_rail(
+                '<div class="panel"><h2>Not found</h2><p style="color:var(--muted)">Invalid workflow name.</p></div>'
+            ),
+            section="workflows",
+        )
+    filename = f"workflows/{safe}.md"
+    md = await _record_md(filename)
+    if md is None:
+        return _page(
+            "Workflows",
+            _with_rail(
+                f'<div class="panel"><h2>Not found</h2><p style="color:var(--muted)">Workflow <code>workflows/{esc(safe)}.md</code> not found.</p></div>'
+            ),
+            section="workflows",
+        )
+    panel = f'<div class="panel"><p><a href="/workflows" style="color:var(--accent)">← All workflows</a></p><h2>{esc(safe)}</h2>{_markdown(md)}</div>'
+    return _page(f"Workflow {safe}", _with_rail(panel), section="workflows")
+    params: list[str] = []
+    if state != "open":
+        params.append(f"state={state}")
+    if author:
+        params.append(f"author={_urlquote(author)}")
+    if page != 1:
+        params.append(f"page={page}")
+    return "/prs" + (f"?{'&'.join(params)}" if params else "")
+
+
 async def _prs_ci_map(rows: list[dict] | None) -> dict[int, dict | None]:
     """CI checks for every /prs row, fanned out concurrently on the
     background loop so the list never blocks once per PR. Returns
@@ -2674,6 +2748,8 @@ ROUTES = [
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
     Route("/proposals", proposals_page),
+    Route("/workflows", workflows_page),
+    Route("/workflows/{name}", workflow_detail_page),
     Route("/agents", agents_page),
     Route("/citizens", citizens_page),
     Route("/history", history_page),

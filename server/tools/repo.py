@@ -341,6 +341,10 @@ async def repo_propose_change(
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
         db.require_claim_for_todo(conn, proposal_id, who["agent_id"])
+        # Workflows: create-pr must have an open run (auto-started on
+        # propose_for_discussion, expires after WORKFLOW_TTL_SECONDS).
+        # Block before GitHub side-effect when WORKFLOW_ENFORCE=1.
+        db.require_workflow_block(conn, proposal_id, who["agent_id"])
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
     plan = await github.apropose_change(
