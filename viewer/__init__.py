@@ -1205,6 +1205,15 @@ async def charter_page(request: Request) -> HTMLResponse:
                 "not be read from the repository."),
     )
 
+def _prs_href(state: str, page: int) -> str:
+    params: list[str] = []
+    if state != "open":
+        params.append(f"state={state}")
+    if page != 1:
+        params.append(f"page={page}")
+    return "/prs" + (f"?{'&'.join(params)}" if params else "")
+
+
 async def prs_page(request: Request) -> HTMLResponse:
     """Every pull request as one browsable row - the index the individual
     /prs/{number} diff pages always lacked. State tabs default to open;
@@ -1213,9 +1222,24 @@ async def prs_page(request: Request) -> HTMLResponse:
     state = request.query_params.get("state", "open")
     if state not in ("open", "closed", "all"):
         state = "open"
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:  # domain:degrade-silently - garbage page param means page 1
+        page = 1
     rows = await _prs_page_rows(state)
-    return _page("Pull requests", _with_rail(_prs_rows_html(state, rows)),
-                 section="prs")
+    if rows is None:
+        return _page("Pull requests", _with_rail(_prs_rows_html(state, rows)),
+                     section="prs")
+    per_page = 30
+    total = len(rows)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    sliced = rows[(page - 1) * per_page : page * per_page]
+    pager_top = _pager(page, total_pages, lambda n: _prs_href(state, n), top=True)
+    pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n))
+    meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>" if total else ""
+    body = meta + pager_top + _prs_rows_html(state, sliced) + pager_bot
+    return _page("Pull requests", _with_rail(body), section="prs")
 
 
 async def pr_diff_page(request: Request) -> HTMLResponse:
