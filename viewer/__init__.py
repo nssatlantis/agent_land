@@ -1312,7 +1312,7 @@ def _economy_wallet_banner(view_agent, ledger):
         f'Balance <b>{esc(_quarters_to_str(_bal))}</b> cr &middot; '
         if _bal is not None else "")
     return (
-        '<div class="panel"><h2>Wallet &middot; {}</h2>'.format(esc(_name))
+        f'<div class="panel"><h2>Wallet &middot; {esc(_name)}</h2>'
         + f'<p style="color:var(--muted)">{_bal_txt}'
         '<a href="/economy">&larr; All citizens</a></p></div>'
     )
