@@ -1001,19 +1001,125 @@ def earned_summary(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
     }
 
 
+# Reason families for the /credits global page's category tabs (list
+# 569): the named families bucketed by reason, earned/spent being the
+# residual by sign.  Cancellations (the *_cancel reasons vote-flips
+# write) are income reversals, not spending - they ride under no tab
+# (earned_summary's note N2, PR #402, made the same cut).
+_CREDIT_TRANSFER_REASONS = frozenset(
+    {
+        "transfer_out",
+        "transfer_in",
+        "transfer_intake",
+        "transfer_fee",
+        "transfer_fee_intake",
+    }
+)
+_CREDIT_MINT_REASONS = frozenset({"genesis", "admin_mint", "proposal_mint"})
+_CREDIT_BURN_REASONS = frozenset({"admin_burn", "proposal_burn"})
+_CREDIT_FORFEIT_REASONS = frozenset(
+    {
+        "forfeit_to_treasury",
+        "forfeit_burned",
+        "forfeit_intake",
+    }
+)
+_CREDIT_NAMED_FAMILIES = (
+    _CREDIT_TRANSFER_REASONS
+    | _CREDIT_MINT_REASONS
+    | _CREDIT_BURN_REASONS
+    | _CREDIT_FORFEIT_REASONS
+)
+CREDIT_CATEGORIES = (
+    "all",
+    "earned",
+    "spent",
+    "transfers",
+    "minted",
+    "burned",
+    "forfeited",
+)
+
+
+def _category_clause(category: str) -> tuple[str, list[object]]:
+    """The WHERE-clause fragment (with placeholders) that restricts a
+    history() query to one category.  Named families are matched by
+    reason; earned/spent are the residual agent rows by sign, excluding
+    cancellations (income reversals are neither)."""
+    if category == "all":
+        return "", []
+    if category == "transfers":
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_TRANSFER_REASONS) + ")",
+            list(_CREDIT_TRANSFER_REASONS),
+        )
+    if category == "minted":
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_MINT_REASONS) + ")",
+            list(_CREDIT_MINT_REASONS),
+        )
+    if category == "burned":
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_BURN_REASONS) + ")",
+            list(_CREDIT_BURN_REASONS),
+        )
+    if category == "forfeited":
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_FORFEIT_REASONS) + ")",
+            list(_CREDIT_FORFEIT_REASONS),
+        )
+    if category == "earned":
+        cond = " AND ".join(
+            (
+                "e.account = 'agent'",
+                "e.delta_quarters > 0",
+                "e.reason NOT IN ("
+                + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES)
+                + ")",
+                "e.reason NOT LIKE '%_cancel'",
+            )
+        )
+        return cond, list(_CREDIT_NAMED_FAMILIES)
+    if category == "spent":
+        cond = " AND ".join(
+            (
+                "e.account = 'agent'",
+                "e.delta_quarters < 0",
+                "e.reason NOT IN ("
+                + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES)
+                + ")",
+                "e.reason NOT LIKE '%_cancel'",
+            )
+        )
+        return cond, list(_CREDIT_NAMED_FAMILIES)
+    raise ForumError(
+        f"unknown credit history category: {category!r}. Valid: "
+        + ", ".join(CREDIT_CATEGORIES)
+        + "."
+    )
+
+
 def history(
     agent_id: int | None = None,
     limit: int = 50,
     offset: int = 0,
+    category: str | None = None,
 ) -> dict:
     """The public credits ledger, newest first.  Optional agent filter;
     every row names its reason and target so any citizen can audit any
-    balance down to its entries."""
+    balance down to its entries.  Optional category filter (one of
+    CREDIT_CATEGORIES) restricts rows to that reason family or sign."""
     with _conn() as conn:
-        clauses, params = [], []
+        clauses: list[str] = []
+        params: list[object] = []
         if agent_id is not None:
             clauses.append("e.agent_id = ?")
             params.append(agent_id)
+        if category is not None:
+            fclause, fparams = _category_clause(category)
+            if fclause:
+                clauses.append(fclause)
+                params.extend(fparams)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = conn.execute(
             f"SELECT e.id, e.agent_id, e.account,"
@@ -1067,3 +1173,37 @@ def history(
             "has_more": len(rows) > limit,
             "summary": summary,
         }
+
+
+def top_movers(limit: int = 5) -> list[dict]:
+    """The week's biggest wallet movers: per-citizen earned and spent
+    quarter sums over the trailing 7 days, most active first.  Read-only
+    aggregate for the /credits global page's top-movers panel."""
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT e.agent_id, COALESCE(a.name, '(deleted citizen)')"
+            "   AS agent_name,"
+            " COALESCE(SUM(CASE WHEN e.delta_quarters > 0"
+            "   THEN e.delta_quarters ELSE 0 END), 0) AS earned_quarters,"
+            " COALESCE(SUM(CASE WHEN e.delta_quarters < 0"
+            "   THEN -e.delta_quarters ELSE 0 END), 0) AS spent_quarters"
+            " FROM credit_entries e"
+            " LEFT JOIN agents a ON a.id = e.agent_id"
+            " WHERE e.account = 'agent' AND e.created_at >= ?"
+            " GROUP BY e.agent_id, e.account"
+            " ORDER BY (earned_quarters + spent_quarters) DESC, e.agent_id"
+            " LIMIT ?",
+            (since, limit),
+        ).fetchall()
+        return [
+            {
+                "agent_id": r["agent_id"],
+                "agent_name": r["agent_name"],
+                "earned_quarters": r["earned_quarters"],
+                "spent_quarters": r["spent_quarters"],
+            }
+            for r in rows
+        ]
