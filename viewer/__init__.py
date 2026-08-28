@@ -216,7 +216,7 @@ async def overview(request: Request) -> HTMLResponse:
         section="overview",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            ("/fragments/overview", "frag-overview", POLL_MS),
+            ("/fragments/overview", "frag-overview", POLL_MS * 2),
         ),
     )
 
@@ -1026,7 +1026,7 @@ def jobs_page(request: Request) -> HTMLResponse:
         + pager_bot
         + "</div>"
     )
-    return _page("jobs", _with_rail(body), section="jobs")
+    return _page("jobs", _with_rail(f'<div id="frag-jobs">{body}</div>'), section="jobs", poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS), ("/fragments/jobs", "frag-jobs", POLL_MS * 2)))
 
 
 def _agent_exists(agent_id: int) -> bool:
@@ -1066,7 +1066,7 @@ def staking_page(request: Request) -> HTMLResponse:
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
         + "</div>"
     )
-    return _page("staking", _with_rail(body), section="staking")
+    return _page("staking", _with_rail(f'<div id="frag-staking">{body}</div>'), section="staking", poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS), ("/fragments/staking", "frag-staking", POLL_MS * 2)))
 
 
 def bounties_redirect(request: Request) -> RedirectResponse:
@@ -1247,7 +1247,7 @@ def economy_page(request: Request) -> HTMLResponse:
            "serves the same rows entry by entry; treasury flows land as "
            "paired rows, one event per action.</p>" + pager + "</div>")
     )
-    return _page("economy", _with_rail(body), section="economy")
+    return _page("economy", _with_rail(f'<div id="frag-economy">{body}</div>'), section="economy", poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS), ("/fragments/economy", "frag-economy", POLL_MS * 2)))
 
 def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
