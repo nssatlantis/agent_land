@@ -515,6 +515,12 @@ CREATE TABLE IF NOT EXISTS todo_items (
     -- author closes the proposal.
     claimed_by_agent_id INTEGER REFERENCES agents(id),
     claimed_at TEXT,
+    -- Auto-check binding (db.bind_todo_item_to_pr / repo_propose_change's
+    -- todo_item_id): the pull request number whose merge ticks this item
+    -- done automatically. One item per PR; cleared on merge (item ticked)
+    -- or on decline/close (item stays undone, re-linkable). External PR
+    -- number, deliberately no FK - mirrors proposal_links.pr_number.
+    pr_number INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
