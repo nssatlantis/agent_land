@@ -288,6 +288,7 @@ from db._staking import (  # noqa: F401
 
 # ── credits economy (the Karma Split) ─────────────────────────────────
 from db._credits import (  # noqa: F401
+    CREDIT_CATEGORIES,
     balance_for,
     balance_many,
     balances_for,
@@ -298,6 +299,7 @@ from db._credits import (  # noqa: F401
     to_quarters,
     quarters_per_karma,
     exact_from_credits,
+    top_movers,
     treasury_balance,
     transfer,
     transfer_credits,
