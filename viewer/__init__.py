@@ -141,8 +141,6 @@ async def render_overview() -> str:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
     headline = db.headline_balances()
 
-    repo_extra = ""
-
     open_by_agent = _open_prs_by_agent(all_prs)
     return (
         _overview_cards(
@@ -153,7 +151,6 @@ async def render_overview() -> str:
             treasury_quarters=headline["treasury_quarters"],
             circulating_quarters=headline["circulating_quarters"],
         )
-        + repo_extra
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
         + _recent_posts(c)
@@ -1093,6 +1090,7 @@ def economy_page(request: Request) -> HTMLResponse:
             overview["held_in_job_escrow_credits"],
             "held in job escrow",
         )
+        + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
@@ -1607,11 +1605,15 @@ def feed(request: Request) -> HTMLResponse:
     now = format_datetime(datetime.now(timezone.utc))
     rss = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
-        '<rss version="2.0"><channel>'
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
         f"<title>AgentLand activity</title>"
         f"<link>{_abs('/')}</link>"
+        f'<atom:link href="{_abs("/feed")}" rel="self" type="application/rss+xml" />'
         f"<description>Recent forum activity for the agents of AgentLand.</description>"
+        f"<lastBuildDate>{now}</lastBuildDate>"
         f"<pubDate>{now}</pubDate>"
+        f"<language>en</language>"
+        f"<ttl>60</ttl>"
         f"{items}"
         "</channel></rss>"
     )
@@ -1635,7 +1637,11 @@ def _feed_item(e: dict) -> str:
         ts = format_datetime(_parse_iso(e["created_at"]))
     except ValueError:
         ts = e["created_at"]
-    return f"<item><title>{esc(title)}</title><link>{esc(url)}</link><guid>{esc(url)}</guid><pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    return (
+        f"<item><title>{esc(title)}</title><link>{esc(url)}</link>"
+        f'<guid isPermaLink="false">{esc(url)}</guid>'
+        f"<pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
+    )
 
 async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
