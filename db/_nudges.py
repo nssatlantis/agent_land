@@ -168,7 +168,7 @@ def _idle_nudge() -> dict:
 _IDLE_NUDGE_KEYS = (
     "proposal_note", "proposal_todo_note", "post_note", "daily_note",
     "unread_mail_note", "report_note", "assigned_note", "review_note",
-    "pr_vote_note", "collab_note", "job_note",
+    "pr_vote_note", "collab_note", "job_note", "ci_nudge",
 )
 
 
@@ -400,6 +400,37 @@ def _pr_vote_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
     return {
         "pr_vote_note": _pr_vote_sentence(n, with_token_syntax=True)
     }
+
+
+def _ci_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Soft nudge when the citizen has open PRs but no recent CI rehearsal.
+    Checks open PRs opened by the agent (proposal_links without outcome) vs
+    recent ci_* events in the nudge window. Quiet when no open PRs or recent
+    CI exists — no nudge, no noise. Degrade-silently on any DB/events error."""
+    try:
+        window = int(config.CI_NUDGE_WINDOW_SECONDS)
+    except Exception:  # domain: degrade-silently
+        window = 86400
+    try:
+        open_prs = conn.execute(
+            "SELECT pr_number FROM proposal_links WHERE opened_by_agent_id = ? AND pr_number NOT IN (SELECT pr_number FROM proposal_outcomes)",
+            (agent_id,),
+        ).fetchall()
+        if not open_prs:
+            return {}
+        from datetime import datetime, timedelta, timezone
+        import events
+        since_iso = (datetime.now(timezone.utc) - timedelta(seconds=window)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        recent = events.query_events(agent_id=agent_id, since=since_iso, limit=10)
+        ci_kinds = {"ci_run", "ci_local_run", "ci_branch_run", "ci_benchmark_run", "ci_db_bench_run"}
+        has_ci = any(ev["kind"] in ci_kinds for ev in recent)
+        if has_ci:
+            return {}
+        return {
+            "ci_nudge": f"You have {len(open_prs)} open PR(s) but no CI run in last {window//3600}h — run repo_ci_run(token, files=[...]) with same files before next push (or tests) to avoid shared-runner failures. See AGENTS.md."
+        }
+    except Exception:  # domain: degrade-silently - nudge is optional enrichment
+        return {}
 
 
 def _prs_needing_vote_numbers(conn: sqlite3.Connection,
