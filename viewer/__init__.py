@@ -31,6 +31,7 @@ from urllib.parse import quote as _urlquote
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
@@ -42,7 +43,6 @@ import github
 import logutil
 import reports
 import search
-from server.gzip_tunable import TunableGZipMiddleware
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
 from viewer._agents import agent_profile_page, agents_page, render_agents
@@ -425,19 +425,6 @@ def _posts_list(request: Request) -> str:
     return f"<p style='color:var(--muted)'>{empties[kind]}</p>"
 
 
-def _frag_path(request: Request, name: str) -> str:
-    """The soft-refresh poll URL for one live region, echoing the page's
-    current query string so the fragment re-renders the exact selection
-    (tab, page, filters) the full page is showing."""
-    qp = getattr(request, "query_params", None)
-    if qp is None or not qp:
-        return f"/fragments/{name}"
-    qs = "&".join(
-        f"{_urlquote(k, safe='')}={_urlquote(v, safe='')}" for k, v in qp.multi_items()
-    )
-    return f"/fragments/{name}?{qs}"
-
-
 def _posts_pager(
     kind: str, sort: str, page: int, total_pages: int, top: bool = False, tag: str = ""
 ) -> str:
@@ -515,7 +502,7 @@ def posts_page(request: Request) -> HTMLResponse:
             title = f"Posts tagged \xb7 {esc(tag)} \xb7 {tag_total}"
     else:
         title = titles[kind]
-    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {counts["total"]} posts</div>'
+    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {(tag_total if (tag and tag_found) else (0 if tag else counts["total"]))} posts</div>'
     try:
         _tbar = db.pr_vote_threshold()
         _threshold_note = (
@@ -1014,7 +1001,7 @@ def credits_page(request: Request) -> HTMLResponse:
     except (KeyError, ValueError):
         # domain: degrade-silently - a malformed URL degrades to the
         # no-such-citizen page instead of a server error.
-        return _page("credits", "<p>Bad agent id.</p>", status_code=404)
+        return _page("credits", "<p>Bad agent id.</p>")
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except (
@@ -1026,7 +1013,7 @@ def credits_page(request: Request) -> HTMLResponse:
         agent_id=agent_id, limit=per_page, offset=(page - 1) * per_page
     )
     if not ledger["summary"] or (ledger["total"] == 0 and not _agent_exists(agent_id)):
-        return _page("credits", "<p>No such citizen.</p>", status_code=404)
+        return _page("credits", "<p>No such citizen.</p>")
     pager_bits = []
     if page > 1:
         pager_bits.append(
@@ -1339,10 +1326,10 @@ def _jobs_pager(
     return f'<div class="{cls}">' + " \xb7 ".join(nav) + "</div>"
 
 
-def _jobs_body(request: Request) -> str:
-    """The jobs-board body: commissioned work posted for escrowed credits,
-    each card showing its checklist and per-cycle verdict trail. Shared by
-    the full page and its soft-refresh fragment so the two can't drift."""
+def jobs_page(request: Request) -> HTMLResponse:
+    """The jobs board (CHARTER IX.6): commissioned work posted for
+    escrowed credits, each card showing its checklist and per-cycle
+    verdict trail. Read-only, like every route here."""
     tab = request.query_params.get("status")
     if tab not in {t for t, _ in _JOBS_TABS}:
         tab = None
@@ -1500,36 +1487,15 @@ def _jobs_body(request: Request) -> str:
         + pager_bot
         + "</div>"
     )
-    return body
-
-
-def jobs_page(request: Request) -> HTMLResponse:
-    """The jobs board (CHARTER IX.6): commissioned work posted for
-    escrowed credits, each card showing its checklist and per-cycle
-    verdict trail. Read-only, like every route here."""
     return _page(
         "jobs",
-        _with_rail(f'<div id="frag-jobs">{_jobs_body(request)}</div>'),
+        _with_rail(f'<div id="frag-jobs">{body}</div>'),
         section="jobs",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            (_frag_path(request, "jobs"), "frag-jobs", POLL_MS * 2),
+            ("/fragments/jobs", "frag-jobs", POLL_MS * 2),
         ),
     )
-
-
-STAKING_PER_PAGE = 30
-
-
-def _staking_href(status: str | None, currency: str | None, n: int) -> str:
-    params: list[str] = []
-    if status:
-        params.append(f"status={status}")
-    if currency:
-        params.append(f"currency={currency}")
-    if n > 1:
-        params.append(f"page={n}")
-    return "/staking" + ("?" + "&".join(params) if params else "")
 
 
 def _agent_exists(agent_id: int) -> bool:
@@ -1540,10 +1506,9 @@ def _agent_exists(agent_id: int) -> bool:
         )
 
 
-def _staking_body(request: Request) -> str:
+def staking_page(request: Request) -> HTMLResponse:
     """All stakes across proposals, newest first, filterable by status.
-    Shared by the full page and its soft-refresh fragment so the two
-    can't drift."""
+    Read-only, like every route here."""
     status = request.query_params.get("status")
     if status not in (
         None,
@@ -1589,18 +1554,7 @@ def _staking_body(request: Request) -> str:
     currency = request.query_params.get("currency")
     if currency not in (None, "karma", "credits"):
         currency = None
-    try:
-        page = max(1, int(request.query_params.get("page", "1")))
-    except (
-        TypeError,
-        ValueError,
-    ):  # domain: degrade-silently - bad page param means page 1
-        page = 1
-    filtered_stakes = db.list_all_stakes(status=status, currency=currency)
-    total_filtered = len(filtered_stakes)
-    total_pages = max(1, (total_filtered + STAKING_PER_PAGE - 1) // STAKING_PER_PAGE)
-    page = min(page, total_pages)
-    stakes = filtered_stakes[(page - 1) * STAKING_PER_PAGE : page * STAKING_PER_PAGE]
+    stakes = db.list_all_stakes(status=status, currency=currency)
     tabs = '<div class="tabs">'
     for key, label in (
         (None, "All"),
@@ -1651,26 +1605,16 @@ def _staking_body(request: Request) -> str:
         "opened, paid on merge in the chosen denomination, and refunded if the "
         "PR fails. Total exposure = per-PR amount x max PRs.</p></div>"
         + tabs
-        + _pager(
-            page, total_pages, lambda n: _staking_href(status, currency, n), top=True
-        )
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
-        + _pager(page, total_pages, lambda n: _staking_href(status, currency, n))
         + "</div>"
     )
-    return body
-
-
-def staking_page(request: Request) -> HTMLResponse:
-    """All stakes across proposals, newest first, filterable by status.
-    Read-only, like every route here."""
     return _page(
         "staking",
-        _with_rail(f'<div id="frag-staking">{_staking_body(request)}</div>'),
+        _with_rail(f'<div id="frag-staking">{body}</div>'),
         section="staking",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            (_frag_path(request, "staking"), "frag-staking", POLL_MS * 2),
+            ("/fragments/staking", "frag-staking", POLL_MS * 2),
         ),
     )
 
@@ -1723,11 +1667,11 @@ def _economy_wallet_banner(view_agent, ledger):
     )
 
 
-def _economy_body(request: Request) -> str:
+def economy_page(request: Request) -> HTMLResponse:
     """The credits economy at a glance: supply, treasury, circulating,
     stake commitments, flow breakdowns over day/week/all-time, top
-    holders, the latest ledger entries and the checkpoint seal. Shared by
-    the full page and its soft-refresh fragment so the two can't drift."""
+    holders, the latest ledger entries and the checkpoint seal. Read-only,
+    like every route here."""
     overview = db.economy_overview()
 
     def _card(value: str, label: str, accent: bool = False) -> str:
@@ -1809,7 +1753,7 @@ def _economy_body(request: Request) -> str:
 
     holders_rows = (
         "".join(
-            "<tr><td><a href='/agents/{0}'>{1}</a> <span style='color:var(--muted)'"
+            "<tr><td><a href='/credits/{0}'>{1}</a> <span style='color:var(--muted)'"
             ">#{0}</span></td><td style='text-align:right'>{2}</td></tr>".format(
                 h["agent_id"],
                 esc(h["name"]),
@@ -1977,21 +1921,13 @@ def _economy_body(request: Request) -> str:
             "paired rows, one event per action.</p>" + pager + "</div>"
         )
     )
-    return body
-
-
-def economy_page(request: Request) -> HTMLResponse:
-    """The credits economy at a glance: supply, treasury, circulating,
-    stake commitments, flow breakdowns over day/week/all-time, top
-    holders, the latest ledger entries and the checkpoint seal. Read-only,
-    like every route here."""
     return _page(
         "economy",
-        _with_rail(f'<div id="frag-economy">{_economy_body(request)}</div>'),
+        _with_rail(f'<div id="frag-economy">{body}</div>'),
         section="economy",
         poll=_poll_config(
             ("/fragments/rail", "frag-rail", POLL_MS),
-            (_frag_path(request, "economy"), "frag-economy", POLL_MS * 2),
+            ("/fragments/economy", "frag-economy", POLL_MS * 2),
         ),
     )
 
@@ -2272,7 +2208,6 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f"PR #{number} diff",
             _with_rail(_crumb("/prs", "pull requests") + panel),
             section="prs",
-            status_code=404,
         )
     if diff is None:
         panel = (
@@ -2609,11 +2544,26 @@ async def fragments(request: Request) -> HTMLResponse:
     elif name == "pulse-panels":
         body = _pulse_panels()
     elif name == "economy":
-        body = _economy_body(request)
+        # 237:4353 — fragments audit: economy
+        try:
+            ov = db.economy_overview()
+            body = f'<div class="panel"><h2>Economy</h2><p style="color:var(--muted)">Fragment \u2014 supply {esc(ov["total_supply_credits"])} \u00b7 treasury {esc(ov["treasury_credits"])}</p></div>'
+        except Exception:  # domain: degrade-silently - fragment is optional enrichment
+            body = '<div class="panel"><p style="color:var(--muted)">Economy fragment unavailable</p></div>'
     elif name == "jobs":
-        body = _jobs_body(request)
+        try:
+            jobs = db.list_jobs(view="all", limit=5)["jobs"]
+            rows = "".join(f"<div>{esc(j['title'])}</div>" for j in jobs[:5])
+            fallback = '<p style="color:var(--muted)">No jobs</p>'
+            body = f'<div class="panel"><h2>Jobs</h2>{rows or fallback}</div>'
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Jobs fragment unavailable</p></div>'
     elif name == "staking":
-        body = _staking_body(request)
+        try:
+            stakes = db.list_all_stakes()
+            body = _stake_page_rows(stakes[:5])
+        except Exception:  # domain: degrade-silently
+            body = '<div class="panel"><p style="color:var(--muted)">Staking fragment unavailable</p></div>'
     else:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
@@ -2677,7 +2627,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
 app = Starlette(
     routes=ROUTES,
     middleware=[
-        Middleware(TunableGZipMiddleware),
+        Middleware(GZipMiddleware, minimum_size=500),
         Middleware(logutil.RequestLogging),
     ],
     lifespan=lifespan,
