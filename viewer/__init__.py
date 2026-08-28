@@ -758,11 +758,14 @@ def credits_global_page(request: Request) -> HTMLResponse:
         category = "all"
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
+    except (
+        ValueError
+    ):  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 50
     ledger = db.credit_history(
-        limit=per_page, offset=(page - 1) * per_page,
+        limit=per_page,
+        offset=(page - 1) * per_page,
         category=None if category == "all" else category,
     )
     overview = db.economy_overview()
@@ -777,10 +780,17 @@ def credits_global_page(request: Request) -> HTMLResponse:
     cards = (
         '<div style="display:flex;gap:12px;flex-wrap:wrap">'
         + _stat_card(overview["total_supply_credits"], "total supply")
-        + _stat_card(overview["treasury_credits"], "treasury", accent=True,
-                     tooltip=_pct_of_supply(overview["treasury_quarters"]))
-        + _stat_card(overview["circulating_credits"], "circulating",
-                     tooltip=_pct_of_supply(overview["circulating_quarters"]))
+        + _stat_card(
+            overview["treasury_credits"],
+            "treasury",
+            accent=True,
+            tooltip=_pct_of_supply(overview["treasury_quarters"]),
+        )
+        + _stat_card(
+            overview["circulating_credits"],
+            "circulating",
+            tooltip=_pct_of_supply(overview["circulating_quarters"]),
+        )
         + "</div>"
     )
 
@@ -810,17 +820,19 @@ def credits_global_page(request: Request) -> HTMLResponse:
         if e["agent_id"] is not None:
             citizen = f'<a href="/credits/{e["agent_id"]}">{citizen}</a>'
         ledger_rows.append(
-            '<tr><td>{}</td><td>{}</td><td>{}</td>'
+            "<tr><td>{}</td><td>{}</td><td>{}</td>"
             '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
                 esc(e["created_at"][:19].replace("T", " ")),
                 citizen,
-                esc(e["reason"]), sign, _quarters_to_str(e["delta_quarters"]),
+                esc(e["reason"]),
+                sign,
+                _quarters_to_str(e["delta_quarters"]),
                 target,
             )
         )
     table = (
         '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
-        '<th>reason</th><th>amount</th><th>target</th></tr></thead>'
+        "<th>reason</th><th>amount</th><th>target</th></tr></thead>"
         "<tbody>" + "".join(ledger_rows) + "</tbody></table>"
         if ledger_rows
         else '<p style="color:var(--muted)">No entries in this category.</p>'
@@ -837,23 +849,28 @@ def credits_global_page(request: Request) -> HTMLResponse:
     pager_bot = _pager(page, total_pages, _href_for_page)
 
     movers = db.top_movers(limit=5)
-    movers_rows = "".join(
-        f"<tr><td><a href='/agents/{m['agent_id']}'>{esc(m['agent_name'])}</a></td>"
-        f"<td style='text-align:right'>"
-        f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
-        f"\u2212{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
-        for m in movers
-    ) or '<tr><td colspan=2 style="color:var(--muted)">No movement this week.</td></tr>'
+    movers_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{m['agent_id']}'>{esc(m['agent_name'])}</a></td>"
+            f"<td style='text-align:right'>"
+            f"+{esc(_quarters_to_str(m['earned_quarters']))} / "
+            f"\u2212{esc(_quarters_to_str(m['spent_quarters']))} cr</td></tr>"
+            for m in movers
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No movement this week.</td></tr>'
+    )
 
-    holder_rows = "".join(
-        f"<tr><td><a href='/agents/{h['agent_id']}'>{esc(h['name'])}</a></td>"
-        f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
-        for h in overview["top_holders"]
-    ) or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+    holder_rows = (
+        "".join(
+            f"<tr><td><a href='/agents/{h['agent_id']}'>{esc(h['name'])}</a></td>"
+            f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
+            for h in overview["top_holders"]
+        )
+        or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+    )
 
     body = (
-        _breadcrumbs([("/", "overview"), ("/economy", "Economy"),
-                      (None, "Credits")])
+        _breadcrumbs([("/", "overview"), ("/economy", "Economy"), (None, "Credits")])
         + '<div class="panel"><h2>Credit ledger</h2>'
         "<p style='color:var(--muted);font-size:15px'>The full public "
         "ledger, newest first - every earn, spend, transfer, mint, burn "
@@ -868,13 +885,14 @@ def credits_global_page(request: Request) -> HTMLResponse:
         + '<div class="panel"><h2>Who moves the credits</h2>'
         '<div style="display:flex;gap:24px;flex-wrap:wrap">'
         + '<div style="flex:1 1 260px"><h3 style="margin:4px 0">Top holders</h3>'
-        '<table><tbody>' + holder_rows + "</tbody></table></div>"
+        "<table><tbody>"
+        + holder_rows
+        + "</tbody></table></div>"
         + '<div style="flex:1 1 260px">'
         "<h3 style='margin:4px 0'>Biggest movers, last 7 days</h3>"
-        '<table><tbody>' + movers_rows + "</tbody></table>"
+        "<table><tbody>" + movers_rows + "</tbody></table>"
         "<p style='color:var(--muted);font-size:13px'>Earned / spent "
-        "quarter sums, most active first.</p></div>"
-        + "</div></div>"
+        "quarter sums, most active first.</p></div>" + "</div></div>"
     )
     return _page("credits", _with_rail(body), section="credits")
 

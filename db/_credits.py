@@ -1006,23 +1006,39 @@ def earned_summary(conn: sqlite3.Connection, agent_id: int) -> dict[str, int]:
 # residual by sign.  Cancellations (the *_cancel reasons vote-flips
 # write) are income reversals, not spending - they ride under no tab
 # (earned_summary's note N2, PR #402, made the same cut).
-_CREDIT_TRANSFER_REASONS = frozenset({
-    "transfer_out", "transfer_in", "transfer_intake",
-    "transfer_fee", "transfer_fee_intake",
-})
+_CREDIT_TRANSFER_REASONS = frozenset(
+    {
+        "transfer_out",
+        "transfer_in",
+        "transfer_intake",
+        "transfer_fee",
+        "transfer_fee_intake",
+    }
+)
 _CREDIT_MINT_REASONS = frozenset({"genesis", "admin_mint", "proposal_mint"})
 _CREDIT_BURN_REASONS = frozenset({"admin_burn", "proposal_burn"})
-_CREDIT_FORFEIT_REASONS = frozenset({
-    "forfeit_to_treasury", "forfeit_burned", "forfeit_intake",
-})
+_CREDIT_FORFEIT_REASONS = frozenset(
+    {
+        "forfeit_to_treasury",
+        "forfeit_burned",
+        "forfeit_intake",
+    }
+)
 _CREDIT_NAMED_FAMILIES = (
     _CREDIT_TRANSFER_REASONS
     | _CREDIT_MINT_REASONS
     | _CREDIT_BURN_REASONS
     | _CREDIT_FORFEIT_REASONS
 )
-CREDIT_CATEGORIES = ("all", "earned", "spent", "transfers",
-                     "minted", "burned", "forfeited")
+CREDIT_CATEGORIES = (
+    "all",
+    "earned",
+    "spent",
+    "transfers",
+    "minted",
+    "burned",
+    "forfeited",
+)
 
 
 def _category_clause(category: str) -> tuple[str, list[object]]:
@@ -1033,42 +1049,53 @@ def _category_clause(category: str) -> tuple[str, list[object]]:
     if category == "all":
         return "", []
     if category == "transfers":
-        return ("e.reason IN ("
-                + ", ".join("?" for _ in _CREDIT_TRANSFER_REASONS) + ")",
-                list(_CREDIT_TRANSFER_REASONS))
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_TRANSFER_REASONS) + ")",
+            list(_CREDIT_TRANSFER_REASONS),
+        )
     if category == "minted":
-        return ("e.reason IN ("
-                + ", ".join("?" for _ in _CREDIT_MINT_REASONS) + ")",
-                list(_CREDIT_MINT_REASONS))
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_MINT_REASONS) + ")",
+            list(_CREDIT_MINT_REASONS),
+        )
     if category == "burned":
-        return ("e.reason IN ("
-                + ", ".join("?" for _ in _CREDIT_BURN_REASONS) + ")",
-                list(_CREDIT_BURN_REASONS))
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_BURN_REASONS) + ")",
+            list(_CREDIT_BURN_REASONS),
+        )
     if category == "forfeited":
-        return ("e.reason IN ("
-                + ", ".join("?" for _ in _CREDIT_FORFEIT_REASONS) + ")",
-                list(_CREDIT_FORFEIT_REASONS))
+        return (
+            "e.reason IN (" + ", ".join("?" for _ in _CREDIT_FORFEIT_REASONS) + ")",
+            list(_CREDIT_FORFEIT_REASONS),
+        )
     if category == "earned":
-        cond = " AND ".join((
-            "e.account = 'agent'",
-            "e.delta_quarters > 0",
-            "e.reason NOT IN ("
-            + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES) + ")",
-            "e.reason NOT LIKE '%_cancel'",
-        ))
+        cond = " AND ".join(
+            (
+                "e.account = 'agent'",
+                "e.delta_quarters > 0",
+                "e.reason NOT IN ("
+                + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES)
+                + ")",
+                "e.reason NOT LIKE '%_cancel'",
+            )
+        )
         return cond, list(_CREDIT_NAMED_FAMILIES)
     if category == "spent":
-        cond = " AND ".join((
-            "e.account = 'agent'",
-            "e.delta_quarters < 0",
-            "e.reason NOT IN ("
-            + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES) + ")",
-            "e.reason NOT LIKE '%_cancel'",
-        ))
+        cond = " AND ".join(
+            (
+                "e.account = 'agent'",
+                "e.delta_quarters < 0",
+                "e.reason NOT IN ("
+                + ", ".join("?" for _ in _CREDIT_NAMED_FAMILIES)
+                + ")",
+                "e.reason NOT LIKE '%_cancel'",
+            )
+        )
         return cond, list(_CREDIT_NAMED_FAMILIES)
     raise ForumError(
         f"unknown credit history category: {category!r}. Valid: "
-        + ", ".join(CREDIT_CATEGORIES) + "."
+        + ", ".join(CREDIT_CATEGORIES)
+        + "."
     )
 
 

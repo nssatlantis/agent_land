@@ -372,56 +372,73 @@ def test_history_category_filters():
     agents, _ = _setup()
     with db._conn() as conn:
         cr.mint(100, "admin_mint", admin="test", conn=conn)  # fund the treasury
-        assert cr.grant(agents["alpha"]["agent_id"], 8, "admin_adjust",
-                        target_type="test", target_id=1, conn=conn)
+        assert cr.grant(
+            agents["alpha"]["agent_id"],
+            8,
+            "admin_adjust",
+            target_type="test",
+            target_id=1,
+            conn=conn,
+        )
     old_fee = _arm("FORUM_TX_FEE_PERCENT", "1.0")  # fee legs ride the transfer
     try:
-        db.transfer(agents["alpha"]["token"], agents["beta"]["agent_id"],
-                    0.25, note="category filter test")
+        db.transfer(
+            agents["alpha"]["token"],
+            agents["beta"]["agent_id"],
+            0.25,
+            note="category filter test",
+        )
     finally:
         _unarm(old_fee, "FORUM_TX_FEE_PERCENT")
 
     by_reason = {e["reason"] for e in db.credit_history(limit=500)["entries"]}
-    assert {"admin_adjust", "transfer_out", "transfer_in",
-            "transfer_fee", "transfer_fee_intake"} <= by_reason
+    assert {
+        "admin_adjust",
+        "transfer_out",
+        "transfer_in",
+        "transfer_fee",
+        "transfer_fee_intake",
+    } <= by_reason
 
     earned = db.credit_history(limit=500, category="earned")["entries"]
     earned_reasons = {e["reason"] for e in earned}
     assert "admin_adjust" in earned_reasons
-    assert not (earned_reasons & {"transfer_in", "transfer_intake"}), \
+    assert not (earned_reasons & {"transfer_in", "transfer_intake"}), (
         "named families are bucketed under their tab, not earned"
-    assert all(e["delta_quarters"] > 0 and e["account"] == "agent"
-               for e in earned)
+    )
+    assert all(e["delta_quarters"] > 0 and e["account"] == "agent" for e in earned)
 
     spent = db.credit_history(limit=500, category="spent")["entries"]
     spent_reasons = {e["reason"] for e in spent}
-    assert "transfer_out" not in spent_reasons and \
-        "transfer_fee" not in spent_reasons
-    assert all(e["delta_quarters"] < 0 and e["account"] == "agent"
-               for e in spent)
+    assert "transfer_out" not in spent_reasons and "transfer_fee" not in spent_reasons
+    assert all(e["delta_quarters"] < 0 and e["account"] == "agent" for e in spent)
 
     trans = db.credit_history(limit=500, category="transfers")["entries"]
-    assert {"transfer_out", "transfer_in", "transfer_fee",
-            "transfer_fee_intake"} <= {e["reason"] for e in trans}
+    assert {"transfer_out", "transfer_in", "transfer_fee", "transfer_fee_intake"} <= {
+        e["reason"] for e in trans
+    }
 
     with db._conn() as conn:
         cr.burn(10, "admin_burn", admin="test", conn=conn)
         cr.mint(10, "proposal_mint", admin="test", proposal_id=7, conn=conn)
-    minted = {e["reason"] for e in
-              db.credit_history(limit=500, category="minted")["entries"]}
+    minted = {
+        e["reason"] for e in db.credit_history(limit=500, category="minted")["entries"]
+    }
     assert {"admin_mint", "proposal_mint"} <= minted
-    burned = {e["reason"] for e in
-              db.credit_history(limit=500, category="burned")["entries"]}
+    burned = {
+        e["reason"] for e in db.credit_history(limit=500, category="burned")["entries"]
+    }
     assert "admin_burn" in burned
 
     victim = db.register_agent("cat-forfeit-victim")
     with db._conn() as conn:
         cr.grant(victim["agent_id"], 12, "admin_adjust", conn=conn)
         cr.forfeit_agent(victim["agent_id"], conn=conn)
-    forfeited = {e["reason"] for e in
-                 db.credit_history(limit=500, category="forfeited")["entries"]}
-    assert {"forfeit_to_treasury", "forfeit_intake",
-            "forfeit_burned"} == forfeited
+    forfeited = {
+        e["reason"]
+        for e in db.credit_history(limit=500, category="forfeited")["entries"]
+    }
+    assert {"forfeit_to_treasury", "forfeit_intake", "forfeit_burned"} == forfeited
 
     from db._core import ForumError
 
@@ -441,20 +458,19 @@ def test_top_movers_shape():
     agents, _ = _setup()
     with db._conn() as conn:
         cr.mint(200, "admin_mint", admin="test", conn=conn)
-        assert cr.grant(agents["alpha"]["agent_id"], 4, "admin_adjust",
-                        conn=conn)
-        assert cr.grant(agents["beta"]["agent_id"], 12, "admin_adjust",
-                        conn=conn)
+        assert cr.grant(agents["alpha"]["agent_id"], 4, "admin_adjust", conn=conn)
+        assert cr.grant(agents["beta"]["agent_id"], 12, "admin_adjust", conn=conn)
     movers = db.top_movers(limit=5)
     assert movers, "the setup grants land inside the 7-day window"
     first = movers[0]
-    assert set(first) == {"agent_id", "agent_name", "earned_quarters",
-                          "spent_quarters"}
-    assert first["earned_quarters"] >= 12, \
+    assert set(first) == {"agent_id", "agent_name", "earned_quarters", "spent_quarters"}
+    assert first["earned_quarters"] >= 12, (
         "beta's 12-quarter grant puts them at (or near) the top"
-    assert max((m["earned_quarters"] + m["spent_quarters"])
-               for m in movers) == first["earned_quarters"] + \
-        first["spent_quarters"], "most active first"
+    )
+    assert (
+        max((m["earned_quarters"] + m["spent_quarters"]) for m in movers)
+        == first["earned_quarters"] + first["spent_quarters"]
+    ), "most active first"
 
 
 def test_events_under_own_categories():
