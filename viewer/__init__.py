@@ -1076,7 +1076,8 @@ def economy_page(request: Request) -> HTMLResponse:
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
-        f" progress - see the <a href='/jobs'>jobs board</a>.</p>"
+        f" progress - see the <a href='/jobs'>jobs board</a>. Official"
+        f" positions are treasury-funded and hold no escrow.</p>"
         if (overview["open_jobs"] or overview["active_jobs"]) else ""
     )
 
