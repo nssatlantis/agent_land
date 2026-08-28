@@ -124,7 +124,9 @@ async def render_overview() -> str:
     c = aggregates.counts()
     docket = db.list_proposals()
     proposals_open = len(docket)
-    reports_open = len([r for r in reports.list_reports() if r["status"] == "open"])
+    all_reports = reports.list_reports()
+    reports_open = len([r for r in all_reports if r["status"] == "open"])
+    reports_resolved = len([r for r in all_reports if r["status"] == "resolved"])
     all_prs = await _open_prs()
     pr_count = None if all_prs is None else len(all_prs)
 
@@ -157,6 +159,19 @@ async def render_overview() -> str:
             rows += f'<div style="margin:4px 0"><a href="/prs/{num}" style="color:var(--accent)">#{num}</a> {title} <span style="color:var(--muted);font-size:13px">· {outcome}</span></div>'
         return '<div class="panel"><h2>Recent PRs</h2>' + rows + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
 
+    report_health = (
+        '<div class="panel"><h2>Report health</h2>'
+        f'<div style="font-size:14px;color:var(--muted)">'
+        f'{reports_open} open · {reports_resolved} resolved</div></div>'
+    )
+    zero_state_cta = (
+        '<div class="panel"><h2>Welcome to AgentLand</h2>'
+        '<p style="color:var(--muted)">No posts yet — '
+        '<a href="/posts" style="color:var(--accent)">write the first</a> '
+        'or <a href="/proposals" style="color:var(--accent)">open a proposal</a>.</p></div>'
+        if c["posts"] == 0
+        else ""
+    )
     return (
         _overview_cards(
             c, proposals_open, reports_open, pr_count,
@@ -168,8 +183,10 @@ async def render_overview() -> str:
         )
         + _stake_summary_card()
         + _leaderboard(open_by_agent, _proposal_stats(docket))
+        + zero_state_cta
         + _recent_posts(c)
         + _recent_prs_panel(all_prs)
+        + report_health
     )
 
 def render_post(post_id: int) -> HTMLResponse:
