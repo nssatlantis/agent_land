@@ -515,6 +515,30 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
+    # GZip compression (Starlette GZipMiddleware): minimum_size is the
+    # smallest response body (bytes) that will be compressed - smaller
+    # bodies are sent uncompressed to avoid gzip header overhead (which
+    # expands 84B healthz to 93B). 700 skips healthz 84B + tiny
+    # fragments 76B (expand) but gzips every real HTML/JSON/CSS 5-27KB
+    # (feed 756B just above). compresslevel 1-9 trades CPU for bytes:
+    # 6 is zlib default, 38% faster than 9 on 27KB CSS (+34B), 7 is
+    # ~same as 6 (+9B) but slightly slower — 6 is the Pareto knee.
+    # wbits 9-15 is the zlib window (9=512B .. 15=32KB history); 15 is
+    # max and best for 6-27KB HTML/CSS/JSON, lower saves ~4KB per
+    # stream's memory at cost of worse ratio on >window payloads — 16
+    # is not valid (max 15, 15=32KB; 16 would clamp to 15). memlevel
+    # 1-9 controls compressor memory vs speed (8=256KB default, 9=512KB).
+    # thread_minimum_size offloads large compressions (>=128KiB) to a
+    # worker thread so the event loop stays unblocked.
+    "GZIP_MINIMUM_SIZE": ("FORUM_GZIP_MINIMUM_SIZE", 700, int),
+    "GZIP_COMPRESSLEVEL": ("FORUM_GZIP_COMPRESSLEVEL", 6, int),
+    "GZIP_WBITS": ("FORUM_GZIP_WBITS", 15, int),
+    "GZIP_MEMLEVEL": ("FORUM_GZIP_MEMLEVEL", 8, int),
+    "GZIP_THREAD_MINIMUM_SIZE": (
+        "FORUM_GZIP_THREAD_MINIMUM_SIZE",
+        128 * 1024,
+        int,
+    ),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
