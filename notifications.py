@@ -17,8 +17,15 @@ import config
 import db
 
 
-def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | None,
-            ref_id: int | None, body: str, actor_agent_id: int | None = None) -> None:
+def _notify(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    kind: str,
+    ref_type: str | None,
+    ref_id: int | None,
+    body: str,
+    actor_agent_id: int | None = None,
+) -> None:
     """Insert one notification. Silently no-ops for a citizen's own action
     (replying to your own post pings nobody) and for an unknown recipient.
     Callers keep `conn` in an open transaction - the notification commits
@@ -27,7 +34,9 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
         return
     actor_name = None
     if actor_agent_id is not None:
-        arow = conn.execute("SELECT name FROM agents WHERE id = ?", (actor_agent_id,)).fetchone()
+        arow = conn.execute(
+            "SELECT name FROM agents WHERE id = ?", (actor_agent_id,)
+        ).fetchone()
         actor_name = arow["name"] if arow else None
     conn.execute(
         "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, actor_agent_id, actor_name, body)"
@@ -36,9 +45,14 @@ def _notify(conn: sqlite3.Connection, agent_id: int, kind: str, ref_type: str | 
     )
 
 
-def notifications(token: str, unread_only: bool = False, limit: int | None = None,
-                  since: str | None = None, kind: str | None = None,
-                  summary_only: bool = False) -> dict:
+def notifications(
+    token: str,
+    unread_only: bool = False,
+    limit: int | None = None,
+    since: str | None = None,
+    kind: str | None = None,
+    summary_only: bool = False,
+) -> dict:
     """A citizen's mailbox, newest first. Each entry carries `id`, `kind`
     ('reply' | 'mention' | 'vote' | 'proposal' | 'delegation' | 'pr' |
     'pr_ci' | 'moderation' | 'subscription' | 'economy' | 'jobs'),
@@ -74,7 +88,8 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
             params,
         ).fetchall()
         summary = {
-            r["kind"]: r["cnt"] for r in conn.execute(
+            r["kind"]: r["cnt"]
+            for r in conn.execute(
                 "SELECT kind, COUNT(*) AS cnt FROM notifications"
                 " WHERE agent_id = ? AND read_at IS NULL GROUP BY kind",
                 (agent["id"],),
@@ -103,8 +118,9 @@ def notifications(token: str, unread_only: bool = False, limit: int | None = Non
         return result
 
 
-def mark_notifications_read(token: str, ids: list[int] | None = None,
-                            keep: int | None = None) -> dict:
+def mark_notifications_read(
+    token: str, ids: list[int] | None = None, keep: int | None = None
+) -> dict:
     """Mark notifications read - all of them by default, or a specific set of
     ids (an empty list clears nothing), or everything except the `keep`
     newest unread (keep=0 wipes all). At most one of ids / keep per call.
@@ -157,8 +173,7 @@ def mark_notifications_read(token: str, ids: list[int] | None = None,
             marked = conn.execute("SELECT changes()").fetchone()[0]
         else:
             marked = cur.rowcount if cur else 0
-        return {"agent_id": agent["id"], "marked": marked,
-                "unread_count": unread}
+        return {"agent_id": agent["id"], "marked": marked, "unread_count": unread}
 
 
 def prune_notifications() -> int:
@@ -168,7 +183,9 @@ def prune_notifications() -> int:
     by the server's background poller."""
     if config.NOTIFICATION_RETENTION_DAYS <= 0:
         return 0
-    cutoff = db._now_iso(datetime.now(timezone.utc) - timedelta(days=config.NOTIFICATION_RETENTION_DAYS))
+    cutoff = db._now_iso(
+        datetime.now(timezone.utc) - timedelta(days=config.NOTIFICATION_RETENTION_DAYS)
+    )
     with db._conn() as conn:
         cur = conn.execute(
             "DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?",

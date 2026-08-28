@@ -5,6 +5,7 @@ NEW pull request to a collaborative proposal unless the opener holds a
 claim on one of its UNDONE to-do items. Default stays off; backfills
 (already-linked PR numbers) skip the gate entirely.
 """
+
 import importlib
 import os
 import sys
@@ -17,8 +18,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup, expect_error  # noqa: E402
 import config  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
@@ -57,7 +58,8 @@ def _make_collab_with_board(opener="alpha", joiner=None):
     )
     pid = prop["post_id"]
     db.set_todos_for_post(
-        AGENTS[opener]["token"], pid,
+        AGENTS[opener]["token"],
+        pid,
         [{"title": "Wave", "items": [{"text": "task a"}, {"text": "task b"}]}],
     )
     if joiner:
@@ -86,7 +88,9 @@ def test_gate_blocks_link_without_claim():
     try:
         err = expect_error(
             db.link_pr_to_proposal,
-            92000 + pid, pid, AGENTS["gamma"]["agent_id"],
+            92000 + pid,
+            pid,
+            AGENTS["gamma"]["agent_id"],
         )
         assert "claim_todo_item" in str(err), f"remedy missing: {err}"
         assert db.proposal_for_pr(92000 + pid) is None
@@ -100,12 +104,8 @@ def test_held_claim_satisfies_gate():
     pid, items = _make_collab_with_board(joiner="delta")
     old = _set_flag("1")
     try:
-        db.claim_todo_item(
-            AGENTS["delta"]["token"], pid, items[0]
-        )
-        db.link_pr_to_proposal(
-            93000 + pid, pid, AGENTS["delta"]["agent_id"]
-        )
+        db.claim_todo_item(AGENTS["delta"]["token"], pid, items[0])
+        db.link_pr_to_proposal(93000 + pid, pid, AGENTS["delta"]["agent_id"])
         assert db.proposal_for_pr(93000 + pid) == pid
     finally:
         _restore_flag(old)
@@ -123,7 +123,9 @@ def test_done_item_claim_does_not_satisfy():
     try:
         expect_error(
             db.link_pr_to_proposal,
-            94000 + pid, pid, AGENTS["epsilon"]["agent_id"],
+            94000 + pid,
+            pid,
+            AGENTS["epsilon"]["agent_id"],
         )
     finally:
         _restore_flag(old)
@@ -137,9 +139,7 @@ def test_backfill_skips_gate():
     db.link_pr_to_proposal(95000 + pid, pid, AGENTS["zeta"]["agent_id"])
     old = _set_flag("1")
     try:
-        db.link_pr_to_proposal(
-            95000 + pid, pid, AGENTS["zeta"]["agent_id"]
-        )
+        db.link_pr_to_proposal(95000 + pid, pid, AGENTS["zeta"]["agent_id"])
         assert db.proposal_for_pr(95000 + pid) == pid
     finally:
         _restore_flag(old)
@@ -165,7 +165,6 @@ def test_plain_proposals_unaffected():
     print("  plain proposals unaffected: ok")
 
 
-
 def test_decided_backfill_bypasses_gate():
     """A decided (merged/closed) PR that never got linked at open time -
     e.g. its opener's claim was released by an earlier verdict, the exact
@@ -179,7 +178,10 @@ def test_decided_backfill_bypasses_gate():
     try:
         # Open-time shape: no claims held -> refused.
         err = expect_error(
-            db.link_pr_to_proposal, 97000 + pid, pid, late["agent_id"],
+            db.link_pr_to_proposal,
+            97000 + pid,
+            pid,
+            late["agent_id"],
         )
         assert "requires claiming" in str(err)
         # The PR is decided (outcome recorded), then backfilled exactly as
@@ -187,13 +189,14 @@ def test_decided_backfill_bypasses_gate():
         assert db.record_proposal_outcome(
             97001 + pid, pid, "merged", "2026-08-23T00:00:00Z"
         )
-        db.link_pr_to_proposal(
-            97001 + pid, pid, late["agent_id"], enforce_claims=False
-        )
+        db.link_pr_to_proposal(97001 + pid, pid, late["agent_id"], enforce_claims=False)
         assert db.proposal_for_pr(97001 + pid) == pid
         # Default stays strict: another unlinked number still refuses.
         err2 = expect_error(
-            db.link_pr_to_proposal, 97002 + pid, pid, late["agent_id"],
+            db.link_pr_to_proposal,
+            97002 + pid,
+            pid,
+            late["agent_id"],
         )
         assert "requires claiming" in str(err2)
     finally:

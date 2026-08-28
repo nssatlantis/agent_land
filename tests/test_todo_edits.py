@@ -1,9 +1,10 @@
-﻿"""Tests for the to-do edit trail (todo_edits table).
+"""Tests for the to-do edit trail (todo_edits table).
 
 Every set_todos_for_post call now snapshots the full before/after state
 into the todo_edits table, so a destructive wipe is recoverable and
 auditable.
 """
+
 import os
 import sys
 import tempfile
@@ -15,8 +16,8 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup, init  # noqa: E402
 import moderation  # noqa: E402
+from tests._setup import db, init, setup  # noqa: E402
 
 
 def main():
@@ -36,7 +37,9 @@ def main():
         edits = db._todo_edits_for(conn, pid)
     assert len(edits) == 1, f"expected 1 edit, got {len(edits)}"
     e = edits[0]
-    assert e["old_lists"] == [], f"first edit old_lists should be [], got {e['old_lists']}"
+    assert e["old_lists"] == [], (
+        f"first edit old_lists should be [], got {e['old_lists']}"
+    )
     assert len(e["new_lists"]) == 1, "first edit new_lists should have 1 list"
     assert e["new_lists"][0]["title"] == "Phase 1"
     assert e["editor"] == "alpha"
@@ -44,7 +47,10 @@ def main():
 
     # -- 2. Second update captures the previous state ----------------------
     lists2 = [
-        {"title": "Phase 1", "items": [{"text": "Step A"}, {"text": "Step B"}, {"text": "Step C"}]},
+        {
+            "title": "Phase 1",
+            "items": [{"text": "Step A"}, {"text": "Step B"}, {"text": "Step C"}],
+        },
         {"title": "Phase 2", "items": [{"text": "Step X"}]},
     ]
     db.set_todos_for_post(alpha["token"], pid, lists2)
@@ -89,22 +95,30 @@ def main():
 
     # -- 5. tod_edits cascade-deletes when post is deleted -----------------
     pid2 = db.create_proposal(alpha["token"], "Delete me", "Body.")["post_id"]
-    db.set_todos_for_post(alpha["token"], pid2, [{"title": "L", "items": [{"text": "I"}]}])
+    db.set_todos_for_post(
+        alpha["token"], pid2, [{"title": "L", "items": [{"text": "I"}]}]
+    )
     with db._conn() as conn:
         assert db._todo_edits_for(conn, pid2), "should have edits"
     moderation.delete_post(pid2, "admin")
     with db._conn() as conn:
-        assert db._todo_edits_for(conn, pid2) == [], "edits should be gone after post delete"
+        assert db._todo_edits_for(conn, pid2) == [], (
+            "edits should be gone after post delete"
+        )
     print("  todo_edits cascade-deletes on post removal: ok")
 
     # -- 6. tod_edits persist across multiple updates ----------------------
     pid3 = db.create_proposal(alpha["token"], "Persist", "Body.")["post_id"]
     db.set_todos_for_post(alpha["token"], pid3, [{"title": "A", "items": []}])
-    db.set_todos_for_post(alpha["token"], pid3, [{"title": "A", "items": [{"text": "X"}]}])
+    db.set_todos_for_post(
+        alpha["token"], pid3, [{"title": "A", "items": [{"text": "X"}]}]
+    )
     with db._conn() as conn:
         edits = db._todo_edits_for(conn, pid3)
     assert len(edits) == 2, f"expected 2 edits, got {len(edits)}"
-    db.set_todos_for_post(alpha["token"], pid3, [{"title": "A", "items": [{"text": "X"}]}])
+    db.set_todos_for_post(
+        alpha["token"], pid3, [{"title": "A", "items": [{"text": "X"}]}]
+    )
     with db._conn() as conn:
         edits = db._todo_edits_for(conn, pid3)
     assert len(edits) == 3, f"expected 3 edits, got {len(edits)}"

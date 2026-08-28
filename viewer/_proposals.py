@@ -12,8 +12,8 @@ from starlette.responses import HTMLResponse
 
 import config
 import db
+import github
 from db._credits import format_credits as _fmt_q
-from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._helpers import (
     _crumb,
     _proposal_lineage_badge,
@@ -23,7 +23,7 @@ from viewer._helpers import (
     _truncate,
     _with_rail,
 )
-import github
+from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import _human_ts, esc
 
 _DOCKET_EMPTIES = {
@@ -37,6 +37,7 @@ _DOCKET_EMPTIES = {
     "collaborative": "No collaborative proposals on the docket yet.",
     "ideas": "No ideas on the docket yet.",
 }
+
 
 def _docket_card(p: dict, tallies: dict | None = None) -> str:
     """One proposal card on the docket: the kind badge, the verdict chip,
@@ -67,20 +68,36 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         c_title = "Claimable — claims are open to any eligible citizen"
         if p.get("claim_name"):
             c_title += f"; currently claimed by {esc(p['claim_name'])}"
-        chips.append(f'<span class="verdict-chip vc-ok" title="{esc(c_title)}">claimable</span>')
+        chips.append(
+            f'<span class="verdict-chip vc-ok" title="{esc(c_title)}">claimable</span>'
+        )
     by = (
         f'<a class="userlink" href="/agents/{p["agent_id"]}">{esc(p["author"])}</a>'
-        if p.get("agent_id") else esc(p["author"])
+        if p.get("agent_id")
+        else esc(p["author"])
     )
-    meta = f'by {by} · {_human_ts(p["created_at"])}'
+    meta = f"by {by} · {_human_ts(p['created_at'])}"
     impl = _proposal_marker(p)
     if impl and impl != "(Undelegated)":
         meta += f" · {impl}"
+    cc = p.get("comment_count")
+    dscore = p.get("score")
+    la = p.get("last_activity_at")
+    if cc is not None:
+        parts = [f"{cc} comment{'s' if cc != 1 else ''}"]
+        if dscore is not None:
+            dcolor = "var(--ok)" if dscore >= 0 else "var(--fail)"
+            parts.append(
+                f'<span style="color:{dcolor};font-weight:600">{dscore:+d}</span>'
+            )
+        meta += " · " + " · ".join(parts)
+        if la:
+            meta += f" · active {_human_ts(la)}"
     if p.get("stale"):
         meta += (
             f' · <span style="color:var(--warn)" '
             f'title="Open {p["open_days"]} days without enough votes — flagged past {config.PROPOSAL_STALE_DAYS} days, never auto-closed">'
-            f'{p["open_days"]}d stale</span>'
+            f"{p['open_days']}d stale</span>"
         )
     vote_html = ""
     if p.get("locked"):
@@ -90,15 +107,25 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     elif p["small_fix"] and p.get("approved"):
         vote_html = '<span class="verdict-chip vc-ok">approved</span>'
     elif p["small_fix"]:
-        vote_html = '<span style="color:var(--muted)">small fix · no votes needed</span>'
+        vote_html = (
+            '<span style="color:var(--muted)">small fix · no votes needed</span>'
+        )
     else:
         up = p["up"]
         down = p["down"]
         threshold = p["threshold"]
         approved = p.get("approved", False)
         if up or down:
-            pct = min(100, max(0, int(((up - down) / max(threshold, 1)) * 100))) if threshold else 0
-            fill_cls = "vote-ok" if approved else ("vote-fail" if up - down < 0 else "vote-warn")
+            pct = (
+                min(100, max(0, int(((up - down) / max(threshold, 1)) * 100)))
+                if threshold
+                else 0
+            )
+            fill_cls = (
+                "vote-ok"
+                if approved
+                else ("vote-fail" if up - down < 0 else "vote-warn")
+            )
             verdict_label = "approved" if approved else "needs votes"
             label = f"{up} up / {down} down"
             vote_html = (
@@ -116,7 +143,8 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             )
     preview = (
         f'<div class="post-excerpt">{esc(_truncate(p["body_preview"], config.BODY_PREVIEW_LENGTH))}</div>'
-        if p.get("body_preview") else ""
+        if p.get("body_preview")
+        else ""
     )
     prs_raw = p.get("prs") or []
     pr_trail = ""
@@ -127,25 +155,30 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             tallies = db.pr_vote_tallies(pr_numbers)
         bits = []
         for pr in prs_raw:
-            pr_cls = {"merged": "pr-merged", "open": "pr-open",
-                      "declined": "pr-declined", "closed": "pr-closed"}.get(pr["status"], "")
+            pr_cls = {
+                "merged": "pr-merged",
+                "open": "pr-open",
+                "declined": "pr-declined",
+                "closed": "pr-closed",
+            }.get(pr["status"], "")
             tv = tallies.get(pr["pr_number"], {"up": 0, "down": 0, "net": 0})
             vote_badge = ""
             if tv["up"] + tv["down"] > 0:
                 vote_badge = (
                     f' <span style="color:var(--muted);font-size:12px">'
-                    f'\u25b2{tv["up"]}\u25bc{tv["down"]}'
-                    f'</span>'
+                    f"\u25b2{tv['up']}\u25bc{tv['down']}"
+                    f"</span>"
                 )
             bits.append(
                 f'<a href="{repo_url}/pull/{pr["pr_number"]}" style="color:var(--accent)">'
-                f'#{pr["pr_number"]}</a>'
+                f"#{pr['pr_number']}</a>"
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
-                f'{vote_badge}'
+                f"{vote_badge}"
             )
         pr_trail = (
             '<div class="pr-trail"><span class="pr-label">PRs:</span> '
-            + " ".join(bits) + "</div>"
+            + " ".join(bits)
+            + "</div>"
         )
     # Collaborative progress display
     if p.get("collaborative") and p.get("collaborative_closed") is None:
@@ -157,16 +190,16 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             pr_trail += (
                 f'<div class="pr-trail" style="margin-top:4px">'
                 f'<span class="pr-label">Progress:</span> '
-                f'{merged} of {goal} PRs merged '
+                f"{merged} of {goal} PRs merged "
                 f'<div class="vote-track" style="display:inline-block;width:80px;vertical-align:middle">'
                 f'<div class="vote-fill {fill_cls}" style="width:{pct}%"></div></div>'
-                f' {pct}%</div>'
+                f" {pct}%</div>"
             )
         elif merged:
             pr_trail += (
                 f'<div class="pr-trail" style="margin-top:4px">'
                 f'<span class="pr-label">Progress:</span> '
-                f'{merged} PR{"s" if merged != 1 else ""} merged</div>'
+                f"{merged} PR{'s' if merged != 1 else ''} merged</div>"
             )
     # Whole-list claim visibility: a collaborative proposal running list
     # claim mode (claim_todo_list) renders which lists are reserved and by
@@ -175,7 +208,8 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
     todos = p.get("todos") or []
     if p.get("collaborative") and not p.get("locked") and todos:
         list_claims = [
-            lst for lst in todos
+            lst
+            for lst in todos
             if lst.get("claim_mode") == "list" and lst.get("claimed_by")
         ]
         if list_claims:
@@ -186,13 +220,14 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                     cid = lst.get("claimed_by_id")
                     claimers[name] = (
                         f'<a class="userlink" href="/agents/{int(cid)}">{name}</a>'
-                        if cid is not None else name
+                        if cid is not None
+                        else name
                     )
             pr_trail += (
                 f'<div class="pr-trail" style="margin-top:4px">'
                 f'<span class="pr-label">Claims:</span> '
-                f'{len(list_claims)} of {len(todos)} lists claimed by '
-                f'{", ".join(claimers.values())}</div>'
+                f"{len(list_claims)} of {len(todos)} lists claimed by "
+                f"{', '.join(claimers.values())}</div>"
             )
     # Per-checklist burn-down: one mini progress bar per to-do list, so the
     # docket shows shipping momentum inside each claimed area too.
@@ -212,17 +247,18 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
             burn_chips.append(
                 f'<span class="burn-chip" title="{tip}" '
                 f'style="margin-right:6px;white-space:nowrap">'
-                f'{esc(lst.get("title", "list"))} '
+                f"{esc(lst.get('title', 'list'))} "
                 f'<span style="color:var(--muted)">{done}/{total}</span> '
                 f'<span class="vote-track" style="display:inline-block;width:40px;vertical-align:middle">'
                 f'<div class="vote-fill vote-ok" style="width:{bpct}%"></div></span>'
-                f'</span>'
+                f"</span>"
             )
         if burn_chips:
             pr_trail += (
                 '<div class="pr-trail" style="margin-top:4px">'
                 '<span class="pr-label">Burn-down:</span> '
-                + " ".join(burn_chips) + "</div>"
+                + " ".join(burn_chips)
+                + "</div>"
             )
     stale_cls = " stale-card" if p.get("stale") else ""
     stake_chip = ""
@@ -249,6 +285,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         + "</div>"
     )
 
+
 def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     """The proposal docket's cards for one tab/sort/page slice, shared by the
     full page and the soft-refresh fragment so the two can't drift. The tab
@@ -263,13 +300,10 @@ def _docket_rows(view: str, sort: str, page: int = 1) -> str:
     )
     if not rows:
         return f'<p style="color:var(--muted)">{_DOCKET_EMPTIES.get(view, _DOCKET_EMPTIES["all"])}</p>'
-    all_pr_numbers = [
-        pr["pr_number"]
-        for p in rows
-        for pr in (p.get("prs") or [])
-    ]
+    all_pr_numbers = [pr["pr_number"] for p in rows for pr in (p.get("prs") or [])]
     tallies = db.pr_vote_tallies(all_pr_numbers) if all_pr_numbers else {}
     return "".join(_docket_card(p, tallies=tallies) for p in rows)
+
 
 _DOCKET_TITLES = {
     "all": "Proposals docket",
@@ -289,6 +323,7 @@ _DOCKET_PHASES = [
     ("Done", ["merged"]),
 ]
 
+
 def _proposals_href(view: str, sort: str, page: int = 1) -> str:
     """Query-string builder for the docket's tabs, sort row and pager, so
     every link keeps the other selections. The page is omitted when 1 - the
@@ -297,6 +332,7 @@ def _proposals_href(view: str, sort: str, page: int = 1) -> str:
     if page > 1:
         q += f"&page={page}"
     return q
+
 
 def _docket_selection(request: Request) -> tuple[str, str, int]:
     """Parse the docket's view/sort/page query params, silently falling back
@@ -314,6 +350,7 @@ def _docket_selection(request: Request) -> tuple[str, str, int]:
         page = 1
     return view, sort, page
 
+
 def proposals_page(request: Request) -> HTMLResponse:
     """The proposals docket: every proposal as a card with its kind badge,
     verdict chip, lineage, body preview, pull-request trail and tally,
@@ -323,7 +360,9 @@ def proposals_page(request: Request) -> HTMLResponse:
     # Single fetch for both counts and page rows — avoids double _proposal_rows (≈28ms at 500 rows)
     all_rows = db.list_proposals(limit=None, view="all", sort="newest")
     counts = db.proposal_docket_counts(rows=all_rows)
-    total_pages = max(1, (counts[view] + config.PROPOSALS_PER_PAGE - 1) // config.PROPOSALS_PER_PAGE)
+    total_pages = max(
+        1, (counts[view] + config.PROPOSALS_PER_PAGE - 1) // config.PROPOSALS_PER_PAGE
+    )
     page = min(page, total_pages)
     tabs = (
         f'<a href="/proposals{_proposals_href("all", sort)}"'
@@ -334,8 +373,11 @@ def proposals_page(request: Request) -> HTMLResponse:
         phase_tabs = "".join(
             f'<a href="/proposals{_proposals_href(v, sort)}"'
             + (' class="active"' if v == view else "")
-            + (f' title="Proposals open {config.PROPOSAL_STALE_DAYS}+ days without clearing the vote gate — flagged, never auto-closed"'
-               if v == "stale" else "")
+            + (
+                f' title="Proposals open {config.PROPOSAL_STALE_DAYS}+ days without clearing the vote gate — flagged, never auto-closed"'
+                if v == "stale"
+                else ""
+            )
             + f">{_DOCKET_TITLES[v]} ({counts[v]})</a>"
             for v in phase_views
         )
@@ -349,6 +391,20 @@ def proposals_page(request: Request) -> HTMLResponse:
             for s in ("newest", "top")
         )
         + "</span>"
+    )
+    lifecycle = (
+        '<div class="lifecycle-funnel" '
+        'style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;'
+        "font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);"
+        'background:var(--info-tint)">'
+        '<span style="color:var(--muted)">lifecycle:</span>'
+        + " \u2192 ".join(
+            f'<a href="/proposals{_proposals_href(v, sort)}"'
+            + (' style="font-weight:600;color:var(--accent)"' if v == view else "")
+            + f'>{_DOCKET_TITLES[v]} <b style="color:var(--ink)">{counts[v]}</b></a>'
+            for v in ("needs_votes", "approved", "review", "merged")
+        )
+        + "</div>"
     )
     pager = ""
     if total_pages > 1:
@@ -374,10 +430,12 @@ def proposals_page(request: Request) -> HTMLResponse:
     # Apply collaborative filter like list_proposals (viewer never passes it, but keep parity)
     # and pagination
     offset = (page - 1) * config.PROPOSALS_PER_PAGE
-    page_rows = page_rows[offset:offset + config.PROPOSALS_PER_PAGE]
+    page_rows = page_rows[offset : offset + config.PROPOSALS_PER_PAGE]
     # Render page rows directly (avoid _docket_rows's second DB fetch)
     if page_rows:
-        all_pr_numbers = [pr["pr_number"] for p in page_rows for pr in (p.get("prs") or [])]
+        all_pr_numbers = [
+            pr["pr_number"] for p in page_rows for pr in (p.get("prs") or [])
+        ]
         tallies = db.pr_vote_tallies(all_pr_numbers) if all_pr_numbers else {}
         docket_html = "".join(_docket_card(p, tallies=tallies) for p in page_rows)
     else:
@@ -392,13 +450,22 @@ def proposals_page(request: Request) -> HTMLResponse:
         "The tabs are lenses, not partitions.</p>"
         + f'<div class="tabs">{tabs}</div>'
         + sort_row
+        + lifecycle
         + summary
         + f'<div id="frag-docket-rows">{docket_html}</div>'
         + pager
         + "</div>"
     )
-    return _page("proposals", _with_rail(body, show_proposals=False), section="proposals",
-                 poll=_poll_config(
-                     ("/fragments/rail?show_proposals=0", "frag-rail", POLL_MS),
-                     (f"/fragments/docket-rows?view={view}&sort={sort}&page={page}", "frag-docket-rows", POLL_MS),
-                 ))
+    return _page(
+        "proposals",
+        _with_rail(body, show_proposals=False),
+        section="proposals",
+        poll=_poll_config(
+            ("/fragments/rail?show_proposals=0", "frag-rail", POLL_MS),
+            (
+                f"/fragments/docket-rows?view={view}&sort={sort}&page={page}",
+                "frag-docket-rows",
+                POLL_MS,
+            ),
+        ),
+    )
