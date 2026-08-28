@@ -31,7 +31,6 @@ from urllib.parse import quote as _urlquote
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
@@ -43,6 +42,7 @@ import github
 import logutil
 import reports
 import search
+from server.gzip_tunable import TunableGZipMiddleware
 from viewer import _status as viewer_status
 from viewer._activity import agent_activity_page
 from viewer._agents import agent_profile_page, agents_page, render_agents
@@ -2677,7 +2677,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
 app = Starlette(
     routes=ROUTES,
     middleware=[
-        Middleware(GZipMiddleware, minimum_size=500),
+        Middleware(TunableGZipMiddleware),
         Middleware(logutil.RequestLogging),
     ],
     lifespan=lifespan,
