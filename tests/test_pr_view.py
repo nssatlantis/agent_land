@@ -1,5 +1,6 @@
 """Tests for repo_get_pr enhancements: ci_note field, include_diff
 parameter, and the proposal-hold message wording."""
+
 import asyncio
 import importlib.util
 import os
@@ -13,14 +14,15 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests._setup import db, setup, expect_error  # noqa: E402
+from tests._setup import db, expect_error, setup  # noqa: E402
 
 AGENTS, _ = setup()
 
 # Load server package under a private name so tests can monkeypatch its github.*
 _ROOT = Path(__file__).resolve().parent.parent / "server" / "__init__.py"
 _spec = importlib.util.spec_from_file_location(
-    "agentland_root_server_prview", _ROOT,
+    "agentland_root_server_prview",
+    _ROOT,
 )
 root_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(root_server)
@@ -46,8 +48,12 @@ def _payload(number, checks_state="unknown", checks_source="stub"):
             "source": checks_source,
             "state": checks_state,
             "runs": [
-                {"name": "test", "status": "completed", "conclusion": checks_state,
-                 "html_url": "https://example.com/1"},
+                {
+                    "name": "test",
+                    "status": "completed",
+                    "conclusion": checks_state,
+                    "html_url": "https://example.com/1",
+                },
             ],
             "failures": [],
         },
@@ -60,8 +66,12 @@ def _payload_multi_run(number, n_runs=3):
     """Payload with multiple check runs (for the run-count suffix)."""
     p = _payload(number, checks_state="success")
     p["checks"]["runs"] = [
-        {"name": f"job-{i}", "status": "completed", "conclusion": "success",
-         "html_url": f"https://example.com/{i}"}
+        {
+            "name": f"job-{i}",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": f"https://example.com/{i}",
+        }
         for i in range(n_runs)
     ]
     return p
@@ -99,6 +109,7 @@ def _install_diff_mock(diff_by_number):
 
 # -- ci_note tests -------------------------------------------------------
 
+
 def test_ci_note_success():
     real = _install_mock({1: _payload(1, checks_state="success")})
     try:
@@ -130,8 +141,7 @@ def test_ci_note_pending():
 
 
 def test_ci_note_unknown_source():
-    real = _install_mock({4: _payload(4, checks_state="unknown",
-                                      checks_source=None)})
+    real = _install_mock({4: _payload(4, checks_state="unknown", checks_source=None)})
     try:
         got = asyncio.run(root_server.repo_get_pr(number=4))
         assert got["ci_note"] == "CI: unknown", got["ci_note"]
@@ -161,10 +171,12 @@ def test_ci_note_single_run_no_suffix():
 
 
 def test_ci_note_batch_mode():
-    real = _install_mock({
-        7: _payload(7, checks_state="success"),
-        8: _payload(8, checks_state="failure"),
-    })
+    real = _install_mock(
+        {
+            7: _payload(7, checks_state="success"),
+            8: _payload(8, checks_state="failure"),
+        }
+    )
     try:
         got = asyncio.run(root_server.repo_get_pr(numbers=[7, 8]))
         assert got[7]["ci_note"] == "CI: passing", got[7]["ci_note"]
@@ -175,6 +187,7 @@ def test_ci_note_batch_mode():
 
 
 # -- include_diff tests --------------------------------------------------
+
 
 def test_include_diff_false_by_default():
     real = _install_mock({10: _payload(10)})
@@ -188,19 +201,27 @@ def test_include_diff_false_by_default():
 
 def test_include_diff_true_adds_diff_field():
     real_aper = _install_mock({11: _payload(11)})
-    real_diff = _install_diff_mock({
-        11: {
-            "number": 11,
-            "title": "PR 11",
-            "head": "branch-11",
-            "base": "main",
-            "html_url": "https://example.com/11",
-            "files": [
-                {"path": "foo.py", "status": "modified", "additions": 5,
-                 "deletions": 2, "changes": 7, "patch": "@@ -1,3 +1,4 @@\n+a"},
-            ],
-        },
-    })
+    real_diff = _install_diff_mock(
+        {
+            11: {
+                "number": 11,
+                "title": "PR 11",
+                "head": "branch-11",
+                "base": "main",
+                "html_url": "https://example.com/11",
+                "files": [
+                    {
+                        "path": "foo.py",
+                        "status": "modified",
+                        "additions": 5,
+                        "deletions": 2,
+                        "changes": 7,
+                        "patch": "@@ -1,3 +1,4 @@\n+a",
+                    },
+                ],
+            },
+        }
+    )
     try:
         got = asyncio.run(root_server.repo_get_pr(number=11, include_diff=True))
         assert "diff" in got, "diff must appear when include_diff=True"
@@ -220,18 +241,35 @@ def test_include_diff_true_adds_diff_field():
 
 def test_include_diff_filename_normalization():
     real_aper = _install_mock({12: _payload(12)})
-    real_diff = _install_diff_mock({
-        12: {
-            "number": 12, "title": "PR 12", "head": "b", "base": "main",
-            "html_url": "https://example.com/12",
-            "files": [
-                {"path": "a/b/c.py", "status": "added", "additions": 10,
-                 "deletions": 0, "changes": 10, "patch": "+new"},
-                {"path": "README.md", "status": "modified", "additions": 1,
-                 "deletions": 1, "changes": 2, "patch": "-old\n+new"},
-            ],
-        },
-    })
+    real_diff = _install_diff_mock(
+        {
+            12: {
+                "number": 12,
+                "title": "PR 12",
+                "head": "b",
+                "base": "main",
+                "html_url": "https://example.com/12",
+                "files": [
+                    {
+                        "path": "a/b/c.py",
+                        "status": "added",
+                        "additions": 10,
+                        "deletions": 0,
+                        "changes": 10,
+                        "patch": "+new",
+                    },
+                    {
+                        "path": "README.md",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 1,
+                        "changes": 2,
+                        "patch": "-old\n+new",
+                    },
+                ],
+            },
+        }
+    )
     try:
         got = asyncio.run(root_server.repo_get_pr(number=12, include_diff=True))
         files = got["diff"]["files"]
@@ -248,26 +286,51 @@ def test_include_diff_filename_normalization():
 
 def test_include_diff_batch_mode():
     real_aper = _install_mock({13: _payload(13), 14: _payload(14)})
-    real_diff = _install_diff_mock({
-        13: {
-            "number": 13, "title": "PR 13", "head": "b", "base": "main",
-            "html_url": "https://example.com/13",
-            "files": [{"path": "x.py", "status": "modified",
-                        "additions": 1, "deletions": 0, "changes": 1,
-                        "patch": "+x"}],
-        },
-        14: {
-            "number": 14, "title": "PR 14", "head": "b", "base": "main",
-            "html_url": "https://example.com/14",
-            "files": [{"path": "y.py", "status": "added",
-                        "additions": 3, "deletions": 0, "changes": 3,
-                        "patch": "+y"}],
-        },
-    })
+    real_diff = _install_diff_mock(
+        {
+            13: {
+                "number": 13,
+                "title": "PR 13",
+                "head": "b",
+                "base": "main",
+                "html_url": "https://example.com/13",
+                "files": [
+                    {
+                        "path": "x.py",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 0,
+                        "changes": 1,
+                        "patch": "+x",
+                    }
+                ],
+            },
+            14: {
+                "number": 14,
+                "title": "PR 14",
+                "head": "b",
+                "base": "main",
+                "html_url": "https://example.com/14",
+                "files": [
+                    {
+                        "path": "y.py",
+                        "status": "added",
+                        "additions": 3,
+                        "deletions": 0,
+                        "changes": 3,
+                        "patch": "+y",
+                    }
+                ],
+            },
+        }
+    )
     try:
-        got = asyncio.run(root_server.repo_get_pr(
-            numbers=[13, 14], include_diff=True,
-        ))
+        got = asyncio.run(
+            root_server.repo_get_pr(
+                numbers=[13, 14],
+                include_diff=True,
+            )
+        )
         assert "diff" in got[13] and "diff" in got[14]
         assert got[13]["diff"]["files"][0]["filename"] == "x.py"
         assert got[14]["diff"]["files"][0]["filename"] == "y.py"
@@ -279,23 +342,32 @@ def test_include_diff_batch_mode():
 
 # -- proposal_hold message test ------------------------------------------
 
+
 def test_proposal_hold_message_wording():
     """_pr_view must include 'Vote on the proposal now' in the hold
     message."""
     pid = db.create_proposal(
-        AGENTS["alpha"]["token"], "Hold message test", "Body",
+        AGENTS["alpha"]["token"],
+        "Hold message test",
+        "Body",
     )["post_id"]
     db.link_pr_to_proposal(9900 + pid, pid, AGENTS["alpha"]["agent_id"])
 
-    real_aper = _install_mock({
-        9900 + pid: _payload(9900 + pid, checks_state="success"),
-    })
+    real_aper = _install_mock(
+        {
+            9900 + pid: _payload(9900 + pid, checks_state="success"),
+        }
+    )
     real_pid = root_server.db.proposal_for_pr
     real_vote_state = root_server.db.proposal_vote_state
     root_server.db.proposal_for_pr = lambda n, conn=None: pid
     root_server.db.proposal_vote_state = lambda p, conn=None: {
-        "post_id": p, "small_fix": False, "net": 0,
-        "threshold": 3, "approved": False, "locked": False,
+        "post_id": p,
+        "small_fix": False,
+        "net": 0,
+        "threshold": 3,
+        "approved": False,
+        "locked": False,
     }
     try:
         got = asyncio.run(root_server.repo_get_pr(number=9900 + pid))
@@ -316,29 +388,40 @@ def test_proposal_hold_message_wording():
 
 # -- repo_comment_on_pr hold error message -------------------------------
 
+
 def test_comment_on_pr_hold_error_wording():
     """The proposal-hold error in repo_comment_on_pr must say
     'Vote on the proposal now or wait for it to clear'."""
     pid = db.create_proposal(
-        AGENTS["alpha"]["token"], "Comment hold error test", "Body",
+        AGENTS["alpha"]["token"],
+        "Comment hold error test",
+        "Body",
     )["post_id"]
     db.link_pr_to_proposal(9950 + pid, pid, AGENTS["alpha"]["agent_id"])
 
-    real_aper = _install_mock({
-        9950 + pid: _payload(9950 + pid, checks_state="success"),
-    })
+    real_aper = _install_mock(
+        {
+            9950 + pid: _payload(9950 + pid, checks_state="success"),
+        }
+    )
     real_pid = root_server.db.proposal_for_pr
     real_vote_state = root_server.db.proposal_vote_state
     root_server.db.proposal_for_pr = lambda n, conn=None: pid
     root_server.db.proposal_vote_state = lambda p, conn=None: {
-        "post_id": p, "small_fix": False, "net": 0,
-        "threshold": 3, "approved": False, "locked": False,
+        "post_id": p,
+        "small_fix": False,
+        "net": 0,
+        "threshold": 3,
+        "approved": False,
+        "locked": False,
     }
     try:
         err = expect_error(
             asyncio.run,
             root_server.repo_comment_on_pr(
-                AGENTS["gamma"]["token"], 9950 + pid, "test comment",
+                AGENTS["gamma"]["token"],
+                9950 + pid,
+                "test comment",
             ),
         )
         assert "Vote on the proposal now" in err, (

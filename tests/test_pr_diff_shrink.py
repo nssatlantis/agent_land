@@ -27,6 +27,7 @@ On plain origin/main the merge-base diff is empty, so the test passes
 (becomes a no-op); it only bites on PR merges. If git is unavailable the test
 skips rather than errors.
 """
+
 from __future__ import annotations
 
 import os
@@ -99,7 +100,7 @@ def _current_lines(path: str) -> int:
 def _has_opt_out_marker(path: str) -> bool:
     full = os.path.join(REPO_ROOT, path)
     try:
-        with open(full, "r", encoding="utf-8", errors="replace") as fh:
+        with open(full, encoding="utf-8", errors="replace") as fh:
             head = "".join(next(fh, "") for _ in range(5))
     except OSError:
         return False
@@ -126,9 +127,7 @@ def test_pr_diff_shrink_floor():
             continue
         if path in renamed:
             continue
-        moved = any(
-            a >= deleted * 0.8 for p, a in added_files.items() if p != path
-        )
+        moved = any(a >= deleted * 0.8 for p, a in added_files.items() if p != path)
         if moved:
             continue
         if _has_opt_out_marker(path):

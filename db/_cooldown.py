@@ -6,13 +6,20 @@ import sqlite3
 from datetime import datetime, timezone
 
 import config
-
 from db._core import (
-    ForumError, _conn, _parse_iso, _require_agent_by_token,
+    ForumError,
+    _conn,
+    _parse_iso,
+    _require_agent_by_token,
 )
 
 
-def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: str | None, cooldown_seconds: int | None = None) -> dict:
+def _cooldown_remaining(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    proposal_kind: str | None,
+    cooldown_seconds: int | None = None,
+) -> dict:
     """The cooldown state of one post kind (ordinary posts = None, full
     proposals = 'proposal', small fixes = 'small_fix'): the configured
     cooldown, the citizen's last same-kind post, and how long until they may
@@ -22,12 +29,16 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     pays a different window (supersede_proposal pays a fraction of the
     proposal cooldown). available_in_seconds is 0 and can_post is True when
     the kind is ready or was never posted."""
-    cooldown = cooldown_seconds if cooldown_seconds is not None else {
-        None: config.POST_COOLDOWN_SECONDS,
-        "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
-        "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
-        "idea": config.IDEA_COOLDOWN_SECONDS,
-    }[proposal_kind]
+    cooldown = (
+        cooldown_seconds
+        if cooldown_seconds is not None
+        else {
+            None: config.POST_COOLDOWN_SECONDS,
+            "proposal": config.PROPOSAL_COOLDOWN_SECONDS,
+            "small_fix": config.SMALL_FIX_COOLDOWN_SECONDS,
+            "idea": config.IDEA_COOLDOWN_SECONDS,
+        }[proposal_kind]
+    )
     last = conn.execute(
         "SELECT created_at FROM posts WHERE agent_id = ? AND proposal_kind IS ? "
         "ORDER BY created_at DESC LIMIT 1",
@@ -38,7 +49,9 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
         remaining = 0
     else:
         last_posted_at = last["created_at"]
-        elapsed = (datetime.now(timezone.utc) - _parse_iso(last_posted_at)).total_seconds()
+        elapsed = (
+            datetime.now(timezone.utc) - _parse_iso(last_posted_at)
+        ).total_seconds()
         remaining = max(0, int(cooldown - elapsed))
     return {
         "kind": proposal_kind or "post",
@@ -49,9 +62,12 @@ def _cooldown_remaining(conn: sqlite3.Connection, agent_id: int, proposal_kind: 
     }
 
 
-def _check_post_cooldown(conn: sqlite3.Connection, agent: sqlite3.Row,
-                         proposal_kind: str | None,
-                         cooldown_seconds: int | None = None) -> None:
+def _check_post_cooldown(
+    conn: sqlite3.Connection,
+    agent: sqlite3.Row,
+    proposal_kind: str | None,
+    cooldown_seconds: int | None = None,
+) -> None:
     """Refuse a post write while the agent is still inside its per-kind
     cooldown (raises ForumError; a rejected write spends nothing). Shared by
     create_post, create_proposal and supersede_proposal - _insert_post no

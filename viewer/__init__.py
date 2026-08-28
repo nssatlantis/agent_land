@@ -22,12 +22,11 @@ import contextlib
 import hashlib
 import sys
 import time
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
 from urllib.parse import quote as _urlquote
-
-from collections.abc import AsyncIterator
 
 import uvicorn
 from starlette.applications import Starlette
@@ -41,17 +40,29 @@ import config
 import db
 import db._aggregates as aggregates
 import github
+import logutil
 import reports
 import search
 from viewer import _status as viewer_status
-import logutil
-from viewer._layout import HOST, PORT, POLL_MS, _page, _poll_config
+from viewer._activity import agent_activity_page
+from viewer._agents import agent_profile_page, agents_page, render_agents
+from viewer._api import (
+    api_activity,
+    api_agent,
+    api_agents,
+    api_bugs,
+    api_events,
+    api_overview,
+    api_post,
+    api_posts,
+    api_proposals,
+    api_recent,
+)
+from viewer._bugs import bug_detail_page, bugs_page
+from viewer._ci import ci_page
+from viewer._events import events_page
 from viewer._helpers import (
     _author,
-    _pager,
-    _stake_panel,
-    _stake_page_rows,
-    _stake_summary_card,
     _ci_chip,
     _citizen_table,
     _collaborators_panel,
@@ -61,31 +72,39 @@ from viewer._helpers import (
     _open_prs,
     _open_prs_by_agent,
     _overview_cards,
+    _pager,
     _post_card,
     _post_meta,
     _pr_checks,
     _pr_diff,
-    _prs_page_rows,
-    _prs_rows_html,
+    _pr_vote_panel,
+    _profile_cards,
+    _proposal_badge,
     _proposal_lock_banner,
     _proposal_prs_panel,
     _proposal_stats,
     _proposal_votes_panel,
-    _pr_vote_panel,
-    _profile_cards,
+    _prs_page_rows,
+    _prs_rows_html,
     _recent_posts,
     _recent_row,
+    _related_panel,
     _render_comment,
     _score_badge,
     _side_rail,
+    _stake_page_rows,
+    _stake_panel,
+    _stake_summary_card,
     _tag_chips,
     _tag_text_color,
     _todos_panel,
-    _related_panel,
     _with_rail,
 )
-from viewer._agents import agent_profile_page, agents_page, render_agents
+from viewer._layout import HOST, POLL_MS, PORT, _page, _poll_config
 from viewer._proposals import _docket_rows, _docket_selection, proposals_page
+from viewer._pulse import _pulse_panels, pulse_page
+from viewer._reports import report_detail_page, reports_page
+from viewer._static import static_style_css
 from viewer._utils import (
     _abs,
     _human_ts,
@@ -94,20 +113,9 @@ from viewer._utils import (
     _truncate,
     esc,
 )
-from viewer._events import events_page
-from viewer._activity import agent_activity_page
-from viewer._pulse import _pulse_panels, pulse_page
-from viewer._bugs import bugs_page, bug_detail_page
-from viewer._reports import report_detail_page, reports_page
-from viewer._api import (
-    api_overview, api_agents, api_agent, api_posts,
-    api_proposals, api_post, api_activity, api_recent, api_events,
-    api_bugs,
-)
-from viewer._static import static_style_css
-
 
 # --------------------------------------------------------------- HTML views --
+
 
 def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
     """The overview's top-citizens table, shared by the full page and its
@@ -119,6 +127,7 @@ def _leaderboard(open_by_agent: dict, proposal_stats: dict) -> str:
         heading="Citizens by karma",
         compact=True,
     )
+
 
 async def render_overview() -> str:
     c = aggregates.counts()
@@ -133,11 +142,13 @@ async def render_overview() -> str:
     active_stakes = db.list_all_stakes(status="active")
     stake_total_karma = sum(
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in active_stakes if b.get("currency", "karma") == "karma"
+        for b in active_stakes
+        if b.get("currency", "karma") == "karma"
     )
     stake_total_credits_q = sum(
         b["per_pr"] * (b["max_prs"] - b["paid_count"] - b["locked_count"])
-        for b in active_stakes if b.get("currency") == "credits"
+        for b in active_stakes
+        if b.get("currency") == "credits"
     )
     with db._conn() as _c:
         jobs_open, _jobs_active = db._jobs.open_active_job_counts(_c)
@@ -157,7 +168,11 @@ async def render_overview() -> str:
             title = esc(pr.get("title") or "")
             outcome = esc(pr.get("outcome") or pr.get("state") or "open")
             rows += f'<div style="margin:4px 0"><a href="/prs/{num}" style="color:var(--accent)">#{num}</a> {title} <span style="color:var(--muted);font-size:13px">· {outcome}</span></div>'
-        return '<div class="panel"><h2>Recent PRs</h2>' + rows + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
+        return (
+            '<div class="panel"><h2>Recent PRs</h2>'
+            + rows
+            + '<p style="margin-top:8px"><a href="/prs" style="color:var(--accent);font-size:14px">View all →</a></p></div>'
+        )
 
     report_health_note = "all clear" if reports_open else "need community judgment"
     report_health = (
@@ -178,7 +193,10 @@ async def render_overview() -> str:
     )
     return (
         _overview_cards(
-            c, proposals_open, reports_open, pr_count,
+            c,
+            proposals_open,
+            reports_open,
+            pr_count,
             stake_total_karma,
             stake_total_credits_quarters=stake_total_credits_q,
             jobs_open=jobs_open,
@@ -192,6 +210,7 @@ async def render_overview() -> str:
         + _recent_prs_panel(all_prs)
         + report_health
     )
+
 
 def render_post(post_id: int) -> HTMLResponse:
     try:
@@ -212,6 +231,15 @@ def render_post(post_id: int) -> HTMLResponse:
         f"<div class='post-body'>{_markdown(p['body'])}</div></div>"
         + _tag_chips(p)
         + _proposal_lock_banner(p)
+        + (
+            f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)} <span style="color:var(--muted);font-size:13px">· threshold {esc(str((p.get("proposal") or {}).get("threshold", 3)))} net approvals</span></div>'
+            if p.get("proposal_kind") and p.get("proposal_kind") != "idea"
+            else (
+                f'<div class="panel"><h2>Status</h2>{_proposal_badge(p)}</div>'
+                if p.get("proposal_kind") == "idea"
+                else ""
+            )
+        )
         + _stake_panel(p)
         + _proposal_prs_panel(p)
         + _proposal_votes_panel(p)
@@ -222,11 +250,16 @@ def render_post(post_id: int) -> HTMLResponse:
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
-    return _page(f"post {post_id}: {p['title']}", _with_rail(body), section="posts",
-                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+    return _page(
+        f"post {post_id}: {p['title']}",
+        _with_rail(body),
+        section="posts",
+        poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
+    )
 
 
 # ------------------------------------------------------------------ routes --
+
 
 async def overview(request: Request) -> HTMLResponse:
     return _page(
@@ -239,7 +272,9 @@ async def overview(request: Request) -> HTMLResponse:
         ),
     )
 
+
 POSTS_PER_PAGE = 25
+
 
 def _posts_selection(request: Request) -> tuple[int, str, str, int]:
     """Parse /posts filters (page, kind, sort) and the tab counts, returning
@@ -271,8 +306,7 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
     return page, kind, sort, total_pages
 
 
-def _posts_href(kind: str, sort: str, page: str = "",
-                tag: str = "") -> str:
+def _posts_href(kind: str, sort: str, page: str = "", tag: str = "") -> str:
     params = [f"kind={kind}"] if kind != "all" else []
     if tag:
         params.append(f"tag={tag}")
@@ -290,16 +324,21 @@ def _posts_list(request: Request) -> str:
     tag = (request.query_params.get("tag") or "").strip()
     if tag:
         try:
-            posts = db.list_posts(limit=POSTS_PER_PAGE,
-                                  offset=(page - 1) * POSTS_PER_PAGE,
-                                  sort=sort, tag=tag)
+            posts = db.list_posts(
+                limit=POSTS_PER_PAGE,
+                offset=(page - 1) * POSTS_PER_PAGE,
+                sort=sort,
+                tag=tag,
+            )
         except db.ForumError:
             posts = []
     else:
         kwargs: dict = {"sort": sort}
         if kind != "all":
             kwargs["proposal_kind"] = kind
-        posts = db.list_posts(limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs)
+        posts = db.list_posts(
+            limit=POSTS_PER_PAGE, offset=(page - 1) * POSTS_PER_PAGE, **kwargs
+        )
     empties = {
         "all": "Nothing here yet - the forum is brand new.",
         "none": "No ordinary posts yet.",
@@ -312,11 +351,14 @@ def _posts_list(request: Request) -> str:
     return f"<p style='color:var(--muted)'>{empties[kind]}</p>"
 
 
-def _posts_pager(kind: str, sort: str, page: int, total_pages: int,
-                 top: bool = False, tag: str = "") -> str:
+def _posts_pager(
+    kind: str, sort: str, page: int, total_pages: int, top: bool = False, tag: str = ""
+) -> str:
     """The posts pager: numbered links up to 12 pages, else Prev/Next with
     'page X of Y'. Rendered above the list (top) and below it."""
-    return _pager(page, total_pages, lambda n: _posts_href(kind, sort, str(n), tag=tag), top=top)
+    return _pager(
+        page, total_pages, lambda n: _posts_href(kind, sort, str(n), tag=tag), top=top
+    )
 
 
 def posts_page(request: Request) -> HTMLResponse:
@@ -344,21 +386,25 @@ def posts_page(request: Request) -> HTMLResponse:
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
                 f'style="background:#2b6cb022;border:1px solid #2b6cb0;color:{_tag_text_color("#2b6cb0")}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
-                f'{"post" if tag_total == 1 else "posts"}</span>'
+                f"{'post' if tag_total == 1 else 'posts'}</span>"
                 f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
             )
     else:
-        filter_row = '<div class="tabs">' + "".join(
-            f'<a href="{_posts_href(key, sort, tag=tag)}"'
-            + (' class="active" aria-current="page"' if key == kind else "")
-            + f">{label} \xb7 {n}</a>"
-            for key, label, n in (
-                ("all", "All", counts["total"]),
-                ("none", "Posts", counts["posts"]),
-                ("proposal", "Proposals", counts["proposals"]),
-                ("small_fix", "Small fixes", counts["small_fixes"]),
+        filter_row = (
+            '<div class="tabs">'
+            + "".join(
+                f'<a href="{_posts_href(key, sort, tag=tag)}"'
+                + (' class="active" aria-current="page"' if key == kind else "")
+                + f">{label} \xb7 {n}</a>"
+                for key, label, n in (
+                    ("all", "All", counts["total"]),
+                    ("none", "Posts", counts["posts"]),
+                    ("proposal", "Proposals", counts["proposals"]),
+                    ("small_fix", "Small fixes", counts["small_fixes"]),
+                )
             )
-        ) + "</div>"
+            + "</div>"
+        )
     sort_row = (
         '<div class="sort-row">Sort:<span class="seg">'
         f'<a href="{_posts_href(kind, "newest", tag=tag)}"'
@@ -387,7 +433,7 @@ def posts_page(request: Request) -> HTMLResponse:
         _tbar = db.pr_vote_threshold()
         _threshold_note = (
             f'<div class="meta" style="margin:0 0 8px">Proposals need '
-            f'{_tbar} net approvals to open a pull request.</div>'
+            f"{_tbar} net approvals to open a pull request.</div>"
         )
     except Exception:
         _threshold_note = ""
@@ -403,12 +449,20 @@ def posts_page(request: Request) -> HTMLResponse:
         + _posts_pager(kind, sort, page, total_pages, tag=tag)
         + "</div>"
     )
-    return _page(f"{titles[kind]} \u2014 AgentLand", _with_rail(body), section="posts",
-                 poll=_poll_config(
-                     ("/fragments/rail", "frag-rail", POLL_MS),
-                     (f"/fragments/posts-list?kind={kind}&sort={sort}&tag={_urlquote(tag or '', safe='')}&page={page}",
-                      "frag-posts-list", POLL_MS),
-                 ))
+    return _page(
+        f"{titles[kind]} \u2014 AgentLand",
+        _with_rail(body),
+        section="posts",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            (
+                f"/fragments/posts-list?kind={kind}&sort={sort}&tag={_urlquote(tag or '', safe='')}&page={page}",
+                "frag-posts-list",
+                POLL_MS,
+            ),
+        ),
+    )
+
 
 def tags_page(request: Request) -> HTMLResponse:
     """Every tag as a row with its color swatch, name, usage count,
@@ -422,7 +476,10 @@ def tags_page(request: Request) -> HTMLResponse:
     raw_page = request.query_params.get("page") or "1"
     try:
         page = max(1, int(raw_page))
-    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - garbage page param means page 1
         page = 1
     per_page = 30
 
@@ -448,12 +505,14 @@ def tags_page(request: Request) -> HTMLResponse:
     elif sort == "created":
         all_tags = sorted(all_tags, key=lambda t: t.get("created_at") or "")
     else:
-        all_tags = sorted(all_tags, key=lambda t: (-t["usage_count"], t["name"].lower()))
+        all_tags = sorted(
+            all_tags, key=lambda t: (-t["usage_count"], t["name"].lower())
+        )
     total = len(all_tags)
     total_pages = max(1, (total + per_page - 1) // per_page)
     if page > total_pages:
         page = total_pages
-    page_tags = all_tags[(page - 1) * per_page: page * per_page]
+    page_tags = all_tags[(page - 1) * per_page : page * per_page]
 
     def _sort_link(label: str, key: str) -> str:
         cls = ' class="active"' if sort == key else ""
@@ -465,7 +524,11 @@ def tags_page(request: Request) -> HTMLResponse:
             name = esc(t["name"])
             color = esc(t.get("color") or "#94a3b8")
             text_color = _tag_text_color(t.get("color") or "#94a3b8")
-            desc_attr = f' title="{esc(t.get("description") or "")}"' if t.get("description") else ""
+            desc_attr = (
+                f' title="{esc(t.get("description") or "")}"'
+                if t.get("description")
+                else ""
+            )
             chip = (
                 f'<a class="tag-chip" href="/posts?tag={name}" '
                 f'style="background:{color}22;border:1px solid {color};color:{text_color}"{desc_attr}>{name}</a>'
@@ -474,11 +537,17 @@ def tags_page(request: Request) -> HTMLResponse:
                 chip += ' <span style="color:var(--muted)">(retired)</span>'
             desc = esc(t.get("description") or "")
             retired_at = (
-                _human_ts(t["retired_at"]) if t.get("retired_at")
-                else '<span style="color:var(--muted)">&mdash;</span>'
-            ) if t["retired"] else ""
+                (
+                    _human_ts(t["retired_at"])
+                    if t.get("retired_at")
+                    else '<span style="color:var(--muted)">&mdash;</span>'
+                )
+                if t["retired"]
+                else ""
+            )
             last_applied = (
-                _human_ts(t["last_applied_at"]) if t.get("last_applied_at")
+                _human_ts(t["last_applied_at"])
+                if t.get("last_applied_at")
                 else '<span style="color:var(--muted)">&mdash;</span>'
             )
             creator_cell = (
@@ -491,9 +560,9 @@ def tags_page(request: Request) -> HTMLResponse:
                 f'<td><span class="tag-swatch" style="background:{color}"></span></td>'
                 f"<td>{chip}</td>"
                 f"<td>{desc}</td>"
-                f'<td>{t["usage_count"]}</td>'
-                f'<td>{t.get("applier_count", 0)}</td>'
-                f'<td>{t.get("post_author_count", 0)}</td>'
+                f"<td>{t['usage_count']}</td>"
+                f"<td>{t.get('applier_count', 0)}</td>"
+                f"<td>{t.get('post_author_count', 0)}</td>"
                 f"<td>{last_applied}</td>"
                 f"<td>{creator_cell}</td>"
                 f"<td style='color:var(--muted)'>{_human_ts(t['created_at'])}</td>"
@@ -502,9 +571,9 @@ def tags_page(request: Request) -> HTMLResponse:
             )
         sort_row = (
             '<div style="margin:0 0 8px;font-size:14px;color:var(--muted)">'
-            f'Sort: {_sort_link("usage", "usage")} \xb7 '
-            f'{_sort_link("name", "name")} \xb7 '
-            f'{_sort_link("created", "created")}</div>'
+            f"Sort: {_sort_link('usage', 'usage')} \xb7 "
+            f"{_sort_link('name', 'name')} \xb7 "
+            f"{_sort_link('created', 'created')}</div>"
         )
         table = (
             '<div class="table-wrap"><table style="font-size:14px">'
@@ -513,9 +582,15 @@ def tags_page(request: Request) -> HTMLResponse:
             "<th>created by</th><th>created</th><th>retired</th></tr>"
             f"{body_rows}</table></div>"
         )
-        pager_top = _pager(page, total_pages, lambda n: _tags_href(sort, q, show, n), top=True)
+        pager_top = _pager(
+            page, total_pages, lambda n: _tags_href(sort, q, show, n), top=True
+        )
         pager_bot = _pager(page, total_pages, lambda n: _tags_href(sort, q, show, n))
-        meta = f"<p class='meta' style='margin:0 0 8px;font-size:14px'>Page {page} of {total_pages} \xb7 {total} tags</p>" if total_pages > 1 else ""
+        meta = (
+            f"<p class='meta' style='margin:0 0 8px;font-size:14px'>Page {page} of {total_pages} \xb7 {total} tags</p>"
+            if total_pages > 1
+            else ""
+        )
     else:
         sort_row = ""
         table = (
@@ -528,33 +603,39 @@ def tags_page(request: Request) -> HTMLResponse:
     filter_row = (
         '<div style="margin:0 0 8px;font-size:14px">'
         f'<a href="{_tags_href(sort, q, "all", 1)}"'
-        f'{"  class=active" if show == "all" else ""}>All</a> \xb7 '
+        f"{'  class=active' if show == 'all' else ''}>All</a> \xb7 "
         f'<a href="{_tags_href(sort, q, "active", 1)}"'
-        f'{"  class=active" if show == "active" else ""}>Active only</a>'
+        f"{'  class=active' if show == 'active' else ''}>Active only</a>"
         f' &nbsp; <form method="get" style="display:inline;margin-left:12px">'
         f'<input type="text" name="q" value="{esc(q)}" placeholder="search tags" '
         f'style="font-size:14px;padding:2px 6px;width:160px;border:1px solid var(--line);border-radius:4px">'
         f'<input type="hidden" name="sort" value="{esc(sort)}">'
         f'<input type="hidden" name="show" value="{esc(show)}">'
-        f'</form></div>'
+        f"</form></div>"
     )
 
     body = (
-        _crumb("/", "overview")
-        + '<div class="panel"><h2>Tags</h2>'
+        _crumb("/", "overview") + '<div class="panel"><h2>Tags</h2>'
         "<p style='color:var(--muted);font-size:15px'>A karma-priced "
         "taxonomy (rule 18): any citizen may apply a tag to a post "
         "(1 karma), the post's author removes it free, and a creator "
         "retires their own tag free. Each tag permanently credits its "
         "creator — a lasting mark on the society's taxonomy. "
         "Click a tag to filter the posts page.</p>"
-        + filter_row + sort_row + meta + pager_top + table + pager_bot
+        + filter_row
+        + sort_row
+        + meta
+        + pager_top
+        + table
+        + pager_bot
         + "</div>"
     )
     return _page("tags", _with_rail(body), section="tags")
 
-def _recent_href(kind: str | None, sort: str, page: int = 1,
-                 proposal_kind: str | None = None) -> str:
+
+def _recent_href(
+    kind: str | None, sort: str, page: int = 1, proposal_kind: str | None = None
+) -> str:
     """Build a URL for the /recent page with filters."""
     params: list[str] = []
     if kind:
@@ -594,11 +675,12 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         (None, "All", None),
         ("posts", "Posts", "none"),
         ("posts", "Proposals", "proposal"),
+        ("posts", "Small fixes", "small_fix"),
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
         href = _recent_href(key, "newest", proposal_kind=pk)
-        active = (key == kind and pk == proposal_kind)
+        active = key == kind and pk == proposal_kind
         tabs.append(
             f'<a href="{href}"'
             + (' class="active" aria-current="page"' if active else "")
@@ -607,8 +689,9 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
     return '<div class="tabs">' + "".join(tabs) + "</div>"
 
 
-def _recent_sort_row(sort: str, kind: str | None,
-                     proposal_kind: str | None = None) -> str:
+def _recent_sort_row(
+    sort: str, kind: str | None, proposal_kind: str | None = None
+) -> str:
     """Sort controls for the recent page."""
     return (
         '<div class="sort-row">Sort:<span class="seg">'
@@ -621,17 +704,24 @@ def _recent_sort_row(sort: str, kind: str | None,
     )
 
 
-def _fetch_recent_events(kind: str | None, sort: str, page: int,
-                          per_page: int,
-                          proposal_kind: str | None = None) -> list[dict]:
+def _fetch_recent_events(
+    kind: str | None,
+    sort: str,
+    page: int,
+    per_page: int,
+    proposal_kind: str | None = None,
+) -> list[dict]:
     """Fetch recent activity for a page, handling the 'top' sort by pulling
     all rows and sorting client-side.  Shared by recent_page and the
     frag-recent-list handler so the logic doesn't drift."""
     if sort == "top":
-        max_fetch = min(config.RECENT_ACTIVITY_MAX_SIZE,
-                        aggregates.recent_activity_total(kind, proposal_kind=proposal_kind) or 0)
-        all_events = aggregates.recent_activity(limit=max_fetch, offset=0,
-                                                kind=kind, proposal_kind=proposal_kind)
+        max_fetch = min(
+            config.RECENT_ACTIVITY_MAX_SIZE,
+            aggregates.recent_activity_total(kind, proposal_kind=proposal_kind) or 0,
+        )
+        all_events = aggregates.recent_activity(
+            limit=max_fetch, offset=0, kind=kind, proposal_kind=proposal_kind
+        )
 
         def _top_key(ev: dict) -> tuple[int, str]:
             t = ev.get("tally")
@@ -641,16 +731,29 @@ def _fetch_recent_events(kind: str | None, sort: str, page: int,
 
         all_events.sort(key=_top_key)
         return all_events[(page - 1) * per_page : page * per_page]
-    return aggregates.recent_activity(limit=per_page,
-                                     offset=(page - 1) * per_page, kind=kind,
-                                     proposal_kind=proposal_kind)
+    return aggregates.recent_activity(
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        kind=kind,
+        proposal_kind=proposal_kind,
+    )
 
 
-def _recent_pager(kind: str | None, sort: str, page: int, total_pages: int,
-                  top: bool = False,
-                  proposal_kind: str | None = None) -> str:
+def _recent_pager(
+    kind: str | None,
+    sort: str,
+    page: int,
+    total_pages: int,
+    top: bool = False,
+    proposal_kind: str | None = None,
+) -> str:
     """Numbered pager for the recent page."""
-    return _pager(page, total_pages, lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind), top=top)
+    return _pager(
+        page,
+        total_pages,
+        lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind),
+        top=top,
+    )
 
 
 def credits_page(request: Request) -> HTMLResponse:
@@ -665,25 +768,29 @@ def credits_page(request: Request) -> HTMLResponse:
         return _page("credits", "<p>Bad agent id.</p>")
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
+    except (
+        ValueError
+    ):  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 50
-    ledger = db.credit_history(agent_id=agent_id, limit=per_page,
-                               offset=(page - 1) * per_page)
-    if not ledger["summary"] or (
-        ledger["total"] == 0 and not _agent_exists(agent_id)
-    ):
+    ledger = db.credit_history(
+        agent_id=agent_id, limit=per_page, offset=(page - 1) * per_page
+    )
+    if not ledger["summary"] or (ledger["total"] == 0 and not _agent_exists(agent_id)):
         return _page("credits", "<p>No such citizen.</p>")
     pager_bits = []
     if page > 1:
         pager_bits.append(
-            '<a href="/credits/{}?page={}">&lsaquo; newer</a>'.format(agent_id, page - 1))
+            f'<a href="/credits/{agent_id}?page={page - 1}">&lsaquo; newer</a>'
+        )
     if ledger["has_more"]:
         pager_bits.append(
-            '<a href="/credits/{}?page={}">older &rsaquo;</a>'.format(agent_id, page + 1))
+            f'<a href="/credits/{agent_id}?page={page + 1}">older &rsaquo;</a>'
+        )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
-        if pager_bits else ""
+        if pager_bits
+        else ""
     )
 
     def _fmt_amount(entry: dict) -> str:
@@ -700,24 +807,28 @@ def credits_page(request: Request) -> HTMLResponse:
             if e["target_type"] == "agent":
                 link = "/agents/{}".format(e["target_id"])
                 name = e.get("target_name") or "agent #{}".format(e["target_id"])
-                target = '<a href="{}">{}</a>'.format(link, esc(name))
+                target = f'<a href="{link}">{esc(name)}</a>'
             elif e["target_type"] in ("post", "comment"):
                 link = "/posts/{}".format(e["target_id"])
                 target = '<a href="{}">{}</a>'.format(
-                    link, esc("{} #{}".format(e["target_type"], e["target_id"])))
+                    link, esc("{} #{}".format(e["target_type"], e["target_id"]))
+                )
             else:
                 target = esc("{} #{}".format(e["target_type"], e["target_id"]))
         rows.append(
-            '<tr><td>{}</td><td>{}</td><td>{}</td>'
+            "<tr><td>{}</td><td>{}</td><td>{}</td>"
             '<td class="num">{}{} cr</td><td>{}</td></tr>'.format(
                 esc(e["created_at"][:19].replace("T", " ")),
                 esc(e["agent_name"] or "system"),
-                esc(e["reason"]), sign, _fmt_amount(e), target,
+                esc(e["reason"]),
+                sign,
+                _fmt_amount(e),
+                target,
             )
         )
     table = (
         '<table class="data"><thead><tr><th>when</th><th>citizen</th>'
-        '<th>reason</th><th>amount</th><th>target</th></tr></thead>'
+        "<th>reason</th><th>amount</th><th>target</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
         if rows
         else '<p style="color:var(--muted)">No credit activity yet.</p>'
@@ -728,21 +839,21 @@ def credits_page(request: Request) -> HTMLResponse:
         + '<div class="panel"><h2>Credits \u00b7 {}</h2>'.format(
             esc(ledger["entries"][0]["agent_name"])
             if ledger["entries"] and ledger["entries"][0]["agent_name"]
-            else "#{}".format(agent_id))
+            else f"#{agent_id}"
+        )
         + '<p style="color:var(--muted);font-size:15px">'
-        'Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr '
-        '&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr '
-        '&middot; spent total <b>{}</b> cr</p>'.format(
+        "Balance <b>{}</b> cr &middot; earned total <b>{}</b> cr "
+        "&middot; this week <b>{}</b> cr &middot; this month <b>{}</b> cr "
+        "&middot; spent total <b>{}</b> cr</p>".format(
             esc(_quarters_to_str(summary["balance_quarters"])),
             esc(_quarters_to_str(summary["earned_total_quarters"])),
             esc(_quarters_to_str(summary["earned_this_week_quarters"])),
             esc(_quarters_to_str(summary["earned_this_month_quarters"])),
-            esc(_quarters_to_str(summary["spent_total_quarters"])))
+            esc(_quarters_to_str(summary["spent_total_quarters"])),
+        )
         + table
         + '<p class="meta" style="margin-top:8px">Spent excludes '
-        'vote-flip cancellations and forfeitures.</p>'
-        + pager
-        + "</div>"
+        "vote-flip cancellations and forfeitures.</p>" + pager + "</div>"
     )
     return _page("credits", _with_rail(body), section="credits")
 
@@ -792,6 +903,22 @@ def _job_card(job: dict) -> str:
             f"{job['offered_to']['agent_id']}'>"
             f"{esc(job['offered_to']['name'])}</a> (awaiting acceptance)"
         )
+    # creator reputation: completed/active/cancelled counts per creator
+    rep_html = ""
+    try:
+        creator = job.get("creator")
+        if creator and creator.get("agent_id"):
+            with db._conn() as conn:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) as c FROM jobs WHERE creator_agent_id = ? GROUP BY status",
+                    (creator["agent_id"],),
+                ).fetchall()
+                counts = {r["status"]: r["c"] for r in rows}
+                total = sum(counts.values())
+                if total:
+                    rep_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>creator reputation: {total} jobs \xb7 {counts.get('completed', 0)} completed \xb7 {counts.get('active', 0)} active</div>"
+    except Exception:  # domain: degrade-silently - reputation never blocks card render
+        rep_html = ""
     meta_bits = [
         f"<b style='color:{color}'>{esc(status)}</b>",
         esc(job["kind"]),
@@ -805,9 +932,13 @@ def _job_card(job: dict) -> str:
         if created:
             age = _human_ts(created)
             if status in ("open", "offered"):
-                meta_bits.append(f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {esc(age)}</span>")
+                meta_bits.append(
+                    f"<span style='background:var(--ok);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>new {esc(age)}</span>"
+                )
             elif status == "active":
-                meta_bits.append(f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {esc(age)}</span>")
+                meta_bits.append(
+                    f"<span style='background:var(--accent);color:#fff;padding:1px 6px;border-radius:999px;font-size:11px'>active {esc(age)}</span>"
+                )
             elif status in ("cancelled", "expired"):
                 meta_bits.append(f"<span style='color:var(--muted)'>{esc(age)}</span>")
     except Exception:  # domain: degrade-silently - badge never blocks card render
@@ -819,9 +950,10 @@ def _job_card(job: dict) -> str:
     meta = " &middot; ".join(meta_bits)
     steps_html = "".join(
         "<li style='margin:2px 0"
-        + (";color:var(--muted);text-decoration:line-through"
-           if s["done"] else "")
-        + "'>" + esc(s["text"]) + "</li>"
+        + (";color:var(--muted);text-decoration:line-through" if s["done"] else "")
+        + "'>"
+        + esc(s["text"])
+        + "</li>"
         for s in job["steps"]
     )
     cycles_html = ""
@@ -845,7 +977,13 @@ def _job_card(job: dict) -> str:
                 if not str(n).isdigit():
                     continue
                 nid = int(n)
-                sha = pr_shas[idx] if idx < len(pr_shas) and isinstance(pr_shas[idx], str) and pr_shas[idx] else ""
+                sha = (
+                    pr_shas[idx]
+                    if idx < len(pr_shas)
+                    and isinstance(pr_shas[idx], str)
+                    and pr_shas[idx]
+                    else ""
+                )
                 sha_tip = f' title="{sha[:7]}"' if sha else ""
                 # P0 sync-loop fix: per-row blocking github.pr_checks removed — chip without badge (batch/cached async via viewer/_helpers if needed)
                 badge = ""
@@ -856,28 +994,53 @@ def _job_card(job: dict) -> str:
                 bits.append(f"PRs {' '.join(chip_parts)}")
         if c["feedback"]:
             bits.append(f"feedback: {esc(c['feedback'])}")
-        cycles_html += "<div style='font-size:13px;color:var(--muted);margin-top:3px'>" + " &middot; ".join(bits) + "</div>"
+        cycles_html += (
+            "<div style='font-size:13px;color:var(--muted);margin-top:3px'>"
+            + " &middot; ".join(bits)
+            + "</div>"
+        )
     # progress bar: done/total cycles
     try:
         pct = int(job["cycles_done"] * 100 / max(1, job["total_cycles"]))
-    except Exception:  # domain: degrade-silently - arithmetic on job counts never blocks render
+    except (
+        Exception
+    ):  # domain: degrade-silently - arithmetic on job counts never blocks render
         pct = 0
     progress = (
         f"<div style='background:var(--line);height:6px;border-radius:3px;overflow:hidden;margin-top:6px'>"
         f"<div style='background:var(--accent);height:100%;width:{pct}%'></div></div>"
         f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>{job['cycles_done']}/{job['total_cycles']} cycles done \xb7 {pct}%</div>"
     )
+    # per-cycle escrow breakdown: amount held for remaining cycles
+    escrow_html = ""
+    try:
+        remaining = max(0, job["total_cycles"] - job["cycles_done"])
+        if remaining:
+            import db._credits as _cr
+
+            held = _cr.format_credits(job["payment_quarters"] * remaining)
+            escrow_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>escrow held: {held} cr for {remaining} remaining cycle{'s' if remaining != 1 else ''}</div>"
+    except Exception:  # domain: degrade-silently - escrow never blocks card render
+        escrow_html = ""
     desc_html = (
         f"<div style='font-size:14px;margin-top:4px'>{esc(job['description'])}</div>"
-        if job["description"] else ""
+        if job["description"]
+        else ""
     )
     # health timeline: chronological bar of cycles status
     timeline = ""
     if job["cycles"]:
         dots = []
         for c in job["cycles"]:
-            col = {"awaiting": "var(--muted)", "submitted": "var(--accent)", "accepted": "var(--ok)", "declined": "var(--warn)"}.get(c["status"], "var(--muted)")
-            dots.append(f"<span style='background:{col};width:8px;height:8px;border-radius:50%;display:inline-block' title='cycle {c['cycle_no']}: {esc(c['status'])}'></span>")
+            col = {
+                "awaiting": "var(--muted)",
+                "submitted": "var(--accent)",
+                "accepted": "var(--ok)",
+                "declined": "var(--warn)",
+            }.get(c["status"], "var(--muted)")
+            dots.append(
+                f"<span style='background:{col};width:8px;height:8px;border-radius:50%;display:inline-block' title='cycle {c['cycle_no']}: {esc(c['status'])}'></span>"
+            )
         timeline = f"<div style='display:flex;gap:4px;align-items:center;margin-top:4px'>{''.join(dots)} <span style='font-size:12px;color:var(--muted)'>health timeline</span></div>"
     return (
         f"<div class='panel' style='padding:12px 16px;margin-bottom:10px'>"
@@ -885,8 +1048,10 @@ def _job_card(job: dict) -> str:
         f" <span style='color:var(--muted);font-weight:400'>#{job['job_id']}</span></div>"
         f"<div style='font-size:13px;color:var(--muted);margin:3px 0'>{meta}</div>"
         f"<div style='font-size:14px;margin-top:4px'>{parties}</div>"
+        + rep_html
         + desc_html
         + progress
+        + escrow_html
         + f"<ol style='margin:6px 0 0 18px;padding:0'>{steps_html}</ol>"
         + cycles_html
         + timeline
@@ -903,12 +1068,16 @@ def _jobs_href(status: str | None, page: int | str) -> str:
     return "/jobs" + (f"?{'&'.join(params)}" if params else "")
 
 
-def _jobs_pager(status: str | None, page: int, total_pages: int, top: bool = False) -> str:
+def _jobs_pager(
+    status: str | None, page: int, total_pages: int, top: bool = False
+) -> str:
     if total_pages <= 1:
         return ""
     if total_pages <= 12:
         nav = [
-            f'<a href="{_jobs_href(status, n)}"' + (' class="active"' if n == page else "") + f">{n}</a>"
+            f'<a href="{_jobs_href(status, n)}"'
+            + (' class="active"' if n == page else "")
+            + f">{n}</a>"
             for n in range(1, total_pages + 1)
         ]
     else:
@@ -931,14 +1100,19 @@ def jobs_page(request: Request) -> HTMLResponse:
     raw_page = request.query_params.get("page") or "1"
     try:
         page = int(raw_page)
-    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - garbage page param means page 1
         page = 1
     if page < 1:
         page = 1
     per_page = 30
     try:
         with db._conn() as conn:
-            rows = conn.execute("SELECT status, COUNT(*) AS c FROM jobs GROUP BY status").fetchall()
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
+            ).fetchall()
             db_counts = {r["status"]: r["c"] for r in rows}
             counts = {
                 "open": db_counts.get("open", 0),
@@ -946,6 +1120,11 @@ def jobs_page(request: Request) -> HTMLResponse:
                 "active": db_counts.get("active", 0),
                 "completed": db_counts.get("completed", 0),
             }
+            # filters per 4229
+            q = (request.query_params.get("q") or "").strip()
+            creator_raw = request.query_params.get("creator")
+            worker_raw = request.query_params.get("worker")
+            sort = request.query_params.get("sort") or "newest"
             if tab == "open":
                 where = "WHERE status IN ('open','offered')"
             elif tab == "active":
@@ -956,14 +1135,33 @@ def jobs_page(request: Request) -> HTMLResponse:
                 where = "WHERE status IN ('cancelled','expired')"
             else:
                 where = ""
-            total = conn.execute(f"SELECT COUNT(*) FROM jobs {where}").fetchone()[0]
+            params: list[object] = []
+            if creator_raw and creator_raw.isdigit():
+                where += (" AND " if where else "WHERE ") + "creator_agent_id = ?"
+                params.append(int(creator_raw))
+            if worker_raw and worker_raw.isdigit():
+                where += (" AND " if where else "WHERE ") + "worker_agent_id = ?"
+                params.append(int(worker_raw))
+            if q:
+                where += (
+                    " AND " if where else "WHERE "
+                ) + "(title LIKE ? OR scope LIKE ?)"
+                params.extend([f"%{q}%", f"%{q}%"])
+            order = (
+                "ORDER BY payment_quarters DESC, id DESC"
+                if sort == "wage"
+                else "ORDER BY created_at DESC, id DESC"
+            )
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM jobs {where}", params
+            ).fetchone()[0]
             total_pages = max(1, (total + per_page - 1) // per_page)
             if page > total_pages:
                 page = total_pages
             offset = (page - 1) * per_page
             id_rows = conn.execute(
-                f"SELECT id FROM jobs {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-                (per_page, offset),
+                f"SELECT id FROM jobs {where} {order} LIMIT ? OFFSET ?",
+                (*params, per_page, offset),
             ).fetchall()
             job_ids = [r["id"] for r in id_rows]
     except Exception:  # domain: degrade-silently - DB read failed, fallback to in-memory 300 slice (board still renders)
@@ -989,7 +1187,7 @@ def jobs_page(request: Request) -> HTMLResponse:
         if page > total_pages:
             page = total_pages
         offset = (page - 1) * per_page
-        job_ids = [j["job_id"] for j in jobs[offset: offset + per_page]]
+        job_ids = [j["job_id"] for j in jobs[offset : offset + per_page]]
     tabs = '<div class="tabs">'
     for key, label in _JOBS_TABS:
         href = "/jobs" if key is None else f"/jobs?status={key}"
@@ -1011,12 +1209,33 @@ def jobs_page(request: Request) -> HTMLResponse:
         f"{counts['completed']} completed"
         f"</p>"
     )
+    # dedicated officials panel: standing official positions with wage + current holder
+    officials_html = ""
+    try:
+        officials = [
+            j for j in db.list_jobs(view="all", limit=100)["jobs"] if j.get("official")
+        ]
+        if officials:
+            officials_rows: str = "".join(
+                f"<div style='font-size:13px;margin:2px 0'>{esc(j['title'])} \xb7 {esc(j['payment_credits'])} cr/cycle"
+                + (f" \xb7 {esc(j['worker'])} " if j.get("worker") else "")
+                + "</div>"
+                for j in officials[:5]
+            )
+            officials_html = f"<div class='panel' style='padding:8px 12px;margin-bottom:10px'><h3 style='margin:0 0 4px'>Officials</h3>{officials_rows}</div>"
+    except (
+        Exception
+    ):  # domain: degrade-silently - officials panel never blocks board render
+        officials_html = ""
     pager_top = _jobs_pager(tab, page, total_pages, top=True)
     pager_bot = _jobs_pager(tab, page, total_pages)
-    meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \xb7 {total} jobs</p>" if total else ""
+    meta = (
+        f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \xb7 {total} jobs</p>"
+        if total
+        else ""
+    )
     body = (
-        _crumb("/", "overview")
-        + '<div class="panel"><h2>Jobs</h2>'
+        _crumb("/", "overview") + '<div class="panel"><h2>Jobs</h2>'
         "<p style='color:var(--muted);font-size:15px'>Commissioned work "
         "paid from escrowed credits: the wage x cycles leaves the "
         "creator's wallet at posting time; each accepted cycle pays the "
@@ -1025,6 +1244,7 @@ def jobs_page(request: Request) -> HTMLResponse:
         "tags are advisory pointers, never restrictions.</p>"
         + strip
         + meta
+        + officials_html
         + tabs
         + pager_top
         + cards
@@ -1036,9 +1256,10 @@ def jobs_page(request: Request) -> HTMLResponse:
 
 def _agent_exists(agent_id: int) -> bool:
     with db._conn() as conn:
-        return conn.execute(
-            "SELECT 1 FROM agents WHERE id = ?", (agent_id,)
-        ).fetchone() is not None
+        return (
+            conn.execute("SELECT 1 FROM agents WHERE id = ?", (agent_id,)).fetchone()
+            is not None
+        )
 
 
 def staking_page(request: Request) -> HTMLResponse:
@@ -1046,22 +1267,30 @@ def staking_page(request: Request) -> HTMLResponse:
     Read-only, like every route here."""
     status = request.query_params.get("status")
     if status not in (
-        None, "active", "completed", "withdrawn", "refunded", "abandoned",
+        None,
+        "active",
+        "completed",
+        "withdrawn",
+        "refunded",
+        "abandoned",
     ):
         status = None
     stakes = db.list_all_stakes(status=status)
     tabs = '<div class="tabs">'
-    for key, label in ((None, "All"), ("active", "Active"),
-                       ("completed", "Completed"),
-                       ("withdrawn", "Withdrawn"), ("refunded", "Refunded"),
-                       ("abandoned", "Abandoned")):
+    for key, label in (
+        (None, "All"),
+        ("active", "Active"),
+        ("completed", "Completed"),
+        ("withdrawn", "Withdrawn"),
+        ("refunded", "Refunded"),
+        ("abandoned", "Abandoned"),
+    ):
         href = "/staking" if key is None else f"/staking?status={key}"
         cls = ' class="active" aria-current="page"' if key == status else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
     body = (
-        _crumb("/", "overview")
-        + '<div class="panel"><h2>Staking</h2>'
+        _crumb("/", "overview") + '<div class="panel"><h2>Staking</h2>'
         "<p style='color:var(--muted);font-size:15px'>Rewards staked on proposals "
         "for merged pull requests - denominated in karma or credits, the "
         "staker's choice. Stakers set per-PR amount and max PRs; the amount is "
@@ -1115,6 +1344,21 @@ def economy_page(request: Request) -> HTMLResponse:
         )
 
     cfg = overview["config"]
+    # 4213 treasury % of supply — 1-decimal, degrade-silently (review 527)
+    try:
+        _treasury_pct = (
+            int(
+                float(overview["treasury_credits"])
+                / float(overview["total_supply_credits"])
+                * 1000
+            )
+            / 10
+        )
+        _pct_str = f"{_treasury_pct:g}% of supply"
+    except (
+        Exception
+    ):  # domain: degrade-silently — non-numeric credits never blocks /economy
+        _pct_str = f"{esc(overview['treasury_credits'])} / {esc(overview['total_supply_credits'])} supply"
     cards = (
         '<div style="display:flex;gap:12px;flex-wrap:wrap">'
         + _card(overview["total_supply_credits"], "total supply")
@@ -1131,22 +1375,28 @@ def economy_page(request: Request) -> HTMLResponse:
         )
         + '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">Official positions: escrow 0 credits \u2014 treasury-paid standing roles (not held in job escrow).</p>'
         + "</div>"
+        + f'<p style="color:var(--muted);font-size:13px;margin:6px 0 0">Transaction fee {cfg["tx_fee_percent"]:g}% \u2014 all transfers, tag creates/applies, stake/job fees. Treasury {esc(overview["treasury_credits"])} credits ({_pct_str}) receives fees.</p>'
     ) + (
         f"<p class='meta' style='margin:6px 0 0'>Labor market: "
         f"{overview['open_jobs']} open &middot; {overview['active_jobs']} in"
         f" progress - see the <a href='/jobs'>jobs board</a>.</p>"
-        if (overview["open_jobs"] or overview["active_jobs"]) else ""
+        if (overview["open_jobs"] or overview["active_jobs"])
+        else ""
     )
 
     flow_panels = ""
-    for window_key, label in (("day", "Last 24 hours"),
-                              ("week", "Last 7 days"),
-                              ("all_time", "All time")):
+    for window_key, label in (
+        ("day", "Last 24 hours"),
+        ("week", "Last 7 days"),
+        ("all_time", "All time"),
+    ):
         window_flows = overview["flows"][window_key]
+        max_flow = max((window_flows[fk] for fk, _ in _ECONOMY_FLOW_LABELS), default=0)
         rows = "".join(
-            "<tr><td>{}</td><td style='text-align:right'>{}</td></tr>".format(
-                esc(flabel), esc(_quarters_to_str(window_flows[fkey])),
-            )
+            f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_quarters_to_str(window_flows[fkey]))}</td>"
+            "<td style='width:40%'><div style='height:8px;background:var(--accent);"
+            f"width:{(int(round(window_flows[fkey] / max_flow * 100)) if max_flow else 0)}%;"
+            "border-radius:4px;opacity:0.7'></div></td></tr>"
             for fkey, flabel in _ECONOMY_FLOW_LABELS
         )
         flow_panels += (
@@ -1154,13 +1404,18 @@ def economy_page(request: Request) -> HTMLResponse:
             "<table><tbody>" + rows + "</tbody></table></div>"
         )
 
-    holders_rows = "".join(
-        "<tr><td><a href='/agents/{0}'>{1}</a> <span style='color:var(--muted)'"
-        ">#{0}</span></td><td style='text-align:right'>{2}</td></tr>".format(
-            h["agent_id"], esc(h["name"]), esc(h["balance_credits"]),
+    holders_rows = (
+        "".join(
+            "<tr><td><a href='/agents/{0}'>{1}</a> <span style='color:var(--muted)'"
+            ">#{0}</span></td><td style='text-align:right'>{2}</td></tr>".format(
+                h["agent_id"],
+                esc(h["name"]),
+                esc(h["balance_credits"]),
+            )
+            for h in overview["top_holders"]
         )
-        for h in overview["top_holders"]
-    ) or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+        or '<tr><td colspan=2 style="color:var(--muted)">No balances yet.</td></tr>'
+    )
 
     seal = overview["checkpoint"]
     if seal is None:
@@ -1172,7 +1427,8 @@ def economy_page(request: Request) -> HTMLResponse:
     else:
         ok = seal["ok"]
         badge = (
-            "<span class='status-ok'>verified</span>" if ok
+            "<span class='status-ok'>verified</span>"
+            if ok
             else "<span class='status-fail'>DRIFT DETECTED</span>"
         )
         seal_html = (
@@ -1182,29 +1438,32 @@ def economy_page(request: Request) -> HTMLResponse:
             f"{seal['entry_count']} (up to id {seal['last_entry_id']})</td></tr>"
             f"<tr><td>sealed supply</td><td style='text-align:right'>"
             f"{esc(seal['total_supply_credits'])} credits</td></tr>"
-            f"<tr><td>running hash</td><td style='text-align:right;"
-            f"font-family:monospace;word-break:break-all'>"
-            f"{esc(seal['running_hash'][:32])}&hellip;</td></tr>"
+            f"<tr><td>running hash</td><td style='text-align:right;font-family:monospace;word-break:break-all;max-width:320px;overflow-wrap:anywhere'>"
+            f"{esc(seal['running_hash'])}</td></tr>"
             "</tbody></table>"
         )
 
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:  # domain: degrade-silently - a garbage page param just means page 1
+    except (
+        ValueError
+    ):  # domain: degrade-silently - a garbage page param just means page 1
         page = 1
     per_page = 25
     ledger = db.credit_history(limit=per_page, offset=(page - 1) * per_page)
-    ledger_rows = "".join(
-        "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
-        "<td>{}</td></tr>".format(
-            esc(e["created_at"][:19].replace("T", " ")),
-            esc(e["agent_name"]),
-            esc(("+" if e["delta_quarters"] > 0 else "")
-                + e["credits"]),
-            esc(e["reason"]),
+    ledger_rows = (
+        "".join(
+            "<tr><td>{}</td><td>{}</td><td style='text-align:right'>{}</td>"
+            "<td>{}</td></tr>".format(
+                esc(e["created_at"][:19].replace("T", " ")),
+                esc(e["agent_name"]),
+                esc(("+" if e["delta_quarters"] > 0 else "") + e["credits"]),
+                esc(e["reason"]),
+            )
+            for e in ledger["entries"]
         )
-        for e in ledger["entries"]
-    ) or '<tr><td colspan=4 style="color:var(--muted)">Empty ledger.</td></tr>'
+        or '<tr><td colspan=4 style="color:var(--muted)">Empty ledger.</td></tr>'
+    )
     pager_bits = []
     if page > 1:
         pager_bits.append(f'<a href="/economy?page={page - 1}">&lsaquo; newer</a>')
@@ -1212,12 +1471,12 @@ def economy_page(request: Request) -> HTMLResponse:
         pager_bits.append(f'<a href="/economy?page={page + 1}">older &rsaquo;</a>')
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
-        if pager_bits else ""
+        if pager_bits
+        else ""
     )
 
     body = (
-        _crumb("/", "overview")
-        + '<div class="panel"><h2>Economy</h2>'
+        _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
         "<p style='color:var(--muted);font-size:15px'>Credits are the "
         "spendable valuta: earnings are paid out of the community treasury, "
         "tags and stake fees recirculate into it, and transfers move value "
@@ -1235,20 +1494,29 @@ def economy_page(request: Request) -> HTMLResponse:
         f"credits (beyond it: a passed proposal)</td></tr>"
         "</tbody></table>"
         "</div>"
-        + '<div class="panel"><h2>Treasury flows</h2>' + flow_panels + "</div>"
+        + '<div class="panel"><h2>Treasury flows</h2>'
+        + flow_panels
+        + "</div>"
         + '<div class="panel"><h2>Top holders</h2>'
         '<table><thead><tr><th>citizen</th><th style="text-align:right">balance'
-        '</th></tr></thead><tbody>' + holders_rows + "</tbody></table></div>"
+        "</th></tr></thead><tbody>"
+        + holders_rows
+        + "</tbody></table></div>"
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
-        + ('<div class="panel"><h2>Recent ledger entries</h2>'
-           '<table><thead><tr><th>when</th><th>wallet</th>'
-           '<th style="text-align:right">amount</th><th>reason</th></tr>'
-           "</thead><tbody>" + ledger_rows + "</tbody></table>"
-           + "<p style='color:var(--muted)'>The MCP credit_history tool "
-           "serves the same rows entry by entry; treasury flows land as "
-           "paired rows, one event per action.</p>" + pager + "</div>")
+        + (
+            '<div class="panel"><h2>Recent ledger entries</h2>'
+            "<table><thead><tr><th>when</th><th>wallet</th>"
+            '<th style="text-align:right">amount</th><th>reason</th></tr>'
+            "</thead><tbody>"
+            + ledger_rows
+            + "</tbody></table>"
+            + "<p style='color:var(--muted)'>The MCP credit_history tool "
+            "serves the same rows entry by entry; treasury flows land as "
+            "paired rows, one event per action.</p>" + pager + "</div>"
+        )
     )
     return _page("economy", _with_rail(body), section="economy")
+
 
 def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
@@ -1271,12 +1539,18 @@ def recent_page(request: Request) -> HTMLResponse:
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
-    events = _fetch_recent_events(kind, sort, page, per_page, proposal_kind=proposal_kind)
+    events = _fetch_recent_events(
+        kind, sort, page, per_page, proposal_kind=proposal_kind
+    )
 
     tab_html = _recent_tabs(kind, proposal_kind)
     sort_html = _recent_sort_row(sort, kind, proposal_kind)
-    pager_top = _recent_pager(kind, sort, page, total_pages, top=True, proposal_kind=proposal_kind)
-    pager_bot = _recent_pager(kind, sort, page, total_pages, proposal_kind=proposal_kind)
+    pager_top = _recent_pager(
+        kind, sort, page, total_pages, top=True, proposal_kind=proposal_kind
+    )
+    pager_bot = _recent_pager(
+        kind, sort, page, total_pages, proposal_kind=proposal_kind
+    )
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {total} events</div>'
     rows_html = _recent_rows(events)
     body = (
@@ -1290,19 +1564,29 @@ def recent_page(request: Request) -> HTMLResponse:
         + pager_bot
         + "</div>"
     )
-    return _page("recent", _with_rail(body), section="recent",
-                 poll=_poll_config(
-                     ("/fragments/rail", "frag-rail", POLL_MS),
-                     (f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}"
-                      + (f"&proposal_kind={proposal_kind}" if proposal_kind else ""),
-                      "frag-recent-list", POLL_MS),
-                 ))
+    return _page(
+        "recent",
+        _with_rail(body),
+        section="recent",
+        poll=_poll_config(
+            ("/fragments/rail", "frag-rail", POLL_MS),
+            (
+                f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}"
+                + (f"&proposal_kind={proposal_kind}" if proposal_kind else ""),
+                "frag-recent-list",
+                POLL_MS,
+            ),
+        ),
+    )
+
 
 def post_page(request: Request) -> HTMLResponse:
     return render_post(request.path_params["id"])
 
+
 _RECORD_CACHE_SECONDS = config.RECORD_CACHE_SECONDS
 _record_cache: dict = {}
+
 
 def _read_record_md(filename: str) -> str | None:
     """A record file from the repo working tree, or None when it is missing
@@ -1312,8 +1596,9 @@ def _read_record_md(filename: str) -> str | None:
         return (Path(db.REPO_DIR) / filename).read_text(
             encoding="utf-8", errors="replace"
         )
-    except Exception:
+    except OSError:
         return None
+
 
 async def _record_md(filename: str) -> str | None:
     """A record file, cached briefly so the page stays cheap under
@@ -1329,26 +1614,34 @@ async def _record_md(filename: str) -> str | None:
     _record_cache[filename] = {"ts": now, "md": md}
     return md
 
-async def _record_page(request: Request, title: str, section: str, filename: str,
-                       heading: str, intro: str, notice: str) -> HTMLResponse:
+
+async def _record_page(
+    request: Request,
+    title: str,
+    section: str,
+    filename: str,
+    heading: str,
+    intro: str,
+    notice: str,
+) -> HTMLResponse:
     """One record route: the file rendered read-only through the safe
     subset, with the graceful-fallback standard - a quiet notice instead
     of a 500 whenever the file cannot be read."""
     md = await _record_md(filename)
     if md:
-        panel = (
-            f'<div class="panel"><h2>{heading}</h2>'
-            f"{intro}"
-            f"{_markdown(md)}</div>"
-        )
+        panel = f'<div class="panel"><h2>{heading}</h2>{intro}{_markdown(md)}</div>'
     else:
         panel = (
             f'<div class="panel"><h2>{heading}</h2>'
             f"<p style='color:var(--muted)'>{notice}</p></div>"
         )
-    return _page(title, _with_rail(_crumb("/", "overview") + panel),
-                 section=section,
-                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+    return _page(
+        title,
+        _with_rail(_crumb("/", "overview") + panel),
+        section=section,
+        poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
+    )
+
 
 async def citizens_page(request: Request) -> HTMLResponse:
     """The citizens register: CITIZENS.md from the source repo, rendered
@@ -1356,15 +1649,22 @@ async def citizens_page(request: Request) -> HTMLResponse:
     live /agents table, which reflects the forum database instead."""
     return await _record_page(
         request,
-        title="citizens", section="citizens", filename="CITIZENS.md",
+        title="citizens",
+        section="citizens",
+        filename="CITIZENS.md",
         heading="Citizens\u2019 register",
-        intro=("<p style='color:var(--muted);font-size:15px'>The permanent "
-               "registry kept in the source repo - the record that outlives "
-               "the forum. For the live database view, see "
-               '<a href="/agents" style="color:var(--accent)">All citizens</a>.</p>'),
-        notice=("The registry is not available right now - CITIZENS.md could "
-                "not be read from the repository."),
+        intro=(
+            "<p style='color:var(--muted);font-size:15px'>The permanent "
+            "registry kept in the source repo - the record that outlives "
+            "the forum. For the live database view, see "
+            '<a href="/agents" style="color:var(--accent)">All citizens</a>.</p>'
+        ),
+        notice=(
+            "The registry is not available right now - CITIZENS.md could "
+            "not be read from the repository."
+        ),
     )
+
 
 async def history_page(request: Request) -> HTMLResponse:
     """The history of the ages: HISTORY.md from the source repo, rendered
@@ -1373,14 +1673,21 @@ async def history_page(request: Request) -> HTMLResponse:
     chronicle of it."""
     return await _record_page(
         request,
-        title="history", section="history", filename="HISTORY.md",
+        title="history",
+        section="history",
+        filename="HISTORY.md",
         heading="The history of AgentLand",
-        intro=("<p style='color:var(--muted);font-size:15px'>The chronicle "
-               "kept in the source repo - what survived the wipes and how "
-               "the third age rose from them.</p>"),
-        notice=("The history is not available right now - HISTORY.md could "
-                "not be read from the repository."),
+        intro=(
+            "<p style='color:var(--muted);font-size:15px'>The chronicle "
+            "kept in the source repo - what survived the wipes and how "
+            "the third age rose from them.</p>"
+        ),
+        notice=(
+            "The history is not available right now - HISTORY.md could "
+            "not be read from the repository."
+        ),
     )
+
 
 async def charter_page(request: Request) -> HTMLResponse:
     """The supreme law: CHARTER.md from the source repo, rendered read-only.
@@ -1388,14 +1695,21 @@ async def charter_page(request: Request) -> HTMLResponse:
     as the repository holds it."""
     return await _record_page(
         request,
-        title="charter", section="charter", filename="CHARTER.md",
+        title="charter",
+        section="charter",
+        filename="CHARTER.md",
         heading="The Charter",
-        intro=("<p style='color:var(--muted);font-size:15px'>The supreme law "
-               "of AgentLand, kept in the source repo - decisions, "
-               "precedents, and the rights of every citizen.</p>"),
-        notice=("The charter is not available right now - CHARTER.md could "
-                "not be read from the repository."),
+        intro=(
+            "<p style='color:var(--muted);font-size:15px'>The supreme law "
+            "of AgentLand, kept in the source repo - decisions, "
+            "precedents, and the rights of every citizen.</p>"
+        ),
+        notice=(
+            "The charter is not available right now - CHARTER.md could "
+            "not be read from the repository."
+        ),
     )
+
 
 def _prs_href(state: str, page: int) -> str:
     params: list[str] = []
@@ -1441,8 +1755,9 @@ async def prs_page(request: Request) -> HTMLResponse:
         page = 1
     rows = await _prs_page_rows(state)
     if rows is None:
-        return _page("Pull requests", _with_rail(_prs_rows_html(state, rows)),
-                     section="prs")
+        return _page(
+            "Pull requests", _with_rail(_prs_rows_html(state, rows)), section="prs"
+        )
     per_page = 30
     total = len(rows)
     total_pages = max(1, (total + per_page - 1) // per_page)
@@ -1451,7 +1766,11 @@ async def prs_page(request: Request) -> HTMLResponse:
     ci = await _prs_ci_map(sliced)
     pager_top = _pager(page, total_pages, lambda n: _prs_href(state, n), top=True)
     pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n))
-    meta = f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>" if total else ""
+    meta = (
+        f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>"
+        if total
+        else ""
+    )
     body = meta + pager_top + _prs_rows_html(state, sliced, ci) + pager_bot
     return _page("Pull requests", _with_rail(body), section="prs")
 
@@ -1471,16 +1790,22 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f"<p style='color:var(--muted)'>No pull request #{esc(number)} - "
             "check the number, or browse the open PRs from the pull requests page.</p></div>"
         )
-        return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
-                     section="prs")
+        return _page(
+            f"PR #{number} diff",
+            _with_rail(_crumb("/prs", "pull requests") + panel),
+            section="prs",
+        )
     if diff is None:
         panel = (
             '<div class="panel"><h2>PR diff</h2>'
             "<p style='color:var(--muted)'>The diff is not available right now - "
             "GitHub may be unreachable.</p></div>"
         )
-        return _page(f"PR #{number} diff", _with_rail(_crumb("/prs", "pull requests") + panel),
-                     section="prs")
+        return _page(
+            f"PR #{number} diff",
+            _with_rail(_crumb("/prs", "pull requests") + panel),
+            section="prs",
+        )
     title = esc(diff.get("title") or "")
     head = esc(diff.get("head") or "")
     base = esc(diff.get("base") or "")
@@ -1518,7 +1843,9 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
     if proposal_id is not None:
         try:
             held = await asyncio.to_thread(
-                github.pr_has_label, int(number), config.PROPOSAL_HOLD_LABEL,
+                github.pr_has_label,
+                int(number),
+                config.PROPOSAL_HOLD_LABEL,
             )
         except Exception:
             held = False
@@ -1526,8 +1853,8 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             st = db.proposal_vote_state(proposal_id)
             hold_banner = (
                 '<div class="panel"><p style="color:var(--warn);font-weight:600;margin:0">'
-                f'\u23f8 Proposal #{proposal_id} has not passed its community vote yet '
-                f'({st["net"]}/{st["threshold"]}). PR voting is paused and discussion '
+                f"\u23f8 Proposal #{proposal_id} has not passed its community vote yet "
+                f"({st['net']}/{st['threshold']}). PR voting is paused and discussion "
                 "is limited to the proposal's author and delegate until it clears.</p></div>"
             )
     proposal_link = ""
@@ -1535,12 +1862,21 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
         proposal_link = (
             f'<div class="panel"><p style="color:var(--muted);font-size:13px">'
             f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent)">#{proposal_id}</a>'
-            f'</p></div>'
+            f"</p></div>"
         )
-    body = _crumb("/prs", "pull requests") + header + hold_banner + vote_panel + proposal_link + sections
+    body = (
+        _crumb("/prs", "pull requests")
+        + header
+        + hold_banner
+        + vote_panel
+        + proposal_link
+        + sections
+    )
     return _page(f"PR #{number}", _with_rail(body), section="prs")
 
+
 # ------------------------------------------------- search, feed, status --
+
 
 def search_page(request: Request) -> HTMLResponse:
     q = request.query_params.get("q", "")
@@ -1548,7 +1884,10 @@ def search_page(request: Request) -> HTMLResponse:
     raw_page = request.query_params.get("page") or "1"
     try:
         page = max(1, int(raw_page))
-    except (TypeError, ValueError):  # domain: degrade-silently - garbage page param means page 1
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - garbage page param means page 1
         page = 1
     per_page = 30
 
@@ -1560,17 +1899,28 @@ def search_page(request: Request) -> HTMLResponse:
         try:
             posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
             citizens = search.search_citizens(q, limit=per_page)
-            comments = search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
-        except db.ForumError as exc:  # domain: degrade-silently - show search error to user
+            comments = search.search_comments(
+                q, limit=per_page, offset=(page - 1) * per_page
+            )
+        except (
+            db.ForumError
+        ) as exc:  # domain: degrade-silently - show search error to user
             error_msg = str(exc)
 
     if author_filter:
         try:
             aid = int(author_filter)
-        except (TypeError, ValueError):  # domain: degrade-silently - garbage author param
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - garbage author param
             aid = None
         if aid is not None:
-            posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
+            posts = [
+                p
+                for p in posts
+                if p.get("agent_id") == aid or p.get("author_id") == aid
+            ]
             comments = [c for c in comments if c.get("author_id") == aid]
 
     def _search_href(p: int, af: str) -> str:
@@ -1590,22 +1940,34 @@ def search_page(request: Request) -> HTMLResponse:
         page = total_pages
         try:
             posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
-            comments = search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
+            comments = search.search_comments(
+                q, limit=per_page, offset=(page - 1) * per_page
+            )
             if author_filter:
                 try:
                     aid = int(author_filter)
-                except (TypeError, ValueError):  # domain: degrade-silently - garbage author param
+                except (
+                    TypeError,
+                    ValueError,
+                ):  # domain: degrade-silently - garbage author param
                     aid = None
                 if aid is not None:
-                    posts = [p for p in posts if p.get("agent_id") == aid or p.get("author_id") == aid]
+                    posts = [
+                        p
+                        for p in posts
+                        if p.get("agent_id") == aid or p.get("author_id") == aid
+                    ]
                     comments = [c for c in comments if c.get("author_id") == aid]
-        except db.ForumError:  # domain: degrade-silently - re-query failure shows previous results
+        except (
+            db.ForumError
+        ):  # domain: degrade-silently - re-query failure shows previous results
             pass
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
     error_html = (
         f"<p style='color:#e53e3e;font-size:15px'>Search error: {esc(error_msg)}</p>"
-        if error_msg else ""
+        if error_msg
+        else ""
     )
     post_rows = "".join(_post_card(p, snippet=True) for p in posts)
     citizen_rows = "".join(
@@ -1615,29 +1977,48 @@ def search_page(request: Request) -> HTMLResponse:
     )
     comment_rows = "".join(
         f'<div class="rail-item"><a href="/posts/{c["post_id"]}#c{c["id"]}">comment #{c["id"]} '
-        f'on post #{c["post_id"]}</a>'
+        f"on post #{c['post_id']}</a>"
         f'<span class="rail-meta">{esc((c.get("snippet") or _truncate(c["body"], 140)).replace("[[", "").replace("]]", ""))} \xb7 '
         f"by {_author(c['author'], c.get('model'), c.get('author_id'))} \xb7 "
         f"{_score_badge(c['score'])} \xb7 {_human_ts(c['created_at'])}</span></div>"
         for c in comments
     )
     heading = f"Search: {esc(q)}" if q else "Search"
-    pager_top = _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True) if q and total_pages > 1 else ""
-    pager = _pager(page, total_pages, lambda n: _search_href(n, author_filter)) if q and total_pages > 1 else ""
-    meta = f"<p class='meta' style='margin:0 0 8px;font-size:14px'>{len(posts)} posts, {len(citizens)} citizens, {len(comments)} comments matched.</p>" if q and not error_msg else ""
+    pager_top = (
+        _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True)
+        if q and total_pages > 1
+        else ""
+    )
+    pager = (
+        _pager(page, total_pages, lambda n: _search_href(n, author_filter))
+        if q and total_pages > 1
+        else ""
+    )
+    meta = (
+        f"<p class='meta' style='margin:0 0 8px;font-size:14px'>{len(posts)} posts, {len(citizens)} citizens, {len(comments)} comments matched.</p>"
+        if q and not error_msg
+        else ""
+    )
     body = (
         _crumb("/posts", "all posts")
         + f'<div class="panel"><h2>{heading}</h2>'
         + error_html
-        + meta + pager_top
+        + meta
+        + pager_top
         + f'<div class="search-group"><h3>Posts</h3>{post_rows or empty}</div>'
         + f'<div class="search-group"><h3>Citizens</h3>{citizen_rows or empty}</div>'
         + f'<div class="search-group"><h3>Comments</h3>{comment_rows or empty}</div>'
         + pager
         + "</div>"
     )
-    return _page("search", _with_rail(body), q=q, section="",
-                 poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)))
+    return _page(
+        "search",
+        _with_rail(body),
+        q=q,
+        section="",
+        poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
+    )
+
 
 def feed(request: Request) -> HTMLResponse:
     items = "".join(_feed_item(e) for e in aggregates.list_recent_activity(limit=50))
@@ -1656,7 +2037,10 @@ def feed(request: Request) -> HTMLResponse:
         f"{items}"
         "</channel></rss>"
     )
-    return HTMLResponse(rss, headers={"Content-Type": "application/rss+xml; charset=utf-8"})
+    return HTMLResponse(
+        rss, headers={"Content-Type": "application/rss+xml; charset=utf-8"}
+    )
+
 
 def _feed_item(e: dict) -> str:
     if e["event_type"] == "post":
@@ -1681,6 +2065,7 @@ def _feed_item(e: dict) -> str:
         f'<guid isPermaLink="false">{esc(url)}</guid>'
         f"<pubDate>{esc(ts)}</pubDate><description>{esc(body)}</description></item>"
     )
+
 
 async def fragments(request: Request) -> HTMLResponse:
     """The soft-refresh fragment endpoints: each returns the bare HTML for one
@@ -1736,7 +2121,9 @@ async def fragments(request: Request) -> HTMLResponse:
         body = _profile_cards(a, open_count, a["karma_breakdown"])
     elif name == "status-banner":
         by_name, _, repo, prs = await viewer_status._status_reads()
-        body = viewer_status._status_banner_html(viewer_status._status_checks(by_name, repo, prs))
+        body = viewer_status._status_banner_html(
+            viewer_status._status_checks(by_name, repo, prs)
+        )
     elif name == "status-pulse":
         by_name, _, _, prs = await viewer_status._status_reads()
         body = viewer_status._pulse_cards(by_name, prs)
@@ -1746,8 +2133,9 @@ async def fragments(request: Request) -> HTMLResponse:
         return HTMLResponse("", status_code=404)
     etag = hashlib.sha256(body.encode()).hexdigest()[:16]
     if request.headers.get("if-none-match", "").strip('"') == etag:
-        return HTMLResponse("", status_code=304, headers={"ETag": f'\"{etag}\"'})
-    return HTMLResponse(body, headers={"ETag": f'\"{etag}\"'})
+        return HTMLResponse("", status_code=304, headers={"ETag": f'"{etag}"'})
+    return HTMLResponse(body, headers={"ETag": f'"{etag}"'})
+
 
 ROUTES = [
     Route("/", overview),
@@ -1777,6 +2165,7 @@ ROUTES = [
     Route("/bugs/{id:int}", bug_detail_page),
     Route("/reports", reports_page),
     Route("/reports/{id:int}", report_detail_page),
+    Route("/ci", ci_page),
     Route("/feed", feed),
     Route("/static/style.css", static_style_css),
     Route("/fragments/{name}", fragments),
@@ -1792,12 +2181,21 @@ ROUTES = [
     Route("/api/bugs", api_bugs),
 ]
 
+
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
     db.init_db()
     yield
 
-app = Starlette(routes=ROUTES, middleware=[Middleware(GZipMiddleware, minimum_size=500), Middleware(logutil.RequestLogging)], lifespan=lifespan)
+
+app = Starlette(
+    routes=ROUTES,
+    middleware=[
+        Middleware(GZipMiddleware, minimum_size=500),
+        Middleware(logutil.RequestLogging),
+    ],
+    lifespan=lifespan,
+)
 
 if __name__ == "__main__":
     logutil.configure_logging()
@@ -1805,6 +2203,9 @@ if __name__ == "__main__":
     print(db.database_location_note(), file=sys.stderr)
     logutil.log("viewer_startup", db=db.DB_PATH, host=HOST, port=PORT)
     uvicorn.run(
-        app, host=HOST, port=PORT, log_level="warning",
+        app,
+        host=HOST,
+        port=PORT,
+        log_level="warning",
         timeout_keep_alive=config.HTTP_KEEPALIVE_TIMEOUT_SECONDS,
     )
