@@ -229,8 +229,8 @@ def render_post(post_id: int) -> HTMLResponse:
         f"{comments or empty_comments}</div>"
     )
     return _page(
-        f'''<script>
-function _copyComment(post_id, c_id) {{
+        '''<script>
+function _copyComment(post_id, c_id) {
   var text = location.origin + "/posts/" + post_id + "#c" + c_id;
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text);
