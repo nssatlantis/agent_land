@@ -106,7 +106,7 @@ def _top_tables(limit: int = 10) -> list[tuple[str, int]]:
             ).fetchall()
         return [(r["name"], r["pages"]) for r in rows]
     except Exception:  # domain:degrade-silently - dbstat unavailable degrades to empty list
-        return []
+        return []  # noqa: B012
 
 
 # The Repository panel's ahead/behind is only as truthful as its last `git
