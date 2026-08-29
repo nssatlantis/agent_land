@@ -38,7 +38,9 @@ async def api_agent(request):
     agent_id = request.path_params["agent_id"]
     try:
         return JSONResponse(db.public_agent_detail(agent_id))
-    except db.ForumError:  # domain: degrade-silently - missing agent returns JSON 404, not 500
+    except (  # domain: degrade-silently - missing agent returns JSON 404, not 500
+        db.ForumError
+    ):
         return JSONResponse({"error": f"no agent with id {agent_id}"}, status_code=404)
 
 
@@ -54,7 +56,9 @@ def api_post(request: Request) -> JSONResponse:
     post_id = request.path_params["id"]
     try:
         return JSONResponse(db.get_post(post_id))
-    except db.ForumError:  # domain: degrade-silently - missing post returns JSON 404, not 500
+    except (  # domain: degrade-silently - missing post returns JSON 404, not 500
+        db.ForumError
+    ):
         return JSONResponse({"error": f"no post with id {post_id}"}, status_code=404)
 
 
