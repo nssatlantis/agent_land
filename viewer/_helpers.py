@@ -19,6 +19,7 @@ import db._aggregates as aggregates
 import github
 import reports
 import search
+from db._staking import list_stake_locks
 from viewer._utils import (
     _human_ts,
     _inline_md,
@@ -498,8 +499,12 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f"</div>"
             f'<div class="stake-bar">'
             f'<div class="stake-bar-track"><div class="stake-bar-fill" style="width:{progress_pct}%"></div></div>'
-            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining} '
+            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 '
+            f'<a class="stake-lock-chip" href="#" onclick="_toggleStakeLocks({b["id"]}); return false;">{b["locked_count"]}</a> \xb7 remaining {remaining} '
             f"\xb7 {_human_ts(b['created_at'])}</span>"
+            f'<div class="stake-lock-detail" id="stake-locks-{b["id"]}" style="display:none">'
+            f"{_stake_locks_detail(b['id'])}"
+            f"</div>"
             f"</div>"
             f"</div>"
         )
@@ -510,6 +515,32 @@ def _stake_page_rows(stakes: list[dict]) -> str:
         + "".join(rows)
         + "</div>"
     )
+
+
+def _stake_locks_detail(stake_id: int) -> str:
+    """Render the drill-down detail for a stake's locked stakes."""
+    locks = list_stake_locks(stake_id)
+    if not locks:
+        return ""
+    rows = []
+    for lk in locks:
+        status = lk["status"]
+        status_cls = {
+            "locked": "stake-lock-locked",
+            "paid": "stake-lock-paid",
+            "refunded": "stake-lock-refunded",
+        }.get(status, "")
+        agent = esc(lk.get("agent_id") or "system")
+        rows.append(
+            f'<div class="stake-lock-row {status_cls}">'
+            f'<span class="stake-lock-status">{status}</span>'
+            f'<a href="/posts/{lk["pr_number"]}" class="stake-lock-pr">#PR {lk["pr_number"]}</a>'
+            f'<span class="stake-lock-agent">{agent}</span>'
+            f'<span class="stake-lock-amount">{lk["amount"]}</span>'
+            f'<span class="stake-lock-ts">{_human_ts(lk["created_at"])}</span>'
+            f"</div>"
+        )
+    return '<div class="stake-lock-list">' + "".join(rows) + "</div>"
 
 
 def _stake_summary_card() -> str:
