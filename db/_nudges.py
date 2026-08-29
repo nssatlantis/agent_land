@@ -180,6 +180,7 @@ _IDLE_NUDGE_KEYS = (
     "pr_vote_note",
     "collab_note",
     "job_note",
+    "workflow_note",
     "ci_nudge",
 )
 

@@ -1465,7 +1465,7 @@ def bind_todo_item_to_pr(
     the system auto-checks the item (`done = 1`) when that PR merges. Called
     by repo_propose_change's todo_item_id and the standalone
     link_pr_to_todo_item tool. One item per PR (Option A): the binding is a
-    nullable pr_number on the item row, cleared on merge (item ticked) or on
+    nullable pr_number on the item row, kept on merge for audit (item ticked) and cleared only on
     decline/close (item stays undone, re-linkable). Refuses an item that is
     not on this proposal, already done, or already bound to a different PR.
     Records the binding in the edit trail like any mutation. Annotation-level
