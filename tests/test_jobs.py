@@ -7,6 +7,7 @@ import importlib
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_jobs_"))
@@ -897,6 +898,10 @@ def test_overdue_cycles():
     does. The sweep notifies worker AND creator exactly once per job+cycle
     window; a decline opens a fresh window; knob 0 disables the feature."""
     _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    # Notify-only: this test exercises the nudge path with an ancient
+    # anchor, so release (FORUM_JOB_OVERDUE_RELEASE_AFTER) must stay off;
+    # the release branch is covered by test_overdue_release.
+    _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "0")
     try:
         creator = _make_creator("jobc-stall")
         worker = db.register_agent("jobw-stall")
@@ -1004,6 +1009,114 @@ def test_overdue_cycles():
         _arm("FORUM_JOB_CYCLE_DUE_HOURS", "0")
         assert db.get_job(job["job_id"])["overdue"] is False, "knob 0 disables"
         assert db._jobs.sweep_overdue_job_cycles() == 0
+    finally:
+        _restore_arms()
+
+
+def test_overdue_release():
+    """Overdue release (FORUM_JOB_OVERDUE_RELEASE_AFTER + JOB_MISSED_KARMA):
+    a current cycle left overdue for N consecutive due windows closes the
+    job - unearned escrow returns to the creator, the worker loses the
+    configured karma via the job_penalties ledger (CHARTER IX.1.f), both
+    sides are notified, the release fires once, and a release_after of 0
+    keeps the sweep notify-only."""
+    _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "2")
+    try:
+        creator = _make_creator("jobc-orel")
+        worker = db.register_agent("jobw-orel")
+        job = _simple_job(
+            creator, title="stalled release", pay=10.0, kind="one_time", cycles=2
+        )
+        db.claim_job(worker["token"], job["job_id"])
+
+        def _age_to(job_id: int, iso: str) -> None:
+            with db._conn(immediate=True) as conn:
+                conn.execute(
+                    "UPDATE events SET created_at = ? WHERE target_type = 'job'"
+                    " AND target_id = ? AND kind IN ('job_claimed','job_submitted',"
+                    "'job_cycle_accepted','job_cycle_declined')",
+                    (iso, job_id),
+                )
+
+        def _iso_past(hours: float) -> str:
+            return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )[:-3] + "Z"
+
+        # One full window overdue (age 1.9h, window 1h): nudged, not released.
+        _age_to(job["job_id"], _iso_past(1.9))
+        assert db._jobs.sweep_overdue_job_cycles() >= 2, "nudge under the threshold"
+        assert db.get_job(job["job_id"])["status"] == "active"
+        assert db.get_job(job["job_id"])["overdue"] is True
+        with db._conn() as conn:
+            wid = db._require_agent_by_token(conn, worker["token"])["id"]
+            cb = conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?"
+                " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                " AND body LIKE ?",
+                (
+                    wid,
+                    job["job_id"],
+                    f"%cycle 1 of job #{job['job_id']}%submit your work%",
+                ),
+            ).fetchall()
+        assert len(cb) == 1, f"worker nudged exactly once: {[r[0] for r in cb]}"
+
+        # Past the 2nd window (age 3h): released - closes, notifies both.
+        _age_to(job["job_id"], _iso_past(3))
+        assert db._jobs.sweep_overdue_job_cycles() >= 2, "release notifies both sides"
+        assert db.get_job(job["job_id"])["status"] == "cancelled"
+
+        with db._conn() as conn:
+            wid = db._require_agent_by_token(conn, worker["token"])["id"]
+            cid = db._require_agent_by_token(conn, creator["token"])["id"]
+            pen = conn.execute(
+                "SELECT amount FROM job_penalties WHERE job_id = ? AND agent_id = ?",
+                (job["job_id"], wid),
+            ).fetchone()
+            assert pen is not None and pen[0] == -2, f"penalty rows: {pen}"
+            w_rel = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT body FROM notifications WHERE agent_id = ?"
+                    " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                    " AND body LIKE '%released%'",
+                    (wid, job["job_id"]),
+                )
+            ]
+            c_rel = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT body FROM notifications WHERE agent_id = ?"
+                    " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                    " AND body LIKE '%released%'",
+                    (cid, job["job_id"]),
+                )
+            ]
+            assert len(w_rel) == 1 and "lost 2 karma" in w_rel[0], w_rel
+            assert len(c_rel) == 1 and "returned to your wallet" in c_rel[0], c_rel
+            assert conn.execute(
+                "SELECT 1 FROM events WHERE kind = 'job_released'"
+                " AND target_type = 'job' AND target_id = ?",
+                (job["job_id"],),
+            ).fetchone(), "the release is on the public ledger"
+            refunded = conn.execute(
+                "SELECT COUNT(*) FROM credit_entries WHERE agent_id = ?"
+                " AND reason = 'job_released'",
+                (cid,),
+            ).fetchone()
+            assert refunded[0] == 1, f"escrow refunded: {refunded}"
+
+        # release_after=0 keeps the sweep notify-only - no release.
+        _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "0")
+        job2 = _simple_job(creator, title="stalled release knob")
+        db.claim_job(worker["token"], job2["job_id"])
+        _age_to(job2["job_id"], _iso_past(3))
+        assert db._jobs.sweep_overdue_job_cycles() >= 2, "nudged under notify-only"
+        assert db.get_job(job2["job_id"])["status"] == "active", (
+            "notify-only never releases"
+        )
     finally:
         _restore_arms()
 
