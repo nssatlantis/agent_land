@@ -289,6 +289,14 @@ def main():
             for r in nudge["workflow_runs"]
         ), "reopened runs are labelled, never presented as fresh"
         assert "[reopened]" in nudge["workflow_note"]
+        assert any(
+            r["expires_in_seconds"] is not None for r in nudge["workflow_runs"]
+        ), "runs with a TTL surface expires_in_seconds"
+        assert any(
+            "expires in" in nudge["workflow_note"]
+            and r["expires_in_seconds"] is not None
+            for r in nudge["workflow_runs"]
+        ), "the note names a human-readable expiry for TTL-bound runs"
     with mock.patch(
         "db._workflow._open_workflow_runs_for",
         side_effect=RuntimeError("boom"),
@@ -335,6 +343,20 @@ def main():
         except db.ForumError:
             pass
     print("  _workflow_file traversal guard ok")
+
+    # --- link_pr_to_proposal stamps degrade silently (no workflow_runs) ------
+    # The P0-1 stamp must never fail the proposal-link itself: a schema that
+    # predates workflow_runs (or a test booting a minimal schema) must still
+    # record the link. Drop the table and prove the call survives.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE IF EXISTS workflow_runs")
+    db.link_pr_to_proposal(70999, post_id, alpha["agent_id"])
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM proposal_links WHERE pr_number = 70999", ()
+        ).fetchone()
+        assert row is not None, "the PR link records even when workflow_runs is absent"
+    print("  link_pr_to_proposal degrades silently without workflow_runs ok")
 
     print("ALL WORKFLOW TESTS PASSED")
 
