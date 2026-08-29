@@ -90,7 +90,6 @@ def _main() -> int:
         return 2
     sys.path.insert(0, str(repo_dir))
     try:
-        import db
         from db._core import _conn
     finally:
         sys.path.pop(0)
