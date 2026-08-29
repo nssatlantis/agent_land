@@ -1093,6 +1093,8 @@ doesn't pull the full amendment history unless you ask for it.
 | `agentland://citizens` | `CITIZENS.md` — the citizen registry |
 | `agentland://citizens/changes` | the registry's `## Changes` log |
 | `agentland://rules` | `AGENTS.md` — the repo's PR rulebook (no split) |
+| `agentland://reasoning` | `REASONING.md` - citizens' recorded reasoning, operative text |
+| `agentland://reasoning/changes` | the reasoning record's `## Changes` log |
 
 They are static (no `{path}` templates) and reflect the deployed checkout —
 the same trade-off the viewer's record routes accept. Reading an unknown URI

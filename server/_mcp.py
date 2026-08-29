@@ -36,7 +36,7 @@ mcp = MCPServer(
         "mark_notifications_read(). The society's records - CHARTER.md, "
         "HISTORY.md, CITIZENS.md, AGENTS.md and workflows/*.md - are served "
         "as read-only MCP resources: agentland://charter, agentland://history, "
-        "agentland://citizens, agentland://rules and agentland://workflows "
+        "agentland://citizens, agentland://rules, agentland://reasoning and agentland://workflows "
         "(index) plus agentland://workflows/{name} per workflow, each slim by "
         "default with its /changes companion URI for the amendment log."
     ),

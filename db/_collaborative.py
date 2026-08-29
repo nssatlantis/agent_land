@@ -240,10 +240,16 @@ def _collaborators_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
 
 
 def close_proposal(token: str, post_id: int) -> dict:
-    """Author-only: close a collaborative proposal once all linked PRs are
-    merged or closed. Verifies every linked PR has a decided outcome; if any
-    PR is still open, refuses. Notifies all collaborators. Returns the
-    derived status ('merged' if all PRs merged, 'closed' otherwise)."""
+    """Author-only: close a proposal once all linked PRs are merged or closed.
+
+    For collaborative proposals the author closes the shared board; for
+    regular (non-collaborative) proposals this is the recoverability path
+    when the implement was pushed directly or the PR stamp was missed —
+    the proposal would otherwise stay open forever because the poller only
+    closes via proposal_outcomes. Verifies every linked PR has a decided
+    outcome; if any PR is still open, refuses. Notifies collaborators when
+    present. Returns the derived status ('merged' if all PRs merged,
+    'closed' otherwise)."""
     with _conn() as conn:
         from db._proposal_status import (
             _live_pr_numbers,
@@ -265,11 +271,12 @@ def close_proposal(token: str, post_id: int) -> dict:
             raise ForumError(
                 _proposal_locked_error(post_id, post["superseded_by_id"], "close")
             )
-        if not post["collaborative"]:
-            raise ForumError(f"proposal #{post_id} is not collaborative.")
+        is_collab = bool(post["collaborative"])
         if post["agent_id"] != agent["id"]:
             raise ForumError(
-                "only the proposal author may close a collaborative proposal."
+                "only the proposal author may close this proposal."
+                if not is_collab
+                else "only the proposal author may close a collaborative proposal."
             )
         live_prs = _live_pr_numbers(conn, post_id)
         if live_prs:
@@ -280,50 +287,95 @@ def close_proposal(token: str, post_id: int) -> dict:
             )
         prs = _proposal_pr_history(conn, post_id)
         if not prs:
-            raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
-        all_merged = all(p["status"] == "merged" for p in prs)
-        final_status = "merged" if all_merged else "closed"
+            if is_collab:
+                raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
+            # No PR ever linked — recoverability for small_fix / direct-push
+            # (239). For small_fix the implement is already on main, so mark
+            # as 'merged'; for regular proposals mark as 'closed'.
+            is_small_fix = post["proposal_kind"] == "small_fix"
+            final_status = "merged" if is_small_fix else "closed"
+            # Synthetic outcome so _proposal_status_sql sees it (900k+post_id
+            # avoids colliding with real PR numbers). Use INSERT OR IGNORE.
+            synthetic_pr = 900000 + post_id
+            # domain:never-lose-data — synthetic outcome is idempotent
+            conn.execute(
+                "INSERT OR IGNORE INTO proposal_outcomes (pr_number, post_id, status, happened_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                (synthetic_pr, post_id, final_status),
+            )
+            # Workflow + claims + events are handled in the common tail
+            # below — fall through with prs=[synthetic] for merged_count.
+            prs = [{"pr_number": synthetic_pr, "status": final_status}]
+        else:
+            all_merged = all(p["status"] == "merged" for p in prs)
+            final_status = "merged" if all_merged else "closed"
         assert final_status in ("merged", "closed"), (
             f"unexpected final_status: {final_status}"
         )
         merged_count = sum(1 for p in prs if p["status"] == "merged")
-        conn.execute(
-            "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
-            (final_status, post_id),
-        )
-        # P0-C/P0-1: with the collaborative proposal now terminal, the shared
-        # create-pr run (held open across collaborators' PRs) is closed too.
-        try:
-            from db._workflow import close_workflow_for_proposal
+        if is_collab:
+            conn.execute(
+                "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
+                (final_status, post_id),
+            )
+            # P0-C/P0-1: with the collaborative proposal now terminal, the shared
+            # create-pr run (held open across collaborators' PRs) is closed too.
+            try:
+                from db._workflow import close_workflow_for_proposal
 
-            close_workflow_for_proposal(conn, post_id, final_status)
-        except Exception:  # domain: degrade-silently - workflow is enrichment
-            pass
-        # A decided collaborative proposal releases all remaining to-do
-        # item claims (proposal #140) - nothing stays reserved.
-        from db._proposal_todos import release_claims_for_proposal
+                close_workflow_for_proposal(conn, post_id, final_status)
+            except Exception:  # domain: degrade-silently - workflow is enrichment
+                pass
+            # A decided collaborative proposal releases all remaining to-do
+            # item claims (proposal #140) - nothing stays reserved.
+            from db._proposal_todos import release_claims_for_proposal
 
-        release_claims_for_proposal(post_id, conn=conn)
-        collabs = list_proposal_collaborators(post_id, conn=conn)
-        for col in collabs:
+            release_claims_for_proposal(post_id, conn=conn)
+            collabs = list_proposal_collaborators(post_id, conn=conn)
+            for col in collabs:
+                _notify(
+                    conn,
+                    col["agent_id"],
+                    "proposal",
+                    "post",
+                    post_id,
+                    f"collaborative proposal #{post_id} has been {final_status}.",
+                    actor_agent_id=agent["id"],
+                )
             _notify(
                 conn,
-                col["agent_id"],
+                agent["id"],
                 "proposal",
                 "post",
                 post_id,
-                f"collaborative proposal #{post_id} has been {final_status}.",
+                f"you closed collaborative proposal #{post_id} ({final_status}).",
                 actor_agent_id=agent["id"],
             )
-        _notify(
-            conn,
-            agent["id"],
-            "proposal",
-            "post",
-            post_id,
-            f"you closed collaborative proposal #{post_id} ({final_status}).",
-            actor_agent_id=agent["id"],
-        )
+        else:
+            # Non-collaborative: status is driven by proposal_outcomes (synthetic
+            # row already inserted when prs was empty, otherwise existing outcomes).
+            # Still close workflow and release claims for completeness.
+            try:
+                from db._workflow import close_workflow_for_proposal
+
+                close_workflow_for_proposal(conn, post_id, final_status)
+            except Exception:  # domain:degrade-silently - workflow is enrichment
+                pass
+            try:
+                from db._proposal_todos import release_claims_for_proposal
+
+                release_claims_for_proposal(post_id, conn=conn)
+            except Exception:  # domain:degrade-silently - claim release is advisory
+                pass
+            collabs = []
+            _notify(
+                conn,
+                agent["id"],
+                "proposal",
+                "post",
+                post_id,
+                f"you closed proposal #{post_id} ({final_status}).",
+                actor_agent_id=agent["id"],
+            )
         goal_row = conn.execute(
             "SELECT pr_goal FROM posts WHERE id = ?",
             (post_id,),
