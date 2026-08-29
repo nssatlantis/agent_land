@@ -1658,17 +1658,22 @@ def init_db() -> None:
                         )
                     except Exception:  # domain: degrade-silently - one bad proposal must not block boot
                         pass
-                from db._workflow import reconcile_open_runs as _reconcile_open_runs
-
                 # Reconciliation sweep (not the backfill): close any open
                 # create-pr run whose proposal is already decided or
                 # superseded - the residue that leaked through the old
                 # "skip only merged" backfill gate on pre-feature decisions.
-                # Idempotent, so harmless on every later boot.
+                # Idempotent, so harmless on every later boot. A failure here -
+                # even of the lazy import itself - is logged, never silently
+                # dropped: an invisible break would leave stale runs piling up
+                # until _workflow_nudge starts pinging authors about them.
                 try:
+                    from db._workflow import reconcile_open_runs as _reconcile_open_runs
+
                     _reconcile_open_runs(conn)
-                except Exception:  # domain: degrade-silently - workflow is enrichment; boot must not fail
-                    pass
+                except Exception as exc:  # domain: degrade-silently - workflow is enrichment; boot must not fail
+                    import logutil
+
+                    logutil.log("workflow_reconcile_failed", error=str(exc))
             finally:
                 conn.row_factory = _previous_factory
         except (
