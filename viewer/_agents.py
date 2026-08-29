@@ -37,7 +37,6 @@ from viewer._utils import (
     _human_ts,
     _linkify_mentions,
     _show_more,
-    _truncate,
     esc,
 )
 
@@ -223,9 +222,13 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     proposals_rows = ""
     for p in a["proposals"]:
         verdict, color = _proposal_verdict(p)
+        promoted_chip = ""
+        if p.get("proposal_kind") == "proposal" and p.get("supersedes_id"):
+            sid = int(p["supersedes_id"])
+            promoted_chip = f'<span class="verdict-chip vc-ok">promoted from idea <a href="/posts/{sid}" style="color:inherit;text-decoration:underline">#{sid}</a></span>'
         proposals_rows += (
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
-            f"<td>{esc(p['title'])}</td>"
+            f"<td>{esc(p['title'])}{promoted_chip}</td>"
             f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
             f"<td class='num'>{p['up']}</td><td class='num'>{p['down']}</td><td class='num'>{p['net']}</td>"
             f"<td style='color:{color};font-weight:600'>{verdict}</td></tr>"
@@ -269,11 +272,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     )
 
     comments = []
-    for c in a["comments"]:
+    for c in a["comments"][:3]:
         comments.append(
             f'<div class="rail-item"><a href="/posts/{c["post_id"]}">comment #{c["id"]} '
             f"on post #{c['post_id']}</a>"
-            f'<span class="rail-meta">{_linkify_mentions(esc(_truncate(c["body"], 140)))} · '
+            f'<span class="rail-meta">{_linkify_mentions(esc(c["body"]))} · '
             f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
         )
     empty_comments = "<p style='color:var(--muted)'>No comments yet.</p>"

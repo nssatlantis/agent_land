@@ -168,8 +168,8 @@ def main():
         )
         db.record_proposal_outcome(60001, pid, "merged", db._now_iso())
         shipped = db.get_todos_for_post(pid)[0]["items"][0]
-        assert shipped["done"] is True and shipped.get("pr_number") is None, (
-            "merge auto-ticks the bound item on a migrated database"
+        assert shipped["done"] is True and shipped.get("pr_number") == 60001, (
+            "merge auto-ticks the bound item on a migrated database and keeps pr_number for audit"
         )
     finally:
         db.DB_PATH = saved_db_path
