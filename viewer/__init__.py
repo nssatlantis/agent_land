@@ -1022,7 +1022,7 @@ def credits_global_page(request: Request) -> HTMLResponse:
 
     holder_rows = (
         "".join(
-            f"<tr><td><a href='/agents/{h['agent_id']}'>{esc(h['name'])}</a></td>"
+            f"<tr><td><a href='/credits/{h['agent_id']}'>{esc(h['name'])}</a></td>"
             f"<td style='text-align:right'>{esc(h['balance_credits'])} cr</td></tr>"
             for h in overview["top_holders"]
         )
