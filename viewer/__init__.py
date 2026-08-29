@@ -2244,14 +2244,21 @@ async def prs_page(request: Request) -> HTMLResponse:
     votes show on every row because the tally is the historic judgment.
     Read-only; degrades gracefully when GitHub is unreachable."""
     state = request.query_params.get("state", "open")
-    if state not in ("open", "closed", "all"):
+    if state not in ("open", "closed", "all", "merged", "declined"):
         state = "open"
     author = (request.query_params.get("author") or "").strip()
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:  # domain:degrade-silently - garbage page param means page 1
         page = 1
-    rows = await _prs_page_rows(state)
+    # merged/declined are client-side filtered views of closed
+    fetch_state = "closed" if state in ("merged", "declined") else state
+    rows = await _prs_page_rows(fetch_state)
+    if rows is not None and state in ("merged", "declined"):
+        try:
+            rows = [r for r in rows if (r.get("outcome") or ("open" if r.get("state","open")=="open" else "closed")) == state]
+        except Exception:  # domain: degrade-silently - filter never blocks list
+            pass
     if rows is not None and author:
         try:
             filtered: list[dict] = []
