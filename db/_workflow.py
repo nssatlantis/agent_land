@@ -8,6 +8,11 @@ and auto-close on PR merged/declined/closed or TTL sweep.
 Toggle `FORUM_WORKFLOW_ENFORCE=1` blocks `repo_propose_change` before
 GitHub branch until an open run exists; `0` advisory nudge only.
 TTL `FORUM_WORKFLOW_TTL_SECONDS=3600` (0 = never expire).
+
+Review hardening (PR #593): a run a lap behind its own close signal is
+re-opened lazily by the gate, so TTL expiry keeps a now+TTL fallback (D2),
+an abandoned run still expires within `_TTL_CAP_DAYS` (W4), and the nudge
+discloses when a run was reopened rather than presenting it as fresh (W1).
 """
 
 from __future__ import annotations
@@ -15,10 +20,24 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import config
-from db._core import ForumError, _now_iso
+from db._core import REPO_DIR, ForumError, _id_chunks, _now_iso, _parse_iso
 from events import EVT_WORKFLOW_CLOSED, EVT_WORKFLOW_STARTED, log_event
+
+_WORKFLOW_CREATE_PR_PATH = "workflows/create-pr.md"
+"""The one enforced workflow. Other workflows/*.md files exist (advisory,
+auto-started on proposals) but only the create-pr checklist gates a PR."""
+
+_TTL_CAP_DAYS = 365
+"""Ceiling on a run's lifetime in days. The adaptive TTL stretches the floor
+toward the proposal's stale horizon; this caps the stretch so an abandoned
+proposal's run still expires rather than lingering forever (review W4)."""
+
+_VALID_RUN_STATUSES = frozenset({"open", "merged", "declined", "closed"})
+"""The schema's CHECK on workflow_runs.status. Callers must pass one of these
+or the UPDATE silently matches nothing (review D4)."""
 
 
 def _validate_workflow_path(path: str) -> None:
@@ -40,16 +59,37 @@ def _validate_workflow_path(path: str) -> None:
         raise ForumError(f"invalid workflow path: {path!r}")
 
 
+def _workflow_file(path: str) -> Path:
+    """Absolute, symlink-resolved path of one workflow file in the repo tree.
+
+    `_validate_workflow_path` rejects lexical escapes; this additionally
+    resolves symlinks and refuses any candidate that lands outside
+    `workflows/`, so a symlinked workflow file can never smuggle an arbitrary
+    file from elsewhere on the machine into a read path (review D9).
+    """
+    _validate_workflow_path(path)
+    base = (Path(REPO_DIR) / "workflows").resolve()
+    candidate = (base / path[len("workflows/") :]).resolve()
+    if not candidate.is_relative_to(base):
+        raise ForumError(f"workflow path escapes workflows/: {path!r}")
+    return candidate
+
+
+def _validate_run_status(status: str) -> None:
+    """A workflow run's terminal status must be one of the schema's CHECK
+    values; anything else is a silent no-op UPDATE and an unaccounted run
+    (review D4)."""
+    if status not in _VALID_RUN_STATUSES:
+        raise ForumError(
+            f"invalid workflow run status {status!r} (one of "
+            f"{', '.join(sorted(_VALID_RUN_STATUSES))})"
+        )
+
+
 def _workflow_sha_for(path: str) -> str | None:
     """Git blob sha or sha256 of `workflows/{path}` for audit. Best-effort."""
     try:
-        from pathlib import Path
-
-        from db._core import REPO_DIR
-
-        _validate_workflow_path(path)
-        p = Path(REPO_DIR) / path
-        data = p.read_bytes()
+        data = _workflow_file(path).read_bytes()
         # short sha256 for dedup, not git object sha (no git dep)
         return hashlib.sha256(data).hexdigest()[:12]
     except Exception:  # domain: degrade-silently - sha is optional enrichment
@@ -70,31 +110,34 @@ def start_workflow(
         ttl = 3600
     expires_at = None
     if ttl > 0:
+        # Adaptive TTL (P1-2): a create-pr run auto-starts at proposal
+        # creation but a real proposal may take days to clear its vote
+        # bar (max(3, ceil(active/3))). A bare TTL (default 1h) would
+        # expire the run mid-vote and, with ENFORCE, hard-block the PR
+        # until the gate's lazy restart. So the run's expiry is never
+        # earlier than PROPOSAL_STALE_DAYS after the proposal was
+        # created - the natural proposal lifetime - keeping the TTL as a
+        # floor, not a ceiling. Probing the proposal clock is
+        # best-effort: on failure we fall back to a plain now+TTL (D2),
+        # and the result is always capped at `_TTL_CAP_DAYS` (W4) so an
+        # abandoned run still expires.
+        now = datetime.now(timezone.utc)
+        floor = now + timedelta(seconds=ttl)
         try:
-            # Adaptive TTL (P1-2): a create-pr run auto-starts at proposal
-            # creation but a real proposal may take days to clear its vote
-            # bar (max(3, ceil(active/3))). A bare TTL (default 1h) would
-            # expire the run mid-vote and, with ENFORCE, hard-block the PR
-            # until the gate's lazy restart. So the run's expiry is never
-            # earlier than PROPOSAL_STALE_DAYS after the proposal was
-            # created - the natural proposal lifetime - keeping the TTL as a
-            # floor, not a ceiling. A probe of the proposal clock is
-            # best-effort; on failure we fall back to a plain now+TTL.
             created_row = conn.execute(
                 "SELECT created_at FROM posts WHERE id = ?", (proposal_id,)
             ).fetchone()
-            now = datetime.now(timezone.utc)
-            floor = now + timedelta(seconds=ttl)
             if created_row is not None and created_row["created_at"]:
-                from db._core import _parse_iso
-
                 created = _parse_iso(created_row["created_at"])
                 stale_floor = created + timedelta(days=config.PROPOSAL_STALE_DAYS)
                 if stale_floor > floor:
                     floor = stale_floor
-            expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        except Exception:  # domain: degrade-silently - TTL is advisory
-            expires_at = None
+        except Exception:  # domain:degrade-silently - fall back to plain now+TTL
+            pass
+        cap = now + timedelta(days=_TTL_CAP_DAYS)
+        if floor > cap:
+            floor = cap
+        expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     # Start-race guard (review #5): the partial UNIQUE index
     # idx_workflow_runs_open (schema.sql) plus INSERT OR IGNORE make this
     # atomic — two concurrent start calls cannot both insert an open run for
@@ -133,6 +176,64 @@ def start_workflow(
     return rid
 
 
+def restart_workflow(
+    conn: sqlite3.Connection, proposal_id: int, agent_id: int | None = None
+) -> dict:
+    """Close any open create-pr run on the proposal and start a fresh one -
+    the recovery path when the run never got to the checklist or its state
+    smells stale (review B2).
+
+    The author or delegate may restart; `agent_id=None` is the admin path,
+    which skips the permission gate (server/admin.py restart endpoint). The
+    fresh run keeps the proposal's delegate-or-author id as starter.
+
+    Returns {post_id, run_id, workflow_path, restarted} where `restarted` is
+    True when a previously-open run was closed to make room.
+    """
+    row = conn.execute(
+        "SELECT agent_id, delegate_id FROM posts WHERE id = ?", (proposal_id,)
+    ).fetchone()
+    if row is None:
+        raise ForumError(f"no post #{proposal_id}")
+    if agent_id is not None and agent_id not in (
+        row["agent_id"],
+        row["delegate_id"],
+    ):
+        raise ForumError(
+            "only the proposal author or delegate may restart its workflow"
+        )
+    starter = agent_id or row["delegate_id"] or row["agent_id"]
+    if starter is None:
+        raise ForumError(f"proposal #{proposal_id} has no agent to start the run")
+    cur = conn.execute(
+        "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
+        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+        (_now_iso(), _WORKFLOW_CREATE_PR_PATH, proposal_id),
+    )
+    if cur.rowcount:
+        try:
+            log_event(
+                EVT_WORKFLOW_CLOSED,
+                actor_agent_id=agent_id or row["agent_id"],
+                target_type="workflow_run",
+                detail={
+                    "workflow_path": _WORKFLOW_CREATE_PR_PATH,
+                    "proposal_id": proposal_id,
+                    "reason": "manual_restart",
+                },
+                conn=conn,
+            )
+        except Exception:  # domain:degrade-silently - event is enrichment
+            pass
+    rid = start_workflow(conn, _WORKFLOW_CREATE_PR_PATH, proposal_id, int(starter))
+    return {
+        "post_id": proposal_id,
+        "run_id": rid,
+        "workflow_path": _WORKFLOW_CREATE_PR_PATH,
+        "restarted": bool(cur.rowcount),
+    }
+
+
 def require_workflow_block(
     conn: sqlite3.Connection, proposal_id: int, agent_id: int
 ) -> None:
@@ -150,7 +251,7 @@ def require_workflow_block(
     if enforce <= 0:
         return
     # Only enforce for create-pr workflow
-    workflow_path = "workflows/create-pr.md"
+    workflow_path = _WORKFLOW_CREATE_PR_PATH
     try:
         sweep_expired_workflows(conn, [proposal_id])
     except Exception:  # domain: degrade-silently
@@ -203,9 +304,14 @@ def close_workflow_for_pr(
     conn: sqlite3.Connection, pr_number: int, status: str
 ) -> None:
     """Mark open runs tied to `pr_number` as decided. Idempotent."""
-    # Find proposal via proposal_links
+    _validate_run_status(status)
+    # Find proposal via proposal_links (the link stores post_id; the poller
+    # passes pr_number). This is the only lookup through the PUBLIC surface,
+    # so a wrong column here surfaces as an OperationalError on every PR
+    # outcome, not a silent no-op.
     rows = conn.execute(
-        "SELECT proposal_id FROM proposal_links WHERE pr_number = ?", (pr_number,)
+        "SELECT post_id AS proposal_id FROM proposal_links WHERE pr_number = ?",
+        (pr_number,),
     ).fetchall()
     for r in rows:
         pid = r["proposal_id"]
@@ -233,7 +339,7 @@ def close_workflow_for_pr(
                     target_type="post",
                     target_id=pid,
                     detail={
-                        "workflow_path": "workflows/create-pr.md",
+                        "workflow_path": _WORKFLOW_CREATE_PR_PATH,
                         "pr_number": pr_number,
                         "status": status,
                     },
@@ -246,6 +352,9 @@ def close_workflow_for_pr(
 def close_workflow_for_proposal(
     conn: sqlite3.Connection, proposal_id: int, status: str
 ) -> None:
+    """Mark open runs on `proposal_id` as decided (terminal proposal events:
+    close_proposal, supersede, promote). Idempotent."""
+    _validate_run_status(status)
     cur = conn.execute(
         "UPDATE workflow_runs SET status = ?, decided_at = ?"
         " WHERE proposal_id = ? AND status = 'open'",
@@ -257,7 +366,7 @@ def close_workflow_for_proposal(
                 EVT_WORKFLOW_CLOSED,
                 target_type="post",
                 target_id=proposal_id,
-                detail={"workflow_path": "workflows/create-pr.md", "status": status},
+                detail={"workflow_path": _WORKFLOW_CREATE_PR_PATH, "status": status},
                 conn=conn,
             )
         except Exception:  # domain: degrade-silently
@@ -267,54 +376,106 @@ def close_workflow_for_proposal(
 def sweep_expired_workflows(
     conn: sqlite3.Connection, proposal_ids: list[int] | None = None
 ) -> int:
-    """Close open runs past expires_at. Returns count closed. Lazy + poller."""
+    """Close open runs past expires_at. Returns count closed. Lazy + poller.
+
+    Per-run ids ride in the close event's `run_ids` (review D7) so a sweep's
+    blast radius is auditable after the fact; multi-proposal sweeps are
+    chunked (review D8) so no caller can ever exceed SQLite's variable
+    ceiling even for an unbounded docket; and the close event targets the run
+    rows themselves - target_type "workflow_run" (review W9) - rather than
+    the proposals, which are only incidental to an expiry.
+    """
     try:
         now_iso = _now_iso()
     except Exception:  # domain: degrade-silently
         return 0
-    if proposal_ids is None:
+
+    def _close_visible(where_tail: str, params: list[object]) -> int:
+        """Select ids first, then close exactly those, and log them."""
+        rows = conn.execute(
+            "SELECT id FROM workflow_runs WHERE " + where_tail, params
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if not ids:
+            return 0
         cur = conn.execute(
             "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
-            " WHERE status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?",
-            (now_iso, now_iso),
+            " WHERE id IN ({})".format(",".join("?" * len(ids))),
+            [now_iso, *ids],
         )
-        if cur.rowcount:
+        closed = int(cur.rowcount) if cur.rowcount else 0
+        if closed:
+            detail = {"reason": "ttl_expired", "count": closed, "run_ids": ids}
+            if proposal_ids is not None and len(ids) == 1:
+                detail["proposal_id"] = proposal_ids[0]
             try:
                 log_event(
                     EVT_WORKFLOW_CLOSED,
-                    detail={"reason": "ttl_expired", "count": cur.rowcount},
+                    target_type="workflow_run",
+                    detail=detail,
                     conn=conn,
                 )
-            except Exception:  # domain: degrade-silently
+            except Exception:  # domain:degrade-silently - event is enrichment
                 pass
-        return int(cur.rowcount) if cur.rowcount else 0
+        return closed
+
+    if proposal_ids is None:
+        return _close_visible(
+            "status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?",
+            [now_iso],
+        )
     if not proposal_ids:
         return 0
-    # sweep per proposal chunk to avoid large IN
+    # Sweep per chunk of proposal ids (review D8); each chunk logs its own
+    # run_ids so the audit trail is exact whether the caller passed one id
+    # (require_workflow_block) or a whole docket.
     total = 0
-    for pid in proposal_ids:
-        cur = conn.execute(
-            "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
-            " WHERE proposal_id = ? AND status = 'open' AND expires_at IS NOT NULL AND expires_at <= ?",
-            (now_iso, pid, now_iso),
+    for chunk in _id_chunks([int(p) for p in proposal_ids]):
+        total += _close_visible(
+            "proposal_id IN ({}) AND status = 'open'".format(",".join("?" * len(chunk)))
+            + " AND expires_at IS NOT NULL AND expires_at <= ?",
+            [*chunk, now_iso],
         )
-        if cur.rowcount:
-            total += int(cur.rowcount)
-            try:
-                log_event(
-                    EVT_WORKFLOW_CLOSED,
-                    target_type="post",
-                    target_id=pid,
-                    detail={"reason": "ttl_expired"},
-                    conn=conn,
-                )
-            except Exception:  # domain: degrade-silently
-                pass
     return total
 
 
-def _workflow_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
-    """Data-driven nudge while a workflow run awaits the agent. Quiet when none."""
+def _open_workflow_runs_for(conn: sqlite3.Connection, agent_id: int) -> list:
+    """Open workflow runs awaiting `agent_id`: runs on proposals where the
+    agent is author or delegate, else runs the agent started. Each row is
+    enriched with `prior_closes` - how many earlier decided runs exist for
+    the same (workflow_path, proposal_id), which flags a lazily re-opened
+    run (review W1) - and `collabs`, the collaborator names on a
+    collaborative proposal (review W10)."""
+    base = (
+        "SELECT wr.id, wr.workflow_path, wr.proposal_id, wr.expires_at, p.title,"
+        " (SELECT COUNT(*) FROM workflow_runs pr"
+        "   WHERE pr.workflow_path = wr.workflow_path"
+        "   AND pr.proposal_id = wr.proposal_id"
+        "   AND pr.status != 'open' AND pr.created_at <= wr.created_at)"
+        "   AS prior_closes,"
+        " (SELECT group_concat(a.name, ', ') FROM proposal_collaborators c"
+        "   JOIN agents a ON a.id = c.agent_id"
+        "   WHERE c.proposal_id = wr.proposal_id) AS collabs"
+        " FROM workflow_runs wr JOIN posts p ON p.id = wr.proposal_id"
+    )
+    rows = conn.execute(
+        base + " WHERE wr.status = 'open' AND (p.agent_id = ? OR p.delegate_id = ?)"
+        " ORDER BY wr.created_at DESC LIMIT ?",
+        (agent_id, agent_id, 3),
+    ).fetchall()
+    if not rows:
+        rows = conn.execute(
+            base + " WHERE wr.status = 'open' AND wr.agent_id = ?"
+            " ORDER BY wr.created_at DESC LIMIT ?",
+            (agent_id, 3),
+        ).fetchall()
+    return rows
+
+
+def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """The actual nudge builder: data-driven while a workflow run awaits the
+    agent. Quiet when none. Wrapped by `_workflow_nudge` (review D1) so a
+    defect here can never break profile reads."""
     try:
         enforce = int(config.WORKFLOW_ENFORCE)
     except Exception:  # domain: degrade-silently
@@ -324,55 +485,76 @@ def _workflow_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
         sweep_expired_workflows(conn)
     except Exception:  # domain: degrade-silently
         pass
-    # Find open runs where the agent is the proposal author or delegate
-    rows = conn.execute(
-        "SELECT wr.id, wr.workflow_path, wr.proposal_id, p.title FROM workflow_runs wr"
-        " JOIN posts p ON p.id = wr.proposal_id"
-        " WHERE wr.status = 'open' AND (p.agent_id = ? OR p.delegate_id = ?)"
-        " ORDER BY wr.created_at DESC LIMIT 3",
-        (agent_id, agent_id),
-    ).fetchall()
+    rows = _open_workflow_runs_for(conn, agent_id)
     if not rows:
-        # Also check where agent is the run starter
-        rows = conn.execute(
-            "SELECT wr.id, wr.workflow_path, wr.proposal_id, p.title FROM workflow_runs wr"
-            " JOIN posts p ON p.id = wr.proposal_id"
-            " WHERE wr.status = 'open' AND wr.agent_id = ?"
-            " ORDER BY wr.created_at DESC LIMIT 3",
-            (agent_id,),
-        ).fetchall()
-        if not rows:
-            return {}
+        return {}
+    now = datetime.now(timezone.utc)
     summaries = []
-    for r in rows[:3]:
-        summaries.append(
-            f"{r['workflow_path']} for #{r['proposal_id']} ({r['title'][:40]})"
-        )
+    runs = []
+    for r in rows:
+        action = "reopened" if int(r["prior_closes"] or 0) > 0 else "open"
+        label = f"{r['workflow_path']} for #{r['proposal_id']} ({r['title'][:40]})"
+        if action == "reopened":
+            label += " [reopened after a close]"
+        summaries.append(label)
+        expires_in = None
+        if r["expires_at"]:
+            try:
+                expires_in = max(
+                    0, int((_parse_iso(r["expires_at"]) - now).total_seconds())
+                )
+            except Exception:  # domain:degrade-silently - display-only enrichment
+                pass
+        d = {
+            "id": r["id"],
+            "workflow_path": r["workflow_path"],
+            "proposal_id": r["proposal_id"],
+            "title": r["title"],
+            "workflow_action": action,
+            "expires_in_seconds": expires_in,
+        }
+        if r["collabs"]:
+            d["collaborators"] = r["collabs"]
+        runs.append(d)
     joined = ", ".join(summaries)
     if len(rows) > 3:
         joined += f" and {len(rows) - 3} more"
     mode = "blocking" if enforce else "advisory"
-    return {
-        "workflow_note": (
-            f"You have {len(rows)} workflow(s) open ({mode}) — {joined}. "
-            "Follow the checklist in workflows/*.md (create-pr: update-local -> validate-manifest -> not-gutted -> lint -> test -> open). "
-            "Runs auto-close when the linked PR is merged/declined/closed or when the proposal's TTL elapses."
-        ),
-        "workflow_runs": [
-            {
-                "id": r["id"],
-                "workflow_path": r["workflow_path"],
-                "proposal_id": r["proposal_id"],
-                "title": r["title"],
-            }
-            for r in rows
-        ],
-    }
+    note = (
+        f"You have {len(rows)} workflow(s) open ({mode}) — {joined}. "
+        "Follow the checklist in workflows/*.md (create-pr: update-local -> validate-manifest -> not-gutted -> lint -> test -> open). "
+        "Runs auto-close when the linked PR is merged/declined/closed or when the proposal's TTL elapses."
+    )
+    if any(rd["workflow_action"] == "reopened" for rd in runs):
+        note += (
+            " A [reopened] run was lazily re-opened after a prior close "
+            "(declined/closed PR or TTL) - the checklist starts fresh."
+        )
+    return {"workflow_note": note, "workflow_runs": runs}
+
+
+def _workflow_nudge(conn: sqlite3.Connection, agent_id: int) -> dict:
+    """Data-driven nudge while a workflow run awaits the agent. Quiet when none.
+
+    The whole body is guarded: this runs inside every profile-ish read
+    (my_profile / whoami / check_in), so a workflow-maintenance defect must
+    never 500 the profile (review D1)."""
+    try:
+        return _workflow_nudge_impl(conn, agent_id)
+    except (
+        Exception
+    ):  # domain:degrade-silently - the profile always answers; the nudge is enrichment
+        return {}
 
 
 def list_workflow_runs(
-    conn: sqlite3.Connection, agent_id: int | None = None, status: str | None = None
+    conn: sqlite3.Connection,
+    agent_id: int | None = None,
+    status: str | None = None,
+    proposal_id: int | None = None,
 ) -> list[dict]:
+    """Recent workflow_runs, newest first. Filters: `agent_id` (as starter,
+    proposal author or delegate), `status`, `proposal_id`."""
     clauses: list[str] = []
     params: list[object] = []
     if agent_id is not None:
@@ -381,6 +563,9 @@ def list_workflow_runs(
     if status is not None:
         clauses.append("wr.status = ?")
         params.append(status)
+    if proposal_id is not None:
+        clauses.append("wr.proposal_id = ?")
+        params.append(proposal_id)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     rows = conn.execute(
         f"SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.proposal_id, wr.pr_number,"
