@@ -4,7 +4,6 @@ Covers the key HTML fragment builders that render proposal votes, PR trails,
 CI status, bounty panels, and lock banners — all pure functions that take
 dicts and return HTML strings."""
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -723,6 +722,8 @@ class _RecordReq:
 
 
 def _render_record(req: _RecordReq) -> str:
+    import asyncio
+
     return asyncio.run(charter_page(req)).body.decode("utf-8")
 
 
