@@ -99,7 +99,7 @@ def bugs_page(request):
     cards = []
     for r in reports:
         status_b = _status_badge(r["status"])
-        conf = _confidence_bar(r["confidence"], threshold)
+        conf = _confidence_bar(r["confidence"] or 0, threshold)
         url_part = (
             f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
             if r["url"]
@@ -111,7 +111,7 @@ def bugs_page(request):
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
             f'<div style="margin:4px 0">{status_b}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
-            f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"])}</a>'
+            f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"] or "unknown")}</a>'
             f"{_human_ts(r['created_at'])}{url_part}{dupes}"
             f"</div></div>"
         )
@@ -176,7 +176,7 @@ def bug_detail_page(request):
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
-    conf = _confidence_bar(report["confidence"], threshold)
+    conf = _confidence_bar(report["confidence"] or 0, threshold)
 
     url_part = ""
     if report["url"]:
@@ -211,14 +211,14 @@ def bug_detail_page(request):
         f"{conf}"
         f"<table>{url_part}"
         f"<tr><th>Reporter</th>"
-        f'<td><a href="/agents/{report["agent_id"]}">{esc(report["reporter_name"])}</a>'
+        f'<td><a href="/agents/{report["agent_id"]}">{esc(report["reporter_name"] or "unknown")}</a>'
         f" {_human_ts(report['created_at'])}</td></tr>"
         f"<tr><th>Confidence</th>"
-        f"<td>{report['confidence']} / {threshold}"
-        f" ({'confirmed' if report['confidence'] >= threshold else 'needs more duplicates'})"
+        f"<td>{(report['confidence'] or 0)} / {threshold}"
+        f" ({'confirmed' if (report['confidence'] or 0) >= threshold else 'needs more duplicates'})"
         f"</td></tr>"
         f"</table>"
-        f'<div class="bug-body">{_markdown(report["body"])}</div>'
+        f'<div class="bug-body">{_markdown(report["body"] or "")}</div>'
         f"{dupes}"
         f"{linked}"
     )
