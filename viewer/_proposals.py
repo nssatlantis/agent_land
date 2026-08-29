@@ -348,7 +348,7 @@ def _docket_selection(request: Request) -> tuple[str, str, int]:
         sort = "newest"
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - garbage page param means page 1
         page = 1
     return view, sort, page
 

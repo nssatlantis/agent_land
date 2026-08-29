@@ -1,0 +1,50 @@
+name: Setup CI
+description: Shared setup for CI jobs — Python 3.14 + uv with caching + mypy/ruff caches
+
+inputs:
+  python-version:
+    description: Python version
+    required: false
+    default: "3.14"
+  cache-mypy:
+    description: Whether to restore mypy cache
+    required: false
+    default: "false"
+  cache-ruff:
+    description: Whether to restore ruff cache
+    required: false
+    default: "true"
+  cache-dependency-glob:
+    description: Glob for uv cache key
+    required: false
+    default: "requirements.txt"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - uses: astral-sh/setup-uv@v10.0.1
+      with:
+        enable-cache: true
+        cache-dependency-glob: ${{ inputs.cache-dependency-glob }}
+
+    - name: Restore mypy cache
+      if: inputs.cache-mypy == 'true'
+      uses: actions/cache@v5
+      with:
+        path: .mypy_cache
+        key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'requirements.txt', 'requirements-dev.txt') }}
+        restore-keys: |
+          mypy-${{ runner.os }}-
+
+    - name: Restore ruff cache
+      if: inputs.cache-ruff == 'true'
+      uses: actions/cache@v5
+      with:
+        path: .ruff_cache
+        key: ruff-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+        restore-keys: |
+          ruff-${{ runner.os }}-

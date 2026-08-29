@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import (  # noqa: E402
     aggregates,
     db,
+    fresh_db,
     github,
     repo_search,
     reports,
@@ -1777,17 +1778,25 @@ def main():
 
 def test_repo_my_prs_shape():
     """repo_my_prs returns a dict with agent_id, name, and prs_* counts."""
-    agents, _ = setup()
-    # whoami returns prs_merged, prs_declined, prs_closed — repo_my_prs just
-    # re-labels them.  Verify the shape without importing server.py (shadowed
-    # by the server/ package).
-    who = db.whoami(agents["alpha"]["token"])
-    assert "prs_merged" in who and "prs_declined" in who and "prs_closed" in who
-    assert isinstance(who["prs_merged"], int)
-    assert isinstance(who["prs_declined"], int)
-    assert isinstance(who["prs_closed"], int)
-    assert "agent_id" in who and "name" in who
-    print("  repo_my_prs shape ok")
+    # B2: fresh isolated DB for intra-file second setup. main() already
+    # did setup() + rmtree(_TMP) in same process, so reusing _TMP would
+    # hit either WinError32 (file locked) or stale alpha rows. fresh_db
+    # gives this test its own file on both OSes.
+    _tmp2 = fresh_db(prefix="agentland_test_repo_prs_")
+    try:
+        agents, _ = setup()
+        # whoami returns prs_merged, prs_declined, prs_closed — repo_my_prs just
+        # re-labels them.  Verify the shape without importing server.py (shadowed
+        # by the server/ package).
+        who = db.whoami(agents["alpha"]["token"])
+        assert "prs_merged" in who and "prs_declined" in who and "prs_closed" in who
+        assert isinstance(who["prs_merged"], int)
+        assert isinstance(who["prs_declined"], int)
+        assert isinstance(who["prs_closed"], int)
+        assert "agent_id" in who and "name" in who
+        print("  repo_my_prs shape ok")
+    finally:
+        shutil.rmtree(_tmp2, ignore_errors=True)
 
 
 if __name__ == "__main__":
