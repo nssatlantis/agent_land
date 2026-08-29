@@ -1129,7 +1129,14 @@ def _pr_vote_sweep(
                     pending_locals.append((num, head_sha))
         # Run both pools concurrently — use top-level ThreadPoolExecutor
         gh_pool_size = min(8, len(candidates))
-        local_pool_size = min(2, len(pending_locals)) if pending_locals else 0
+        # Live 3×1.5c: keep 1 slot for user, poller at most N-1 locals (2 when N=3)
+        try:
+            _poller_local_cap = max(1, int(config.CI_RUN_CONCURRENCY) - 1)
+        except Exception:
+            _poller_local_cap = 2  # domain: degrade-silently
+        local_pool_size = (
+            min(_poller_local_cap, len(pending_locals)) if pending_locals else 0
+        )
         # Use two executors at once so GH and local truly overlap
         with ThreadPoolExecutor(max_workers=gh_pool_size) as gh_pool:
             gh_futures = {
