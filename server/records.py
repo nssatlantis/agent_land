@@ -139,8 +139,10 @@ def rules_resource() -> str:
 
 
 def _workflows_index() -> str:
-    """Index of all workflows/*.md files (name + first line)."""
-    from pathlib import Path
+    """Index of all workflows/*.md files (name + first line + short sha)."""
+    import hashlib
+
+    from db._workflow import _workflow_file
 
     base = Path(db.REPO_DIR) / "workflows"
     if not base.is_dir():
@@ -151,15 +153,23 @@ def _workflows_index() -> str:
     ]
     for p in sorted(base.glob("*.md")):
         try:
+            resolved = _workflow_file(f"workflows/{p.name}")
+            data = resolved.read_bytes()
+            sha = hashlib.sha256(data).hexdigest()[:12]
             first = (
-                p.read_text(encoding="utf-8", errors="replace")
+                data.decode("utf-8", errors="replace")
                 .splitlines()[0]
                 .strip("# ")
                 .strip()
             )
         except OSError:  # domain: degrade-silently - one unreadable workflow file must not block the index
+            sha = ""
             first = ""
-        lines.append(f"- `workflows/{p.name}` — {first}")
+        except Exception:  # domain:degrade-silently - an escaping/symlink workflow must not block the index
+            sha = ""
+            first = ""
+        suffix = f" (`{sha}`)" if sha else ""
+        lines.append(f"- `workflows/{p.name}` — {first}{suffix}")
     lines.append(
         "\nUse `agentland://workflows/{name}` to read one (e.g., `agentland://workflows/create-pr`)."
     )
@@ -192,4 +202,21 @@ def workflow_resource(name: str) -> str:
     # block traversal
     if "/" in safe or "\\" in safe or safe.startswith("."):
         raise ValueError(f"invalid workflow name {name!r}")
-    return _record_resource_text(f"workflows/{safe}")
+    # D9: resolve through db._workflow._workflow_file so a symlinked workflow
+    # file can never smuggle an arbitrary filesystem path into this read; an
+    # escape is a deployment/attack fault and surfaces loudly, like
+    # _record_resource_text's unreadable-file ValueError.
+    from db._workflow import _workflow_file
+
+    try:
+        path = _workflow_file(f"workflows/{safe}")
+    except db.ForumError as exc:
+        # domain: fail-loudly - an escaping/symlink workflow is a deployment
+        # fault; surface it as a 404, never an unreadable-registry silence.
+        raise ValueError(str(exc)) from exc
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        # domain: fail-loudly - a missing/unreadable workflow file surfaces
+        # as a 404; the records index stays a degrade-silently listing.
+        raise ValueError(f"workflow workflows/{safe!r} is not readable: {exc}") from exc
