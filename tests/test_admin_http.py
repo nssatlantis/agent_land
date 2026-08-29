@@ -827,6 +827,160 @@ def main():
         r["action"] == "fix_bug_report" and r["admin_user"] == "root" for r in bug_audit
     ), "fix left a signed audit row"
 
+    # --- /admin/workflows close-stale (review D7/W9) -------------------------
+    # A decided-but-retryable proposal keeps an open create-pr run until the
+    # reconcile sweep closes it; the admin page offers a one-click sweep that
+    # appears only while such runs exist.
+    wf_agent = db.register_agent("wfstale")
+    stale_post = db.create_proposal(wf_agent["token"], "admin stale run", "decided")
+    stale_pid = stale_post["post_id"]
+    with db._conn() as conn:
+        db.record_proposal_outcome(
+            88123, stale_pid, "declined", db._now_iso(), conn=conn
+        )
+    stale_run_id = None
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM workflow_runs WHERE proposal_id = ? AND status = 'open'",
+            (stale_pid,),
+        ).fetchone()
+        assert row is not None, "the decided proposal still holds an open run"
+        stale_run_id = row["id"]
+
+    # the button is rendered while there is something to close
+    wf_page = _call(
+        admin.workflows_admin_page,
+        _req("GET", "/admin/workflows", headers=[(b"authorization", _AUTH.encode())]),
+    )
+    assert wf_page.status_code == 200 and b"close stale" in wf_page.body.lower(), (
+        "the close-stale button renders while a stale run exists"
+    )
+
+    # ... and on a filtered tab too (the residue belongs to the decided views)
+    wf_decl = _call(
+        admin.workflows_admin_page,
+        _req(
+            "GET",
+            "/admin/workflows",
+            query={"status": "declined"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert wf_decl.status_code == 200 and b"close stale" in wf_decl.body.lower(), (
+        "the close-stale button renders on the declined filter tab too"
+    )
+
+    # the POST is auth-gated and CSRF-guarded
+    no_auth = _call(
+        admin.workflow_close_stale,
+        _req(
+            "POST",
+            "/admin/workflows/close-stale",
+            cookies={_CSRF: cookie_token},
+            body={"csrf": cookie_token},
+        ),
+    )
+    assert no_auth.status_code == 401, "close-stale refuses unauthenticated POSTs"
+    bad_csrf = _call(
+        admin.workflow_close_stale,
+        _req(
+            "POST",
+            "/admin/workflows/close-stale",
+            cookies={_CSRF: "tok"},
+            body={"csrf": "WRONG"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"CSRF" in bad_csrf.body, "close-stale refuses a bad CSRF token"
+
+    # the real POST closes the stale run and reports the count
+    close_resp = _call(
+        admin.workflow_close_stale,
+        _req(
+            "POST",
+            "/admin/workflows/close-stale",
+            cookies={_CSRF: cookie_token},
+            body={"csrf": cookie_token},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert close_resp.status_code == 200, "close-stale renders the count"
+    assert (
+        b"closed 1 stale workflow run" in close_resp.body.lower()
+        or b"closed 1 stale workflow runs" in close_resp.body.lower()
+    ), "the close-stale flash names how many runs were closed"
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status, decided_at FROM workflow_runs WHERE id = ?",
+            (stale_run_id,),
+        ).fetchone()
+        assert row["status"] == "declined" and row["decided_at"], (
+            "the stale run closes to the proposal's exact decided status"
+        )
+
+    # once clean, the button disappears
+    wf_page2 = _call(
+        admin.workflows_admin_page,
+        _req("GET", "/admin/workflows", headers=[(b"authorization", _AUTH.encode())]),
+    )
+    assert b"close stale" not in wf_page2.body.lower(), (
+        "the close-stale button hides once nothing stale remains"
+    )
+
+    # once clean, the POST reports the zero and stays idempotent
+    idle = _call(
+        admin.workflow_close_stale,
+        _req(
+            "POST",
+            "/admin/workflows/close-stale",
+            cookies={_CSRF: cookie_token},
+            body={"csrf": cookie_token},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert idle.status_code == 200, "close-stale renders when nothing is stale"
+    assert b"closed 0 stale workflow run" in idle.body.lower(), (
+        "the close-stale flash reports zero when nothing is stale"
+    )
+    idle2 = _call(
+        admin.workflow_close_stale,
+        _req(
+            "POST",
+            "/admin/workflows/close-stale",
+            cookies={_CSRF: cookie_token},
+            body={"csrf": cookie_token},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"closed 0 stale workflow run" in idle2.body.lower(), (
+        "close-stale with nothing stale is idempotent"
+    )
+
+    # a reconcile DB fault surfaces as a flash, never a bare 500: the handler's
+    # catch is broad (reconcile raises sqlite3.Error, not ForumError)
+    _orig_reconcile = db.reconcile_open_runs
+
+    def _boom(_conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    db.reconcile_open_runs = _boom
+    try:
+        fault = _call(
+            admin.workflow_close_stale,
+            _req(
+                "POST",
+                "/admin/workflows/close-stale",
+                cookies={_CSRF: cookie_token},
+                body={"csrf": cookie_token},
+                headers=[(b"authorization", _AUTH.encode())],
+            ),
+        )
+    finally:
+        db.reconcile_open_runs = _orig_reconcile
+    assert fault.status_code == 200 and b"locked" in fault.body, (
+        "a reconcile DB fault flashes instead of erroring out"
+    )
+
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
     by_action = {}
