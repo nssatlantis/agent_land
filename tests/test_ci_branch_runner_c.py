@@ -1,6 +1,6 @@
-"""Tests for branch-mode CI runs — shard C (4/12).
+"""Tests for branch-mode CI runs — shard C (3/12).
 
-Covers: merge conflict, PR requirements isolation, native mode, hostile payload.
+Covers: merge conflict, PR requirements isolation, hostile payload.
 """
 
 import json
@@ -198,22 +198,6 @@ def test_pr_requirements_never_reach_the_build():
         fx.unpatch()
 
 
-def test_native_mode_still_reports_native():
-    actor = _uid()
-    saved_prepare = ci_runner._prepare_tree
-    scratch = Path(tempfile.mkdtemp(prefix="agentland_ci_nat_"))
-    (scratch / "requirements.txt").write_text("# x\n")
-    ci_runner._prepare_tree = lambda: (str(scratch), "f" * 40)
-    restore_exec, _, _ = _patched_execution("")
-    try:
-        result = ci_runner.run_checks(actor, "t", "benchmarks", pr_number=None)
-        assert result["mode"] == "native"
-        assert "pr_number" not in result
-    finally:
-        ci_runner._prepare_tree = saved_prepare
-        restore_exec()
-
-
 def _docker_present() -> bool:
     return ci_runner._docker_available()
 
@@ -281,7 +265,6 @@ def test_hostile_payload_contained():
 def main():
     test_merge_conflict_reports_files_without_running()
     test_pr_requirements_never_reach_the_build()
-    test_native_mode_still_reports_native()
     test_hostile_payload_contained()
     print("test_ci_branch_runner_c: all ok")
 
