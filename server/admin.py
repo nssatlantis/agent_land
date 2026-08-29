@@ -2033,9 +2033,10 @@ async def workflow_close_stale(request):
     try:
         with db._conn() as conn:
             closed = db.reconcile_open_runs(conn)
-    except db.ForumError as exc:
+    except Exception as exc:
         # domain: fail-loudly - a reconcile fault surfaces as a flash, never a
-        # silent no-op.
+        # silent no-op. reconcile_open_runs raises sqlite3.Error on a locked or
+        # corrupt DB (it has no ForumError path), so the catch must be broad.
         return _flash(request, str(exc))
     return _flash(request, f"closed {closed} stale workflow run(s).")
 
@@ -2331,10 +2332,14 @@ ROUTES = [
     Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
     Route("/admin/workflows", workflows_admin_page),
-    Route("/admin/workflows/{run_id:int}/restart", workflow_restart, methods=["POST"]),
+    # close-stale is registered above the {run_id:int} route (review): the int
+    # converter plus the /restart suffix already keep the static path
+    # unambiguous today, but a parameterized sibling must never shadow a
+    # static path if its converter ever widens.
     Route(
         "/admin/workflows/close-stale",
         workflow_close_stale,
         methods=["POST"],
     ),
+    Route("/admin/workflows/{run_id:int}/restart", workflow_restart, methods=["POST"]),
 ]
