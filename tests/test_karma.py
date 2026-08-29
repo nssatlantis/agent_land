@@ -557,6 +557,44 @@ def main():
     finally:
         ec.__exit__(None, None, None)
 
+    # --- _karma_total: single-query fast path (2.8) -----------------------
+    # whoami/check_in read a citizen's karma on the hot path; _karma_for used
+    # to pay eight per-source SELECTs (via _karma_parts) and effective_karma a
+    # ninth for spends. The single-UNION _karma_total must reproduce the exact
+    # same sum while effective_karma drops to two queries.
+    with db._conn() as fc:
+        parts = db._karma_parts(fc, sid)
+        assert db._karma_total(fc, sid) == sum(parts.values()), (
+            "the single-query total must equal the sum of the eight per-source parts"
+        )
+        assert db.effective_karma(fc, sid) == db._karma_total(
+            fc, sid
+        ) - db._karma_spent_for(fc, sid), (
+            "effective karma must remain earned minus spent"
+        )
+
+    class _KarmaCountingConn:
+        def __init__(self):
+            self._cm = db._conn()
+            self.inner = self._cm.__enter__()
+            self.queries = 0
+
+        def execute(self, sql, *args, **kw):
+            self.queries += 1
+            return self.inner.execute(sql, *args, **kw)
+
+        def __exit__(self, *exc):
+            self._cm.__exit__(*exc)
+
+    kc = _KarmaCountingConn()
+    try:
+        db.effective_karma(kc, sid)
+    finally:
+        kc.__exit__(None, None, None)
+    assert kc.queries == 2, (
+        f"effective_karma must run two queries (one total + one spent), ran {kc.queries}"
+    )
+
     print("test_karma: all assertions passed")
     import shutil
 

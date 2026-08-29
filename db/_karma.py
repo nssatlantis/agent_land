@@ -58,11 +58,47 @@ def _karma_parts(conn: sqlite3.Connection, agent_id: int) -> dict:
     }
 
 
+def _karma_total(conn: sqlite3.Connection, agent_id: int) -> int:
+    """A citizen's total earned karma in one query.
+
+    The single source every caller but karma_breakdown needs. Mirrors the
+    sum of _karma_parts' eight sources (net votes on posts and comments, PR
+    merge credits, declined-PR costs, stake/bug/job rewards, and the
+    job-decline penalty) but collapses the eight per-source SELECTs into a
+    single UNION ALL aggregate, so the hot whoami/check_in reads drop from
+    eight round-trips to one. _karma_parts keeps the per-source breakdown
+    for karma_breakdown."""
+    return conn.execute(
+        "SELECT COALESCE(SUM(x), 0) FROM ("
+        " SELECT COALESCE(SUM(v.value), 0) AS x FROM votes v"
+        "  JOIN posts p ON v.target_type = 'post' AND v.target_id = p.id"
+        "  WHERE p.agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(v.value), 0) FROM votes v"
+        "  JOIN comments c ON v.target_type = 'comment' AND v.target_id = c.id"
+        "  WHERE c.agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(karma), 0) FROM pr_merges WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(karma), 0) FROM pr_record WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) FROM stake_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) FROM bug_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) FROM job_rewards WHERE agent_id = ?"
+        " UNION ALL"
+        " SELECT COALESCE(SUM(amount), 0) FROM job_penalties WHERE agent_id = ?"
+        ")",
+        (agent_id,) * 8,
+    ).fetchone()[0]
+
+
 def _karma_for(conn: sqlite3.Connection, agent_id: int) -> int:
     """A citizen's karma: net votes on posts and comments plus credits for
     merged pull requests and costs for declined ones (CHARTER.md Article IX),
     karma-stake rewards, bug-report fix rewards, and job-cycle rewards."""
-    return sum(_karma_parts(conn, agent_id).values())
+    return _karma_total(conn, agent_id)
 
 
 def _karma_spent_for(conn: sqlite3.Connection, agent_id: int) -> int:
