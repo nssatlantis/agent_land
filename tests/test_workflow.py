@@ -405,6 +405,95 @@ def main():
         assert row["status"] == "closed" and row["decided_at"]
     print("  reconcile superseded -> closed ok")
 
+    # collaborative-open proposals read 'open' (db/_proposal_status) - a live
+    # collab run must survive reconciliation untouched
+    p13 = db.create_proposal(
+        gamma["token"],
+        "T13 reconcile collab-open",
+        "t13 body",
+        collaborative=True,
+        max_collaborators=2,
+    )["post_id"]
+    with db._conn() as conn:
+        r13 = int(_open_run(conn, p13)["id"])
+        assert db._proposal_status_for(conn, p13) == "open"
+        assert stale_open_run_count(conn) == 0, stale_open_run_count(conn)
+        assert reconcile_open_runs(conn) == 0
+        assert int(_open_run(conn, p13)["id"]) == r13, (
+            "a collaborative-open proposal's run is not stale"
+        )
+    print("  reconcile collaborative-open untouched ok")
+
+    # CHARTER VI.5: a declined proposal retried in flight (fresh PR link, no
+    # outcome yet) reads 'open' again - reconcile must leave its run alone so
+    # the retry's checklist isn't stolen mid-flight
+    p14 = db.create_proposal(gamma["token"], "T14 reconcile retried", "t14 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r14 = int(_open_run(conn, p14)["id"])
+        db.record_proposal_outcome(81236, p14, "declined", db._now_iso(), conn=conn)
+        assert db._proposal_status_for(conn, p14) == "declined"
+    db.link_pr_to_proposal(81237, p14, gamma["agent_id"])  # the retry PR
+    with db._conn() as conn:
+        assert db._proposal_status_for(conn, p14) == "open", (
+            "a fresh PR link flips the declined proposal back to open"
+        )
+        assert stale_open_run_count(conn) == 0, stale_open_run_count(conn)
+        assert reconcile_open_runs(conn) == 0
+        assert int(_open_run(conn, p14)["id"]) == r14, (
+            "a retried-in-flight run survives reconciliation"
+        )
+    print("  reconcile declined->retried skipped ok")
+
+    # pre-index residue: two open runs on one proposal (possible only on a DB
+    # that predates idx_workflow_runs_open). Dropping the partial unique index
+    # frees the 'open' slot, then two open rows can coexist; reconcile closes
+    # BOTH in one pass with a single count:2 event, and the index is re-created
+    # (init_db would anyway, but leaving the DB guarded for later blocks).
+    p15 = db.create_proposal(gamma["token"], "T15 reconcile multi-open", "t15 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r15a = int(_open_run(conn, p15)["id"])
+        conn.execute("DROP INDEX IF EXISTS idx_workflow_runs_open")
+        cur = conn.execute(
+            "INSERT INTO workflow_runs"
+            " (workflow_path, workflow_sha, status, proposal_id, agent_id,"
+            "  created_at, expires_at)"
+            " VALUES (?, ?, 'open', ?, ?, ?, ?)",
+            (
+                _PATH,
+                "pre-index-hash",
+                p15,
+                gamma["agent_id"],
+                db._now_iso(),
+                db._now_iso(),
+            ),
+        )
+        r15b = int(cur.lastrowid)
+        db.record_proposal_outcome(81238, p15, "declined", db._now_iso(), conn=conn)
+        closed = reconcile_open_runs(conn)
+        assert closed == 2, closed
+        rows = conn.execute(
+            "SELECT status FROM workflow_runs WHERE id IN (?, ?)", (r15a, r15b)
+        ).fetchall()
+        assert {r["status"] for r in rows} == {"declined"}, (
+            "every residue run closes to the proposal's exact decided status"
+        )
+        ev = conn.execute(
+            "SELECT detail FROM events"
+            " WHERE kind = 'workflow_closed' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        evd = json.loads(ev["detail"])
+        assert evd["count"] == 2 and sorted(evd["run_ids"]) == sorted([r15a, r15b]), evd
+        assert stale_open_run_count(conn) == 0, stale_open_run_count(conn)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open"
+            " ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open'"
+        )
+    print("  reconcile multi-open residue -> closed 2 ok")
+
     # --- boot sweep: init_db backfill + reconcile (cross-boot stability) ------
     # The backfill's skip predicate is now "!= open", not "== merged", so a
     # decided proposal is never re-opened on boot; reconcile then closes any
