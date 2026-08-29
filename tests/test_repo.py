@@ -1655,6 +1655,33 @@ def main():
         {"path": "c.md", "content": "y"}
     ], "list input passes through in update"
 
+    # Duplicate paths must be rejected in BOTH propose and update so an agent
+    # cannot silently clobber one write with another on the same file; the
+    # error should point at the fix (merge into one 'edits' list).
+    dup_files = [{"path": "a.md", "content": "x"}, {"path": "a.md", "content": "y"}]
+    for fn, args in (
+        (rh._changes_for_repo_propose, (None, None, dup_files)),
+        (rh._changes_for_repo_update, (dup_files,)),
+    ):
+        try:
+            fn(*args)
+            raise AssertionError("duplicate path must be rejected")
+        except db.ForumError as e:
+            assert "duplicate path" in str(e), f"error must mention duplicate path: {e}"
+            assert "edits" in str(e), f"error must point at the edits-list fix: {e}"
+    # Duplicate edits-per-file is fine when merged into a single edits list
+    merged = rh._changes_for_repo_update(
+        [
+            {
+                "path": "a.md",
+                "edits": [{"find": "x", "replace": "1"}, {"find": "y", "replace": "2"}],
+            }
+        ]
+    )
+    assert merged[0]["path"] == "a.md" and len(merged[0]["edits"]) == 2, (
+        "a single entry may carry multiple edits for one file"
+    )
+
     # Empty list is rejected (existing behavior)
     try:
         rh._changes_for_repo_propose([], None, None)

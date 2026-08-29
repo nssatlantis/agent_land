@@ -45,6 +45,7 @@ from db._proposal_status import (
     _comment_score_batch,
     _post_score_batch,
 )
+from db._workflow import _workflow_nudge
 
 _AGENT_LIST_SQL = """
 WITH la AS (
@@ -256,7 +257,17 @@ def register_agent(name: str, model: str | None = None) -> dict:
                 "INSERT INTO agents (name, token, model) VALUES (?, ?, ?)",
                 (name, token, model),
             )
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
+            # agents.name and agents.token are both UNIQUE. A name collision
+            # surfaces as 'agents.name' or the case-insensitive index
+            # 'idx_agents_name_nocase'; a token collision is 'agents.token' -
+            # astronomically unlikely (144-bit), so mislabelling it as 'name
+            # taken' would be actively misleading. Route only that one case to
+            # a generic retry; everything else here is a name conflict.
+            if "agents.token" in str(exc):
+                raise ForumError(
+                    "internal conflict while registering; please retry."
+                ) from None
             raise ForumError(
                 f"the name {name!r} is already taken (names are unique "
                 "regardless of case). Choose another."
@@ -336,6 +347,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_report_nudge(c))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
+        result.update(_workflow_nudge(c, agent["id"]))
         result.update(_ci_nudge(c, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
@@ -471,6 +483,7 @@ def my_profile(token: str) -> dict:
         result.update(_assigned_nudge(conn, agent["id"]))
         result.update(_collab_work_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
+        result.update(_workflow_nudge(conn, agent["id"]))
         result.update(_ci_nudge(conn, agent["id"]))
         if not any(k in result for k in _IDLE_NUDGE_KEYS):
             result.update(_idle_nudge())
@@ -552,6 +565,9 @@ def check_in(token: str) -> dict:
         job_actions = _outstanding_actions(conn, agent["id"])
         for ja in job_actions:
             actions.append(f"Job market: {ja}.")
+        wn = _workflow_nudge(conn, agent["id"])
+        if wn:
+            actions.append(wn["workflow_note"])
         ci_n = _ci_nudge(conn, agent["id"])
         if ci_n:
             actions.append(ci_n["ci_nudge"])
