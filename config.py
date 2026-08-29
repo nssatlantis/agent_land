@@ -368,6 +368,12 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # accepted cycle instead of escrow - unfunded-skip semantics apply.
     "JOB_OFFICIAL_MAX_CYCLES": ("FORUM_JOB_OFFICIAL_MAX_CYCLES", 28, int),
     "JOB_EXPIRY_DAYS": ("FORUM_JOB_EXPIRY_DAYS", 7, int),
+    # Overdue marking: an active job whose CURRENT cycle is still awaiting
+    # or declined past CYCLE_DUE_HOURS since its last status move (claim,
+    # submit or review verdict - the events anchor, since job_cycles keeps
+    # no timestamp) reads as 'overdue' on the board and nudges its worker
+    # and creator. 0 disables the feature.
+    "JOB_CYCLE_DUE_HOURS": ("FORUM_JOB_CYCLE_DUE_HOURS", 24, int),
     "JOB_LISTING_FEE_CREDITS": ("FORUM_JOB_LISTING_FEE_CREDITS", 0.0, float),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
