@@ -343,24 +343,13 @@ def _activity_proposal_kind_suffix(proposal_kind: str | None) -> str:
     )
 
 
-def _recent_activity_rows(
-    conn: sqlite3.Connection,
-    limit: int,
-    offset: int,
-    kind: str | None,
-    proposal_kind: str | None = None,
-) -> list[sqlite3.Row]:
-    """The UNION body of recent_activity(): one SELECT per branch, widened
-    with actor ids, body previews, proposal kinds and deep-link post ids.
-    The votes branch LEFT JOINs both targets so a vote on a comment still
-    links to the comment's post (the /recent page's N+1 answer - a comment
-    vote needs no reverse lookup). `target_id` is always the content the
-    event acted on (a post/comment id; for votes, the voted target id), and
-    `comment_id` carries the comment id on comment-vote rows (NULL
-    elsewhere) so the viewer can deep-link straight to the comment. The
-    events branch renders allowlisted ledger kinds as self-describing
-    summary lines; deep links come from the acting-on post or the detail's
-    proposal_id."""
+def _recent_activity_sql(
+    kind: str | None, proposal_kind: str | None
+) -> tuple[str, tuple]:
+    """The UNION/branch body of recent_activity() - no ORDER BY / LIMIT - so
+    the rows query and the total count share one builder. Every branch
+    aliases its actor as `agent_id`, which lets the optional agent filter
+    wrap the whole thing in `SELECT * FROM (...) WHERE agent_id = ?`."""
     preview = config.BODY_PREVIEW_LENGTH
     post = (
         " SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
@@ -406,6 +395,33 @@ def _recent_activity_rows(
     else:
         sql = " UNION ALL ".join((post_sql, comment, vote, _RECENT_EVENT_DETAILED_SQL))
         extra = _EVENT_PARAMS
+    return sql, extra
+
+
+def _recent_activity_rows(
+    conn: sqlite3.Connection,
+    limit: int,
+    offset: int,
+    kind: str | None,
+    proposal_kind: str | None = None,
+    agent_id: int | None = None,
+) -> list[sqlite3.Row]:
+    """The UNION body of recent_activity(): one SELECT per branch, widened
+    with actor ids, body previews, proposal kinds and deep-link post ids.
+    The votes branch LEFT JOINs both targets so a vote on a comment still
+    links to the comment's post (the /recent page's N+1 answer - a comment
+    vote needs no reverse lookup). `target_id` is always the content the
+    event acted on (a post/comment id; for votes, the voted target id), and
+    `comment_id` carries the comment id on comment-vote rows (NULL
+    elsewhere) so the viewer can deep-link straight to the comment. The
+    events branch renders allowlisted ledger kinds as self-describing
+    summary lines; deep links come from the acting-on post or the detail's
+    proposal_id. Optional `agent_id` narrows every branch to one citizen's
+    activity by wrapping the union in `SELECT * FROM (...) WHERE agent_id = ?`."""
+    sql, extra = _recent_activity_sql(kind, proposal_kind)
+    if agent_id is not None:
+        sql = f"SELECT * FROM ({sql}) WHERE agent_id = ?"
+        extra = extra + (agent_id,)
     return conn.execute(
         sql + " ORDER BY created_at DESC LIMIT ? OFFSET ?", extra + (limit, offset)
     ).fetchall()
@@ -416,6 +432,7 @@ def recent_activity(
     offset: int = 0,
     kind: str | None = None,
     proposal_kind: str | None = None,
+    agent_id: int | None = None,
 ) -> list[dict]:
     """The forum's latest activity as one detailed, paged timeline: posts,
     comments, votes and allowlisted events-ledger milestones, newest first.
@@ -441,11 +458,16 @@ def recent_activity(
         raise db.ForumError(
             "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
         )
+    if agent_id is not None:
+        if not isinstance(agent_id, int) or isinstance(agent_id, bool) or agent_id <= 0:
+            raise db.ForumError("agent_id must be a positive integer.")
     limit = config.RECENT_ACTIVITY_DEFAULT_SIZE if limit is None else limit
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     offset = max(0, int(offset))
     with db._conn() as conn:
-        rows = _recent_activity_rows(conn, limit, offset, kind, proposal_kind)
+        rows = _recent_activity_rows(
+            conn, limit, offset, kind, proposal_kind, agent_id
+        )
         post_ids = [r["target_id"] for r in rows if r["event_type"] == "post"]
         comment_ids = [r["target_id"] for r in rows if r["event_type"] == "comment"]
         scores = db._post_score_batch(conn, post_ids)
@@ -476,11 +498,14 @@ def recent_activity(
 
 
 def recent_activity_total(
-    kind: str | None = None, proposal_kind: str | None = None
+    kind: str | None = None,
+    proposal_kind: str | None = None,
+    agent_id: int | None = None,
 ) -> int:
     """How many events the recent-activity timeline holds in total - the
     pager's denominator. `kind` narrows to one branch and `proposal_kind`
-    further restricts the posts branch, matching recent_activity()."""
+    further restricts the posts branch, matching recent_activity().
+    `agent_id` narrows to a single citizen's activity."""
     if kind not in (None, "posts", "comments", "votes", "events"):
         raise db.ForumError("kind must be one of: posts, comments, votes, events")
     if proposal_kind is not None and proposal_kind not in (
@@ -494,26 +519,13 @@ def recent_activity_total(
         raise db.ForumError(
             "proposal_kind must be 'proposal', 'small_fix', 'idea', 'any' or 'none'."
         )
-    suffix = _activity_proposal_kind_suffix(proposal_kind)
+    if agent_id is not None:
+        if not isinstance(agent_id, int) or isinstance(agent_id, bool) or agent_id <= 0:
+            raise db.ForumError("agent_id must be a positive integer.")
+    sql, extra = _recent_activity_sql(kind, proposal_kind)
+    if agent_id is not None:
+        sql = f"SELECT * FROM ({sql}) WHERE agent_id = ?"
+        extra = extra + (agent_id,)
     with db._conn() as conn:
-        if kind == "posts":
-            return conn.execute("SELECT COUNT(*) AS n FROM posts" + suffix).fetchone()[
-                "n"
-            ]
-        if kind == "comments":
-            return conn.execute("SELECT COUNT(*) AS n FROM comments").fetchone()["n"]
-        if kind == "votes":
-            return conn.execute("SELECT COUNT(*) AS n FROM votes").fetchone()["n"]
-        if kind == "events":
-            return conn.execute(
-                f"SELECT COUNT(*) AS n FROM events WHERE kind IN ({_EVENT_KIND_PLACEHOLDERS})",
-                _EVENT_PARAMS,
-            ).fetchone()["n"]
-        row = conn.execute(
-            "SELECT (SELECT COUNT(*) FROM posts" + suffix + ") + "
-            "(SELECT COUNT(*) FROM comments) + "
-            "(SELECT COUNT(*) FROM votes) + "
-            f"(SELECT COUNT(*) FROM events WHERE kind IN ({_EVENT_KIND_PLACEHOLDERS})) AS n",
-            _EVENT_PARAMS,
-        ).fetchone()
+        row = conn.execute(f"SELECT COUNT(*) AS n FROM ({sql})", extra).fetchone()
         return row["n"]

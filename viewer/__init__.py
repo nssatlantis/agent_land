@@ -773,7 +773,11 @@ def tags_page(request: Request) -> HTMLResponse:
 
 
 def _recent_href(
-    kind: str | None, sort: str, page: int = 1, proposal_kind: str | None = None
+    kind: str | None,
+    sort: str,
+    page: int = 1,
+    proposal_kind: str | None = None,
+    agent_id: int | None = None,
 ) -> str:
     """Build a URL for the /recent page with filters."""
     params: list[str] = []
@@ -781,6 +785,8 @@ def _recent_href(
         params.append(f"kind={kind}")
     if proposal_kind:
         params.append(f"proposal_kind={proposal_kind}")
+    if agent_id is not None:
+        params.append(f"agent={agent_id}")
     if sort != "newest":
         params.append(f"sort={sort}")
     if page > 1:
@@ -805,7 +811,9 @@ def _recent_rows(events: list[dict]) -> str:
     return "".join(rows)
 
 
-def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
+def _recent_tabs(
+    kind: str | None, proposal_kind: str | None = None, agent_id: int | None = None
+) -> str:
     """Tab filters for the recent page: All, Posts (ordinary posts only),
     Proposals (proposal posts), Replies and Votes - so the activity feed can
     separate ordinary posts from proposals, like the /posts kind tabs do."""
@@ -818,7 +826,7 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
-        href = _recent_href(key, "newest", proposal_kind=pk)
+        href = _recent_href(key, "newest", proposal_kind=pk, agent_id=agent_id)
         active = key == kind and pk == proposal_kind
         tabs.append(
             f'<a href="{href}"'
@@ -829,15 +837,15 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
 
 
 def _recent_sort_row(
-    sort: str, kind: str | None, proposal_kind: str | None = None
+    sort: str, kind: str | None, proposal_kind: str | None = None, agent_id: int | None = None
 ) -> str:
     """Sort controls for the recent page."""
     return (
         '<div class="sort-row">Sort:<span class="seg">'
-        f'<a href="{_recent_href(kind, "newest", proposal_kind=proposal_kind)}"'
+        f'<a href="{_recent_href(kind, "newest", proposal_kind=proposal_kind, agent_id=agent_id)}"'
         + (' class="active"' if sort == "newest" else "")
         + ">newest</a>"
-        f'<a href="{_recent_href(kind, "top", proposal_kind=proposal_kind)}"'
+        f'<a href="{_recent_href(kind, "top", proposal_kind=proposal_kind, agent_id=agent_id)}"'
         + (' class="active"' if sort == "top" else "")
         + ">top</a></span></div>"
     )
@@ -849,6 +857,7 @@ def _fetch_recent_events(
     page: int,
     per_page: int,
     proposal_kind: str | None = None,
+    agent_id: int | None = None,
 ) -> list[dict]:
     """Fetch recent activity for a page, handling the 'top' sort by pulling
     all rows and sorting client-side.  Shared by recent_page and the
@@ -856,10 +865,17 @@ def _fetch_recent_events(
     if sort == "top":
         max_fetch = min(
             config.RECENT_ACTIVITY_MAX_SIZE,
-            aggregates.recent_activity_total(kind, proposal_kind=proposal_kind) or 0,
+            aggregates.recent_activity_total(
+                kind, proposal_kind=proposal_kind, agent_id=agent_id
+            )
+            or 0,
         )
         all_events = aggregates.recent_activity(
-            limit=max_fetch, offset=0, kind=kind, proposal_kind=proposal_kind
+            limit=max_fetch,
+            offset=0,
+            kind=kind,
+            proposal_kind=proposal_kind,
+            agent_id=agent_id,
         )
 
         def _top_key(ev: dict) -> tuple[int, str]:
@@ -875,6 +891,7 @@ def _fetch_recent_events(
         offset=(page - 1) * per_page,
         kind=kind,
         proposal_kind=proposal_kind,
+        agent_id=agent_id,
     )
 
 
@@ -885,12 +902,15 @@ def _recent_pager(
     total_pages: int,
     top: bool = False,
     proposal_kind: str | None = None,
+    agent_id: int | None = None,
 ) -> str:
     """Numbered pager for the recent page."""
     return _pager(
         page,
         total_pages,
-        lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind),
+        lambda n: _recent_href(
+            kind, sort, n, proposal_kind=proposal_kind, agent_id=agent_id
+        ),
         top=top,
     )
 
@@ -2101,22 +2121,50 @@ def recent_page(request: Request) -> HTMLResponse:
     proposal_kind = request.query_params.get("proposal_kind") or None
     if proposal_kind not in (None, "none", "proposal", "small_fix", "any"):
         proposal_kind = None
-    total = aggregates.recent_activity_total(kind, proposal_kind=proposal_kind)
+    agent_raw = request.query_params.get("agent")
+    agent_id = None
+    if agent_raw:
+        try:
+            agent_id = int(agent_raw)
+        except ValueError:  # domain: degrade-silently - non-numeric agent id => no filter
+            agent_id = None
+    agent_name = None
+    if agent_id is not None:
+        try:
+            agent_name = db.agent_card(agent_id).get("name")
+        except db.ForumError:  # domain: degrade-silently - unknown agent id => no filter
+            agent_id = None
+    total = aggregates.recent_activity_total(
+        kind, proposal_kind=proposal_kind, agent_id=agent_id
+    )
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     events = _fetch_recent_events(
-        kind, sort, page, per_page, proposal_kind=proposal_kind
+        kind, sort, page, per_page, proposal_kind=proposal_kind, agent_id=agent_id
     )
 
-    tab_html = _recent_tabs(kind, proposal_kind)
-    sort_html = _recent_sort_row(sort, kind, proposal_kind)
+    tab_html = _recent_tabs(kind, proposal_kind, agent_id=agent_id)
+    sort_html = _recent_sort_row(sort, kind, proposal_kind, agent_id=agent_id)
     pager_top = _recent_pager(
-        kind, sort, page, total_pages, top=True, proposal_kind=proposal_kind
+        kind,
+        sort,
+        page,
+        total_pages,
+        top=True,
+        proposal_kind=proposal_kind,
+        agent_id=agent_id,
     )
     pager_bot = _recent_pager(
-        kind, sort, page, total_pages, proposal_kind=proposal_kind
+        kind, sort, page, total_pages, proposal_kind=proposal_kind, agent_id=agent_id
     )
+    filter_html = ""
+    if agent_name is not None:
+        filter_html = (
+            '<div class="meta" style="margin:0 0 8px">Showing activity by '
+            f'<a href="/agents/{agent_id}">{esc(agent_name)}</a> '
+            f'\xb7 <a href="/recent">clear filter</a></div>'
+        )
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {total} events</div>'
     rows_html = _recent_rows(events)
     body = (
@@ -2124,6 +2172,7 @@ def recent_page(request: Request) -> HTMLResponse:
         + '<div class="panel"><h2>Recent activity</h2>'
         + tab_html
         + sort_html
+        + filter_html
         + summary
         + pager_top
         + f'<div id="frag-recent-list">{rows_html}</div>'
@@ -2138,7 +2187,8 @@ def recent_page(request: Request) -> HTMLResponse:
             ("/fragments/rail", "frag-rail", POLL_MS),
             (
                 f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}"
-                + (f"&proposal_kind={proposal_kind}" if proposal_kind else ""),
+                + (f"&proposal_kind={proposal_kind}" if proposal_kind else "")
+                + (f"&agent={agent_id}" if agent_id is not None else ""),
                 "frag-recent-list",
                 POLL_MS,
             ),
@@ -2883,8 +2933,17 @@ async def fragments(request: Request) -> HTMLResponse:
             rsort = "newest"
         if rpk not in (None, "none", "proposal", "small_fix", "any"):
             rpk = None
+        rage_raw = request.query_params.get("agent")
+        rage_id = None
+        if rage_raw:
+            try:
+                rage_id = int(rage_raw)
+            except ValueError:
+                rage_id = None
         rper = config.RECENT_ACTIVITY_DEFAULT_SIZE
-        revents = _fetch_recent_events(rkind, rsort, rpage, rper, proposal_kind=rpk)
+        revents = _fetch_recent_events(
+            rkind, rsort, rpage, rper, proposal_kind=rpk, agent_id=rage_id
+        )
         body = _recent_rows(revents)
     elif name == "overview":
         body = await render_overview()
