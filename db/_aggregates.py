@@ -366,7 +366,7 @@ def _recent_activity_rows(
     surface first at the database level."""
     preview = config.BODY_PREVIEW_LENGTH
     net_col = (
-        "(SELECT COALESCE(SUM(CASE WHEN value=1 THEN 1 ELSE -1 END), 0)"
+        "(SELECT COALESCE(SUM(CASE WHEN value=1 THEN 1 ELSE -1 END), 0) AS net"
         " FROM votes WHERE target_type='post' AND target_id=p.id)"
         if sort == "top"
         else "NULL AS net"
