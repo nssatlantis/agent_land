@@ -748,7 +748,14 @@ def lock_stakes_for_pr(
                     from db._credits import _insert_entry, treasury_balance
 
                     if treasury_balance(c) < b["per_pr"]:
-                        _abandon(b, treasury_balance(c))
+                        # Finding 4428: the treasury is the community
+                        # float (fees, mints and job payouts refill it on
+                        # every transfer), so a dip below per_pr at lock
+                        # time is transient - skip this stake this pass
+                        # and retry on the next lock instead of abandoning
+                        # it forever.  The wallet branch above keeps its
+                        # abandon: a staker's wallet shortfall is a real
+                        # condition until that citizen tops up.
                         continue
                     _insert_entry(
                         c,
@@ -1308,4 +1315,19 @@ def list_all_stakes(
     sql += " ORDER BY b.id DESC"
     with _conn() as conn:
         rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_stake_locks(stake_id: int) -> list[dict]:
+    """All locks for a single stake, newest first. For the /staking
+    locked-stakes drill-down."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, pr_number, agent_id, amount, status,"
+            " karma_spend_id, created_at"
+            " FROM stake_locks"
+            " WHERE stake_id=?"
+            " ORDER BY id DESC",
+            (stake_id,),
+        ).fetchall()
     return [dict(r) for r in rows]

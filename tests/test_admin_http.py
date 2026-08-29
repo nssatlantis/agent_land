@@ -433,6 +433,37 @@ def main():
     except ForumError:
         pass
 
+    # --- delete_post: _safe_referer trusts only same-origin or bare paths --
+    def _delete_with_referer(ref):
+        headers = [(b"authorization", _AUTH.encode())]
+        if ref is not None:
+            headers.append((b"referer", ref.encode()))
+        p = db.create_post(b_token, "ref post", "body")["post_id"]
+        resp = _call(
+            admin.delete_post,
+            _req(
+                "POST",
+                f"/admin/posts/{p}/delete",
+                params={"id": p},
+                cookies={_CSRF: cookie_token},
+                body={"csrf": cookie_token, "confirm": "on"},
+                headers=headers,
+            ),
+        )
+        assert resp.status_code == 303, "ticked delete redirects"
+        return resp.headers.get("location")
+
+    # Same-origin absolute URL (scheme + host match the request) is honoured.
+    assert _delete_with_referer("http://127.0.0.1:8000/admin/posts/9") == (
+        "http://127.0.0.1:8000/admin/posts/9"
+    ), "same-origin absolute referer is kept"
+    # Off-site referer is never used as an open-redirect target.
+    assert _delete_with_referer("https://evil.example.com/phish") == "/admin", (
+        "off-site referer falls back"
+    )
+    # A missing referer falls back too.
+    assert _delete_with_referer(None) == "/admin", "missing referer falls back"
+
     # --- resolve_report: clear / suspend -----------------------------------
     resp = _call(
         admin.resolve_report,

@@ -1271,7 +1271,8 @@ def main():
         calls.append((method, path))
         if (
             method == "GET"
-            and path == "pulls?state=closed&sort=updated&direction=desc&per_page=50"
+            and path
+            == "pulls?state=closed&sort=updated&direction=desc&per_page=50&page=1"
         ):
             return [
                 {
@@ -1312,7 +1313,7 @@ def main():
     assert closed[0]["outcome"] == "merged" and closed[0]["merged_at"], closed
     assert (
         "GET",
-        "pulls?state=closed&sort=updated&direction=desc&per_page=50",
+        "pulls?state=closed&sort=updated&direction=desc&per_page=50&page=1",
     ) in calls
 
     try:
@@ -1527,9 +1528,10 @@ def main():
     real_request = github._core._request
     try:
         calls = []
-        github._core._request = lambda method, path, body=None, ok_404=False: (
+
+        def _closed_mock(method, path, body=None, ok_404=False):
             calls.append((method, path))
-            or [
+            return [
                 {
                     "number": 5,
                     "title": "t",
@@ -1549,11 +1551,21 @@ def main():
                     "body": "human-made, no trailer",
                 },
             ]
-        )
+
+        github._core._request = _closed_mock
         closed = github.recently_closed_prs(per_page=2)
+        # The outcome poller's ingest is intentionally a *single recent page*:
+        # it re-processes the newest closed PRs each sweep and leans on
+        # INSERT OR IGNORE idempotency, so it must NOT paginate the whole
+        # history (that would re-record every historical PR's karma on a
+        # fresh DB). Full pagination belongs on the user-facing list_prs
+        # closed/all listing, not this poller feed.
         assert calls == [
-            ("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=2")
-        ], "recently_closed_prs hits the closed-pulls endpoint with the page size"
+            (
+                "GET",
+                "pulls?state=closed&sort=updated&direction=desc&per_page=2&page=1",
+            ),
+        ], "recently_closed_prs fetches one recent page, not the full closed history"
         assert (
             closed[0]["number"] == 5
             and closed[0]["merged_at"] == "2026-08-11T00:00:00Z"
@@ -1654,6 +1666,33 @@ def main():
     assert rh._changes_for_repo_update([{"path": "c.md", "content": "y"}]) == [
         {"path": "c.md", "content": "y"}
     ], "list input passes through in update"
+
+    # Duplicate paths must be rejected in BOTH propose and update so an agent
+    # cannot silently clobber one write with another on the same file; the
+    # error should point at the fix (merge into one 'edits' list).
+    dup_files = [{"path": "a.md", "content": "x"}, {"path": "a.md", "content": "y"}]
+    for fn, args in (
+        (rh._changes_for_repo_propose, (None, None, dup_files)),
+        (rh._changes_for_repo_update, (dup_files,)),
+    ):
+        try:
+            fn(*args)
+            raise AssertionError("duplicate path must be rejected")
+        except db.ForumError as e:
+            assert "duplicate path" in str(e), f"error must mention duplicate path: {e}"
+            assert "edits" in str(e), f"error must point at the edits-list fix: {e}"
+    # Duplicate edits-per-file is fine when merged into a single edits list
+    merged = rh._changes_for_repo_update(
+        [
+            {
+                "path": "a.md",
+                "edits": [{"find": "x", "replace": "1"}, {"find": "y", "replace": "2"}],
+            }
+        ]
+    )
+    assert merged[0]["path"] == "a.md" and len(merged[0]["edits"]) == 2, (
+        "a single entry may carry multiple edits for one file"
+    )
 
     # Empty list is rejected (existing behavior)
     try:

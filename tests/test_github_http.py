@@ -141,7 +141,8 @@ def test_native_twin_alist_tree():
                     {"path": "a.py", "type": "blob", "size": 10},
                     {"path": "d/", "type": "tree"},
                     {"path": "b.md", "type": "blob"},
-                ]
+                ],
+                "truncated": True,
             },
         )
 
@@ -151,6 +152,7 @@ def test_native_twin_alist_tree():
         assert result["repo"] == gh.GITHUB_REPO
         assert result["branch"] == "main"
         assert [f["path"] for f in result["files"]] == ["a.py", "b.md"]
+        assert result["truncated"] is True, "GitHub's truncated flag is surfaced"
     finally:
         gh_core._client = old
         gh.clear_cache()
@@ -499,6 +501,8 @@ def main():
     test_apr_checks_cache_parity_with_sync()
     test_apr_checks_falls_through_to_actions_tier()
     test_apr_checks_head_sha_shortcut_skips_pr_fetch()
+    test_propose_change_failure_cleans_up_orphan_branch()
+    test_comment_on_pr_missing_html_url_ok()
     print("test_github_http: all ok")
     return 0
 
@@ -867,6 +871,80 @@ def test_apr_checks_head_sha_shortcut_skips_pr_fetch():
         gh_core._client = old
         gh.clear_cache()
     print("  _head_sha shortcut skips the PR fetch: ok")
+
+
+def test_propose_change_failure_cleans_up_orphan_branch():
+    # Bug 1.6: when a propose_change's file PUT (or a later step) fails after
+    # the feature branch was created, the branch would be left orphaned (a
+    # ref with no PR on it). propose_change must best-effort DELETE the branch
+    # before re-raising, so a failed propose leaves no dangling ref.
+    branch = "proposal/orphan-test/20260829-000000"
+    calls = []
+
+    def handler(request):
+        method = request.method
+        path = request.url.path
+        calls.append((method, path))
+        if method == "GET" and path.endswith("/git/ref/heads/main"):
+            return httpx.Response(200, json={"object": {"sha": "base123"}})
+        if method == "GET" and "/contents/" in path:
+            return httpx.Response(404, json={"message": "no file"})
+        if method == "POST" and path.endswith("/git/refs"):
+            return httpx.Response(201, json={"ref": f"refs/heads/{branch}"})
+        if method == "PUT" and "/contents/" in path:
+            return httpx.Response(500, json={"message": "boom"})
+        if method == "DELETE" and path.endswith("/git/refs/heads/" + branch):
+            return httpx.Response(204, json=None)
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        raised = None
+        try:
+            gh.propose_change(
+                [{"path": "docs/x.md", "content": "hello"}],
+                title="t",
+                body="b",
+                citizen="curious-alpha (agent_id=3)",
+                branch=branch,
+            )
+        except gh.RepoError as exc:
+            raised = str(exc)
+        assert raised is not None and "boom" in raised, raised
+        # The orphan branch must have been deleted before the error propagated.
+        assert any(
+            m == "DELETE" and p.endswith("/git/refs/heads/" + branch) for m, p in calls
+        ), calls
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  propose_change failure cleans up the orphan branch: ok")
+
+
+def test_comment_on_pr_missing_html_url_ok():
+    # Bug 1.7: comment_on_pr read data["html_url"] with a hard subscript -
+    # a payload that omitted html_url would KeyError. Guarded with .get() it
+    # returns None instead of crashing.
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "id": 7,
+                "user": {"login": "someone"},
+                "created_at": "2026-08-29T00:00:00Z",
+                # html_url deliberately absent
+            },
+        )
+
+    old = _install_mock(handler)
+    try:
+        result = gh.comment_on_pr(5, "hello world")
+        assert result["comment_id"] == 7
+        assert result["author"] == "someone"
+        assert result["html_url"] is None, result
+    finally:
+        gh_core._client = old
+    print("  comment_on_pr tolerates a missing html_url: ok")
 
 
 if __name__ == "__main__":

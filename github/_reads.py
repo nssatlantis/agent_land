@@ -57,7 +57,12 @@ def list_tree(ref: str | None = None) -> dict:
     for item in tree.get("tree", []):
         if item.get("type") == "blob":
             entries.append({"path": item["path"], "size": item.get("size", 0)})
-    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    result = {
+        "repo": GITHUB_REPO,
+        "branch": ref,
+        "files": entries,
+        "truncated": tree.get("truncated", False),
+    }
     _core._tree_cache.set(cache_key, result)
     return result
 
@@ -77,7 +82,12 @@ async def alist_tree(ref: str | None = None) -> dict:
         for item in tree.get("tree", [])
         if item.get("type") == "blob"
     ]
-    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    result = {
+        "repo": GITHUB_REPO,
+        "branch": ref,
+        "files": entries,
+        "truncated": tree.get("truncated", False),
+    }
     _core._tree_cache.set(cache_key, result)
     return result
 
@@ -384,6 +394,51 @@ def open_pr_labels() -> set[str]:
         page += 1
 
 
+def _closed_pulls_page(state: str, per_page: int, page: int) -> list:
+    """One page of the closed/all pulls listing, newest by updated."""
+    return _core._request(
+        "GET",
+        f"pulls?state={state}&sort=updated&direction=desc&per_page={per_page}&page={page}",
+    )
+
+
+async def _aclosed_pulls_page(state: str, per_page: int, page: int) -> list:
+    """Native-await twin of _closed_pulls_page."""
+    return await _core._on_bg(
+        _core._arequest(
+            "GET",
+            f"pulls?state={state}&sort=updated&direction=desc&per_page={per_page}&page={page}",
+        )
+    )
+
+
+def _paginated_closed_pulls(state: str, per_page: int) -> list:
+    """Every page of the closed/all pulls listing, newest by updated, stopping
+    at the first short page. The single-page read (2.1) silently dropped every
+    PR past the newest page once closed PRs outgrew one page; a page loop
+    bounded by _PR_PAGE_CAP makes a full listing explicit and complete."""
+    out: list = []
+    page = 1
+    while True:
+        batch = _closed_pulls_page(state, per_page, page)
+        out.extend(batch)
+        if len(batch) < per_page or page >= _PR_PAGE_CAP:
+            return out
+        page += 1
+
+
+async def _apaginated_closed_pulls(state: str, per_page: int) -> list:
+    """Native-await twin of _paginated_closed_pulls."""
+    out: list = []
+    page = 1
+    while True:
+        batch = await _aclosed_pulls_page(state, per_page, page)
+        out.extend(batch)
+        if len(batch) < per_page or page >= _PR_PAGE_CAP:
+            return out
+        page += 1
+
+
 def list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     """Pull requests, newest first. `state` is 'open' (the default - the same
     cached list repo_list_prs always returned), 'closed' or 'all'; the
@@ -411,10 +466,7 @@ def list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     if state == "open":
         rows = open_prs()
         return [r for r in rows if r["created_at"] >= since] if since else rows
-    pulls = _core._request(
-        "GET",
-        f"pulls?state={state}&sort=updated&direction=desc&per_page={config.GITHUB_PRS_PER_PAGE}",
-    )
+    pulls = _paginated_closed_pulls(state, config.GITHUB_PRS_PER_PAGE)
     rows = []
     for p in pulls:
         row = {
@@ -459,12 +511,7 @@ async def alist_prs(state: str = "open", since: str | None = None) -> list[dict]
     if state == "open":
         rows = await asyncio.to_thread(open_prs)
         return [r for r in rows if r["created_at"] >= since] if since else rows
-    pulls = await _core._on_bg(
-        _core._arequest(
-            "GET",
-            f"pulls?state={state}&sort=updated&direction=desc&per_page={config.GITHUB_PRS_PER_PAGE}",
-        )
-    )
+    pulls = await _apaginated_closed_pulls(state, config.GITHUB_PRS_PER_PAGE)
     rows = []
     for p in pulls:
         row = {
@@ -497,9 +544,13 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
     poller. `proposal_post_id` is the 'Proposal: #N' stamp - the forum
     proposal the PR implements, used by the poller to record the proposal's
     outcome (backfilling pre-existing PRs from the stamp alone)."""
-    pulls = _core._request(
-        "GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}"
-    )
+    # The outcome poller's ingest is a *recent* read, not a full historic
+    # scan: it re-processes the newest closed PRs each sweep and relies on
+    # INSERT OR IGNORE idempotency for anything already recorded. Full
+    # pagination here would re-record every historical PR's karma for real
+    # citizens on a fresh database (2.1 pagination belongs on the user-facing
+    # list_prs closed/all listing, not this poller feed), so fetch one page.
+    pulls = _closed_pulls_page("closed", per_page, 1)
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
@@ -525,11 +576,7 @@ async def arecently_closed_prs(
 ) -> list[dict]:
     """Native-await twin of recently_closed_prs - the outcome poller's hot
     fetch, now off the worker threads entirely."""
-    pulls = await _core._on_bg(
-        _core._arequest(
-            "GET", f"pulls?state=closed&sort=updated&direction=desc&per_page={per_page}"
-        )
-    )
+    pulls = await _aclosed_pulls_page("closed", per_page, 1)
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
