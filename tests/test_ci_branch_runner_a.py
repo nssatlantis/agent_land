@@ -1,6 +1,7 @@
-"""Tests for branch-mode CI runs — shard A (4/12).
+"""Tests for branch-mode CI runs — shard A (5/12).
 
-Covers: knob defaults, invalid PR rejected, branch disabled, sandbox missing.
+Covers: knob defaults, invalid PR rejected, branch disabled, sandbox missing,
+native mode.
 Split from test_ci_branch_runner.py for harness parallelism.
 """
 
@@ -177,11 +178,59 @@ def test_sandbox_missing_refuses():
         ci_runner._docker_available = saved
 
 
+def _patched_execution(stub_script: str):
+    holder = {"image_calls": 0}
+    rev_holder = {"rev": None}
+    saved = (
+        ci_runner._ensure_image,
+        ci_runner._sandbox_argv,
+        ci_runner._docker_available,
+    )
+
+    def fake_image(tree, rev):
+        holder["image_calls"] += 1
+        rev_holder["rev"] = rev
+        return "fake:tag"
+
+    def fake_argv(tree, image_tag, script_rel):
+        return [sys.executable, "-c", stub_script], "agentland-ci-test"
+
+    ci_runner._ensure_image = fake_image
+    ci_runner._sandbox_argv = fake_argv
+    ci_runner._docker_available = lambda: True
+
+    def restore():
+        (
+            ci_runner._ensure_image,
+            ci_runner._sandbox_argv,
+            ci_runner._docker_available,
+        ) = saved
+
+    return restore, holder, rev_holder
+
+
+def test_native_mode_still_reports_native():
+    actor = _uid()
+    saved_prepare = ci_runner._prepare_tree
+    scratch = Path(tempfile.mkdtemp(prefix="agentland_ci_nat_"))
+    (scratch / "requirements.txt").write_text("# x\n")
+    ci_runner._prepare_tree = lambda: (str(scratch), "f" * 40)
+    restore_exec, _, _ = _patched_execution("")
+    try:
+        result = ci_runner.run_checks(actor, "t", "benchmarks", pr_number=None)
+        assert result["mode"] == "native"
+        assert "pr_number" not in result
+    finally:
+        ci_runner._prepare_tree = saved_prepare
+        restore_exec()
+
+
 def main():
     test_knob_defaults()
     test_invalid_pr_rejected()
     test_branch_disabled_refuses()
     test_sandbox_missing_refuses()
+    test_native_mode_still_reports_native()
     print("test_ci_branch_runner_a: all ok")
 
 
