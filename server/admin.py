@@ -16,26 +16,7 @@ citizen (typed-name + destroy-content guard), delete a single post or
 proposal, and manual report resolution (clear / suspend the author).
 """
 
-from __future__ import annotations
-
-import base64
-import math
-import os
-import secrets
-from urllib.parse import quote as _urlquote
-from urllib.parse import urlparse
-
-from starlette.responses import HTMLResponse, RedirectResponse
-from starlette.routing import Route
-
-import config
-import db
-import moderation
-import reports
-from viewer._layout import _page
-from viewer._utils import _human_ts, _markdown, _rows, _ts_or_dash, esc
-
-ADMIN_USER = os.environ.get("ADMIN_USER", "")
+from __future__ import annotationsimport base64import mathimport osimport secretsfrom urllib.parse import quote as _urlquotefrom urllib.parse import urlparsefrom starlette.responses import HTMLResponse, RedirectResponsefrom starlette.routing import Routeimport configimport dbimport moderationimport reportsfrom viewer._layout import _pagefrom viewer._utils import _human_ts, _markdown, _rows, _ts_or_dash, escADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 _CSRF_COOKIE = "admin_csrf"
@@ -2048,11 +2029,7 @@ async def workflow_close_stale(request):
 
 def _ci_dashboard_snapshot() -> dict:
     """Gather workspace + CI runner state without holding locks across I/O."""
-    import os
-    import shutil
-    import subprocess
-    import time
-    from pathlib import Path
+    import os    import shutil    import subprocess    import time    from pathlib import Path
 
     snap: dict = {}
     # Live knobs
@@ -2176,13 +2153,7 @@ def _ci_dashboard_snapshot() -> dict:
         snap["ws"] = {"error": str(exc)}
     # Ticker
     try:
-        from server.tools.repo import (
-            _PENDING_LOCK,
-            _TICKER_TASK,
-            in_flight_snapshot,
-            pending_snapshot_with_deadlines,
-            requeue_attempts_snapshot,
-        )
+        from server.tools.repo import (            _PENDING_LOCK,            _TICKER_TASK,            in_flight_snapshot,            pending_snapshot_with_deadlines,            requeue_attempts_snapshot,        )
 
         pending_deadlines = pending_snapshot_with_deadlines()
         inflight = in_flight_snapshot()
@@ -2407,9 +2378,7 @@ async def ci_prune_images(request):
     if not _csrf_ok(request, form):
         return _flash(request, "CSRF token missing or invalid - refresh and retry.")
     try:
-        import subprocess
-
-        import config as _cfg
+        import subprocess        import config as _cfg
 
         if not __import__("shutil").which("docker"):
             return _flash(request, "docker not available on host.")
@@ -2461,9 +2430,7 @@ async def ci_gc_workspaces(request):
     if not _csrf_ok(request, form):
         return _flash(request, "CSRF token missing or invalid - refresh and retry.")
     try:
-        import subprocess
-
-        import server.ci_runner as cr
+        import subprocess        import server.ci_runner as cr
 
         # gc on each -ci tree
         gc_count = 0
