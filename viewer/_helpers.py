@@ -902,7 +902,13 @@ def _prs_rows_html(
     never blocks the event loop fetching CI row by row. Every interpolated
     string from GitHub is escaped (untrusted input)."""
     parts = []
-    for s, label in (("open", "Open"), ("closed", "Closed"), ("all", "All")):
+    for s, label in (
+        ("open", "Open"),
+        ("closed", "Closed"),
+        ("merged", "Merged"),
+        ("declined", "Declined"),
+        ("all", "All"),
+    ):
         active = ' class="active"' if s == state else ""
         parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
     tabs = " ".join(parts)
@@ -944,6 +950,26 @@ def _prs_rows_html(
     for r in rows:
         num = r.get("number") or 0
         title = esc(r.get("title") or "")
+        # reference linkify: resolve #P42 to proposal name (237:4278) — display-only, degrade-silently
+        try:
+            import re
+
+            def _ref_repl(m):
+                pid = m.group(1)
+                try:
+                    p = db.get_post(int(pid))
+                    pt = esc(p.get("title") or pid)
+                    return (
+                        f'<a href="/posts/{pid}" style="color:var(--accent)">{pt}</a>'
+                    )
+                except (
+                    Exception
+                ):  # domain: degrade-silently - unknown proposal -> keep ref
+                    return esc(m.group(0))
+
+            title = re.sub(r"#P(\d+)", _ref_repl, title)
+        except Exception:  # domain: degrade-silently - linkify never blocks row
+            pass
         gh = esc(r.get("html_url") or "")
         href_ref = esc(r.get("head") or "")
         base_ref = esc(r.get("base") or "")
@@ -1708,19 +1734,25 @@ def _todos_panel(p: dict) -> str:
                 # header dot (grey open / blue claimed) carries it. Per-item
                 # dots would be noise.
                 dot = ""
+            pr = it.get("pr_number")
+            if pr is not None:
+                try:
+                    prid = int(pr)
+                    if it.get("done"):
+                        pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
+                    else:
+                        pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{prid}</span>'
+                except (TypeError, ValueError):
+                    pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
+            else:
+                pr_chip = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
                 f"<span style='color:var(--muted)'>{box}</span> "
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
                 f"{esc(it['text'])}"
-                + (
-                    " <span style='color:var(--warn)' title='auto-checks when this "
-                    f"PR merges'>PR #{esc(str(it['pr_number']))}</span>"
-                    if it.get("pr_number")
-                    else ""
-                )
-                + "</div>"
+                f"{pr_chip}" + "</div>"
             )
     out.append("</div>")
     return "".join(out)

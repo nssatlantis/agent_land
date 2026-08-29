@@ -304,6 +304,107 @@ def main():
 
     print("  require_claim_for_todo all branches: ok")
 
+    # --- 4429: claims never stamp over a concurrent claim ------------------
+    # claim_todo_item / claim_todo_list must not hand the same unit to two
+    # collaborators even if the pre-check read races a commit in between:
+    # the guarded UPDATE + rowcount (WHERE claimed_by IS NULL) relents to
+    # whoever landed first and names them.
+    collab2 = db.register_agent("gate-tester2")
+    collab2_token = collab2["token"]
+    collab2_id = collab2["agent_id"]
+    db.join_proposal(collab2_token, cpid)
+    db.claim_todo_item(gate_token, cpid, item1_id)
+    err = expect_error(db.claim_todo_item, collab2_token, cpid, item1_id)
+    assert "already claimed by" in err and "gate-tester" in err, (
+        f"second item claim must name the holder, got: {err}"
+    )
+    print("  claim_todo_item race refuses holder: ok")
+
+    # List mode: a second collaborator cannot claim a list another holds.
+    cp2 = db.create_proposal(
+        agents["alpha"]["token"], "Claim List Gate", "body", collaborative=True
+    )
+    cpid2 = cp2["post_id"]
+    db.set_todos_for_post(
+        agents["alpha"]["token"],
+        cpid2,
+        [
+            {"title": "A", "items": [{"text": "a1"}]},
+            {"title": "B", "items": [{"text": "b1"}]},
+        ],
+    )
+    db.set_todo_claim_mode(agents["alpha"]["token"], cpid2, "list")
+    collab3 = db.register_agent("gate-tester3")
+    collab3_token = collab3["token"]
+    collab3_id = collab3["agent_id"]
+    db.join_proposal(collab3_token, cpid2)
+    collab4 = db.register_agent("gate-tester4")
+    collab4_token = collab4["token"]
+    db.join_proposal(collab4_token, cpid2)
+    with db._conn() as _conn:
+        rows = _conn.execute(
+            "SELECT tl.id, tl.title, ti.id AS item_id FROM todo_lists tl"
+            " JOIN todo_items ti ON ti.list_id = tl.id"
+            " WHERE tl.post_id = ? ORDER BY tl.title",
+            (cpid2,),
+        ).fetchall()
+    list_a_id = next(r["id"] for r in rows if r["title"] == "A")
+    list_b_id = next(r["id"] for r in rows if r["title"] == "B")
+    a1_id = next(r["item_id"] for r in rows if r["title"] == "A")
+    b1_id = next(r["item_id"] for r in rows if r["title"] == "B")
+    # collab4 claims list B first (so they are under the per-collab cap when
+    # collab3 tries the same list - the "already claimed" guard is what fires).
+    db.claim_todo_list(collab4_token, cpid2, list_b_id)
+    err = expect_error(db.claim_todo_list, collab3_token, cpid2, list_b_id)
+    assert "already claimed by" in err and "gate-tester4" in err, (
+        f"second list claim must name the holder, got: {err}"
+    )
+    print("  claim_todo_list race refuses holder: ok")
+
+    # --- 4429: the pre-open gate binds to the PR's actual to-do item ------
+    _restore_flag(_saved_flag)
+    _set_flag("1")
+    try:
+        # Item mode: claiming item1 does NOT cover a PR bound to item2.
+        with db._conn() as conn:
+            db.require_claim_for_todo(conn, cpid, gate_agent_id, item1_id)
+        print("  gate bound to claimed item passes: ok")
+        try:
+            with db._conn() as conn:
+                db.require_claim_for_todo(conn, cpid, gate_agent_id, item2_id)
+            assert False, "bound-to-other-item gate should have raised"
+        except db.ForumError as e:
+            assert "requires claiming" in str(e)
+        print("  gate bound to unclaimed item raises: ok")
+        try:
+            with db._conn() as conn:
+                db.require_claim_for_todo(conn, cpid, collab2_id, item1_id)
+            assert False, "claimless bound gate should have raised"
+        except db.ForumError as e:
+            assert "requires claiming" in str(e)
+        # Unbound gate is still satisfied by any active claim.
+        with db._conn() as conn:
+            db.require_claim_for_todo(conn, cpid, gate_agent_id)
+        print("  unbound gate still passes on any claim: ok")
+
+        # List mode: claiming list A does NOT cover a PR bound to list B's item.
+        db.claim_todo_list(collab3_token, cpid2, list_a_id)
+        with db._conn() as conn:
+            db.require_claim_for_todo(conn, cpid2, collab3_id, a1_id)
+        try:
+            with db._conn() as conn:
+                db.require_claim_for_todo(conn, cpid2, collab3_id, b1_id)
+            assert False, "bound-to-other-list gate should have raised"
+        except db.ForumError as e:
+            assert "requires claiming" in str(e)
+        with db._conn() as conn:
+            db.require_claim_for_todo(conn, cpid2, collab3_id)
+        print("  list-mode per-list gate: ok")
+    finally:
+        _restore_flag(_saved_flag)
+
+    print("  4429 claim race + per-bound gate: ok")
+
     # --- teardown --------------------------------------------------------
     import shutil
 
