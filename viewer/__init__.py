@@ -111,9 +111,13 @@ from viewer._reports import report_detail_page, reports_page
 from viewer._static import static_style_css
 from viewer._utils import (
     _abs,
+    _heading_sections,
     _human_ts,
     _markdown,
     _parse_iso,
+    _recent_changes_html,
+    _split_changes,
+    _toc_nav,
     _truncate,
     _ts_or_dash,
     esc,
@@ -2266,9 +2270,11 @@ _record_stamp_cache: dict = {}
 
 def _read_record_stamp(filename: str) -> str:
     """The last commit that touched a record file, as a short HTML line:
-    'last commit <when> \u00b7 @<sha>' via git log -1 --format=%cI + %h - or ''
-    when git is absent, the file is uncommitted, or anything fails. Pure
-    enrichment: a failure just omits the line from the panel."""
+    'repo@<short sha> \u00b7 <when> \u00b7 <a>view on GitHub</a>' via
+    git log -1 --format=%cI + %h -- or '' when git is absent, the file is
+    uncommitted, or anything fails. Pure enrichment: a failure just omits
+    the line from the panel. The GitHub link is same-source as the record
+    itself: repo_spec() and base_branch() are the server's own settings."""
     try:
         import subprocess
 
@@ -2285,7 +2291,14 @@ def _read_record_stamp(filename: str) -> str:
         if len(lines) < 2:
             return ""
         ts, sha = lines[0], lines[1]
-        return f'{_human_ts(ts)} <span style="font-family:monospace">@{esc(sha)}</span>'
+        repo = github.repo_spec()
+        branch = github.base_branch()
+        url = f"https://github.com/{repo}/blob/{branch}/{filename}"
+        return (
+            f'<span style="font-family:monospace">{esc(repo)}@{esc(sha)}</span>'
+            f" \u00b7 {_human_ts(ts)} \u00b7 "
+            f'<a href="{esc(url)}" style="color:var(--accent)">view on GitHub</a>'
+        )
     except Exception:  # domain: degrade-silently - stamp is optional enrichment
         return ""
 
@@ -2303,6 +2316,68 @@ async def _record_stamp(filename: str) -> str:
     return stamp
 
 
+def _read_record_recent(filename: str) -> list[dict]:
+    """The last 5 commits that touched a record file, newest first, each
+    {short, iso, subject, patch} where patch is that commit's unified diff
+    of the file, truncated. [] when git is absent or anything fails - the
+    recent-changes panel is optional enrichment. Each 'git show' is scoped
+    to the single file and runs with timeout like _read_record_stamp."""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "log", "-5", "--format=%cI%x00%h%x00%s", "--", filename],
+            cwd=str(db.REPO_DIR),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        commits: list[dict] = []
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\x00")
+            if len(parts) != 3:
+                continue
+            iso, short, subject = parts
+            show = subprocess.run(
+                ["git", "show", "--format=", short, "--", filename],
+                cwd=str(db.REPO_DIR),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            patch = show.stdout if show.returncode == 0 else ""
+            if len(patch) > 4000:
+                patch = patch[:4000] + "\n\u2026 (patch truncated)"
+            commits.append(
+                {"short": short, "iso": iso, "subject": subject, "patch": patch}
+            )
+        return commits
+    except Exception:  # domain: degrade-silently - recent-changes panel is optional
+        return []
+
+
+_record_recent_cache: dict = {}
+
+
+async def _record_recent(filename: str) -> str:
+    """The record page's 'recent changes' panel HTML (ever-interactive diff
+    of the last 5 commits), on the same short TTL as _record_stamp. '' when
+    no commits could be read - the page renders without the panel.
+    Runs in a worker thread."""
+    now = time.monotonic()
+    entry = _record_recent_cache.get(filename)
+    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+        return entry["html"]
+    commits = await asyncio.to_thread(_read_record_recent, filename)
+    html = _recent_changes_html(commits)
+    _record_recent_cache[filename] = {"ts": now, "html": html}
+    return html
+
+
 async def _record_page(
     request: Request,
     title: str,
@@ -2311,19 +2386,52 @@ async def _record_page(
     heading: str,
     intro: str,
     notice: str,
+    operative_label: str = "The record",
 ) -> HTMLResponse:
     """One record route: the file rendered read-only through the safe
     subset, with the graceful-fallback standard - a quiet notice instead
-    of a 500 whenever the file cannot be read."""
+    of a 500 whenever the file cannot be read.
+
+    A record whose body carries the '## Changes' amendment log splits into
+    an operative view (default; 'The law' for the charter, 'The record'
+    otherwise) and an 'Amendment log' tab (?view=amendments) - the same
+    split the MCP slim/companion resources serve. Headings get a sticky
+    table of contents (deep-linked anchor ids); the stamp reads 'updated
+    repo@<short> \u00b7 <when> \u00b7 view on GitHub'; and the last 5
+    commits render as an ever-interactive recent-changes diff panel. None
+    of it mutates state - pure GET."""
     md = await _record_md(filename)
     if md:
+        body, changes = _split_changes(md)
+        view_amendments = (
+            request.query_params.get("view") == "amendments" and changes is not None
+        )
+        shown = changes if view_amendments else body
+        tabs = ""
+        if changes is not None:
+            path = request.url.path
+            tabs = (
+                '<div class="tabs" style="margin-top:6px">'
+                f'<a href="{esc(path)}"'
+                + ("" if view_amendments else ' class="active"')
+                + f">{esc(operative_label)}</a>"
+                f'<a href="{esc(path + "?view=amendments")}"'
+                + ("" if not view_amendments else ' class="active"')
+                + ">Amendment log</a>"
+                "</div>"
+            )
         stamp = await _record_stamp(filename)
         stamp_html = (
-            f'<p class="meta" style="margin-top:2px">last commit {stamp}</p>'
+            f'<p class="meta" style="margin-top:2px">updated {stamp}</p>'
             if stamp
             else ""
         )
-        panel = f'<div class="panel"><h2>{heading}</h2>{intro}{stamp_html}{_markdown(md)}</div>'
+        toc = _toc_nav(_heading_sections(shown))
+        recent = await _record_recent(filename)
+        panel = (
+            f'<div class="panel"><h2>{heading}</h2>{intro}{tabs}{stamp_html}'
+            f"{toc}{_markdown(shown, anchors=True)}</div>{recent}"
+        )
     else:
         panel = (
             f'<div class="panel"><h2>{heading}</h2>'
@@ -2402,6 +2510,7 @@ async def charter_page(request: Request) -> HTMLResponse:
             "The charter is not available right now - CHARTER.md could "
             "not be read from the repository."
         ),
+        operative_label="The law",
     )
 
 
