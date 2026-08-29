@@ -96,6 +96,22 @@ def now() -> dict:
     return {"now_iso": _now_iso(dt), "now_epoch": int(dt.timestamp())}
 
 
+def earliest_record_iso() -> str | None:
+    """The forum's earliest content timestamp (posts + comments) in the exact
+    `%Y-%m-%dT%H:%M:%S.mmmZ` storage format, or None when the forum has no
+    content yet. The auto-link poller uses it as a scan floor so a fresh
+    database - or one trimmed of its history - is not scanned back before its
+    own records began. A lexicographic MIN is exact because every stored
+    timestamp is zero-padded to the same shape."""
+    with _conn() as conn:
+        row = conn.execute("SELECT MIN(created_at) FROM posts").fetchone()
+        earliest_posts = row[0]
+        row = conn.execute("SELECT MIN(created_at) FROM comments").fetchone()
+        earliest_comments = row[0]
+    candidates = [t for t in (earliest_posts, earliest_comments) if t]
+    return min(candidates) if candidates else None
+
+
 # Observability counters for /status's Process panel (see the getters at the
 # bottom of this module). Plain ints/dicts: GIL makes += and rebind atomic.
 _slow_block_count = 0
@@ -1602,18 +1618,24 @@ def init_db() -> None:
         # proposals. Idempotent: start_workflow's "no open run" guard means a
         # proposal that already has a run (or that _insert_post already
         # started) is never double-started, so this is a no-op on fresh DBs
-        # and on every later boot. Only still-openable proposals qualify: a
-        # proposal whose live status is anything but 'open' - merged
-        # (terminal), or declined/closed (retryable per CHARTER VI.5, but not
-        # currently open) - plus superseded (locked by a newer version) cannot
-        # open a PR today and are skipped. A DECLINED/CLOSED proposal would
-        # otherwise gain a fresh, forever-open run on every boot, because it
-        # is still retryable and nothing ever closes runs for decisions that
-        # predate the feature. reconcile_open_runs() below heals the runs that
-        # leaked through that old "skip only merged" gate: it closes any open
-        # run whose proposal is decided, mirroring what close_workflow_for_pr
-        # does for poller-processed outcomes, so this backfill and the
-        # reconciliation cannot fight each other across boots.
+        # and on every later boot. The candidate set is every proposal with NO
+        # create-pr run of any status: a proposal that already folded a run
+        # (expired at TTL, or decided) without ever linking a pull request is
+        # the ghost pattern the reconcile sweep below cleans up, and re-seeding
+        # one here would regenerate it forever across boots. Still-openable
+        # proposals qualify: a proposal whose live status is anything but
+        # 'open' - merged (terminal), or declined/closed (retryable per
+        # CHARTER VI.5, but not currently open) - plus superseded (locked by a
+        # newer version) cannot open a PR today and are skipped. A
+        # DECLINED/CLOSED proposal would otherwise gain a fresh, forever-open
+        # run on every boot, because it is still retryable and nothing ever
+        # closes runs for decisions that predate the feature.
+        # reconcile_open_runs() below heals the runs that leaked through that
+        # old "skip only merged" gate: it closes any open run whose proposal
+        # is decided (or is a no-link ghost), mirroring what
+        # close_workflow_for_pr does for poller-processed outcomes, so this
+        # backfill and the reconciliation cannot fight each other across
+        # boots.
         try:
             # This conn has no row_factory (plain tuples) - every other query
             # in init_db keys by index. start_workflow and our reads need
@@ -1638,7 +1660,6 @@ def init_db() -> None:
                     " AND id NOT IN ("
                     "   SELECT proposal_id FROM workflow_runs"
                     "   WHERE workflow_path = 'workflows/create-pr.md'"
-                    "   AND status = 'open'"
                     " )"
                 ).fetchall()
                 for _row in _candidates:
