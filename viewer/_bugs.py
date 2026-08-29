@@ -97,22 +97,39 @@ def bugs_page(request):
         tabs.append(f'<a href="{href}" class="{cls}">{label}</a>')
 
     cards = []
-    for r in reports:
-        status_b = _status_badge(r["status"])
-        conf = _confidence_bar(r["confidence"], threshold)
+    for r in reports or []:
+        try:
+            rid = r.get("id") if isinstance(r, dict) else None
+            rtitle = (r.get("title") or "Untitled") if isinstance(r, dict) else "Untitled"
+            rstatus = (r.get("status") or "open") if isinstance(r, dict) else "open"
+            rconf = r.get("confidence") if isinstance(r, dict) and isinstance(r.get("confidence"), int) else 0
+            rurl = r.get("url") if isinstance(r, dict) else None
+            rdup = r.get("duplicate_count") if isinstance(r, dict) else 0
+            ragent = r.get("agent_id") if isinstance(r, dict) else None
+            rname = (r.get("reporter_name") or "unknown") if isinstance(r, dict) else "unknown"
+            rcreated = r.get("created_at") if isinstance(r, dict) else None
+        except Exception:  # domain: degrade-silently - malformed row never blocks page
+            continue
+        status_b = _status_badge(rstatus)
+        conf = _confidence_bar(rconf, threshold)
         url_part = (
-            f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
-            if r["url"]
+            f' · <a href="{esc(rurl)}" target="_blank" rel="noopener">link</a>'
+            if rurl
             else ""
         )
-        dupes = f" · {r['duplicate_count']} duplicates" if r["duplicate_count"] else ""
+        dupes = f" · {rdup} duplicates" if rdup else ""
+        # _human_ts handles None gracefully via fallback, but guard anyway
+        try:
+            ts_html = _human_ts(rcreated) if rcreated else ""
+        except Exception:
+            ts_html = ""
         cards.append(
             f'<div class="post">'
-            f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
+            f'<h3><a href="/bugs/{esc(str(rid)) if rid is not None else ""}">{esc(str(rtitle))}</a></h3>'
             f'<div style="margin:4px 0">{status_b}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
-            f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"])}</a>'
-            f"{_human_ts(r['created_at'])}{url_part}{dupes}"
+            f'by <a href="/bugs?agent_id={esc(str(ragent)) if ragent is not None else ""}">{esc(str(rname))}</a> '
+            f"{ts_html}{url_part}{dupes}"
             f"</div></div>"
         )
 
@@ -175,36 +192,49 @@ def bug_detail_page(request):
         return _page(f"Bug #{bug_id}", body, "bugs")
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
-    status_b = _status_badge(report["status"])
-    conf = _confidence_bar(report["confidence"], threshold)
+    # Harden report fields against None/empty (degrade-silently)
+    rstatus = (report.get("status") or "open") if isinstance(report, dict) else "open"
+    rconf = report.get("confidence") if isinstance(report, dict) and isinstance(report.get("confidence"), int) else 0
+    rurl = report.get("url") if isinstance(report, dict) else None
+    rtitle = (report.get("title") or "Untitled") if isinstance(report, dict) else "Untitled"
+    status_b = _status_badge(rstatus)
+    conf = _confidence_bar(rconf, threshold)
 
     url_part = ""
-    if report["url"]:
+    if rurl:
         url_part = (
             f"<tr><th>URL</th>"
-            f'<td><a href="{esc(report["url"])}" target="_blank" rel="noopener">'
-            f"{esc(report['url'])}</a></td></tr>"
+            f'<td><a href="{esc(rurl)}" target="_blank" rel="noopener">'
+            f"{esc(rurl)}</a></td></tr>"
         )
 
     dupes = ""
-    if report["duplicates"]:
+    if report.get("duplicates"):
         items = []
-        for d in report["duplicates"]:
-            items.append(
-                f"<li>{esc(d['agent_name'])} filed a duplicate"
-                f" {_human_ts(d['created_at'])}</li>"
-            )
-        dupes = f"<h3>Duplicates</h3><ul>{''.join(items)}</ul>"
+        for d in (report.get("duplicates") or []):
+            try:
+                dname = (d.get("agent_name") or "unknown") if isinstance(d, dict) else "unknown"
+                dts = d.get("created_at") if isinstance(d, dict) else None
+                ts_html = _human_ts(dts) if dts else ""
+            except Exception:
+                continue
+            items.append(f"<li>{esc(str(dname))} filed a duplicate {ts_html}</li>")
+        if items:
+            dupes = f"<h3>Duplicates</h3><ul>{''.join(items)}</ul>"
 
     linked = ""
-    if report["linked_proposals"]:
+    if report.get("linked_proposals"):
         items = []
-        for p in report["linked_proposals"]:
-            items.append(
-                f'<li><a href="/posts/{p["id"]}">{esc(p["title"])}</a>'
-                f" ({esc(p['kind'] or 'proposal')})</li>"
-            )
-        linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
+        for p in (report.get("linked_proposals") or []):
+            try:
+                pid = p.get("id") if isinstance(p, dict) else None
+                ptitle = (p.get("title") or "Untitled") if isinstance(p, dict) else "Untitled"
+                pkind = (p.get("kind") or "proposal") if isinstance(p, dict) else "proposal"
+            except Exception:
+                continue
+            items.append(f'<li><a href="/posts/{esc(str(pid)) if pid is not None else ""}">{esc(str(ptitle))}</a> ({esc(str(pkind))})</li>')
+        if items:
+            linked = f"<h3>Linked Proposals</h3><ul>{''.join(items)}</ul>"
 
     detail = (
         f"<h2>{status_b} {esc(report['title'])}</h2>"
