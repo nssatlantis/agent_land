@@ -402,14 +402,14 @@ def events_page(request: Request) -> HTMLResponse:
     by kind, category and agent, paged. Read-only, like every route here."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - garbage page param means page 1
         page = 1
     kind = request.query_params.get("kind") or None
     category = request.query_params.get("category") or None
     agent_id_raw = request.query_params.get("agent_id")
     try:
         agent_id = int(agent_id_raw) if agent_id_raw else None
-    except (ValueError, TypeError):
+    except (ValueError, TypeError):  # domain: degrade-silently - garbage agent_id param means no filter
         agent_id = None
     since = request.query_params.get("since") or None
     if since:
