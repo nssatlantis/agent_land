@@ -164,9 +164,7 @@ def _effective_cpus() -> float:
     return round(min(ceil, max(1.0, ceil)), 2)
 
 
-def _ci_acquire_slot(
-    reserve: bool = False, timeout: float | None = None
-) -> int:
+def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int:
     """Acquire a CI slot token; raises ForumError if saturated.
 
     reserve=True keeps 1 slot for user (poller/ticker use it; user passes False).

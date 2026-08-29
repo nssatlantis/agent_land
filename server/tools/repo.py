@@ -44,9 +44,7 @@ async def _debounce_ticker() -> None:
         try:
             _ticker_conc = max(1, int(config.CI_RUN_CONCURRENCY))
         except Exception:
-            _ticker_conc = (
-                3  # domain: degrade-silently - config read failure must not stall ticker
-            )
+            _ticker_conc = 3  # domain: degrade-silently - config read failure must not stall ticker
         # Adaptive 5s poll base, 10s when backlog large (user asked 5/10s)
         # Keep 5s sleep fixed; effective throttle via semaphore + backoff below
         sem = asyncio.Semaphore(_ticker_conc)
@@ -87,7 +85,9 @@ async def _debounce_ticker() -> None:
                                 if attempts <= 5:
                                     _REQUEUE_ATTEMPTS[pr_number] = attempts
                                     # Backoff: 15s * attempt (15,30,45,60,75)
-                                    _PENDING[pr_number] = time.monotonic() + 15 * attempts
+                                    _PENDING[pr_number] = (
+                                        time.monotonic() + 15 * attempts
+                                    )
                                 else:
                                     # Drop after 5 — surface as missed coalesce, next push will re-enqueue fresh
                                     _REQUEUE_ATTEMPTS.pop(pr_number, None)
