@@ -1550,9 +1550,7 @@ def _with_rail(content: str, show_proposals: bool = True) -> str:
     )
 
 
-def _render_comment(
-    node: dict, post_id: int = 0, depth: int = 0
-) -> str:
+def _render_comment(node: dict, post_id: int = 0, depth: int = 0) -> str:
     quote = ""
     if node.get("quote_text"):
         # A structured quote: the frozen excerpt (escaped, inline-markdown so
@@ -1591,9 +1589,7 @@ def _render_comment(
         f'<div class="comment" id="c{node["id"]}"{indent_attr}>{copy_btn}{depth_badge}{_comment_meta(node)}<hr>'
         f"{quote}<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
-    replies = "".join(
-        _render_comment(r, post_id, depth + 1) for r in node["replies"]
-    )
+    replies = "".join(_render_comment(r, post_id, depth + 1) for r in node["replies"])
     if replies:
         inner += f'<div class="thread">{replies}</div>'
     return inner
