@@ -542,7 +542,7 @@ def events_page(request: Request) -> HTMLResponse:
         + ' style="padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em">'
         + '<button type="submit" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em;cursor:pointer">Filter</button>'
         + "</form></div>"
-        + f'<div id="frag-events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
+        + f'<div id="events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
         + f"{pager}</div>"
     )
     return _page("events", _with_rail(body), section="events")
