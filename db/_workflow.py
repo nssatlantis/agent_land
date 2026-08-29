@@ -489,10 +489,19 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
         ids = _open_run_ids_for(conn, pid)
         if not ids:
             continue
+        # Close exactly the rows observed as stale, never whatever happens to
+        # be open for the proposal by the time the UPDATE runs (TOCTOU review):
+        # under WAL the reads commit as they go, and the admin handler's path
+        # is not under init_db's held write transaction - so a retry that opens
+        # a fresh run between the probe and this write would have been swept by
+        # a proposal_id-scoped UPDATE. Scoping to the captured ids (the
+        # _close_visible idiom of sweep_expired_workflows) leaves anything newer
+        # alone, and `status = 'open'` still skips rows another closer already
+        # decided since we captured them.
         cur = conn.execute(
             "UPDATE workflow_runs SET status = ?, decided_at = ?"
-            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
-            (run_status, _now_iso(), _WORKFLOW_CREATE_PR_PATH, pid),
+            " WHERE id IN ({}) AND status = 'open'".format(",".join("?" * len(ids))),
+            (run_status, _now_iso(), *ids),
         )
         closed = int(cur.rowcount) if cur.rowcount else 0
         if closed:
