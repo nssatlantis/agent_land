@@ -733,7 +733,9 @@ def lock_stakes_for_pr(
                         )
                         credited = staker
                     remaining[currency][staker] = seen - b["per_pr"]
-                except ForumError:
+                except (  # domain: degrade-silently - single stake abandon, siblings continue
+                    ForumError
+                ):
                     # spend() refused against the live balance (a
                     # concurrent drain between our snapshot and this
                     # debit). Abandon this stake and let its siblings
