@@ -3,6 +3,7 @@
 Covers: merge conflict, PR requirements isolation, native mode, hostile payload.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -19,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import db  # noqa: E402
 import events  # noqa: E402
 import server.ci_runner as ci_runner  # noqa: E402
-from tests._setup import config  # noqa: E402
 
 db.init_db()
 
