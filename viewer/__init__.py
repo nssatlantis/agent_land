@@ -2281,14 +2281,6 @@ async def workflow_detail_page(request: Request) -> HTMLResponse:
         )
     panel = f'<div class="panel"><p><a href="/workflows" style="color:var(--accent)">← All workflows</a></p><h2>{esc(safe)}</h2>{_markdown(md)}</div>'
     return _page(f"Workflow {safe}", _with_rail(panel), section="workflows")
-    params: list[str] = []
-    if state != "open":
-        params.append(f"state={state}")
-    if author:
-        params.append(f"author={_urlquote(author)}")
-    if page != 1:
-        params.append(f"page={page}")
-    return "/prs" + (f"?{'&'.join(params)}" if params else "")
 
 
 async def _prs_ci_map(rows: list[dict] | None) -> dict[int, dict | None]:
