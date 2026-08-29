@@ -485,10 +485,22 @@ def posts_page(request: Request) -> HTMLResponse:
                     tag_total = db.post_tag_count(tag)
             except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
                 tag_total = 0
+            # Use actual tag color with swatch (reuse _tag_chips pattern)
+            try:
+                _trow = next(
+                    (x for x in db.list_tags() if x["name"].lower() == tag.lower()),
+                    None,
+                )
+                _tcolor = _trow["color"] if _trow and _trow.get("color") else "#2b6cb0"
+            except (
+                Exception
+            ):  # domain: degrade-silently - tag color is optional enrichment
+                _tcolor = "#2b6cb0"
+            _ttext = _tag_text_color(_tcolor)
             tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
-                f'style="background:#2b6cb022;border:1px solid #2b6cb0;color:{_tag_text_color("#2b6cb0")}">{tag_label}</a>'
+                f'style="background:{esc(_tcolor)}22;border:1px solid {esc(_tcolor)};color:{esc(_ttext)}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
                 f"{'post' if tag_total == 1 else 'posts'}</span>"
                 f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear tag</a> \xb7 '
@@ -510,6 +522,27 @@ def posts_page(request: Request) -> HTMLResponse:
         + "</div>"
     )
     filter_row = tag_row + tabs_row
+    # Tag filter dropdown with color swatches (reuse _tag_chips pattern) — display-only (4233)
+    try:
+        _all_tags_dropdown = db.list_tags()
+    except Exception:  # domain: degrade-silently - tag dropdown is optional enrichment
+        _all_tags_dropdown = []
+    if _all_tags_dropdown:
+        _dchips = []
+        for _td in _all_tags_dropdown:
+            _dname = _td["name"]
+            _dcol = _td.get("color") or "#94a3b8"
+            _dtc = _tag_text_color(_dcol)
+            _dchips.append(
+                f'<a class="tag-chip" href="/posts?tag={esc(_dname)}" style="background:{esc(_dcol)}22;border:1px solid {esc(_dcol)};color:{esc(_dtc)}">{esc(_dname)}</a>'
+            )
+        tag_dropdown = (
+            '<div class="tags-row" style="margin:0 0 12px">Filter by tag: '
+            + " ".join(_dchips)
+            + ' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+        )
+    else:
+        tag_dropdown = ""
     sort_row = (
         '<div class="sort-row">Sort:<span class="seg">'
         f'<a href="{_posts_href(kind, "newest", tag=tag)}"'
@@ -546,6 +579,7 @@ def posts_page(request: Request) -> HTMLResponse:
         _crumb("/", "overview")
         + f'<div class="panel"><h2>{title}</h2>'
         + filter_row
+        + tag_dropdown
         + sort_row
         + _threshold_note
         + summary
