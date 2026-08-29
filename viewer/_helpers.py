@@ -895,33 +895,25 @@ def _open_pr_cell(open_count: int, limit: int) -> str:
 # PR index (/prs) ----------------------------------------------------------
 
 _PRS_CLOSED_CACHE_SECONDS = config.PR_CACHE_SECONDS
-_prs_closed_cache: dict[str, Any] = {
-    "ts": 0.0,
-    "state": None,
-    "rows": None,
-    "fresh": False,
-}
+_prs_state_cache: dict[str, dict[str, Any]] = {}
 
 
 async def _prs_page_rows(state: str) -> list[dict] | None:
     """github.list_prs rows for the /prs index. The open path reuses the
-    shared open-PR cache; closed/all get their own TTL mirror here so page
-    refreshes never hammer GitHub. Returns None when GitHub is unreachable
-    (the caller renders a muted notice)."""
+    shared open-PR cache; closed/all get per-state TTL mirrors here so
+    concurrent tabs do not thrash a single slot. Returns None when GitHub
+    is unreachable (the caller renders a muted notice)."""
     if state == "open":
         return await _open_prs()
     now = time.monotonic()
-    if (
-        _prs_closed_cache["fresh"]
-        and _prs_closed_cache["state"] == state
-        and now - _prs_closed_cache["ts"] < _PRS_CLOSED_CACHE_SECONDS
-    ):
-        return _prs_closed_cache["rows"]
+    ent = _prs_state_cache.get(state)
+    if ent and ent.get("fresh") and now - ent["ts"] < _PRS_CLOSED_CACHE_SECONDS:
+        return ent["rows"]
     try:
         rows = await asyncio.to_thread(github.list_prs, state)
-    except Exception:
+    except Exception:  # domain: degrade-silently - list still renders muted
         rows = None
-    _prs_closed_cache.update(ts=now, state=state, rows=rows, fresh=True)
+    _prs_state_cache[state] = {"ts": now, "rows": rows, "fresh": True}
     return rows
 
 
@@ -1009,7 +1001,10 @@ def _prs_hold_chip(r: dict, state: str) -> str:
 
 
 def _prs_rows_html(
-    state: str, rows: list[dict] | None, ci: dict[int, dict | None] | None = None
+    state: str,
+    rows: list[dict] | None,
+    ci: dict[int, dict | None] | None = None,
+    author: str = "",
 ) -> str:
     """The /prs index body: state tabs plus one row per pull request -
     number, title, citizen, branches, votes, opened/updated, outcome, CI.
@@ -1024,9 +1019,24 @@ def _prs_rows_html(
         parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
     tabs = " ".join(parts)
     bar = db.pr_vote_threshold()
+    author_esc = esc(author)
+    state_esc = esc(state)
+    filter_row = (
+        '<form method="get" action="/prs" style="margin:0 0 8px;display:flex;gap:8px;align-items:center">'
+        f'<input name="author" value="{author_esc}" placeholder="filter by author id/name" style="flex:1;max-width:220px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;font-size:13px" />'
+        f'<input type="hidden" name="state" value="{state_esc}" />'
+        '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);font-size:13px">filter</button>'
+        + (
+            f'<a href="/prs?state={state_esc}" style="color:var(--muted);font-size:13px">clear</a>'
+            if author
+            else ""
+        )
+        + "</form>"
+    )
     head = (
         f'<div class="tabs" style="margin-bottom:12px">{tabs}</div>'
-        '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
+        + filter_row
+        + '<p style="color:var(--muted);font-size:13px;margin-bottom:8px">'
         f"community auto-merge bar: {bar} net approvals</p>"
     )
     if rows is None:
