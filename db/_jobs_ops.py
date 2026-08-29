@@ -106,6 +106,27 @@ def _cycle_is_overdue(status: str | None, anchor_at: str | None, cutoff: str) ->
     return anchor_at <= cutoff
 
 
+def _overdue_windows_elapsed(anchor_at: str | None, cutoff: str) -> int:
+    """How many whole FORUM_JOB_CYCLE_DUE_HOURS windows a cycle has idled
+    past its deadline: 0 = not overdue, 1 = the first due window has fully
+    elapsed, then +1 per window.  Deterministic from the events anchor
+    alone (no schema column), so the release threshold
+    (FORUM_JOB_OVERDUE_RELEASE_AFTER) resolves on the fly; a misread
+    ledger or dead clock degrades to 0 and never releases."""
+    hours = int(config.JOB_CYCLE_DUE_HOURS)
+    if not cutoff or hours <= 0 or not anchor_at:
+        return 0
+    try:
+        window_s = hours * 3600
+        anchor = datetime.fromisoformat(anchor_at.replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - anchor).total_seconds()
+        if age < window_s:
+            return 0
+        return int(age) // window_s
+    except Exception:
+        return 0  # domain: degrade-silently - unparsable clock = no release
+
+
 def _overdue_flag(
     status: str,
     cur_cycle_status: str | None,
