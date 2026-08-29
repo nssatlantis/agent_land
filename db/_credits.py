@@ -196,7 +196,10 @@ def grant(
             "credit grants must be non-negative - use grant_earned() for "
             "the vote-flip cancellation path."
         )
-    with _conn() if conn is None else nullcontext(conn) as c:
+    # BEGIN IMMEDIATE: the treasury balance is checked and the paired
+    # treasury/agent rows written as one atomic unit - a concurrent grant
+    # cannot interleave between the check and the write (review 4426).
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         return _grant_positive(
             c,
             agent_id,
@@ -354,7 +357,7 @@ def grant_earned(
     Penalties proper live on the karma layer."""
     if not config.CREDITS_ENABLED or delta_quarters == 0:
         return False
-    with _conn() if conn is None else nullcontext(conn) as c:
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         balance = balance_for(c, agent_id)
         if delta_quarters > 0:
             return _grant_positive(
@@ -453,7 +456,10 @@ def spend(
         return False
     if amount_quarters < 0:
         raise ForumError("credit amounts must be positive.")
-    with _conn() if conn is None else nullcontext(conn) as c:
+    # BEGIN IMMEDIATE: the balance check and its debit form one atomic
+    # step - a concurrent spend can't both pass the check and overspend
+    # the wallet (review 4426).
+    with _conn(immediate=True) if conn is None else nullcontext(conn) as c:
         balance = balance_for(c, agent_id)
         if balance < amount_quarters:
             raise ForumError(
@@ -1132,6 +1138,7 @@ def history(
             f" FROM credit_entries e"
             f" LEFT JOIN agents a ON a.id = e.agent_id"
             f" LEFT JOIN agents ta ON ta.id = e.target_id"
+            f" AND e.target_type = 'agent'"
             f"{where} ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             (*params, limit + 1, offset),
         ).fetchall()
