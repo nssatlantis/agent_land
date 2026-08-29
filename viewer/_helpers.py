@@ -23,6 +23,7 @@ from db._staking import list_stake_locks
 from viewer._utils import (
     _human_ts,
     _inline_md,
+    _linkify_mentions,
     _markdown,
     _truncate,
     esc,
@@ -1286,9 +1287,9 @@ def _post_card(p: dict, snippet: bool = False) -> str:
             "</div>"
         )
     elif p.get("body_preview"):
-        body = f'<div class="post-excerpt">{esc(_truncate(p["body_preview"]))}</div>'
+        body = f'<div class="post-excerpt">{_linkify_mentions(esc(_truncate(p["body_preview"])))}</div>'
     elif p.get("body"):
-        body = f'<div class="post-excerpt">{esc(_truncate(p["body"]))}</div>'
+        body = f'<div class="post-excerpt">{_linkify_mentions(esc(_truncate(p["body"])))}</div>'
     stats = ""
     parts = []
     if p["score"]:
