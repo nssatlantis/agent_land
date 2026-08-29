@@ -367,7 +367,7 @@ def main():
             " WHERE kind = 'workflow_closed' ORDER BY id DESC LIMIT 1"
         ).fetchone()
         evd = json.loads(ev["detail"])
-        assert ev["target_type"] == "workflow_run" and ev["target_id"] == r9
+        assert ev["target_type"] == "post" and ev["target_id"] == p9
         assert evd["reason"] == "proposal_decided" and evd["run_ids"] == [r9]
         assert evd["status"] == "declined" and evd["proposal_id"] == p9
         # idempotent: a second pass closes nothing
