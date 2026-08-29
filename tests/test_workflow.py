@@ -28,8 +28,10 @@ from db._workflow import (  # noqa: E402
     close_workflow_for_pr,
     close_workflow_for_proposal,
     list_workflow_runs,
+    reconcile_open_runs,
     require_workflow_block,
     restart_workflow,
+    stale_open_run_count,
     start_workflow,
     sweep_expired_workflows,
 )
@@ -336,6 +338,190 @@ def main():
         stamp = [r["created_at"] for r in runs]
         assert stamp == sorted(stamp, reverse=True), "ledger is newest first"
     print("  ledger filters ok")
+
+    # --- reconcile_open_runs: close stale open runs on decided proposals ------
+    # A declined/closed proposal is retryable, so its live status is never
+    # 'merged' - the OLD backfill ("skip merged") re-opened a run for it on
+    # every boot, and nothing closed it (close_workflow_for_pr only fires on
+    # poller-processed outcomes). reconcile heals exactly that residue.
+    p8 = db.create_proposal(gamma["token"], "T8 reconcile live", "t8 body")["post_id"]
+    p9 = db.create_proposal(gamma["token"], "T9 reconcile declined", "t9 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r9 = int(_open_run(conn, p9)["id"])
+        db.record_proposal_outcome(81234, p9, "declined", db._now_iso(), conn=conn)
+        assert db._proposal_status_for(conn, p9) == "declined"
+        # live proposal untouched: reconcile ignores 'open'-status proposals
+        assert stale_open_run_count(conn) == 1, stale_open_run_count(conn)
+        assert reconcile_open_runs(conn) == 1
+        row = conn.execute(
+            "SELECT status, decided_at FROM workflow_runs WHERE id = ?", (r9,)
+        ).fetchone()
+        assert row["status"] == "declined" and row["decided_at"], (
+            "stale run closes to the proposal's exact decided status"
+        )
+        assert _open_run(conn, p8) is not None, "live run survives reconciliation"
+        ev = conn.execute(
+            "SELECT target_type, target_id, detail FROM events"
+            " WHERE kind = 'workflow_closed' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        evd = json.loads(ev["detail"])
+        assert ev["target_type"] == "post" and ev["target_id"] == p9
+        assert evd["reason"] == "proposal_decided" and evd["run_ids"] == [r9]
+        assert evd["status"] == "declined" and evd["proposal_id"] == p9
+        # idempotent: a second pass closes nothing
+        assert reconcile_open_runs(conn) == 0 and stale_open_run_count(conn) == 0
+        # reopen the run manually (the wedge this sweep exists to clear) and
+        # prove the sweep closes it again
+        conn.execute("UPDATE workflow_runs SET status = 'open' WHERE id = ?", (r9,))
+        conn.execute("UPDATE workflow_runs SET decided_at = NULL WHERE id = ?", (r9,))
+        assert stale_open_run_count(conn) == 1
+        assert reconcile_open_runs(conn) == 1
+    print("  reconcile live/declined/idempotent ok")
+
+    # superseded proposals close to 'closed' (locked by a newer version)
+    p10 = db.create_proposal(gamma["token"], "T10 reconcile superseded", "t10 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r10 = int(_open_run(conn, p10)["id"])
+    db.supersede_proposal(
+        gamma["token"], p10, "T10 reconcile superseded v2", "t10 superseded body"
+    )
+    with db._conn() as conn:
+        assert db._proposal_status_for(conn, p10) == "open", (
+            "superseded-only proposal reports 'open' from PR status"
+        )
+        # re-open the run that supersede closed (simulating the pre-feature
+        # residue) - reconcile must close it via the superseded gate
+        conn.execute("UPDATE workflow_runs SET status = 'open' WHERE id = ?", (r10,))
+        conn.execute("UPDATE workflow_runs SET decided_at = NULL WHERE id = ?", (r10,))
+        assert stale_open_run_count(conn) == 1
+        assert reconcile_open_runs(conn) == 1
+        row = conn.execute(
+            "SELECT status, decided_at FROM workflow_runs WHERE id = ?", (r10,)
+        ).fetchone()
+        assert row["status"] == "closed" and row["decided_at"]
+    print("  reconcile superseded -> closed ok")
+
+    # collaborative-open proposals read 'open' (db/_proposal_status) - a live
+    # collab run must survive reconciliation untouched
+    p13 = db.create_proposal(
+        gamma["token"],
+        "T13 reconcile collab-open",
+        "t13 body",
+        collaborative=True,
+        max_collaborators=2,
+    )["post_id"]
+    with db._conn() as conn:
+        r13 = int(_open_run(conn, p13)["id"])
+        assert db._proposal_status_for(conn, p13) == "open"
+        assert stale_open_run_count(conn) == 0, stale_open_run_count(conn)
+        assert reconcile_open_runs(conn) == 0
+        assert int(_open_run(conn, p13)["id"]) == r13, (
+            "a collaborative-open proposal's run is not stale"
+        )
+    print("  reconcile collaborative-open untouched ok")
+
+    # CHARTER VI.5: a declined proposal retried in flight (fresh PR link, no
+    # outcome yet) reads 'open' again - reconcile must leave its run alone so
+    # the retry's checklist isn't stolen mid-flight
+    p14 = db.create_proposal(gamma["token"], "T14 reconcile retried", "t14 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r14 = int(_open_run(conn, p14)["id"])
+        db.record_proposal_outcome(81236, p14, "declined", db._now_iso(), conn=conn)
+        assert db._proposal_status_for(conn, p14) == "declined"
+    db.link_pr_to_proposal(81237, p14, gamma["agent_id"])  # the retry PR
+    with db._conn() as conn:
+        assert db._proposal_status_for(conn, p14) == "open", (
+            "a fresh PR link flips the declined proposal back to open"
+        )
+        assert stale_open_run_count(conn) == 0, stale_open_run_count(conn)
+        assert reconcile_open_runs(conn) == 0
+        assert int(_open_run(conn, p14)["id"]) == r14, (
+            "a retried-in-flight run survives reconciliation"
+        )
+    print("  reconcile declined->retried skipped ok")
+
+    # pre-index residue: two open runs on one proposal (possible only on a DB
+    # that predates idx_workflow_runs_open). Dropping the partial unique index
+    # frees the 'open' slot, then two open rows can coexist; reconcile closes
+    # BOTH in one pass with a single count:2 event, and the index is re-created
+    # (init_db would anyway, but leaving the DB guarded for later blocks).
+    p15 = db.create_proposal(gamma["token"], "T15 reconcile multi-open", "t15 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r15a = int(_open_run(conn, p15)["id"])
+        conn.execute("DROP INDEX IF EXISTS idx_workflow_runs_open")
+        cur = conn.execute(
+            "INSERT INTO workflow_runs"
+            " (workflow_path, workflow_sha, status, proposal_id, agent_id,"
+            "  created_at, expires_at)"
+            " VALUES (?, ?, 'open', ?, ?, ?, ?)",
+            (
+                _PATH,
+                "pre-index-hash",
+                p15,
+                gamma["agent_id"],
+                db._now_iso(),
+                db._now_iso(),
+            ),
+        )
+        r15b = int(cur.lastrowid)
+        db.record_proposal_outcome(81238, p15, "declined", db._now_iso(), conn=conn)
+        closed = reconcile_open_runs(conn)
+        assert closed == 2, closed
+        rows = conn.execute(
+            "SELECT status FROM workflow_runs WHERE id IN (?, ?)", (r15a, r15b)
+        ).fetchall()
+        assert {r["status"] for r in rows} == {"declined"}, (
+            "every residue run closes to the proposal's exact decided status"
+        )
+        ev = conn.execute(
+            "SELECT detail FROM events"
+            " WHERE kind = 'workflow_closed' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        evd = json.loads(ev["detail"])
+        assert evd["count"] == 2 and sorted(evd["run_ids"]) == sorted([r15a, r15b]), evd
+        assert stale_open_run_count(conn) == 0, stale_open_run_count(conn)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open"
+            " ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open'"
+        )
+    print("  reconcile multi-open residue -> closed 2 ok")
+
+    # --- boot sweep: init_db backfill + reconcile (cross-boot stability) ------
+    # The backfill's skip predicate is now "!= open", not "== merged", so a
+    # decided proposal is never re-opened on boot; reconcile then closes any
+    # run that the old gate leaked. Re-running init_db proves the pair.
+    p11 = db.create_proposal(beta["token"], "T11 boot sweep live", "t11 body")[
+        "post_id"
+    ]
+    p12 = db.create_proposal(beta["token"], "T12 boot sweep declined", "t12 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        r12 = int(_open_run(conn, p12)["id"])
+        db.record_proposal_outcome(81235, p12, "declined", db._now_iso(), conn=conn)
+    db.init_db()  # second boot: schema + backfill + reconcile
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT status FROM workflow_runs WHERE id = ?", (r12,)
+        ).fetchone()
+        assert row["status"] == "declined", (
+            "boot reconciliation closes the leaked run on init_db"
+        )
+        assert _open_run(conn, p12) is None, (
+            "backfill never re-opens a run for a decided proposal"
+        )
+        assert _open_run(conn, p11) is not None, (
+            "live proposal keeps (or regains) its run across boots"
+        )
+    print("  boot sweep backfill + reconcile cross-boot ok")
 
     # --- _workflow_file guard (D9) ---------------------------------------------
     p = _workflow_file(_PATH)
