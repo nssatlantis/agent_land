@@ -4,7 +4,6 @@ Covers: knob defaults, invalid PR rejected, branch disabled, sandbox missing.
 Split from test_ci_branch_runner.py for harness parallelism.
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -18,7 +17,6 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import db  # noqa: E402
-import events  # noqa: E402
 import server.ci_runner as ci_runner  # noqa: E402
 from tests._setup import config  # noqa: E402
 
