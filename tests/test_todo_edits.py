@@ -5,6 +5,7 @@ into the todo_edits table, so a destructive wipe is recoverable and
 auditable.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -141,6 +142,76 @@ def main():
         edits = db._todo_edits_for(conn, pid5)
     assert edits == [], "untouched proposal should have no edits"
     print("  untouched proposal has no edits: ok")
+
+    # -- 9. New rows store only the after side, as compact JSON ------------
+    pid7 = db.create_proposal(alpha["token"], "Compact", "Body.")["post_id"]
+    db.set_todos_for_post(
+        alpha["token"], pid7, [{"title": "L1", "items": [{"text": "A"}]}]
+    )
+    db.set_todos_for_post(
+        alpha["token"],
+        pid7,
+        [
+            {"title": "L1", "items": [{"text": "A"}, {"text": "B"}]},
+            {"title": "L2", "items": []},
+        ],
+    )
+    with db._conn() as conn:
+        raw = conn.execute(
+            "SELECT old_lists, new_lists FROM todo_edits WHERE post_id = ? ORDER BY id",
+            (pid7,),
+        ).fetchall()
+    assert len(raw) == 2
+    for row in raw:
+        assert row["old_lists"] == "", (
+            "new-format row stores the '' sentinel, not a second snapshot"
+        )
+        expected = json.dumps(json.loads(row["new_lists"]), separators=(",", ":"))
+        assert row["new_lists"] == expected, (
+            "new_lists stored without separator whitespace (compact JSON)"
+        )
+    with db._conn() as conn:
+        edits = db._todo_edits_for(conn, pid7)
+    assert len(edits) == 2
+    assert edits[0]["old_lists"] == [], "first edit before side derives to []"
+    assert edits[1]["old_lists"] == edits[0]["new_lists"], (
+        "derived before side equals the previous edit's after side"
+    )
+    assert edits[1]["new_lists"][0]["items"][-1]["text"] == "B"
+    assert edits[1]["new_lists"][1]["title"] == "L2"
+    print("  compact rows reconstruct the full before/after trail: ok")
+
+    # -- 10. Mixed-era chains: legacy rows keep their own snapshot ----------
+    pid8 = db.create_proposal(alpha["token"], "Mixed era", "Body.")["post_id"]
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO todo_edits (post_id, editor_agent_id, old_lists, new_lists)"
+            " VALUES (?, ?, ?, ?)",
+            (
+                pid8,
+                alpha["agent_id"],
+                "[]",
+                json.dumps([{"title": "Legacy", "items": [{"text": "L"}]}]),
+            ),
+        )
+    # a real mutation then writes the compact format on top of the legacy row
+    db.set_todos_for_post(
+        alpha["token"],
+        pid8,
+        [{"title": "Legacy", "items": [{"text": "L"}, {"text": "L2"}]}],
+    )
+    with db._conn() as conn:
+        edits = db._todo_edits_for(conn, pid8)
+        batch = db._todo_edits_batch(conn, [pid8])
+    assert len(edits) == 2
+    assert edits[0]["old_lists"] == [], "legacy first row keeps its [] snapshot"
+    assert edits[0]["new_lists"][0]["title"] == "Legacy"
+    assert edits[1]["old_lists"] == edits[0]["new_lists"], (
+        "compact before side derives from the legacy row's after side"
+    )
+    assert edits[1]["new_lists"][0]["items"][-1]["text"] == "L2"
+    assert batch[pid8] == edits, "batch reader reconstructs the same trail"
+    print("  mixed legacy/compact chains reconstruct correctly: ok")
 
     print("\ntest_todo_edits: all assertions passed")
 
