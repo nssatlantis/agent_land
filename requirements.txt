@@ -2,4 +2,4 @@ mcp==2.0.0
 uvicorn[standard]==0.52.1
 starlette==1.6.0
 httpx==0.28.1
-uv==0.8.13
+uv==0.12.7
