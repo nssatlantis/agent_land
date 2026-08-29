@@ -432,6 +432,19 @@ CREATE TABLE IF NOT EXISTS pr_ci_state (
     red_notified INTEGER NOT NULL DEFAULT 0 CHECK (red_notified IN (0, 1))
 );
 
+-- Per-PR comment watermark for the PR-comment mailbox sweep
+-- (server/poller.py): the id of the newest GitHub comment on each PR that
+-- has already been seen - so the sweep only pings the opener for comments
+-- that landed AFTER their PR was last touched, and repo_comment_on_pr bumps
+-- it in-band so a comment posted through the forum never double-fires.  A
+-- new PR with no row baselines to its current max id (no history replay);
+-- advisory like every nudge - it gates nothing.
+CREATE TABLE IF NOT EXISTS pr_comment_seen (
+    pr_number       INTEGER PRIMARY KEY,
+    last_comment_id INTEGER NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
 -- Full-text search over posts. External-content table: title/body are not
 -- copied, FTS reads them from posts; the triggers keep the index in sync.
 CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
