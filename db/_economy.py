@@ -352,6 +352,65 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
     }
 
 
+def _runway_estimate(
+    flows_7d: dict,
+    treasury_quarters: int,
+    *,
+    enabled: bool,
+) -> dict:
+    """The treasury runway gauge: how long the treasury lasts at the
+    trailing 7-day net burn. Mints count as income and burns as expense
+    (the user-authored decision), joined by the organic payouts/returns so
+    the number reflects the true seven-day net drain. Purely advisory -
+    observability over /economy, it never touches payout behavior.
+
+    Status semantics (degrade-silently - a weird overview is never allowed
+    to break /economy):
+      - disabled: the gauge is off (FORUM_ECONOMY_RUNWAY=0) or the economy
+        is in mint-on-earn mode (no treasury cliff to forecast).
+      - idle: no net burn in the window (income >= expense) - nothing to
+        run out of; days is None rather than a bogus huge number.
+      - exhausted: the treasury is already empty.
+      - ok: net burn > 0 with a funded treasury - days is the estimate.
+    """
+    if not enabled:
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "days": None,
+            "net_burn_7d_quarters": 0,
+            "in_7d_quarters": 0,
+            "out_7d_quarters": 0,
+        }
+    income = (
+        flows_7d.get("minted_quarters", 0)
+        + flows_7d.get("fees_in_quarters", 0)
+        + flows_7d.get("forfeit_intake_quarters", 0)
+        + flows_7d.get("spend_intake_quarters", 0)
+        + flows_7d.get("transfer_intake_quarters", 0)
+        + flows_7d.get("payout_returns_in_quarters", 0)
+    )
+    expense = flows_7d.get("burned_quarters", 0) + flows_7d.get(
+        "payouts_out_quarters", 0
+    )
+    net_burn = expense - income
+    base = {
+        "enabled": True,
+        "net_burn_7d_quarters": net_burn,
+        "in_7d_quarters": income,
+        "out_7d_quarters": expense,
+    }
+    if net_burn <= 0:
+        return {**base, "status": "idle", "days": None}
+    if treasury_quarters <= 0:
+        return {**base, "status": "exhausted", "days": None}
+    # Net burn over 7 days annualised to a per-day rate; credits are
+    # treasury_quarters/4. Round down so the estimate is conservative.
+    per_day = net_burn / 7.0
+    days = int((treasury_quarters / 4.0) / per_day) if per_day > 0 else None
+    return {**base, "status": "ok", "days": days}
+
+
 def _fmt(quarters: int) -> str:
     from db._credits import format_credits
 
@@ -479,6 +538,16 @@ def economy_overview() -> dict:
             }
 
         supply_q = totals["s"]
+        try:
+            runway = _runway_estimate(
+                windows["week"],
+                treasury_q,
+                enabled=bool(config.ECONOMY_RUNWAY and config.TREASURY_FUNDS_PAYOUTS),
+            )
+        except (
+            Exception
+        ):  # domain:degrade-silently - a runway hiccup never breaks /economy
+            runway = _runway_estimate({}, 0, enabled=False)
         return {
             "entry_count": totals["n"],
             "total_supply_quarters": supply_q,
@@ -496,8 +565,12 @@ def economy_overview() -> dict:
             "flows": windows,
             "top_holders": holders,
             "checkpoint": checkpoint,
+            "runway": runway,
             "config": {
                 "funds_payouts": bool(config.TREASURY_FUNDS_PAYOUTS),
+                "runway_enabled": bool(
+                    config.ECONOMY_RUNWAY and config.TREASURY_FUNDS_PAYOUTS
+                ),
                 "tx_fee_percent": config.TX_FEE_PERCENT,
                 "daily_admin_cap_credits": config.ADMIN_MINT_DAILY_CAP_CREDITS,
                 "checkpoint_seconds": config.ECONOMY_CHECKPOINT_SECONDS,
