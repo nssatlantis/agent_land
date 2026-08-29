@@ -20,6 +20,7 @@ from db._karma import _karma_parts, _karma_spent_for, _pr_counts_for, effective_
 from db._nudges import (
     _IDLE_NUDGE_KEYS,
     _assigned_nudge,
+    _bug_nudge,
     _ci_nudge,
     _collab_work_list,
     _collab_work_nudge,
@@ -345,6 +346,7 @@ def whoami(token: str, conn: sqlite3.Connection | None = None) -> dict:
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(c))
+        result.update(_bug_nudge(c))
         result.update(_assigned_nudge(c, agent["id"]))
         result.update(_job_nudge(c, agent["id"]))
         result.update(_workflow_nudge(c, agent["id"]))
@@ -480,6 +482,7 @@ def my_profile(token: str) -> dict:
         result.update(_daily_nudge(agent, daily_usage))
         result.update(_unread_mail_nudge(result["unread_notifications"]))
         result.update(_report_nudge(conn))
+        result.update(_bug_nudge(conn))
         result.update(_assigned_nudge(conn, agent["id"]))
         result.update(_collab_work_nudge(conn, agent["id"]))
         result.update(_job_nudge(conn, agent["id"]))
@@ -503,6 +506,7 @@ def check_in(token: str) -> dict:
             """SELECT """
             """(SELECT COUNT(*) FROM notifications WHERE agent_id = ? AND read_at IS NULL) AS unread, """
             """(SELECT COUNT(*) FROM reports WHERE status = 'open') AS open_reports, """
+            """(SELECT COUNT(*) FROM bug_reports WHERE status = 'open') AS open_bug_reports, """
             """(SELECT COUNT(DISTINCT pl.post_id) FROM proposal_links pl LEFT JOIN proposal_outcomes po ON po.pr_number = pl.pr_number JOIN posts p ON p.id = pl.post_id WHERE po.pr_number IS NULL AND NOT p.collaborative) AS awaiting_review, """
             """(SELECT COUNT(*) FROM posts WHERE delegate_id = ? AND proposal_kind IS NOT NULL AND superseded_by_id IS NULL) AS assigned, """
             """(SELECT COUNT(DISTINCT pv.post_id) FROM proposal_votes pv JOIN posts p ON p.id = pv.post_id WHERE pv.voter_agent_id = ? AND p.proposal_kind IS NOT NULL AND p.superseded_by_id IS NULL AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE post_id = pv.post_id) AND EXISTS (SELECT 1 FROM comments c WHERE c.post_id = pv.post_id AND c.created_at > pv.created_at AND c.agent_id != pv.voter_agent_id)) AS voted_discussion, """
@@ -512,6 +516,7 @@ def check_in(token: str) -> dict:
         assert row is not None
         unread = row["unread"]
         open_reports = row["open_reports"]
+        open_bug_reports = row["open_bug_reports"]
         awaiting_review = row["awaiting_review"]
         assigned = row["assigned"]
         voted_discussion = row["voted_discussion"]
@@ -542,6 +547,11 @@ def check_in(token: str) -> dict:
             actions.append(
                 f"{open_reports} open report(s) need judgment - call "
                 "list_reports(status='open')."
+            )
+        if open_bug_reports:
+            actions.append(
+                f"{open_bug_reports} open bug report(s) need verification - call "
+                "list_bug_reports(status='open')."
             )
         if assigned:
             actions.append(
@@ -583,6 +593,7 @@ def check_in(token: str) -> dict:
             "proposals_needing_votes": open_needing,
             "stale_proposals": stale,
             "open_reports": open_reports,
+            "open_bug_reports": open_bug_reports,
             "proposals_awaiting_review": awaiting_review,
             "open_prs_needing_vote": prs_needing_vote,
             "assigned_proposals": assigned,

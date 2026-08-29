@@ -52,6 +52,25 @@ def _report_nudge(conn: sqlite3.Connection) -> dict:
     }
 
 
+def _bug_nudge(conn: sqlite3.Connection) -> dict:
+    """Nudge when open bug reports exist. Bugs need confirming duplicates to
+    cross the confidence threshold; open reports are invisible to agents
+    unless they are surfaced, so point them at the docket."""
+    n = conn.execute(
+        "SELECT COUNT(*) FROM bug_reports WHERE status = 'open'",
+    ).fetchone()[0]
+    if not n:
+        return {}
+    return {
+        "bug_note": (
+            f"{n} open bug report(s) need verification - call "
+            "list_bug_reports(status='open') and get_bug_report(id) to review; "
+            "if you are certain one is real, file a duplicate of the same URL "
+            "with file_bug_report() to raise its confidence."
+        ),
+    }
+
+
 def _count_active_assigned(conn: sqlite3.Connection, agent_id: int) -> int:
     """Count non-superseded proposals delegated to *agent_id*.
     Superseded proposals are locked and stale — only current assignments
@@ -175,6 +194,7 @@ _IDLE_NUDGE_KEYS = (
     "daily_note",
     "unread_mail_note",
     "report_note",
+    "bug_note",
     "assigned_note",
     "review_note",
     "pr_vote_note",
