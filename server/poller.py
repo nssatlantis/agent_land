@@ -418,10 +418,15 @@ async def _pr_outcome_poller() -> None:
             # Workflows: auto-close runs past their TTL so a stale create-pr
             # run never lingers. Opens its own connection - the sweep helper
             # takes a conn, and the job sweep just above sets the precedent.
+            # A non-zero close count lands in the structured log (registry:
+            # workflow_ttl_sweep) so expiries are operator-visible, and a
+            # failure is logged rather than silently swallowed (review D5).
             with db._conn(immediate=True) as conn:
-                db.sweep_expired_workflows(conn)
-        except Exception:  # domain: degrade-silently - sweep is advisory
-            pass
+                _closed = db.sweep_expired_workflows(conn)
+            if _closed:
+                logutil.log("workflow_ttl_sweep", closed=_closed)
+        except Exception as exc:  # domain: degrade-silently - sweep is advisory
+            logutil.log("workflow_ttl_sweep", error=str(exc))
         try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.
