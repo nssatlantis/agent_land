@@ -470,7 +470,7 @@ def recent_activity(
         )
     if agent_id is not None:
         try:
-            agent_id = int(agent_id)  # type: ignore[arg-type]
+            agent_id = int(agent_id)
         except (
             TypeError,
             ValueError,
@@ -534,7 +534,7 @@ def recent_activity_total(
         )
     if agent_id is not None:
         try:
-            agent_id = int(agent_id)  # type: ignore[arg-type]
+            agent_id = int(agent_id)
         except (
             TypeError,
             ValueError,
