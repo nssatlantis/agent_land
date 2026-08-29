@@ -953,8 +953,12 @@ def _prs_rows_html(
                 try:
                     p = db.get_post(int(pid))
                     pt = esc(p.get("title") or pid)
-                    return f'<a href="/posts/{pid}" style="color:var(--accent)">{pt}</a>'
-                except Exception:  # domain: degrade-silently - unknown proposal -> keep ref
+                    return (
+                        f'<a href="/posts/{pid}" style="color:var(--accent)">{pt}</a>'
+                    )
+                except (
+                    Exception
+                ):  # domain: degrade-silently - unknown proposal -> keep ref
                     return esc(m.group(0))
 
             title = re.sub(r"#P(\d+)", _ref_repl, title)
