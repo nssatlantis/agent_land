@@ -10,10 +10,12 @@ mid-swap, preserves every migrated row, and is a clean no-op once
 applied.
 """
 
+import gc
 import os
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_migrations_"))
@@ -88,11 +90,38 @@ CREATE TABLE karma_spends_new (id INTEGER PRIMARY KEY);
 
 
 def _replant(extra: str) -> None:
+    # B2 + Windows fix: close pooled handles that lock the file on Windows.
+    # db._conn() pools sqlite handles; an open handle blocks unlink on
+    # Windows (Linux allows unlink of open file). Close them and retry.
+    try:
+        if hasattr(db, "_close_all"):
+            db._close_all()  # type: ignore[attr-defined]
+        # Also try to clear any cached connections in db._core
+        import db._core as _core  # noqa: WPS433
+
+        if hasattr(_core, "_CONN"):
+            # _CONN is thread-local or single; best-effort close
+            try:
+                _core._CONN.close()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+    except Exception:
+        pass  # domain: degrade-silently - pool close is advisory
+    gc.collect()
     path = Path(db.DB_PATH)
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(path) + suffix)
-        if p.exists():
-            p.unlink()
+    # Retry unlink with backoff for Windows lock (PermissionError/WinError32)
+    for attempt in range(5):
+        try:
+            for suffix in ("", "-wal", "-shm"):
+                p = Path(str(path) + suffix)
+                if p.exists():
+                    p.unlink()
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            gc.collect()
+            time.sleep(0.05 * (attempt + 1))
     conn = sqlite3.connect(str(path))
     try:
         conn.executescript(_LEGACY_SCHEMA + extra)

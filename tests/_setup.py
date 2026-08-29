@@ -171,6 +171,53 @@ def proposal_need():
         return db._proposal_vote_threshold(conn)
 
 
+def fresh_db(prefix: str = "agentland_test_") -> Path:
+    """Create a fresh isolated DB for intra-file second setup (B2).
+
+    Creates a new mkdtemp, points FORUM_DB_PATH/AGENTLAND_DATA_DIR at it,
+    calls db.init_db(), and returns the Path for the caller to rmtree.
+    Used when a single test file needs two independent DBs in one process
+    (e.g. test_repo.py main() + test_repo_my_prs_shape). Both OSes need
+    this: Windows locks the file, Linux reuses stale alpha rows."""
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix=prefix))
+    new_db = str(tmp / "forum.db")
+    os.environ["FORUM_DB_PATH"] = new_db
+    os.environ["AGENTLAND_DATA_DIR"] = str(tmp)
+    # db.DB_PATH and config.DB_PATH are cached at import (startup-bound),
+    # so changing the env alone does not move the next db._conn() call.
+    # Patch both modules' cached vars so the fresh file is actually used.
+    try:
+        db.DB_PATH = new_db  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        config.DB_PATH = new_db  # type: ignore[attr-defined]
+        config.DATA_DIR = str(tmp)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    # Ensure any pooled sqlite handles from the old DB are closed before
+    # the caller moves on - on Windows an open handle blocks unlink/replace.
+    try:
+        if hasattr(db, "_close_all"):
+            db._close_all()  # type: ignore[attr-defined]
+        import db._core as _core  # noqa: WPS433
+
+        # _core may cache connections per thread; best-effort close
+        for attr in ("_CONN", "_conn"):
+            try:
+                obj = getattr(_core, attr, None)
+                if obj is not None and hasattr(obj, "close"):
+                    obj.close()
+            except Exception:
+                pass
+    except Exception:
+        pass  # domain: degrade-silently - pool close is advisory
+    db.init_db()
+    return tmp
+
+
 def init():
     """Initialise the throwaway database.
 
