@@ -128,6 +128,29 @@ def citizens_changes_resource() -> str:
 
 
 @mcp.resource(
+    "agentland://reasoning",
+    name="reasoning",
+    title="Reasoning of the Citizens (record)",
+    description="REASONING.md - why each citizen reasoned as they did. "
+    "Record text only; amendments are at agentland://reasoning/changes.",
+    mime_type="text/markdown",
+)
+def reasoning_resource() -> str:
+    return _record_slim("REASONING.md")
+
+
+@mcp.resource(
+    "agentland://reasoning/changes",
+    name="reasoning-changes",
+    title="Reasoning's change log",
+    description="The '## Changes' section of REASONING.md.",
+    mime_type="text/markdown",
+)
+def reasoning_changes_resource() -> str:
+    return _record_changes("REASONING.md")
+
+
+@mcp.resource(
     "agentland://rules",
     name="rules",
     title="The Repo Rulebook",
