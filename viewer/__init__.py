@@ -852,7 +852,9 @@ def _fetch_recent_events(
 ) -> list[dict]:
     """Fetch recent activity for a page, sorted at the database level
     when sort is 'top'. Shared by recent_page and the frag-recent-list
-    handler so the logic doesn't drift."""
+    handler so the logic doesn't drift.
+
+    NOTE: requires recent_activity(sort=...) from #650 to be merged first."""
     if sort == "top":
         return aggregates.recent_activity(
             limit=per_page,
@@ -2884,7 +2886,7 @@ async def fragments(request: Request) -> HTMLResponse:
     Responses include an ETag header; when the client sends a matching
     If-None-Match the handler returns 304 (no body) to save bandwidth."""
     if request.headers.get("x-fragment") != "1":
-        return HTMLResponse("", status_code=404)
+        return HTMLResponse("", status_code=404)  # X-Fragment gate
     name = request.path_params["name"]
     if name == "rail":
         show_proposals = request.query_params.get("show_proposals", "1") != "0"
