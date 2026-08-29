@@ -1003,3 +1003,16 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_proposal ON workflow_runs(proposal_
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_pr ON workflow_runs(pr_number);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_sha ON workflow_runs(workflow_path, workflow_sha);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_agent_status ON workflow_runs(agent_id, status);
+-- Start-race guard (review #5): at most one OPEN run per (workflow_path,
+-- proposal_id). start_workflow uses INSERT OR IGNORE against this partial
+-- UNIQUE index so two concurrent starts cannot double-insert an open run
+-- (the old SELECT-then-INSERT had a TOCTOU window). Declined/closed/merged
+-- runs don't collide - the partial predicate only constrains 'open'.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
+    ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open';
+-- Gate/lazy-restart hot path (review #4): the require_workflow_block lookups
+-- filter on workflow_path + proposal_id + status; this composite serves them
+-- with a covering index instead of the per-row scans the single-column
+-- indexes left behind.
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_proposal_status
+    ON workflow_runs(workflow_path, proposal_id, status);
