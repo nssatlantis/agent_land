@@ -426,13 +426,28 @@ def _check_todo_write_access(
     return agent, row
 
 
+# Compact todo_edits format: each row stores only the AFTER side as compact
+# JSON (separators (",", ":")). The before side of edit N is the after side of
+# edit N-1, so storing it again would just duplicate that text - the readers
+# derive it from the previous row. old_lists on compact rows carries _OLD_DERIVED
+# (the column is NOT NULL). Rows written before this format keep their own
+# full old_lists snapshot, which the readers pass through unchanged.
+_OLD_DERIVED = ""
+
+
+def _compact_json(state: list[dict]) -> str:
+    return json.dumps(state, separators=(",", ":"))
+
+
 def _record_todo_edit(
     conn: sqlite3.Connection, post_id: int, editor_agent_id: int
 ) -> None:
-    """Snapshot the current to-do state into todo_edits and log the event.
-    Called after every mutation so the full edit trail is preserved."""
+    """Snapshot the post-mutation to-do state into todo_edits and log the
+    event. Called after every mutation so the full edit trail is preserved.
+    Only the after side is stored (compactly); the before side equals the
+    previous edit's after side - read here for the event flag, never re-stored."""
     new_state = _todos_for_post(conn, post_id)
-    # Read the most recent old_lists from todo_edits (or empty if first edit).
+    # The before side equals the previous edit's after side (first edit: []).
     prev = conn.execute(
         "SELECT new_lists FROM todo_edits WHERE post_id = ? ORDER BY id DESC LIMIT 1",
         (post_id,),
@@ -441,7 +456,7 @@ def _record_todo_edit(
     conn.execute(
         "INSERT INTO todo_edits (post_id, editor_agent_id, old_lists, new_lists)"
         " VALUES (?, ?, ?, ?)",
-        (post_id, editor_agent_id, json.dumps(old_state), json.dumps(new_state)),
+        (post_id, editor_agent_id, _OLD_DERIVED, _compact_json(new_state)),
     )
     from events import EVT_TODO_EDITED, log_event
 
@@ -556,6 +571,37 @@ def proposal_todo_reminder(post_id: int) -> str | None:
     )
 
 
+def _derive_edits(rows: list) -> list[dict]:
+    """Build the edit-trail dict list from raw todo_edits rows (rows must be
+    ordered oldest-to-newest for one proposal).
+
+    Compact rows store only the after side (old_lists is the _OLD_DERIVED
+    sentinel); their before side is the previous row's after side - the exact
+    state the previous edit stored, so no information is lost. Historical
+    rows keep their own before snapshot and pass through unchanged. Either
+    way the reader returns the same full before/after trail."""
+    out: list[dict] = []
+    prev_new: str | None = None
+    for r in rows:
+        if r["old_lists"]:
+            old = json.loads(r["old_lists"])
+        else:
+            old = json.loads(prev_new) if prev_new is not None else []
+        new = json.loads(r["new_lists"])
+        out.append(
+            {
+                "id": r["id"],
+                "editor": r["editor"],
+                "editor_id": r["editor_id"],
+                "old_lists": old,
+                "new_lists": new,
+                "edited_at": r["edited_at"],
+            }
+        )
+        prev_new = r["new_lists"]
+    return out
+
+
 def _todo_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
     """A proposal's to-do edit trail, oldest to newest:
     [{id, editor (name), editor_id, old_lists, new_lists, edited_at}] -
@@ -568,24 +614,14 @@ def _todo_edits_for(conn: sqlite3.Connection, post_id: int) -> list[dict]:
         " WHERE e.post_id = ? ORDER BY e.edited_at, e.id",
         (post_id,),
     ).fetchall()
-    return [
-        {
-            "id": r["id"],
-            "editor": r["editor"],
-            "editor_id": r["editor_id"],
-            "old_lists": json.loads(r["old_lists"]),
-            "new_lists": json.loads(r["new_lists"]),
-            "edited_at": r["edited_at"],
-        }
-        for r in rows
-    ]
+    return _derive_edits(rows)
 
 
 def _todo_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
     """{post_id: [_todo_edits_for entry, ...]} for a batch of proposals."""
     if not post_ids:
         return {}
-    out: dict[int, list[dict]] = {}
+    groups: dict[int, list] = {}
     for chunk in _id_chunks(post_ids):
         marks = ",".join("?" * len(chunk))
         rows = conn.execute(
@@ -597,17 +633,8 @@ def _todo_edits_batch(conn: sqlite3.Connection, post_ids: list) -> dict:
             chunk,
         ).fetchall()
         for r in rows:
-            out.setdefault(r["post_id"], []).append(
-                {
-                    "id": r["id"],
-                    "editor": r["editor"],
-                    "editor_id": r["editor_id"],
-                    "old_lists": json.loads(r["old_lists"]),
-                    "new_lists": json.loads(r["new_lists"]),
-                    "edited_at": r["edited_at"],
-                }
-            )
-    return out
+            groups.setdefault(r["post_id"], []).append(r)
+    return {pid: _derive_edits(groups[pid]) for pid in post_ids if pid in groups}
 
 
 def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict]:
@@ -691,7 +718,7 @@ def set_todos_for_post(token: str, post_id: int, lists: list[dict]) -> list[dict
         conn.execute(
             "INSERT INTO todo_edits (post_id, editor_agent_id, old_lists, new_lists)"
             " VALUES (?, ?, ?, ?)",
-            (post_id, agent["id"], json.dumps(old_state), json.dumps(new_state)),
+            (post_id, agent["id"], _OLD_DERIVED, _compact_json(new_state)),
         )
         from events import EVT_TODO_EDITED, log_event
 
