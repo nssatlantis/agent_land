@@ -109,6 +109,7 @@ def test_double_entry_invariants():
     cfg = overview["config"]
     assert set(cfg) == {
         "funds_payouts",
+        "runway_enabled",
         "tx_fee_percent",
         "daily_admin_cap_credits",
         "checkpoint_seconds",
@@ -1009,9 +1010,132 @@ def test_proposal_author_credit_cap():
     print("  proposal_author_credit_cap: ok")
 
 
+def test_treasury_runway_estimate():
+    # Active burn: net burn = payouts out - organic + mint/burn income/expense.
+    # Mints count as income, burns as expense (the authored decision). Days are
+    # rounded DOWN (conservative).
+    ok = economy._runway_estimate(
+        {
+            "minted_quarters": 0,
+            "burned_quarters": 0,
+            "fees_in_quarters": 20,
+            "forfeit_intake_quarters": 0,
+            "spend_intake_quarters": 0,
+            "transfer_intake_quarters": 0,
+            "payout_returns_in_quarters": 0,
+            "payouts_out_quarters": 280,
+        },
+        400,
+        enabled=True,
+    )
+    assert ok["status"] == "ok"
+    assert ok["enabled"] is True
+    assert ok["net_burn_7d_quarters"] == 260  # payouts 280 - income (fees) 20
+    assert ok["in_7d_quarters"] == 20
+    assert ok["out_7d_quarters"] == 280
+    assert ok["days"] == 2, ok  # (400/4) / (260/7) = 2.69 -> 2
+
+    # Mint counts as income: a mint covering the payout leaves no net burn -
+    # idle, and never a bogus huge runway figure.
+    idle = economy._runway_estimate(
+        {
+            "minted_quarters": 1000,
+            "burned_quarters": 0,
+            "fees_in_quarters": 0,
+            "forfeit_intake_quarters": 0,
+            "spend_intake_quarters": 0,
+            "transfer_intake_quarters": 0,
+            "payout_returns_in_quarters": 0,
+            "payouts_out_quarters": 800,
+        },
+        4000,
+        enabled=True,
+    )
+    assert idle["status"] == "idle"
+    assert idle["days"] is None, idle
+    assert idle["net_burn_7d_quarters"] == -200  # income 1000 - expense 800
+
+    # Burn counts as an expense (drains the treasury toward the cliff).
+    burn = economy._runway_estimate(
+        {
+            "minted_quarters": 0,
+            "burned_quarters": 500,
+            "fees_in_quarters": 0,
+            "forfeit_intake_quarters": 0,
+            "spend_intake_quarters": 0,
+            "transfer_intake_quarters": 0,
+            "payout_returns_in_quarters": 0,
+            "payouts_out_quarters": 0,
+        },
+        4000,
+        enabled=True,
+    )
+    assert burn["status"] == "ok"
+    assert burn["net_burn_7d_quarters"] == 500
+    assert burn["days"] == 14, burn  # (4000/4) / (500/7) = 14
+
+    # An empty treasury is exhausted - no days, but still flagged as draining.
+    empty = economy._runway_estimate(
+        {
+            "minted_quarters": 0,
+            "burned_quarters": 0,
+            "fees_in_quarters": 0,
+            "forfeit_intake_quarters": 0,
+            "spend_intake_quarters": 0,
+            "transfer_intake_quarters": 0,
+            "payout_returns_in_quarters": 0,
+            "payouts_out_quarters": 280,
+        },
+        0,
+        enabled=True,
+    )
+    assert empty["status"] == "exhausted"
+    assert empty["days"] is None
+
+    # Disabled gauge is inert and zeroed, whatever the flows say.
+    off = economy._runway_estimate(
+        {"payouts_out_quarters": 280},
+        400,
+        enabled=False,
+    )
+    assert off["status"] == "disabled"
+    assert off["enabled"] is False
+    assert off["days"] is None
+    assert off["net_burn_7d_quarters"] == 0
+    print("  treasury_runway_estimate: ok")
+
+
+def test_treasury_runway_overview_wiring():
+    overview = db.economy_overview()
+    r = overview["runway"]
+    assert set(r) == {
+        "enabled",
+        "status",
+        "days",
+        "net_burn_7d_quarters",
+        "in_7d_quarters",
+        "out_7d_quarters",
+    }
+    assert r["enabled"] is True
+    assert r["status"] in ("ok", "idle", "exhausted")
+
+    # Turning the knob off makes the gauge inert: disabled, zeroed, no days.
+    _shadow("ECONOMY_RUNWAY", 0)
+    try:
+        off = db.economy_overview()["runway"]
+        assert off["enabled"] is False
+        assert off["status"] == "disabled"
+        assert off["days"] is None
+    finally:
+        _restore()
+    print("  treasury_runway_overview_wiring: ok")
+
+
 def main():
     test_genesis_seeded_exactly_once()
     test_double_entry_invariants()
+    test_treasury_runway_estimate()
+    test_treasury_runway_overview_wiring()
     test_fee_ceiling_rounding()
     test_transfer_happy_charges_fee()
     test_transfer_to_treasury()
