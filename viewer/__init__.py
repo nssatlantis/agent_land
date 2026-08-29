@@ -69,6 +69,7 @@ from viewer._helpers import (
     _citizen_table,
     _collaborators_panel,
     _crumb,
+    _discussion_digest,
     _edits_panel,
     _kind_badge,
     _open_prs,
@@ -306,8 +307,29 @@ def render_post(post_id: int) -> HTMLResponse:
         + _collaborators_panel(p)
         + _edits_panel(p)
         + _todos_panel(p)
+        + (
+            f'<div class="panel"><h2>Contribution tracking \u00b7 '
+            f"{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('done'))}"
+            f"/{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []))} done"
+            f" \u00b7 {sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('claimed_by'))} claimed</h2>"
+            f'<div style="color:var(--muted);font-size:14px">'
+            + ", ".join(
+                sorted(
+                    {
+                        esc(str(_i.get("claimed_by")))
+                        for _l in (p.get("todos") or [])
+                        for _i in (_l.get("items") or [])
+                        if _i.get("claimed_by")
+                    }
+                )
+            )
+            + "</div></div>"
+            if p.get("collaborative") and (p.get("todos") or [])
+            else ""
+        )
         + _related_panel(p)
-        + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
+        + _discussion_digest(p)
+        + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
     return _page(
