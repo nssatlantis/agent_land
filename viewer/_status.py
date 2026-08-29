@@ -204,7 +204,93 @@ async def _timed(
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
 _TOP_TABLES_CACHE_SECONDS = 300
-_top_tables_cache: dict[str, tuple[float, list[tuple[str, int, int]]]] = {}
+_top_tables_cache: dict[
+    str, tuple[float, tuple[list[tuple[str, int, int, int, int, int]], int | None]]
+] = {}
+
+
+def _storage_table_rows(
+    conn: Any, limit: int = 10
+) -> tuple[list[tuple[str, int, int, int, int, int]], int | None]:
+    """Per-table storage facts for the Storage & tables panel.
+
+    Each entry is ``(name, rows, index_count, pages, overflow, bytes)``.
+    rows/index_count come from sqlite_master + COUNT(*) over the table;
+    pages/overflow/bytes come from dbstat (one row per b-tree page) with every
+    index's pages folded into the table it belongs to via sqlite_master, so a
+    table's footprint includes its indexes. (An earlier fold summed ``pageno``
+    - the b-tree page *positions* in the file - which is not a page count and
+    produced numbers like 59 million for a 693-row table.) Returns the entries
+    sorted by bytes then rows descending - a row-count fallback when dbstat is
+    absent - plus the total attributed b-tree bytes (None when dbstat is not
+    compiled into this Python build, so the panel degrades to row counts)."""
+    key = "storage_tables"
+    cached = _top_tables_cache.get(key)
+    if cached is not None:
+        ts, result = cached
+        if time.monotonic() - ts < _TOP_TABLES_CACHE_SECONDS:
+            return result
+    pages_map: dict[str, int] = {}
+    bytes_map: dict[str, int] = {}
+    overflow_map: dict[str, int] = {}
+    total_bytes: int | None = None
+    try:
+        attributed = conn.execute(
+            "SELECT COALESCE(sm.tbl_name, d.name) AS tname,"
+            " COUNT(*) AS pages,"
+            " SUM(d.pgsize) AS bytes,"
+            " SUM(CASE WHEN d.pagetype = 'overflow' THEN 1 ELSE 0 END) AS overflow"
+            " FROM dbstat d"
+            " LEFT JOIN sqlite_master sm ON d.name = sm.name"
+            " WHERE COALESCE(sm.tbl_name, d.name) NOT LIKE 'sqlite_%'"
+            " GROUP BY tname"
+        ).fetchall()
+        for r in attributed:
+            pages_map[r[0]] = int(r[1])
+            bytes_map[r[0]] = int(r[2] or 0)
+            overflow_map[r[0]] = int(r[3])
+        total_bytes = sum(bytes_map.values())
+    except (
+        Exception
+    ):  # domain: degrade-silently - dbstat unavailable degrades to row counts only
+        pass
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    tables: list[tuple[str, int, int, int, int, int]] = []
+    for r in rows:
+        tname = r[0]
+        try:
+            cnt = int(
+                conn.execute(f'SELECT COUNT(*) AS n FROM "{tname}"').fetchone()[0]
+            )
+        except Exception:  # domain: degrade-silently - one table's count failure must not break the status page
+            cnt = 0
+        try:
+            idx = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='index'"
+                    " AND tbl_name=? AND name NOT LIKE 'sqlite_autoindex_%'",
+                    (tname,),
+                ).fetchone()[0]
+            )
+        except Exception:  # domain: degrade-silently - index count is advisory only
+            idx = 0
+        tables.append(
+            (
+                tname,
+                cnt,
+                idx,
+                pages_map.get(tname, 0),
+                overflow_map.get(tname, 0),
+                bytes_map.get(tname, 0),
+            )
+        )
+    tables.sort(key=lambda t: (t[5], t[1]), reverse=True)
+    result = (tables[:limit], total_bytes)
+    _top_tables_cache[key] = (time.monotonic(), result)
+    return result
+
 
 _NETWORK_TIMEOUT_SECONDS = 10
 
@@ -759,75 +845,49 @@ async def status_page(request: Request) -> HTMLResponse:
             )
             + "</table>"
         )
-    else:
-        storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
-    storage_panel = _collapsible("Storage", storage_inner, "storage")
-
-    # --- top tables (storage) --------------------------------------------
-    def _top_tables() -> list[tuple[str, int, int]]:
-        """Top tables by row count plus dbstat page count when available (fold of #649)."""
-        key = "top_tables"
-        cached = _top_tables_cache.get(key)
-        if cached is not None:
-            ts, result = cached
-            if time.monotonic() - ts < _TOP_TABLES_CACHE_SECONDS:
-                return result
         try:
             with db._conn() as conn:
-                pages_map: dict[str, int] = {}
-                try:
-                    prow = conn.execute(
-                        "SELECT name, SUM(pageno) as pages FROM dbstat "
-                        "WHERE name NOT LIKE 'sqlite_%' GROUP BY name"
-                    ).fetchall()
-                    pages_map = {r["name"]: int(r["pages"] or 0) for r in prow}
-                except (
-                    Exception
-                ):  # domain: degrade-silently - dbstat unavailable degrades to pages 0
-                    pages_map = {}
-                rows = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                ).fetchall()
-                tables: list[tuple[str, int, int]] = []
-                for r in rows:
-                    tname = r["name"]
-                    try:
-                        cnt = conn.execute(
-                            f'SELECT COUNT(*) AS n FROM "{tname}"'
-                        ).fetchone()["n"]
-                    except Exception:  # domain: degrade-silently - one table's count failure must not break the status page
-                        cnt = 0
-                    pages = pages_map.get(tname, 0)
-                    tables.append((tname, int(cnt), int(pages)))
-                tables.sort(key=lambda x: x[1], reverse=True)
-                result = tables[:10]
-                _top_tables_cache[key] = (
-                    time.monotonic(),
-                    result,
-                )
-                return result
+                tables, btree_bytes = _storage_table_rows(conn)
         except (
             Exception
-        ):  # domain: degrade-silently - top tables never blocks status page
-            return []
-
-    _top_list = _top_tables()
-    if _top_list:
-        _top_rows = "".join(
-            f"<tr><td style='font-family:monospace'>{esc(name)}</td>"
-            f"<td style='text-align:right'>{cnt:,}</td>"
-            f"<td style='text-align:right'>{pages:,}</td></tr>"
-            for name, cnt, pages in _top_list
-        )
-        _top_inner = (
-            f"<table><tr><th>table</th><th style='text-align:right'>rows</th>"
-            f"<th style='text-align:right'>pages</th></tr>{_top_rows}</table>"
-            "<p style='color:var(--muted);font-size:12px'>Top 10 tables by row count + "
-            "page count (dbstat when available), cached 300s.</p>"
-        )
+        ):  # domain: degrade-silently - table stats never block the status page
+            tables, btree_bytes = [], None
+        if tables:
+            tbl_rows = "".join(
+                f"<tr><td style='font-family:monospace'>{esc(name)}</td>"
+                f"<td style='text-align:right'>{cnt:,}</td>"
+                f"<td style='text-align:right'>{idx}</td>"
+                f"<td style='text-align:right'>{pages:,}</td>"
+                f"<td style='text-align:right'>{overflow:,}</td>"
+                f"<td style='text-align:right'>"
+                f"{esc(_human_bytes(bytes_)) if bytes_ else '&mdash;'}</td></tr>"
+                for name, cnt, idx, pages, overflow, bytes_ in tables
+            )
+            cover_note = ""
+            if btree_bytes is not None:
+                if stats.get("size"):
+                    cover_note = (
+                        f" - table b-trees account for {esc(_human_bytes(btree_bytes))} "
+                        f"({btree_bytes / stats['size'] * 100:.0f}% of the db file)"
+                    )
+                else:
+                    cover_note = f" - table b-trees: {esc(_human_bytes(btree_bytes))}"
+            storage_inner += (
+                "<table><tr><th>table</th>"
+                "<th style='text-align:right'>rows</th>"
+                "<th style='text-align:right'>idx</th>"
+                "<th style='text-align:right'>pages</th>"
+                "<th style='text-align:right'>overflow</th>"
+                "<th style='text-align:right'>size</th></tr>"
+                + tbl_rows
+                + "</table>"
+                + "<p style='color:var(--muted);font-size:12px'>Top tables by size - rows is "
+                "COUNT(*); pages/overflow/size are dbstat b-tree pages with index pages "
+                f"attributed to their table{cover_note}, cached 300s.</p>"
+            )
     else:
-        _top_inner = "<p style='color:var(--muted)'>No table stats.</p>"
-    top_tables_panel = _collapsible("Top tables", _top_inner, "top-tables", open=False)
+        storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
+    storage_panel = _collapsible("Storage & tables", storage_inner, "storage")
 
     # --- process / runtime facts ------------------------------------------
     proc = by_name["process_info"]
@@ -891,7 +951,6 @@ async def status_page(request: Request) -> HTMLResponse:
         + github_panel
         + config_panel
         + storage_panel
-        + top_tables_panel
         + process_panel
         + bigfiles_panel
         + perf_panel

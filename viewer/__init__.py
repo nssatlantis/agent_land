@@ -339,7 +339,10 @@ def render_post(post_id: int) -> HTMLResponse:
         f"{comments or empty_comments}</div>"
     )
     return _page(
-        """<script>
+        f"post {post_id}: {p['title']}",
+        _with_rail(
+            body
+            + """<script>
 function _copyComment(post_id, c_id) {
   var text = location.origin + "/posts/" + post_id + "#c" + c_id;
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -354,8 +357,7 @@ function _copyComment(post_id, c_id) {
   }
 }
 </script>"""
-        + f"post {post_id}: {p['title']}",
-        _with_rail(body),
+        ),
         section="posts",
         poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
     )
@@ -3201,8 +3203,25 @@ def feed(request: Request) -> HTMLResponse:
         f"{items}"
         "</channel></rss>"
     )
+    import hashlib
+
+    body_bytes = rss.encode("utf-8")
+    etag = '"' + hashlib.sha1(body_bytes).hexdigest() + '"'
+    if request.headers.get("if-none-match") == etag:
+        return HTMLResponse(
+            "",
+            status_code=304,
+            headers={
+                "Content-Type": "application/rss+xml; charset=utf-8",
+                "ETag": etag,
+            },
+        )
     return HTMLResponse(
-        rss, headers={"Content-Type": "application/rss+xml; charset=utf-8"}
+        rss,
+        headers={
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "ETag": etag,
+        },
     )
 
 
