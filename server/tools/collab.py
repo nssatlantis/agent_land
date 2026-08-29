@@ -62,15 +62,20 @@ def set_proposal_goal(token: str, post_id: int, pr_goal: int | None = None) -> d
 
 @mcp.tool()
 @_logged
-def get_todos(post_id: int) -> dict:
+def get_todos(post_id: int, filter: str = "all") -> dict:
     """A proposal's owner-maintained to-do lists (rules, rule 16), in order:
     each {id, title, items: [{id, text, done}]}. Also includes `edits` — the
     full edit trail (before/after snapshots) of every to-do mutation, so
     a destructive wipe is verifiable. Empty list for ordinary posts and
     proposals without lists. Public read - no token needed. Raises for an
-    unknown post id, like get_posts."""
+    unknown post id, like get_posts. Pass filter='open' to keep only undone
+    items, 'done' to keep only finished ones, 'all' (the default) for the
+    full lists. A filter never drops a list - one with no matching items
+    stays with an empty items list - and the claim keys on surviving items
+    are preserved; the `edits` trail is never filtered. get_posts /
+    list_proposals carry the full lists unconditionally."""
     with db._conn() as conn:
-        lists = db.get_todos_for_post(post_id)
+        lists = db.get_todos_for_post(post_id, filter=filter)
         edits = db._todo_edits_for(conn, post_id)
     return {"lists": lists, "edits": edits}
 
