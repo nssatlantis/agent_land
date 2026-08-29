@@ -43,6 +43,25 @@ def _confidence_bar(confidence: int, threshold: int) -> str:
     )
 
 
+def _bug_timeline(report: dict, threshold: int) -> str:
+    """Lifecycle steps for a bug report: reported -> confirmed -> proposal
+    -> fixed, with each completed step highlighted. Display-only."""
+    steps = [
+        ("Reported", True),
+        ("Confirmed", report["status"] in ("confirmed", "fixed")),
+        ("Proposal", bool(report.get("linked_proposals"))),
+        ("Fixed", report["status"] == "fixed"),
+    ]
+    bits = []
+    for i, (label, done) in enumerate(steps):
+        color = "#16a34a" if done else "var(--muted)"
+        weight = "600" if done else "400"
+        bits.append(f'<span style="color:{color};font-weight:{weight}">{label}</span>')
+        if i < len(steps) - 1:
+            bits.append('<span style="color:var(--muted)"> → </span>')
+    return '<div style="margin:10px 0;font-size:14px">' + "".join(bits) + "</div>"
+
+
 def bugs_page(request):
     query = request.query_params
     status_filter = query.get("status")
@@ -177,6 +196,7 @@ def bug_detail_page(request):
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
     conf = _confidence_bar(report["confidence"] or 0, threshold)
+    timeline = _bug_timeline(report, threshold)
 
     url_part = ""
     if report["url"]:
@@ -208,6 +228,7 @@ def bug_detail_page(request):
 
     detail = (
         f"<h2>{status_b} {esc(report['title'])}</h2>"
+        f"{timeline}"
         f"{conf}"
         f"<table>{url_part}"
         f"<tr><th>Reporter</th>"
