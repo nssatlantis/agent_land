@@ -81,7 +81,7 @@ def _sync_pr_votes_passed_label(pr_number: int) -> None:
             label = _vote_label_name(t["up"], t["down"])
             color = _vote_label_color(t["net"], eligible)
             _github.add_pr_label(pr_number, label, color=color)
-    except Exception as exc:
+    except Exception as exc:  # domain: degrade-silently - GitHub label sync is enrichment, vote already committed
         import logutil
 
         logutil.log("pr_votes_label_sync_failed", pr_number=pr_number, error=str(exc))
@@ -216,9 +216,9 @@ def vote_on_pr(
                     f"no further approve votes are accepted."
                 )
             c.execute("RELEASE SAVEPOINT vote_sp")
-        except ForumError:
+        except ForumError:  # domain: fail-loudly - vote validation must propagate to caller
             raise
-        except Exception:
+        except Exception:  # domain: fail-loudly - DB error must propagate after rollback
             c.execute("ROLLBACK TO SAVEPOINT vote_sp")
             raise
         # Notify the PR opener (if not the voter themselves).
