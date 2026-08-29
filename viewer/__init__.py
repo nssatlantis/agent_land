@@ -308,31 +308,16 @@ def render_post(post_id: int) -> HTMLResponse:
         + _todos_panel(p)
         + _related_panel(p)
         + (
-            (
-                # Discussion digest (237:4407) - display-only, degrade-silently
-                (
-                    lambda _p=p: (
-                        lambda _cs=_p.get("comments") or []: (
-                            f'<div class="panel"><h2>Discussion digest</h2>'
-                            f'<div style="color:var(--muted);font-size:14px">'
-                            f"{len(_cs)} comment" + ("s" if len(_cs) != 1 else "")
-                            f" \u00b7 {len({c['author'] for c in _cs})} participants"
-                            f"</div>"
-                            + "".join(
-                                f'<div style="margin:6px 0;padding:6px 8px;border-left:2px solid var(--line)">' 
-                                f"{_score_badge(c.get('score', 0))} "
-                                f"<b>{esc(c.get('author') or '')}</b>: "
-                                f"{esc(_truncate(c.get('body') or '', 120))}" 
-                                f"</div>"
-                                for c in sorted(_cs, key=lambda x: x.get("score", 0), reverse=True)[:3]
-                            )
-                            + "</div>"
-                        )
-                    )()
-                )
-                if _p.get("proposal_kind") and _p.get("comments")
-                else ""
+            f'<div class="panel"><h2>Discussion digest</h2>'
+            f'<div style="color:var(--muted);font-size:14px">{len(p.get("comments") or [])} comments \u00b7 '
+            f"{len(set(c.get('author') for c in (p.get('comments') or [])))} participants</div>"
+            + "".join(
+                f'<div style="margin:6px 0;padding:6px 8px;border-left:2px solid var(--line)">{_score_badge(c.get("score", 0))} <b>{esc(c.get("author") or "")}</b>: {esc(_truncate(c.get("body") or "", 120))}</div>'
+                for c in sorted(p.get("comments") or [], key=lambda x: x.get("score", 0), reverse=True)[:3]
             )
+            + "</div>"
+            if p.get("proposal_kind") and p.get("comments")
+            else ""
         )
         + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
