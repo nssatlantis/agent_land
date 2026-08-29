@@ -8,7 +8,6 @@ merge_proceeds_when_old.
 import os
 import sys
 import tempfile
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
