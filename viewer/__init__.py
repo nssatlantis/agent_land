@@ -275,7 +275,7 @@ async def render_overview() -> str:
 def render_post(post_id: int) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
-    except db.ForumError:
+    except db.ForumError:  # domain: degrade-silently - missing post renders 404 page, never 500
         return _page(f"no post {post_id}", "<p>No such post.</p>")
     comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
@@ -357,7 +357,7 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
     soft-refresh fragment so the two can't drift."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - garbage page param means page 1
         page = 1
     kind = request.query_params.get("kind")
     if kind not in ("proposal", "small_fix", "none"):
