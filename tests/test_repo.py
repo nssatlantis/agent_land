@@ -1271,7 +1271,8 @@ def main():
         calls.append((method, path))
         if (
             method == "GET"
-            and path == "pulls?state=closed&sort=updated&direction=desc&per_page=50"
+            and path
+            == "pulls?state=closed&sort=updated&direction=desc&per_page=50&page=1"
         ):
             return [
                 {
@@ -1312,7 +1313,7 @@ def main():
     assert closed[0]["outcome"] == "merged" and closed[0]["merged_at"], closed
     assert (
         "GET",
-        "pulls?state=closed&sort=updated&direction=desc&per_page=50",
+        "pulls?state=closed&sort=updated&direction=desc&per_page=50&page=1",
     ) in calls
 
     try:
@@ -1527,9 +1528,12 @@ def main():
     real_request = github._core._request
     try:
         calls = []
-        github._core._request = lambda method, path, body=None, ok_404=False: (
+
+        def _closed_mock(method, path, body=None, ok_404=False):
             calls.append((method, path))
-            or [
+            if "&page=2" in path:
+                return []
+            return [
                 {
                     "number": 5,
                     "title": "t",
@@ -1549,11 +1553,19 @@ def main():
                     "body": "human-made, no trailer",
                 },
             ]
-        )
+
+        github._core._request = _closed_mock
         closed = github.recently_closed_prs(per_page=2)
         assert calls == [
-            ("GET", "pulls?state=closed&sort=updated&direction=desc&per_page=2")
-        ], "recently_closed_prs hits the closed-pulls endpoint with the page size"
+            (
+                "GET",
+                "pulls?state=closed&sort=updated&direction=desc&per_page=2&page=1",
+            ),
+            (
+                "GET",
+                "pulls?state=closed&sort=updated&direction=desc&per_page=2&page=2",
+            ),
+        ], "recently_closed_prs pages the closed-pulls endpoint until a short page"
         assert (
             closed[0]["number"] == 5
             and closed[0]["merged_at"] == "2026-08-11T00:00:00Z"
