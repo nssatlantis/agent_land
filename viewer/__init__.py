@@ -1291,6 +1291,13 @@ def _job_card(job: dict) -> str:
         meta_bits.append("OFFICIAL")
     if job["scope"]:
         meta_bits.append(f"scope: {esc(job['scope'])}")
+    if job.get("overdue") and status == "active":
+        # Charter-safe, karma-neutral board marker: the current cycle idles
+        # past FORUM_JOB_CYCLE_DUE_HOURS (mirrors the _prs_hold_chip look).
+        meta_bits.append(
+            "<span style='color:var(--warn);border:1px solid var(--warn);"
+            "border-radius:8px;padding:0 6px;font-size:12px'>overdue</span>"
+        )
     meta = " &middot; ".join(meta_bits)
     steps_html = "".join(
         "<li style='margin:2px 0"
