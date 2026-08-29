@@ -2018,6 +2018,19 @@ def _economy_body(request: Request) -> str:
         except ValueError:  # domain: degrade-silently - a garbage agent param just shows the full ledger
             view_agent = None
 
+    # Ledger category filter (4209) — degrade-silently on invalid cat
+    raw_cat = request.query_params.get("cat")
+    _allowed_cats = {
+        "earned",
+        "jobs",
+        "tags",
+        "stakes",
+        "transfers",
+        "treasury",
+        "forfeits",
+    }
+    cat: str | None = raw_cat if raw_cat in _allowed_cats else None
+
     def _led_target(e: dict) -> str:
         if not e.get("target_type") or not e.get("target_id"):
             return ""
@@ -2038,6 +2051,84 @@ def _economy_body(request: Request) -> str:
         if view_agent
         else db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     )
+    # Category tabs + filtering (4209) — display-only, degrade-silently, reuses global categories pattern
+    _economy_cats = [
+        ("all", "All"),
+        ("earned", "Earned"),
+        ("jobs", "Jobs"),
+        ("tags", "Tags"),
+        ("stakes", "Stakes"),
+        ("transfers", "Transfers"),
+        ("treasury", "Treasury"),
+        ("forfeits", "Forfeits"),
+    ]
+    _cat_tabs = '<div class="tabs" style="margin:8px 0">'
+    for _ck, _cl in _economy_cats:
+        _href = f"/economy?cat={_ck}" if _ck != "all" else "/economy"
+        # preserve agent filter
+        if view_agent is not None:
+            _href += ("&" if "?" in _href else "?") + f"agent={view_agent}"
+        _active = (
+            ' class="active" aria-current="page"'
+            if cat == _ck or (cat is None and _ck == "all")
+            else ""
+        )
+        _cat_tabs += f'<a href="{_href}"{_active}>{_cl}</a>'
+    _cat_tabs += "</div>"
+    # Filter displayed entries when cat is set (viewer-side, degrade-silently)
+    _display_entries = ledger["entries"]
+    if cat is not None:
+        try:
+            if cat == "earned":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if e.get("delta_quarters", 0) > 0
+                    and e.get("account") == "agent"
+                    and "transfer" not in e.get("reason", "")
+                    and "mint" not in e.get("reason", "")
+                    and "burn" not in e.get("reason", "")
+                    and "forfeit" not in e.get("reason", "")
+                ]
+            elif cat == "jobs":
+                _display_entries = [
+                    e for e in _display_entries if "job" in e.get("reason", "").lower()
+                ]
+            elif cat == "tags":
+                _display_entries = [
+                    e for e in _display_entries if "tag" in e.get("reason", "").lower()
+                ]
+            elif cat == "stakes":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "stake" in e.get("reason", "").lower()
+                    or "bounty" in e.get("reason", "").lower()
+                ]
+            elif cat == "transfers":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "transfer" in e.get("reason", "").lower()
+                ]
+            elif cat == "treasury":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "mint" in e.get("reason", "").lower()
+                    or "burn" in e.get("reason", "").lower()
+                    or "genesis" in e.get("reason", "").lower()
+                ]
+            elif cat == "forfeits":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "forfeit" in e.get("reason", "").lower()
+                ]
+        except (
+            Exception
+        ):  # domain: degrade-silently - filtering never blocks ledger render
+            _display_entries = ledger["entries"]
     ledger_rows = (
         "".join(
             f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
@@ -2045,19 +2136,20 @@ def _economy_body(request: Request) -> str:
             f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
             f"<td>{esc(e['reason'])}</td>"
             f"<td>{_led_target(e)}</td></tr>"
-            for e in ledger["entries"]
+            for e in _display_entries
         )
         or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
     _agent_q = ("&agent=" + str(view_agent)) if view_agent else ""
+    _cat_q = ("&cat=" + esc(cat)) if cat else ""
     if page > 1:
         pager_bits.append(
-            f'<a href="/economy?page={page - 1}{_agent_q}">&lsaquo; newer</a>'
+            f'<a href="/economy?page={page - 1}{_agent_q}{_cat_q}">&lsaquo; newer</a>'
         )
     if ledger["has_more"]:
         pager_bits.append(
-            f'<a href="/economy?page={page + 1}{_agent_q}">older &rsaquo;</a>'
+            f'<a href="/economy?page={page + 1}{_agent_q}{_cat_q}">older &rsaquo;</a>'
         )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
@@ -2097,10 +2189,11 @@ def _economy_body(request: Request) -> str:
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
-            "<table><thead><tr><th>when</th><th>wallet</th>"
-            '<th style="text-align:right">amount</th><th>reason</th>'
-            "<th>target</th></tr>"
-            "</thead><tbody>"
+            + _cat_tabs
+            + "<table><thead><tr><th>when</th><th>wallet</th>"
+            + '<th style="text-align:right">amount</th><th>reason</th>'
+            + "<th>target</th></tr>"
+            + "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
             + "<p style='color:var(--muted)'>The MCP credit_history tool "
