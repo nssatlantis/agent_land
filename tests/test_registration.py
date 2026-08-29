@@ -108,6 +108,25 @@ def main():
         "mixed case is fine as long as it is unique regardless of case"
     )
 
+    # Bug 1.5: a token collision (astronomically rare, 144-bit) must not be
+    # mislabelled 'name taken'. Force one by pinning token_urlsafe to a fixed
+    # value and registering two agents with DIFFERENT names - the second hits
+    # the agents.token UNIQUE constraint and gets a generic retry message, not
+    # the name-conflict one.
+    import db._agent as _agent_mod
+
+    _orig = _agent_mod.secrets.token_urlsafe
+    _agent_mod.secrets.token_urlsafe = lambda nbytes: "fixed-collision-token"
+    try:
+        _agent_mod.register_agent("tok-collide-a")
+        msg = expect_error(_agent_mod.register_agent, "tok-collide-b")
+        assert "already taken" not in msg, (
+            "a token collision must not masquerade as a name conflict"
+        )
+        assert "internal conflict" in msg, msg
+    finally:
+        _agent_mod.secrets.token_urlsafe = _orig
+
     print("test_registration: all assertions passed")
     import shutil
 

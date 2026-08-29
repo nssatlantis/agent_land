@@ -372,6 +372,17 @@ from db._text import (  # noqa: F401
     _reconcile_signature,
     _strip_terminal_signature,
 )
+
+# ── official workflows (per-file checklists) ───────────────────────────
+from db._workflow import (  # noqa: F401
+    close_workflow_for_pr,
+    close_workflow_for_proposal,
+    list_workflow_runs,
+    require_workflow_block,
+    restart_workflow,
+    start_workflow,
+    sweep_expired_workflows,
+)
 from events import log_event  # noqa: F401,E402
 
 # ── cross-package re-exports (keep internal callers working) ───────────

@@ -485,6 +485,19 @@ def link_pr_to_proposal(
             "VALUES (?, ?, ?)",
             (pr_number, post_id, agent_id),
         )
+        # P0-1: stamp the open create-pr run with the PR number so run history
+        # points at the exact PR that opened - the workflow_runs.pr_number
+        # column was previously never written. Best-effort; a missing run is
+        # fine (the gate auto-restarts one on demand).
+        try:
+            c.execute(
+                "UPDATE workflow_runs SET pr_number = ?"
+                " WHERE proposal_id = ? AND status = 'open'"
+                " AND workflow_path = 'workflows/create-pr.md'",
+                (pr_number, post_id),
+            )
+        except Exception:  # domain:degrade-silently - run stamp is optional enrichment
+            pass
 
 
 def proposal_for_pr(
@@ -678,9 +691,9 @@ def record_proposal_outcome(
             release_claims_for_agent(post_id, link["opened_by_agent_id"], conn=c)
         # Auto-check a to-do item bound to this PR (db.bind_todo_item_to_pr
         # / repo_propose_change's todo_item_id). On merge the item is ticked
-        # done and its binding cleared; on decline/close the stale binding is
-        # cleared so the item can be re-linked, but it stays undone. Only
-        # runs when a verdict is newly recorded (the early return above
+        # done and its binding kept for audit; on decline/close the stale
+        # binding is cleared so the item can be re-linked, but it stays undone.
+        # Only runs when a verdict is newly recorded (the early return above
         # absorbs repeats), so the tick fires exactly once per merge. The
         # PR opener is the natural editor for the trail; fall back to the
         # post author.
@@ -700,7 +713,7 @@ def record_proposal_outcome(
             )
             if status == "merged" and config.TODO_AUTO_TICK_ON_MERGE > 0:
                 c.execute(
-                    "UPDATE todo_items SET done = 1, pr_number = NULL"
+                    "UPDATE todo_items SET done = 1"
                     " WHERE id IN (SELECT ti.id FROM todo_items ti"
                     "  JOIN todo_lists tl ON tl.id = ti.list_id"
                     "  WHERE tl.post_id = ? AND ti.pr_number = ?)",
