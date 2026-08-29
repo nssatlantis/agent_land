@@ -1087,7 +1087,9 @@ def _collaborators_panel(p: dict) -> str:
         f"open PR{'' if limit == 1 else 's'} at a time "
         f"(RULES_TEXT rule 9a).</p>"
     )
-    return _collapsible(f"Collaborators \xb7 {total}", inner, "collaborators", open=False)
+    return _collapsible(
+        f"Collaborators \xb7 {total}", inner, "collaborators", open=False
+    )
 
 
 def _edits_panel(p: dict) -> str:
