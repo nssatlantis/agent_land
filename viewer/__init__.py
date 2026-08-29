@@ -2110,6 +2110,48 @@ async def _record_md(filename: str) -> str | None:
     return md
 
 
+_record_stamp_cache: dict = {}
+
+
+def _read_record_stamp(filename: str) -> str:
+    """The last commit that touched a record file, as a short HTML line:
+    'last commit <when> \u00b7 @<sha>' via git log -1 --format=%cI + %h - or ''
+    when git is absent, the file is uncommitted, or anything fails. Pure
+    enrichment: a failure just omits the line from the panel."""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cI%n%h", "--", filename],
+            cwd=str(db.REPO_DIR),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return ""
+        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            return ""
+        ts, sha = lines[0], lines[1]
+        return f"{_human_ts(ts)} <span style=\"font-family:monospace\">@{esc(sha)}</span>"
+    except Exception:  # domain: degrade-silently - stamp is optional enrichment
+        return ""
+
+
+async def _record_stamp(filename: str) -> str:
+    """The record page's 'last commit' line, on the same short TTL as
+    _record_md so auto-refresh stays cheap. Runs in a worker thread (this
+    loop also serves the MCP endpoint)."""
+    now = time.monotonic()
+    entry = _record_stamp_cache.get(filename)
+    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+        return entry["stamp"]
+    stamp = await asyncio.to_thread(_read_record_stamp, filename)
+    _record_stamp_cache[filename] = {"ts": now, "stamp": stamp}
+    return stamp
+
+
 async def _record_page(
     request: Request,
     title: str,
@@ -2124,7 +2166,13 @@ async def _record_page(
     of a 500 whenever the file cannot be read."""
     md = await _record_md(filename)
     if md:
-        panel = f'<div class="panel"><h2>{heading}</h2>{intro}{_markdown(md)}</div>'
+        stamp = await _record_stamp(filename)
+        stamp_html = (
+            f'<p class="meta" style="margin-top:2px">last commit {stamp}</p>'
+            if stamp
+            else ""
+        )
+        panel = f'<div class="panel"><h2>{heading}</h2>{intro}{stamp_html}{_markdown(md)}</div>'
     else:
         panel = (
             f'<div class="panel"><h2>{heading}</h2>'
