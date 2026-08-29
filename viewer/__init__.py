@@ -3262,7 +3262,8 @@ async def fragments(request: Request) -> HTMLResponse | RedirectResponse:
             try:
                 aid = int(request.query_params.get("agent_id", ""))
                 canonical = f"/agents/{aid}"
-            except (TypeError, ValueError):  # domain: degrade-silently - bad agent id -> no canonical
+            except (TypeError, ValueError):
+                # domain: degrade-silently - bad agent id -> no canonical
                 canonical = None
         if not canonical:
             return HTMLResponse("", status_code=404)
