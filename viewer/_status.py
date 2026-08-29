@@ -127,7 +127,7 @@ def _git_ok(args: list[str], cwd: str) -> bool:
             timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
         )
         return result.returncode == 0
-    except Exception:
+    except Exception:  # domain: degrade-silently - git check failure degrades to not-ok
         return False
 
 
