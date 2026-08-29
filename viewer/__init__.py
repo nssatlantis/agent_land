@@ -115,6 +115,7 @@ from viewer._utils import (
     _markdown,
     _parse_iso,
     _truncate,
+    _ts_or_dash,
     esc,
 )
 
@@ -2230,6 +2231,28 @@ async def workflows_page(request: Request) -> HTMLResponse:
     if not files:
         panel = '<div class="panel"><h2>Workflows</h2><p style="color:var(--muted)">No workflows found — workflows/*.md missing.</p></div>'
     else:
+        # Live config (review W5): read the real knobs so the header text
+        # never lies about which mode the server is actually running in.
+        try:
+            _enforce = int(config.WORKFLOW_ENFORCE)
+        except Exception:  # domain: degrade-silently - display only
+            _enforce = 1
+        try:
+            _ttl = int(config.WORKFLOW_TTL_SECONDS)
+        except Exception:  # domain: degrade-silently - display only
+            _ttl = 0
+        mode_text = "blocking" if _enforce > 0 else "advisory"
+        # Review W7: one query, then stamp each card with the newest run's
+        # status so a reader knows when this checklist last applied.
+        last_by_path: dict[str, dict] = {}
+        try:
+            with db._conn() as conn:
+                for _r in db.list_workflow_runs(conn):
+                    _p = _r.get("workflow_path") or ""
+                    if _p and _p not in last_by_path:
+                        last_by_path[_p] = _r
+        except Exception:  # domain: degrade-silently - footer is cosmetic
+            last_by_path = {}
         items = []
         for p in files:
             try:
@@ -2244,12 +2267,30 @@ async def workflows_page(request: Request) -> HTMLResponse:
             except OSError:  # domain: degrade-silently
                 title, desc = p.stem, ""
             href = f"/workflows/{p.stem}"
+            rel = f"workflows/{p.name}"
+            last = last_by_path.get(rel)
+            last_note = ""
+            if last:
+                when = _ts_or_dash(last.get("created_at"))
+                state = esc(last.get("status") or "")
+                last_note = (
+                    f'<br><span style="color:var(--muted)">last applied: '
+                    f"{state} · {when}</span>"
+                )
             items.append(
-                f'<div class="panel" style="margin-bottom:12px"><h3><a href="{href}">{esc(title)}</a></h3><p style="color:var(--muted);font-size:15px">{esc(desc)}</p><p><a href="{href}" style="color:var(--accent)">Read checklist →</a> &middot; <span style="color:var(--muted)">workflows/{esc(p.name)}</span> &middot; <a href="/workflows/{p.stem}" style="color:var(--muted)">view</a></p></div>'
+                f'<div class="panel" style="margin-bottom:12px"><h3><a href="{href}">{esc(title)}</a></h3><p style="color:var(--muted);font-size:15px">{esc(desc)}</p><p><a href="{href}" style="color:var(--accent)">Read checklist →</a> &middot; <span style="color:var(--muted)">{esc(rel)}</span> &middot; <a href="/workflows/{p.stem}" style="color:var(--muted)">view</a></p>{last_note}</div>'
             )
+        ttl_text = f" <code>FORUM_WORKFLOW_TTL_SECONDS={_ttl}</code>"
+        if _ttl > 0:
+            ttl_text += f" (runs auto-close ~{_ttl // 60}min after start)"
+        else:
+            ttl_text += " (runs never auto-expire)"
         panel = (
-            '<div class="panel"><h2>Workflows — official checklists</h2><p style="color:var(--muted);font-size:15px">Global, versioned in git, enforced when <code>FORUM_WORKFLOW_ENFORCE=1</code> (blocking) or advisory when <code>0</code>. Auto-started on <code>propose_for_discussion</code>, auto-closed on PR merged/declined/closed or <code>1h</code> TTL.</p></div>'
-            + "".join(items)
+            '<div class="panel"><h2>Workflows — official checklists</h2><p style="color:var(--muted);font-size:15px">Global, versioned in git, '
+            f"enforced when <code>FORUM_WORKFLOW_ENFORCE={_enforce}</code> ({mode_text})."
+            f"{ttl_text} Auto-started on "
+            "<code>propose_for_discussion</code>, auto-closed on PR "
+            "merged/declined/closed or TTL expiry.</p></div>" + "".join(items)
         )
     return _page("Workflows", _with_rail(panel), section="workflows")
 
@@ -2270,7 +2311,32 @@ async def workflow_detail_page(request: Request) -> HTMLResponse:
             section="workflows",
         )
     filename = f"workflows/{safe}.md"
-    md = await _record_md(filename)
+    # D9: resolve through db._workflow._workflow_file so a symlinked workflow
+    # file can never smuggle an arbitrary filesystem path into this read. An
+    # escaping or missing workflow renders the same read-only not-found page.
+    from db._workflow import _workflow_file
+
+    try:
+        _wf_path = _workflow_file(filename)
+    except db.ForumError:
+        # domain: degrade-silently - an escaping/symlink workflow name
+        # renders the read-only not-found page, never anything that reads
+        # outside workflows/.
+        _wf_path = None
+    if _wf_path is None:
+        return _page(
+            "Workflows",
+            _with_rail(
+                '<div class="panel"><h2>Not found</h2><p style="color:var(--muted)">Invalid workflow name.</p></div>'
+            ),
+            section="workflows",
+        )
+    try:
+        md = _wf_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        # domain: degrade-silently - an unreadable workflow file renders
+        # the not-found page; the workflows index stays intact.
+        md = None
     if md is None:
         return _page(
             "Workflows",
