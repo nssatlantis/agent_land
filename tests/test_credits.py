@@ -449,6 +449,34 @@ def test_history_category_filters():
         pass
 
 
+def test_history_target_name_only_for_agent_targets():
+    """A credit row whose target_id collides with a citizen's agent_id but
+    whose target_type is not 'agent' must NOT resolve a phantom
+    target_name (review 4430)."""
+    import db._credits as cr
+
+    agents, _ = _setup()
+    # beta's agent_id exists in the agents table and is used here as a
+    # NON-agent target id; without the target_type guard the LEFT JOIN
+    # would fabricate beta's name onto an unrelated "post" row.
+    with db._conn() as conn:
+        cr.mint(100, "admin_mint", admin="test", conn=conn)
+        assert cr.grant(
+            agents["gamma"]["agent_id"],
+            8,
+            "admin_adjust",
+            target_type="post",
+            target_id=agents["beta"]["agent_id"],
+            conn=conn,
+        )
+    rows = db.credit_history(limit=500)["entries"]
+    ours = [e for e in rows if e["reason"] == "admin_adjust"]
+    assert ours, "the grant row is public in the ledger"
+    assert all(e["target_name"] is None for e in ours), (
+        "non-agent targets never resolve a citizen name"
+    )
+
+
 def test_top_movers_shape():
     """The 7-day aggregate returns per-citizen earned/spent quarter sums,
     most active first, with names resolved (deleted-citizen marker when
@@ -626,6 +654,7 @@ def main():
     test_karma_stake_flow_unaffected()
     test_history_and_balances_shapes()
     test_history_category_filters()
+    test_history_target_name_only_for_agent_targets()
     test_top_movers_shape()
     test_events_under_own_categories()
     test_concurrent_spends_cannot_overspend()
