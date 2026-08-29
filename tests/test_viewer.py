@@ -17,6 +17,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402
+from viewer._events import _event_calendar  # noqa: E402
 from viewer import (  # noqa: E402
     _economy_body,
     _frag_path,
@@ -866,6 +867,22 @@ def test_storage_table_rows_degrades_when_dbstat_absent():
         assert pages == 0 and bytes_ == 0 and overflow == 0
 
 
+def test_event_calendar_renders_grid():
+    html = _event_calendar(
+        "2026-08",
+        {1: 5, 15: 2, 31: 0},
+        "&amp;kind=comment_created",
+        capped=False,
+    )
+    assert "cal-grid" in html, "calendar grid must render"
+    assert "2026-08-01" in html, "day cells link to date-filtered events"
+    assert (
+        "/events?date=2026-08-01&amp;kind=comment_created" in html
+    ), "active filters preserved on day links"
+    assert _event_calendar("not-a-month", {}, "", False) == ""
+    assert "cal-grid" in _event_calendar("2026-02", {}, "", False)
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -909,6 +926,7 @@ if __name__ == "__main__":
     test_record_page_amendments_view_swaps_body()
     test_record_page_toc_and_anchors()
     test_record_page_stamp_present()
+    test_event_calendar_renders_grid()
     test_storage_table_rows_counts_and_index_attribution()
     test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
     test_storage_table_rows_degrades_when_dbstat_absent()
