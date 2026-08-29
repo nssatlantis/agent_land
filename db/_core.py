@@ -1649,45 +1649,53 @@ def init_db() -> None:
         try:
             # This conn has no row_factory (plain tuples) - every other query
             # in init_db keys by index. start_workflow and our reads need
-            # sqlite3.Row keyed access, so switch it on for this last block;
-            # nothing after it uses the conn.
-            conn.row_factory = sqlite3.Row
-            from db._proposal_status import (
-                _proposal_status_for,
-                _proposal_superseded_by,
-            )
-            from db._workflow import start_workflow as _start_workflow
+            # sqlite3.Row keyed access, so switch it on for this last block
+            # and restore it in a finally (review D3). A separate connection
+            # would be a dead end: init_db still holds this conn's write
+            # transaction open while backfilling, so a second writer would
+            # busy-timeout (~5s) and silently no-op the backfill - precisely
+            # the failure this backfill exists to prevent.
+            _previous_factory = conn.row_factory
+            try:
+                conn.row_factory = sqlite3.Row
+                from db._proposal_status import (
+                    _proposal_status_for,
+                    _proposal_superseded_by,
+                )
+                from db._workflow import start_workflow as _start_workflow
 
-            _candidates = conn.execute(
-                "SELECT id, agent_id FROM posts"
-                " WHERE proposal_kind IN ('proposal', 'small_fix')"
-                " AND id NOT IN ("
-                "   SELECT proposal_id FROM workflow_runs"
-                "   WHERE workflow_path = 'workflows/create-pr.md'"
-                "   AND status = 'open'"
-                " )"
-            ).fetchall()
-            for _row in _candidates:
-                _pid = int(_row["id"])
-                _author = _row["agent_id"]
-                if _author is None:
-                    continue
-                try:
-                    if _proposal_status_for(conn, _pid) == "merged":
+                _candidates = conn.execute(
+                    "SELECT id, agent_id FROM posts"
+                    " WHERE proposal_kind IN ('proposal', 'small_fix')"
+                    " AND id NOT IN ("
+                    "   SELECT proposal_id FROM workflow_runs"
+                    "   WHERE workflow_path = 'workflows/create-pr.md'"
+                    "   AND status = 'open'"
+                    " )"
+                ).fetchall()
+                for _row in _candidates:
+                    _pid = int(_row["id"])
+                    _author = _row["agent_id"]
+                    if _author is None:
                         continue
-                except Exception:  # domain: degrade-silently - treat as openable
-                    pass
-                try:
-                    if _proposal_superseded_by(conn, _pid) is not None:
-                        continue
-                except Exception:  # domain: degrade-silently - treat as openable
-                    pass
-                try:
-                    _start_workflow(conn, "workflows/create-pr.md", _pid, int(_author))
-                except (
-                    Exception
-                ):  # domain: degrade-silently - one bad proposal must not block boot
-                    pass
+                    try:
+                        if _proposal_status_for(conn, _pid) == "merged":
+                            continue
+                    except Exception:  # domain: degrade-silently - treat as openable
+                        pass
+                    try:
+                        if _proposal_superseded_by(conn, _pid) is not None:
+                            continue
+                    except Exception:  # domain: degrade-silently - treat as openable
+                        pass
+                    try:
+                        _start_workflow(
+                            conn, "workflows/create-pr.md", _pid, int(_author)
+                        )
+                    except Exception:  # domain: degrade-silently - one bad proposal must not block boot
+                        pass
+            finally:
+                conn.row_factory = _previous_factory
         except (
             Exception
         ):  # domain: degrade-silently - workflows are enrichment; boot must not fail
