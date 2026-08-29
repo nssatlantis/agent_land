@@ -78,15 +78,24 @@ def _last_pr_for_item(post_id: int, item_id: int, edits: list[dict]) -> int | No
 
 
 def _main() -> int:
-    ap = argparse.ArgumentParser(description="Backfill pr_number on done todos cleared on merge.")
-    ap.add_argument("--post-id", type=int, default=None, help="only this proposal (default: all)")
-    ap.add_argument("--apply", action="store_true", help="write; without flag this is dry-run")
+    ap = argparse.ArgumentParser(
+        description="Backfill pr_number on done todos cleared on merge."
+    )
+    ap.add_argument(
+        "--post-id", type=int, default=None, help="only this proposal (default: all)"
+    )
+    ap.add_argument(
+        "--apply", action="store_true", help="write; without flag this is dry-run"
+    )
     args = ap.parse_args()
 
     repo_dir = _find_repo()
     _config = _import_config(repo_dir)
     if pathlib.Path(_config.DB_PATH).resolve().is_relative_to(repo_dir.resolve()):
-        print(f"ERROR: DB {_config.DB_PATH} inside repo {repo_dir}; refusing.", file=sys.stderr)
+        print(
+            f"ERROR: DB {_config.DB_PATH} inside repo {repo_dir}; refusing.",
+            file=sys.stderr,
+        )
         return 2
     sys.path.insert(0, str(repo_dir))
     try:
@@ -106,7 +115,9 @@ def _main() -> int:
             ).fetchall()
             post_ids = [r["post_id"] for r in rows]
             if not post_ids:
-                print("No done:true items with pr_number IS NULL — nothing to backfill.")
+                print(
+                    "No done:true items with pr_number IS NULL — nothing to backfill."
+                )
                 return 0
 
         total_would = 0
@@ -145,17 +156,28 @@ def _main() -> int:
                     continue
                 total_would += 1
                 if args.apply:
-                    conn.execute("UPDATE todo_items SET pr_number = ? WHERE id = ?", (pr, it["id"]))
+                    conn.execute(
+                        "UPDATE todo_items SET pr_number = ? WHERE id = ?",
+                        (pr, it["id"]),
+                    )
                     total_did += 1
-                    print(f"post {pid} item #{it['id']} ({it['text'][:40]!r}) -> PR #{pr}")
+                    print(
+                        f"post {pid} item #{it['id']} ({it['text'][:40]!r}) -> PR #{pr}"
+                    )
                 else:
-                    print(f"[dry-run] post {pid} item #{it['id']} ({it['text'][:40]!r}) would -> PR #{pr}")
+                    print(
+                        f"[dry-run] post {pid} item #{it['id']} ({it['text'][:40]!r}) would -> PR #{pr}"
+                    )
 
         if args.apply:
             conn.commit()
-            print(f"backfill complete: {total_did} restored ({total_would} candidates).")
+            print(
+                f"backfill complete: {total_did} restored ({total_would} candidates)."
+            )
         else:
-            print(f"dry-run complete: {total_would} would be restored; re-run with --apply to write.")
+            print(
+                f"dry-run complete: {total_would} would be restored; re-run with --apply to write."
+            )
         return 0
 
 
