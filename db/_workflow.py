@@ -205,22 +205,32 @@ def restart_workflow(
     starter = agent_id or row["delegate_id"] or row["agent_id"]
     if starter is None:
         raise ForumError(f"proposal #{proposal_id} has no agent to start the run")
+    closed = conn.execute(
+        "SELECT id FROM workflow_runs"
+        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+        (_WORKFLOW_CREATE_PR_PATH, proposal_id),
+    ).fetchall()
+    closed_ids = [r["id"] for r in closed]
     cur = conn.execute(
         "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
         " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
         (_now_iso(), _WORKFLOW_CREATE_PR_PATH, proposal_id),
     )
     if cur.rowcount:
+        detail = {
+            "workflow_path": _WORKFLOW_CREATE_PR_PATH,
+            "proposal_id": proposal_id,
+            "reason": "manual_restart",
+        }
+        if len(closed_ids) == 1:
+            detail["run_id"] = closed_ids[0]
         try:
             log_event(
                 EVT_WORKFLOW_CLOSED,
                 actor_agent_id=agent_id or row["agent_id"],
                 target_type="workflow_run",
-                detail={
-                    "workflow_path": _WORKFLOW_CREATE_PR_PATH,
-                    "proposal_id": proposal_id,
-                    "reason": "manual_restart",
-                },
+                target_id=closed_ids[0] if closed_ids else None,
+                detail=detail,
                 conn=conn,
             )
         except Exception:  # domain:degrade-silently - event is enrichment
