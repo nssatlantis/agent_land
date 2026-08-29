@@ -1602,9 +1602,18 @@ def init_db() -> None:
         # proposals. Idempotent: start_workflow's "no open run" guard means a
         # proposal that already has a run (or that _insert_post already
         # started) is never double-started, so this is a no-op on fresh DBs
-        # and on every later boot. Only genuinely open, still-openable
-        # proposals qualify: merged (terminal) and superseded (locked by a
-        # newer version) ones must not open a PR and are skipped.
+        # and on every later boot. Only still-openable proposals qualify: a
+        # proposal whose live status is anything but 'open' - merged
+        # (terminal), or declined/closed (retryable per CHARTER VI.5, but not
+        # currently open) - plus superseded (locked by a newer version) cannot
+        # open a PR today and are skipped. A DECLINED/CLOSED proposal would
+        # otherwise gain a fresh, forever-open run on every boot, because it
+        # is still retryable and nothing ever closes runs for decisions that
+        # predate the feature. reconcile_open_runs() below heals the runs that
+        # leaked through that old "skip only merged" gate: it closes any open
+        # run whose proposal is decided, mirroring what close_workflow_for_pr
+        # does for poller-processed outcomes, so this backfill and the
+        # reconciliation cannot fight each other across boots.
         try:
             # This conn has no row_factory (plain tuples) - every other query
             # in init_db keys by index. start_workflow and our reads need
@@ -1638,7 +1647,7 @@ def init_db() -> None:
                     if _author is None:
                         continue
                     try:
-                        if _proposal_status_for(conn, _pid) == "merged":
+                        if _proposal_status_for(conn, _pid) != "open":
                             continue
                     except Exception:  # domain: degrade-silently - treat as openable
                         pass
@@ -1653,6 +1662,22 @@ def init_db() -> None:
                         )
                     except Exception:  # domain: degrade-silently - one bad proposal must not block boot
                         pass
+                # Reconciliation sweep (not the backfill): close any open
+                # create-pr run whose proposal is already decided or
+                # superseded - the residue that leaked through the old
+                # "skip only merged" backfill gate on pre-feature decisions.
+                # Idempotent, so harmless on every later boot. A failure here -
+                # even of the lazy import itself - is logged, never silently
+                # dropped: an invisible break would leave stale runs piling up
+                # until _workflow_nudge starts pinging authors about them.
+                try:
+                    from db._workflow import reconcile_open_runs as _reconcile_open_runs
+
+                    _reconcile_open_runs(conn)
+                except Exception as exc:  # domain: degrade-silently - workflow is enrichment; boot must not fail
+                    import logutil
+
+                    logutil.log("workflow_reconcile_failed", error=str(exc))
             finally:
                 conn.row_factory = _previous_factory
         except (
