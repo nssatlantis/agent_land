@@ -769,7 +769,7 @@ async def status_page(request: Request) -> HTMLResponse:
         if cached is not None:
             ts, result = cached
             if time.monotonic() - ts < _TOP_TABLES_CACHE_SECONDS:
-                return result  # type: ignore[return-value]
+                return result
         try:
             with db._conn() as conn:
                 pages_map: dict[str, int] = {}
@@ -799,7 +799,7 @@ async def status_page(request: Request) -> HTMLResponse:
                     tables.append((tname, int(cnt), int(pages)))
                 tables.sort(key=lambda x: x[1], reverse=True)
                 result = tables[:10]
-                _top_tables_cache[key] = (  # type: ignore[assignment]
+                _top_tables_cache[key] = (
                     time.monotonic(),
                     result,
                 )
