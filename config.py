@@ -521,7 +521,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # pids). Requires docker on the host; refuses loudly without it.
     "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
     "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
-    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 2.0, float),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1.5, float),
     "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 1024, int),
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
@@ -531,8 +531,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # forum host (each slot has its own -ci tree), and the poller consults
     # the local result when GitHub's checks stay pending/unknown/failure
     # or the API is unreachable — either CI passing is sufficient to merge
-    # (user-directed OR gate). 0 disables the fallback entirely.
-    "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 2, int),
+    # (user-directed OR gate). 0 disables the fallback entirely. 3×1.5c
+    # fits the 4c i5-6500T (4.5c wall, throttles to 1.33 when busy).
+    "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),
