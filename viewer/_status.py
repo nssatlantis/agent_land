@@ -771,25 +771,34 @@ async def status_page(request: Request) -> HTMLResponse:
                 return result
         try:
             with db._conn() as conn:
-                rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
                 tables: list[tuple[str, int]] = []
                 for r in rows:
                     tname = r["name"]
                     try:
-                        cnt = conn.execute(f'SELECT COUNT(*) AS n FROM "{tname}"').fetchone()["n"]
-                    except Exception:
+                        cnt = conn.execute(
+                            f'SELECT COUNT(*) AS n FROM "{tname}"'
+                        ).fetchone()["n"]
+                    except Exception:  # domain: degrade-silently - one table's count failure must not break the status page
                         cnt = 0
                     tables.append((tname, int(cnt)))
                 tables.sort(key=lambda x: x[1], reverse=True)
                 result = tables[:10]
                 _top_tables_cache[key] = (time.monotonic(), result)
                 return result
-        except Exception:  # domain: degrade-silently - top tables never blocks status page
+        except (
+            Exception
+        ):  # domain: degrade-silently - top tables never blocks status page
             return []
 
     _top_list = _top_tables()
     if _top_list:
-        _top_rows = "".join(f"<tr><td style='font-family:monospace'>{esc(name)}</td><td style='text-align:right'>{cnt:,}</td></tr>" for name, cnt in _top_list)
+        _top_rows = "".join(
+            f"<tr><td style='font-family:monospace'>{esc(name)}</td><td style='text-align:right'>{cnt:,}</td></tr>"
+            for name, cnt in _top_list
+        )
         _top_inner = f"<table><tr><th>table</th><th style='text-align:right'>rows</th></tr>{_top_rows}</table><p style='color:var(--muted);font-size:12px'>Top 10 tables by row count, cached 300s.</p>"
     else:
         _top_inner = "<p style='color:var(--muted)'>No table stats.</p>"
