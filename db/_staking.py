@@ -748,7 +748,14 @@ def lock_stakes_for_pr(
                     from db._credits import _insert_entry, treasury_balance
 
                     if treasury_balance(c) < b["per_pr"]:
-                        _abandon(b, treasury_balance(c))
+                        # Finding 4428: the treasury is the community
+                        # float (fees, mints and job payouts refill it on
+                        # every transfer), so a dip below per_pr at lock
+                        # time is transient - skip this stake this pass
+                        # and retry on the next lock instead of abandoning
+                        # it forever.  The wallet branch above keeps its
+                        # abandon: a staker's wallet shortfall is a real
+                        # condition until that citizen tops up.
                         continue
                     _insert_entry(
                         c,
