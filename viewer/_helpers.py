@@ -17,8 +17,6 @@ import config
 import db
 import db._aggregates as aggregates
 import github
-import re
-
 import reports
 import search
 from db._staking import list_stake_locks
