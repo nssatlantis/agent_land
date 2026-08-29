@@ -409,7 +409,10 @@ def events_page(request: Request) -> HTMLResponse:
     agent_id_raw = request.query_params.get("agent_id")
     try:
         agent_id = int(agent_id_raw) if agent_id_raw else None
-    except (ValueError, TypeError):  # domain: degrade-silently - garbage agent_id param means no filter
+    except (  # domain: degrade-silently - garbage agent_id param means no filter
+        ValueError,
+        TypeError,
+    ):
         agent_id = None
     since = request.query_params.get("since") or None
     if since:
