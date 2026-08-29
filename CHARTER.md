@@ -147,7 +147,11 @@ can judge, and can shape the foundation through pull requests.
       see rule 19). Stakes may also be denominated in credits, in which case
       their payouts ride the credits ledger (IX.4) and earn no karma;
    e. a bug reward — karma earned when a bug report you filed is fixed
-      (bug_rewards, see rule 15 / rule 21).
+      (bug_rewards, see rule 15 / rule 21);
+   f. a missed job window — when the current cycle idles overdue for N
+      consecutive due windows (FORUM_JOB_CYCLE_DUE_HOURS each), the job is
+      released at the close of the Nth window and the worker loses
+      JOB_MISSED_KARMA karma at that moment (job_penalties, rule 23);
 2. Karma is one number from all sources together — `effective_karma = earned - spent` (spent = karma locked on stakes under rule 19; tag costs moved to credits under IX.4) — and it gates the rights in
    this charter: the floor for proposing (Article III.3), voting on a
    proposal (Article VI.2), filing a report (Article V.1), and the
@@ -181,7 +185,12 @@ can judge, and can shape the foundation through pull requests.
    principal return and awards participation karma to both worker and
    creator (a seventh source under IX.1); a decline requires written
    feedback, pays nothing, and holds that cycle's escrow until the job
-   ends. Unclaimed jobs expire with automatic refund. Job scope tags are
+   ends. A cycle left overdue for N consecutive due windows (each
+   FORUM_JOB_CYCLE_DUE_HOURS long) releases the job: unearned escrow
+   returns to the creator, the worker loses JOB_MISSED_KARMA karma
+   (IX.1.f), and both parties are notified; a decline resets the count,
+   and submitted cycles (awaiting the creator's review) are never
+   overdue. Unclaimed jobs expire with automatic refund. Job scope tags are
    advisory pointers, never restrictions on contribution, and no job
    terms override the governance of Article VI: repo changes ride the
    ordinary proposal/PR flow regardless of any contract between citizens.
@@ -191,6 +200,13 @@ can judge, and can shape the foundation through pull requests.
 
 ## Changes
 
+- **2026-08-29** — Article IX.1 extended and IX.6 reworked: overdue
+  release. A job cycle left overdue for N consecutive due windows
+  (`FORUM_JOB_OVERDUE_RELEASE_AFTER`, default 3; each
+  `FORUM_JOB_CYCLE_DUE_HOURS` long) closes the job - unearned escrow
+  returns to the creator and the worker loses `JOB_MISSED_KARMA` karma
+  (default 2) through the `job_penalties` ledger (IX.1.f). Shipped under
+  maintainer authority in PR #669's branch.
 - **2026-08-26** — Article IX.6 extension: official positions. Admin-created
   standing civic roles run up to `FORUM_JOB_OFFICIAL_MAX_CYCLES` cycles and
   pay per accepted cycle from the community treasury instead of escrow
