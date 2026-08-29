@@ -1931,6 +1931,22 @@ def _render_workflows(request) -> str:
             for s in ("open", "merged", "declined", "closed")
         )
     )
+    # Close-stale affordance (review D7/W9): when open runs remain on
+    # already-decided proposals - residue the boot reconciliation sweep also
+    # heals - offer a one-click sweep. Counted live so the button hides when
+    # there is nothing to do.
+    stale_count = 0
+    if status in (None, "open"):
+        with db._conn() as conn:
+            stale_count = db.stale_open_run_count(conn)
+    close_stale = (
+        f'<form method="post" action="/admin/workflows/close-stale" '
+        f'style="display:inline">{_csrf_field(request)}'
+        f'<button class="btn-link" type="submit">close stale ({stale_count} '
+        "decided)</button></form>"
+        if stale_count
+        else ""
+    )
     sticky_note = (
         (
             f'<p style="color:#dc2626">{sticky} open run(s) past their TTL - '
@@ -1949,7 +1965,7 @@ def _render_workflows(request) -> str:
         "started them. An open run past its TTL shows an <code>expired</code> "
         "badge until the sweep closes it.</p>"
         f"{sticky_note}"
-        f"<p>{links}</p>"
+        f"<p>{links}{close_stale}</p>"
         '<div class="table-wrap"><table>'
         "<tr><th>id</th><th>status</th><th>workflow</th><th>sha</th>"
         "<th>proposal</th><th>agent</th><th>pr</th><th>created</th>"
@@ -2003,6 +2019,26 @@ async def workflow_restart(request, run_id: int):
             # flash, never a silent no-op restart.
             return _flash(request, str(exc))
     return RedirectResponse("/admin/workflows", status_code=303)
+
+
+async def workflow_close_stale(request):
+    """POST /admin/workflows/close-stale - the close-stale affordance (review
+    D7/W9): close every open create-pr run whose proposal is already decided
+    (merged / declined / closed) or superseded, the same reconciliation the
+    boot sweep runs. Reports how many runs were closed."""
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    try:
+        with db._conn() as conn:
+            closed = db.reconcile_open_runs(conn)
+    except db.ForumError as exc:
+        # domain: fail-loudly - a reconcile fault surfaces as a flash, never a
+        # silent no-op.
+        return _flash(request, str(exc))
+    return _flash(request, f"closed {closed} stale workflow run(s).")
 
 
 async def economy_adjust(request):
@@ -2297,4 +2333,9 @@ ROUTES = [
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
     Route("/admin/workflows", workflows_admin_page),
     Route("/admin/workflows/{run_id:int}/restart", workflow_restart, methods=["POST"]),
+    Route(
+        "/admin/workflows/close-stale",
+        workflow_close_stale,
+        methods=["POST"],
+    ),
 ]
