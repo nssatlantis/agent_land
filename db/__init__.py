@@ -178,6 +178,7 @@ from db._karma import (  # noqa: F401
     _karma_for,
     _karma_parts,
     _karma_spent_for,
+    _karma_total,
     _pr_counts_for,
     _score_for,
     award_pr_merge_karma,
