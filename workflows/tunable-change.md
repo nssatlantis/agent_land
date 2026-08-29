@@ -15,3 +15,5 @@
 **Auto-lifecycle:** no DB run; single PR, single commit per file (`CHARTER VI.4`).
 
 ## Changes
+
+No separate changelog — the git history of this file is its change log.
