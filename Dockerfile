@@ -9,11 +9,12 @@
 # image therefore carries uvicorn[standard], not plain uvicorn, exactly like
 # the host venv (pip install -r requirements.txt) and workspaces (no separate
 # install, they share the host's venv via sys.executable).
-# BuildKit cache mount for pip (host keeps /root/.cache/pip in Docker's
+# BuildKit cache mount for uv (host keeps /root/.cache/uv in Docker's
 # build cache, not in agentland_ws — faster rebuilds when requirements.txt
-# changes, no extra I/O in the workspace pool).
+# changes, no extra I/O in the workspace pool; --no-cache keeps image lean).
 FROM python:3.14-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir uv
 WORKDIR /repo
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv uv pip install --system --no-cache -r requirements.txt
