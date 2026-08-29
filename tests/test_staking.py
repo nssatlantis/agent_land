@@ -13,6 +13,7 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from db._staking import list_stake_locks  # noqa: E402
 from tests._setup import (  # noqa: E402
     db,
     expect_error,
@@ -378,6 +379,53 @@ def main():
         ).fetchone()
     assert ab_reward["amount"] == 3
     print("  admin-funded bounty: ok")
+
+    # --- admin credit stake survives a transient treasury shortfall -------
+    # Finding 4428: the treasury is the community float (fees, mints and
+    # job payouts refill it on every transfer), so an admin credit stake
+    # whose per_pr exceeds the treasury at lock time must SKIP this pass
+    # and retry on the next lock - permanently abandoning it on a transient
+    # dip would strangle the reward.  Only wallet stakes (a real condition
+    # until that citizen tops up) abandon on shortfall.
+    ac_admin = db.admin_stake("admin", pid, per_pr=2, max_prs=1, currency="credits")
+    ac_stake_id = ac_admin["stake_id"]
+    with db._conn() as conn:
+        conn.execute("DELETE FROM credit_entries WHERE account = 'treasury'")
+        assert db.treasury_balance(conn) == 0, "test requires an empty treasury"
+    # Lock while the treasury is short: the stake survives (continue), no
+    # lock row lands.
+    db.lock_stakes_for_pr(None, pid, 9050, agents["gamma"]["agent_id"])
+    with db._conn() as conn:
+        ac_status = conn.execute(
+            "SELECT status FROM proposal_stakes WHERE id = ?", (ac_stake_id,)
+        ).fetchone()["status"]
+        ac_locks = conn.execute(
+            "SELECT COUNT(*) FROM stake_locks WHERE stake_id = ?",
+            (ac_stake_id,),
+        ).fetchone()[0]
+    assert ac_status == "active", (
+        f"transient treasury shortfall must not abandon the stake, got {ac_status}"
+    )
+    assert ac_locks == 0, "no lock may land while the treasury is short"
+    # The float refills (fees arrive); the NEXT lock pass succeeds.
+    with db._conn() as conn:
+        conn.execute(
+            "INSERT INTO credit_entries"
+            " (agent_id, account, delta_quarters, reason)"
+            " VALUES (NULL, 'treasury', 8, 'test_fund')"
+        )
+    db.lock_stakes_for_pr(None, pid, 9051, agents["gamma"]["agent_id"])
+    with db._conn() as conn:
+        ac_lock = conn.execute(
+            "SELECT amount, status FROM stake_locks"
+            " WHERE stake_id = ? AND pr_number = 9051",
+            (ac_stake_id,),
+        ).fetchone()
+    assert ac_lock is not None and ac_lock["status"] == "locked", (
+        "a refilled treasury must let the next lock land"
+    )
+    assert ac_lock["amount"] == 8, "credits per_pr=2 must lock as 8 quarters"
+    print("  admin credit stake transient-treasury continue: ok")
 
     # --- refund_proposal_stakes: supersede refunds active bounties ------
     # Give beta some karma so they can vote (bounty lock spent their ek)
@@ -1360,6 +1408,28 @@ def test_list_bounties():
     print("  list_all_stakes filter ok")
 
 
+def test_list_stake_locks():
+    """list_stake_locks returns all locks for a stake, ordered by id DESC."""
+    # Use existing data created by main(): find a stake that has a lock
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT s.id FROM proposal_stakes s "
+            "JOIN stake_locks sl ON sl.stake_id = s.id "
+            "LIMIT 1"
+        ).fetchone()
+    assert row is not None, "main() must have created a locked stake"
+    sid = row["id"]
+    locks = list_stake_locks(sid)
+    assert len(locks) >= 1, f"expected at least 1 lock, got {len(locks)}"
+    # Order: newest first (id DESC)
+    ids = [l["id"] for l in locks]
+    assert ids == sorted(ids, reverse=True), "should be id DESC"
+    # Non-existent stake returns empty
+    assert list_stake_locks(99999) == []
+    print("  list_stake_locks ok")
+
+
 if __name__ == "__main__":
     main()
     test_list_bounties()
+    test_list_stake_locks()

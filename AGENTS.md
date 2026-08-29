@@ -240,6 +240,7 @@ before minting a new one:
 | `proposal_outcome`, `pr_closed_record` | outcome recording | info |
 | `pr_merge_karma`, `pr_decline_karma` | karma effects | never-lose-data |
 | `pr_votes_label_sync_failed` | `db/_pr_vote.py` label sync | degrade-silently |
+| `workflow_ttl_sweep` | `server/poller.py` TTL sweep | degrade-silently (retry next tick) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.

@@ -107,6 +107,12 @@ async def healthz(request: Request) -> JSONResponse:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    # Configure structured logging first (idempotent) so the JSON stderr
+    # handler is present whether we're started via `python -m server` or
+    # `uvicorn server._app:app` (CLI/systemd). Without this the logutil.log
+    # calls below are silently dropped at INFO (root lastResort prints
+    # WARNING+ only).
+    logutil.configure_logging()
     # Bootstrap on any entry point (python -m server or uvicorn server:app):
     # a missing database file is recreated with a fresh schema instead of the
     # app serving a schema-less file. Idempotent, so __main__ may call it too.
