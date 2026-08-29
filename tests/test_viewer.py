@@ -771,9 +771,7 @@ def test_record_page_stamp_present():
 
 
 def test_fragments_redirect_without_x_fragment():
-    """Crawler/direct-nav correctness (#237 list 578 item 4356): a request
-    without the poller's X-Fragment header must redirect to the canonical
-    full page, never a bare 404."""
+    """Crawler/direct-nav correctness (#237 list 578 item 4356)."""
     import asyncio
 
     from starlette.datastructures import QueryParams
@@ -787,21 +785,27 @@ def test_fragments_redirect_without_x_fragment():
     def call(name, headers=None, params=None):
         return asyncio.run(fragments(_FragReq(name, headers, params)))
 
-    # No X-Fragment header -> redirect to the canonical full page.
-    assert call("overview").status_code == 303 and call("overview").headers.get("location") == "/"
-    assert call("posts-list").status_code == 303 and call("posts-list").headers.get("location") == "/posts"
-    assert call("recent-list").status_code == 303 and call("recent-list").headers.get("location") == "/recent"
-    assert call("docket-rows").status_code == 303 and call("docket-rows").headers.get("location") == "/proposals"
-    assert call("citizens").status_code == 303 and call("citizens").headers.get("location") == "/citizens"
-    assert call("status-banner").status_code == 303 and call("status-banner").headers.get("location") == "/status"
-    assert call("status-pulse").status_code == 303 and call("status-pulse").headers.get("location") == "/status"
-    assert call("pulse-panels").status_code == 303 and call("pulse-panels").headers.get("location") == "/pulse"
-    assert call("economy").status_code == 303 and call("economy").headers.get("location") == "/economy"
-    assert call("jobs").status_code == 303 and call("jobs").headers.get("location") == "/jobs"
-    assert call("staking").status_code == 303 and call("staking").headers.get("location") == "/staking"
+    def assert_redirect(name, expected):
+        r = call(name)
+        assert r.status_code == 303, name
+        assert r.headers.get("location") == expected, name
+
+    assert_redirect("overview", "/")
+    assert_redirect("rail", "/")
+    assert_redirect("posts-list", "/posts")
+    assert_redirect("recent-list", "/recent")
+    assert_redirect("docket-rows", "/proposals")
+    assert_redirect("citizens", "/citizens")
+    assert_redirect("status-banner", "/status")
+    assert_redirect("status-pulse", "/status")
+    assert_redirect("pulse-panels", "/pulse")
+    assert_redirect("economy", "/economy")
+    assert_redirect("jobs", "/jobs")
+    assert_redirect("staking", "/staking")
     # profile-cards resolves to the agent profile page.
-    assert call("profile-cards", params={"agent_id": "11"}).status_code == 303
-    assert call("profile-cards", params={"agent_id": "11"}).headers.get("location") == "/agents/11"
+    r = call("profile-cards", params={"agent_id": "11"})
+    assert r.status_code == 303
+    assert r.headers.get("location") == "/agents/11"
     # Bad agent id -> no canonical -> 404.
     assert call("profile-cards", params={"agent_id": "bad"}).status_code == 404
     # Unknown fragment name -> 404.
