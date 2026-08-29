@@ -21,6 +21,25 @@ from db._core import ForumError, _now_iso
 from events import EVT_WORKFLOW_CLOSED, EVT_WORKFLOW_STARTED, log_event
 
 
+def _validate_workflow_path(path: str) -> None:
+    """Reject a workflow path that could escape `workflows/` (review #8).
+    A workflow only ever lives as `workflows/<name>.md`; anything else is a
+    traversal or mis-addressing and must fail loudly, not be silently
+    coerced into a filesystem read or a DB row keyed on an attacker string.
+    """
+    if not isinstance(path, str) or not path:
+        raise ForumError("workflow path is required")
+    if (
+        not path.startswith("workflows/")
+        or ".." in path
+        or "\\" in path
+        or path.startswith("/")
+        or ":" in path
+        or not path.endswith(".md")
+    ):
+        raise ForumError(f"invalid workflow path: {path!r}")
+
+
 def _workflow_sha_for(path: str) -> str | None:
     """Git blob sha or sha256 of `workflows/{path}` for audit. Best-effort."""
     try:
@@ -28,6 +47,7 @@ def _workflow_sha_for(path: str) -> str | None:
 
         from db._core import REPO_DIR
 
+        _validate_workflow_path(path)
         p = Path(REPO_DIR) / path
         data = p.read_bytes()
         # short sha256 for dedup, not git object sha (no git dep)
@@ -41,14 +61,7 @@ def start_workflow(
 ) -> int:
     """Create one open run for `workflow_path` + `proposal_id`. Idempotent
     per (workflow_path, proposal_id) while open — second start returns existing id."""
-    # Already open?
-    row = conn.execute(
-        "SELECT id FROM workflow_runs"
-        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
-        (workflow_path, proposal_id),
-    ).fetchone()
-    if row is not None:
-        return int(row["id"])
+    _validate_workflow_path(workflow_path)
     sha = _workflow_sha_for(workflow_path)
     ttl = 0
     try:
@@ -82,11 +95,27 @@ def start_workflow(
             expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         except Exception:  # domain: degrade-silently - TTL is advisory
             expires_at = None
+    # Start-race guard (review #5): the partial UNIQUE index
+    # idx_workflow_runs_open (schema.sql) plus INSERT OR IGNORE make this
+    # atomic — two concurrent start calls cannot both insert an open run for
+    # the same (workflow_path, proposal_id), where SELECT-then-INSERT held a
+    # TOCTOU window. On an ignored insert we re-select the existing open run
+    # and return its id, preserving idempotence.
     cur = conn.execute(
-        "INSERT INTO workflow_runs (workflow_path, workflow_sha, proposal_id, agent_id, status, expires_at)"
+        "INSERT OR IGNORE INTO workflow_runs"
+        " (workflow_path, workflow_sha, proposal_id, agent_id, status, expires_at)"
         " VALUES (?, ?, ?, ?, 'open', ?)",
         (workflow_path, sha, proposal_id, agent_id, expires_at),
     )
+    if cur.rowcount == 0:
+        row = conn.execute(
+            "SELECT id FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+            (workflow_path, proposal_id),
+        ).fetchone()
+        if row is None:
+            raise ForumError("could not create or find an open workflow run")
+        return int(row["id"])
     rid = cur.lastrowid
     if rid is None:
         raise ForumError("could not read the new workflow run id")
@@ -355,8 +384,11 @@ def list_workflow_runs(
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     rows = conn.execute(
         f"SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.proposal_id, wr.pr_number,"
-        f" wr.agent_id, wr.status, wr.created_at, wr.decided_at, wr.expires_at, p.title"
-        f" FROM workflow_runs wr JOIN posts p ON p.id = wr.proposal_id{where}"
+        f" wr.agent_id, a.name AS agent_name, wr.status, wr.created_at, wr.decided_at,"
+        f" wr.expires_at, p.title"
+        f" FROM workflow_runs wr"
+        f" JOIN posts p ON p.id = wr.proposal_id"
+        f" LEFT JOIN agents a ON a.id = wr.agent_id{where}"
         f" ORDER BY wr.created_at DESC LIMIT 50",
         params,
     ).fetchall()
