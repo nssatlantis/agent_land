@@ -178,6 +178,7 @@ from db._karma import (  # noqa: F401
     _karma_for,
     _karma_parts,
     _karma_spent_for,
+    _karma_total,
     _pr_counts_for,
     _score_for,
     award_pr_merge_karma,
@@ -377,8 +378,10 @@ from db._workflow import (  # noqa: F401
     close_workflow_for_pr,
     close_workflow_for_proposal,
     list_workflow_runs,
+    reconcile_open_runs,
     require_workflow_block,
     restart_workflow,
+    stale_open_run_count,
     start_workflow,
     sweep_expired_workflows,
 )

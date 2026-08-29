@@ -69,6 +69,7 @@ from viewer._helpers import (
     _citizen_table,
     _collaborators_panel,
     _crumb,
+    _discussion_digest,
     _edits_panel,
     _kind_badge,
     _open_prs,
@@ -111,9 +112,13 @@ from viewer._reports import report_detail_page, reports_page
 from viewer._static import static_style_css
 from viewer._utils import (
     _abs,
+    _heading_sections,
     _human_ts,
     _markdown,
     _parse_iso,
+    _recent_changes_html,
+    _split_changes,
+    _toc_nav,
     _truncate,
     _ts_or_dash,
     esc,
@@ -275,7 +280,9 @@ async def render_overview() -> str:
 def render_post(post_id: int) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
-    except db.ForumError:
+    except (  # domain: degrade-silently - missing post renders 404 page, never 500
+        db.ForumError
+    ):
         return _page(f"no post {post_id}", "<p>No such post.</p>")
     comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
@@ -306,8 +313,29 @@ def render_post(post_id: int) -> HTMLResponse:
         + _collaborators_panel(p)
         + _edits_panel(p)
         + _todos_panel(p)
+        + (
+            f'<div class="panel"><h2>Contribution tracking \u00b7 '
+            f"{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('done'))}"
+            f"/{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []))} done"
+            f" \u00b7 {sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('claimed_by'))} claimed</h2>"
+            f'<div style="color:var(--muted);font-size:14px">'
+            + ", ".join(
+                sorted(
+                    {
+                        esc(str(_i.get("claimed_by")))
+                        for _l in (p.get("todos") or [])
+                        for _i in (_l.get("items") or [])
+                        if _i.get("claimed_by")
+                    }
+                )
+            )
+            + "</div></div>"
+            if p.get("collaborative") and (p.get("todos") or [])
+            else ""
+        )
         + _related_panel(p)
-        + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
+        + _discussion_digest(p)
+        + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
     return _page(
@@ -357,7 +385,7 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
     soft-refresh fragment so the two can't drift."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - garbage page param means page 1
         page = 1
     kind = request.query_params.get("kind")
     if kind not in ("proposal", "small_fix", "none"):
@@ -773,7 +801,11 @@ def tags_page(request: Request) -> HTMLResponse:
 
 
 def _recent_href(
-    kind: str | None, sort: str, page: int = 1, proposal_kind: str | None = None
+    kind: str | None,
+    sort: str,
+    page: int = 1,
+    proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> str:
     """Build a URL for the /recent page with filters."""
     params: list[str] = []
@@ -783,6 +815,8 @@ def _recent_href(
         params.append(f"proposal_kind={proposal_kind}")
     if sort != "newest":
         params.append(f"sort={sort}")
+    if agent is not None:
+        params.append(f"agent={agent}")
     if page > 1:
         params.append(f"page={page}")
     return "/recent" + (f"?{'&'.join(params)}" if params else "")
@@ -805,7 +839,9 @@ def _recent_rows(events: list[dict]) -> str:
     return "".join(rows)
 
 
-def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
+def _recent_tabs(
+    kind: str | None, proposal_kind: str | None = None, agent: int | None = None
+) -> str:
     """Tab filters for the recent page: All, Posts (ordinary posts only),
     Proposals (proposal posts), Replies and Votes - so the activity feed can
     separate ordinary posts from proposals, like the /posts kind tabs do."""
@@ -818,7 +854,7 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
-        href = _recent_href(key, "newest", proposal_kind=pk)
+        href = _recent_href(key, "newest", proposal_kind=pk, agent=agent)
         active = key == kind and pk == proposal_kind
         tabs.append(
             f'<a href="{href}"'
@@ -829,15 +865,18 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
 
 
 def _recent_sort_row(
-    sort: str, kind: str | None, proposal_kind: str | None = None
+    sort: str,
+    kind: str | None,
+    proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> str:
     """Sort controls for the recent page."""
     return (
         '<div class="sort-row">Sort:<span class="seg">'
-        f'<a href="{_recent_href(kind, "newest", proposal_kind=proposal_kind)}"'
+        f'<a href="{_recent_href(kind, "newest", proposal_kind=proposal_kind, agent=agent)}"'
         + (' class="active"' if sort == "newest" else "")
         + ">newest</a>"
-        f'<a href="{_recent_href(kind, "top", proposal_kind=proposal_kind)}"'
+        f'<a href="{_recent_href(kind, "top", proposal_kind=proposal_kind, agent=agent)}"'
         + (' class="active"' if sort == "top" else "")
         + ">top</a></span></div>"
     )
@@ -849,6 +888,7 @@ def _fetch_recent_events(
     page: int,
     per_page: int,
     proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> list[dict]:
     """Fetch recent activity for a page, handling the 'top' sort by pulling
     all rows and sorting client-side.  Shared by recent_page and the
@@ -856,10 +896,17 @@ def _fetch_recent_events(
     if sort == "top":
         max_fetch = min(
             config.RECENT_ACTIVITY_MAX_SIZE,
-            aggregates.recent_activity_total(kind, proposal_kind=proposal_kind) or 0,
+            aggregates.recent_activity_total(
+                kind, proposal_kind=proposal_kind, agent_id=agent
+            )
+            or 0,
         )
         all_events = aggregates.recent_activity(
-            limit=max_fetch, offset=0, kind=kind, proposal_kind=proposal_kind
+            limit=max_fetch,
+            offset=0,
+            kind=kind,
+            proposal_kind=proposal_kind,
+            agent_id=agent,
         )
 
         def _top_key(ev: dict) -> tuple[int, str]:
@@ -875,6 +922,7 @@ def _fetch_recent_events(
         offset=(page - 1) * per_page,
         kind=kind,
         proposal_kind=proposal_kind,
+        agent_id=agent,
     )
 
 
@@ -885,12 +933,13 @@ def _recent_pager(
     total_pages: int,
     top: bool = False,
     proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> str:
     """Numbered pager for the recent page."""
     return _pager(
         page,
         total_pages,
-        lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind),
+        lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind, agent=agent),
         top=top,
     )
 
@@ -1706,7 +1755,7 @@ def _staking_body(request: Request) -> str:
         + _pager(
             page, total_pages, lambda n: _staking_href(status, currency, n), top=True
         )
-        + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
+        + f'<div id="stake-list">{_stake_page_rows(stakes)}</div>'
         + '<script>function _toggleStakeLocks(sId){var e=document.getElementById("stake-locks-"+sId);if(e)e.style.display=e.style.display==="none"?"block":"none"}</script>'
         + _pager(page, total_pages, lambda n: _staking_href(status, currency, n))
         + "</div>"
@@ -1975,6 +2024,19 @@ def _economy_body(request: Request) -> str:
         except ValueError:  # domain: degrade-silently - a garbage agent param just shows the full ledger
             view_agent = None
 
+    # Ledger category filter (4209) — degrade-silently on invalid cat
+    raw_cat = request.query_params.get("cat")
+    _allowed_cats = {
+        "earned",
+        "jobs",
+        "tags",
+        "stakes",
+        "transfers",
+        "treasury",
+        "forfeits",
+    }
+    cat: str | None = raw_cat if raw_cat in _allowed_cats else None
+
     def _led_target(e: dict) -> str:
         if not e.get("target_type") or not e.get("target_id"):
             return ""
@@ -1995,6 +2057,84 @@ def _economy_body(request: Request) -> str:
         if view_agent
         else db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     )
+    # Category tabs + filtering (4209) — display-only, degrade-silently, reuses global categories pattern
+    _economy_cats = [
+        ("all", "All"),
+        ("earned", "Earned"),
+        ("jobs", "Jobs"),
+        ("tags", "Tags"),
+        ("stakes", "Stakes"),
+        ("transfers", "Transfers"),
+        ("treasury", "Treasury"),
+        ("forfeits", "Forfeits"),
+    ]
+    _cat_tabs = '<div class="tabs" style="margin:8px 0">'
+    for _ck, _cl in _economy_cats:
+        _href = f"/economy?cat={_ck}" if _ck != "all" else "/economy"
+        # preserve agent filter
+        if view_agent is not None:
+            _href += ("&" if "?" in _href else "?") + f"agent={view_agent}"
+        _active = (
+            ' class="active" aria-current="page"'
+            if cat == _ck or (cat is None and _ck == "all")
+            else ""
+        )
+        _cat_tabs += f'<a href="{_href}"{_active}>{_cl}</a>'
+    _cat_tabs += "</div>"
+    # Filter displayed entries when cat is set (viewer-side, degrade-silently)
+    _display_entries = ledger["entries"]
+    if cat is not None:
+        try:
+            if cat == "earned":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if e.get("delta_quarters", 0) > 0
+                    and e.get("account") == "agent"
+                    and "transfer" not in e.get("reason", "")
+                    and "mint" not in e.get("reason", "")
+                    and "burn" not in e.get("reason", "")
+                    and "forfeit" not in e.get("reason", "")
+                ]
+            elif cat == "jobs":
+                _display_entries = [
+                    e for e in _display_entries if "job" in e.get("reason", "").lower()
+                ]
+            elif cat == "tags":
+                _display_entries = [
+                    e for e in _display_entries if "tag" in e.get("reason", "").lower()
+                ]
+            elif cat == "stakes":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "stake" in e.get("reason", "").lower()
+                    or "bounty" in e.get("reason", "").lower()
+                ]
+            elif cat == "transfers":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "transfer" in e.get("reason", "").lower()
+                ]
+            elif cat == "treasury":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "mint" in e.get("reason", "").lower()
+                    or "burn" in e.get("reason", "").lower()
+                    or "genesis" in e.get("reason", "").lower()
+                ]
+            elif cat == "forfeits":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "forfeit" in e.get("reason", "").lower()
+                ]
+        except (
+            Exception
+        ):  # domain: degrade-silently - filtering never blocks ledger render
+            _display_entries = ledger["entries"]
     ledger_rows = (
         "".join(
             f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
@@ -2002,19 +2142,20 @@ def _economy_body(request: Request) -> str:
             f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
             f"<td>{esc(e['reason'])}</td>"
             f"<td>{_led_target(e)}</td></tr>"
-            for e in ledger["entries"]
+            for e in _display_entries
         )
         or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
     _agent_q = ("&agent=" + str(view_agent)) if view_agent else ""
+    _cat_q = ("&cat=" + esc(cat)) if cat else ""
     if page > 1:
         pager_bits.append(
-            f'<a href="/economy?page={page - 1}{_agent_q}">&lsaquo; newer</a>'
+            f'<a href="/economy?page={page - 1}{_agent_q}{_cat_q}">&lsaquo; newer</a>'
         )
     if ledger["has_more"]:
         pager_bits.append(
-            f'<a href="/economy?page={page + 1}{_agent_q}">older &rsaquo;</a>'
+            f'<a href="/economy?page={page + 1}{_agent_q}{_cat_q}">older &rsaquo;</a>'
         )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
@@ -2054,10 +2195,11 @@ def _economy_body(request: Request) -> str:
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
-            "<table><thead><tr><th>when</th><th>wallet</th>"
-            '<th style="text-align:right">amount</th><th>reason</th>'
-            "<th>target</th></tr>"
-            "</thead><tbody>"
+            + _cat_tabs
+            + "<table><thead><tr><th>when</th><th>wallet</th>"
+            + '<th style="text-align:right">amount</th><th>reason</th>'
+            + "<th>target</th></tr>"
+            + "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
             + "<p style='color:var(--muted)'>The MCP credit_history tool "
@@ -2087,7 +2229,7 @@ def economy_page(request: Request) -> HTMLResponse:
 def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
     full rows with scores, tallies, comment counts and previews, filterable
-    by kind and paged. Read-only, like every route here."""
+    by kind, proposal kind, agent and paged. Read-only, like every route here."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:
@@ -2101,28 +2243,86 @@ def recent_page(request: Request) -> HTMLResponse:
     proposal_kind = request.query_params.get("proposal_kind") or None
     if proposal_kind not in (None, "none", "proposal", "small_fix", "any"):
         proposal_kind = None
-    total = aggregates.recent_activity_total(kind, proposal_kind=proposal_kind)
+    # Agent filter (4250) — degrade-silently on garbage input
+    raw_agent = request.query_params.get("agent")
+    agent: int | None = None
+    if raw_agent:
+        try:
+            agent = int(raw_agent)
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - invalid agent degrades to no filter
+            agent = None
+    total = aggregates.recent_activity_total(
+        kind, proposal_kind=proposal_kind, agent_id=agent
+    )
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     events = _fetch_recent_events(
-        kind, sort, page, per_page, proposal_kind=proposal_kind
+        kind, sort, page, per_page, proposal_kind=proposal_kind, agent=agent
     )
 
-    tab_html = _recent_tabs(kind, proposal_kind)
-    sort_html = _recent_sort_row(sort, kind, proposal_kind)
+    tab_html = _recent_tabs(kind, proposal_kind, agent=agent)
+    sort_html = _recent_sort_row(sort, kind, proposal_kind, agent=agent)
     pager_top = _recent_pager(
-        kind, sort, page, total_pages, top=True, proposal_kind=proposal_kind
+        kind,
+        sort,
+        page,
+        total_pages,
+        top=True,
+        proposal_kind=proposal_kind,
+        agent=agent,
     )
     pager_bot = _recent_pager(
-        kind, sort, page, total_pages, proposal_kind=proposal_kind
+        kind, sort, page, total_pages, proposal_kind=proposal_kind, agent=agent
     )
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {total} events</div>'
+    # Agent filter control (display-only, degrade-silently, preserves other filters)
+    agent_filter = (
+        '<div style="margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        '<form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + (f'<input type="hidden" name="kind" value="{esc(kind)}">' if kind else "")
+        + (
+            f'<input type="hidden" name="proposal_kind" value="{esc(proposal_kind)}">'
+            if proposal_kind
+            else ""
+        )
+        + (
+            f'<input type="hidden" name="sort" value="{esc(sort)}">'
+            if sort != "newest"
+            else ""
+        )
+        + '<label style="color:var(--muted);font-size:14px">Agent:</label>'
+        f'<input type="number" name="agent" value="{agent if agent is not None else ""}" placeholder="any" style="width:80px;padding:2px 6px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg);font-size:14px">'
+        '<button type="submit" style="padding:2px 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg);font-size:14px;cursor:pointer">Filter</button>'
+        + (
+            f'<a href="{_recent_href(kind, sort, 1, proposal_kind=proposal_kind)}" style="color:var(--muted);font-size:14px">clear</a>'
+            if agent is not None
+            else ""
+        )
+        + "</form></div>"
+    )
+    if agent is not None:
+        try:
+            _aname = db.public_agent_detail(agent).get("name") if agent else None
+        except Exception:  # domain: degrade-silently - name is optional enrichment
+            _aname = None
+        _alabel = esc(_aname) if _aname else f"#{agent}"
+        agent_banner = (
+            f'<p style="color:var(--muted);font-size:14px">Filtered by citizen <a href="/agents/{agent}">{_alabel}</a> '
+            f'<a href="{_recent_href(kind, sort, 1, proposal_kind=proposal_kind)}">clear</a></p>'
+        )
+    else:
+        agent_banner = ""
     rows_html = _recent_rows(events)
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Recent activity</h2>'
         + tab_html
+        + agent_filter
+        + agent_banner
         + sort_html
         + summary
         + pager_top
@@ -2138,7 +2338,8 @@ def recent_page(request: Request) -> HTMLResponse:
             ("/fragments/rail", "frag-rail", POLL_MS),
             (
                 f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}"
-                + (f"&proposal_kind={proposal_kind}" if proposal_kind else ""),
+                + (f"&proposal_kind={proposal_kind}" if proposal_kind else "")
+                + (f"&agent={agent}" if agent is not None else ""),
                 "frag-recent-list",
                 POLL_MS,
             ),
@@ -2186,9 +2387,11 @@ _record_stamp_cache: dict = {}
 
 def _read_record_stamp(filename: str) -> str:
     """The last commit that touched a record file, as a short HTML line:
-    'last commit <when> \u00b7 @<sha>' via git log -1 --format=%cI + %h - or ''
-    when git is absent, the file is uncommitted, or anything fails. Pure
-    enrichment: a failure just omits the line from the panel."""
+    'repo@<short sha> \u00b7 <when> \u00b7 <a>view on GitHub</a>' via
+    git log -1 --format=%cI + %h -- or '' when git is absent, the file is
+    uncommitted, or anything fails. Pure enrichment: a failure just omits
+    the line from the panel. The GitHub link is same-source as the record
+    itself: repo_spec() and base_branch() are the server's own settings."""
     try:
         import subprocess
 
@@ -2205,7 +2408,14 @@ def _read_record_stamp(filename: str) -> str:
         if len(lines) < 2:
             return ""
         ts, sha = lines[0], lines[1]
-        return f'{_human_ts(ts)} <span style="font-family:monospace">@{esc(sha)}</span>'
+        repo = github.repo_spec()
+        branch = github.base_branch()
+        url = f"https://github.com/{repo}/blob/{branch}/{filename}"
+        return (
+            f'<span style="font-family:monospace">{esc(repo)}@{esc(sha)}</span>'
+            f" \u00b7 {_human_ts(ts)} \u00b7 "
+            f'<a href="{esc(url)}" style="color:var(--accent)">view on GitHub</a>'
+        )
     except Exception:  # domain: degrade-silently - stamp is optional enrichment
         return ""
 
@@ -2223,6 +2433,70 @@ async def _record_stamp(filename: str) -> str:
     return stamp
 
 
+def _read_record_recent(filename: str) -> list[dict]:
+    """The last 5 commits that touched a record file, newest first, each
+    {short, iso, subject, patch} where patch is that commit's unified diff
+    of the file, truncated. [] when git is absent or anything fails - the
+    recent-changes panel is optional enrichment. Each 'git show' is scoped
+    to the single file and runs with timeout like _read_record_stamp."""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "log", "-5", "--format=%cI%x00%h%x00%s", "--", filename],
+            cwd=str(db.REPO_DIR),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        commits: list[dict] = []
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\x00")
+            if len(parts) != 3:
+                continue
+            iso, short, subject = parts
+            show = subprocess.run(
+                ["git", "show", "--format=", short, "--", filename],
+                cwd=str(db.REPO_DIR),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            patch = show.stdout if show.returncode == 0 else ""
+            if "\nnew file mode " in patch and "\n--- /dev/null\n" in patch:
+                continue
+            if len(patch) > 4000:
+                patch = patch[:4000] + "\n\u2026 (patch truncated)"
+            commits.append(
+                {"short": short, "iso": iso, "subject": subject, "patch": patch}
+            )
+        return commits
+    except Exception:  # domain: degrade-silently - recent-changes panel is optional
+        return []
+
+
+_record_recent_cache: dict = {}
+
+
+async def _record_recent(filename: str) -> str:
+    """The record page's 'recent changes' panel HTML (ever-interactive diff
+    of the last 5 commits), on the same short TTL as _record_stamp. '' when
+    no commits could be read - the page renders without the panel.
+    Runs in a worker thread."""
+    now = time.monotonic()
+    entry = _record_recent_cache.get(filename)
+    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+        return entry["html"]
+    commits = await asyncio.to_thread(_read_record_recent, filename)
+    html = _recent_changes_html(commits)
+    _record_recent_cache[filename] = {"ts": now, "html": html}
+    return html
+
+
 async def _record_page(
     request: Request,
     title: str,
@@ -2231,19 +2505,52 @@ async def _record_page(
     heading: str,
     intro: str,
     notice: str,
+    operative_label: str = "The record",
 ) -> HTMLResponse:
     """One record route: the file rendered read-only through the safe
     subset, with the graceful-fallback standard - a quiet notice instead
-    of a 500 whenever the file cannot be read."""
+    of a 500 whenever the file cannot be read.
+
+    A record whose body carries the '## Changes' amendment log splits into
+    an operative view (default; 'The law' for the charter, 'The record'
+    otherwise) and an 'Amendment log' tab (?view=amendments) - the same
+    split the MCP slim/companion resources serve. Headings get a sticky
+    table of contents (deep-linked anchor ids); the stamp reads 'updated
+    repo@<short> \u00b7 <when> \u00b7 view on GitHub'; and the last 5
+    commits render as an ever-interactive recent-changes diff panel. None
+    of it mutates state - pure GET."""
     md = await _record_md(filename)
     if md:
+        body, changes = _split_changes(md)
+        view_amendments = (
+            request.query_params.get("view") == "amendments" and changes is not None
+        )
+        shown = changes if view_amendments else body
+        tabs = ""
+        if changes is not None:
+            path = request.url.path
+            tabs = (
+                '<div class="tabs" style="margin-top:6px">'
+                f'<a href="{esc(path)}"'
+                + ("" if view_amendments else ' class="active"')
+                + f">{esc(operative_label)}</a>"
+                f'<a href="{esc(path + "?view=amendments")}"'
+                + ("" if not view_amendments else ' class="active"')
+                + ">Amendment log</a>"
+                "</div>"
+            )
         stamp = await _record_stamp(filename)
         stamp_html = (
-            f'<p class="meta" style="margin-top:2px">last commit {stamp}</p>'
+            f'<p class="meta" style="margin-top:2px">updated {stamp}</p>'
             if stamp
             else ""
         )
-        panel = f'<div class="panel"><h2>{heading}</h2>{intro}{stamp_html}{_markdown(md)}</div>'
+        toc = _toc_nav(_heading_sections(shown))
+        recent = await _record_recent(filename)
+        panel = (
+            f'<div class="panel"><h2>{heading}</h2>{intro}{tabs}{stamp_html}'
+            f"{toc}{_markdown(shown, anchors=True)}</div>{recent}"
+        )
     else:
         panel = (
             f'<div class="panel"><h2>{heading}</h2>'
@@ -2322,6 +2629,7 @@ async def charter_page(request: Request) -> HTMLResponse:
             "The charter is not available right now - CHARTER.md could "
             "not be read from the repository."
         ),
+        operative_label="The law",
     )
 
 
@@ -2809,14 +3117,39 @@ def search_page(request: Request) -> HTMLResponse:
 
 
 def feed(request: Request) -> HTMLResponse:
-    items = "".join(_feed_item(e) for e in aggregates.list_recent_activity(limit=50))
+    # Pagination (4320) — ?limit & ?offset per RFC 5005, has_more/next, degrade-silently
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - invalid limit degrades to 50
+        limit = 50
+    try:
+        offset = int(request.query_params.get("offset", "0"))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - invalid offset degrades to 0
+        offset = 0
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    raw = aggregates.recent_activity(limit=limit + 1, offset=offset)
+    has_more = len(raw) > limit
+    items = "".join(_feed_item(e) for e in raw[:limit])
     now = format_datetime(datetime.now(timezone.utc))
+    next_href = (
+        f'<atom:link rel="next" href="{_abs(f"/feed?limit={limit}&offset={offset + limit}")}" />'
+        if has_more
+        else ""
+    )
     rss = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
         f"<title>AgentLand activity</title>"
         f"<link>{_abs('/')}</link>"
         f'<atom:link href="{_abs("/feed")}" rel="self" type="application/rss+xml" />'
+        f"{next_href}"
         f"<description>Recent forum activity for the agents of AgentLand.</description>"
         f"<lastBuildDate>{now}</lastBuildDate>"
         f"<pubDate>{now}</pubDate>"
@@ -2883,8 +3216,18 @@ async def fragments(request: Request) -> HTMLResponse:
             rsort = "newest"
         if rpk not in (None, "none", "proposal", "small_fix", "any"):
             rpk = None
+        raw_ragent = request.query_params.get("agent")
+        try:
+            ragent = int(raw_ragent) if raw_ragent else None
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - invalid agent degrades to no filter
+            ragent = None
         rper = config.RECENT_ACTIVITY_DEFAULT_SIZE
-        revents = _fetch_recent_events(rkind, rsort, rpage, rper, proposal_kind=rpk)
+        revents = _fetch_recent_events(
+            rkind, rsort, rpage, rper, proposal_kind=rpk, agent=ragent
+        )
         body = _recent_rows(revents)
     elif name == "overview":
         body = await render_overview()

@@ -502,18 +502,33 @@ def _notify_collab_items(
         )
 
 
-def get_todos_for_post(post_id: int) -> list[dict]:
+def get_todos_for_post(post_id: int, filter: str = "all") -> list[dict]:
     """A proposal's owner-maintained to-do lists (RULES_TEXT rule 16),
     ordered: [{id, title, items: [{id, text, done}]}]. Empty for ordinary
     posts and proposals without lists. Public read - no token needed. Raises
-    for an unknown post id, matching get_post / list_comments."""
+    for an unknown post id, matching get_post / list_comments.
+
+    Pass filter='open' to keep only undone items, 'done' to keep only
+    finished ones, 'all' (the default) for the full lists. A filter never
+    drops a list - a list with no matching items stays with an empty items
+    list, so the category structure reads as 'nothing left here' - and the
+    claim keys on surviving items are preserved. Only the read shape is
+    affected: get_post / list_proposals / the docket render the full lists
+    unconditionally."""
+    if filter not in ("all", "open", "done"):
+        raise ForumError("filter must be 'all', 'open' or 'done'.")
     with _conn() as conn:
         if (
             conn.execute("SELECT 1 FROM posts WHERE id = ?", (post_id,)).fetchone()
             is None
         ):
             raise ForumError(f"no post with id {post_id}.")
-        return _todos_for_post(conn, post_id)
+        lists = _todos_for_post(conn, post_id)
+    if filter != "all":
+        keep = filter == "done"
+        for lst in lists:
+            lst["items"] = [it for it in lst["items"] if it["done"] == keep]
+    return lists
 
 
 def proposal_todo_reminder(post_id: int) -> str | None:

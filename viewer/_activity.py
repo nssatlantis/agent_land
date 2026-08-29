@@ -111,7 +111,11 @@ def agent_activity_page(request: Request) -> HTMLResponse:
     Read-only, like every route here."""
     try:
         agent_id = int(request.path_params["agent_id"])
-    except (KeyError, TypeError, ValueError):
+    except (  # domain: degrade-silently - bad agent_id param shows no-such-citizen
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
         return _page("no agent", "<p>No such citizen.</p>")
     try:
         a = db.agent_card(agent_id)

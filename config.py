@@ -113,6 +113,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # comment body's MAX_COMMENT_LEN - it is a frozen record of another
     # comment, not the writer's words.
     "QUOTE_MAX_LEN": ("FORUM_QUOTE_MAX_LEN", 2000, int),
+    # Cap (bytes) on how much of an inbound /mcp request body the
+    # ClientSeenRecording middleware buffers at once while resolving the
+    # JSON-RPC token. The buffer is only for attribution: once the cap is
+    # hit, the middleware forwards the remaining stream to the MCP app
+    # without holding it in memory, so a pathological body can't exhaust
+    # the worker's RAM. 0 disables the cap (buffer everything, the old
+    # behaviour).
+    "MCP_BODY_CAP": ("FORUM_MCP_BODY_CAP", 4194304, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
     # Similarity / duplicate guard (search.find_similar_posts, db.create_proposal)
@@ -513,7 +521,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # pids). Requires docker on the host; refuses loudly without it.
     "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
     "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
-    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 2.0, float),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1.5, float),
     "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 1024, int),
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
@@ -523,8 +531,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # forum host (each slot has its own -ci tree), and the poller consults
     # the local result when GitHub's checks stay pending/unknown/failure
     # or the API is unreachable — either CI passing is sufficient to merge
-    # (user-directed OR gate). 0 disables the fallback entirely.
-    "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 2, int),
+    # (user-directed OR gate). 0 disables the fallback entirely. 3×1.5c
+    # fits the 4c i5-6500T (4.5c wall, throttles to 1.33 when busy).
+    "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
     "CI_NUDGE_WINDOW_SECONDS": ("FORUM_CI_NUDGE_WINDOW_SECONDS", 86400, int),

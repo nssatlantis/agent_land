@@ -62,6 +62,9 @@ _SKIP_DIRS = frozenset(
     }
 )
 
+_BIG_FILES_CACHE_SECONDS = 60
+_big_files_cache: dict[tuple[str, int], tuple[float, list[tuple[str, int]]]] = {}
+
 
 def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
     """Walk *repo_root* and return .py files with >= *threshold* lines.
@@ -70,17 +73,26 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
     Directories in ``_SKIP_DIRS`` are pruned.  Encoding errors are ignored
     so the scan never 500s on a broken file.
     """
+    key = (str(repo_root), int(threshold))
+    cached_entry = _big_files_cache.get(key)
+    if cached_entry is not None:
+        ts, cached = cached_entry
+        if time.monotonic() - ts < _BIG_FILES_CACHE_SECONDS:
+            return cached
     results: list[tuple[str, int]] = []
     for path in sorted(repo_root.rglob("*.py")):
         if any(part in _SKIP_DIRS for part in path.parts):
             continue
         try:
             count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
-        except OSError:
+        except (  # domain: degrade-silently - unreadable py file skipped, list still renders
+            OSError
+        ):
             continue
         if count >= threshold:
             results.append((path.relative_to(repo_root).as_posix(), count))
     results.sort(key=lambda x: x[1], reverse=True)
+    _big_files_cache[key] = (time.monotonic(), results)
     return results
 
 
@@ -117,7 +129,7 @@ def _git_ok(args: list[str], cwd: str) -> bool:
             timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
         )
         return result.returncode == 0
-    except Exception:
+    except Exception:  # domain: degrade-silently - git check failure degrades to not-ok
         return False
 
 
@@ -190,6 +202,9 @@ async def _timed(
 # lock is needed); under a multi-worker deploy each worker would hold its
 # own cache, which a 5s TTL makes harmlessly eventually-consistent.
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
+
+_TOP_TABLES_CACHE_SECONDS = 300
+_top_tables_cache: dict[str, tuple[float, list[tuple[str, int, int]]]] = {}
 
 _NETWORK_TIMEOUT_SECONDS = 10
 
@@ -292,9 +307,15 @@ def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
         },
         {
             "name": "git in sync with origin",
-            "ok": repo.get("commits_ahead") == 0 and repo.get("commits_behind") == 0,
+            "ok": not repo.get("stale")
+            and repo.get("commits_ahead") == 0
+            and repo.get("commits_behind") == 0,
             "warn": True,
-            "tooltip": "HEAD matches origin/main \u2014 no local divergence",
+            "tooltip": (
+                "GitHub unreachable \u2014 fetch failed, sync status is stale"
+                if repo.get("stale")
+                else "HEAD matches origin/main \u2014 no local divergence"
+            ),
         },
         {
             "name": "GitHub token configured",
@@ -584,7 +605,9 @@ async def status_page(request: Request) -> HTMLResponse:
     if repo.get("root"):
         ahead_behind = f"{repo['commits_ahead']} / {repo['commits_behind']}"
         if repo.get("stale"):
-            ahead_behind += ' <span style="color:var(--muted)">(stale)</span>'
+            ahead_behind += ' <span style="color:var(--muted)">(unreachable \u2014 last fetch failed)</span>'
+        elif repo.get("commits_behind", 0) > 0:
+            ahead_behind += f' <span style="color:var(--warn)">({repo["commits_behind"]} behind)</span>'
         last_fetch = repo.get("last_fetch") or 0
         last_fetch_label = (
             _human_duration(max(0, time.monotonic() - last_fetch)) + " ago"
@@ -740,6 +763,72 @@ async def status_page(request: Request) -> HTMLResponse:
         storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
     storage_panel = _collapsible("Storage", storage_inner, "storage")
 
+    # --- top tables (storage) --------------------------------------------
+    def _top_tables() -> list[tuple[str, int, int]]:
+        """Top tables by row count plus dbstat page count when available (fold of #649)."""
+        key = "top_tables"
+        cached = _top_tables_cache.get(key)
+        if cached is not None:
+            ts, result = cached
+            if time.monotonic() - ts < _TOP_TABLES_CACHE_SECONDS:
+                return result
+        try:
+            with db._conn() as conn:
+                pages_map: dict[str, int] = {}
+                try:
+                    prow = conn.execute(
+                        "SELECT name, SUM(pageno) as pages FROM dbstat "
+                        "WHERE name NOT LIKE 'sqlite_%' GROUP BY name"
+                    ).fetchall()
+                    pages_map = {r["name"]: int(r["pages"] or 0) for r in prow}
+                except (
+                    Exception
+                ):  # domain: degrade-silently - dbstat unavailable degrades to pages 0
+                    pages_map = {}
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+                tables: list[tuple[str, int, int]] = []
+                for r in rows:
+                    tname = r["name"]
+                    try:
+                        cnt = conn.execute(
+                            f'SELECT COUNT(*) AS n FROM "{tname}"'
+                        ).fetchone()["n"]
+                    except Exception:  # domain: degrade-silently - one table's count failure must not break the status page
+                        cnt = 0
+                    pages = pages_map.get(tname, 0)
+                    tables.append((tname, int(cnt), int(pages)))
+                tables.sort(key=lambda x: x[1], reverse=True)
+                result = tables[:10]
+                _top_tables_cache[key] = (
+                    time.monotonic(),
+                    result,
+                )
+                return result
+        except (
+            Exception
+        ):  # domain: degrade-silently - top tables never blocks status page
+            return []
+
+    _top_list = _top_tables()
+    if _top_list:
+        _top_rows = "".join(
+            f"<tr><td style='font-family:monospace'>{esc(name)}</td>"
+            f"<td style='text-align:right'>{cnt:,}</td>"
+            f"<td style='text-align:right'>{pages:,}</td></tr>"
+            for name, cnt, pages in _top_list
+        )
+        _top_inner = (
+            f"<table><tr><th>table</th><th style='text-align:right'>rows</th>"
+            f"<th style='text-align:right'>pages</th></tr>{_top_rows}</table>"
+            "<p style='color:var(--muted);font-size:12px'>Top 10 tables by row count + "
+            "page count (dbstat when available), cached 300s.</p>"
+        )
+    else:
+        _top_inner = "<p style='color:var(--muted)'>No table stats.</p>"
+    top_tables_panel = _collapsible("Top tables", _top_inner, "top-tables", open=False)
+
     # --- process / runtime facts ------------------------------------------
     proc = by_name["process_info"]
     if proc:
@@ -802,6 +891,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + github_panel
         + config_panel
         + storage_panel
+        + top_tables_panel
         + process_panel
         + bigfiles_panel
         + perf_panel

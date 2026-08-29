@@ -141,7 +141,8 @@ def test_native_twin_alist_tree():
                     {"path": "a.py", "type": "blob", "size": 10},
                     {"path": "d/", "type": "tree"},
                     {"path": "b.md", "type": "blob"},
-                ]
+                ],
+                "truncated": True,
             },
         )
 
@@ -151,6 +152,7 @@ def test_native_twin_alist_tree():
         assert result["repo"] == gh.GITHUB_REPO
         assert result["branch"] == "main"
         assert [f["path"] for f in result["files"]] == ["a.py", "b.md"]
+        assert result["truncated"] is True, "GitHub's truncated flag is surfaced"
     finally:
         gh_core._client = old
         gh.clear_cache()

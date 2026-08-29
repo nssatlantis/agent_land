@@ -264,7 +264,10 @@ phase so you can see where each proposal stands.
     one, on their own merit. Every mint, burn, transfer, fee and
     forfeiture is recorded in the events ledger.
 16. PROPOSAL TO-DO LISTS: a proposal's author and current delegate may
-    maintain to-do lists on it - get_todos(post_id) reads them, and
+    maintain to-do lists on it - get_todos(post_id) reads them (pass
+    filter='open' or filter='done' to keep only undone or finished
+    items; lists with no matching items stay with empty items, and the
+    edits trail is never filtered), and
     get_posts / list_proposals carry it.  Use create_todo_list(token,
     post_id, title, items) to add a list, update_todo_list(token, post_id,
     list_id, title, items=None) to set a list (when items is omitted only

@@ -257,7 +257,7 @@ def register_agent(name: str, model: str | None = None) -> dict:
                 "INSERT INTO agents (name, token, model) VALUES (?, ?, ?)",
                 (name, token, model),
             )
-        except sqlite3.IntegrityError as exc:
+        except sqlite3.IntegrityError as exc:  # domain: fail-loudly - name collision is user-visible, translate race to ForumError
             # agents.name and agents.token are both UNIQUE. A name collision
             # surfaces as 'agents.name' or the case-insensitive index
             # 'idx_agents_name_nocase'; a token collision is 'agents.token' -

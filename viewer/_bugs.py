@@ -28,6 +28,19 @@ def _status_badge(status: str) -> str:
     )
 
 
+def _bug_severity(report: dict, threshold: int) -> str:
+    """At-a-glance severity badge derived from confidence vs the confirm
+    threshold (more duplicates reported => higher severity). Display-only."""
+    conf = report.get("confidence") or 0
+    if threshold > 0 and conf >= threshold:
+        level, color = "High", "#dc2626"
+    elif threshold > 0 and conf >= threshold / 2:
+        level, color = "Medium", "#d97706"
+    else:
+        level, color = "Low", "#16a34a"
+    return f'<span class="kind-badge" style="background:{color}">sev: {level}</span>'
+
+
 def _confidence_bar(confidence: int, threshold: int) -> str:
     if threshold <= 0:
         return ""
@@ -41,6 +54,25 @@ def _confidence_bar(confidence: int, threshold: int) -> str:
         f'<span style="font-size:13px;color:var(--muted)">{confidence}/{threshold}</span>'
         f"</div>"
     )
+
+
+def _bug_timeline(report: dict, threshold: int) -> str:
+    """Lifecycle steps for a bug report: reported -> confirmed -> proposal
+    -> fixed, with each completed step highlighted. Display-only."""
+    steps = [
+        ("Reported", True),
+        ("Confirmed", report["status"] in ("confirmed", "fixed")),
+        ("Proposal", bool(report.get("linked_proposals"))),
+        ("Fixed", report["status"] == "fixed"),
+    ]
+    bits = []
+    for i, (label, done) in enumerate(steps):
+        color = "#16a34a" if done else "var(--muted)"
+        weight = "600" if done else "400"
+        bits.append(f'<span style="color:{color};font-weight:{weight}">{label}</span>')
+        if i < len(steps) - 1:
+            bits.append('<span style="color:var(--muted)"> → </span>')
+    return '<div style="margin:10px 0;font-size:14px">' + "".join(bits) + "</div>"
 
 
 def bugs_page(request):
@@ -99,7 +131,8 @@ def bugs_page(request):
     cards = []
     for r in reports:
         status_b = _status_badge(r["status"])
-        conf = _confidence_bar(r["confidence"], threshold)
+        conf = _confidence_bar(r["confidence"] or 0, threshold)
+        sev = _bug_severity(r, threshold)
         url_part = (
             f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
             if r["url"]
@@ -109,9 +142,9 @@ def bugs_page(request):
         cards.append(
             f'<div class="post">'
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
-            f'<div style="margin:4px 0">{status_b}{conf}</div>'
+            f'<div style="margin:4px 0">{status_b}{sev}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
-            f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"])}</a>'
+            f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"] or "unknown")}</a>'
             f"{_human_ts(r['created_at'])}{url_part}{dupes}"
             f"</div></div>"
         )
@@ -176,7 +209,9 @@ def bug_detail_page(request):
 
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
-    conf = _confidence_bar(report["confidence"], threshold)
+    conf = _confidence_bar(report["confidence"] or 0, threshold)
+    sev = _bug_severity(report, threshold)
+    timeline = _bug_timeline(report, threshold)
 
     url_part = ""
     if report["url"]:
@@ -208,17 +243,19 @@ def bug_detail_page(request):
 
     detail = (
         f"<h2>{status_b} {esc(report['title'])}</h2>"
+        f"{sev}"
+        f"{timeline}"
         f"{conf}"
         f"<table>{url_part}"
         f"<tr><th>Reporter</th>"
-        f'<td><a href="/agents/{report["agent_id"]}">{esc(report["reporter_name"])}</a>'
+        f'<td><a href="/agents/{report["agent_id"]}">{esc(report["reporter_name"] or "unknown")}</a>'
         f" {_human_ts(report['created_at'])}</td></tr>"
         f"<tr><th>Confidence</th>"
-        f"<td>{report['confidence']} / {threshold}"
-        f" ({'confirmed' if report['confidence'] >= threshold else 'needs more duplicates'})"
+        f"<td>{(report['confidence'] or 0)} / {threshold}"
+        f" ({'confirmed' if (report['confidence'] or 0) >= threshold else 'needs more duplicates'})"
         f"</td></tr>"
         f"</table>"
-        f'<div class="bug-body">{_markdown(report["body"])}</div>'
+        f'<div class="bug-body">{_markdown(report["body"] or "")}</div>'
         f"{dupes}"
         f"{linked}"
     )

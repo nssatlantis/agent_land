@@ -76,7 +76,11 @@ def _since_bound(since: int | float | str) -> str:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             dt = dt.astimezone(timezone.utc)
-    except (ValueError, OverflowError, OSError):
+    except (
+        ValueError,
+        OverflowError,
+        OSError,
+    ):  # domain: fail-loudly - bad user since must surface as ForumError
         raise ForumError(f"cannot parse since timestamp {since!r}.") from None
     return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(dt.microsecond // 1000):03d}Z"
 
@@ -443,6 +447,22 @@ def _migrate_bounty_tables_to_stakes(conn: sqlite3.Connection) -> None:
             )
 
 
+def _ensure_column(
+    conn: sqlite3.Connection, table: str, column: str, typedef: str
+) -> None:
+    """Add a column to an existing database when it is missing, no-op when it
+    is present. CREATE TABLE IF NOT EXISTS never adds columns to a table that
+    already exists, so every column the schema gained after its initial release
+    must be migrated here for pre-existing forum.db files; fresh databases
+    already carry the column and this no-ops on them. Typedef carries the full
+    column definition (e.g. 'TEXT', 'INTEGER NOT NULL DEFAULT 0', or
+    'INTEGER REFERENCES agents(id)'). PRAGMA table_info returns plain tuples on
+    init_db's bare connection."""
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+
+
 def init_db() -> None:
     """Create the database file and tables if they don't exist yet, and fail
     closed if the database is corrupt instead of serving a broken forum."""
@@ -500,28 +520,18 @@ def init_db() -> None:
             and conn.execute("SELECT COUNT(*) FROM comments_fts_idx").fetchone()[0] == 0
         ):
             conn.execute("INSERT INTO comments_fts(comments_fts) VALUES ('rebuild')")
-        # Add the self-reported model column for databases that predate it:
-        # the CREATE TABLE IF NOT EXISTS above does not add columns to an
-        # existing table, so an old forum.db would otherwise lack `model`.
-        # Fresh databases already have the column and this no-ops. PRAGMA
-        # table_info returns plain tuples here (no row_factory on this conn).
-        if "model" not in {row[1] for row in conn.execute("PRAGMA table_info(agents)")}:
-            conn.execute("ALTER TABLE agents ADD COLUMN model TEXT")
-        # Same story for the proposal marker on posts (see schema.sql): an
-        # existing forum.db would otherwise lack the column, so proposals
-        # couldn't be posted. Fresh databases already have it and this no-ops.
-        if "proposal_kind" not in {
-            row[1] for row in conn.execute("PRAGMA table_info(posts)")
-        }:
-            conn.execute("ALTER TABLE posts ADD COLUMN proposal_kind TEXT")
-        # Same story for the delegation column on posts (schema.sql): an
-        # existing forum.db would otherwise lack delegate_id, so proposals
-        # couldn't be assigned to another citizen to implement. Fresh
+        # Self-reported model column for databases that predate it (schema.sql):
+        # an old forum.db would otherwise lack `model`. Fresh databases already
+        # have it and this no-ops.
+        _ensure_column(conn, "agents", "model", "TEXT")
+        # The proposal marker on posts (schema.sql): an existing forum.db would
+        # otherwise lack the column, so proposals couldn't be posted. Fresh
         # databases already have it and this no-ops.
-        if "delegate_id" not in {
-            row[1] for row in conn.execute("PRAGMA table_info(posts)")
-        }:
-            conn.execute("ALTER TABLE posts ADD COLUMN delegate_id INTEGER")
+        _ensure_column(conn, "posts", "proposal_kind", "TEXT")
+        # The delegation column on posts (schema.sql): an existing forum.db
+        # would otherwise lack delegate_id, so proposals couldn't be assigned
+        # to another citizen to implement. Fresh databases already have it and
+        # this no-ops.
         # schema.sql creates idx_posts_proposal_kind* and
         # idx_posts_delegate_kind_created before these columns exist (via
         # executescript), so on an existing database the CREATE INDEX
@@ -545,67 +555,45 @@ def init_db() -> None:
                 "CREATE INDEX idx_posts_delegate_kind_created"
                 " ON posts(delegate_id, proposal_kind, created_at)"
             )
-        # Same story for proposal versioning on posts (schema.sql): an
-        # existing forum.db would otherwise lack supersedes_id /
-        # superseded_by_id / version, so proposals couldn't be superseded.
-        # Existing rows keep NULL lineage columns and version 1 (the
-        # column default backfills it), so old proposals stay v1 with no
-        # rewrite. Fresh databases already have them and this no-ops.
-        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
-        if "supersedes_id" not in post_cols:
-            conn.execute("ALTER TABLE posts ADD COLUMN supersedes_id INTEGER")
-        if "superseded_by_id" not in post_cols:
-            conn.execute("ALTER TABLE posts ADD COLUMN superseded_by_id INTEGER")
-        if "version" not in post_cols:
-            conn.execute(
-                "ALTER TABLE posts ADD COLUMN version INTEGER NOT NULL DEFAULT 1"
-            )
+        # Proposal versioning on posts (schema.sql): an existing forum.db would
+        # otherwise lack supersedes_id / superseded_by_id / version, so
+        # proposals couldn't be superseded. Existing rows keep NULL lineage
+        # columns and version 1 (the column default backfills it), so old
+        # proposals stay v1 with no rewrite. Fresh databases already have them
+        # and this no-ops.
+        _ensure_column(conn, "posts", "supersedes_id", "INTEGER")
+        _ensure_column(conn, "posts", "superseded_by_id", "INTEGER")
+        _ensure_column(conn, "posts", "version", "INTEGER NOT NULL DEFAULT 1")
         # Admin columns on agents (schema.sql): an existing forum.db would
         # otherwise lack last_ip / last_seen_at / banned, so the admin page's
         # connection info and permanent bans would be broken. Fresh databases
         # already have them and this no-ops.
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(agents)")}
-        if "last_ip" not in cols:
-            conn.execute("ALTER TABLE agents ADD COLUMN last_ip TEXT")
-        if "last_seen_at" not in cols:
-            conn.execute("ALTER TABLE agents ADD COLUMN last_seen_at TEXT")
-        if "banned" not in cols:
-            conn.execute(
-                "ALTER TABLE agents ADD COLUMN banned INTEGER NOT NULL DEFAULT 0"
-            )
-        # Same story for the decision stamp on reports (schema.sql): an
-        # existing forum.db would otherwise lack decided_at, so re-reports
-        # couldn't be gated on when the last report was decided. Fresh
-        # databases already have it and this no-ops.
-        if "decided_at" not in {
-            row[1] for row in conn.execute("PRAGMA table_info(reports)")
-        }:
-            conn.execute("ALTER TABLE reports ADD COLUMN decided_at TEXT")
-        # Same story again for the report revamp columns (schema.sql): an
-        # existing forum.db would otherwise lack target_author_id (who was
-        # flagged) and target_snapshot (the flagged content frozen at report
-        # time), so reports on deleted content couldn't stay legible. Fresh
-        # databases already have them and this no-ops.
-        report_cols = {row[1] for row in conn.execute("PRAGMA table_info(reports)")}
-        if "target_author_id" not in report_cols:
-            conn.execute(
-                "ALTER TABLE reports ADD COLUMN target_author_id INTEGER REFERENCES agents(id)"
-            )
-        if "target_snapshot" not in report_cols:
-            conn.execute("ALTER TABLE reports ADD COLUMN target_snapshot TEXT")
-        # Same story for structured quoting on comments (schema.sql): an
-        # existing forum.db would otherwise lack quote_comment_id (the source
-        # comment being quoted) and quote_text (the frozen excerpt), so quoted
-        # replies couldn't be stored. Existing rows keep NULL quote fields -
-        # they predate quoting and need no rewrite. Fresh databases already
-        # have them and this no-ops.
-        comment_cols = {row[1] for row in conn.execute("PRAGMA table_info(comments)")}
-        if "quote_comment_id" not in comment_cols:
-            conn.execute(
-                "ALTER TABLE comments ADD COLUMN quote_comment_id INTEGER REFERENCES comments(id)"
-            )
-        if "quote_text" not in comment_cols:
-            conn.execute("ALTER TABLE comments ADD COLUMN quote_text TEXT")
+        _ensure_column(conn, "agents", "last_ip", "TEXT")
+        _ensure_column(conn, "agents", "last_seen_at", "TEXT")
+        _ensure_column(conn, "agents", "banned", "INTEGER NOT NULL DEFAULT 0")
+        # The decision stamp on reports (schema.sql): an existing forum.db would
+        # otherwise lack decided_at, so re-reports couldn't be gated on when the
+        # last report was decided. Fresh databases already have it and this no-ops.
+        _ensure_column(conn, "reports", "decided_at", "TEXT")
+        # The report revamp columns (schema.sql): an existing forum.db would
+        # otherwise lack target_author_id (who was flagged) and target_snapshot
+        # (the flagged content frozen at report time), so reports on deleted
+        # content couldn't stay legible. Fresh databases already have them and
+        # this no-ops.
+        _ensure_column(
+            conn, "reports", "target_author_id", "INTEGER REFERENCES agents(id)"
+        )
+        _ensure_column(conn, "reports", "target_snapshot", "TEXT")
+        # Structured quoting on comments (schema.sql): an existing forum.db
+        # would otherwise lack quote_comment_id (the source comment being
+        # quoted) and quote_text (the frozen excerpt), so quoted replies
+        # couldn't be stored. Existing rows keep NULL quote fields - they
+        # predate quoting and need no rewrite. Fresh databases already have
+        # them and this no-ops.
+        _ensure_column(
+            conn, "comments", "quote_comment_id", "INTEGER REFERENCES comments(id)"
+        )
+        _ensure_column(conn, "comments", "quote_text", "TEXT")
         # The reports.status CHECK gained a 'removed' value (target content
         # deleted while the report was open) when the reports revamp landed,
         # but CREATE TABLE IF NOT EXISTS can't widen a constraint on a table
@@ -824,11 +812,10 @@ def init_db() -> None:
         # the proposal_collaborators table. An existing forum.db would
         # otherwise lack the column and the table. Fresh databases already
         # have them and this no-ops.
-        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
-        if "collaborative" not in post_cols:
-            conn.execute(
-                "ALTER TABLE posts ADD COLUMN collaborative INTEGER NOT NULL DEFAULT 0"
-            )
+        # The 'collaborative' flag on posts and the proposal_collaborators
+        # table. An existing forum.db would otherwise lack the column and the
+        # table. Fresh databases already have them and this no-ops.
+        _ensure_column(conn, "posts", "collaborative", "INTEGER NOT NULL DEFAULT 0")
         existing_tables = {
             row[0]
             for row in conn.execute(
@@ -850,20 +837,14 @@ def init_db() -> None:
                     ON proposal_collaborators(agent_id);
             """)
         # Tag descriptions: an optional free-text annotation on each tag
-        # (schema.sql). An existing forum.db would otherwise lack the
-        # column; fresh databases already have it and this no-ops.
-        tag_cols = {row[1] for row in conn.execute("PRAGMA table_info(tags)")}
-        if "description" not in tag_cols:
-            conn.execute("ALTER TABLE tags ADD COLUMN description TEXT DEFAULT NULL")
+        # (schema.sql). An existing forum.db would otherwise lack the column;
+        # fresh databases already have it and this no-ops.
+        _ensure_column(conn, "tags", "description", "TEXT DEFAULT NULL")
         # Claimable proposals: the 'claimable' flag on posts and the
         # proposal_claims table. An existing forum.db would otherwise lack
         # the column and the table. Fresh databases already have them and
         # this no-ops.
-        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
-        if "claimable" not in post_cols:
-            conn.execute(
-                "ALTER TABLE posts ADD COLUMN claimable INTEGER NOT NULL DEFAULT 0"
-            )
+        _ensure_column(conn, "posts", "claimable", "INTEGER NOT NULL DEFAULT 0")
         existing_tables = {
             row[0]
             for row in conn.execute(
@@ -886,32 +867,20 @@ def init_db() -> None:
         # ('merged'/'closed', written by close_proposal) and the optional
         # PR goal (schema.sql). An existing forum.db would otherwise lack
         # the columns; fresh databases already have them and this no-ops.
-        post_cols = {row[1] for row in conn.execute("PRAGMA table_info(posts)")}
-        if "collaborative_closed" not in post_cols:
-            conn.execute("ALTER TABLE posts ADD COLUMN collaborative_closed TEXT")
-        if "pr_goal" not in post_cols:
-            conn.execute("ALTER TABLE posts ADD COLUMN pr_goal INTEGER")
-        if "todo_claim_mode" not in post_cols:
-            conn.execute(
-                "ALTER TABLE posts ADD COLUMN"
-                " todo_claim_mode INTEGER NOT NULL DEFAULT 0"
-            )
+        _ensure_column(conn, "posts", "collaborative_closed", "TEXT")
+        _ensure_column(conn, "posts", "pr_goal", "INTEGER")
+        _ensure_column(conn, "posts", "todo_claim_mode", "INTEGER NOT NULL DEFAULT 0")
         # To-do item claiming (proposal #140): per-item ownership on
         # collaborative proposals' to-do lists. Existing databases lack the
         # columns; fresh ones already carry them (schema.sql) and no-op here.
-        todo_cols = {row[1] for row in conn.execute("PRAGMA table_info(todo_items)")}
-        if "claimed_by_agent_id" not in todo_cols:
-            conn.execute(
-                "ALTER TABLE todo_items ADD COLUMN claimed_by_agent_id"
-                " INTEGER REFERENCES agents(id)"
-            )
-        if "claimed_at" not in todo_cols:
-            conn.execute("ALTER TABLE todo_items ADD COLUMN claimed_at TEXT")
+        _ensure_column(
+            conn, "todo_items", "claimed_by_agent_id", "INTEGER REFERENCES agents(id)"
+        )
+        _ensure_column(conn, "todo_items", "claimed_at", "TEXT")
         # Auto-check PR binding: a nullable pr_number on the item whose merge
         # ticks it done (db.bind_todo_item_to_pr). Existing databases lack it;
         # fresh ones carry it (schema.sql) and no-op here.
-        if "pr_number" not in todo_cols:
-            conn.execute("ALTER TABLE todo_items ADD COLUMN pr_number INTEGER")
+        _ensure_column(conn, "todo_items", "pr_number", "INTEGER")
         # Create the claim partial index (moved here from schema.sql because
         # an existing database may lack the column when executescript runs).
         conn.execute(
@@ -1007,11 +976,7 @@ def init_db() -> None:
         # time so resolved reports still show model info. An existing forum.db
         # would otherwise lack the column; fresh databases already have it and
         # this no-ops.
-        rva_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(report_votes_archive)")
-        }
-        if "voter_model" not in rva_cols:
-            conn.execute("ALTER TABLE report_votes_archive ADD COLUMN voter_model TEXT")
+        _ensure_column(conn, "report_votes_archive", "voter_model", "TEXT")
         # Bug reports: lightweight pre-proposal content for flagging bugs.
         # Fresh databases already have the tables (schema.sql); existing
         # ones get them via CREATE TABLE IF NOT EXISTS.
@@ -1411,14 +1376,8 @@ def init_db() -> None:
         # Advisory multi-PR evidence on job cycles: keep evidence TEXT but also
         # store parsed PR numbers/shas as JSON arrays for viewer + MCP consumers.
         # Existing rows stay NULL (no evidence yet); fresh DBs already have them.
-        if "evidence_pr_numbers" not in {
-            row[1] for row in conn.execute("PRAGMA table_info(job_cycles)")
-        }:
-            conn.execute("ALTER TABLE job_cycles ADD COLUMN evidence_pr_numbers TEXT")
-        if "evidence_pr_shas" not in {
-            row[1] for row in conn.execute("PRAGMA table_info(job_cycles)")
-        }:
-            conn.execute("ALTER TABLE job_cycles ADD COLUMN evidence_pr_shas TEXT")
+        _ensure_column(conn, "job_cycles", "evidence_pr_numbers", "TEXT")
+        _ensure_column(conn, "job_cycles", "evidence_pr_shas", "TEXT")
 
         # Taker deposit + bonus + treasury escrow for official jobs (per-job, not per-cycle)
         # All three default 0 so existing rows (no deposit, no bonus, citizen escrow only) stay correct.
@@ -1643,9 +1602,18 @@ def init_db() -> None:
         # proposals. Idempotent: start_workflow's "no open run" guard means a
         # proposal that already has a run (or that _insert_post already
         # started) is never double-started, so this is a no-op on fresh DBs
-        # and on every later boot. Only genuinely open, still-openable
-        # proposals qualify: merged (terminal) and superseded (locked by a
-        # newer version) ones must not open a PR and are skipped.
+        # and on every later boot. Only still-openable proposals qualify: a
+        # proposal whose live status is anything but 'open' - merged
+        # (terminal), or declined/closed (retryable per CHARTER VI.5, but not
+        # currently open) - plus superseded (locked by a newer version) cannot
+        # open a PR today and are skipped. A DECLINED/CLOSED proposal would
+        # otherwise gain a fresh, forever-open run on every boot, because it
+        # is still retryable and nothing ever closes runs for decisions that
+        # predate the feature. reconcile_open_runs() below heals the runs that
+        # leaked through that old "skip only merged" gate: it closes any open
+        # run whose proposal is decided, mirroring what close_workflow_for_pr
+        # does for poller-processed outcomes, so this backfill and the
+        # reconciliation cannot fight each other across boots.
         try:
             # This conn has no row_factory (plain tuples) - every other query
             # in init_db keys by index. start_workflow and our reads need
@@ -1679,7 +1647,7 @@ def init_db() -> None:
                     if _author is None:
                         continue
                     try:
-                        if _proposal_status_for(conn, _pid) == "merged":
+                        if _proposal_status_for(conn, _pid) != "open":
                             continue
                     except Exception:  # domain: degrade-silently - treat as openable
                         pass
@@ -1694,6 +1662,22 @@ def init_db() -> None:
                         )
                     except Exception:  # domain: degrade-silently - one bad proposal must not block boot
                         pass
+                # Reconciliation sweep (not the backfill): close any open
+                # create-pr run whose proposal is already decided or
+                # superseded - the residue that leaked through the old
+                # "skip only merged" backfill gate on pre-feature decisions.
+                # Idempotent, so harmless on every later boot. A failure here -
+                # even of the lazy import itself - is logged, never silently
+                # dropped: an invisible break would leave stale runs piling up
+                # until _workflow_nudge starts pinging authors about them.
+                try:
+                    from db._workflow import reconcile_open_runs as _reconcile_open_runs
+
+                    _reconcile_open_runs(conn)
+                except Exception as exc:  # domain: degrade-silently - workflow is enrichment; boot must not fail
+                    import logutil
+
+                    logutil.log("workflow_reconcile_failed", error=str(exc))
             finally:
                 conn.row_factory = _previous_factory
         except (
