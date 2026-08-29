@@ -239,7 +239,7 @@ def _toc_nav(sections: tuple) -> str:
 
 def _recent_changes_html(commits: list[dict]) -> str:
     """The record page's 'recent changes' panel: a collapsible <details> per
-    commit showing @short · subject · when, opened to a pre.diff of that
+    commit showing @short - subject - when, opened to a pre.diff of that
     file's patch. '' when no commits were read - the record page renders
     plain."""
     if not commits:
@@ -247,13 +247,13 @@ def _recent_changes_html(commits: list[dict]) -> str:
     rows = "".join(
         f'<details class="show-more"><summary>'
         f'<code style="font-family:ui-monospace,Consolas,Menlo,monospace">@{esc(c["short"])}</code> '
-        f"· {esc(c['subject'])} · {_human_ts(c['iso'])}"
+        f"&middot; {esc(c['subject'])} &middot; {_human_ts(c['iso'])}"
         f'</summary><pre class="diff" style="margin:8px 0 0">{esc(c["patch"])}</pre></details>'
         for c in commits
     )
     return (
         f'<details class="panel" style="margin-top:16px">'
-        f"<summary><h2>Recent changes · last {len(commits)} commits</h2></summary>{rows}</details>"
+        f"<summary><h2>Recent changes &middot; last {len(commits)} commits</h2></summary>{rows}</details>"
     )
 
 
