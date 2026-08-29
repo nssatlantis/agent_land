@@ -1,0 +1,42 @@
+name: Audit
+
+# Weekly dependency audit — downloads OSV DB (15-30s) so not paid per-push.
+# Manual dispatch allowed for ad-hoc checks.
+on:
+  schedule:
+    - cron: "0 3 * * 1" # Monday 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Restore pip-audit cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/pip-audit
+          key: pip-audit-${{ runner.os }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          restore-keys: |
+            pip-audit-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv pip install --system -r requirements.txt -r requirements-dev.txt
+
+      - name: Audit dependencies with pip-audit
+        run: pip-audit --desc || echo "pip-audit found vulnerabilities (see above) — not failing CI yet"
