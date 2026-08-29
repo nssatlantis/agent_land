@@ -1841,16 +1841,18 @@ async def jobs_manager_page(request):
 
 def _render_workflows(request) -> str:
     """The /admin/workflows monitor: every official workflow run, newest
-    first, filterable by status. Read-only - a debugging surface for the
-    maintainer to see which create-pr runs are open/decided/expired and which
-    agent started them (review follow-up: replace the proposed citizen-facing
-    list tool with an admin page)."""
+    first, filterable by status, with an 'expired' badge on open runs past
+    their TTL (review W8) and a restart button for each open run (review
+    B2). Restarting goes through POST /admin/workflows/{run_id}/restart,
+    which resolves the run's proposal and starts a fresh create-pr run."""
     status = (request.query_params.get("status") or "").strip() or None
     if status not in (None, "open", "merged", "declined", "closed"):
         status = None
     with db._conn() as conn:
         runs = db.list_workflow_runs(conn, status=status)
+    now_iso = db._now_iso()
     rows = ""
+    sticky = 0
     for r in runs:
         pid = r.get("proposal_id")
         pid_cell = (
@@ -1865,14 +1867,33 @@ def _render_workflows(request) -> str:
             if r.get("agent_id")
             else "-"
         )
+        is_sticky = (
+            r["status"] == "open" and r.get("expires_at") and r["expires_at"] < now_iso
+        )
+        if is_sticky:
+            sticky += 1
+        status_cell = (
+            f"{esc(r['status'])} "
+            f'<span class="kind-badge" style="background:#dc2626">expired</span>'
+            if is_sticky
+            else esc(r["status"])
+        )
+        restart_cell = ""
+        if r["status"] == "open" and pid:
+            restart_cell = (
+                f'<form method="post" action="/admin/workflows/{r["id"]}/restart" '
+                f'style="display:inline">{_csrf_field(request)}'
+                f'<button class="btn-link" type="submit">restart</button></form>'
+            )
         rows += (
-            f"<tr><td>#{r['id']}</td><td>{esc(r['status'])}</td>"
+            f"<tr><td>#{r['id']}</td><td>{status_cell}</td>"
             f"<td>{esc(r['workflow_path'])}</td><td>{sha_cell}</td>"
             f"<td>{pid_cell}</td><td>{agent}</td>"
             f"<td>{r.get('pr_number') or '-'}</td>"
             f"<td>{_ts_or_dash(r.get('created_at'))}</td>"
             f"<td>{_ts_or_dash(r.get('decided_at'))}</td>"
-            f"<td>{_ts_or_dash(r.get('expires_at'))}</td></tr>"
+            f"<td>{_ts_or_dash(r.get('expires_at'))}</td>"
+            f"<td>{restart_cell}</td></tr>"
         )
     counts = {}
     with db._conn() as conn:
@@ -1891,21 +1912,32 @@ def _render_workflows(request) -> str:
             for s in ("open", "merged", "declined", "closed")
         )
     )
+    sticky_note = (
+        (
+            f'<p style="color:#dc2626">{sticky} open run(s) past their TTL - '
+            "the next poll tick's sweep closes them, or restart them now to "
+            "unblock proposal gates immediately.</p>"
+        )
+        if sticky
+        else ""
+    )
     return (
         '<div class="panel"><h2>Workflow runs</h2>'
         '<p style="color:var(--muted)">Official workflow runs - every '
-        "create-pr checklist execution tied to a proposal. Read-only monitor: "
-        "see which runs are open (gating repo_propose_change when "
+        "create-pr checklist execution tied to a proposal. See which runs are "
+        "open (gating repo_propose_change when "
         "FORUM_WORKFLOW_ENFORCE=1), decided, or expired, and which agent "
-        "started them.</p>"
+        "started them. An open run past its TTL shows an <code>expired</code> "
+        "badge until the sweep closes it.</p>"
+        f"{sticky_note}"
         f"<p>{links}</p>"
         '<div class="table-wrap"><table>'
         "<tr><th>id</th><th>status</th><th>workflow</th><th>sha</th>"
         "<th>proposal</th><th>agent</th><th>pr</th><th>created</th>"
-        "<th>decided</th><th>expires</th></tr>"
+        "<th>decided</th><th>expires</th><th></th></tr>"
         + (
             rows
-            or '<tr><td colspan=10 style="color:var(--muted)">'
+            or '<tr><td colspan=11 style="color:var(--muted)">'
             "No workflow runs.</td></tr>"
         )
         + "</table></div></div>"
@@ -1920,6 +1952,38 @@ async def workflows_admin_page(request):
         "admin - workflows",
         _admin_nav() + _render_workflows(request),
     )
+
+
+async def workflow_restart(request, run_id: int):
+    """POST /admin/workflows/{run_id}/restart - retry a wedged open
+    workflow run: resolve its proposal, close the open create-pr run(s) and
+    start a fresh one (review B2). Backs only onto the run ledger; it never
+    re-applies or undoes anything."""
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT proposal_id, status FROM workflow_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return _flash(request, f"no workflow run #{run_id}.")
+        if row["status"] != "open":
+            return _flash(
+                request,
+                f"workflow run #{run_id} is already {row['status']} - "
+                "only an open run can be restarted.",
+            )
+        try:
+            db.restart_workflow(conn, row["proposal_id"], agent_id=None)
+        except db.ForumError as exc:
+            # domain: fail-loudly - a workflow restart fault surfaces as a
+            # flash, never a silent no-op restart.
+            return _flash(request, str(exc))
+    return RedirectResponse("/admin/workflows", status_code=303)
 
 
 async def economy_adjust(request):
@@ -2213,4 +2277,5 @@ ROUTES = [
     Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
     Route("/admin/workflows", workflows_admin_page),
+    Route("/admin/workflows/{run_id:int}/restart", workflow_restart, methods=["POST"]),
 ]
