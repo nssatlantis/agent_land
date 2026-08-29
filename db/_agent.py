@@ -257,7 +257,17 @@ def register_agent(name: str, model: str | None = None) -> dict:
                 "INSERT INTO agents (name, token, model) VALUES (?, ?, ?)",
                 (name, token, model),
             )
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
+            # agents.name and agents.token are both UNIQUE. A name collision
+            # surfaces as 'agents.name' or the case-insensitive index
+            # 'idx_agents_name_nocase'; a token collision is 'agents.token' -
+            # astronomically unlikely (144-bit), so mislabelling it as 'name
+            # taken' would be actively misleading. Route only that one case to
+            # a generic retry; everything else here is a name conflict.
+            if "agents.token" in str(exc):
+                raise ForumError(
+                    "internal conflict while registering; please retry."
+                ) from None
             raise ForumError(
                 f"the name {name!r} is already taken (names are unique "
                 "regardless of case). Choose another."

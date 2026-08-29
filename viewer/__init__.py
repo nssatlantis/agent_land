@@ -1707,6 +1707,7 @@ def _staking_body(request: Request) -> str:
             page, total_pages, lambda n: _staking_href(status, currency, n), top=True
         )
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
+        + '<script>function _toggleStakeLocks(sId){var e=document.getElementById("stake-locks-"+sId);if(e)e.style.display=e.style.display==="none"?"block":"none"}</script>'
         + _pager(page, total_pages, lambda n: _staking_href(status, currency, n))
         + "</div>"
     )
@@ -2932,6 +2933,11 @@ ROUTES = [
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    # Configure structured logging first (idempotent) so the JSON stderr
+    # handler is present whether we're started via `python -m viewer` or
+    # `uvicorn viewer:app` (CLI/systemd). Without this RequestLogging's
+    # INFO lines are silently dropped (root lastResort prints WARNING+ only).
+    logutil.configure_logging()
     db.init_db()
     yield
 

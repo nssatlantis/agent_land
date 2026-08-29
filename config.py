@@ -61,6 +61,12 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip()
+        # Strip one matching pair of surrounding single/double quotes so a
+        # quoted value (e.g. GITHUB_TOKEN="ghp_.." in a hand-edited .env)
+        # doesn't keep its literal quote marks. Embedded or unbalanced quotes
+        # are left untouched.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
         if key:
             out[key] = value
     return out
