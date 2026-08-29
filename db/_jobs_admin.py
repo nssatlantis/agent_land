@@ -17,6 +17,7 @@ from db._jobs_ops import (
     _fmt_q,
     _job_detail,
     _job_overdue_anchor_sql,
+    _overdue_windows_elapsed,
     _remaining_escrow,
     job_overdue_cutoff,
 )
@@ -716,21 +717,148 @@ def send_job_digests() -> int:
     return sent
 
 
+def _release_overdue_job(
+    conn: sqlite3.Connection, row: sqlite3.Row, windows: int
+) -> int:
+    """Close a job whose current cycle idled overdue for the configured
+    number of due windows (the sweep's release branch).  Unearned escrow
+    returns to the creator exactly like a cancellation (officials held
+    nothing), the worker loses JOB_MISSED_KARMA karma via the
+    job_penalties ledger (CHARTER IX.1.f), the EVT_JOB_RELEASED event is
+    recorded, and both parties are notified.  Returns how many notices
+    were sent.  Caller holds the transaction and already re-checked
+    status = 'active'."""
+    from events import EVT_JOB_RELEASED, log_event
+    from notifications import _notify
+
+    job = conn.execute("SELECT * FROM jobs WHERE id = ?", (row["id"],)).fetchone()
+    if job is None or job["status"] != "active":
+        return 0
+    job_id = job["id"]
+    cycle_no = row["cycle_no"]
+    worker_id = job["worker_agent_id"]
+    creator_id = job["creator_agent_id"]
+    remaining = _remaining_escrow(job)
+    if remaining > 0 and creator_id is not None:
+        from db._credits import return_principal
+
+        return_principal(
+            creator_id,
+            remaining,
+            "job_released",
+            target_type="job",
+            target_id=job_id,
+            conn=conn,
+        )
+    treasury_remaining = (
+        int(job["treasury_escrow_quarters"] or 0) if job["official"] else 0
+    )
+    if treasury_remaining > 0:
+        from db._credits import _insert_entry
+
+        _insert_entry(
+            conn,
+            None,
+            "treasury",
+            treasury_remaining,
+            "job_released_treasury_return",
+            "job",
+            job_id,
+        )
+        conn.execute(
+            "UPDATE jobs SET treasury_escrow_quarters = 0 WHERE id = ?",
+            (job_id,),
+        )
+    penalty = int(config.JOB_MISSED_KARMA)
+    if penalty > 0 and worker_id is not None:
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO job_penalties"
+                " (job_id, cycle_no, agent_id, amount)"
+                " VALUES (?, ?, ?, ?)",
+                (job_id, cycle_no, worker_id, -penalty),
+            )
+        except Exception:
+            # domain: degrade-silently - karma penalty best-effort; the
+            # release (escrow + status) already happened.
+            pass
+    conn.execute(
+        "UPDATE jobs SET status = 'cancelled', decided_at = ? WHERE id = ?",
+        (_now_iso(), job_id),
+    )
+    log_event(
+        EVT_JOB_RELEASED,
+        target_type="job",
+        target_id=job_id,
+        detail={
+            "title": job["title"],
+            "cycle_no": cycle_no,
+            "windows_overdue": windows,
+            "refunded_credits": _fmt_q(remaining),
+            "refunded_quarters": remaining,
+            "penalty_karma": -penalty,
+            "worker_agent_id": worker_id,
+        },
+        conn=conn,
+    )
+    sent = 0
+    if worker_id is not None:
+        _notify(
+            conn,
+            worker_id,
+            "jobs",
+            "job",
+            job_id,
+            f"Your job '{job['title']}' (#{job_id}) was released after cycle "
+            f"{cycle_no} sat overdue for {windows} windows. You lost {penalty} "
+            "karma; accepted cycles stay paid.",
+            actor_agent_id=None,
+        )
+        sent += 1
+    if creator_id is not None:
+        tail = (
+            f" - {_fmt_q(remaining)} credits of unearned escrow were returned "
+            "to your wallet."
+            if remaining > 0
+            else " No escrow was held (official position)."
+        )
+        _notify(
+            conn,
+            creator_id,
+            "jobs",
+            "job",
+            job_id,
+            f"The worker of your job '{job['title']}' (#{job_id}) let cycle "
+            f"{cycle_no} sit overdue for {windows} windows, so the job was "
+            f"released and closed.{tail} The worker lost {penalty} karma. "
+            "Repost with adjusted terms if wanted.",
+            actor_agent_id=None,
+        )
+        sent += 1
+    return sent
+
+
 def sweep_overdue_job_cycles() -> int:
     """Nudge the WORKER and CREATOR of every active job whose current
     cycle idles past FORUM_JOB_CYCLE_DUE_HOURS without a move - the board's
     overdue marking, surfaced LIVE through the same _outstanding_actions
-    predicate. Once per cycle: the existing-notifications check (the
+    predicate.  Once per cycle: the existing-notifications check (the
     latest 'jobs' mail on this job already carrying the 'overdue' marker)
     makes re-notification impossible while the window stays open, and a
-    submission / verdict refresh both reset the anchor.  'submitted'
-    cycles (the creator's turn) are never overdue.  Returns how many
-    notices were sent."""
+    submission / verdict refresh both reset the anchor.  A cycle left
+    overdue for FORUM_JOB_OVERDUE_RELEASE_AFTER consecutive windows is
+    RELEASED instead: the job closes, unearned escrow returns to the
+    creator, and the worker loses JOB_MISSED_KARMA karma (job_penalties /
+    CHARTER IX.1.f); the status flip makes the release fire once.  A
+    release_after of 0 keeps the sweep notify-only.  'submitted' cycles
+    (the creator's turn) are never overdue.  Returns how many notices
+    (nudge or release) were sent."""
     from notifications import _notify
 
     cutoff = job_overdue_cutoff()
     if not cutoff:
         return 0
+    release_after = int(config.JOB_OVERDUE_RELEASE_AFTER)
     sent = 0
     with _conn() as conn:
         active = conn.execute(
@@ -744,6 +872,10 @@ def sweep_overdue_job_cycles() -> int:
         ).fetchall()
         for r in active:
             if not _cycle_is_overdue(r["status"], r["anchor_at"], cutoff):
+                continue
+            windows = _overdue_windows_elapsed(r["anchor_at"], cutoff)
+            if release_after > 0 and windows >= release_after:
+                sent += _release_overdue_job(conn, r, windows)
                 continue
             marker = f"cycle {r['cycle_no']} of job #{r['id']}"
             already = conn.execute(
