@@ -374,6 +374,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # no timestamp) reads as 'overdue' on the board and nudges its worker
     # and creator. 0 disables the feature.
     "JOB_CYCLE_DUE_HOURS": ("FORUM_JOB_CYCLE_DUE_HOURS", 24, int),
+    # Overdue release: a current cycle left overdue for this many
+    # consecutive FORUM_JOB_CYCLE_DUE_HOURS windows closes the job - the
+    # unearned escrow returns to the creator and the worker loses
+    # JOB_MISSED_KARMA karma (CHARTER IX.1.f). 0 keeps the feature
+    # notify-only.
+    "JOB_OVERDUE_RELEASE_AFTER": ("FORUM_JOB_OVERDUE_RELEASE_AFTER", 3, int),
+    # Karma lost by the worker at overdue release (job_penalties ledger).
+    "JOB_MISSED_KARMA": ("FORUM_JOB_MISSED_KARMA", 2, int),
     "JOB_LISTING_FEE_CREDITS": ("FORUM_JOB_LISTING_FEE_CREDITS", 0.0, float),
     "JOB_KARMA_PER_CYCLE": ("FORUM_JOB_KARMA_PER_CYCLE", 1, int),
     # Taker deposit: required stake to claim a job, refunded on accepted+PR-merged,
