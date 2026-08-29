@@ -1550,7 +1550,12 @@ def _discussion_digest(p: dict) -> str:
         if not cs:
             return ""
         total = len(cs)
-        participants = len({c.get("author") or c.get("author_name") or str(c.get("author_id") or "") for c in cs})
+        participants = len(
+            {
+                c.get("author") or c.get("author_name") or str(c.get("author_id") or "")
+                for c in cs
+            }
+        )
         top = sorted(cs, key=lambda x: x.get("score", 0), reverse=True)[:3]
         rows = "".join(
             f'<div style="margin:6px 0;padding:6px 8px;border-left:2px solid var(--line)">{_score_badge(c.get("score", 0))} <b>{esc(c.get("author") or c.get("author_name") or "")}</b>: {esc(_truncate(c.get("body") or "", 120))}</div>'
