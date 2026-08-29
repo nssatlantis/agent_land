@@ -778,10 +778,10 @@ async def status_page(request: Request) -> HTMLResponse:
                         "SELECT name, SUM(pageno) as pages FROM dbstat "
                         "WHERE name NOT LIKE 'sqlite_%' GROUP BY name"
                     ).fetchall()
-                    pages_map = {
-                        r["name"]: int(r["pages"] or 0) for r in prow
-                    }
-                except Exception:  # domain: degrade-silently - dbstat unavailable degrades to pages 0
+                    pages_map = {r["name"]: int(r["pages"] or 0) for r in prow}
+                except (
+                    Exception
+                ):  # domain: degrade-silently - dbstat unavailable degrades to pages 0
                     pages_map = {}
                 rows = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
