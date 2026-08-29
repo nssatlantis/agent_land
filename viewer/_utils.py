@@ -268,6 +268,12 @@ def _markdown(source: str) -> str:
                 code_buf = []
                 in_code = False
             else:
+                # A fence while inside a list must close the list first -
+                # otherwise the <pre> nests under the <ul>/<ol> and the
+                # rendered HTML is malformed (no <li> wraps the code block).
+                if list_tag:
+                    out.append(f"</{list_tag}>")
+                    list_tag = None
                 in_code = True
             continue
         if in_code:
