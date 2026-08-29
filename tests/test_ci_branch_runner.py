@@ -146,7 +146,7 @@ class _GitFixture:
 def test_knob_defaults():
     assert config.CI_RUN_BRANCH_ENABLED == 1
     assert config.CI_RUN_IMAGE_BASE == "agentland-ci"
-    assert float(config.CI_RUN_SANDBOX_CPUS) == 2.0
+    assert float(config.CI_RUN_SANDBOX_CPUS) == 1.5
     assert config.CI_RUN_SANDBOX_MEMORY_MB == 1024
     assert config.CI_RUN_SANDBOX_SWAP_MB == 256
     assert config.CI_RUN_SANDBOX_PIDS == 128

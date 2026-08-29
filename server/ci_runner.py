@@ -133,30 +133,104 @@ def _ci_ensure_pool() -> queue.Queue[int]:
     return _CI_QUEUE
 
 
-def _ci_acquire_slot() -> int:
-    """Acquire a CI slot token without blocking; raises ForumError if saturated."""
+def _ci_queue_depth() -> tuple[int, int, int]:
+    """Snapshot (desired, available, busy) without mutating the pool."""
     q = _ci_ensure_pool()
-    while True:
+    desired = max(1, int(config.CI_RUN_CONCURRENCY))
+    try:
+        avail = q.qsize()
+    except Exception:
+        avail = 0
+    busy = max(0, desired - avail)
+    return desired, avail, busy
+
+
+def _effective_cpus() -> float:
+    """Adaptive down-only: 1.5 → 1.33 when workers already busy.
+
+    Host is 4c (i5-6500T). 3×1.5=4.5 oversubscribes; throttle to 1.33
+    (4/3) when at least one other slot is busy so total never exceeds 4c.
+    Never up — cap is config.CI_RUN_SANDBOX_CPUS (1.5), floor 1.0."""
+    try:
+        ceil = float(config.CI_RUN_SANDBOX_CPUS)
+    except Exception:
+        ceil = 1.5  # domain: degrade-silently
+    desired, avail, busy = _ci_queue_depth()
+    # Down-only: if any other slot busy, fair share is 4/conc
+    if busy >= 1:
+        fair = 4.0 / max(1, desired)
+        # Never exceed ceil, never drop below 1.0 (timeout thrash)
+        return round(min(ceil, max(1.0, fair)), 2)
+    return round(min(ceil, max(1.0, ceil)), 2)
+
+
+def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int:
+    """Acquire a CI slot token; raises ForumError if saturated.
+
+    reserve=True keeps 1 slot for user (poller/ticker use it; user passes False).
+    timeout=None is non-blocking (poller/ticker); timeout=10 waits for user
+    and surfaces Retry-After.
+    """
+    # Check reserve before touching queue — stale q race handled below
+    for attempt in range(2):  # at most one retry on stale queue
+        q = _ci_ensure_pool()
+        desired = max(1, int(config.CI_RUN_CONCURRENCY))
+        # Reserve: poller/ticker must not take the last free token
+        if reserve:
+            try:
+                avail = q.qsize()
+            except Exception:
+                avail = 0
+            if avail <= 1:
+                # Report Retry-After hint
+                _, _, busy = _ci_queue_depth()
+                retry_after = 30 * max(1, busy)
+                raise db.ForumError(
+                    f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy, reserved 1 for user)"
+                )
+        # Acquire — blocking wait for user, instant for poller
         try:
-            idx = q.get(block=False)
+            if timeout is not None:
+                idx = q.get(block=True, timeout=timeout)
+            else:
+                idx = q.get(block=False)
         except queue.Empty as exc:
+            # Stale-queue retry: live config may have rebuilt _CI_QUEUE
+            # while we held old q. Retry once with fresh queue.
+            with _CI_LOCK:
+                live_q = _CI_QUEUE
+            if live_q is not None and live_q is not q and attempt == 0:
+                continue
+            _, _, busy = _ci_queue_depth()
+            retry_after = 30 * max(1, busy) if busy else 30
             raise db.ForumError(
-                "a CI run is already in progress; try again when it finishes"
+                f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy)"
             ) from exc
-        # Validate against current pool — handles race where caller held old
-        # queue ref across a shrink rebuild and got a retired index (>=live).
-        # _CI_SLOTS length is the live pool size; protect read with _CI_LOCK.
+        # Validate retired index (shrink race)
         with _CI_LOCK:
             live_len = len(_CI_SLOTS)
-        desired = max(1, int(config.CI_RUN_CONCURRENCY))
         live = min(desired, live_len) if live_len else desired
         if 0 <= idx < live:
             return idx
-        # Retired idx from old queue — discard and try next; if now empty, saturated.
+        # Retired idx — discard and retry if fresh queue still has tokens
         if q.empty():
+            with _CI_LOCK:
+                live_q = _CI_QUEUE
+            if live_q is not None and live_q is not q and attempt == 0:
+                continue
+            _, _, busy = _ci_queue_depth()
+            retry_after = 30 * max(1, busy) if busy else 30
             raise db.ForumError(
-                "a CI run is already in progress; try again when it finishes"
+                f"a CI run is already in progress; try again in ~{retry_after}s (pool {busy}/{desired} busy)"
             ) from None
+        # Retired but queue still has items — loop to next token
+        continue
+    # Fallback — should not reach
+    _, _, busy = _ci_queue_depth()
+    desired = max(1, int(config.CI_RUN_CONCURRENCY))
+    raise db.ForumError(
+        f"a CI run is already in progress; try again in ~{30 * max(1, busy)}s (pool {busy}/{desired} busy)"
+    )
 
 
 def _ci_release_slot(idx: int) -> None:
@@ -740,6 +814,11 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
     Returns (argv, container_name) - the name lets the timeout path stop
     the container even though the killed client detaches from it."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
+    # Adaptive down-only: 1.5 → 1.33 when busy (4c host, 3×1.33=4.0)
+    try:
+        cpus = _effective_cpus()
+    except Exception:
+        cpus = float(config.CI_RUN_SANDBOX_CPUS)  # domain: degrade-silently
     argv = [
         "docker",
         "run",
@@ -756,7 +835,7 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
         "--user",
         "1000:1000",
         "--cpus",
-        str(config.CI_RUN_SANDBOX_CPUS),
+        str(cpus),
         "--memory",
         f"{config.CI_RUN_SANDBOX_MEMORY_MB}m",
         # memory-swap = memory + swap extra; 256M swap lets a brief peak spill to swap
@@ -980,17 +1059,18 @@ def run_checks(
     _gate(kind_event, agent_id)
     tmp_root = tempfile.mkdtemp(prefix="agentland_ci_run_")
     started = time.monotonic()
-    # Acquire a sharded runner slot — up to CI_RUN_CONCURRENCY concurrent
-    # runs on the single host. The third caller still gets the familiar
-    # "already in progress" error. Legacy _RUN_LOCK is kept for the
-    # existing single-slot test: if it is held, treat as saturated.
+    # Acquire a sharded runner slot — 3×1.5c on 4c host. User path waits
+    # 10s for a slot and surfaces Retry-After; poller/ticker reserve 1.
+    # Legacy _RUN_LOCK is kept for the existing single-slot test: if it is
+    # held, treat as saturated.
     if _RUN_LOCK.locked():  # legacy: only set by tests via acquire(); always False in prod — real gate is _ci_acquire_slot (same point MiMo #2)
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(
-            "a CI run is already in progress; try again when it finishes"
+            "a CI run is already in progress; try again in ~30s (pool busy, legacy lock)"
         )
     try:
-        slot = _ci_acquire_slot()
+        # User-initiated: wait up to 10s for a slot, then Retry-After
+        slot = _ci_acquire_slot(reserve=False, timeout=10)
     except db.ForumError:
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
@@ -1167,10 +1247,11 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
     if _RUN_LOCK.locked():  # legacy: only set by tests; always False in prod — real gate is _ci_acquire_slot
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise db.ForumError(
-            "a CI run is already in progress; try again when it finishes"
+            "a CI run is already in progress; try again in ~30s (pool busy, legacy lock)"
         )
     try:
-        slot = _ci_acquire_slot()
+        # Poller/ticker: reserve 1 slot for user, non-blocking skip
+        slot = _ci_acquire_slot(reserve=True, timeout=None)
     except db.ForumError:
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
