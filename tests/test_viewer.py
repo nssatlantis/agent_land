@@ -814,15 +814,16 @@ def test_storage_table_rows_dbstat_pages_are_counts_not_pageno():
         conn.execute("SELECT 1 FROM dbstat LIMIT 1").fetchone()
     except Exception:
         return  # dbstat not compiled into this build: fallback path covered below
-    expected = dict(
-        conn.execute(
+    expected = {
+        r[0]: (int(r[1]), int(r[2]), int(r[3]))
+        for r in conn.execute(
             "SELECT COALESCE(sm.tbl_name, d.name), COUNT(*), SUM(d.pgsize),"
             " SUM(CASE WHEN d.pagetype = 'overflow' THEN 1 ELSE 0 END)"
             " FROM dbstat d LEFT JOIN sqlite_master sm ON d.name = sm.name"
             " WHERE COALESCE(sm.tbl_name, d.name) NOT LIKE 'sqlite_%'"
             " GROUP BY 1"
         ).fetchall()
-    )
+    }
     tables, total_bytes = _storage_table_rows(conn)
     for tname, _cnt, _nidx, pages, overflow, bytes_ in tables:
         if tname not in expected:
