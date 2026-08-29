@@ -342,7 +342,10 @@ def render_post(post_id: int) -> HTMLResponse:
         f"{comments or empty_comments}</div>"
     )
     return _page(
-        """<script>
+        f"post {post_id}: {p['title']}",
+        _with_rail(
+            body
+            + """<script>
 function _copyComment(post_id, c_id) {
   var text = location.origin + "/posts/" + post_id + "#c" + c_id;
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -357,8 +360,7 @@ function _copyComment(post_id, c_id) {
   }
 }
 </script>"""
-        + f"post {post_id}: {p['title']}",
-        _with_rail(body),
+        ),
         section="posts",
         poll=_poll_config(("/fragments/rail", "frag-rail", POLL_MS)),
     )
@@ -3191,12 +3193,17 @@ def feed(request: Request) -> HTMLResponse:
         offset = 0
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
-    raw = aggregates.recent_activity(limit=limit + 1, offset=offset)
+    # Subscription filter (4325) - ?kind= narrows the feed to one branch
+    kind = request.query_params.get("kind")
+    if kind not in (None, "posts", "comments", "votes", "events"):
+        kind = None  # domain: degrade-silently - unknown kind degrades to full feed
+    kind_q = f"&kind={kind}" if kind else ""
+    raw = aggregates.recent_activity(limit=limit + 1, offset=offset, kind=kind)
     has_more = len(raw) > limit
     items = "".join(_feed_item(e) for e in raw[:limit])
     now = format_datetime(datetime.now(timezone.utc))
     next_href = (
-        f'<atom:link rel="next" href="{_abs(f"/feed?limit={limit}&offset={offset + limit}")}" />'
+        f'<atom:link rel="next" href="{_abs(f"/feed?limit={limit}&offset={offset + limit}{kind_q}")}" />'
         if has_more
         else ""
     )
@@ -3215,8 +3222,25 @@ def feed(request: Request) -> HTMLResponse:
         f"{items}"
         "</channel></rss>"
     )
+    import hashlib
+
+    body_bytes = rss.encode("utf-8")
+    etag = '"' + hashlib.sha1(body_bytes).hexdigest() + '"'
+    if request.headers.get("if-none-match") == etag:
+        return HTMLResponse(
+            "",
+            status_code=304,
+            headers={
+                "Content-Type": "application/rss+xml; charset=utf-8",
+                "ETag": etag,
+            },
+        )
     return HTMLResponse(
-        rss, headers={"Content-Type": "application/rss+xml; charset=utf-8"}
+        rss,
+        headers={
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "ETag": etag,
+        },
     )
 
 
