@@ -1539,6 +1539,38 @@ def _side_rail(show_proposals: bool = True) -> str:
     return "".join(cards)
 
 
+def _discussion_digest(p: dict) -> str:
+    """Discussion digest for proposal posts (237:4407) - display-only.
+    Shows comment count, distinct participants, top 3 by score. Degrades
+    silently - any data shape error yields empty string."""
+    try:
+        if not p.get("proposal_kind") or not p.get("comments"):
+            return ""
+        cs = p.get("comments") or []
+        if not cs:
+            return ""
+        total = len(cs)
+        participants = len(
+            {
+                c.get("author") or c.get("author_name") or str(c.get("author_id") or "")
+                for c in cs
+            }
+        )
+        top = sorted(cs, key=lambda x: x.get("score", 0), reverse=True)[:3]
+        rows = "".join(
+            f'<div style="margin:6px 0;padding:6px 8px;border-left:2px solid var(--line)">{_score_badge(c.get("score", 0))} <b>{esc(c.get("author") or c.get("author_name") or "")}</b>: {esc(_truncate(c.get("body") or "", 120))}</div>'
+            for c in top
+        )
+        return (
+            f'<div class="panel"><h2>Discussion digest</h2>'
+            f'<div style="color:var(--muted);font-size:14px">{total} comments \u00b7 {participants} participants</div>'
+            + rows
+            + "</div>"
+        )
+    except Exception:  # domain: degrade-silently - digest never blocks post page
+        return ""
+
+
 def _with_rail(content: str, show_proposals: bool = True) -> str:
     """Wrap a page's main column next to the side rail in a two-column grid
     (single column on narrow screens). The rail's inner content carries a
@@ -1550,7 +1582,7 @@ def _with_rail(content: str, show_proposals: bool = True) -> str:
     )
 
 
-def _render_comment(node: dict, post_id: int = 0) -> str:
+def _render_comment(node: dict, post_id: int = 0, depth: int = 0) -> str:
     quote = ""
     if node.get("quote_text"):
         # A structured quote: the frozen excerpt (escaped, inline-markdown so
@@ -1568,8 +1600,11 @@ def _render_comment(node: dict, post_id: int = 0) -> str:
             )
         else:
             attr = '<span class="quote-meta">— source comment deleted</span>'
+        # Unified #P/#C quote block (237:4406) - attributed + truncated snapshot, same esc as body
+        _qt = esc(_truncate(node["quote_text"], 280))
         quote = (
             f'<blockquote class="quote">{_inline_md(node["quote_text"])}'
+            f'<div style="color:var(--muted);font-size:12px;margin-top:4px">snapshot: {_qt}</div>'
             f"{attr}</blockquote>"
         )
     copy_icon = "&#128279;"
@@ -1577,11 +1612,19 @@ def _render_comment(node: dict, post_id: int = 0) -> str:
         f'<button class="copy-link" title="Copy permalink" '
         f'onclick="_copyComment({post_id},{node["id"]})">{copy_icon}</button>'
     )
+    depth_badge = (
+        f'<span style="color:var(--muted);font-size:12px;margin-right:6px"'
+        f' title="depth {depth}">\u21b3 depth {depth}</span>'
+        if depth
+        else ""
+    )
+    indent = f"margin-left:{min(depth * 12, 36)}px" if depth else ""
+    indent_attr = f' style="{indent}"' if indent else ""
     inner = (
-        f'<div class="comment" id="c{node["id"]}">{copy_btn}{_comment_meta(node)}<hr>'
+        f'<div class="comment" id="c{node["id"]}"{indent_attr}>{copy_btn}{depth_badge}{_comment_meta(node)}<hr>'
         f"{quote}<div class='post-body'>{_markdown(node['body'])}</div></div>"
     )
-    replies = "".join(_render_comment(r, post_id) for r in node["replies"])
+    replies = "".join(_render_comment(r, post_id, depth + 1) for r in node["replies"])
     if replies:
         inner += f'<div class="thread">{replies}</div>'
     return inner

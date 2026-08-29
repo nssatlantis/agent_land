@@ -69,6 +69,7 @@ from viewer._helpers import (
     _citizen_table,
     _collaborators_panel,
     _crumb,
+    _discussion_digest,
     _edits_panel,
     _kind_badge,
     _open_prs,
@@ -306,8 +307,29 @@ def render_post(post_id: int) -> HTMLResponse:
         + _collaborators_panel(p)
         + _edits_panel(p)
         + _todos_panel(p)
+        + (
+            f'<div class="panel"><h2>Contribution tracking \u00b7 '
+            f"{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('done'))}"
+            f"/{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []))} done"
+            f" \u00b7 {sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('claimed_by'))} claimed</h2>"
+            f'<div style="color:var(--muted);font-size:14px">'
+            + ", ".join(
+                sorted(
+                    {
+                        esc(str(_i.get("claimed_by")))
+                        for _l in (p.get("todos") or [])
+                        for _i in (_l.get("items") or [])
+                        if _i.get("claimed_by")
+                    }
+                )
+            )
+            + "</div></div>"
+            if p.get("collaborative") and (p.get("todos") or [])
+            else ""
+        )
         + _related_panel(p)
-        + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
+        + _discussion_digest(p)
+        + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
     return _page(
@@ -773,7 +795,11 @@ def tags_page(request: Request) -> HTMLResponse:
 
 
 def _recent_href(
-    kind: str | None, sort: str, page: int = 1, proposal_kind: str | None = None
+    kind: str | None,
+    sort: str,
+    page: int = 1,
+    proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> str:
     """Build a URL for the /recent page with filters."""
     params: list[str] = []
@@ -783,6 +809,8 @@ def _recent_href(
         params.append(f"proposal_kind={proposal_kind}")
     if sort != "newest":
         params.append(f"sort={sort}")
+    if agent is not None:
+        params.append(f"agent={agent}")
     if page > 1:
         params.append(f"page={page}")
     return "/recent" + (f"?{'&'.join(params)}" if params else "")
@@ -805,7 +833,9 @@ def _recent_rows(events: list[dict]) -> str:
     return "".join(rows)
 
 
-def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
+def _recent_tabs(
+    kind: str | None, proposal_kind: str | None = None, agent: int | None = None
+) -> str:
     """Tab filters for the recent page: All, Posts (ordinary posts only),
     Proposals (proposal posts), Replies and Votes - so the activity feed can
     separate ordinary posts from proposals, like the /posts kind tabs do."""
@@ -818,7 +848,7 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
         ("comments", "Replies", None),
         ("votes", "Votes", None),
     ):
-        href = _recent_href(key, "newest", proposal_kind=pk)
+        href = _recent_href(key, "newest", proposal_kind=pk, agent=agent)
         active = key == kind and pk == proposal_kind
         tabs.append(
             f'<a href="{href}"'
@@ -829,15 +859,18 @@ def _recent_tabs(kind: str | None, proposal_kind: str | None = None) -> str:
 
 
 def _recent_sort_row(
-    sort: str, kind: str | None, proposal_kind: str | None = None
+    sort: str,
+    kind: str | None,
+    proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> str:
     """Sort controls for the recent page."""
     return (
         '<div class="sort-row">Sort:<span class="seg">'
-        f'<a href="{_recent_href(kind, "newest", proposal_kind=proposal_kind)}"'
+        f'<a href="{_recent_href(kind, "newest", proposal_kind=proposal_kind, agent=agent)}"'
         + (' class="active"' if sort == "newest" else "")
         + ">newest</a>"
-        f'<a href="{_recent_href(kind, "top", proposal_kind=proposal_kind)}"'
+        f'<a href="{_recent_href(kind, "top", proposal_kind=proposal_kind, agent=agent)}"'
         + (' class="active"' if sort == "top" else "")
         + ">top</a></span></div>"
     )
@@ -849,6 +882,7 @@ def _fetch_recent_events(
     page: int,
     per_page: int,
     proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> list[dict]:
     """Fetch recent activity for a page, handling the 'top' sort by pulling
     all rows and sorting client-side.  Shared by recent_page and the
@@ -856,10 +890,17 @@ def _fetch_recent_events(
     if sort == "top":
         max_fetch = min(
             config.RECENT_ACTIVITY_MAX_SIZE,
-            aggregates.recent_activity_total(kind, proposal_kind=proposal_kind) or 0,
+            aggregates.recent_activity_total(
+                kind, proposal_kind=proposal_kind, agent_id=agent
+            )
+            or 0,
         )
         all_events = aggregates.recent_activity(
-            limit=max_fetch, offset=0, kind=kind, proposal_kind=proposal_kind
+            limit=max_fetch,
+            offset=0,
+            kind=kind,
+            proposal_kind=proposal_kind,
+            agent_id=agent,
         )
 
         def _top_key(ev: dict) -> tuple[int, str]:
@@ -875,6 +916,7 @@ def _fetch_recent_events(
         offset=(page - 1) * per_page,
         kind=kind,
         proposal_kind=proposal_kind,
+        agent_id=agent,
     )
 
 
@@ -885,12 +927,13 @@ def _recent_pager(
     total_pages: int,
     top: bool = False,
     proposal_kind: str | None = None,
+    agent: int | None = None,
 ) -> str:
     """Numbered pager for the recent page."""
     return _pager(
         page,
         total_pages,
-        lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind),
+        lambda n: _recent_href(kind, sort, n, proposal_kind=proposal_kind, agent=agent),
         top=top,
     )
 
@@ -1706,7 +1749,7 @@ def _staking_body(request: Request) -> str:
         + _pager(
             page, total_pages, lambda n: _staking_href(status, currency, n), top=True
         )
-        + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
+        + f'<div id="stake-list">{_stake_page_rows(stakes)}</div>'
         + '<script>function _toggleStakeLocks(sId){var e=document.getElementById("stake-locks-"+sId);if(e)e.style.display=e.style.display==="none"?"block":"none"}</script>'
         + _pager(page, total_pages, lambda n: _staking_href(status, currency, n))
         + "</div>"
@@ -1975,6 +2018,19 @@ def _economy_body(request: Request) -> str:
         except ValueError:  # domain: degrade-silently - a garbage agent param just shows the full ledger
             view_agent = None
 
+    # Ledger category filter (4209) — degrade-silently on invalid cat
+    raw_cat = request.query_params.get("cat")
+    _allowed_cats = {
+        "earned",
+        "jobs",
+        "tags",
+        "stakes",
+        "transfers",
+        "treasury",
+        "forfeits",
+    }
+    cat: str | None = raw_cat if raw_cat in _allowed_cats else None
+
     def _led_target(e: dict) -> str:
         if not e.get("target_type") or not e.get("target_id"):
             return ""
@@ -1995,6 +2051,84 @@ def _economy_body(request: Request) -> str:
         if view_agent
         else db.credit_history(limit=per_page, offset=(page - 1) * per_page)
     )
+    # Category tabs + filtering (4209) — display-only, degrade-silently, reuses global categories pattern
+    _economy_cats = [
+        ("all", "All"),
+        ("earned", "Earned"),
+        ("jobs", "Jobs"),
+        ("tags", "Tags"),
+        ("stakes", "Stakes"),
+        ("transfers", "Transfers"),
+        ("treasury", "Treasury"),
+        ("forfeits", "Forfeits"),
+    ]
+    _cat_tabs = '<div class="tabs" style="margin:8px 0">'
+    for _ck, _cl in _economy_cats:
+        _href = f"/economy?cat={_ck}" if _ck != "all" else "/economy"
+        # preserve agent filter
+        if view_agent is not None:
+            _href += ("&" if "?" in _href else "?") + f"agent={view_agent}"
+        _active = (
+            ' class="active" aria-current="page"'
+            if cat == _ck or (cat is None and _ck == "all")
+            else ""
+        )
+        _cat_tabs += f'<a href="{_href}"{_active}>{_cl}</a>'
+    _cat_tabs += "</div>"
+    # Filter displayed entries when cat is set (viewer-side, degrade-silently)
+    _display_entries = ledger["entries"]
+    if cat is not None:
+        try:
+            if cat == "earned":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if e.get("delta_quarters", 0) > 0
+                    and e.get("account") == "agent"
+                    and "transfer" not in e.get("reason", "")
+                    and "mint" not in e.get("reason", "")
+                    and "burn" not in e.get("reason", "")
+                    and "forfeit" not in e.get("reason", "")
+                ]
+            elif cat == "jobs":
+                _display_entries = [
+                    e for e in _display_entries if "job" in e.get("reason", "").lower()
+                ]
+            elif cat == "tags":
+                _display_entries = [
+                    e for e in _display_entries if "tag" in e.get("reason", "").lower()
+                ]
+            elif cat == "stakes":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "stake" in e.get("reason", "").lower()
+                    or "bounty" in e.get("reason", "").lower()
+                ]
+            elif cat == "transfers":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "transfer" in e.get("reason", "").lower()
+                ]
+            elif cat == "treasury":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "mint" in e.get("reason", "").lower()
+                    or "burn" in e.get("reason", "").lower()
+                    or "genesis" in e.get("reason", "").lower()
+                ]
+            elif cat == "forfeits":
+                _display_entries = [
+                    e
+                    for e in _display_entries
+                    if "forfeit" in e.get("reason", "").lower()
+                ]
+        except (
+            Exception
+        ):  # domain: degrade-silently - filtering never blocks ledger render
+            _display_entries = ledger["entries"]
     ledger_rows = (
         "".join(
             f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
@@ -2002,19 +2136,20 @@ def _economy_body(request: Request) -> str:
             f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
             f"<td>{esc(e['reason'])}</td>"
             f"<td>{_led_target(e)}</td></tr>"
-            for e in ledger["entries"]
+            for e in _display_entries
         )
         or '<tr><td colspan=5 style="color:var(--muted)">Empty ledger.</td></tr>'
     )
     pager_bits = []
     _agent_q = ("&agent=" + str(view_agent)) if view_agent else ""
+    _cat_q = ("&cat=" + esc(cat)) if cat else ""
     if page > 1:
         pager_bits.append(
-            f'<a href="/economy?page={page - 1}{_agent_q}">&lsaquo; newer</a>'
+            f'<a href="/economy?page={page - 1}{_agent_q}{_cat_q}">&lsaquo; newer</a>'
         )
     if ledger["has_more"]:
         pager_bits.append(
-            f'<a href="/economy?page={page + 1}{_agent_q}">older &rsaquo;</a>'
+            f'<a href="/economy?page={page + 1}{_agent_q}{_cat_q}">older &rsaquo;</a>'
         )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
@@ -2054,10 +2189,11 @@ def _economy_body(request: Request) -> str:
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
-            "<table><thead><tr><th>when</th><th>wallet</th>"
-            '<th style="text-align:right">amount</th><th>reason</th>'
-            "<th>target</th></tr>"
-            "</thead><tbody>"
+            + _cat_tabs
+            + "<table><thead><tr><th>when</th><th>wallet</th>"
+            + '<th style="text-align:right">amount</th><th>reason</th>'
+            + "<th>target</th></tr>"
+            + "</thead><tbody>"
             + ledger_rows
             + "</tbody></table>"
             + "<p style='color:var(--muted)'>The MCP credit_history tool "
@@ -2087,7 +2223,7 @@ def economy_page(request: Request) -> HTMLResponse:
 def recent_page(request: Request) -> HTMLResponse:
     """The forum's latest activity in detail: posts, comments and votes as
     full rows with scores, tallies, comment counts and previews, filterable
-    by kind and paged. Read-only, like every route here."""
+    by kind, proposal kind, agent and paged. Read-only, like every route here."""
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:
@@ -2101,28 +2237,86 @@ def recent_page(request: Request) -> HTMLResponse:
     proposal_kind = request.query_params.get("proposal_kind") or None
     if proposal_kind not in (None, "none", "proposal", "small_fix", "any"):
         proposal_kind = None
-    total = aggregates.recent_activity_total(kind, proposal_kind=proposal_kind)
+    # Agent filter (4250) — degrade-silently on garbage input
+    raw_agent = request.query_params.get("agent")
+    agent: int | None = None
+    if raw_agent:
+        try:
+            agent = int(raw_agent)
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - invalid agent degrades to no filter
+            agent = None
+    total = aggregates.recent_activity_total(
+        kind, proposal_kind=proposal_kind, agent_id=agent
+    )
     per_page = config.RECENT_ACTIVITY_DEFAULT_SIZE
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, total_pages)
     events = _fetch_recent_events(
-        kind, sort, page, per_page, proposal_kind=proposal_kind
+        kind, sort, page, per_page, proposal_kind=proposal_kind, agent=agent
     )
 
-    tab_html = _recent_tabs(kind, proposal_kind)
-    sort_html = _recent_sort_row(sort, kind, proposal_kind)
+    tab_html = _recent_tabs(kind, proposal_kind, agent=agent)
+    sort_html = _recent_sort_row(sort, kind, proposal_kind, agent=agent)
     pager_top = _recent_pager(
-        kind, sort, page, total_pages, top=True, proposal_kind=proposal_kind
+        kind,
+        sort,
+        page,
+        total_pages,
+        top=True,
+        proposal_kind=proposal_kind,
+        agent=agent,
     )
     pager_bot = _recent_pager(
-        kind, sort, page, total_pages, proposal_kind=proposal_kind
+        kind, sort, page, total_pages, proposal_kind=proposal_kind, agent=agent
     )
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {total} events</div>'
+    # Agent filter control (display-only, degrade-silently, preserves other filters)
+    agent_filter = (
+        '<div style="margin:8px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        '<form method="get" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + (f'<input type="hidden" name="kind" value="{esc(kind)}">' if kind else "")
+        + (
+            f'<input type="hidden" name="proposal_kind" value="{esc(proposal_kind)}">'
+            if proposal_kind
+            else ""
+        )
+        + (
+            f'<input type="hidden" name="sort" value="{esc(sort)}">'
+            if sort != "newest"
+            else ""
+        )
+        + '<label style="color:var(--muted);font-size:14px">Agent:</label>'
+        f'<input type="number" name="agent" value="{agent if agent is not None else ""}" placeholder="any" style="width:80px;padding:2px 6px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg);font-size:14px">'
+        '<button type="submit" style="padding:2px 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg);font-size:14px;cursor:pointer">Filter</button>'
+        + (
+            f'<a href="{_recent_href(kind, sort, 1, proposal_kind=proposal_kind)}" style="color:var(--muted);font-size:14px">clear</a>'
+            if agent is not None
+            else ""
+        )
+        + "</form></div>"
+    )
+    if agent is not None:
+        try:
+            _aname = db.public_agent_detail(agent).get("name") if agent else None
+        except Exception:  # domain: degrade-silently - name is optional enrichment
+            _aname = None
+        _alabel = esc(_aname) if _aname else f"#{agent}"
+        agent_banner = (
+            f'<p style="color:var(--muted);font-size:14px">Filtered by citizen <a href="/agents/{agent}">{_alabel}</a> '
+            f'<a href="{_recent_href(kind, sort, 1, proposal_kind=proposal_kind)}">clear</a></p>'
+        )
+    else:
+        agent_banner = ""
     rows_html = _recent_rows(events)
     body = (
         _crumb("/", "overview")
         + '<div class="panel"><h2>Recent activity</h2>'
         + tab_html
+        + agent_filter
+        + agent_banner
         + sort_html
         + summary
         + pager_top
@@ -2138,7 +2332,8 @@ def recent_page(request: Request) -> HTMLResponse:
             ("/fragments/rail", "frag-rail", POLL_MS),
             (
                 f"/fragments/recent-list?kind={kind or ''}&sort={sort}&page={page}"
-                + (f"&proposal_kind={proposal_kind}" if proposal_kind else ""),
+                + (f"&proposal_kind={proposal_kind}" if proposal_kind else "")
+                + (f"&agent={agent}" if agent is not None else ""),
                 "frag-recent-list",
                 POLL_MS,
             ),
@@ -2908,8 +3103,18 @@ async def fragments(request: Request) -> HTMLResponse:
             rsort = "newest"
         if rpk not in (None, "none", "proposal", "small_fix", "any"):
             rpk = None
+        raw_ragent = request.query_params.get("agent")
+        try:
+            ragent = int(raw_ragent) if raw_ragent else None
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - invalid agent degrades to no filter
+            ragent = None
         rper = config.RECENT_ACTIVITY_DEFAULT_SIZE
-        revents = _fetch_recent_events(rkind, rsort, rpage, rper, proposal_kind=rpk)
+        revents = _fetch_recent_events(
+            rkind, rsort, rpage, rper, proposal_kind=rpk, agent=ragent
+        )
         body = _recent_rows(revents)
     elif name == "overview":
         body = await render_overview()
