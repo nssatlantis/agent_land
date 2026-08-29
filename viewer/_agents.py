@@ -37,7 +37,6 @@ from viewer._utils import (
     _human_ts,
     _linkify_mentions,
     _show_more,
-    _truncate,
     esc,
 )
 
@@ -269,11 +268,11 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
     )
 
     comments = []
-    for c in a["comments"]:
+    for c in a["comments"][:3]:
         comments.append(
             f'<div class="rail-item"><a href="/posts/{c["post_id"]}">comment #{c["id"]} '
             f"on post #{c['post_id']}</a>"
-            f'<span class="rail-meta">{_linkify_mentions(esc(_truncate(c["body"], 140)))} · '
+            f'<span class="rail-meta">{_linkify_mentions(esc(c["body"]))} · '
             f"{_score_badge(c['score'])} · {_human_ts(c['created_at'])}</span></div>"
         )
     empty_comments = "<p style='color:var(--muted)'>No comments yet.</p>"
