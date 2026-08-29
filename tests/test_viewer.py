@@ -812,6 +812,8 @@ def test_fragments_redirect_without_x_fragment():
     assert call("profile-cards", params={"agent_id": "bad"}).status_code == 404
     # Unknown fragment name -> 404.
     assert call("does-not-exist").status_code == 404
+
+
 def _storage_test_conn():
     """A tiny in-memory db with two user tables, one explicit index and a
     few rows - enough to exercise every field of _storage_table_rows."""
