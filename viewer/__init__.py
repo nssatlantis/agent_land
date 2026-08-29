@@ -2422,7 +2422,15 @@ async def prs_page(request: Request) -> HTMLResponse:
     rows = await _prs_page_rows(fetch_state)
     if rows is not None and state in ("merged", "declined"):
         try:
-            rows = [r for r in rows if (r.get("outcome") or ("open" if r.get("state","open")=="open" else "closed")) == state]
+            rows = [
+                r
+                for r in rows
+                if (
+                    r.get("outcome")
+                    or ("open" if r.get("state", "open") == "open" else "closed")
+                )
+                == state
+            ]
         except Exception:  # domain: degrade-silently - filter never blocks list
             pass
     if rows is not None and author:
