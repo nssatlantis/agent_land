@@ -90,6 +90,13 @@ _RUN_LOCK = threading.Lock()  # legacy single-slot — kept for tests that patch
 _CI_QUEUE: queue.Queue[int] | None = None
 _CI_SLOTS: list[str] = []
 _CI_LOCK = threading.Lock()
+# Live cpus throttle: active sandboxed runs and their current cpu share.
+# Used to `docker update --cpus` the *other* runs when a new one starts
+# (down) or when one finishes (up) so a single job gets 2.5c alone and
+# shares fairly when busy.
+_ACTIVE: dict[int, str] = {}
+_ACTIVE_CPUS: dict[int, float] = {}
+_ACTIVE_LOCK = threading.Lock()
 
 
 def _ci_ensure_pool() -> queue.Queue[int]:
@@ -145,23 +152,83 @@ def _ci_queue_depth() -> tuple[int, int, int]:
     return desired, avail, busy
 
 
-def _effective_cpus() -> float:
-    """Adaptive down-only: 1.5 → 1.33 when workers already busy.
+def _host_cpus() -> int:
+    """Host cpus for fair-share — os.cpu_count() when available, else 4."""
+    try:
+        c = os.cpu_count()
+        if c and c > 0:
+            return int(c)
+    except Exception:
+        pass  # domain: degrade-silently - cpu_count unreadable
+    return 4
 
-    Host is 4c (i5-6500T). 3×1.5=4.5 oversubscribes; throttle to 1.33
-    (4/3) when at least one other slot is busy so total never exceeds 4c.
-    Never up — cap is config.CI_RUN_SANDBOX_CPUS (1.5), floor 1.0."""
+
+def _register_active(slot: int, name: str, cpus: float) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE[slot] = name
+        _ACTIVE_CPUS[slot] = cpus
+
+
+def _deregister_active(slot: int) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE.pop(slot, None)
+        _ACTIVE_CPUS.pop(slot, None)
+
+
+def _throttle_active() -> None:
+    """Live-throttle every active sandbox to the new fair share.
+
+    Called after acquire (down) and after release (up) — `docker update
+    --cpus` patches the cgroup of the *other* still-running container(s).
+    Best-effort: a finished container or missing docker is not a failure."""
     try:
         ceil = float(config.CI_RUN_SANDBOX_CPUS)
     except Exception:
-        ceil = 1.5  # domain: degrade-silently
-    desired, avail, busy = _ci_queue_depth()
-    # Down-only: if any other slot busy, fair share is 4/conc
-    if busy >= 1:
-        fair = 4.0 / max(1, desired)
-        # Never exceed ceil, never drop below 1.0 (timeout thrash)
-        return round(min(ceil, max(1.0, fair)), 2)
-    return round(min(ceil, max(1.0, ceil)), 2)
+        ceil = 2.5  # domain: degrade-silently
+    host = _host_cpus()
+    _, _, busy = _ci_queue_depth()
+    if busy == 0:
+        return
+    target = round(min(ceil, max(1.0, host / max(1, busy))), 2)
+    with _ACTIVE_LOCK:
+        snapshot = list(_ACTIVE.items())
+        prev_map = dict(_ACTIVE_CPUS)
+    for slot, name in snapshot:
+        prev = prev_map.get(slot)
+        if prev is not None and prev == target:
+            continue
+        try:
+            subprocess.run(
+                ["docker", "update", "--cpus", str(target), name],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            with _ACTIVE_LOCK:
+                # Only record if still registered (race with deregister)
+                if slot in _ACTIVE and _ACTIVE[slot] == name:
+                    _ACTIVE_CPUS[slot] = target
+        except Exception:
+            pass  # domain: degrade-silently - live throttle is best-effort
+
+
+def _effective_cpus() -> float:
+    """Busy-aware: ceil alone, fair-share host/busy when contended.
+
+    Single runner gets the full ceil (2.5) for speed; two runners share
+    host/2 (2.0 on 4c), three share host/3 (1.33). Host is os.cpu_count()
+    so a future migration scales automatically. Floor 1.0 avoids timeout
+    thrash; never exceeds ceil."""
+    try:
+        ceil = float(config.CI_RUN_SANDBOX_CPUS)
+    except Exception:
+        ceil = 2.5  # domain: degrade-silently
+    host = _host_cpus()
+    _, _, busy = _ci_queue_depth()
+    if busy <= 1:
+        return round(min(ceil, max(1.0, ceil)), 2)
+    fair = host / max(1, busy)
+    return round(min(ceil, max(1.0, fair)), 2)
 
 
 def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int:
@@ -211,6 +278,10 @@ def _ci_acquire_slot(reserve: bool = False, timeout: float | None = None) -> int
             live_len = len(_CI_SLOTS)
         live = min(desired, live_len) if live_len else desired
         if 0 <= idx < live:
+            try:
+                _throttle_active()  # down-scale existing to host/busy
+            except Exception:
+                pass  # domain: degrade-silently - live throttle best-effort
             return idx
         # Retired idx — discard and retry if fresh queue still has tokens
         if q.empty():
@@ -238,6 +309,10 @@ def _ci_release_slot(idx: int) -> None:
     q = _ci_ensure_pool()
     if 0 <= idx < max(1, int(config.CI_RUN_CONCURRENCY)):
         q.put(idx)
+        try:
+            _throttle_active()  # up-scale remaining to host/busy
+        except Exception:
+            pass  # domain: degrade-silently - live throttle best-effort
 
 
 # checks value -> (native event kind, suite script path relative to the tree)
@@ -814,7 +889,7 @@ def _sandbox_argv(tree: str, image_tag: str, script_rel: str) -> tuple[list[str]
     Returns (argv, container_name) - the name lets the timeout path stop
     the container even though the killed client detaches from it."""
     name = f"agentland-ci-{uuid.uuid4().hex[:12]}"
-    # Adaptive down-only: 1.5 → 1.33 when busy (4c host, 3×1.33=4.0)
+    # Busy-aware: ceil (2.5) alone, host/busy when contended — live-throttled via docker update
     try:
         cpus = _effective_cpus()
     except Exception:
@@ -1085,6 +1160,15 @@ def run_checks(
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
+            try:
+                _cpus_idx = argv.index("--cpus")
+                _cpus_val = float(argv[_cpus_idx + 1])
+            except Exception:
+                _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)  # domain: degrade-silently
+            try:
+                _register_active(slot, container_name, _cpus_val)
+            except Exception:
+                pass  # domain: degrade-silently - registration best-effort
             env = _child_env(tmp_root)
         elif branch_mode:
             assert pr_number is not None
@@ -1132,6 +1216,15 @@ def run_checks(
             image_tag = _ensure_image(tree, merge_info["base"])
             _ensure_tree_traversable(tree)
             argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
+            try:
+                _cpus_idx = argv.index("--cpus")
+                _cpus_val = float(argv[_cpus_idx + 1])
+            except Exception:
+                _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)  # domain: degrade-silently
+            try:
+                _register_active(slot, container_name, _cpus_val)
+            except Exception:
+                pass  # domain: degrade-silently - registration best-effort
             # The docker CLIENT never needs host secrets; sanitizing its
             # env too keeps tokens out of one more child process.
             env = _child_env(tmp_root)
@@ -1208,6 +1301,10 @@ def run_checks(
         return result
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+        try:
+            _deregister_active(slot)
+        except Exception:
+            pass  # domain: degrade-silently - deregistration best-effort
         try:
             _ci_release_slot(slot)
         except Exception:
@@ -1297,6 +1394,15 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
         image_tag = _ensure_image(tree, merge_info["base"])
         _ensure_tree_traversable(tree)
         argv, container_name = _sandbox_argv(tree, image_tag, script_rel)
+        try:
+            _cpus_idx = argv.index("--cpus")
+            _cpus_val = float(argv[_cpus_idx + 1])
+        except Exception:
+            _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)  # domain: degrade-silently
+        try:
+            _register_active(slot, container_name, _cpus_val)
+        except Exception:
+            pass  # domain: degrade-silently - registration best-effort
         env = _child_env(tmp_root)
         pieces = _execute(
             argv,
@@ -1340,6 +1446,10 @@ def run_branch_ci_for_poller(pr_number: int, checks: str = "tests") -> dict:
         return result
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+        try:
+            _deregister_active(slot)
+        except Exception:
+            pass  # domain: degrade-silently - deregistration best-effort
         try:
             _ci_release_slot(slot)
         except Exception:
