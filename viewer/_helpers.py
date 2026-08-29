@@ -1022,7 +1022,13 @@ def _prs_rows_html(
     never blocks the event loop fetching CI row by row. Every interpolated
     string from GitHub is escaped (untrusted input)."""
     parts = []
-    for s, label in (("open", "Open"), ("closed", "Closed"), ("all", "All")):
+    for s, label in (
+        ("open", "Open"),
+        ("closed", "Closed"),
+        ("merged", "Merged"),
+        ("declined", "Declined"),
+        ("all", "All"),
+    ):
         active = ' class="active"' if s == state else ""
         parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
     tabs = " ".join(parts)
