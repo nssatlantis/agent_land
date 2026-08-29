@@ -2350,6 +2350,8 @@ def _read_record_recent(filename: str) -> list[dict]:
                 timeout=5,
             )
             patch = show.stdout if show.returncode == 0 else ""
+            if "\nnew file mode " in patch and "\n--- /dev/null\n" in patch:
+                continue
             if len(patch) > 4000:
                 patch = patch[:4000] + "\n\u2026 (patch truncated)"
             commits.append(
