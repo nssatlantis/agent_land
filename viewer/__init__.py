@@ -61,6 +61,8 @@ from viewer._api import (
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._events import events_page
+import re
+
 from viewer._helpers import (
     _author,
     _breadcrumbs,
@@ -71,6 +73,8 @@ from viewer._helpers import (
     _crumb,
     _discussion_digest,
     _edits_panel,
+    _pr_reputation_panel,
+    _related_prs_panel,
     _kind_badge,
     _open_prs,
     _open_prs_by_agent,
@@ -2998,12 +3002,28 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:0 6px;font-size:12px">{_ptitle}</a>'
             f"</p></div>"
         )
+    # Related PR finder + reputation (237:4280) - display-only, degrade-silently
+    try:
+        related_panel = _related_prs_panel(int(number))
+    except Exception:
+        related_panel = ""
+    try:
+        m = re.search(r"agent_id=(\d+)", diff.get("body") or "")
+        _aid = int(m.group(1)) if m else None
+    except Exception:
+        _aid = None
+    try:
+        reputation_panel = _pr_reputation_panel(_aid)
+    except Exception:
+        reputation_panel = ""
     body = (
         _crumb("/prs", "pull requests")
         + header
         + hold_banner
         + vote_panel
         + proposal_link
+        + related_panel
+        + reputation_panel
         + sections
     )
     return _page(f"PR #{number}", _with_rail(body), section="prs")
