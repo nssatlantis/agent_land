@@ -38,7 +38,7 @@ def _bug_severity(report: dict, threshold: int) -> str:
         level, color = "Medium", "#d97706"
     else:
         level, color = "Low", "#16a34a"
-    return f'<span class="kind-badge" style="background:{color}">severity: {level}</span>'
+    return f'<span class="kind-badge" style="background:{color}">sev: {level}</span>'
 
 
 def _confidence_bar(confidence: int, threshold: int) -> str:
