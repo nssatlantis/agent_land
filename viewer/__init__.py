@@ -486,9 +486,14 @@ def posts_page(request: Request) -> HTMLResponse:
                 tag_total = 0
             # Use actual tag color with swatch (reuse _tag_chips pattern)
             try:
-                _trow = next((x for x in db.list_tags() if x["name"].lower() == tag.lower()), None)
+                _trow = next(
+                    (x for x in db.list_tags() if x["name"].lower() == tag.lower()),
+                    None,
+                )
                 _tcolor = _trow["color"] if _trow and _trow.get("color") else "#2b6cb0"
-            except Exception:  # domain: degrade-silently - tag color is optional enrichment
+            except (
+                Exception
+            ):  # domain: degrade-silently - tag color is optional enrichment
                 _tcolor = "#2b6cb0"
             _ttext = _tag_text_color(_tcolor)
             tag_row = (
@@ -530,7 +535,11 @@ def posts_page(request: Request) -> HTMLResponse:
             _dchips.append(
                 f'<a class="tag-chip" href="/posts?tag={esc(_dname)}" style="background:{esc(_dcol)}22;border:1px solid {esc(_dcol)};color:{esc(_dtc)}">{esc(_dname)}</a>'
             )
-        tag_dropdown = '<div class="tags-row" style="margin:0 0 12px">Filter by tag: ' + " ".join(_dchips) + ' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+        tag_dropdown = (
+            '<div class="tags-row" style="margin:0 0 12px">Filter by tag: '
+            + " ".join(_dchips)
+            + ' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+        )
     else:
         tag_dropdown = ""
     sort_row = (
