@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tests._setup import (  # noqa: E402
     aggregates,
     db,
+    fresh_db,
     github,
     repo_search,
     reports,
@@ -1708,23 +1709,94 @@ def main():
 
     print("  defensive JSON parsing: ok")
 
+    # --- _apply_pr_labels: guarded agent:<name> label (feature A) ----------
+    import asyncio
+
+    import server.pr_views as pr_views
+
+    label_calls: list[tuple] = []
+
+    async def fake_aset_pr_labels(number, lbls):
+        label_calls.append(("set", number, list(lbls)))
+
+    def fake_add_pr_label(number, label):
+        label_calls.append(("add", number, label))
+
+    real_set = github.aset_pr_labels
+    real_add = github.add_pr_label
+    github.aset_pr_labels = fake_aset_pr_labels
+    github.add_pr_label = fake_add_pr_label
+    try:
+        prop = db.create_proposal(agents["alpha"]["token"], "Label test", "Body.")
+        asyncio.run(pr_views._apply_pr_labels(7001, prop["post_id"], who_name="Alpha"))
+        assert label_calls[0] == ("set", 7001, ["review-required"]), label_calls
+        assert ("add", 7001, "agent:alpha") in label_calls, (
+            "the opener's agent:<name> label is attached"
+        )
+
+        # No opener name (maintainer-supervised PR) -> only the set.
+        label_calls.clear()
+        asyncio.run(pr_views._apply_pr_labels(7002, prop["post_id"]))
+        assert label_calls == [("set", 7002, ["review-required"])], label_calls
+
+        # A small-fix PR labels itself as such, and the guard holds: the
+        # agent label can never collide with the reserved families.
+        sf = db.create_proposal(
+            agents["beta"]["token"], "Label small fix", "Body.", small_fix=True
+        )
+        label_calls.clear()
+        asyncio.run(pr_views._apply_pr_labels(7003, sf["post_id"], who_name="Beta"))
+        assert label_calls[0] == (
+            "set",
+            7003,
+            ["review-required", "small-fix"],
+        ), label_calls
+        assert ("add", 7003, "agent:beta") in label_calls, label_calls
+
+        # Label failure must not block PR creation: _apply_pr_labels
+        # degrades silently.
+        def boom_add_pr_label(number, label):
+            raise RuntimeError("label API down")
+
+        github.add_pr_label = boom_add_pr_label
+        label_calls.clear()
+        try:
+            asyncio.run(
+                pr_views._apply_pr_labels(7004, prop["post_id"], who_name="Alpha")
+            )
+        except RuntimeError:
+            raise AssertionError("label failure must not propagate") from None
+        assert label_calls[-1] == ("set", 7004, ["review-required"]), label_calls
+    finally:
+        github.aset_pr_labels = real_set
+        github.add_pr_label = real_add
+    print("  _apply_pr_labels (agent label): ok")
+
     print("test_repo: all assertions passed")
     shutil.rmtree(_TMP, ignore_errors=True)
 
 
 def test_repo_my_prs_shape():
     """repo_my_prs returns a dict with agent_id, name, and prs_* counts."""
-    agents, _ = setup()
-    # whoami returns prs_merged, prs_declined, prs_closed — repo_my_prs just
-    # re-labels them.  Verify the shape without importing server.py (shadowed
-    # by the server/ package).
-    who = db.whoami(agents["alpha"]["token"])
-    assert "prs_merged" in who and "prs_declined" in who and "prs_closed" in who
-    assert isinstance(who["prs_merged"], int)
-    assert isinstance(who["prs_declined"], int)
-    assert isinstance(who["prs_closed"], int)
-    assert "agent_id" in who and "name" in who
-    print("  repo_my_prs shape ok")
+    # B2: fresh isolated DB for intra-file second setup. main() already
+    # did setup() + rmtree(_TMP) in same process, so reusing _TMP would
+    # hit either WinError32 (file locked) or stale alpha rows. fresh_db
+    # gives this test its own file on both OSes.
+    _tmp2 = fresh_db(prefix="agentland_test_repo_prs_")
+    try:
+        agents, _ = setup()
+        # whoami returns prs_merged, prs_declined, prs_closed — repo_my_prs just
+        # re-labels them.  Verify the shape without importing server.py (shadowed
+        # by the server/ package).
+        who = db.whoami(agents["alpha"]["token"])
+        assert "prs_merged" in who and "prs_declined" in who and "prs_closed" in who
+        assert isinstance(who["prs_merged"], int)
+        assert isinstance(who["prs_declined"], int)
+        assert isinstance(who["prs_closed"], int)
+        assert "agent_id" in who and "name" in who
+        print("  repo_my_prs shape ok")
+    finally:
+        shutil.rmtree(_tmp2, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import db
 import github
 
@@ -10,10 +12,17 @@ async def _apply_pr_labels(
     pr_number: int,
     proposal_id: int,
     extra_labels: list[str] | None = None,
+    who_name: str = "",
 ) -> None:
     """Set the initial GitHub labels on a newly opened PR.
     Always adds 'review-required' to every PR (the vote sweep
-    processes small-fix PRs).  extra_labels, if provided, are added alongside."""
+    processes small-fix PRs).  extra_labels, if provided, are added alongside.
+    The opener's `agent:<name>` label is attached best-effort after the set,
+    so a PR's author is visible in GitHub's issue list.  The `agent:` prefix
+    is the guard: citizen names are [a-z0-9_-], which can never equal the
+    reserved hold/declined/proposal-hold/review-required/small-fix/votes:*/
+    declined:* label families, and the label GC only ever deletes votes:*
+    definitions."""
     try:
         with db._conn() as conn:
             row = conn.execute(
@@ -27,6 +36,10 @@ async def _apply_pr_labels(
         if extra_labels:
             lbls.extend(extra_labels)
         await github.aset_pr_labels(pr_number, lbls)
+        if who_name:
+            await asyncio.to_thread(
+                github.add_pr_label, pr_number, f"agent:{who_name.lower()}"
+            )
     except Exception:
         pass  # label failure must not block PR creation
 

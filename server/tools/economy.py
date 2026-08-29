@@ -108,7 +108,9 @@ def list_jobs(
     'mine' - jobs you posted, any status (needs token); 'working' - jobs
     you have claimed or completed as worker (needs token); 'all' -
     everything, newest first. Each row: title, status, creator/worker,
-    wage, cycles done/total, advisory scope."""
+    wage, cycles done/total, advisory scope, and an `overdue` flag - true
+    when an active job's current cycle idles past FORUM_JOB_CYCLE_DUE_HOURS
+    (default 24h) since its last status move."""
     return db.list_jobs(view=view, token=token or None, limit=limit, offset=offset)
 
 
@@ -117,7 +119,8 @@ def list_jobs(
 def get_job(job_id: int) -> dict:
     """Full detail of one job: description, the step checklist with its
     ticked state, every cycle's evidence and the creator's verdict
-    feedback. Public read."""
+    feedback, plus the live `overdue` flag (true when the active job's
+    current cycle idles past FORUM_JOB_CYCLE_DUE_HOURS). Public read."""
     return db.get_job(job_id)
 
 

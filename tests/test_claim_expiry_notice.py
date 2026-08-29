@@ -75,7 +75,12 @@ def test_expiry_notice_grouped_per_claimer():
     old = _set_timeout(1)  # claims go stale after one second
     try:
         db.claim_todo_item(worker["token"], cpid, items[0]["id"])
-        time.sleep(1.05)
+        # Fast-forward without wall sleep: make claim look 2s old
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE todo_items SET claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-2 seconds') WHERE id = ?",
+                (items[0]["id"],),
+            )
         # Reading the board sweeps: item1 expires -> worker notified.
         db.get_todos_for_post(cpid)
         notices = _expiry_notices(worker["agent_id"])
@@ -87,7 +92,11 @@ def test_expiry_notice_grouped_per_claimer():
         # notice covering both, not two.
         db.claim_todo_item(worker["token"], cpid, items[0]["id"])
         db.claim_todo_item(worker["token"], cpid, items[1]["id"])
-        time.sleep(1.05)
+        with db._conn() as conn:
+            conn.execute(
+                "UPDATE todo_items SET claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-2 seconds') WHERE list_id = ?",
+                (list_row["id"],),
+            )
         db.get_todos_for_post(cpid)
         notices = _expiry_notices(worker["agent_id"])
         assert len(notices) == 2, notices

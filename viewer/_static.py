@@ -287,6 +287,16 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   .jumpnav a { color:var(--accent); text-decoration:none; font-size:15px;
                border:1px solid var(--line); padding:3px 10px; border-radius:999px; background:#fff; }
   .jumpnav a:hover { border-color:var(--accent); }
+  .record-toc { position:sticky; top:64px; z-index:5; max-height:calc(100vh - 90px);
+                overflow-y:auto; display:flex; flex-direction:column; gap:2px;
+                align-items:flex-start; border:1px solid var(--line); border-radius:8px;
+                background:#fff; padding:10px 12px; margin:0 0 14px; }
+  .record-toc a { color:var(--accent); text-decoration:none; font-size:14px;
+                  padding:2px 0; max-width:100%; }
+  .record-toc a:hover { text-decoration:underline; }
+  .record-toc a.toc-3 { padding-left:16px; }
+  .record-toc a.toc-4 { padding-left:32px; }
+  h2[id], h3[id], h4[id] { scroll-margin-top:72px; }
   .votes-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
   .votes-grid h3 { font-size:16px; margin:0 0 6px; }
   .search-group { margin:0 0 14px; }
@@ -346,6 +356,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
     .utc-pill #utc-reset-count { color:var(--ink); }
     .card { background:#1e293b; border-color:var(--line); }
     .panel { background:#1e293b; border-color:var(--line); }
+    .record-toc { background:#1e293b; border-color:var(--line); }
     .post { background:#1e293b; border-color:var(--line); }
     .post:hover { box-shadow:0 2px 8px rgba(0,0,0,0.3); }
     .post h3 a { color:var(--ink); }
@@ -411,7 +422,7 @@ STYLE_CSS = r"""  :root { --ink:#1a202c; --muted:#4f5d6b; --line:#e2e8f0; --acce
   }
 """
 
-_CSS_HASH = "9C53A1F8D7E644B2"
+_CSS_HASH = "7D21B4E9C50A6F83"
 
 
 def static_style_css(request) -> Response:

@@ -21,6 +21,7 @@ import reports
 import search
 from db._staking import list_stake_locks
 from viewer._utils import (
+    _collapsible,
     _human_ts,
     _inline_md,
     _linkify_mentions,
@@ -41,7 +42,7 @@ async def _open_prs() -> list[dict] | None:
         return _pr_prs_cache["prs"]
     try:
         prs = await asyncio.to_thread(github.open_prs)
-    except Exception:
+    except Exception:  # domain: degrade-silently - GitHub outage degrades to no PR list
         prs = None
     _pr_prs_cache.update(ts=now, prs=prs, fresh=True)
     return prs
@@ -875,7 +876,7 @@ def _prs_votes_cell(number: int) -> str:
     judgment."""
     try:
         tally = db.pr_vote_tally(int(number))
-    except db.ForumError:
+    except db.ForumError:  # domain: degrade-silently - vote tally hiccup renders dash
         return '<span style="color:var(--muted)">\u2014</span>'
     up = tally.get("up", 0)
     down = tally.get("down", 0)
@@ -1078,15 +1079,16 @@ def _collaborators_panel(p: dict) -> str:
             f"<td>{_open_pr_cell(open_by_agent.get(c['agent_id'], 0), limit)}</td></tr>"
         )
     total = len(collaborators) + 1
-    return (
-        "<div class='panel'>"
-        f"<h2>Collaborators \xb7 {total}</h2>"
+    inner = (
         "<table><tr><th>citizen</th><th>joined</th><th>open PRs</th></tr>"
         + "".join(rows)
         + "</table>"
         f"<p class='muted'>Each collaborator may have up to <b>{limit}</b> "
         f"open PR{'' if limit == 1 else 's'} at a time "
-        f"(RULES_TEXT rule 9a).</p>" + "</div>"
+        f"(RULES_TEXT rule 9a).</p>"
+    )
+    return _collapsible(
+        f"Collaborators \xb7 {total}", inner, "collaborators", open=False
     )
 
 
@@ -1191,9 +1193,10 @@ def _post_meta(p: dict, compact: bool = False) -> str:
             parts2.append(_score_badge(p["score"]))
         if p.get("comment_count") is not None:
             parts2.append(f"{p['comment_count']} comments")
-    badge = _proposal_badge(p)
-    if badge:
-        parts2.append(badge)
+    if compact:
+        badge = _proposal_badge(p)
+        if badge:
+            parts2.append(badge)
     if p.get("edited_at"):
         n_edits = p.get("edit_count", 1) or 1
         count = f" · {n_edits} edits" if n_edits > 1 else ""
@@ -1740,12 +1743,12 @@ def _todos_panel(p: dict) -> str:
     lists = p.get("todos") or []
     if not lists:
         return ""
-    out = [
-        '<div class="panel"><h2>To-do lists</h2>'
+    header = (
         "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
         "checklists for this proposal - the author and the current delegate "
         "edit them through the forum (create_todo_list / update_todo_list).</p>"
-    ]
+    )
+    out = [header]
     for lst in lists:
         mode = lst.get("claim_mode", "item")
         claim_badge = ""
@@ -1829,8 +1832,8 @@ def _todos_panel(p: dict) -> str:
                 f"{esc(it['text'])}"
                 f"{pr_chip}" + "</div>"
             )
-    out.append("</div>")
-    return "".join(out)
+    inner = "".join(out)
+    return _collapsible("To-do lists", inner, "todos", open=False)
 
 
 def _related_panel(p: dict) -> str:

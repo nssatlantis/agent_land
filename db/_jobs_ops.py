@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import config
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
@@ -46,6 +47,99 @@ def _fmt_q(quarters: int) -> str:
     from db._credits import format_credits
 
     return format_credits(quarters)
+
+
+# Job-overdue accounting.  job_cycles keeps no timestamp, so the events
+# ledger is the anchor of record for "when did the CURRENT cycle last
+# move": claiming the job, submitting a cycle, and the creator's accept /
+# decline verdicts all close the idle window; the job's own creation fills
+# a job that somehow has no event yet.
+_JOB_ANCHOR_KINDS = (
+    "job_claimed",
+    "job_submitted",
+    "job_cycle_accepted",
+    "job_cycle_declined",
+)
+
+
+def _job_overdue_anchor_sql(job_alias: str) -> str:
+    """SQL for the latest events-ledger anchor of a job's current cycle.
+
+    Returns a COALESCE(latest job event in _JOB_ANCHOR_KINDS, created_at)
+    expression referencing the given jobs alias.  The returned timestamps
+    share the ledger's %Y-%m-%dT%H:%M:%fZ format, which keeps comparisons
+    with job_overdue_cutoff() lexicographically safe."""
+    kinds = ",".join(f"'{k}'" for k in _JOB_ANCHOR_KINDS)
+    return (
+        f"COALESCE((SELECT MAX(e.created_at) FROM events e"
+        f" WHERE e.target_type = 'job' AND e.target_id = {job_alias}.id"
+        f" AND e.kind IN ({kinds})), {job_alias}.created_at)"
+    )
+
+
+def job_overdue_cutoff() -> str:
+    """The ISO boundary for 'overdue', or '' when the feature is disabled.
+
+    An active job whose CURRENT cycle is still awaiting/declined past this
+    many hours (config.JOB_CYCLE_DUE_HOURS) since its last status move
+    reads as overdue.  A cutoff of 0 (FORUM_JOB_CYCLE_DUE_HOURS=0) disables
+    the feature."""
+    hours = int(config.JOB_CYCLE_DUE_HOURS)
+    if hours <= 0:
+        return ""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+
+
+def _cycle_is_overdue(status: str | None, anchor_at: str | None, cutoff: str) -> bool:
+    """True when a job's current cycle idles past the due window.
+
+    awaiting/declined are the worker's turn (the creator has already made
+    their move); 'submitted' means the ball is with the creator and never
+    counts as overdue.  Both timestamps are the ledger's format, so a plain
+    string comparison matches time order."""
+    if not cutoff or status not in ("awaiting", "declined"):
+        return False
+    if not anchor_at:
+        return False
+    return anchor_at <= cutoff
+
+
+def _overdue_windows_elapsed(anchor_at: str | None, cutoff: str) -> int:
+    """How many whole FORUM_JOB_CYCLE_DUE_HOURS windows a cycle has idled
+    past its deadline: 0 = not overdue, 1 = the first due window has fully
+    elapsed, then +1 per window.  Deterministic from the events anchor
+    alone (no schema column), so the release threshold
+    (FORUM_JOB_OVERDUE_RELEASE_AFTER) resolves on the fly; a misread
+    ledger or dead clock degrades to 0 and never releases."""
+    hours = int(config.JOB_CYCLE_DUE_HOURS)
+    if not cutoff or hours <= 0 or not anchor_at:
+        return 0
+    try:
+        window_s = hours * 3600
+        anchor = datetime.fromisoformat(anchor_at.replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - anchor).total_seconds()
+        if age < window_s:
+            return 0
+        return int(age) // window_s
+    except Exception:
+        return 0  # domain: degrade-silently - unparsable clock = no release
+
+
+def _overdue_flag(
+    status: str,
+    cur_cycle_status: str | None,
+    anchor_at: str | None,
+    cutoff: str,
+) -> bool:
+    """Board-level overdue flag: the job must be ACTIVE and its current
+    cycle must idle past the due window.  Completed/expired/cancelled jobs
+    never read overdue, even where a leftover cycle row still sits in a
+    transitional status."""
+    if status != "active":
+        return False
+    return _cycle_is_overdue(cur_cycle_status, anchor_at, cutoff)
 
 
 def _all_prs_merged(pr_numbers: list[int]) -> bool:
@@ -137,7 +231,7 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
     """Full detail for one job: parties, checklist, per-cycle state."""
     job = conn.execute(
         "SELECT j.*, c.name AS creator_name, w.name AS worker_name,"
-        " o.name AS offered_to_name"
+        f" o.name AS offered_to_name, {_job_overdue_anchor_sql('j')} AS anchor_at"
         " FROM jobs j"
         " LEFT JOIN agents c ON c.id = j.creator_agent_id"
         " LEFT JOIN agents w ON w.id = j.worker_agent_id"
@@ -198,6 +292,12 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
                 "decided_at": r["decided_at"],
             }
         )
+    cur_status: str | None = None
+    if job["status"] == "active":
+        cur_status = next(
+            (c["status"] for c in cycles if c["cycle_no"] == job["cycles_done"] + 1),
+            None,
+        )
     return {
         "job_id": job["id"],
         "title": job["title"],
@@ -206,6 +306,9 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
         "kind": job["kind"],
         "official": bool(job["official"]),
         "status": job["status"],
+        "overdue": _overdue_flag(
+            job["status"], cur_status, job["anchor_at"], job_overdue_cutoff()
+        ),
         "creator": (
             {"agent_id": job["creator_agent_id"], "name": job["creator_name"]}
             if job["creator_agent_id"] is not None
@@ -772,12 +875,17 @@ def list_jobs(
             agent = _require_active_agent(conn, token)
             params.append(agent["id"])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        _cutoff = job_overdue_cutoff()
         rows = conn.execute(
             "SELECT j.id, j.title, j.kind, j.status, j.scope,"
             " j.payment_quarters, j.total_cycles, j.cycles_done,"
             " j.official, j.created_at,"
             " c.name AS creator_name, w.name AS worker_name,"
-            " o.name AS offered_to_name"
+            " o.name AS offered_to_name,"
+            f" {_job_overdue_anchor_sql('j')} AS anchor_at,"
+            " (SELECT jc.status FROM job_cycles jc"
+            " WHERE jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1)"
+            " AS cur_cycle_status"
             " FROM jobs j"
             " LEFT JOIN agents c ON c.id = j.creator_agent_id"
             " LEFT JOIN agents w ON w.id = j.worker_agent_id"
@@ -803,6 +911,9 @@ def list_jobs(
                 "payment_credits": _fmt_q(r["payment_quarters"]),
                 "total_cycles": r["total_cycles"],
                 "cycles_done": r["cycles_done"],
+                "overdue": _overdue_flag(
+                    r["status"], r["cur_cycle_status"], r["anchor_at"], _cutoff
+                ),
                 "created_at": r["created_at"],
             }
             for r in rows
