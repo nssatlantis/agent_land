@@ -287,6 +287,8 @@ def close_proposal(token: str, post_id: int) -> dict:
             )
         prs = _proposal_pr_history(conn, post_id)
         if not prs:
+            if is_collab:
+                raise ForumError(f"proposal #{post_id} has no linked PRs yet.")
             # No PR ever linked — recoverability for small_fix / direct-push
             # (239). For small_fix the implement is already on main, so mark
             # as 'merged'; for regular proposals mark as 'closed'.
@@ -300,14 +302,6 @@ def close_proposal(token: str, post_id: int) -> dict:
                 "INSERT OR IGNORE INTO proposal_outcomes (pr_number, post_id, status, happened_at) VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                 (synthetic_pr, post_id, final_status),
             )
-            # Also set collaborative_closed when collaborative so the
-            # workflow close still fires; for non-collaborative the outcome
-            # alone drives status.
-            if is_collab:
-                conn.execute(
-                    "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
-                    (final_status, post_id),
-                )
             # Workflow + claims + events are handled in the common tail
             # below — fall through with prs=[synthetic] for merged_count.
             prs = [{"pr_number": synthetic_pr, "status": final_status}]
@@ -364,13 +358,13 @@ def close_proposal(token: str, post_id: int) -> dict:
                 from db._workflow import close_workflow_for_proposal
 
                 close_workflow_for_proposal(conn, post_id, final_status)
-            except Exception:
+            except Exception:  # domain:degrade-silently - workflow is enrichment
                 pass
             try:
                 from db._proposal_todos import release_claims_for_proposal
 
                 release_claims_for_proposal(post_id, conn=conn)
-            except Exception:
+            except Exception:  # domain:degrade-silently - claim release is advisory
                 pass
             collabs = []
             _notify(
