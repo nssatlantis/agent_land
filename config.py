@@ -319,6 +319,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # proposal id is required (the community's mint/burn path).
     "TREASURY_GENESIS_CREDITS": ("FORUM_TREASURY_GENESIS_CREDITS", 1000.0, float),
     "TREASURY_FUNDS_PAYOUTS": ("FORUM_TREASURY_FUNDS_PAYOUTS", 1, int),
+    # ECONOMY_RUNWAY gates the treasury runway gauge (a leading health
+    # indicator on /economy and economy_overview): an estimate of how long
+    # the treasury lasts at the trailing 7-day net burn rate, where mints
+    # count as income and burns as expense. Advisory/observability only - it
+    # never changes payout behavior. Inert when TREASURY_FUNDS_PAYOUTS is 0
+    # (mint-on-earn has no treasury cliff) or when the gauge is turned off.
+    "ECONOMY_RUNWAY": ("FORUM_ECONOMY_RUNWAY", 1, int),
     "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 1.0, float),
     "ADMIN_MINT_DAILY_CAP_CREDITS": (
         "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",
@@ -539,6 +546,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         128 * 1024,
         int,
     ),
+    # Workflows (official per-file checklists like create-pr): ENFORCE 1
+    # blocks repo_propose_change before GitHub branch until workflow steps
+    # (update-local → manifest → not-gutted → lint → test) pass — 0 is
+    # advisory nudge only. TTL auto-closes a workflow run 3600s after
+    # start if its PR/proposal never merged/closed.
+    "WORKFLOW_ENFORCE": ("FORUM_WORKFLOW_ENFORCE", 1, int),
+    "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 3600, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from

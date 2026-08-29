@@ -19,6 +19,7 @@ import db._aggregates as aggregates
 import github
 import reports
 import search
+from db._staking import list_stake_locks
 from viewer._utils import (
     _human_ts,
     _inline_md,
@@ -498,8 +499,12 @@ def _stake_page_rows(stakes: list[dict]) -> str:
             f"</div>"
             f'<div class="stake-bar">'
             f'<div class="stake-bar-track"><div class="stake-bar-fill" style="width:{progress_pct}%"></div></div>'
-            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 locked {b["locked_count"]} \xb7 remaining {remaining} '
+            f'<span class="stake-bar-label">paid {b["paid_count"]} \xb7 '
+            f'<a class="stake-lock-chip" href="#" onclick="_toggleStakeLocks({b["id"]}); return false;">{b["locked_count"]}</a> \xb7 remaining {remaining} '
             f"\xb7 {_human_ts(b['created_at'])}</span>"
+            f'<div class="stake-lock-detail" id="stake-locks-{b["id"]}" style="display:none">'
+            f"{_stake_locks_detail(b['id'])}"
+            f"</div>"
             f"</div>"
             f"</div>"
         )
@@ -510,6 +515,32 @@ def _stake_page_rows(stakes: list[dict]) -> str:
         + "".join(rows)
         + "</div>"
     )
+
+
+def _stake_locks_detail(stake_id: int) -> str:
+    """Render the drill-down detail for a stake's locked stakes."""
+    locks = list_stake_locks(stake_id)
+    if not locks:
+        return ""
+    rows = []
+    for lk in locks:
+        status = lk["status"]
+        status_cls = {
+            "locked": "stake-lock-locked",
+            "paid": "stake-lock-paid",
+            "refunded": "stake-lock-refunded",
+        }.get(status, "")
+        agent = esc(lk.get("agent_id") or "system")
+        rows.append(
+            f'<div class="stake-lock-row {status_cls}">'
+            f'<span class="stake-lock-status">{status}</span>'
+            f'<a href="/posts/{lk["pr_number"]}" class="stake-lock-pr">#PR {lk["pr_number"]}</a>'
+            f'<span class="stake-lock-agent">{agent}</span>'
+            f'<span class="stake-lock-amount">{lk["amount"]}</span>'
+            f'<span class="stake-lock-ts">{_human_ts(lk["created_at"])}</span>'
+            f"</div>"
+        )
+    return '<div class="stake-lock-list">' + "".join(rows) + "</div>"
 
 
 def _stake_summary_card() -> str:
@@ -902,7 +933,13 @@ def _prs_rows_html(
     never blocks the event loop fetching CI row by row. Every interpolated
     string from GitHub is escaped (untrusted input)."""
     parts = []
-    for s, label in (("open", "Open"), ("closed", "Closed"), ("all", "All")):
+    for s, label in (
+        ("open", "Open"),
+        ("closed", "Closed"),
+        ("merged", "Merged"),
+        ("declined", "Declined"),
+        ("all", "All"),
+    ):
         active = ' class="active"' if s == state else ""
         parts.append(f'<a href="/prs?state={s}"{active}>{label}</a>')
     tabs = " ".join(parts)
@@ -944,6 +981,26 @@ def _prs_rows_html(
     for r in rows:
         num = r.get("number") or 0
         title = esc(r.get("title") or "")
+        # reference linkify: resolve #P42 to proposal name (237:4278) — display-only, degrade-silently
+        try:
+            import re
+
+            def _ref_repl(m):
+                pid = m.group(1)
+                try:
+                    p = db.get_post(int(pid))
+                    pt = esc(p.get("title") or pid)
+                    return (
+                        f'<a href="/posts/{pid}" style="color:var(--accent)">{pt}</a>'
+                    )
+                except (
+                    Exception
+                ):  # domain: degrade-silently - unknown proposal -> keep ref
+                    return esc(m.group(0))
+
+            title = re.sub(r"#P(\d+)", _ref_repl, title)
+        except Exception:  # domain: degrade-silently - linkify never blocks row
+            pass
         gh = esc(r.get("html_url") or "")
         href_ref = esc(r.get("head") or "")
         base_ref = esc(r.get("base") or "")
@@ -1708,19 +1765,25 @@ def _todos_panel(p: dict) -> str:
                 # header dot (grey open / blue claimed) carries it. Per-item
                 # dots would be noise.
                 dot = ""
+            pr = it.get("pr_number")
+            if pr is not None:
+                try:
+                    prid = int(pr)
+                    if it.get("done"):
+                        pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
+                    else:
+                        pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{prid}</span>'
+                except (TypeError, ValueError):
+                    pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
+            else:
+                pr_chip = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
                 f"<span style='color:var(--muted)'>{box}</span> "
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
                 f"{esc(it['text'])}"
-                + (
-                    " <span style='color:#b45309' title='auto-checks when this "
-                    f"PR merges'>PR #{esc(str(it['pr_number']))}</span>"
-                    if it.get("pr_number")
-                    else ""
-                )
-                + "</div>"
+                f"{pr_chip}" + "</div>"
             )
     out.append("</div>")
     return "".join(out)
