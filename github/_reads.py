@@ -57,7 +57,12 @@ def list_tree(ref: str | None = None) -> dict:
     for item in tree.get("tree", []):
         if item.get("type") == "blob":
             entries.append({"path": item["path"], "size": item.get("size", 0)})
-    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    result = {
+        "repo": GITHUB_REPO,
+        "branch": ref,
+        "files": entries,
+        "truncated": tree.get("truncated", False),
+    }
     _core._tree_cache.set(cache_key, result)
     return result
 
@@ -77,7 +82,12 @@ async def alist_tree(ref: str | None = None) -> dict:
         for item in tree.get("tree", [])
         if item.get("type") == "blob"
     ]
-    result = {"repo": GITHUB_REPO, "branch": ref, "files": entries}
+    result = {
+        "repo": GITHUB_REPO,
+        "branch": ref,
+        "files": entries,
+        "truncated": tree.get("truncated", False),
+    }
     _core._tree_cache.set(cache_key, result)
     return result
 
