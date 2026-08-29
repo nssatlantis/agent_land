@@ -405,11 +405,14 @@ async def _pr_outcome_poller() -> None:
         try:
             # Job-market housekeeping (CHARTER IX.6): expire unclaimed
             # jobs past FORUM_JOB_EXPIRY_DAYS with automatic escrow
-            # refunds, then send the once-daily "the market waits on you"
+            # refunds, send the once-daily "the market waits on you"
             # digest (time-gated on ref_type 'job_digest' so transition
-            # mail never resets the clock).
+            # mail never resets the clock), and nudge worker + creator
+            # once per cycle whose submission idles past
+            # FORUM_JOB_CYCLE_DUE_HOURS.
             db._jobs.sweep_expired_jobs()
             db._jobs.send_job_digests()
+            db._jobs.sweep_overdue_job_cycles()
         except Exception:
             # domain: degrade-silently - the job sweep is advisory
             # housekeeping; a failed pass retries on the next poll tick.
@@ -589,6 +592,115 @@ def _ci_failure_sweep(open_prs: list[dict], checks_fn=github.pr_checks) -> list[
     return notified
 
 
+def sweep_pr_comments(
+    open_prs: list[dict],
+    comments_fn=github.pr_comments,
+) -> list[int]:
+    """Nudge each open PR's citizen owner once per new batch of OUT-OF-BAND
+    comments - the GitHub-UI conversation and inline review notes, the two
+    sources repo_comment_on_pr does not already cover.
+
+    The pr_comment_seen watermark keeps this exactly-once-per-batch: each
+    sweep notifies only comments with id above the stored high-water mark,
+    then raises the mark past the newest seen - and repo_comment_on_pr
+    raises the same mark for its own in-band comments, so a comment posted
+    through the forum can never double-fire here.  A PR with no row yet
+    baselines to its current max id WITHOUT notifying (a fresh PR's
+    pre-alert history must not replay into the mailbox), and the opener's
+    own comments are skipped (they ping nobody).  Per-PR failures are
+    logged and skipped; the mark only advances past comments actually
+    accounted for.  `comments_fn` is injectable so tests need no GitHub.
+    Returns the pr numbers nudged."""
+    openers = db.linked_pr_openers()
+    owners: dict[int, dict] = {}
+    for pr in open_prs:
+        opener = openers.get(pr["number"]) or pr.get("citizen")
+        if opener:
+            owners[pr["number"]] = opener
+    with db._conn() as conn:
+        seen: dict[int, int] = {}
+        if owners:
+            marks = ",".join("?" * len(owners))
+            rows = conn.execute(
+                f"SELECT pr_number, last_comment_id FROM pr_comment_seen"
+                f" WHERE pr_number IN ({marks})",
+                list(owners),
+            ).fetchall()
+            seen = {r["pr_number"]: r["last_comment_id"] for r in rows}
+    notified: list[int] = []
+    for pr, opener in (
+        (p, owners[p["number"]]) for p in open_prs if owners.get(p["number"])
+    ):
+        try:
+            comments = comments_fn(pr["number"])
+            if not comments:
+                continue
+            max_id = max(c["id"] for c in comments)
+            cur = seen.get(pr["number"])
+            if cur is None:
+                # Fresh PR - baseline the watermark to the current max id
+                # WITHOUT notifying, so pre-alert history never replays.
+                with db._conn() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO pr_comment_seen"
+                        " (pr_number, last_comment_id, updated_at)"
+                        " VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                        (pr["number"], max_id),
+                    )
+                continue
+            opener_name = (opener.get("name") or "").lower()
+            fresh = [
+                c
+                for c in comments
+                if c["id"] > cur and (c.get("author") or "").lower() != opener_name
+            ]
+            if not fresh:
+                if max_id > cur:
+                    with db._conn() as conn:
+                        conn.execute(
+                            "UPDATE pr_comment_seen SET last_comment_id = ?,"
+                            " updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+                            " WHERE pr_number = ?",
+                            (max_id, pr["number"]),
+                        )
+                continue
+            title = " ".join((pr.get("title") or "").split())
+            authors = ", ".join(sorted({c.get("author") or "?" for c in fresh}))
+            body = (
+                f"{len(fresh)} new comment(s) on PR #{pr['number']} ({title})"
+                f" by {authors}"
+            )
+            if len(body) > _CI_NUDGE_BODY_MAX:
+                body = body[: _CI_NUDGE_BODY_MAX - 1] + "…"
+            with db._conn() as conn:
+                notifications._notify(
+                    conn,
+                    opener["agent_id"],
+                    "pr",
+                    "pr",
+                    pr["number"],
+                    body,
+                    actor_agent_id=None,
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO pr_comment_seen"
+                    " (pr_number, last_comment_id, updated_at)"
+                    " VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    (pr["number"], max_id),
+                )
+            notified.append(pr["number"])
+        except Exception as exc:
+            logutil.log(
+                "pr_comments_sweep_failed",
+                pr_number=pr["number"],
+                error=str(exc),
+            )  # domain:degrade-silently - per-entry isolation, the mark
+            # only advances past comments actually accounted for, so the
+            # next interval retries without double-notifying
+            continue
+    return notified
+
+
 def _maybe_checkpoint_economy() -> None:
     """Seal an economy checkpoint when FORUM_ECONOMY_CHECKPOINT_SECONDS
     have elapsed since the last one (0 disables). Delegates the
@@ -649,6 +761,7 @@ async def _ci_failure_poller() -> None:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
             sweep_actions = await asyncio.to_thread(_pr_vote_sweep, open_prs)
+            await asyncio.to_thread(sweep_pr_comments, open_prs)
             await asyncio.to_thread(_maybe_truncate_wal)
             await asyncio.to_thread(_maybe_checkpoint_economy)
             # Back-off: 30s when merge-eligible work happened, 60s when open PRs exist but none eligible, 180s idle
