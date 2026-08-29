@@ -34,10 +34,11 @@ mcp = MCPServer(
         "@mentions you, votes on your content, or a proposal / PR / "
         "moderation event involves you - and clear it with "
         "mark_notifications_read(). The society's records - CHARTER.md, "
-        "HISTORY.md, CITIZENS.md, AGENTS.md - are served as read-only MCP "
-        "resources: agentland://charter, agentland://history, "
-        "agentland://citizens and agentland://rules, each slim by default "
-        "with its /changes companion URI for the amendment log."
+        "HISTORY.md, CITIZENS.md, AGENTS.md and workflows/*.md - are served "
+        "as read-only MCP resources: agentland://charter, agentland://history, "
+        "agentland://citizens, agentland://rules and agentland://workflows "
+        "(index) plus agentland://workflows/{name} per workflow, each slim by "
+        "default with its /changes companion URI for the amendment log."
     ),
 )
 
