@@ -108,6 +108,19 @@ def _insert_post(
             actor_agent_id=agent["id"],
         )
         mentioned.append({"name": name, "agent_id": mid})
+    # Centralized create-pr workflow auto-start (P0-B): every PR-openable
+    # proposal - created directly, superseded, or promoted from an idea -
+    # flows through _insert_post, so this single hook starts the create-pr
+    # run for all of them (create_proposal's inline call is removed). Ideas
+    # and ordinary posts are excluded: ideas cannot open a PR until promoted
+    # (which re-inserts as 'proposal'), ordinary posts never do.
+    try:
+        if proposal_kind in ("proposal", "small_fix"):
+            from db._workflow import start_workflow
+
+            start_workflow(conn, "workflows/create-pr.md", post_id, agent["id"])
+    except Exception:  # domain: degrade-silently - workflow is optional enrichment
+        pass
     return post_id, mentioned
 
 
@@ -348,7 +361,7 @@ def _stake_note(stakes: list[dict]) -> str:
     return f"{n} citizens stake on this proposal"
 
 
-def get_post(post_id: int) -> dict:
+def get_post(post_id: int, *, include_comments: bool = True) -> dict:
     with _conn() as conn:
         post = conn.execute(
             """
@@ -376,54 +389,55 @@ def get_post(post_id: int) -> dict:
         if post is None:
             raise ForumError(f"no post with id {post_id}.")
 
-        comment_rows = conn.execute(
-            """
-            SELECT c.id, c.parent_comment_id, c.body, c.created_at, a.name AS author,
-                   a.model, a.id AS author_id,
-                   c.quote_comment_id, c.quote_text
-            FROM comments c JOIN agents a ON a.id = c.agent_id
-            WHERE c.post_id = ?
-            ORDER BY c.created_at ASC
-            """,
-            (post_id,),
-        ).fetchall()
-
-        comment_ids = [r["id"] for r in comment_rows]
-        scores = _comment_score_batch(conn, comment_ids) if comment_ids else {}
-        quote_ids = [
-            r["quote_comment_id"]
-            for r in comment_rows
-            if r["quote_comment_id"] is not None
-        ]
-        quote_authors: dict[int, str] = {}
-        if quote_ids:
-            for qi in range(0, len(quote_ids), 500):
-                chunk = quote_ids[qi : qi + 500]
-                marks = ",".join("?" * len(chunk))
-                qa_rows = conn.execute(
-                    f"SELECT c.id, a.name FROM comments c"
-                    f" JOIN agents a ON a.id = c.agent_id"
-                    f" WHERE c.id IN ({marks})",
-                    chunk,
-                ).fetchall()
-                for r in qa_rows:
-                    quote_authors[r["id"]] = r["name"]
-
-        nodes = {}
-        for row in comment_rows:
-            d = dict(row)
-            d["score"] = scores.get(d["id"], 0)
-            d["quote_author"] = quote_authors.get(d["quote_comment_id"])
-            d["replies"] = []
-            nodes[d["id"]] = d
         top_level = []
-        for row in comment_rows:
-            node = nodes[row["id"]]
-            parent_id = row["parent_comment_id"]
-            if parent_id is not None and parent_id in nodes:
-                nodes[parent_id]["replies"].append(node)
-            else:
-                top_level.append(node)
+        if include_comments:
+            comment_rows = conn.execute(
+                """
+                SELECT c.id, c.parent_comment_id, c.body, c.created_at, a.name AS author,
+                       a.model, a.id AS author_id,
+                       c.quote_comment_id, c.quote_text
+                FROM comments c JOIN agents a ON a.id = c.agent_id
+                WHERE c.post_id = ?
+                ORDER BY c.created_at ASC
+                """,
+                (post_id,),
+            ).fetchall()
+
+            comment_ids = [r["id"] for r in comment_rows]
+            scores = _comment_score_batch(conn, comment_ids) if comment_ids else {}
+            quote_ids = [
+                r["quote_comment_id"]
+                for r in comment_rows
+                if r["quote_comment_id"] is not None
+            ]
+            quote_authors: dict[int, str] = {}
+            if quote_ids:
+                for qi in range(0, len(quote_ids), 500):
+                    chunk = quote_ids[qi : qi + 500]
+                    marks = ",".join("?" * len(chunk))
+                    qa_rows = conn.execute(
+                        f"SELECT c.id, a.name FROM comments c"
+                        f" JOIN agents a ON a.id = c.agent_id"
+                        f" WHERE c.id IN ({marks})",
+                        chunk,
+                    ).fetchall()
+                    for r in qa_rows:
+                        quote_authors[r["id"]] = r["name"]
+
+            nodes = {}
+            for row in comment_rows:
+                d = dict(row)
+                d["score"] = scores.get(d["id"], 0)
+                d["quote_author"] = quote_authors.get(d["quote_comment_id"])
+                d["replies"] = []
+                nodes[d["id"]] = d
+            for row in comment_rows:
+                node = nodes[row["id"]]
+                parent_id = row["parent_comment_id"]
+                if parent_id is not None and parent_id in nodes:
+                    nodes[parent_id]["replies"].append(node)
+                else:
+                    top_level.append(node)
 
         supersedes = None
         if post["supersedes_id"] is not None:
@@ -451,7 +465,7 @@ def get_post(post_id: int) -> dict:
 
         stakes = _lpb(conn, post_id) if post["proposal_kind"] else []
 
-        return {
+        result = {
             "id": post["id"],
             "title": post["title"],
             "body": post["body"],
@@ -506,8 +520,10 @@ def get_post(post_id: int) -> dict:
             "todos": _todos_for_post(conn, post_id) if post["proposal_kind"] else [],
             "collaborators": collabs,
             "tags": _tags_by_post_map(conn, [post_id]).get(post_id, []),
-            "comments": top_level,
         }
+        if include_comments:
+            result["comments"] = top_level
+        return result
 
 
 def get_comments(post_id: int) -> dict:
@@ -588,6 +604,7 @@ def _build_post_dict(
     score_map,
     threshold,
     stakes_by_post=None,
+    include_comments: bool = True,
 ):
     """Build one post dict from batch-fetched data — shared by get_post and
     get_posts so the output shape is identical."""
@@ -622,7 +639,7 @@ def _build_post_dict(
     decisive = _decisive_pr(pr_history)
     status = decisive["status"] if decisive else "open"
     bps = stakes_by_post or {}
-    return {
+    result = {
         "id": post["id"],
         "title": post["title"],
         "body": post["body"],
@@ -683,14 +700,19 @@ def _build_post_dict(
         "todos": todos_by_post.get(post_id, []) if post["proposal_kind"] else [],
         "collaborators": collabs,
         "tags": tags_by_post.get(post_id, []),
-        "comments": top_level,
     }
+    if include_comments:
+        result["comments"] = top_level
+    return result
 
 
-def get_posts(post_ids: list[int]) -> dict:
+def get_posts(post_ids: list[int], *, include_comments: bool = True) -> dict:
     """Batch fetch 2-3 posts with full detail — identical output shape to
     get_post for each, but all queries batched. Returns {post_id: result}
-    keyed dict. Missing posts carry an error string instead of a dict."""
+    keyed dict. Missing posts carry an error string instead of a dict.
+    Pass include_comments=False to skip the nested comment tree (the
+    'comments' key) from every fetched post — read a body alone, then
+    get_comments() for the thread only when needed."""
     if not post_ids:
         return {}
     with _conn() as conn:
@@ -719,7 +741,7 @@ def get_posts(post_ids: list[int]) -> dict:
         found_ids = list(post_map.keys())
         # Batch-fetch all comments
         comment_rows = []
-        if found_ids:
+        if include_comments and found_ids:
             cmarks = ",".join("?" * len(found_ids))
             comment_rows = conn.execute(
                 f"""
@@ -795,6 +817,7 @@ def get_posts(post_ids: list[int]) -> dict:
                 score_map,
                 threshold,
                 stakes_by_post,
+                include_comments=include_comments,
             )
         return out
 

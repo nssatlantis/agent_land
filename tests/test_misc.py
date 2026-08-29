@@ -168,8 +168,8 @@ def main():
         )
         db.record_proposal_outcome(60001, pid, "merged", db._now_iso())
         shipped = db.get_todos_for_post(pid)[0]["items"][0]
-        assert shipped["done"] is True and shipped.get("pr_number") is None, (
-            "merge auto-ticks the bound item on a migrated database"
+        assert shipped["done"] is True and shipped.get("pr_number") == 60001, (
+            "merge auto-ticks the bound item on a migrated database and keeps pr_number for audit"
         )
     finally:
         db.DB_PATH = saved_db_path
@@ -1743,6 +1743,39 @@ def main():
             kind="posts", proposal_kind=ok_pk
         )  # valid values must not raise
     print("  recent_activity proposal_kind filter: ok")
+    # get_posts include_comments: read a body alone, pull the thread only
+    # when needed. Default keeps the nested tree; include_comments=False
+    # omits the 'comments' key entirely (not an empty list -- that would
+    # read as "no comments exist") and leaves everything else intact. Both
+    # the single and batch paths honour the flag.
+    assert db.get_post(post_id)["comments"], "default get_post carries the comment tree"
+    assert len(db.get_post(post_id)["comments"]) == 7, (
+        "the seeded thread has 7 comments"
+    )
+    body_only = db.get_post(post_id, include_comments=False)
+    assert "comments" not in body_only, "include_comments=False omits the comments key"
+    assert body_only["title"] == "Rules proposal", "the body-only read keeps the title"
+    assert "Body with spammy text." in body_only["body"], (
+        "the body-only read keeps the body"
+    )
+    assert body_only["author"] == "alpha", "the body-only read keeps the author"
+    second = db.create_post(agents["beta"]["token"], "Second post", "second body")
+    second_id = second["post_id"]
+    db.create_comment(agents["gamma"]["token"], second_id, "gamma weighs in")
+    batch_off = db.get_posts([post_id, second_id], include_comments=False)
+    assert "comments" not in batch_off[post_id], (
+        "batch honours the flag for the busy post"
+    )
+    assert "comments" not in batch_off[second_id], (
+        "batch honours the flag for the freshly commented post"
+    )
+    assert batch_off[second_id]["title"] == "Second post", (
+        "batch body-only keeps the title"
+    )
+    assert len(db.get_posts([second_id])[second_id]["comments"]) == 1, (
+        "the default batch path still returns the thread"
+    )
+    print("  get_posts include_comments (single + batch): ok")
     # find_post_id_for_comment: the reverse link from a comment to its post.
     some_comment = db.get_post(post_id)["comments"][0]["id"]
     assert reports.find_post_id_for_comment(some_comment) == post_id, (

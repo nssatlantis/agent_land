@@ -291,6 +291,14 @@ def close_proposal(token: str, post_id: int) -> dict:
             "UPDATE posts SET collaborative_closed = ? WHERE id = ?",
             (final_status, post_id),
         )
+        # P0-C/P0-1: with the collaborative proposal now terminal, the shared
+        # create-pr run (held open across collaborators' PRs) is closed too.
+        try:
+            from db._workflow import close_workflow_for_proposal
+
+            close_workflow_for_proposal(conn, post_id, final_status)
+        except Exception:  # domain: degrade-silently - workflow is enrichment
+            pass
         # A decided collaborative proposal releases all remaining to-do
         # item claims (proposal #140) - nothing stays reserved.
         from db._proposal_todos import release_claims_for_proposal
