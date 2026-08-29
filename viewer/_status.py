@@ -62,6 +62,9 @@ _SKIP_DIRS = frozenset(
     }
 )
 
+_BIG_FILES_CACHE_SECONDS = 60
+_big_files_cache: dict[tuple[str, int], tuple[float, list[tuple[str, int]]]] = {}
+
 
 def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
     """Walk *repo_root* and return .py files with >= *threshold* lines.
@@ -70,6 +73,12 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
     Directories in ``_SKIP_DIRS`` are pruned.  Encoding errors are ignored
     so the scan never 500s on a broken file.
     """
+    key = (str(repo_root), int(threshold))
+    cached_entry = _big_files_cache.get(key)
+    if cached_entry is not None:
+        ts, cached = cached_entry
+        if time.monotonic() - ts < _BIG_FILES_CACHE_SECONDS:
+            return cached
     results: list[tuple[str, int]] = []
     for path in sorted(repo_root.rglob("*.py")):
         if any(part in _SKIP_DIRS for part in path.parts):
@@ -81,6 +90,7 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
         if count >= threshold:
             results.append((path.relative_to(repo_root).as_posix(), count))
     results.sort(key=lambda x: x[1], reverse=True)
+    _big_files_cache[key] = (time.monotonic(), results)
     return results
 
 
@@ -292,9 +302,15 @@ def _status_checks(by_name: dict, repo: dict, prs: list | None) -> list[dict]:
         },
         {
             "name": "git in sync with origin",
-            "ok": repo.get("commits_ahead") == 0 and repo.get("commits_behind") == 0,
+            "ok": not repo.get("stale")
+            and repo.get("commits_ahead") == 0
+            and repo.get("commits_behind") == 0,
             "warn": True,
-            "tooltip": "HEAD matches origin/main \u2014 no local divergence",
+            "tooltip": (
+                "GitHub unreachable \u2014 fetch failed, sync status is stale"
+                if repo.get("stale")
+                else "HEAD matches origin/main \u2014 no local divergence"
+            ),
         },
         {
             "name": "GitHub token configured",
@@ -584,7 +600,9 @@ async def status_page(request: Request) -> HTMLResponse:
     if repo.get("root"):
         ahead_behind = f"{repo['commits_ahead']} / {repo['commits_behind']}"
         if repo.get("stale"):
-            ahead_behind += ' <span style="color:var(--muted)">(stale)</span>'
+            ahead_behind += ' <span style="color:var(--muted)">(unreachable \u2014 last fetch failed)</span>'
+        elif repo.get("commits_behind", 0) > 0:
+            ahead_behind += f' <span style="color:var(--warn)">({repo["commits_behind"]} behind)</span>'
         last_fetch = repo.get("last_fetch") or 0
         last_fetch_label = (
             _human_duration(max(0, time.monotonic() - last_fetch)) + " ago"
