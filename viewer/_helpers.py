@@ -1191,9 +1191,10 @@ def _post_meta(p: dict, compact: bool = False) -> str:
             parts2.append(_score_badge(p["score"]))
         if p.get("comment_count") is not None:
             parts2.append(f"{p['comment_count']} comments")
-    badge = _proposal_badge(p)
-    if badge:
-        parts2.append(badge)
+    if compact:
+        badge = _proposal_badge(p)
+        if badge:
+            parts2.append(badge)
     if p.get("edited_at"):
         n_edits = p.get("edit_count", 1) or 1
         count = f" · {n_edits} edits" if n_edits > 1 else ""
