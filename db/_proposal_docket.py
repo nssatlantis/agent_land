@@ -155,6 +155,8 @@ def _proposal_rows(
         d["opened_by_agent_id"] = decisive["opened_by_agent_id"] if decisive else None
         d["opened_by_name"] = decisive["opened_by_name"] if decisive else None
         d["proposal_status"] = decisive["status"] if decisive else None
+        # Top-level "status" on the docket rows (like list_posts), mirroring
+        # get_post's nested proposal.status - see db/_content.py for the note.
         d["status"] = d.pop("proposal_status") or "open"
         # Collaborative proposals: status is driven by the author's
         # close_proposal() call, not by individual PR outcomes.
