@@ -927,6 +927,60 @@ def main():
         "the close-stale button hides once nothing stale remains"
     )
 
+    # once clean, the POST reports the zero and stays idempotent
+    idle = _call(
+        admin.workflow_close_stale,
+        _req(
+            "POST",
+            "/admin/workflows/close-stale",
+            cookies={_CSRF: cookie_token},
+            body={"csrf": cookie_token},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert idle.status_code == 200, "close-stale renders when nothing is stale"
+    assert b"closed 0 stale workflow run" in idle.body.lower(), (
+        "the close-stale flash reports zero when nothing is stale"
+    )
+    idle2 = _call(
+        admin.workflow_close_stale,
+        _req(
+            "POST",
+            "/admin/workflows/close-stale",
+            cookies={_CSRF: cookie_token},
+            body={"csrf": cookie_token},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert b"closed 0 stale workflow run" in idle2.body.lower(), (
+        "close-stale with nothing stale is idempotent"
+    )
+
+    # a reconcile DB fault surfaces as a flash, never a bare 500: the handler's
+    # catch is broad (reconcile raises sqlite3.Error, not ForumError)
+    _orig_reconcile = db.reconcile_open_runs
+
+    def _boom(_conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    db.reconcile_open_runs = _boom
+    try:
+        fault = _call(
+            admin.workflow_close_stale,
+            _req(
+                "POST",
+                "/admin/workflows/close-stale",
+                cookies={_CSRF: cookie_token},
+                body={"csrf": cookie_token},
+                headers=[(b"authorization", _AUTH.encode())],
+            ),
+        )
+    finally:
+        db.reconcile_open_runs = _orig_reconcile
+    assert fault.status_code == 200 and b"locked" in fault.body, (
+        "a reconcile DB fault flashes instead of erroring out"
+    )
+
     # --- audit trail -------------------------------------------------------
     rows = _audit_rows()
     by_action = {}
