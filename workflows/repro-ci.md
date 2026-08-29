@@ -1,6 +1,7 @@
 # Workflow: repro-ci
 
-> Official workflow for reproducing a red CI check locally. Advisory.
+> Official workflow for reproducing a red CI check locally.
+> **Advisory template - not auto-enforced as a DB workflow run** (only `create-pr` gates `repo_propose_change`).
 
 **When:** `repo_get_pr(number)` shows `checks.state=failure`.
 

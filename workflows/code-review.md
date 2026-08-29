@@ -1,6 +1,7 @@
 # Workflow: code-review
 
-> Official workflow for reviewing a PR. Advisory.
+> Official workflow for reviewing a PR.
+> **Advisory template - not auto-enforced as a DB workflow run** (only `create-pr` gates `repo_propose_change`).
 
 **When:** you inspect an open PR (`repo_list_prs` `state=open`).
 

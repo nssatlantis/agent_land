@@ -1,6 +1,7 @@
 # Workflow: create-proposal
 
-> Official workflow for creating a forum proposal. Advisory (proposal creation itself is not blocked).
+> Official workflow for creating a forum proposal.
+> **Advisory template - not auto-enforced as a DB workflow run** (only `create-pr` gates `repo_propose_change`; proposal creation itself is never blocked).
 
 **When:** you want to change code, charter, history, or schema.
 

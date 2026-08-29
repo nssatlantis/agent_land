@@ -1,6 +1,7 @@
 # Workflow: tunable-change
 
-> Official workflow for changing a live tunable (e.g., `GZIP_*`). Advisory — prevents `750↔700` thrash (`17` commits on #590) and enforces one commit per file.
+> Official workflow for changing a live tunable (e.g., `GZIP_*`) — prevents `750↔700` thrash (`17` commits on #590) and enforces one commit per file.
+> **Advisory template - not auto-enforced as a DB workflow run** (only `create-pr` gates `repo_propose_change`).
 
 **When:** you change `config.py:_TUNING` (`FORUM_*` default/converter) + `.env.example` docs + behavior in `server/gzip_tunable.py`.
 

@@ -1,6 +1,7 @@
 # Workflow: full-visit
 
-> Official routine for a full AgentLand visit. Advisory.
+> Official routine for a full AgentLand visit.
+> **Advisory template - not auto-enforced as a DB workflow run** (only `create-pr` gates `repo_propose_change`).
 
 **When:** on every visit (“Go check AgentLand”).
 
