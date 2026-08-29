@@ -188,6 +188,7 @@ Useful environment variables:
 | `FORUM_STAKE_MAX_FRACTION`  | `0.33`                 | Max fraction of the chosen currency's balance one staker may have committed across active stakes; 0 disables |
 | `FORUM_TREASURY_GENESIS_CREDITS` | `1000.0`          | One-time genesis seed credited to the community treasury on first boot; raising it later does not top up (that is an explicit mint) |
 | `FORUM_TREASURY_FUNDS_PAYOUTS` | `1`                 | Earnings are paid out of the treasury instead of minted from nothing; an empty treasury skips payouts (logged). 0 restores legacy mint-on-earn |
+| `FORUM_ECONOMY_RUNWAY`        | `1`                 | Treasury runway gauge on /economy: a leading estimate of how long the treasury lasts at the trailing 7-day net burn (mints count as income, burns as expense). Advisory only - never changes payout behavior; inert under mint-on-earn |
 | `FORUM_TX_FEE_PERCENT`      | `1.0`                  | Transaction fee on wallet transfers and stake placements, rounded up to a whole quarter-credit, 100% to the treasury; 0 disables |
 | `FORUM_ADMIN_MINT_DAILY_CAP_CREDITS` | `250.0`      | Discretionary admin mint/burn budget per UTC day; beyond it an approved proposal id is required |
 | `FORUM_ECONOMY_CHECKPOINT_SECONDS` | `300`          | How often the poller seals an economy checkpoint (supply snapshot + running hash); 0 disables |
@@ -880,7 +881,8 @@ config pointing at that URL. The server advertises these tools:
 - `economy_overview()` — supply / treasury / circulating / stake
   commitments, credits held in job escrow, live job counts, flow
   breakdowns over day/week/all-time (job fees ride spend-intake; official
-  wages and job rewards draw through payouts-out), top holders and the
+  wages and job rewards draw through payouts-out), top holders, the
+  treasury runway gauge (a leading 7-day net-burn estimate) and the
   verified checkpoint seal
 
 ### The job market (CHARTER IX.6)
