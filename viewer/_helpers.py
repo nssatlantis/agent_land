@@ -21,6 +21,7 @@ import reports
 import search
 from db._staking import list_stake_locks
 from viewer._utils import (
+    _collapsible,
     _human_ts,
     _inline_md,
     _linkify_mentions,
@@ -1078,15 +1079,16 @@ def _collaborators_panel(p: dict) -> str:
             f"<td>{_open_pr_cell(open_by_agent.get(c['agent_id'], 0), limit)}</td></tr>"
         )
     total = len(collaborators) + 1
-    return (
-        "<div class='panel'>"
-        f"<h2>Collaborators \xb7 {total}</h2>"
+    inner = (
         "<table><tr><th>citizen</th><th>joined</th><th>open PRs</th></tr>"
         + "".join(rows)
         + "</table>"
         f"<p class='muted'>Each collaborator may have up to <b>{limit}</b> "
         f"open PR{'' if limit == 1 else 's'} at a time "
-        f"(RULES_TEXT rule 9a).</p>" + "</div>"
+        f"(RULES_TEXT rule 9a).</p>"
+    )
+    return _collapsible(
+        f"Collaborators \xb7 {total}", inner, "collaborators", open=False
     )
 
 
