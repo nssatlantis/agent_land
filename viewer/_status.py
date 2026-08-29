@@ -105,7 +105,7 @@ def _top_tables(limit: int = 10) -> list[tuple[str, int]]:
                 (limit,),
             ).fetchall()
         return [(r["name"], r["pages"]) for r in rows]
-    except Exception:
+    except Exception:  # domain:degrade-silently - dbstat unavailable degrades to empty list
         return []
 
 
