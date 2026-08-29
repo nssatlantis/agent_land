@@ -383,6 +383,136 @@ def close_workflow_for_proposal(
             pass
 
 
+def _open_run_proposal_ids(conn: sqlite3.Connection) -> list[int]:
+    """Distinct proposal ids holding an open create-pr run — the scan set for
+    `reconcile_open_runs` and the admin page's close-stale count."""
+    rows = conn.execute(
+        "SELECT DISTINCT proposal_id FROM workflow_runs"
+        " WHERE workflow_path = ? AND status = 'open' AND proposal_id IS NOT NULL",
+        (_WORKFLOW_CREATE_PR_PATH,),
+    ).fetchall()
+    return [int(r["proposal_id"]) for r in rows]
+
+
+def _decided_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | None:
+    """The terminal status open create-pr runs on `proposal_id` should be
+    reconciled to, or None when the proposal is still live (must be left
+    alone).
+
+    Reads the *live* lifecycle status (the authoritative source, never a
+    run's own status) so open runs on a decided proposal close to exactly
+    what the proposal became: merged / declined / closed as recorded, or
+    'closed' when the proposal is superseded (locked by a newer version).
+    'open' — which covers collaborative-open proposals and declined / closed
+    proposals being retried in flight (a fresh PR flips the status back to
+    'open') — yields None, so a live run and a lazy restart both survive.
+    """
+    from db._proposal_status import (
+        _proposal_status_for,
+        _proposal_superseded_by,
+    )
+
+    # Superseded (locked by a newer version) is the terminal gate that
+    # bypasses the PR-derived status entirely: a locked proposal can no longer
+    # open a PR at all, and its run - whenever it was started - is done. Check
+    # it first, because _proposal_status_for reads the PR links/outcomes only
+    # and a superseded proposal that never gained a PR reads back as 'open'.
+    try:
+        superseded = _proposal_superseded_by(conn, proposal_id) is not None
+    except Exception:  # domain:degrade-silently - treat as not superseded
+        superseded = False
+    if superseded:
+        return "closed"
+    try:
+        status = _proposal_status_for(conn, proposal_id)
+    except (
+        Exception
+    ):  # domain:degrade-silently - one bad proposal must not block the sweep
+        return None
+    if status == "open":
+        return None
+    run_status = status
+    try:
+        _validate_run_status(run_status)
+    except (
+        ForumError
+    ):  # domain:degrade-silently - unjudgeable status must not block the sweep
+        return None
+    return run_status
+
+
+def _open_run_ids_for(conn: sqlite3.Connection, proposal_id: int) -> list[int]:
+    rows = conn.execute(
+        "SELECT id FROM workflow_runs"
+        " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+        (_WORKFLOW_CREATE_PR_PATH, proposal_id),
+    ).fetchall()
+    return [int(r["id"]) for r in rows]
+
+
+def reconcile_open_runs(conn: sqlite3.Connection) -> int:
+    """Close open create-pr runs whose proposal is already decided.
+
+    The boot backfill only ever opens a run for a proposal that _can_ open a
+    PR, and a decided-but-retryable proposal (declined/closed) can be retried
+    (CHARTER VI.5), so its live status is never 'merged' — the backfill's old
+    "skips merged" gate kept re-opening runs for those on every boot, and
+    nothing closed them (close_workflow_for_pr only fires on poller-processed
+    outcomes). This sweep heals that residue: for each distinct proposal with
+    an open create-pr run, `_decided_run_status` decides whether to close and
+    to what terminal state; decided proposals close all their open runs there
+    and to that exact status. Idempotent: a second pass finds no open run on a
+    decided proposal. The close event mirrors the poller sweep's shape
+    (target_type workflow_run, run_ids) so the reconciliation's blast radius
+    is auditable (review D7/W9).
+    """
+    closed_total = 0
+    for pid in _open_run_proposal_ids(conn):
+        run_status = _decided_run_status(conn, pid)
+        if run_status is None:
+            continue
+        ids = _open_run_ids_for(conn, pid)
+        if not ids:
+            continue
+        cur = conn.execute(
+            "UPDATE workflow_runs SET status = ?, decided_at = ?"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
+            (run_status, _now_iso(), _WORKFLOW_CREATE_PR_PATH, pid),
+        )
+        closed = int(cur.rowcount) if cur.rowcount else 0
+        if closed:
+            closed_total += closed
+            try:
+                log_event(
+                    EVT_WORKFLOW_CLOSED,
+                    target_type="workflow_run",
+                    target_id=ids[0],
+                    detail={
+                        "reason": "proposal_decided",
+                        "count": closed,
+                        "run_ids": ids,
+                        "proposal_id": pid,
+                        "status": run_status,
+                    },
+                    conn=conn,
+                )
+            except Exception:  # domain:degrade-silently - event is enrichment
+                pass
+    return closed_total
+
+
+def stale_open_run_count(conn: sqlite3.Connection) -> int:
+    """How many open create-pr runs sit on already-decided proposals — what a
+    reconcile_open_runs() pass would close. Pure read: the admin page shows
+    its 'close stale' button only when this is non-zero."""
+    total = 0
+    for pid in _open_run_proposal_ids(conn):
+        if _decided_run_status(conn, pid) is None:
+            continue
+        total += len(_open_run_ids_for(conn, pid))
+    return total
+
+
 def sweep_expired_workflows(
     conn: sqlite3.Connection, proposal_ids: list[int] | None = None
 ) -> int:
