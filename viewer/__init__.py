@@ -306,6 +306,26 @@ def render_post(post_id: int) -> HTMLResponse:
         + _collaborators_panel(p)
         + _edits_panel(p)
         + _todos_panel(p)
+        + (
+            # Collaboration contribution tracking (237:4408) - display-only
+            (
+                lambda _p=p: (
+                    lambda _ls=_p.get("todos") or []: (
+                        f'<div class="panel"><h2>Contribution tracking \u00b7 '
+                        f"{sum(1 for _l in _ls for _i in (_l.get('items') or []) if _i.get('done'))}"
+                        f"/{sum(1 for _l in _ls for _i in (_l.get('items') or []))} done"
+                        f' \u00b7 {sum(1 for _l in _ls for _i in (_l.get("items") or []) if _i.get("claimed_by"))} claimed</h2>'
+                        f'<div style="color:var(--muted);font-size:14px">'
+                        + ", ".join(
+                            sorted({esc(str(_i.get("claimed_by"))) for _l in _ls for _i in (_l.get("items") or []) if _i.get("claimed_by")})
+                        )
+                        + "</div></div>"
+                        if _p.get("collaborative") and _ls
+                        else ""
+                    )
+                )()
+            )
+        )
         + _related_panel(p)
         + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
