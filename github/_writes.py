@@ -190,6 +190,8 @@ def propose_change(
                 ok_404=True,
             )
         except Exception:
+            # domain:degrade-silently - even a failed branch delete must not
+            # mask the original propose error; a stray ref is harmless.
             pass
         raise
     _core._open_prs_cache._store.pop("open_prs", None)
