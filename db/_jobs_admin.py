@@ -13,9 +13,12 @@ import config
 from db._core import ForumError, _conn, _now_iso, _parse_iso, _require_active_agent
 from db._jobs_ops import (
     _apply_review,
+    _cycle_is_overdue,
     _fmt_q,
     _job_detail,
+    _job_overdue_anchor_sql,
     _remaining_escrow,
+    job_overdue_cutoff,
 )
 
 
@@ -605,6 +608,7 @@ def _outstanding_actions(
     note) and the daily digest, so the two surfaces can never disagree
     about what someone owes (#389 shared-predicate discipline)."""
     out: list[str] = []
+    _cutoff = job_overdue_cutoff()
     offers = conn.execute(
         "SELECT id, title FROM jobs"
         " WHERE status = 'offered' AND offered_to_agent_id = ?"
@@ -614,7 +618,8 @@ def _outstanding_actions(
     for r in offers:
         out.append(f"#{r['id']} '{r['title']}': accept/decline your offer")
     todo = conn.execute(
-        "SELECT j.id, j.title, jc.cycle_no FROM jobs j"
+        "SELECT j.id, j.title, jc.cycle_no, jc.status,"
+        f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
         " WHERE j.worker_agent_id = ? AND j.status = 'active'"
         " AND jc.status IN ('awaiting', 'declined')"
@@ -622,10 +627,13 @@ def _outstanding_actions(
         (agent_id,),
     ).fetchall()
     for r in todo:
-        out.append(
+        phrase = (
             f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
             "your work - submit_job()"
         )
+        if _cycle_is_overdue(r["status"], r["anchor_at"], _cutoff):
+            phrase += " (overdue)"
+        out.append(phrase)
     review = conn.execute(
         "SELECT j.id, j.title, jc.cycle_no FROM jobs j"
         " JOIN job_cycles jc ON jc.job_id = j.id"
@@ -639,6 +647,21 @@ def _outstanding_actions(
             f"#{r['id']} '{r['title']}': cycle {r['cycle_no']} awaits "
             "your review_job() verdict"
         )
+    stale = conn.execute(
+        "SELECT j.id, j.title, jc.cycle_no, jc.status,"
+        f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
+        " JOIN job_cycles jc ON jc.job_id = j.id AND jc.cycle_no = j.cycles_done + 1"
+        " WHERE j.creator_agent_id = ? AND j.status = 'active'"
+        " AND jc.status IN ('awaiting', 'declined')"
+        " ORDER BY j.id",
+        (agent_id,),
+    ).fetchall()
+    for r in stale:
+        if _cycle_is_overdue(r["status"], r["anchor_at"], _cutoff):
+            out.append(
+                f"#{r['id']} '{r['title']}': worker hasn't submitted cycle"
+                f" {r['cycle_no']} (overdue)"
+            )
     return out
 
 
@@ -690,4 +713,63 @@ def send_job_digests() -> int:
                 # domain: degrade-silently - one citizen's digest must
                 # never block others; retried on the next sweep.
                 pass
+    return sent
+
+
+def sweep_overdue_job_cycles() -> int:
+    """Nudge the WORKER and CREATOR of every active job whose current
+    cycle idles past FORUM_JOB_CYCLE_DUE_HOURS without a move - the board's
+    overdue marking, surfaced LIVE through the same _outstanding_actions
+    predicate. Once per cycle: the existing-notifications check (the
+    latest 'jobs' mail on this job already carrying the 'overdue' marker)
+    makes re-notification impossible while the window stays open, and a
+    submission / verdict refresh both reset the anchor.  'submitted'
+    cycles (the creator's turn) are never overdue.  Returns how many
+    notices were sent."""
+    from notifications import _notify
+
+    cutoff = job_overdue_cutoff()
+    if not cutoff:
+        return 0
+    sent = 0
+    with _conn() as conn:
+        active = conn.execute(
+            "SELECT j.id, j.title, j.worker_agent_id, j.creator_agent_id,"
+            " jc.cycle_no, jc.status,"
+            f" {_job_overdue_anchor_sql('j')} AS anchor_at FROM jobs j"
+            " JOIN job_cycles jc ON jc.job_id = j.id"
+            " AND jc.cycle_no = j.cycles_done + 1"
+            " WHERE j.status = 'active'"
+            " AND jc.status IN ('awaiting', 'declined')",
+        ).fetchall()
+        for r in active:
+            if not _cycle_is_overdue(r["status"], r["anchor_at"], cutoff):
+                continue
+            marker = f"cycle {r['cycle_no']} of job #{r['id']}"
+            already = conn.execute(
+                "SELECT 1 FROM notifications WHERE agent_id = ?"
+                " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                " AND body LIKE ? LIMIT 1",
+                (r["worker_agent_id"], r["id"], f"%{marker}%overdue%"),
+            ).fetchone()
+            if already is not None:
+                continue
+            for role_agent_id, body in (
+                (
+                    r["worker_agent_id"],
+                    f"{marker} ('{r['title']}') is overdue - submit your work"
+                    " or the creator may reassign.",
+                ),
+                (
+                    r["creator_agent_id"],
+                    f"Worker hasn't submitted {marker} ('{r['title']}') -"
+                    " overdue; consider reassigning.",
+                ),
+            ):
+                if role_agent_id is None:
+                    # Official job - the creator is the admin panel; the
+                    # worker's notice still lands.
+                    continue
+                _notify(conn, role_agent_id, "jobs", "job", r["id"], body)
+                sent += 1
     return sent
