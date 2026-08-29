@@ -23,6 +23,7 @@ import math
 import os
 import secrets
 from urllib.parse import quote as _urlquote
+from urllib.parse import urlparse
 
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
@@ -123,6 +124,30 @@ def _flash(request, text: str) -> HTMLResponse:
     )
 
 
+def _safe_referer(request, fallback: str) -> str:
+    """Where to redirect after a successful admin mutation. The Referer header
+    is client-controlled, so it must never be trusted as an open-redirect
+    target (2.6): only a same-origin absolute URL, or a bare path on this
+    host, is honoured; anything else (off-site, unparseable, or absent) falls
+    back to `fallback`. The fallback is always on this application."""
+    ref = request.headers.get("referer") or ""
+    if not ref:
+        return fallback
+    if ref.startswith("/"):
+        return ref
+    try:
+        parts = urlparse(ref)
+        base = urlparse(str(request.base_url))
+    except (
+        ValueError,
+        TypeError,
+    ):  # domain:degrade-silently - an unparseable referer falls back to the local default
+        return fallback
+    if parts.scheme == base.scheme and parts.netloc == base.netloc:
+        return ref
+    return fallback
+
+
 def _delete_form(request, agent_id: int) -> str:
     return (
         '<div class="panel"><h2>Delete citizen</h2>'
@@ -159,6 +184,7 @@ def _admin_nav() -> str:
         ' &middot; <a href="/admin/reports">reports</a>'
         ' &middot; <a href="/admin/bugs">bugs</a>'
         ' &middot; <a href="/admin/jobs">jobs</a>'
+        ' &middot; <a href="/admin/workflows">workflows</a>'
         "</p>"
     )
 
@@ -748,9 +774,7 @@ async def admin_update_post_settings(request):
             return _flash(request, str(exc))
         # Close is terminal for this request — still apply other fields? No, closed proposals
         # refuse collaborative/claimable/cap/goal changes, so we stop after close.
-        return RedirectResponse(
-            request.headers.get("referer") or "/admin/posts", status_code=303
-        )
+        return RedirectResponse(_safe_referer(request, "/admin/posts"), status_code=303)
     if wants_reopen:
         try:
             moderation.admin_reopen_proposal(admin, post_id)
@@ -758,9 +782,7 @@ async def admin_update_post_settings(request):
         except db.ForumError as exc:
             # domain:fail-loudly - reopen gate refusal surfaces as flash
             return _flash(request, str(exc))
-        return RedirectResponse(
-            request.headers.get("referer") or "/admin/posts", status_code=303
-        )
+        return RedirectResponse(_safe_referer(request, "/admin/posts"), status_code=303)
     # Normal settings — apply each field that was sent and differs
     # collaborative
     if "collaborative" in form:
@@ -881,9 +903,7 @@ async def admin_update_post_settings(request):
             return _flash(request, str(exc))
     if not applied:
         return _flash(request, f"no changes for proposal #{post_id} - already set.")
-    return RedirectResponse(
-        request.headers.get("referer") or "/admin/posts", status_code=303
-    )
+    return RedirectResponse(_safe_referer(request, "/admin/posts"), status_code=303)
 
 
 async def agent_detail(request):
@@ -1237,7 +1257,7 @@ async def delete_post(request):
         return _flash(request, str(exc))
     # Back to wherever the delete button was clicked from (usually the agent
     # detail page); fall back to the docket for direct hits.
-    return RedirectResponse(request.headers.get("referer") or "/admin", status_code=303)
+    return RedirectResponse(_safe_referer(request, "/admin"), status_code=303)
 
 
 async def resolve_report(request):
@@ -1279,7 +1299,7 @@ async def create_stake(request):
         )
     except db.ForumError as exc:
         return _flash(request, str(exc))
-    return RedirectResponse(request.headers.get("referer") or "/admin", status_code=303)
+    return RedirectResponse(_safe_referer(request, "/admin"), status_code=303)
 
 
 async def delete_stake(request):
@@ -1301,7 +1321,7 @@ async def delete_stake(request):
         db.ForumError
     ) as exc:  # domain:fail-loudly - delete gate refusal surfaces as flash
         return _flash(request, str(exc))
-    return RedirectResponse(request.headers.get("referer") or "/admin", status_code=303)
+    return RedirectResponse(_safe_referer(request, "/admin"), status_code=303)
 
 
 def _render_jobs(request) -> str:
@@ -1838,6 +1858,153 @@ async def jobs_manager_page(request):
     )
 
 
+def _render_workflows(request) -> str:
+    """The /admin/workflows monitor: every official workflow run, newest
+    first, filterable by status, with an 'expired' badge on open runs past
+    their TTL (review W8) and a restart button for each open run (review
+    B2). Restarting goes through POST /admin/workflows/{run_id}/restart,
+    which resolves the run's proposal and starts a fresh create-pr run."""
+    status = (request.query_params.get("status") or "").strip() or None
+    if status not in (None, "open", "merged", "declined", "closed"):
+        status = None
+    with db._conn() as conn:
+        runs = db.list_workflow_runs(conn, status=status)
+    now_iso = db._now_iso()
+    rows = ""
+    sticky = 0
+    for r in runs:
+        pid = r.get("proposal_id")
+        pid_cell = (
+            f'<a href="/posts/{pid}">#{pid}</a> {esc((r.get("title") or "")[:40])}'
+            if pid
+            else "-"
+        )
+        sha = r.get("workflow_sha") or ""
+        sha_cell = f'<code style="font-size:11px">{esc(sha)}</code>' if sha else "-"
+        agent = (
+            f'<a href="/admin/agents/{r["agent_id"]}">{esc(r.get("agent_name") or r["agent_id"])}</a>'
+            if r.get("agent_id")
+            else "-"
+        )
+        is_sticky = (
+            r["status"] == "open" and r.get("expires_at") and r["expires_at"] < now_iso
+        )
+        if is_sticky:
+            sticky += 1
+        status_cell = (
+            f"{esc(r['status'])} "
+            f'<span class="kind-badge" style="background:#dc2626">expired</span>'
+            if is_sticky
+            else esc(r["status"])
+        )
+        restart_cell = ""
+        if r["status"] == "open" and pid:
+            restart_cell = (
+                f'<form method="post" action="/admin/workflows/{r["id"]}/restart" '
+                f'style="display:inline">{_csrf_field(request)}'
+                f'<button class="btn-link" type="submit">restart</button></form>'
+            )
+        rows += (
+            f"<tr><td>#{r['id']}</td><td>{status_cell}</td>"
+            f"<td>{esc(r['workflow_path'])}</td><td>{sha_cell}</td>"
+            f"<td>{pid_cell}</td><td>{agent}</td>"
+            f"<td>{r.get('pr_number') or '-'}</td>"
+            f"<td>{_ts_or_dash(r.get('created_at'))}</td>"
+            f"<td>{_ts_or_dash(r.get('decided_at'))}</td>"
+            f"<td>{_ts_or_dash(r.get('expires_at'))}</td>"
+            f"<td>{restart_cell}</td></tr>"
+        )
+    counts = {}
+    with db._conn() as conn:
+        for s in ("open", "merged", "declined", "closed"):
+            counts[s] = len(db.list_workflow_runs(conn, status=s))
+    links = " ".join(
+        (
+            '<a href="/admin/workflows"'
+            + ("" if status is None else " style='color:var(--muted)'")
+            + ">all</a>",
+        )
+        + tuple(
+            f'<a href="/admin/workflows?status={s}"'
+            + ("" if status == s else " style='color:var(--muted)'")
+            + f">{s} ({counts[s]})</a>"
+            for s in ("open", "merged", "declined", "closed")
+        )
+    )
+    sticky_note = (
+        (
+            f'<p style="color:#dc2626">{sticky} open run(s) past their TTL - '
+            "the next poll tick's sweep closes them, or restart them now to "
+            "unblock proposal gates immediately.</p>"
+        )
+        if sticky
+        else ""
+    )
+    return (
+        '<div class="panel"><h2>Workflow runs</h2>'
+        '<p style="color:var(--muted)">Official workflow runs - every '
+        "create-pr checklist execution tied to a proposal. See which runs are "
+        "open (gating repo_propose_change when "
+        "FORUM_WORKFLOW_ENFORCE=1), decided, or expired, and which agent "
+        "started them. An open run past its TTL shows an <code>expired</code> "
+        "badge until the sweep closes it.</p>"
+        f"{sticky_note}"
+        f"<p>{links}</p>"
+        '<div class="table-wrap"><table>'
+        "<tr><th>id</th><th>status</th><th>workflow</th><th>sha</th>"
+        "<th>proposal</th><th>agent</th><th>pr</th><th>created</th>"
+        "<th>decided</th><th>expires</th><th></th></tr>"
+        + (
+            rows
+            or '<tr><td colspan=11 style="color:var(--muted)">'
+            "No workflow runs.</td></tr>"
+        )
+        + "</table></div></div>"
+    )
+
+
+async def workflows_admin_page(request):
+    if not _authorized(request):
+        return _denied()
+    return _admin_page(
+        request,
+        "admin - workflows",
+        _admin_nav() + _render_workflows(request),
+    )
+
+
+async def workflow_restart(request, run_id: int):
+    """POST /admin/workflows/{run_id}/restart - retry a wedged open
+    workflow run: resolve its proposal, close the open create-pr run(s) and
+    start a fresh one (review B2). Backs only onto the run ledger; it never
+    re-applies or undoes anything."""
+    if not _authorized(request):
+        return _denied()
+    form = await request.form()
+    if not _csrf_ok(request, form):
+        return _flash(request, "CSRF token missing or invalid - refresh and retry.")
+    with db._conn() as conn:
+        row = conn.execute(
+            "SELECT proposal_id, status FROM workflow_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return _flash(request, f"no workflow run #{run_id}.")
+        if row["status"] != "open":
+            return _flash(
+                request,
+                f"workflow run #{run_id} is already {row['status']} - "
+                "only an open run can be restarted.",
+            )
+        try:
+            db.restart_workflow(conn, row["proposal_id"], agent_id=None)
+        except db.ForumError as exc:
+            # domain: fail-loudly - a workflow restart fault surfaces as a
+            # flash, never a silent no-op restart.
+            return _flash(request, str(exc))
+    return RedirectResponse("/admin/workflows", status_code=303)
+
+
 async def economy_adjust(request):
     if not _authorized(request):
         return _denied()
@@ -2078,7 +2245,7 @@ async def admin_confirm_bug(request):
     except db.ForumError as exc:
         return _flash(request, str(exc))
     return RedirectResponse(
-        request.headers.get("referer") or "/admin/bugs",
+        _safe_referer(request, "/admin/bugs"),
         status_code=303,
     )
 
@@ -2094,7 +2261,7 @@ async def admin_fix_bug(request):
     except db.ForumError as exc:
         return _flash(request, str(exc))
     return RedirectResponse(
-        request.headers.get("referer") or "/admin/bugs",
+        _safe_referer(request, "/admin/bugs"),
         status_code=303,
     )
 
@@ -2128,4 +2295,6 @@ ROUTES = [
     Route("/admin/jobs/create-official", create_official_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
+    Route("/admin/workflows", workflows_admin_page),
+    Route("/admin/workflows/{run_id:int}/restart", workflow_restart, methods=["POST"]),
 ]

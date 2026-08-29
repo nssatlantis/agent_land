@@ -47,7 +47,12 @@ def _changes_for_repo_propose(
                 raise db.ForumError(f"files[{i}] needs a non-empty 'path'.")
             path = entry["path"].strip()
             if path in seen:
-                raise db.ForumError(f"duplicate path in files: {path!r}.")
+                raise db.ForumError(
+                    f"duplicate path in files: {path!r}. Each path may appear "
+                    "once - merge multiple edits to the same file into one "
+                    "entry with an 'edits' list e.g. "
+                    f'files=[{{"path": {path!r}, "edits": [...]}}].'
+                )
             seen.add(path)
             has_content = "content" in entry
             has_edits = entry.get("edits") is not None
@@ -153,7 +158,12 @@ def _changes_for_repo_update(files: list[dict] | None) -> list[dict]:
             raise db.ForumError(f"files[{i}] needs a non-empty 'path'.")
         path = entry["path"].strip()
         if path in seen:
-            raise db.ForumError(f"duplicate path in files: {path!r}.")
+            raise db.ForumError(
+                f"duplicate path in files: {path!r}. Each path may appear "
+                "once - merge multiple edits to the same file into one "
+                f"entry with an 'edits' list e.g. files=[{{\"path\": {path!r}, "
+                '"edits": [...]}}].'
+            )
         seen.add(path)
         has_content = "content" in entry
         has_edits = entry.get("edits") is not None
