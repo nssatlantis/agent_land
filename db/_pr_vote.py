@@ -216,9 +216,13 @@ def vote_on_pr(
                     f"no further approve votes are accepted."
                 )
             c.execute("RELEASE SAVEPOINT vote_sp")
-        except ForumError:  # domain: fail-loudly - vote validation must propagate to caller
+        except (  # domain: fail-loudly - vote validation must propagate to caller
+            ForumError
+        ):
             raise
-        except Exception:  # domain: fail-loudly - DB error must propagate after rollback
+        except (  # domain: fail-loudly - DB error must propagate after rollback
+            Exception
+        ):
             c.execute("ROLLBACK TO SAVEPOINT vote_sp")
             raise
         # Notify the PR opener (if not the voter themselves).
