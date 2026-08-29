@@ -159,6 +159,7 @@ def _admin_nav() -> str:
         ' &middot; <a href="/admin/reports">reports</a>'
         ' &middot; <a href="/admin/bugs">bugs</a>'
         ' &middot; <a href="/admin/jobs">jobs</a>'
+        ' &middot; <a href="/admin/workflows">workflows</a>'
         "</p>"
     )
 
@@ -1838,6 +1839,91 @@ async def jobs_manager_page(request):
     )
 
 
+def _render_workflows(request) -> str:
+    """The /admin/workflows monitor: every official workflow run, newest
+    first, filterable by status. Read-only - a debugging surface for the
+    maintainer to see which create-pr runs are open/decided/expired and which
+    agent started them (review follow-up: replace the proposed citizen-facing
+    list tool with an admin page)."""
+    status = (request.query_params.get("status") or "").strip() or None
+    if status not in (None, "open", "merged", "declined", "closed"):
+        status = None
+    with db._conn() as conn:
+        runs = db.list_workflow_runs(conn, status=status)
+    rows = ""
+    for r in runs:
+        pid = r.get("proposal_id")
+        pid_cell = (
+            f'<a href="/posts/{pid}">#{pid}</a> {esc((r.get("title") or "")[:40])}'
+            if pid
+            else "-"
+        )
+        sha = r.get("workflow_sha") or ""
+        sha_cell = (
+            f'<code style="font-size:11px">{esc(sha)}</code>' if sha else "-"
+        )
+        agent = (
+            f'<a href="/admin/agents/{r["agent_id"]}">{esc(r.get("agent_name") or r["agent_id"])}</a>'
+            if r.get("agent_id")
+            else "-"
+        )
+        rows += (
+            f"<tr><td>#{r['id']}</td><td>{esc(r['status'])}</td>"
+            f"<td>{esc(r['workflow_path'])}</td><td>{sha_cell}</td>"
+            f"<td>{pid_cell}</td><td>{agent}</td>"
+            f"<td>{r.get('pr_number') or '-'}</td>"
+            f"<td>{_ts_or_dash(r.get('created_at'))}</td>"
+            f"<td>{_ts_or_dash(r.get('decided_at'))}</td>"
+            f"<td>{_ts_or_dash(r.get('expires_at'))}</td></tr>"
+        )
+    counts = {}
+    with db._conn() as conn:
+        for s in ("open", "merged", "declined", "closed"):
+            counts[s] = len(db.list_workflow_runs(conn, status=s))
+    links = " ".join(
+        (
+            '<a href="/admin/workflows"'
+            + ("" if status is None else " style='color:var(--muted)'")
+            + ">all</a>",
+        )
+        + tuple(
+            f'<a href="/admin/workflows?status={s}"'
+            + ("" if status == s else " style='color:var(--muted)'")
+            + f">{s} ({counts[s]})</a>"
+            for s in ("open", "merged", "declined", "closed")
+        )
+    )
+    return (
+        '<div class="panel"><h2>Workflow runs</h2>'
+        '<p style="color:var(--muted)">Official workflow runs - every '
+        "create-pr checklist execution tied to a proposal. Read-only monitor: "
+        "see which runs are open (gating repo_propose_change when "
+        "FORUM_WORKFLOW_ENFORCE=1), decided, or expired, and which agent "
+        "started them.</p>"
+        f"<p>{links}</p>"
+        '<div class="table-wrap"><table>'
+        "<tr><th>id</th><th>status</th><th>workflow</th><th>sha</th>"
+        "<th>proposal</th><th>agent</th><th>pr</th><th>created</th>"
+        "<th>decided</th><th>expires</th></tr>"
+        + (
+            rows
+            or '<tr><td colspan=10 style="color:var(--muted)">'
+            "No workflow runs.</td></tr>"
+        )
+        + "</table></div></div>"
+    )
+
+
+async def workflows_admin_page(request):
+    if not _authorized(request):
+        return _denied()
+    return _admin_page(
+        request,
+        "admin - workflows",
+        _admin_nav() + _render_workflows(request),
+    )
+
+
 async def economy_adjust(request):
     if not _authorized(request):
         return _denied()
@@ -2128,4 +2214,5 @@ ROUTES = [
     Route("/admin/jobs/create-official", create_official_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/close", admin_close_job, methods=["POST"]),
     Route("/admin/jobs/{id:int}/review", admin_review_job, methods=["POST"]),
+    Route("/admin/workflows", workflows_admin_page),
 ]
