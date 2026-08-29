@@ -69,6 +69,7 @@ from viewer._helpers import (
     _citizen_table,
     _collaborators_panel,
     _crumb,
+    _discussion_digest,
     _edits_panel,
     _kind_badge,
     _open_prs,
@@ -307,22 +308,7 @@ def render_post(post_id: int) -> HTMLResponse:
         + _edits_panel(p)
         + _todos_panel(p)
         + _related_panel(p)
-        + (
-            f'<div class="panel"><h2>Discussion digest</h2>'
-            f'<div style="color:var(--muted);font-size:14px">{len(p.get("comments") or [])} comments \u00b7 '
-            f"{len(set(c.get('author') for c in (p.get('comments') or [])))} participants</div>"
-            + "".join(
-                f'<div style="margin:6px 0;padding:6px 8px;border-left:2px solid var(--line)">{_score_badge(c.get("score", 0))} <b>{esc(c.get("author") or "")}</b>: {esc(_truncate(c.get("body") or "", 120))}</div>'
-                for c in sorted(
-                    p.get("comments") or [],
-                    key=lambda x: x.get("score", 0),
-                    reverse=True,
-                )[:3]
-            )
-            + "</div>"
-            if p.get("proposal_kind") and p.get("comments")
-            else ""
-        )
+        + _discussion_digest(p)
         + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
