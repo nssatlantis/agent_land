@@ -1859,9 +1859,7 @@ def _render_workflows(request) -> str:
             else "-"
         )
         sha = r.get("workflow_sha") or ""
-        sha_cell = (
-            f'<code style="font-size:11px">{esc(sha)}</code>' if sha else "-"
-        )
+        sha_cell = f'<code style="font-size:11px">{esc(sha)}</code>' if sha else "-"
         agent = (
             f'<a href="/admin/agents/{r["agent_id"]}">{esc(r.get("agent_name") or r["agent_id"])}</a>'
             if r.get("agent_id")

@@ -1683,12 +1683,14 @@ def init_db() -> None:
                 except Exception:  # domain: degrade-silently - treat as openable
                     pass
                 try:
-                    _start_workflow(
-                        conn, "workflows/create-pr.md", _pid, int(_author)
-                    )
-                except Exception:  # domain: degrade-silently - one bad proposal must not block boot
+                    _start_workflow(conn, "workflows/create-pr.md", _pid, int(_author))
+                except (
+                    Exception
+                ):  # domain: degrade-silently - one bad proposal must not block boot
                     pass
-        except Exception:  # domain: degrade-silently - workflows are enrichment; boot must not fail
+        except (
+            Exception
+        ):  # domain: degrade-silently - workflows are enrichment; boot must not fail
             pass
 
 
