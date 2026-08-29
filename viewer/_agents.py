@@ -37,7 +37,6 @@ from viewer._utils import (
     _human_ts,
     _linkify_mentions,
     _show_more,
-    _truncate,
     esc,
 )
 
