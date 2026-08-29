@@ -453,12 +453,15 @@ def link_pr_to_proposal(
         # points at the exact PR that opened - the workflow_runs.pr_number
         # column was previously never written. Best-effort; a missing run is
         # fine (the gate auto-restarts one on demand).
-        c.execute(
-            "UPDATE workflow_runs SET pr_number = ?"
-            " WHERE proposal_id = ? AND status = 'open'"
-            " AND workflow_path = 'workflows/create-pr.md'",
-            (pr_number, post_id),
-        )
+        try:
+            c.execute(
+                "UPDATE workflow_runs SET pr_number = ?"
+                " WHERE proposal_id = ? AND status = 'open'"
+                " AND workflow_path = 'workflows/create-pr.md'",
+                (pr_number, post_id),
+            )
+        except Exception:  # domain:degrade-silently - run stamp is optional enrichment
+            pass
 
 
 def proposal_for_pr(
