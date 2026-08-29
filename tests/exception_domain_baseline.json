@@ -1,6 +1,6 @@
 {
-  "db/_agent.py": 1,
-  "db/_core.py": 1,
+  "db/_agent.py": 2,
+  "db/_core.py": 2,
   "db/_pr_vote.py": 3,
   "search.py": 6,
   "server/_mcp.py": 2,
@@ -20,7 +20,7 @@
   "viewer/_events.py": 2,
   "viewer/_helpers.py": 6,
   "viewer/_proposals.py": 1,
-  "viewer/_status.py": 10,
+  "viewer/_status.py": 11,
   "viewer/_utils.py": 2,
   "db/_staking.py": 1,
   "db/_credits.py": 0,
