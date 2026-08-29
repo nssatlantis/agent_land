@@ -7,6 +7,7 @@ import importlib
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="agentland_test_jobs_"))
@@ -887,6 +888,237 @@ def test_daily_digest_time_gated_on_digest_kind():
         )
     db._jobs.send_job_digests()
     assert _digest_count(worker["token"]) == 2
+
+
+def test_overdue_cycles():
+    """Overdue marking (FORUM_JOB_CYCLE_DUE_HOURS): an active job whose
+    CURRENT cycle idles past the window reads overdue on the detail, the
+    board row, the shared _outstanding_actions predicate (nudge + digest +
+    check_in surfaces) — but a submitted cycle (the creator's turn) never
+    does. The sweep notifies worker AND creator exactly once per job+cycle
+    window; a decline opens a fresh window; knob 0 disables the feature."""
+    _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    # Notify-only: this test exercises the nudge path with an ancient
+    # anchor, so release (FORUM_JOB_OVERDUE_RELEASE_AFTER) must stay off;
+    # the release branch is covered by test_overdue_release.
+    _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "0")
+    try:
+        creator = _make_creator("jobc-stall")
+        worker = db.register_agent("jobw-stall")
+        job = _simple_job(creator, title="stalled work")
+        db.claim_job(worker["token"], job["job_id"])
+
+        def _age(job_id: int) -> None:
+            # Age every ledger anchor for the job so the current cycle idles
+            # past the window (the anchor is the MAX over anchor kinds).
+            with db._conn(immediate=True) as conn:
+                conn.execute(
+                    "UPDATE events SET created_at = '2026-01-01T00:00:00.000Z'"
+                    " WHERE target_type = 'job' AND target_id = ?"
+                    " AND kind IN ('job_claimed','job_submitted',"
+                    "'job_cycle_accepted','job_cycle_declined')",
+                    (job_id,),
+                )
+
+        def _what_waits(token: str) -> list[str]:
+            with db._conn() as conn:
+                aid = db._require_agent_by_token(conn, token)["id"]
+                return db._jobs._outstanding_actions(conn, aid)
+
+        # Fresh claim inside the window: awaiting, but not overdue.
+        assert db.get_job(job["job_id"])["overdue"] is False
+        _fresh = _what_waits(worker["token"])
+        assert "overdue" not in _fresh[0], f"fresh actions: {_fresh}"
+
+        # The claim's event ages -> the awaiting cycle idles past the window.
+        _age(job["job_id"])
+        assert db.get_job(job["job_id"])["overdue"] is True, (
+            "awaiting cycle past the window is overdue"
+        )
+        mine = db.list_jobs(view="mine", token=creator["token"])["jobs"]
+        row = next(j for j in mine if j["job_id"] == job["job_id"])
+        assert row["overdue"] is True, "board row carries the flag"
+        assert any("(overdue)" in a for a in _what_waits(worker["token"]))
+        assert any("hasn't submitted" in a for a in _what_waits(creator["token"])), (
+            "the creator-side stale phrase rides the same predicate"
+        )
+        with db._conn() as conn:
+            wid = db._require_agent_by_token(conn, worker["token"])["id"]
+            note = db._nudges._job_nudge(conn, wid)
+        assert "overdue" in note["job_note"], note
+        # The daily digest draws from the same shared predicate.
+        db._jobs.send_job_digests()
+        with db._conn() as conn:
+            wid = db._require_agent_by_token(conn, worker["token"])["id"]
+            dig = conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?"
+                " AND kind = 'jobs' AND ref_type = 'job_digest'"
+                " ORDER BY id DESC LIMIT 1",
+                (wid,),
+            ).fetchone()
+        assert dig is not None and "overdue" in (dig[0] or ""), dig
+
+        # Sweep: worker + creator each notified once per job+cycle window.
+        assert db._jobs.sweep_overdue_job_cycles() == 2
+        assert db._jobs.sweep_overdue_job_cycles() == 0, "once per window"
+        with db._conn() as conn:
+            wid = db._require_agent_by_token(conn, worker["token"])["id"]
+            cid = db._require_agent_by_token(conn, creator["token"])["id"]
+            w_bodies = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT body FROM notifications WHERE agent_id = ?"
+                    " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?",
+                    (wid, job["job_id"]),
+                )
+            ]
+            c_bodies = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT body FROM notifications WHERE agent_id = ?"
+                    " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?",
+                    (cid, job["job_id"]),
+                )
+            ]
+        owe = [b for b in w_bodies if "overdue" in b]
+        assert len(owe) == 1, f"worker nudged once: {w_bodies}"
+        assert "cycle 1 of job #" in owe[0] and "submit your work" in owe[0]
+        coe = [b for b in c_bodies if "overdue" in b]
+        assert len(coe) == 1, f"creator nudged once: {c_bodies}"
+        assert "hasn't submitted" in coe[0] and "reassign" in coe[0]
+
+        # A SUBMITTED cycle (creator's turn) is never overdue, even when old.
+        job2 = _simple_job(creator, title="overdue submitted")
+        db.claim_job(worker["token"], job2["job_id"])
+        db.submit_job(worker["token"], job2["job_id"], "#P1")
+        _age(job2["job_id"])
+        assert db.get_job(job2["job_id"])["overdue"] is False, (
+            "submitted waits on the creator, never overdue"
+        )
+        # A DECLINED rework cycle opens a fresh window: anchor = the decline.
+        db.review_job(creator["token"], job2["job_id"], "decline", feedback="redo it")
+        assert db.get_job(job2["job_id"])["status"] == "active"
+        _age(job2["job_id"])
+        assert db.get_job(job2["job_id"])["overdue"] is True, (
+            "declined rework idles overdue"
+        )
+        assert db._jobs.sweep_overdue_job_cycles() == 2, (
+            "the declined cycle gets its own notices"
+        )
+        # Knob 0 disables the feature entirely.
+        _arm("FORUM_JOB_CYCLE_DUE_HOURS", "0")
+        assert db.get_job(job["job_id"])["overdue"] is False, "knob 0 disables"
+        assert db._jobs.sweep_overdue_job_cycles() == 0
+    finally:
+        _restore_arms()
+
+
+def test_overdue_release():
+    """Overdue release (FORUM_JOB_OVERDUE_RELEASE_AFTER + JOB_MISSED_KARMA):
+    a current cycle left overdue for N consecutive due windows closes the
+    job - unearned escrow returns to the creator, the worker loses the
+    configured karma via the job_penalties ledger (CHARTER IX.1.f), both
+    sides are notified, the release fires once, and a release_after of 0
+    keeps the sweep notify-only."""
+    _arm("FORUM_JOB_CYCLE_DUE_HOURS", "1")
+    _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "2")
+    try:
+        creator = _make_creator("jobc-orel")
+        worker = db.register_agent("jobw-orel")
+        job = _simple_job(
+            creator, title="stalled release", pay=10.0, kind="one_time", cycles=2
+        )
+        db.claim_job(worker["token"], job["job_id"])
+
+        def _age_to(job_id: int, iso: str) -> None:
+            with db._conn(immediate=True) as conn:
+                conn.execute(
+                    "UPDATE events SET created_at = ? WHERE target_type = 'job'"
+                    " AND target_id = ? AND kind IN ('job_claimed','job_submitted',"
+                    "'job_cycle_accepted','job_cycle_declined')",
+                    (iso, job_id),
+                )
+
+        def _iso_past(hours: float) -> str:
+            return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )[:-3] + "Z"
+
+        # One full window overdue (age 1.9h, window 1h): nudged, not released.
+        _age_to(job["job_id"], _iso_past(1.9))
+        assert db._jobs.sweep_overdue_job_cycles() >= 2, "nudge under the threshold"
+        assert db.get_job(job["job_id"])["status"] == "active"
+        assert db.get_job(job["job_id"])["overdue"] is True
+        with db._conn() as conn:
+            wid = db._require_agent_by_token(conn, worker["token"])["id"]
+            cb = conn.execute(
+                "SELECT body FROM notifications WHERE agent_id = ?"
+                " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                " AND body LIKE ?",
+                (
+                    wid,
+                    job["job_id"],
+                    f"%cycle 1 of job #{job['job_id']}%submit your work%",
+                ),
+            ).fetchall()
+        assert len(cb) == 1, f"worker nudged exactly once: {[r[0] for r in cb]}"
+
+        # Past the 2nd window (age 3h): released - closes, notifies both.
+        _age_to(job["job_id"], _iso_past(3))
+        assert db._jobs.sweep_overdue_job_cycles() >= 2, "release notifies both sides"
+        assert db.get_job(job["job_id"])["status"] == "cancelled"
+
+        with db._conn() as conn:
+            wid = db._require_agent_by_token(conn, worker["token"])["id"]
+            cid = db._require_agent_by_token(conn, creator["token"])["id"]
+            pen = conn.execute(
+                "SELECT amount FROM job_penalties WHERE job_id = ? AND agent_id = ?",
+                (job["job_id"], wid),
+            ).fetchone()
+            assert pen is not None and pen[0] == -2, f"penalty rows: {pen}"
+            w_rel = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT body FROM notifications WHERE agent_id = ?"
+                    " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                    " AND body LIKE '%released%'",
+                    (wid, job["job_id"]),
+                )
+            ]
+            c_rel = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT body FROM notifications WHERE agent_id = ?"
+                    " AND kind = 'jobs' AND ref_type = 'job' AND ref_id = ?"
+                    " AND body LIKE '%released%'",
+                    (cid, job["job_id"]),
+                )
+            ]
+            assert len(w_rel) == 1 and "lost 2 karma" in w_rel[0], w_rel
+            assert len(c_rel) == 1 and "returned to your wallet" in c_rel[0], c_rel
+            assert conn.execute(
+                "SELECT 1 FROM events WHERE kind = 'job_released'"
+                " AND target_type = 'job' AND target_id = ?",
+                (job["job_id"],),
+            ).fetchone(), "the release is on the public ledger"
+            refunded = conn.execute(
+                "SELECT COUNT(*) FROM credit_entries WHERE agent_id = ?"
+                " AND reason = 'job_released'",
+                (cid,),
+            ).fetchone()
+            assert refunded[0] == 1, f"escrow refunded: {refunded}"
+
+        # release_after=0 keeps the sweep notify-only - no release.
+        _arm("FORUM_JOB_OVERDUE_RELEASE_AFTER", "0")
+        job2 = _simple_job(creator, title="stalled release knob")
+        db.claim_job(worker["token"], job2["job_id"])
+        _age_to(job2["job_id"], _iso_past(3))
+        assert db._jobs.sweep_overdue_job_cycles() >= 2, "nudged under notify-only"
+        assert db.get_job(job2["job_id"])["status"] == "active", (
+            "notify-only never releases"
+        )
+    finally:
+        _restore_arms()
 
 
 def test_list_views_filter_correctly():
