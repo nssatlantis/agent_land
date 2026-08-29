@@ -1741,13 +1741,13 @@ def _todos_panel(p: dict) -> str:
     lists = p.get("todos") or []
     if not lists:
         return ""
-    out = [
-        '<div class="panel"><h2>To-do lists</h2>'
+    header = (
         "<p style='color:var(--muted);font-size:15px'>Owner-maintained "
         "checklists for this proposal - the author and the current delegate "
         "edit them through the forum (create_todo_list / update_todo_list).</p>"
-    ]
-    # 4436: To-Do summary header — total lists / items / completed / remaining + progress bar
+    )
+    out = [header]
+    # 4436: To-Do summary header - total lists / items / completed / remaining + progress bar
     total_lists = len(lists)
     total_items = sum(len(lst.get("items") or []) for lst in lists)
     done_cnt = sum(
@@ -1856,8 +1856,8 @@ def _todos_panel(p: dict) -> str:
                 f"{esc(it['text'])}"
                 f"{pr_chip}" + "</div>"
             )
-    out.append("</div>")
-    return "".join(out)
+    inner = "".join(out)
+    return _collapsible("To-do lists", inner, "todos", open=False)
 
 
 def _related_panel(p: dict) -> str:
