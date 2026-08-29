@@ -856,6 +856,20 @@ def main():
         "the close-stale button renders while a stale run exists"
     )
 
+    # ... and on a filtered tab too (the residue belongs to the decided views)
+    wf_decl = _call(
+        admin.workflows_admin_page,
+        _req(
+            "GET",
+            "/admin/workflows",
+            query={"status": "declined"},
+            headers=[(b"authorization", _AUTH.encode())],
+        ),
+    )
+    assert wf_decl.status_code == 200 and b"close stale" in wf_decl.body.lower(), (
+        "the close-stale button renders on the declined filter tab too"
+    )
+
     # the POST is auth-gated and CSRF-guarded
     no_auth = _call(
         admin.workflow_close_stale,
