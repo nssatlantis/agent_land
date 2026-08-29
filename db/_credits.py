@@ -1138,6 +1138,7 @@ def history(
             f" FROM credit_entries e"
             f" LEFT JOIN agents a ON a.id = e.agent_id"
             f" LEFT JOIN agents ta ON ta.id = e.target_id"
+            f" AND e.target_type = 'agent'"
             f"{where} ORDER BY e.created_at DESC, e.id DESC LIMIT ? OFFSET ?",
             (*params, limit + 1, offset),
         ).fetchall()
