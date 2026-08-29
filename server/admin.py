@@ -23,6 +23,7 @@ import math
 import os
 import secrets
 from urllib.parse import quote as _urlquote
+from urllib.parse import urlparse
 
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
@@ -121,6 +122,30 @@ def _flash(request, text: str) -> HTMLResponse:
     return _admin_page(
         request, "admin", f'<p style="color:var(--muted)">{esc(text)}</p>'
     )
+
+
+def _safe_referer(request, fallback: str) -> str:
+    """Where to redirect after a successful admin mutation. The Referer header
+    is client-controlled, so it must never be trusted as an open-redirect
+    target (2.6): only a same-origin absolute URL, or a bare path on this
+    host, is honoured; anything else (off-site, unparseable, or absent) falls
+    back to `fallback`. The fallback is always on this application."""
+    ref = request.headers.get("referer") or ""
+    if not ref:
+        return fallback
+    if ref.startswith("/"):
+        return ref
+    try:
+        parts = urlparse(ref)
+        base = urlparse(str(request.base_url))
+    except (
+        ValueError,
+        TypeError,
+    ):  # domain:degrade-silently - an unparseable referer falls back to the local default
+        return fallback
+    if parts.scheme == base.scheme and parts.netloc == base.netloc:
+        return ref
+    return fallback
 
 
 def _delete_form(request, agent_id: int) -> str:
@@ -749,9 +774,7 @@ async def admin_update_post_settings(request):
             return _flash(request, str(exc))
         # Close is terminal for this request — still apply other fields? No, closed proposals
         # refuse collaborative/claimable/cap/goal changes, so we stop after close.
-        return RedirectResponse(
-            request.headers.get("referer") or "/admin/posts", status_code=303
-        )
+        return RedirectResponse(_safe_referer(request, "/admin/posts"), status_code=303)
     if wants_reopen:
         try:
             moderation.admin_reopen_proposal(admin, post_id)
@@ -759,9 +782,7 @@ async def admin_update_post_settings(request):
         except db.ForumError as exc:
             # domain:fail-loudly - reopen gate refusal surfaces as flash
             return _flash(request, str(exc))
-        return RedirectResponse(
-            request.headers.get("referer") or "/admin/posts", status_code=303
-        )
+        return RedirectResponse(_safe_referer(request, "/admin/posts"), status_code=303)
     # Normal settings — apply each field that was sent and differs
     # collaborative
     if "collaborative" in form:
@@ -882,9 +903,7 @@ async def admin_update_post_settings(request):
             return _flash(request, str(exc))
     if not applied:
         return _flash(request, f"no changes for proposal #{post_id} - already set.")
-    return RedirectResponse(
-        request.headers.get("referer") or "/admin/posts", status_code=303
-    )
+    return RedirectResponse(_safe_referer(request, "/admin/posts"), status_code=303)
 
 
 async def agent_detail(request):
@@ -1238,7 +1257,7 @@ async def delete_post(request):
         return _flash(request, str(exc))
     # Back to wherever the delete button was clicked from (usually the agent
     # detail page); fall back to the docket for direct hits.
-    return RedirectResponse(request.headers.get("referer") or "/admin", status_code=303)
+    return RedirectResponse(_safe_referer(request, "/admin"), status_code=303)
 
 
 async def resolve_report(request):
@@ -1280,7 +1299,7 @@ async def create_stake(request):
         )
     except db.ForumError as exc:
         return _flash(request, str(exc))
-    return RedirectResponse(request.headers.get("referer") or "/admin", status_code=303)
+    return RedirectResponse(_safe_referer(request, "/admin"), status_code=303)
 
 
 async def delete_stake(request):
@@ -1302,7 +1321,7 @@ async def delete_stake(request):
         db.ForumError
     ) as exc:  # domain:fail-loudly - delete gate refusal surfaces as flash
         return _flash(request, str(exc))
-    return RedirectResponse(request.headers.get("referer") or "/admin", status_code=303)
+    return RedirectResponse(_safe_referer(request, "/admin"), status_code=303)
 
 
 def _render_jobs(request) -> str:
@@ -2226,7 +2245,7 @@ async def admin_confirm_bug(request):
     except db.ForumError as exc:
         return _flash(request, str(exc))
     return RedirectResponse(
-        request.headers.get("referer") or "/admin/bugs",
+        _safe_referer(request, "/admin/bugs"),
         status_code=303,
     )
 
@@ -2242,7 +2261,7 @@ async def admin_fix_bug(request):
     except db.ForumError as exc:
         return _flash(request, str(exc))
     return RedirectResponse(
-        request.headers.get("referer") or "/admin/bugs",
+        _safe_referer(request, "/admin/bugs"),
         status_code=303,
     )
 
