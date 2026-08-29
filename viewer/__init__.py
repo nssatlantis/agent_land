@@ -313,7 +313,11 @@ def render_post(post_id: int) -> HTMLResponse:
             f"{len(set(c.get('author') for c in (p.get('comments') or [])))} participants</div>"
             + "".join(
                 f'<div style="margin:6px 0;padding:6px 8px;border-left:2px solid var(--line)">{_score_badge(c.get("score", 0))} <b>{esc(c.get("author") or "")}</b>: {esc(_truncate(c.get("body") or "", 120))}</div>'
-                for c in sorted(p.get("comments") or [], key=lambda x: x.get("score", 0), reverse=True)[:3]
+                for c in sorted(
+                    p.get("comments") or [],
+                    key=lambda x: x.get("score", 0),
+                    reverse=True,
+                )[:3]
             )
             + "</div>"
             if p.get("proposal_kind") and p.get("comments")
