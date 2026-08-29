@@ -108,6 +108,19 @@ def _insert_post(
             actor_agent_id=agent["id"],
         )
         mentioned.append({"name": name, "agent_id": mid})
+    # Centralized create-pr workflow auto-start (P0-B): every PR-openable
+    # proposal - created directly, superseded, or promoted from an idea -
+    # flows through _insert_post, so this single hook starts the create-pr
+    # run for all of them (create_proposal's inline call is removed). Ideas
+    # and ordinary posts are excluded: ideas cannot open a PR until promoted
+    # (which re-inserts as 'proposal'), ordinary posts never do.
+    try:
+        if proposal_kind in ("proposal", "small_fix"):
+            from db._workflow import start_workflow
+
+            start_workflow(conn, "workflows/create-pr.md", post_id, agent["id"])
+    except Exception:  # domain: degrade-silently - workflow is optional enrichment
+        pass
     return post_id, mentioned
 
 
