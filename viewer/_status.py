@@ -94,6 +94,21 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
     return results
 
 
+def _top_tables(limit: int = 10) -> list[tuple[str, int]]:
+    """Return the largest tables by page count from dbstat."""
+    try:
+        with db._conn() as conn:
+            rows = conn.execute(
+                "SELECT name, SUM(pageno) as pages FROM dbstat "
+                "WHERE name NOT LIKE 'sqlite_%' GROUP BY name "
+                "ORDER BY pages DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [(r["name"], r["pages"]) for r in rows]
+    except Exception:
+        return []
+
+
 # The Repository panel's ahead/behind is only as truthful as its last `git
 # fetch`. We fetch origin/main on a short TTL so the numbers reflect GitHub
 # within a minute (one fetch per window is plenty). "ok" records whether the
@@ -756,6 +771,13 @@ async def status_page(request: Request) -> HTMLResponse:
         )
     else:
         storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
+    tables = _top_tables(10)
+    if tables:
+        storage_inner += (
+            '<h3>Top tables</h3><table class="kv">'
+            + _rows([(esc(name), f"{pages:,} pages") for name, pages in tables])
+            + "</table>"
+        )
     storage_panel = _collapsible("Storage", storage_inner, "storage")
 
     # --- process / runtime facts ------------------------------------------
