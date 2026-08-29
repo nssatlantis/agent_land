@@ -419,15 +419,29 @@ def _decided_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | Non
     # and a superseded proposal that never gained a PR reads back as 'open'.
     try:
         superseded = _proposal_superseded_by(conn, proposal_id) is not None
-    except Exception:  # domain:degrade-silently - treat as not superseded
+    except Exception as exc:  # domain:degrade-silently - treat as not superseded
+        import logutil
+
+        logutil.log(
+            "workflow_reconcile_probe_failed",
+            proposal_id=proposal_id,
+            probe="superseded_by",
+            error=str(exc),
+        )
         superseded = False
     if superseded:
         return "closed"
     try:
         status = _proposal_status_for(conn, proposal_id)
-    except (
-        Exception
-    ):  # domain:degrade-silently - one bad proposal must not block the sweep
+    except Exception as exc:  # domain:degrade-silently - skip that proposal
+        import logutil
+
+        logutil.log(
+            "workflow_reconcile_probe_failed",
+            proposal_id=proposal_id,
+            probe="proposal_status",
+            error=str(exc),
+        )
         return None
     if status == "open":
         return None
@@ -462,9 +476,10 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     an open create-pr run, `_decided_run_status` decides whether to close and
     to what terminal state; decided proposals close all their open runs there
     and to that exact status. Idempotent: a second pass finds no open run on a
-    decided proposal. The close event mirrors the poller sweep's shape
-    (target_type workflow_run, run_ids) so the reconciliation's blast radius
-    is auditable (review D7/W9).
+    decided proposal. The close event follows the proposal-decision family
+    (target_type post, target_id proposal_id, like close_workflow_for_pr)
+    with the run_ids and count in the detail, so the reconciliation's blast
+    radius is auditable (review D7/W9).
     """
     closed_total = 0
     for pid in _open_run_proposal_ids(conn):
@@ -485,8 +500,8 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
             try:
                 log_event(
                     EVT_WORKFLOW_CLOSED,
-                    target_type="workflow_run",
-                    target_id=ids[0],
+                    target_type="post",
+                    target_id=pid,
                     detail={
                         "reason": "proposal_decided",
                         "count": closed,
