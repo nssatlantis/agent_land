@@ -555,8 +555,6 @@ def check_in(token: str) -> dict:
         job_actions = _outstanding_actions(conn, agent["id"])
         for ja in job_actions:
             actions.append(f"Job market: {ja}.")
-        from db._workflow import _workflow_nudge
-
         wn = _workflow_nudge(conn, agent["id"])
         if wn:
             actions.append(wn["workflow_note"])
