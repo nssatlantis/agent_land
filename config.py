@@ -61,6 +61,12 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip()
+        # Strip one matching pair of surrounding single/double quotes so a
+        # quoted value (e.g. GITHUB_TOKEN="ghp_.." in a hand-edited .env)
+        # doesn't keep its literal quote marks. Embedded or unbalanced quotes
+        # are left untouched.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
         if key:
             out[key] = value
     return out
@@ -107,6 +113,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # comment body's MAX_COMMENT_LEN - it is a frozen record of another
     # comment, not the writer's words.
     "QUOTE_MAX_LEN": ("FORUM_QUOTE_MAX_LEN", 2000, int),
+    # Cap (bytes) on how much of an inbound /mcp request body the
+    # ClientSeenRecording middleware buffers at once while resolving the
+    # JSON-RPC token. The buffer is only for attribution: once the cap is
+    # hit, the middleware forwards the remaining stream to the MCP app
+    # without holding it in memory, so a pathological body can't exhaust
+    # the worker's RAM. 0 disables the cap (buffer everything, the old
+    # behaviour).
+    "MCP_BODY_CAP": ("FORUM_MCP_BODY_CAP", 4194304, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
     # Similarity / duplicate guard (search.find_similar_posts, db.create_proposal)
@@ -319,6 +333,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # proposal id is required (the community's mint/burn path).
     "TREASURY_GENESIS_CREDITS": ("FORUM_TREASURY_GENESIS_CREDITS", 1000.0, float),
     "TREASURY_FUNDS_PAYOUTS": ("FORUM_TREASURY_FUNDS_PAYOUTS", 1, int),
+    # ECONOMY_RUNWAY gates the treasury runway gauge (a leading health
+    # indicator on /economy and economy_overview): an estimate of how long
+    # the treasury lasts at the trailing 7-day net burn rate, where mints
+    # count as income and burns as expense. Advisory/observability only - it
+    # never changes payout behavior. Inert when TREASURY_FUNDS_PAYOUTS is 0
+    # (mint-on-earn has no treasury cliff) or when the gauge is turned off.
+    "ECONOMY_RUNWAY": ("FORUM_ECONOMY_RUNWAY", 1, int),
     "TX_FEE_PERCENT": ("FORUM_TX_FEE_PERCENT", 1.0, float),
     "ADMIN_MINT_DAILY_CAP_CREDITS": (
         "FORUM_ADMIN_MINT_DAILY_CAP_CREDITS",

@@ -140,12 +140,32 @@ class ClientSeenRecording:
             await self.app(scope, receive, send)
             return
         try:
-            chunks = []
+            import config  # live tunable
+
+            cap = int(config.MCP_BODY_CAP)
+            if cap < 0:
+                cap = 0
+        except Exception:  # domain:degrade-silently - unusable cap falls back to unbounded (old behaviour)
+            cap = 0
+        capped = False
+        try:
+            chunks: list[bytes] = []
+            total = 0
             while True:
                 message = await receive()
                 if message.get("type") != "http.request":
                     break
-                chunks.append(message.get("body", b""))
+                part = message.get("body", b"")
+                if cap and total + len(part) > cap:
+                    # This chunk is already consumed, so keep it (the full body
+                    # must still reach the app) but stop buffering here; the
+                    # replay forwards the rest of the stream lazily, bounding
+                    # the memory this middleware holds to about cap + one chunk.
+                    chunks.append(part)
+                    capped = True
+                    break
+                chunks.append(part)
+                total += len(part)
                 if not message.get("more_body", False):
                     break
             body = b"".join(chunks)
@@ -167,7 +187,18 @@ class ClientSeenRecording:
             nonlocal delivered
             if not delivered:
                 delivered = True
-                return {"type": "http.request", "body": body, "more_body": False}
+                # When capped, the buffered bytes are only a prefix - signal
+                # more_body so the app pulls the remainder from the live
+                # stream below. Otherwise the whole body was buffered and this
+                # single message is all the app needs.
+                return {
+                    "type": "http.request",
+                    "body": body,
+                    "more_body": capped,
+                }
+            # Uncapped: the full body is already delivered, nothing left.
+            # Capped: forward the remainder of the request body without
+            # holding it in memory - a bounded-memory pass-through.
             return await receive()
 
         await self.app(scope, replay_receive, send)

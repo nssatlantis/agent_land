@@ -1175,9 +1175,9 @@ _JOBS_TABS = (
 
 _JOB_STATUS_COLORS = {
     "open": "var(--accent)",
-    "offered": "#b45309",
-    "active": "#2563eb",
-    "completed": "#15803d",
+    "offered": "var(--warn)",
+    "active": "var(--accent)",
+    "completed": "var(--ok)",
     "cancelled": "var(--muted)",
     "expired": "var(--muted)",
 }
@@ -1707,6 +1707,7 @@ def _staking_body(request: Request) -> str:
             page, total_pages, lambda n: _staking_href(status, currency, n), top=True
         )
         + f'<div id="frag-stake-list">{_stake_page_rows(stakes)}</div>'
+        + '<script>function _toggleStakeLocks(sId){var e=document.getElementById("stake-locks-"+sId);if(e)e.style.display=e.style.display==="none"?"block":"none"}</script>'
         + _pager(page, total_pages, lambda n: _staking_href(status, currency, n))
         + "</div>"
     )
@@ -1794,6 +1795,36 @@ def _economy_body(request: Request) -> str:
         )
 
     cfg = overview["config"]
+    # Treasury runway gauge: a leading estimate of how long the treasury
+    # lasts at the trailing 7-day net burn (mints = income, burns =
+    # expense). Advisory only - it signals an approaching cliff, it never
+    # changes payout behavior. Off when mint-on-earn or the knob is 0.
+    runway = overview.get("runway") or {}
+    _runway_html = ""
+    _runway_caption = ""
+    if cfg.get("runway_enabled") and runway.get("enabled"):
+        _rs = runway.get("status")
+        if _rs == "ok" and runway.get("days") is not None:
+            _runway_html = _card(
+                f"~{int(runway['days'])} days", "treasury runway (est.)", accent=True
+            )
+            _runway_caption = (
+                '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
+                "≈ treasury balance \u00f7 7-day net burn (mints = income, burns = expense). "
+                "Official escrow is pre-funded; a rough leading estimate, not a promise.</p>"
+            )
+        elif _rs == "exhausted":
+            _runway_html = _card("exhausted", "treasury runway", accent=True)
+            _runway_caption = (
+                '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
+                "Treasury is empty - payout has paused until a mint refills it.</p>"
+            )
+        elif _rs == "idle":
+            _runway_html = _card("no net drain", "treasury runway")
+            _runway_caption = (
+                '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
+                "No net treasury burn in the trailing 7 days (income \u2265 expense).</p>"
+            )
     # 4213 treasury % of supply — 1-decimal, degrade-silently (review 527)
     try:
         _treasury_pct = (
@@ -1814,6 +1845,8 @@ def _economy_body(request: Request) -> str:
         + _card(overview["total_supply_credits"], "total supply")
         + _card(overview["treasury_credits"], "treasury", accent=True)
         + _card(overview["circulating_credits"], "circulating")
+        + _runway_html
+        + _runway_caption
         + _card(
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
@@ -1916,6 +1949,9 @@ def _economy_body(request: Request) -> str:
             f"<table><tbody>"
             f"<tr><td>entries covered</td><td style='text-align:right'>"
             f"{seal['entry_count']} (up to id {seal['last_entry_id']})</td></tr>"
+            f"<tr><td>new since seal</td><td style='text-align:right'>"
+            f"{max(0, overview['entry_count'] - seal['entry_count'])} "
+            f"(live {overview['entry_count']})</td></tr>"
             f"<tr><td>sealed supply</td><td style='text-align:right'>"
             f"{esc(seal['total_supply_credits'])} credits</td></tr>"
             f"<tr><td>running hash</td><td style='text-align:right;font-family:monospace;word-break:break-all;max-width:320px;overflow-wrap:anywhere'>"
@@ -2145,6 +2181,48 @@ async def _record_md(filename: str) -> str | None:
     return md
 
 
+_record_stamp_cache: dict = {}
+
+
+def _read_record_stamp(filename: str) -> str:
+    """The last commit that touched a record file, as a short HTML line:
+    'last commit <when> \u00b7 @<sha>' via git log -1 --format=%cI + %h - or ''
+    when git is absent, the file is uncommitted, or anything fails. Pure
+    enrichment: a failure just omits the line from the panel."""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%cI%n%h", "--", filename],
+            cwd=str(db.REPO_DIR),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return ""
+        lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            return ""
+        ts, sha = lines[0], lines[1]
+        return f'{_human_ts(ts)} <span style="font-family:monospace">@{esc(sha)}</span>'
+    except Exception:  # domain: degrade-silently - stamp is optional enrichment
+        return ""
+
+
+async def _record_stamp(filename: str) -> str:
+    """The record page's 'last commit' line, on the same short TTL as
+    _record_md so auto-refresh stays cheap. Runs in a worker thread (this
+    loop also serves the MCP endpoint)."""
+    now = time.monotonic()
+    entry = _record_stamp_cache.get(filename)
+    if entry is not None and now - entry["ts"] < _RECORD_CACHE_SECONDS:
+        return entry["stamp"]
+    stamp = await asyncio.to_thread(_read_record_stamp, filename)
+    _record_stamp_cache[filename] = {"ts": now, "stamp": stamp}
+    return stamp
+
+
 async def _record_page(
     request: Request,
     title: str,
@@ -2159,7 +2237,13 @@ async def _record_page(
     of a 500 whenever the file cannot be read."""
     md = await _record_md(filename)
     if md:
-        panel = f'<div class="panel"><h2>{heading}</h2>{intro}{_markdown(md)}</div>'
+        stamp = await _record_stamp(filename)
+        stamp_html = (
+            f'<p class="meta" style="margin-top:2px">last commit {stamp}</p>'
+            if stamp
+            else ""
+        )
+        panel = f'<div class="panel"><h2>{heading}</h2>{intro}{stamp_html}{_markdown(md)}</div>'
     else:
         panel = (
             f'<div class="panel"><h2>{heading}</h2>'
@@ -2669,7 +2753,7 @@ def search_page(request: Request) -> HTMLResponse:
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
     error_html = (
-        f"<p style='color:#e53e3e;font-size:15px'>Search error: {esc(error_msg)}</p>"
+        f"<p style='color:var(--fail);font-size:15px'>Search error: {esc(error_msg)}</p>"
         if error_msg
         else ""
     )
@@ -2897,6 +2981,11 @@ ROUTES = [
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    # Configure structured logging first (idempotent) so the JSON stderr
+    # handler is present whether we're started via `python -m viewer` or
+    # `uvicorn viewer:app` (CLI/systemd). Without this RequestLogging's
+    # INFO lines are silently dropped (root lastResort prints WARNING+ only).
+    logutil.configure_logging()
     db.init_db()
     yield
 
