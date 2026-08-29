@@ -449,6 +449,34 @@ def test_history_category_filters():
         pass
 
 
+def test_history_target_name_only_for_agent_targets():
+    """A credit row whose target_id collides with a citizen's agent_id but
+    whose target_type is not 'agent' must NOT resolve a phantom
+    target_name (review 4430)."""
+    import db._credits as cr
+
+    agents, _ = _setup()
+    # beta's agent_id exists in the agents table and is used here as a
+    # NON-agent target id; without the target_type guard the LEFT JOIN
+    # would fabricate beta's name onto an unrelated "post" row.
+    with db._conn() as conn:
+        cr.mint(100, "admin_mint", admin="test", conn=conn)
+        assert cr.grant(
+            agents["gamma"]["agent_id"],
+            8,
+            "admin_adjust",
+            target_type="post",
+            target_id=agents["beta"]["agent_id"],
+            conn=conn,
+        )
+    rows = db.credit_history(limit=500)["entries"]
+    ours = [e for e in rows if e["reason"] == "admin_adjust"]
+    assert ours, "the grant row is public in the ledger"
+    assert all(e["target_name"] is None for e in ours), (
+        "non-agent targets never resolve a citizen name"
+    )
+
+
 def test_top_movers_shape():
     """The 7-day aggregate returns per-citizen earned/spent quarter sums,
     most active first, with names resolved (deleted-citizen marker when
@@ -478,6 +506,52 @@ def test_events_under_own_categories():
     db.vote(agents["beta"]["token"], "post", pid, 1)
     rows = [e for e in events.query_events(kind="credit_earned", limit=10)]
     assert any(e["detail"]["reason"] == "post_vote" for e in rows)
+
+
+def test_concurrent_spends_cannot_overspend():
+    """spend() checks the balance then debits it - the check and the
+    debit must hold the write lock together (BEGIN IMMEDIATE), or two
+    racing spends can both pass the check against the same opening
+    balance and take the wallet negative (review 4426).  Race forced by
+    a barrier; under the fix exactly one spend lands, never two."""
+    import threading
+
+    agents, _ = _setup()
+    import db._credits as cr
+
+    wallet = db.register_agent("race-wallet")
+    with db._conn() as conn:
+        cr.mint(100, "admin_mint", admin="test", conn=conn)
+        assert cr.grant(wallet["agent_id"], 16, "test_seed", conn=conn)
+
+    outcomes: list[str] = []
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def voter(delta_q: int):
+        try:
+            barrier.wait()
+            cr.spend(wallet["agent_id"], delta_q, "test_race_spend")
+            outcomes.append("ok")
+        except db.ForumError as exc:
+            outcomes.append(str(exc))
+        except Exception as exc:  # noqa: BLE001 - collected below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=voter, args=(16,)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, f"concurrent spends raised: {errors}"
+    assert outcomes.count("ok") == 1, (
+        "exactly one spend clears the balance check; the loser sees the"
+        " post-commit zero and is refused"
+    )
+    assert any("insufficient" in o for o in outcomes), (
+        "the loser is refused (ForumError), not crashed"
+    )
+    assert _bal(wallet["agent_id"]) == 0, "wallet is never driven negative"
 
 
 def test_credit_stake_lifecycle_lock_pay_refund():
@@ -580,8 +654,10 @@ def main():
     test_karma_stake_flow_unaffected()
     test_history_and_balances_shapes()
     test_history_category_filters()
+    test_history_target_name_only_for_agent_targets()
     test_top_movers_shape()
     test_events_under_own_categories()
+    test_concurrent_spends_cannot_overspend()
     test_credit_stake_lifecycle_lock_pay_refund()
     print("test_credits: all ok")
 

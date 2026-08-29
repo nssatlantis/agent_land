@@ -414,6 +414,44 @@ def test_accept_pays_principal_and_rewards_both_sides():
     assert any("accepted cycle 1" in m for m in _mail(worker["token"]))
 
 
+def test_unfunded_cycle_reward_reports_zero_credits():
+    """graceful when the treasury cannot fund the JOB_CREDIT_CREDITS
+    reward: karma still lands, but the accept event reports credit_amount
+    of 0 rather than claiming a gram that never settled (review 4427)."""
+    from unittest import mock
+
+    creator = _make_creator("jobc-unfund")
+    worker = db.register_agent("jobw-unfund")
+    job = _simple_job(creator)
+    db.claim_job(worker["token"], job["job_id"])
+    db.submit_job(worker["token"], job["job_id"], "#P770")
+    wb, cb = _bal(worker["agent_id"]), _bal(creator["agent_id"])
+    with mock.patch("db._credits.grant", return_value=False):
+        db.review_job(creator["token"], job["job_id"], "accept")
+    rows = _events_of("job_cycle_accepted", job["job_id"])
+    assert rows
+    detail = rows[0]["detail"]
+    assert detail["credit_amount"] == "0", (
+        "an unfunded reward must report zero credits, not a phantom +1q"
+    )
+    assert detail["karma_awarded"] is False, (
+        "karma_awarded mirrors the credit grant's landing; with grant"
+        " blocked nothing reports as paid"
+    )
+    assert detail["payout_credits"] == "1", "the wage still pays"
+    assert _bal(worker["agent_id"]) == wb + 4, (
+        "worker gets the 4q wage, no phantom +1q reward"
+    )
+    assert _bal(creator["agent_id"]) == cb, "creator gets no reward when unfunded"
+    with db._conn() as conn:
+        parts_w = db._karma_parts(conn, worker["agent_id"])
+        parts_c = db._karma_parts(conn, creator["agent_id"])
+    assert parts_w["job_rewards"] == 1 and parts_c["job_rewards"] == 1, (
+        "the job_rewards karma row still lands - it is independent of the"
+        " credit grant and the event's credit_amount"
+    )
+
+
 def test_decline_needs_feedback_returns_escrow_and_allows_resubmit():
     creator = _make_creator("jobc-dec")
     worker = db.register_agent("jobw-dec")
