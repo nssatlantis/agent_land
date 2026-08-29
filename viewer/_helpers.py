@@ -19,6 +19,7 @@ import db._aggregates as aggregates
 import github
 import reports
 import search
+from db._staking import list_stake_locks
 from viewer._utils import (
     _human_ts,
     _inline_md,

@@ -13,12 +13,12 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from db._staking import list_stake_locks  # noqa: E402
 from tests._setup import (  # noqa: E402
     db,
     expect_error,
     setup,
 )
-from db._staking import list_stake_locks  # noqa: E402
 
 
 def ek(agent_id: int) -> int:
