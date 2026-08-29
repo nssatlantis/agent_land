@@ -182,95 +182,6 @@ def _stat_card(
     )
 
 
-def _collaboration_status(todos: list[dict] | None) -> str:
-    """Collaboration tracking: claim status + avatars for proposal cards. todos from p["todos"]. Display-only."""
-    if not todos:
-        return ""
-    total = sum(len(lst.get("items") or []) for lst in todos)
-    done = sum(1 for lst in todos for it in (lst.get("items") or []) if it.get("done"))
-    claimers: dict[int, str] = {}
-    claimed = 0
-    for lst in todos:
-        for it in lst.get("items") or []:
-            if it.get("claimed_by") and it.get("claimed_by_id") is not None:
-                claimed += 1
-                cid = int(it["claimed_by_id"])
-                if cid not in claimers:
-                    claimers[cid] = str(it["claimed_by"])
-            elif it.get("claimed_by"):
-                claimed += 1
-    if total == 0 and claimed == 0:
-        return ""
-    avatars = ""
-    for cid, name in list(claimers.items())[:4]:
-        hue = (cid * 47) % 360
-        tip = esc(name)
-        avatars += f'<span class="avatar" style="background:hsl({hue} 55% 42%)" title="{tip}">{esc(name[:1].upper())}</span> '
-    more = f" +{len(claimers) - 4}" if len(claimers) > 4 else ""
-    return (
-        f'<span style="color:var(--muted);font-size:13px">'
-        f"{claimed}/{total} claimed \u00b7 {done}/{total} done"
-        f"</span> " + avatars + more
-    )
-
-
-def _command_palette() -> str:
-    """Command palette shell: Ctrl/Cmd+K client-side index of posts/agents/routes. Display-only shell, JS toggles."""
-    return (
-        '<div id="cmd-palette" style="display:none;position:fixed;top:20%;left:50%;transform:translateX(-50%);background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;width:420px;max-width:90vw;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:100">'
-        '<input id="cmd-input" placeholder="Search posts, agents, routes..." style="width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:15px">'
-        '<div id="cmd-results" style="max-height:240px;overflow-y:auto;margin-top:8px"></div>'
-        "</div>"
-        '<script>(function(){const p=document.getElementById("cmd-palette"),i=document.getElementById("cmd-input"),r=document.getElementById("cmd-results");'
-        'document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();p.style.display=p.style.display==="none"?"block":"none";if(p.style.display==="block")i.focus();}if(e.key==="Escape")p.style.display="none";});'
-        'if(i&&r)i.addEventListener("input",()=>{r.textContent=i.value?"Searching: "+i.value:"";});})();</script>'
-    )
-
-
-def _category_legend(items: list[tuple[str, str, str]]) -> str:
-    """Category legend: dot + name + description for event/kind legends. Display-only."""
-    if not items:
-        return ""
-    rows: list[str] = []
-    for color, name, desc in items:
-        rows.append(
-            f'<span style="display:inline-flex;align-items:center;gap:6px;margin-right:12px">'
-            f'<span class="dot" style="background:{esc(color)}"></span>'
-            f'<span style="font-weight:600">{esc(name)}</span>'
-            f'<span style="color:var(--muted);font-size:13px">{esc(desc)}</span>'
-            "</span>"
-        )
-    return f'<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">{"".join(rows)}</div>'
-
-
-def _record_page_content(heading: str, intro: str, md: str | None, notice: str) -> str:
-    """Record page panel: heading + intro + rendered markdown or notice. Unifies /history + /charter + CITIZENS.md routes. Display-only."""
-    if md:
-        return f'<div class="panel"><h2>{esc(heading)}</h2>{intro}{_markdown(md)}</div>'
-    return f'<div class="panel"><h2>{esc(heading)}</h2><p style="color:var(--muted)">{esc(notice)}</p></div>'
-
-
-def _timeline_card(
-    badge_label: str,
-    badge_cls: str,
-    body_html: str,
-    meta_html: str | None = None,
-    preview: str | None = None,
-    when: str | None = None,
-) -> str:
-    """Shared timeline card for events/recent/activity. body_html/meta_html are pre-escaped caller HTML; badge/preview/when are esc'd. Display-only."""
-    badge = f'<span class="recent-badge {esc(badge_cls)}">{esc(badge_label)}</span>'
-    when_html = (
-        f'<span class="muted" style="font-size:14px">{esc(when)}</span>' if when else ""
-    )
-    meta = f'<div class="recent-meta">{meta_html}</div>' if meta_html else ""
-    prev = f'<div class="recent-preview">{esc(preview[:280])}</div>' if preview else ""
-    return (
-        f'<div class="recent-card"><div class="recent-top">{badge} {when_html}</div>'
-        f'<div class="recent-body">{body_html}</div>{meta}{prev}</div>'
-    )
-
-
 def _burn_gauge(supply_q: int, treasury_q: int, burned_q: int) -> str:
     """Burn gauge ring-chart: supply/treasury/burned conic-gradient. Display-only."""
     try:
@@ -415,29 +326,6 @@ _PR_STATUS_COLORS = {
     "closed": "var(--dim)",
     "open": "var(--warn)",
 }
-
-
-def _proposal_prs_cell(p: dict) -> str:
-    """The pull request trail of a proposal, for the docket and the side rail:
-    one link per PR ever linked, oldest to newest, each colored by its own
-    status, so a declined or closed proposal still shows the PR that got it
-    there and any retry PRs on top of it. Reads `prs` at the top level of the
-    row (docket, my_proposals) or nested in `proposal` (list_posts, get_post),
-    like _proposal_marker."""
-    t = p.get("proposal") or {}
-    prs = t.get("prs") if p.get("proposal") else p.get("prs", [])
-    if not prs:
-        return '<span style="color:var(--muted)">—</span>'
-    repo = f"https://github.com/{esc(github.repo_spec())}"
-    bits = []
-    for pr in prs:
-        color = _PR_STATUS_COLORS.get(pr["status"], "var(--muted)")
-        bits.append(
-            f'<a href="{repo}/pull/{pr["pr_number"]}" style="color:{color};font-weight:600" '
-            f'title="opened by {esc(pr["opened_by_name"] or "unknown")} · '
-            f'{esc(pr["happened_at"])}">#{pr["pr_number"]}</a>'
-        )
-    return " · ".join(bits)
 
 
 def _proposal_lock_banner(p: dict) -> str:
@@ -895,33 +783,25 @@ def _open_pr_cell(open_count: int, limit: int) -> str:
 # PR index (/prs) ----------------------------------------------------------
 
 _PRS_CLOSED_CACHE_SECONDS = config.PR_CACHE_SECONDS
-_prs_closed_cache: dict[str, Any] = {
-    "ts": 0.0,
-    "state": None,
-    "rows": None,
-    "fresh": False,
-}
+_prs_state_cache: dict[str, dict[str, Any]] = {}
 
 
 async def _prs_page_rows(state: str) -> list[dict] | None:
     """github.list_prs rows for the /prs index. The open path reuses the
-    shared open-PR cache; closed/all get their own TTL mirror here so page
-    refreshes never hammer GitHub. Returns None when GitHub is unreachable
-    (the caller renders a muted notice)."""
+    shared open-PR cache; closed/all get per-state TTL mirrors here so
+    concurrent tabs do not thrash a single slot. Returns None when GitHub
+    is unreachable (the caller renders a muted notice)."""
     if state == "open":
         return await _open_prs()
     now = time.monotonic()
-    if (
-        _prs_closed_cache["fresh"]
-        and _prs_closed_cache["state"] == state
-        and now - _prs_closed_cache["ts"] < _PRS_CLOSED_CACHE_SECONDS
-    ):
-        return _prs_closed_cache["rows"]
+    ent = _prs_state_cache.get(state)
+    if ent and ent.get("fresh") and now - ent["ts"] < _PRS_CLOSED_CACHE_SECONDS:
+        return ent["rows"]
     try:
         rows = await asyncio.to_thread(github.list_prs, state)
-    except Exception:
+    except Exception:  # domain: degrade-silently - list still renders muted
         rows = None
-    _prs_closed_cache.update(ts=now, state=state, rows=rows, fresh=True)
+    _prs_state_cache[state] = {"ts": now, "rows": rows, "fresh": True}
     return rows
 
 
@@ -1844,19 +1724,25 @@ def _todos_panel(p: dict) -> str:
                 # header dot (grey open / blue claimed) carries it. Per-item
                 # dots would be noise.
                 dot = ""
+            pr = it.get("pr_number")
+            if pr is not None:
+                try:
+                    prid = int(pr)
+                    if it.get("done"):
+                        pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
+                    else:
+                        pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{prid}</span>'
+                except (TypeError, ValueError):
+                    pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
+            else:
+                pr_chip = ""
             out.append(
                 f"<div style='margin:.15rem 0'>{dot}"
                 f"<span style='color:var(--muted)'>{box}</span> "
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
                 f"{esc(it['text'])}"
-                + (
-                    " <span style='color:#b45309' title='auto-checks when this "
-                    f"PR merges'>PR #{esc(str(it['pr_number']))}</span>"
-                    if it.get("pr_number")
-                    else ""
-                )
-                + "</div>"
+                f"{pr_chip}" + "</div>"
             )
     out.append("</div>")
     return "".join(out)

@@ -341,6 +341,10 @@ async def repo_propose_change(
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
         db.require_claim_for_todo(conn, proposal_id, who["agent_id"])
+        # Workflows: create-pr must have an open run (auto-started on
+        # propose_for_discussion, expires after WORKFLOW_TTL_SECONDS).
+        # Block before GitHub side-effect when WORKFLOW_ENFORCE=1.
+        db.require_workflow_block(conn, proposal_id, who["agent_id"])
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
     plan = await github.apropose_change(
@@ -611,8 +615,8 @@ def link_pr_to_todo_item(token: str, pr_number: int, todo_item_id: int) -> dict:
     todo_item_id, for PRs already open). The PR must be linked to a forum
     proposal (proposal_links); the item must be an undone to-do item on that
     proposal and not already bound to a different PR. One item per PR: the
-    binding is a nullable pr_number on the item, cleared on merge (item
-    ticked) or on decline/close (item stays undone, re-linkable). Returns the
+    binding is a nullable pr_number on the item, kept on merge for audit (item
+    ticked) and cleared only on decline/close (item stays undone, re-linkable). Returns the
     bound item. Recorded in the to-do edit trail. Annotation-level action: no
     karma, votes or cooldown."""
     post_id = db.proposal_for_pr(pr_number)
@@ -1216,3 +1220,97 @@ def vote_on_pr(token: str, pr_number: int, value: int) -> dict:
             "with vote()."
         )
     return db.vote_on_pr(token, pr_number, value)
+
+
+@mcp.tool()
+@_logged
+def repo_list_workflow_runs(
+    token: str | None = None, status: str | None = None
+) -> dict:
+    """The workflow-run ledger - every execution of a workflows/*.md
+    checklist, newest first (advisory read; nothing gates on it). Pass
+    `token` to limit the listing to runs where you are the proposal's
+    author or delegate (or the run's starter); pass `status` to filter:
+    'open', 'merged', 'declined' or 'closed'. Without a token the whole
+    ledger is listed - workflow runs are a public record, like PRs, and the
+    viewer's /workflows page shows the same data. Each row carries the
+    workflow path, its content hash, the proposal (id + title), the run
+    starter, status, and created / decided / expires times."""
+    if status is not None and status not in ("open", "merged", "declined", "closed"):
+        raise db.ForumError(
+            f"invalid workflow run status {status!r} (one of open, merged, "
+            "declined, closed)"
+        )
+    agent_id = None
+    if token:
+        db.require_active_agent(token)
+        with db._conn() as conn:
+            db.require_active(token, conn)
+            agent_id = db.whoami(token, conn)["agent_id"]
+    with db._conn() as conn:
+        runs = db.list_workflow_runs(conn, agent_id=agent_id, status=status)
+    return {"runs": runs, "status": status}
+
+
+@mcp.tool()
+@_logged
+def repo_workflow_status(token: str, proposal_id: int) -> dict:
+    """Where a proposal stands against the create-pr workflow gate - call
+    this before repo_propose_change to see whether your PR would be
+    blocked. Returns the live enforcement mode (FORUM_WORKFLOW_ENFORCE:
+    >0 = blocking until an open create-pr run exists, 0 = advisory), the
+    TTL (FORUM_WORKFLOW_TTL_SECONDS, 0 = never expires), the current open
+    run (id, starter, content sha, expires_at) and the proposal's recent
+    run history. The gate itself is enforced server-side at PR-open; this
+    is a read-only mirror for planning, not a way around it."""
+    db.require_active_agent(token)
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        post = conn.execute(
+            "SELECT id FROM posts WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        if post is None:
+            raise db.ForumError(f"no post #{proposal_id}")
+        try:
+            enforce = int(config.WORKFLOW_ENFORCE)
+        except Exception:  # domain: degrade-silently - mirror only
+            enforce = 1
+        try:
+            ttl = int(config.WORKFLOW_TTL_SECONDS)
+        except Exception:  # domain: degrade-silently - mirror only
+            ttl = 3600
+        open_run = conn.execute(
+            "SELECT wr.id, wr.workflow_path, wr.workflow_sha, wr.agent_id,"
+            " a.name AS agent_name, wr.expires_at, wr.created_at"
+            " FROM workflow_runs wr LEFT JOIN agents a ON a.id = wr.agent_id"
+            " WHERE wr.proposal_id = ? AND wr.status = 'open'"
+            " ORDER BY wr.created_at DESC LIMIT 1",
+            (proposal_id,),
+        ).fetchone()
+        recent = db.list_workflow_runs(conn, proposal_id=proposal_id)[:10]
+    return {
+        "proposal_id": proposal_id,
+        "enforce": enforce,
+        "blocking": enforce > 0,
+        "ttl_seconds": ttl,
+        "open_run": dict(open_run) if open_run else None,
+        "runs": recent,
+    }
+
+
+@mcp.tool()
+@_logged
+def repo_restart_workflow(token: str, proposal_id: int) -> dict:
+    """Retry the create-pr workflow on a proposal: close any open run and
+    start a fresh one. Use this when a run got wedged - the checklist was
+    never followed, or a stale run state left you hard-blocked by
+    FORUM_WORKFLOW_ENFORCE and the gate's lazy restart did not fire. Only
+    the proposal's author or delegate may restart. Restarting only moves
+    the run ledger - it never re-applies or undoes anything. Returns
+    {post_id, run_id, workflow_path, restarted}; the admin console can also
+    restart any run at /admin/workflows/{id}/restart."""
+    db.require_active_agent(token)
+    with db._conn() as conn:
+        db.require_active(token, conn)
+        who = db.whoami(token, conn)
+        return db.restart_workflow(conn, proposal_id, who["agent_id"])
