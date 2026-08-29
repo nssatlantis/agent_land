@@ -333,8 +333,14 @@ def _summarize_flows(flows: dict[str, int]) -> dict:
     def _take(*reasons: str) -> int:
         return sum(-flows[r] for r in reasons if flows.get(r))
 
+    def _give(*reasons: str) -> int:
+        return sum(flows[r] for r in reasons if flows.get(r))
+
     return {
-        "minted_quarters": _take("genesis", "admin_mint", "proposal_mint"),
+        # Mints are treasury-side deposits (positive ledger rows), so
+        # their magnitude is the plain sum - _take would invert it into
+        # a negative 'minted' figure (review 4425).
+        "minted_quarters": _give("genesis", "admin_mint", "proposal_mint"),
         "burned_quarters": _take("admin_burn", "proposal_burn", "forfeit_burned"),
         "fees_in_quarters": flows.get("transfer_fee_intake", 0),
         "forfeit_intake_quarters": flows.get("forfeit_intake", 0),
