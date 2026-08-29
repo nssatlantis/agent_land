@@ -378,6 +378,7 @@ from db._workflow import (  # noqa: F401
     close_workflow_for_proposal,
     list_workflow_runs,
     require_workflow_block,
+    restart_workflow,
     start_workflow,
     sweep_expired_workflows,
 )
