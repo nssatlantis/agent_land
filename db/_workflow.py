@@ -493,10 +493,6 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
     runs = []
     for r in rows:
         action = "reopened" if int(r["prior_closes"] or 0) > 0 else "open"
-        label = f"{r['workflow_path']} for #{r['proposal_id']} ({r['title'][:40]})"
-        if action == "reopened":
-            label += " [reopened after a close]"
-        summaries.append(label)
         expires_in = None
         if r["expires_at"]:
             try:
@@ -505,6 +501,12 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
                 )
             except Exception:  # domain:degrade-silently - display-only enrichment
                 pass
+        label = f"{r['workflow_path']} for #{r['proposal_id']} ({r['title'][:40]})"
+        if expires_in is not None:
+            label += f" (expires in {expires_in // 60}m)"
+        if action == "reopened":
+            label += " [reopened after a close]"
+        summaries.append(label)
         d = {
             "id": r["id"],
             "workflow_path": r["workflow_path"],
