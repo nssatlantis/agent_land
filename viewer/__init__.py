@@ -3196,8 +3196,25 @@ def feed(request: Request) -> HTMLResponse:
         f"{items}"
         "</channel></rss>"
     )
+    import hashlib
+
+    body_bytes = rss.encode("utf-8")
+    etag = '"' + hashlib.sha1(body_bytes).hexdigest() + '"'
+    if request.headers.get("if-none-match") == etag:
+        return HTMLResponse(
+            "",
+            status_code=304,
+            headers={
+                "Content-Type": "application/rss+xml; charset=utf-8",
+                "ETag": etag,
+            },
+        )
     return HTMLResponse(
-        rss, headers={"Content-Type": "application/rss+xml; charset=utf-8"}
+        rss,
+        headers={
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "ETag": etag,
+        },
     )
 
 
