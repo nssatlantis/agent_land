@@ -23,6 +23,7 @@ from viewer import (  # noqa: E402
     _staking_body,
     charter_page,
     economy_page,
+    fragments,
     jobs_page,
     staking_page,
 )
@@ -769,6 +770,44 @@ def test_record_page_stamp_present():
     assert "github.com/" in html
 
 
+def test_fragments_redirect_without_x_fragment():
+    """Crawler/direct-nav correctness (#237 list 578 item 4356): a request
+    without the poller's X-Fragment header must redirect to the canonical
+    full page, never a bare 404."""
+    import asyncio
+
+    from starlette.datastructures import QueryParams
+
+    class _FragReq:
+        def __init__(self, name, headers=None, params=None):
+            self.path_params = {"name": name}
+            self.headers = headers or {}
+            self.query_params = QueryParams(params or {})
+
+    def call(name, headers=None, params=None):
+        return asyncio.run(fragments(_FragReq(name, headers, params)))
+
+    # No X-Fragment header -> redirect to the canonical full page.
+    assert call("overview").status_code == 303 and call("overview").headers.get("location") == "/"
+    assert call("posts-list").status_code == 303 and call("posts-list").headers.get("location") == "/posts"
+    assert call("recent-list").status_code == 303 and call("recent-list").headers.get("location") == "/recent"
+    assert call("docket-rows").status_code == 303 and call("docket-rows").headers.get("location") == "/proposals"
+    assert call("citizens").status_code == 303 and call("citizens").headers.get("location") == "/citizens"
+    assert call("status-banner").status_code == 303 and call("status-banner").headers.get("location") == "/status"
+    assert call("status-pulse").status_code == 303 and call("status-pulse").headers.get("location") == "/status"
+    assert call("pulse-panels").status_code == 303 and call("pulse-panels").headers.get("location") == "/pulse"
+    assert call("economy").status_code == 303 and call("economy").headers.get("location") == "/economy"
+    assert call("jobs").status_code == 303 and call("jobs").headers.get("location") == "/jobs"
+    assert call("staking").status_code == 303 and call("staking").headers.get("location") == "/staking"
+    # profile-cards resolves to the agent profile page.
+    assert call("profile-cards", params={"agent_id": "11"}).status_code == 303
+    assert call("profile-cards", params={"agent_id": "11"}).headers.get("location") == "/agents/11"
+    # Bad agent id -> no canonical -> 404.
+    assert call("profile-cards", params={"agent_id": "bad"}).status_code == 404
+    # Unknown fragment name -> 404.
+    assert call("does-not-exist").status_code == 404
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -812,4 +851,5 @@ if __name__ == "__main__":
     test_record_page_amendments_view_swaps_body()
     test_record_page_toc_and_anchors()
     test_record_page_stamp_present()
+    test_fragments_redirect_without_x_fragment()
     print("\n== test_viewer: all passed ==")
