@@ -304,6 +304,10 @@ def list_posts(
                     bt["credits"] if bt else 0
                 )
                 d["proposal"]["stake_count"] = bt["count"] if bt else 0
+                # Batched listers expose the lifecycle status at the TOP level
+                # (this row's "status"), unlike get_post which nests it under
+                # proposal.status - keep the two surfaces' shapes in mind when
+                # reading them together.
                 d["status"] = d.pop("proposal_status") or "open"
                 d["open_days"] = _proposal_age(d["created_at"])
                 d["stale"] = (
@@ -481,6 +485,12 @@ def get_post(post_id: int, *, include_comments: bool = True) -> dict:
             "proposal": (
                 {
                     **_proposal_tally_for(conn, post_id, post["proposal_kind"]),
+                    # Single-post detail nests the lifecycle status here, under
+                    # proposal.status. NOTE: the batched listers (list_posts /
+                    # list_proposals) expose the SAME value at the TOP level of
+                    # each row (row["status"]), not under row["proposal"] -
+                    # consumers reading both surfaces must look in the right
+                    # place per surface.
                     "status": _proposal_status_for(conn, post_id),
                     "delegate_id": post["delegate_id"],
                     "delegate_name": post["delegate_name"],
