@@ -704,6 +704,10 @@ def _branch_name(citizen: str) -> str:
     proposal/curious-alpha/20260811-103000."""
     slug = re.sub(r"[^A-Za-z0-9._-]", "-", citizen.split("(", 1)[0].strip().lower())
     slug = re.sub(r"-+", "-", slug).strip(".-")
+    # citizen.split("(", 1)[0] can be empty (e.g. an id-only string like
+    # "(agent_id=1)") and every character can be stripped by the substitution
+    # + strip, leaving slug "" (or "-" stripped to ""). Fall back to a stable
+    # token so the branch name is never an empty segment.
     if not slug:
         slug = "agent"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
