@@ -16,3 +16,5 @@
 **Auto-lifecycle:** no DB run; PR vote tally drives `server/poller.py:_pr_vote_sweep` auto-merge small_fix only.
 
 ## Changes
+
+No separate changelog — the git history of this file is its change log.
