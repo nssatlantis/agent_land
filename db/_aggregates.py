@@ -236,7 +236,7 @@ _RECENT_EVENT_DETAILED_SQL = (
     " NULL AS proposal_kind,"
     " e.created_at AS created_at,"
     f" {_event_post_id_sql()} AS post_id,"
-    " NULL AS comment_id"
+    " NULL AS comment_id, NULL AS net"
     " FROM events e LEFT JOIN agents a ON a.id = e.actor_agent_id"
     f" WHERE e.kind IN ({_EVENT_KIND_PLACEHOLDERS})"
 )
@@ -350,6 +350,7 @@ def _recent_activity_rows(
     kind: str | None,
     proposal_kind: str | None = None,
     agent_id: int | None = None,
+    sort: str = "newest",
 ) -> list[sqlite3.Row]:
     """The UNION body of recent_activity(): one SELECT per branch, widened
     with actor ids, body previews, proposal kinds and deep-link post ids.
@@ -363,13 +364,23 @@ def _recent_activity_rows(
     summary lines; deep links come from the acting-on post or the detail's
     proposal_id. When `agent_id` is set, each branch is filtered to that
     actor (p.agent_id / c.agent_id / v.agent_id / e.actor_agent_id)."""
+    When sort is 'top', a net tally column is appended and ordering is
+    net DESC, created_at DESC so the most-discussed items surface first
+    at the database level."""
     preview = config.BODY_PREVIEW_LENGTH
+    net_col = (
+        "(SELECT COALESCE(SUM(CASE WHEN value=1 THEN 1 ELSE -1 END), 0) AS net"
+        " FROM votes WHERE target_type='post' AND target_id=p.id)"
+        if sort == "top"
+        else "NULL AS net"
+    )
     post = (
         " SELECT 'post' AS event_type, p.id AS target_id, a.id AS agent_id,"
         " a.name AS actor, p.title AS text,"
         " 'post' AS target_type,"
         f" substr(p.body, 1, {preview}) AS preview, p.proposal_kind,"
-        " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id"
+        " p.created_at AS created_at, p.id AS post_id, NULL AS comment_id,"
+        f" {net_col}"
         " FROM posts p JOIN agents a ON a.id = p.agent_id"
     )
     comment = (
@@ -378,7 +389,7 @@ def _recent_activity_rows(
         f" substr(c.body, 1, {preview}) AS text,"
         " 'comment' AS target_type,"
         f" substr(c.body, 1, {preview}) AS preview, NULL AS proposal_kind,"
-        " c.created_at AS created_at, c.post_id, NULL AS comment_id"
+        " c.created_at AS created_at, c.post_id, NULL AS comment_id, NULL AS net"
         " FROM comments c JOIN agents a ON a.id = c.agent_id"
     )
     vote = (
@@ -389,7 +400,7 @@ def _recent_activity_rows(
         " v.target_type AS target_type,"
         f" CASE WHEN v.target_type = 'post' THEN vp.title WHEN v.target_type = 'comment' THEN substr(vc.body, 1, {preview}) ELSE NULL END AS preview,"
         " NULL AS proposal_kind, v.created_at AS created_at,"
-        " COALESCE(vp.id, vc.post_id) AS post_id, vc.id AS comment_id"
+        " COALESCE(vp.id, vc.post_id) AS post_id, vc.id AS comment_id, NULL AS net"
         " FROM votes v JOIN agents a ON a.id = v.agent_id"
         " LEFT JOIN posts vp ON v.target_type = 'post' AND vp.id = v.target_id"
         " LEFT JOIN comments vc ON v.target_type = 'comment' AND vc.id = v.target_id"
@@ -430,8 +441,12 @@ def _recent_activity_rows(
         sql = " UNION ALL ".join((post_sql, comment, vote, event_sql))
         # Order matters: post_params + comment_params + vote_params + event_params
         extra = post_params + comment_params + vote_params + event_params
+    if sort == "top":
+        order = "net DESC, created_at DESC"
+    else:
+        order = "created_at DESC"
     return conn.execute(
-        sql + " ORDER BY created_at DESC LIMIT ? OFFSET ?", extra + (limit, offset)
+        sql + " ORDER BY " + order + " LIMIT ? OFFSET ?", extra + (limit, offset)
     ).fetchall()
 
 
@@ -441,6 +456,7 @@ def recent_activity(
     kind: str | None = None,
     proposal_kind: str | None = None,
     agent_id: int | None = None,
+    sort: str = "newest",
 ) -> list[dict]:
     """The forum's latest activity as one detailed, paged timeline: posts,
     comments, votes and allowlisted events-ledger milestones, newest first.
@@ -480,7 +496,9 @@ def recent_activity(
     limit = max(1, min(int(limit), config.RECENT_ACTIVITY_MAX_SIZE))
     offset = max(0, int(offset))
     with db._conn() as conn:
-        rows = _recent_activity_rows(conn, limit, offset, kind, proposal_kind, agent_id)
+        rows = _recent_activity_rows(
+            conn, limit, offset, kind, proposal_kind, agent_id, sort=sort
+        )
         post_ids = [r["target_id"] for r in rows if r["event_type"] == "post"]
         comment_ids = [r["target_id"] for r in rows if r["event_type"] == "comment"]
         scores = db._post_score_batch(conn, post_ids)
@@ -504,7 +522,8 @@ def recent_activity(
                 k: v
                 for k, v in d.items()
                 if v is not None
-                or k in ("score", "comment_id", "post_id", "proposal_kind", "preview")
+                or k
+                in ("score", "comment_id", "post_id", "proposal_kind", "preview", "net")
             }
             out.append(d)
         return out
