@@ -1933,12 +1933,11 @@ def _render_workflows(request) -> str:
     )
     # Close-stale affordance (review D7/W9): when open runs remain on
     # already-decided proposals - residue the boot reconciliation sweep also
-    # heals - offer a one-click sweep. Counted live so the button hides when
-    # there is nothing to do.
-    stale_count = 0
-    if status in (None, "open"):
-        with db._conn() as conn:
-            stale_count = db.stale_open_run_count(conn)
+    # heals - offer a one-click sweep. Counted live on every status tab so an
+    # admin browsing the decided/closed filters still sees the residue that
+    # belongs there; the button hides only when there is nothing to do.
+    with db._conn() as conn:
+        stale_count = db.stale_open_run_count(conn)
     close_stale = (
         f'<form method="post" action="/admin/workflows/close-stale" '
         f'style="display:inline">{_csrf_field(request)}'
