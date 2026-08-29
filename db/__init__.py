@@ -106,6 +106,7 @@ from db._core import (  # noqa: F401
     _since_bound,
     active_citizens,
     database_location_note,
+    earliest_record_iso,
     init_db,
     now,
     require_active,
