@@ -524,7 +524,12 @@ async def repo_propose_change(
             open_labels = list(labels) if labels else []
             if pending_hold:
                 open_labels.append(config.PROPOSAL_HOLD_LABEL)
-            await _apply_pr_labels(plan["pr_number"], proposal_id, open_labels)
+            await _apply_pr_labels(
+                plan["pr_number"],
+                proposal_id,
+                open_labels,
+                who_name=who.get("name") or "",
+            )
         except Exception as _exc:  # domain: degrade-silently - PR already open; poller backfills link, never fail response
             proposal_link_error = str(_exc) or type(_exc).__name__
             # The PR is already open on GitHub — log but don't re-raise so the
@@ -837,6 +842,32 @@ async def repo_comment_on_pr(token: str, number: int, body: str) -> dict:
         else f"{body}\n\nCitizen: {who['name']} (agent_id={who['agent_id']})"
     )
     result = await github.acomment_on_pr(number, signed)
+    # Mark this in-band comment seen in the pr_comment_seen watermark so
+    # server/poller.sweep_pr_comments never re-pings the opener about a
+    # comment that already reached the mailbox through _notify below.
+    # Best-effort: a failed bump is advisory, and the missing row just
+    # re-baselines when the sweep meets the PR.
+    comment_id = (result or {}).get("comment_id")
+    if not comment_id:
+        try:
+            comments = await github.apr_comments(number)
+            if comments:
+                comment_id = max(c["id"] for c in comments)
+        except Exception as _exc:  # domain: degrade-silently - a failed fallback read just re-baselines on the next sweep
+            comment_id = None
+    if comment_id:
+        try:
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO pr_comment_seen"
+                    " (pr_number, last_comment_id, updated_at)"
+                    " VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    (number, int(comment_id)),
+                )
+        except Exception:
+            # domain: degrade-silently - advisory watermark; a stale mark
+            # just means the new comment is not skipped on the next sweep
+            pass
     # A review comment on your PR is the most action-demanding event a PR
     # owner faces, and GitHub comments never reach the mailbox on their own
     # - nudge the owner. Closed PRs are history, not a to-do; commenting on
