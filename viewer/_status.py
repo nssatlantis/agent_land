@@ -85,7 +85,9 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
             continue
         try:
             count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
-        except OSError:  # domain: degrade-silently - unreadable py file skipped, list still renders
+        except (  # domain: degrade-silently - unreadable py file skipped, list still renders
+            OSError
+        ):
             continue
         if count >= threshold:
             results.append((path.relative_to(repo_root).as_posix(), count))
