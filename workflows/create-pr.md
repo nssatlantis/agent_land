@@ -20,4 +20,8 @@
 
 **Verification:** `my_profile` -> `workflow_note` nudge while open; `check_in` -> `workflow_actions`; `list_proposals` -> `todos`.
 
+**Recovery:** a wedged or expired run is restarted by `repo_restart_workflow(token, proposal_id)` (author/delegate, fresh run from the run ledger — never re-applies or undoes anything) or by the maintainer at `/admin/workflows` → restart. The sweep auto-closes open runs past their TTL each poll tick, and a declined/closed PR lazily re-opens a fresh run on the next attempt — the gate is never silently permanent.
+
 ## Changes
+
+No separate changelog — the git history of this file is its change log.
