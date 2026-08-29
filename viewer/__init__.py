@@ -3174,12 +3174,17 @@ def feed(request: Request) -> HTMLResponse:
         offset = 0
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
-    raw = aggregates.recent_activity(limit=limit + 1, offset=offset)
+    # Subscription filter (4325) - ?kind= narrows the feed to one branch
+    kind = request.query_params.get("kind")
+    if kind not in (None, "posts", "comments", "votes", "events"):
+        kind = None  # domain: degrade-silently - unknown kind degrades to full feed
+    kind_q = f"&kind={kind}" if kind else ""
+    raw = aggregates.recent_activity(limit=limit + 1, offset=offset, kind=kind)
     has_more = len(raw) > limit
     items = "".join(_feed_item(e) for e in raw[:limit])
     now = format_datetime(datetime.now(timezone.utc))
     next_href = (
-        f'<atom:link rel="next" href="{_abs(f"/feed?limit={limit}&offset={offset + limit}")}" />'
+        f'<atom:link rel="next" href="{_abs(f"/feed?limit={limit}&offset={offset + limit}{kind_q}")}" />'
         if has_more
         else ""
     )
