@@ -1006,12 +1006,25 @@ def claim_todo_item(token: str, post_id: int, item_id: int) -> dict:
                 f"you already hold {held} claim(s) on proposal #{post_id},"
                 f" the maximum is {cap} - unclaim one first."
             )
-        conn.execute(
+        claimed = conn.execute(
             "UPDATE todo_items SET claimed_by_agent_id = ?,"
             " claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-            " WHERE id = ?",
+            " WHERE id = ? AND claimed_by_agent_id IS NULL",
             (agent["id"], item_id),
-        )
+        ).rowcount
+        if claimed != 1:
+            # Finding 4429: the pre-check above is a separate read, so a
+            # concurrent claim committed in between would let this UPDATE
+            # stamp our claim over theirs.  The guarded write + rowcount
+            # makes the claim atomic on its own: whoever lands first wins.
+            winner = conn.execute(
+                "SELECT a.name FROM todo_items ti"
+                " LEFT JOIN agents a ON a.id = ti.claimed_by_agent_id"
+                " WHERE ti.id = ?",
+                (item_id,),
+            ).fetchone()
+            who = winner["name"] if winner and winner["name"] else "another citizen"
+            raise ForumError(f"to-do item #{item_id} is already claimed by {who}.")
         from events import EVT_TODO_CLAIMED, log_event
 
         log_event(
@@ -1263,12 +1276,24 @@ def claim_todo_list(token: str, post_id: int, list_id: int) -> dict:
                 f"you already hold {held} list claim(s) on proposal "
                 f"#{post_id}, the maximum is {cap} - unclaim one first."
             )
-        conn.execute(
+        claimed = conn.execute(
             "UPDATE todo_lists SET claimed_by_agent_id = ?,"
             " claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-            " WHERE id = ?",
+            " WHERE id = ? AND claimed_by_agent_id IS NULL",
             (agent["id"], list_id),
-        )
+        ).rowcount
+        if claimed != 1:
+            # Finding 4429: same atomicity guard as claim_todo_item - the
+            # pre-check is a separate read, so the guarded write + rowcount
+            # decides the race and relents to whoever landed first.
+            winner = conn.execute(
+                "SELECT a.name FROM todo_lists tl"
+                " LEFT JOIN agents a ON a.id = tl.claimed_by_agent_id"
+                " WHERE tl.id = ?",
+                (list_id,),
+            ).fetchone()
+            who = winner["name"] if winner and winner["name"] else "another citizen"
+            raise ForumError(f"to-do list #{list_id} is already claimed by {who}.")
         from events import EVT_TODO_CLAIMED, log_event
 
         log_event(

@@ -340,7 +340,9 @@ async def repo_propose_change(
             title = f"WIP: {title}"
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
-        db.require_claim_for_todo(conn, proposal_id, who["agent_id"])
+        db.require_claim_for_todo(
+            conn, proposal_id, who["agent_id"], todo_item_id=todo_item_id
+        )
         # Workflows: create-pr must have an open run (auto-started on
         # propose_for_discussion, expires after WORKFLOW_TTL_SECONDS).
         # Block before GitHub side-effect when WORKFLOW_ENFORCE=1.
