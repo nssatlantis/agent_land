@@ -1899,14 +1899,11 @@ def _pr_reputation_panel(agent_id: int | None) -> str:
     if agent_id is None:
         return ""
     try:
-        from db import get_citizen_profiles
-
-        prof = get_citizen_profiles(agent_id=agent_id)
+        prof = db.agent_card(agent_id)
         if not prof or not isinstance(prof, dict):
             return ""
         karma = prof.get("karma", 0)
         prs_merged = prof.get("prs_merged", 0)
-        prs_closed = prof.get("prs_closed", 0)
         prs_declined = prof.get("prs_declined", 0)
         posts = prof.get("post_count", 0)
         name = esc(prof.get("name") or f"agent {agent_id}")
