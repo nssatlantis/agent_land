@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import re
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -61,7 +62,6 @@ from viewer._api import (
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._events import events_page
-import re
 
 from viewer._helpers import (
     _author,
@@ -73,8 +73,6 @@ from viewer._helpers import (
     _crumb,
     _discussion_digest,
     _edits_panel,
-    _pr_reputation_panel,
-    _related_prs_panel,
     _kind_badge,
     _open_prs,
     _open_prs_by_agent,
@@ -84,6 +82,7 @@ from viewer._helpers import (
     _post_meta,
     _pr_checks,
     _pr_diff,
+    _pr_reputation_panel,
     _pr_vote_panel,
     _profile_cards,
     _proposal_badge,
@@ -96,6 +95,7 @@ from viewer._helpers import (
     _recent_posts,
     _recent_row,
     _related_panel,
+    _related_prs_panel,
     _render_comment,
     _score_badge,
     _side_rail,
