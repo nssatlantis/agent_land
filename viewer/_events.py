@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 
@@ -383,7 +385,13 @@ def _fmt_amt(d: dict, field: str = "amount") -> str:
 
 
 def _event_row(e: dict) -> str:
-    """One row on the /events timeline."""
+    """One row on the /events timeline. Each row is a `<details>` so a
+    reader can expand the full `detail` JSON and a clickable target link
+    without leaving the timeline (item 4308: expanded event details).
+
+    When the event has no `detail` and no `target_type`, the row stays
+    clickable for accessibility but the body block is omitted to keep the
+    timeline quiet."""
     label, color = _EVENT_KIND_BADGES.get(e["kind"], (e["kind"], "var(--muted)"))
     badge = f'<span class="badge" style="background:{color};color:#0f172a;font-size:.75em;padding:1px 6px;border-radius:4px">{label}</span>'
     actor = e.get("actor_name")
@@ -394,7 +402,85 @@ def _event_row(e: dict) -> str:
     )
     desc = _event_description(e)
     ts = _human_ts(e["created_at"])
-    return f'<div class="row" style="padding:6px 0;border-bottom:1px solid var(--border)">{badge} {actor_html} \u2014 {desc} <span class="muted" style="float:right">{ts}</span></div>'
+    body = _event_detail_body(e)
+    chevron = (
+        '<span class="event-chevron" '
+        'style="color:var(--muted);font-size:.85em;margin-right:4px">'
+        "\u25b8</span>"
+    )
+    summary = (
+        f'<summary style="cursor:pointer;list-style:none;'
+        f'padding:6px 0;border-bottom:1px solid var(--border)">'
+        f"{chevron}{badge} {actor_html} \u2014 {desc} "
+        f'<span class="muted" style="float:right">{ts}</span></summary>'
+    )
+    if not body:
+        return f"<details>{summary}</details>"
+    return (
+        f"<details>{summary}"
+        f'<div class="event-detail" style="padding:6px 16px 10px 28px;'
+        f"background:var(--bg-alt);border-left:3px solid var(--accent);"
+        f'font-size:.85em;margin:0 0 6px">{body}</div></details>'
+    )
+
+
+def _event_target_html(e: dict) -> str:
+    """One clickable link for the event's `target_type` + `target_id`,
+    or '' when the event has no target. Mirrors the pattern used by the
+    /credits and /reports routes (target_type -> /agents or /posts)."""
+    tt = e.get("target_type")
+    tid = e.get("target_id")
+    if not tt or tid is None:
+        return ""
+    if tt == "agent":
+        return f'<a href="/agents/{tid}">agent #{tid}</a>'
+    if tt in ("post", "comment", "proposal"):
+        return f'<a href="/posts/{tid}">{tt} #{tid}</a>'
+    if tt == "pr":
+        return f'<a href="/prs/{tid}">PR #{tid}</a>'
+    if tt in ("bug", "bug_report"):
+        return f'<a href="/bugs#{tid}">bug #{tid}</a>'
+    if tt == "proposal_stake":
+        return f'<a href="/staking#{tid}">stake #{tid}</a>'
+    if tt == "treasury":
+        return '<a href="/economy">treasury</a>'
+    return f"{esc(tt)} #{tid}"
+
+
+def _event_detail_body(e: dict) -> str:
+    """Render the expanded body for an /events row: a target link (when
+    the event has one) plus the full `detail` JSON pretty-printed. The
+    `detail` dict is what the writer (db.events.log_event) actually
+    stored, so a citizen can audit a vote/pr-vote/stake by reading
+    exactly what landed."""
+    parts: list[str] = []
+    target = _event_target_html(e)
+    if target:
+        parts.append(f"<div><b>target:</b> {target}</div>")
+    detail = e.get("detail")
+    if detail:
+        try:
+            pretty = json.dumps(detail, indent=2, sort_keys=True, ensure_ascii=False)
+        except (
+            TypeError,
+            ValueError,
+        ):  # domain: degrade-silently - a malformed detail falls back to repr
+            pretty = esc(repr(detail))
+        parts.append(
+            f'<pre style="margin:6px 0 0;padding:6px 8px;'
+            f"background:var(--bg);border:1px solid var(--border);"
+            f"border-radius:4px;overflow-x:auto;white-space:pre-wrap;"
+            f'word-break:break-word">{esc(pretty)}</pre>'
+        )
+    if not parts:
+        return ""
+    event_id = e.get("id")
+    if event_id is not None:
+        parts.append(
+            f'<div class="muted" style="margin-top:4px;font-size:.85em">'
+            f"event #{event_id} \xb7 {_human_ts(e['created_at'])}</div>"
+        )
+    return "".join(parts)
 
 
 def events_page(request: Request) -> HTMLResponse:
@@ -542,7 +628,7 @@ def events_page(request: Request) -> HTMLResponse:
         + ' style="padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em">'
         + '<button type="submit" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em;cursor:pointer">Filter</button>'
         + "</form></div>"
-        + f'<div id="frag-events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
+        + f'<div id="events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
         + f"{pager}</div>"
     )
     return _page("events", _with_rail(body), section="events")
