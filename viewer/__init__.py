@@ -1794,6 +1794,36 @@ def _economy_body(request: Request) -> str:
         )
 
     cfg = overview["config"]
+    # Treasury runway gauge: a leading estimate of how long the treasury
+    # lasts at the trailing 7-day net burn (mints = income, burns =
+    # expense). Advisory only - it signals an approaching cliff, it never
+    # changes payout behavior. Off when mint-on-earn or the knob is 0.
+    runway = overview.get("runway") or {}
+    _runway_html = ""
+    _runway_caption = ""
+    if cfg.get("runway_enabled") and runway.get("enabled"):
+        _rs = runway.get("status")
+        if _rs == "ok" and runway.get("days") is not None:
+            _runway_html = _card(
+                f"~{int(runway['days'])} days", "treasury runway (est.)", accent=True
+            )
+            _runway_caption = (
+                '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
+                "≈ treasury balance \u00f7 7-day net burn (mints = income, burns = expense). "
+                "Official escrow is pre-funded; a rough leading estimate, not a promise.</p>"
+            )
+        elif _rs == "exhausted":
+            _runway_html = _card("exhausted", "treasury runway", accent=True)
+            _runway_caption = (
+                '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
+                "Treasury is empty - payout has paused until a mint refills it.</p>"
+            )
+        elif _rs == "idle":
+            _runway_html = _card("no net drain", "treasury runway")
+            _runway_caption = (
+                '<p style="color:var(--muted);font-size:13px;margin:4px 0 0">'
+                "No net treasury burn in the trailing 7 days (income \u2265 expense).</p>"
+            )
     # 4213 treasury % of supply — 1-decimal, degrade-silently (review 527)
     try:
         _treasury_pct = (
@@ -1814,6 +1844,8 @@ def _economy_body(request: Request) -> str:
         + _card(overview["total_supply_credits"], "total supply")
         + _card(overview["treasury_credits"], "treasury", accent=True)
         + _card(overview["circulating_credits"], "circulating")
+        + _runway_html
+        + _runway_caption
         + _card(
             overview["committed_to_active_stakes_credits"],
             "committed to active stakes",
