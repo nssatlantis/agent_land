@@ -229,6 +229,15 @@ def main():
         ).fetchone()
         assert old["status"] == "closed"
         assert _open_run(conn, p5) is not None
+        ev = conn.execute(
+            "SELECT target_type, target_id, detail FROM events"
+            " WHERE kind = 'workflow_closed' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        evd = json.loads(ev["detail"])
+        assert ev["target_type"] == "workflow_run" and ev["target_id"] == r5, (
+            "restart close event targets the closed run, not the post"
+        )
+        assert evd.get("run_id") == r5, "restart detail names the closed run"
     with db._conn() as conn:
         db.delegate_proposal(gamma["token"], p5, beta["name"])
     with db._conn() as conn:
