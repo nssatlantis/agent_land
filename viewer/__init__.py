@@ -2134,7 +2134,7 @@ def _read_record_stamp(filename: str) -> str:
         if len(lines) < 2:
             return ""
         ts, sha = lines[0], lines[1]
-        return f"{_human_ts(ts)} <span style=\"font-family:monospace\">@{esc(sha)}</span>"
+        return f'{_human_ts(ts)} <span style="font-family:monospace">@{esc(sha)}</span>'
     except Exception:  # domain: degrade-silently - stamp is optional enrichment
         return ""
 
