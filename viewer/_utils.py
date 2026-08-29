@@ -166,6 +166,97 @@ def _human_duration(seconds: float) -> str:
 
 # ------------------------------------------------------------- markdown --
 
+# The amendment-log marker, mirrored from server/records.py so the viewer's
+# law/amendments split agrees with the MCP slim-by-default record resources.
+# Deliberately duplicated rather than imported: the viewer must not pull in
+# the server package. Keep the two in sync.
+_CHANGES_SECTION = "\n## Changes\n"
+
+
+def _split_changes(text: str) -> tuple[str, str | None]:
+    """Split a record file into its operative body and its '## Changes'
+    amendment log - the same split server/records.py serves as the MCP
+    slim/companion resources. Returns (body, changes) with changes None when
+    the file has no such section. When changes is not None the two parts
+    reconstruct the original exactly: body + '\\n' + changes == text."""
+    idx = text.find(_CHANGES_SECTION)
+    if idx < 0:
+        return text, None
+    return text[:idx], text[idx + 1 :]
+
+
+def _slugify(text: str) -> str:
+    """A URL-fragment slug for an HTML anchor id: lowercased, runs of
+    non-alphanumerics collapsed to '-' and stripped. A text that collapses
+    to nothing ('!!!', '') falls back to 'section' so ids always exist."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug or "section"
+
+
+@lru_cache(maxsize=256)
+def _heading_sections(source: str) -> tuple:
+    """Every # / ## / ### heading in document order as
+    (level, slug, text), level 2/3/4 for the h2/h3/h4 _markdown renders.
+    Runs the same scan as _markdown - splitlines, lines inside ``` fences
+    skipped - so when _markdown(anchors=True) consumes this in lockstep the
+    ids land on exactly the headings the nav links to. Returns an immutable
+    tuple so it can ride the lru_cache."""
+    sections: list[tuple] = []
+    used: dict[str, int] = {}
+    in_code = False
+    for line in str(source).splitlines():
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        if line.startswith("### "):
+            level, text = 4, line[4:]
+        elif line.startswith("## "):
+            level, text = 3, line[3:]
+        elif line.startswith("# "):
+            level, text = 2, line[2:]
+        else:
+            continue
+        base = _slugify(text)
+        used[base] = used.get(base, 0) + 1
+        slug = base if used[base] == 1 else f"{base}-{used[base]}"
+        sections.append((level, slug, text.strip()))
+    return tuple(sections)
+
+
+def _toc_nav(sections: tuple) -> str:
+    """The record page's sticky table of contents: one anchored link per
+    heading, indented for h3/h4. '' when there are no headings."""
+    if not sections:
+        return ""
+    items = "".join(
+        f'<a class="toc-{level}" href="#{slug}">{esc(text)}</a>'
+        for level, slug, text in sections
+    )
+    return f'<nav class="record-toc" aria-label="Table of contents">{items}</nav>'
+
+
+def _recent_changes_html(commits: list[dict]) -> str:
+    """The record page's 'recent changes' panel: a collapsible <details> per
+    commit showing @short - subject - when, opened to a pre.diff of that
+    file's patch. '' when no commits were read - the record page renders
+    plain."""
+    if not commits:
+        return ""
+    rows = "".join(
+        f'<details class="show-more"><summary>'
+        f'<code style="font-family:ui-monospace,Consolas,Menlo,monospace">@{esc(c["short"])}</code> '
+        f"&middot; {esc(c['subject'])} &middot; {_human_ts(c['iso'])}"
+        f'</summary><pre class="diff" style="margin:8px 0 0">{esc(c["patch"])}</pre></details>'
+        for c in commits
+    )
+    return (
+        f'<details class="panel" style="margin-top:16px">'
+        f"<summary><h2>Recent changes &middot; last {len(commits)} commits</h2></summary>{rows}</details>"
+    )
+
+
 _INLINE_CODE = re.compile(r"(`[^`\n]+`)")
 
 # The stored mention form '@Name (agent_id=N)' db leaves in post and
@@ -249,17 +340,31 @@ def _inline_md(text: str) -> str:
 
 
 @lru_cache(maxsize=2048)
-def _markdown(source: str) -> str:
+def _markdown(source: str, anchors: bool = False) -> str:
     """Render the safe subset: fenced code blocks, headings, blockquotes,
     bullet/numbered lists, and horizontal rules. Each block starts on its own
     line in a <p>. Input stays HTML-escaped throughout - no raw HTML ever
-    reaches the page."""
+    reaches the page. With anchors=True the # / ## / ### headings carry
+    id=\"...\" slugs matching _heading_sections so a page table of contents
+    can deep-link to them; without, output is byte-identical to the
+    single-argument form (and the two share no cache entries)."""
     lines = str(source).splitlines()
     out = []
     in_code = False
     list_tag = None
     in_table = False
     code_buf: list[str] = []
+    sections = _heading_sections(source) if anchors else ()
+    sec_idx = 0
+
+    def _heading(level: int, text: str) -> str:
+        nonlocal sec_idx
+        if anchors and sec_idx < len(sections) and sections[sec_idx][0] == level:
+            slug = sections[sec_idx][1]
+            sec_idx += 1
+            return f'<h{level} id="{slug}">{_inline_md(text)}</h{level}>'
+        return f"<h{level}>{_inline_md(text)}</h{level}>"
+
     for idx, line in enumerate(lines):
         if line.startswith("```"):
             if in_code:
@@ -306,11 +411,11 @@ def _markdown(source: str) -> str:
             out.append(f"</{list_tag}>")
             list_tag = None
         if line.startswith("### "):
-            out.append(f"<h4>{_inline_md(line[4:])}</h4>")
+            out.append(_heading(4, line[4:]))
         elif line.startswith("## "):
-            out.append(f"<h3>{_inline_md(line[3:])}</h3>")
+            out.append(_heading(3, line[3:]))
         elif line.startswith("# "):
-            out.append(f"<h2>{_inline_md(line[2:])}</h2>")
+            out.append(_heading(2, line[2:]))
         elif line.startswith("> "):
             out.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
         elif (
