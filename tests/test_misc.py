@@ -1206,6 +1206,42 @@ def main():
     )
     print("  events category migration: ok")
 
+    # --- pr_comment_seen table migration --------------------------------
+    # A pre-sweep database carries no pr_comment_seen table.  init_db()
+    # must create it on boot (CREATE TABLE IF NOT EXISTS in the schema
+    # script), and a second boot must not clobber rows the sweep wrote.
+    _saved_db_path = db.DB_PATH
+    try:
+        _tmp = Path(tempfile.mkdtemp(prefix="agentland_test_pr_comment_seen_"))
+        db.DB_PATH = str(_tmp / "pr_comment_seen_upgrade.db")
+        db.init_db()
+        with db._conn() as conn:
+            conn.execute("DROP TABLE pr_comment_seen")
+        db.init_db()  # the upgrade: recreate the missing table
+        with db._conn() as conn:
+            cols = {
+                r["name"] for r in conn.execute("PRAGMA table_info(pr_comment_seen)")
+            }
+            assert {"pr_number", "last_comment_id", "updated_at"} <= cols, (
+                "init_db adds pr_comment_seen on upgrade"
+            )
+            conn.execute(
+                "INSERT INTO pr_comment_seen (pr_number, last_comment_id,"
+                " updated_at) VALUES (7001, 55,"
+                " strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            )
+        db.init_db()  # second boot: idempotent, data preserved
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT last_comment_id FROM pr_comment_seen WHERE pr_number = 7001"
+            ).fetchone()
+        assert row and row["last_comment_id"] == 55, (
+            "a second init_db() keeps pr_comment_seen data"
+        )
+    finally:
+        db.DB_PATH = _saved_db_path
+    print("  pr_comment_seen table migration: ok")
+
     # --- idx_posts_proposal_kind is actually USED, not just present -------
     # The existence check above only proves the index exists; it does not
     # prove a posts-by-proposal_kind filter will use it. Pin the plan so a
