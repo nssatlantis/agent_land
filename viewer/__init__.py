@@ -310,10 +310,17 @@ def render_post(post_id: int) -> HTMLResponse:
             f'<div class="panel"><h2>Contribution tracking \u00b7 '
             f"{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('done'))}"
             f"/{sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []))} done"
-            f' \u00b7 {sum(1 for _l in (p.get("todos") or []) for _i in (_l.get("items") or []) if _i.get("claimed_by"))} claimed</h2>'
+            f" \u00b7 {sum(1 for _l in (p.get('todos') or []) for _i in (_l.get('items') or []) if _i.get('claimed_by'))} claimed</h2>"
             f'<div style="color:var(--muted);font-size:14px">'
             + ", ".join(
-                sorted({esc(str(_i.get("claimed_by"))) for _l in (p.get("todos") or []) for _i in (_l.get("items") or []) if _i.get("claimed_by")})
+                sorted(
+                    {
+                        esc(str(_i.get("claimed_by")))
+                        for _l in (p.get("todos") or [])
+                        for _i in (_l.get("items") or [])
+                        if _i.get("claimed_by")
+                    }
+                )
             )
             + "</div></div>"
             if p.get("collaborative") and (p.get("todos") or [])
