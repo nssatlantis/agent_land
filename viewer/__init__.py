@@ -850,31 +850,23 @@ def _fetch_recent_events(
     per_page: int,
     proposal_kind: str | None = None,
 ) -> list[dict]:
-    """Fetch recent activity for a page, handling the 'top' sort by pulling
-    all rows and sorting client-side.  Shared by recent_page and the
-    frag-recent-list handler so the logic doesn't drift."""
+    """Fetch recent activity for a page, sorted at the database level
+    when sort is 'top'. Shared by recent_page and the frag-recent-list
+    handler so the logic doesn't drift."""
     if sort == "top":
-        max_fetch = min(
-            config.RECENT_ACTIVITY_MAX_SIZE,
-            aggregates.recent_activity_total(kind, proposal_kind=proposal_kind) or 0,
+        return aggregates.recent_activity(
+            limit=per_page,
+            offset=(page - 1) * per_page,
+            kind=kind,
+            proposal_kind=proposal_kind,
+            sort="top",
         )
-        all_events = aggregates.recent_activity(
-            limit=max_fetch, offset=0, kind=kind, proposal_kind=proposal_kind
-        )
-
-        def _top_key(ev: dict) -> tuple[int, str]:
-            t = ev.get("tally")
-            net = (t["up"] - t["down"]) if t else 0
-            sc = ev.get("score") or 0
-            return (-(net or sc), ev.get("created_at", ""))
-
-        all_events.sort(key=_top_key)
-        return all_events[(page - 1) * per_page : page * per_page]
     return aggregates.recent_activity(
         limit=per_page,
         offset=(page - 1) * per_page,
         kind=kind,
         proposal_kind=proposal_kind,
+        sort="newest",
     )
 
 
@@ -1958,7 +1950,34 @@ def _economy_body(request: Request) -> str:
             f"{esc(seal['running_hash'])}</td></tr>"
             "</tbody></table>"
         )
-
+    # --- checkpoint inspector: full ledger hash recompute ----------
+    inspector_html = ""
+    if seal is not None:
+        chain_cls = "status-ok" if seal.get("chain_ok") else "status-fail"
+        inspector_html = (
+            '<div class="panel"><h2>Checkpoint inspector</h2>'
+            "<table><tbody>"
+            f"<tr><td>chain recompute</td>"
+            f"<td style='text-align:right'><span class='{chain_cls}'>"
+            f"{'verified' if seal['chain_ok'] else 'MISMATCH'}</span></td></tr>"
+            f"<tr><td>seals checked</td>"
+            f"<td style='text-align:right'>{seal.get('seals_checked', 0)}</td></tr>"
+            f"<tr><td>sealed entries</td>"
+            f"<td style='text-align:right'>{seal['sealed_entry_count']}</td></tr>"
+            f"<tr><td>live entries</td>"
+            f"<td style='text-align:right'>{seal['live_entry_count']}</td></tr>"
+            f"<tr><td>entries match</td>"
+            f"<td style='text-align:right'><span class='{chain_cls}'>"
+            f"{'yes' if seal['sealed_entry_count'] == seal['live_entry_count'] else 'no'}</span></td></tr>"
+            f"<tr><td>sealed supply</td>"
+            f"<td style='text-align:right'>{esc(seal['sealed_supply_credits'])}</td></tr>"
+            f"<tr><td>live supply</td>"
+            f"<td style='text-align:right'>{esc(seal['live_supply_credits'])}</td></tr>"
+            f"<tr><td>supply match</td>"
+            f"<td style='text-align:right'><span class='{chain_cls}'>"
+            f"{'yes' if seal['sealed_supply_quarters'] == seal['live_supply_quarters'] else 'no'}</span></td></tr>"
+            "</tbody></table></div>"
+        )
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except (
@@ -2051,6 +2070,7 @@ def _economy_body(request: Request) -> str:
         + holders_rows
         + "</tbody></table></div>"
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
+        + inspector_html
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
@@ -2863,6 +2883,8 @@ async def fragments(request: Request) -> HTMLResponse:
 
     Responses include an ETag header; when the client sends a matching
     If-None-Match the handler returns 304 (no body) to save bandwidth."""
+    if request.headers.get("x-fragment") != "1":
+        return HTMLResponse("", status_code=404)
     name = request.path_params["name"]
     if name == "rail":
         show_proposals = request.query_params.get("show_proposals", "1") != "0"
