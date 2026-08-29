@@ -1895,6 +1895,52 @@ def _related_panel(p: dict) -> str:
     )
 
 
+def _related_prs_panel(pr_number: int) -> str:
+    """Possibly related open PRs (237:4280) - display-only, degrade-silently."""
+    try:
+        related = search.find_similar_prs(pr_number=pr_number)
+    except Exception:  # domain: degrade-silently
+        return ""
+    if not related:
+        return ""
+    rows = ""
+    for r in related[:3]:
+        score = f"{(r.get('score', 0) * 100):.0f}%"
+        rows += (
+            f'<div style="margin:.25rem 0">'
+            f'<a href="/prs/{r["number"]}" style="color:var(--accent);text-decoration:none">PR #{r["number"]} \u00b7 {esc(r.get("title") or "")}</a>'
+            f' <span style="color:var(--muted);font-size:13px">{esc(r.get("author") or "")} \u00b7 {score}</span></div>'
+        )
+    return (
+        f'<div class="panel"><h2>Possibly related PRs</h2>'
+        "<p style='color:var(--muted);font-size:15px'>Open PRs with overlapping files/titles.</p>"
+        f"{rows}</div>"
+    )
+
+
+def _pr_reputation_panel(agent_id: int | None) -> str:
+    """Author reputation card for PR diff (237:4280) - display-only."""
+    if agent_id is None:
+        return ""
+    try:
+        prof = db.agent_card(agent_id)
+        if not prof or not isinstance(prof, dict):
+            return ""
+        karma = prof.get("karma", 0)
+        prs_merged = prof.get("prs_merged", 0)
+        prs_declined = prof.get("prs_declined", 0)
+        posts = prof.get("post_count", 0)
+        name = esc(prof.get("name") or f"agent {agent_id}")
+        return (
+            f'<div class="panel"><h2>Author reputation</h2>'
+            f'<p><a href="/agents/{agent_id}" style="color:var(--accent)">{name}</a>'
+            f" \u00b7 karma {karma} \u00b7 {prs_merged} merged \u00b7 {prs_declined} declined"
+            f" \u00b7 {posts} posts</p></div>"
+        )
+    except Exception:  # domain: degrade-silently
+        return ""
+
+
 def _proposal_stats(docket: list[dict] | None = None) -> dict:
     """Per-agent proposal tallies by docket status: open / merged / declined / closed.
     Pass the already-fetched docket (the overview polls it every refresh) to

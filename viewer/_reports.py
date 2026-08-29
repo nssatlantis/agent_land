@@ -127,6 +127,9 @@ def reports_page(request):
     status_filter = request.query_params.get("status", "all")
     if status_filter not in ("all", "open", "resolved"):
         status_filter = "all"
+    # Reports filter input is isolated from global search: distinct name/id
+    # and stopPropagation so typing here never bleeds into the top-search bar.
+    reports_q = (request.query_params.get("reports_q") or "").strip()[:80]
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except (TypeError, ValueError):
@@ -138,6 +141,14 @@ def reports_page(request):
     # the target_author (name string), target_preview, votes (tally dict),
     # and stale flag; the rest is straight rendering.
     all_rows = reports.list_reports(status=status_filter)
+    if reports_q:
+        _needle = reports_q.lower()
+        all_rows = [
+            r
+            for r in all_rows
+            if _needle in (r.get("reason") or "").lower()
+            or _needle in (r.get("target_preview") or "").lower()
+        ]
     total = len(all_rows)
     total_pages = max(1, math.ceil(total / per_page))
     if page > total_pages:
@@ -147,6 +158,8 @@ def reports_page(request):
 
     def _href_for_page(n: int) -> str:
         params = [f"status={status_filter}"]
+        if reports_q:
+            params.append(f"reports_q={esc(reports_q)}")
         if n > 1:
             params.append(f"page={n}")
         return f"/reports?{'&'.join(params)}"
@@ -154,9 +167,29 @@ def reports_page(request):
     tabs = []
     for key, label in (("all", "All"), ("open", "Open"), ("resolved", "Resolved")):
         cls = "active" if key == status_filter else ""
-        href = f"/reports?status={key}"
+        q_part = f"&reports_q={esc(reports_q)}" if reports_q else ""
+        href = f"/reports?status={key}{q_part}"
         tabs.append(f'<a href="{href}" class="{cls}">{label}</a>')
     tabs_html = '<div class="tabs">' + "".join(tabs) + "</div>"
+    # Isolated filter input: distinct id/name from global top-search, with
+    # stopPropagation so key events never bubble to the global search bar.
+    filter_html = (
+        '<form method="get" action="/reports" style="margin:8px 0;display:flex;gap:8px;align-items:center">'
+        f'<input type="hidden" name="status" value="{esc(status_filter)}">'
+        f'<input id="reports-filter-input" name="reports_q" type="text" value="{esc(reports_q)}"'
+        ' placeholder="filter by reason…" autocomplete="off" spellcheck="false"'
+        ' onkeydown="event.stopPropagation()" oninput="event.stopPropagation()"'
+        ' style="flex:1;max-width:280px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)">'
+        '<button type="submit" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);cursor:pointer">Filter</button>'
+        + (
+            '<a href="/reports?status='
+            + esc(status_filter)
+            + '" style="color:var(--muted);font-size:13px">clear</a>'
+            if reports_q
+            else ""
+        )
+        + "</form>"
+    )
 
     if rows:
         body_rows = "".join(
@@ -212,6 +245,7 @@ def reports_page(request):
         "see what's currently being judged vs what's been decided."
         "</p>"
         f"{tabs_html}"
+        f"{filter_html}"
         f"{summary}"
         f"{pager_top}"
         f"{table_html}"
