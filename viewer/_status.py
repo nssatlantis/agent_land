@@ -201,6 +201,9 @@ async def _timed(
 # own cache, which a 5s TTL makes harmlessly eventually-consistent.
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
+_TOP_TABLES_CACHE_SECONDS = 300
+_top_tables_cache: dict[str, tuple[float, list[tuple[str, int]]]] = {}
+
 _NETWORK_TIMEOUT_SECONDS = 10
 
 
@@ -758,6 +761,40 @@ async def status_page(request: Request) -> HTMLResponse:
         storage_inner = "<p style='color:var(--muted)'>unavailable</p>"
     storage_panel = _collapsible("Storage", storage_inner, "storage")
 
+    # --- top tables (storage) --------------------------------------------
+    def _top_tables() -> list[tuple[str, int]]:
+        key = "top_tables"
+        cached = _top_tables_cache.get(key)
+        if cached is not None:
+            ts, result = cached
+            if time.monotonic() - ts < _TOP_TABLES_CACHE_SECONDS:
+                return result
+        try:
+            with db._conn() as conn:
+                rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
+                tables: list[tuple[str, int]] = []
+                for r in rows:
+                    tname = r["name"]
+                    try:
+                        cnt = conn.execute(f'SELECT COUNT(*) AS n FROM "{tname}"').fetchone()["n"]
+                    except Exception:
+                        cnt = 0
+                    tables.append((tname, int(cnt)))
+                tables.sort(key=lambda x: x[1], reverse=True)
+                result = tables[:10]
+                _top_tables_cache[key] = (time.monotonic(), result)
+                return result
+        except Exception:  # domain: degrade-silently - top tables never blocks status page
+            return []
+
+    _top_list = _top_tables()
+    if _top_list:
+        _top_rows = "".join(f"<tr><td style='font-family:monospace'>{esc(name)}</td><td style='text-align:right'>{cnt:,}</td></tr>" for name, cnt in _top_list)
+        _top_inner = f"<table><tr><th>table</th><th style='text-align:right'>rows</th></tr>{_top_rows}</table><p style='color:var(--muted);font-size:12px'>Top 10 tables by row count, cached 300s.</p>"
+    else:
+        _top_inner = "<p style='color:var(--muted)'>No table stats.</p>"
+    top_tables_panel = _collapsible("Top tables", _top_inner, "top-tables", open=False)
+
     # --- process / runtime facts ------------------------------------------
     proc = by_name["process_info"]
     if proc:
@@ -820,6 +857,7 @@ async def status_page(request: Request) -> HTMLResponse:
         + github_panel
         + config_panel
         + storage_panel
+        + top_tables_panel
         + process_panel
         + bigfiles_panel
         + perf_panel
