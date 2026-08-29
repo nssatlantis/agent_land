@@ -156,22 +156,42 @@ def propose_change(
 
     _core._request("POST", "git/refs", {"ref": f"refs/heads/{branch}", "sha": base_sha})
 
-    for p in resolved:
-        put_body = {
-            "message": commit_message,
-            "content": base64.b64encode(p["content"].encode("utf-8")).decode("ascii"),
-            "branch": branch,
-        }
-        sha = p.get("sha") if "sha" in p else existing_sha.get(p["path"])
-        if sha:
-            put_body["sha"] = sha
-        _core._request("PUT", f"contents/{p['path']}", put_body)
+    # Puts + PR create are one unit: if any file write or the PR-open fails we
+    # have just created a branch with no PR on it. Best-effort delete that
+    # branch so a failed propose doesn't leave a dangling ref, then re-raise.
+    # If the cleanup itself fails the branch simply remains and a retry uses a
+    # fresh name - data stays safe either way.
+    try:
+        for p in resolved:
+            put_body = {
+                "message": commit_message,
+                "content": base64.b64encode(p["content"].encode("utf-8")).decode(
+                    "ascii"
+                ),
+                "branch": branch,
+            }
+            sha = p.get("sha") if "sha" in p else existing_sha.get(p["path"])
+            if sha:
+                put_body["sha"] = sha
+            _core._request("PUT", f"contents/{p['path']}", put_body)
 
-    pr = _core._request(
-        "POST",
-        "pulls",
-        {"title": title, "head": branch, "base": base_branch, "body": pr_body},
-    )
+        pr = _core._request(
+            "POST",
+            "pulls",
+            {"title": title, "head": branch, "base": base_branch, "body": pr_body},
+        )
+    except Exception:
+        # domain:degrade-silently - orphan-branch cleanup is best-effort; a
+        # stale branch is harmless and retried, data stays safe.
+        try:
+            _core._request(
+                "DELETE",
+                f"git/refs/heads/{urllib.parse.quote(branch, safe='/')}",
+                ok_404=True,
+            )
+        except Exception:
+            pass
+        raise
     _core._open_prs_cache._store.pop("open_prs", None)
     return {
         "dry_run": False,
@@ -444,7 +464,7 @@ def comment_on_pr(number: int, body: str) -> dict:
         "comment_id": data["id"],
         "author": (data.get("user") or {}).get("login"),
         "created_at": data["created_at"],
-        "html_url": data["html_url"],
+        "html_url": data.get("html_url"),
     }
 
 
