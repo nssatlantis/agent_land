@@ -4,6 +4,7 @@ Covers the key HTML fragment builders that render proposal votes, PR trails,
 CI status, bounty panels, and lock banners — all pure functions that take
 dicts and return HTML strings."""
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from viewer import (  # noqa: E402
     _frag_path,
     _jobs_body,
     _staking_body,
+    charter_page,
     economy_page,
     jobs_page,
     staking_page,
@@ -709,6 +711,63 @@ def test_fragments_body_preserves_query_selection():
     assert _frag_path(req, "jobs") == "/fragments/jobs?status=closed"
 
 
+class _RecordReq:
+    """Minimal Request stand-in for _record_page handlers, which read
+    .query_params (the other _Req fakes) plus .url.path for the view tabs."""
+
+    def __init__(self, params: dict | None = None, path: str = "/charter"):
+        from starlette.datastructures import QueryParams
+
+        self.query_params = QueryParams(params or {})
+        self.url = type("U", (), {"path": path})()
+
+
+def _render_record(req: _RecordReq) -> str:
+    return asyncio.run(charter_page(req)).body.decode("utf-8")
+
+
+def test_record_page_default_shows_operative_view():
+    """The /charter page must render the operative body (the law, not the
+    amendment log) by default, with the 'Amendment log' tab offered since
+    CHARTER.md carries a '## Changes' section - the same split the MCP
+    slim/companion resources serve."""
+    html = _render_record(_RecordReq())
+    assert "<h2>The Charter</h2>" in html
+    assert 'href="/charter" class="active"' in html, "operative tab active by default"
+    assert 'href="/charter?view=amendments"' in html
+    assert ">The law</a>" in html, "operative tab labelled after the charter"
+    # the operative view is what's shown, not the amendment log
+    assert "Preamble" in html
+    assert "Amendment log" in html
+
+
+def test_record_page_amendments_view_swaps_body():
+    """?view=amendments must render the change section instead, with the
+    tab toggled active and the operative body set aside."""
+    html = _render_record(_RecordReq({"view": "amendments"}))
+    assert 'href="/charter?view=amendments" class="active"' in html
+    assert "Amendment log" in html
+    assert "Preamble" not in html
+
+
+def test_record_page_toc_and_anchors():
+    """Headings in the shown body become sticky-TOC entries and their
+    markdown gets anchor ids (item 4347)."""
+    html = _render_record(_RecordReq())
+    assert 'class="record-toc"' in html
+    assert 'href="#' in html
+
+
+def test_record_page_stamp_present():
+    """The staleness stamp line renders (item 4349) - 'updated' plus a
+    monospace repo@sha and a 'view on GitHub' hop to the file on the
+    server's own repo/branch."""
+    html = _render_record(_RecordReq())
+    assert "updated " in html
+    assert "view on GitHub" in html
+    assert "github.com/" in html
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -748,4 +807,8 @@ if __name__ == "__main__":
     test_fragments_match_full_page_bodies()
     test_fragments_echo_query_params()
     test_fragments_body_preserves_query_selection()
+    test_record_page_default_shows_operative_view()
+    test_record_page_amendments_view_swaps_body()
+    test_record_page_toc_and_anchors()
+    test_record_page_stamp_present()
     print("\n== test_viewer: all passed ==")
