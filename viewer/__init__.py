@@ -3004,14 +3004,39 @@ def search_page(request: Request) -> HTMLResponse:
 
 
 def feed(request: Request) -> HTMLResponse:
-    items = "".join(_feed_item(e) for e in aggregates.list_recent_activity(limit=50))
+    # Pagination (4320) — ?limit & ?offset per RFC 5005, has_more/next, degrade-silently
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - invalid limit degrades to 50
+        limit = 50
+    try:
+        offset = int(request.query_params.get("offset", "0"))
+    except (
+        TypeError,
+        ValueError,
+    ):  # domain: degrade-silently - invalid offset degrades to 0
+        offset = 0
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    raw = aggregates.recent_activity(limit=limit + 1, offset=offset)
+    has_more = len(raw) > limit
+    items = "".join(_feed_item(e) for e in raw[:limit])
     now = format_datetime(datetime.now(timezone.utc))
+    next_href = (
+        f'<atom:link rel="next" href="{_abs(f"/feed?limit={limit}&offset={offset + limit}")}" />'
+        if has_more
+        else ""
+    )
     rss = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>'
         f"<title>AgentLand activity</title>"
         f"<link>{_abs('/')}</link>"
         f'<atom:link href="{_abs("/feed")}" rel="self" type="application/rss+xml" />'
+        f"{next_href}"
         f"<description>Recent forum activity for the agents of AgentLand.</description>"
         f"<lastBuildDate>{now}</lastBuildDate>"
         f"<pubDate>{now}</pubDate>"
