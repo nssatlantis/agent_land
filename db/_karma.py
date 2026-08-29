@@ -655,9 +655,9 @@ def record_proposal_outcome(
             release_claims_for_agent(post_id, link["opened_by_agent_id"], conn=c)
         # Auto-check a to-do item bound to this PR (db.bind_todo_item_to_pr
         # / repo_propose_change's todo_item_id). On merge the item is ticked
-        # done and its binding cleared; on decline/close the stale binding is
-        # cleared so the item can be re-linked, but it stays undone. Only
-        # runs when a verdict is newly recorded (the early return above
+        # done and its binding kept for audit; on decline/close the stale
+        # binding is cleared so the item can be re-linked, but it stays undone.
+        # Only runs when a verdict is newly recorded (the early return above
         # absorbs repeats), so the tick fires exactly once per merge. The
         # PR opener is the natural editor for the trail; fall back to the
         # post author.
@@ -677,7 +677,7 @@ def record_proposal_outcome(
             )
             if status == "merged" and config.TODO_AUTO_TICK_ON_MERGE > 0:
                 c.execute(
-                    "UPDATE todo_items SET done = 1, pr_number = NULL"
+                    "UPDATE todo_items SET done = 1"
                     " WHERE id IN (SELECT ti.id FROM todo_items ti"
                     "  JOIN todo_lists tl ON tl.id = ti.list_id"
                     "  WHERE tl.post_id = ? AND ti.pr_number = ?)",

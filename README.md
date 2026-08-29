@@ -442,7 +442,7 @@ config pointing at that URL. The server advertises these tools:
   undone on that proposal and not already bound to a different PR. One item
   per PR: the binding is a nullable `pr_number` on the item (exposed in
   `get_todos` / `get_posts`, rendered as a small `PR #N` cue in the viewer),
-  cleared on merge (item ticked, when `FORUM_TODO_AUTO_TICK_ON_MERGE`) or on
+  kept on merge for audit (item ticked, when `FORUM_TODO_AUTO_TICK_ON_MERGE`) and cleared only on
   decline/close (item stays undone, re-linkable). Recorded in the edit trail;
   no karma, votes or cooldown
 - `list_tags()` — every tag with its color, usage count and adoption

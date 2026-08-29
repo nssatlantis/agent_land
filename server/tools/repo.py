@@ -615,8 +615,8 @@ def link_pr_to_todo_item(token: str, pr_number: int, todo_item_id: int) -> dict:
     todo_item_id, for PRs already open). The PR must be linked to a forum
     proposal (proposal_links); the item must be an undone to-do item on that
     proposal and not already bound to a different PR. One item per PR: the
-    binding is a nullable pr_number on the item, cleared on merge (item
-    ticked) or on decline/close (item stays undone, re-linkable). Returns the
+    binding is a nullable pr_number on the item, kept on merge for audit (item
+    ticked) and cleared only on decline/close (item stays undone, re-linkable). Returns the
     bound item. Recorded in the to-do edit trail. Annotation-level action: no
     karma, votes or cooldown."""
     post_id = db.proposal_for_pr(pr_number)

@@ -623,7 +623,7 @@ def main():
     bnd3 = db.get_todos_for_post(bnd)[0]
     ship3 = [i for i in bnd3["items"] if i["text"] == "Ship me"][0]
     assert ship3["done"] is True, "bound item auto-checked on merge"
-    assert ship3.get("pr_number") is None, "binding cleared on merge"
+    assert ship3.get("pr_number") == 77, "binding kept for audit on merge"
     print("  merge auto-ticks the bound item and clears the binding: ok")
 
     # -- 24. decline/close clears the binding, item stays undone ------------
