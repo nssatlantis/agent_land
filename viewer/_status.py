@@ -202,7 +202,7 @@ async def _timed(
 _STATUS_CACHE: tuple[float, tuple[dict, dict, dict, list | None] | None] = (0.0, None)
 
 _TOP_TABLES_CACHE_SECONDS = 300
-_top_tables_cache: dict[str, tuple[float, list[tuple[str, int]]]] = {}
+_top_tables_cache: dict[str, tuple[float, list[tuple[str, int, int]]]] = {}
 
 _NETWORK_TIMEOUT_SECONDS = 10
 
@@ -762,19 +762,31 @@ async def status_page(request: Request) -> HTMLResponse:
     storage_panel = _collapsible("Storage", storage_inner, "storage")
 
     # --- top tables (storage) --------------------------------------------
-    def _top_tables() -> list[tuple[str, int]]:
+    def _top_tables() -> list[tuple[str, int, int]]:
+        """Top tables by row count plus dbstat page count when available (fold of #649)."""
         key = "top_tables"
         cached = _top_tables_cache.get(key)
         if cached is not None:
             ts, result = cached
             if time.monotonic() - ts < _TOP_TABLES_CACHE_SECONDS:
-                return result
+                return result  # type: ignore[return-value]
         try:
             with db._conn() as conn:
+                pages_map: dict[str, int] = {}
+                try:
+                    prow = conn.execute(
+                        "SELECT name, SUM(pageno) as pages FROM dbstat "
+                        "WHERE name NOT LIKE 'sqlite_%' GROUP BY name"
+                    ).fetchall()
+                    pages_map = {
+                        r["name"]: int(r["pages"] or 0) for r in prow
+                    }
+                except Exception:  # domain: degrade-silently - dbstat unavailable degrades to pages 0
+                    pages_map = {}
                 rows = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
                 ).fetchall()
-                tables: list[tuple[str, int]] = []
+                tables: list[tuple[str, int, int]] = []
                 for r in rows:
                     tname = r["name"]
                     try:
@@ -783,10 +795,14 @@ async def status_page(request: Request) -> HTMLResponse:
                         ).fetchone()["n"]
                     except Exception:  # domain: degrade-silently - one table's count failure must not break the status page
                         cnt = 0
-                    tables.append((tname, int(cnt)))
+                    pages = pages_map.get(tname, 0)
+                    tables.append((tname, int(cnt), int(pages)))
                 tables.sort(key=lambda x: x[1], reverse=True)
                 result = tables[:10]
-                _top_tables_cache[key] = (time.monotonic(), result)
+                _top_tables_cache[key] = (  # type: ignore[assignment]
+                    time.monotonic(),
+                    result,
+                )
                 return result
         except (
             Exception
@@ -796,10 +812,17 @@ async def status_page(request: Request) -> HTMLResponse:
     _top_list = _top_tables()
     if _top_list:
         _top_rows = "".join(
-            f"<tr><td style='font-family:monospace'>{esc(name)}</td><td style='text-align:right'>{cnt:,}</td></tr>"
-            for name, cnt in _top_list
+            f"<tr><td style='font-family:monospace'>{esc(name)}</td>"
+            f"<td style='text-align:right'>{cnt:,}</td>"
+            f"<td style='text-align:right'>{pages:,}</td></tr>"
+            for name, cnt, pages in _top_list
         )
-        _top_inner = f"<table><tr><th>table</th><th style='text-align:right'>rows</th></tr>{_top_rows}</table><p style='color:var(--muted);font-size:12px'>Top 10 tables by row count, cached 300s.</p>"
+        _top_inner = (
+            f"<table><tr><th>table</th><th style='text-align:right'>rows</th>"
+            f"<th style='text-align:right'>pages</th></tr>{_top_rows}</table>"
+            "<p style='color:var(--muted);font-size:12px'>Top 10 tables by row count + "
+            "page count (dbstat when available), cached 300s.</p>"
+        )
     else:
         _top_inner = "<p style='color:var(--muted)'>No table stats.</p>"
     top_tables_panel = _collapsible("Top tables", _top_inner, "top-tables", open=False)
