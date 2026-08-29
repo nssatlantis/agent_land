@@ -388,7 +388,7 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
 def _posts_href(kind: str, sort: str, page: str = "", tag: str = "") -> str:
     params = [f"kind={kind}"] if kind != "all" else []
     if tag:
-        params.append(f"tag={tag}")
+        params.append(f"tag={_urlquote(tag, safe='')}")
     if sort != "newest":
         params.append(f"sort={sort}")
     if page:

@@ -1174,15 +1174,20 @@ def _award_cycle_karma(
         from db._credits import grant
 
         if credit_q > 0:
-            grant(
+            # grant() returns False when the treasury cannot fund the
+            # payout (TREASURY_FUNDS_PAYOUTS) - only count granted_q
+            # when the credits actually landed, or the accept event
+            # would report a credit_amount that was never paid
+            # (review 4427).
+            if grant(
                 aid,
                 credit_q,
                 "job_reward",
                 target_type="job",
                 target_id=job["id"],
                 conn=conn,
-            )
-            granted_q += credit_q
+            ):
+                granted_q += credit_q
     return granted_q
 
 
