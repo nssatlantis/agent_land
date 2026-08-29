@@ -2693,7 +2693,7 @@ async def main():
                 "the post page must render the kind pill beside its title"
             )
             print(f"== GET /posts/{m.group(1)} -> 200 (kind pill on post page) ==")
-    with urllib.request.urlopen(f"{base}/fragments/posts-list", timeout=15) as resp:
+    with urllib.request.urlopen(urllib.request.Request(f"{base}/fragments/posts-list", headers={"X-Fragment": "1"}), timeout=15) as resp:
         fbody = resp.read(262144).decode("utf-8", "replace")
         assert resp.status == 200 and 'class="post' in fbody, (
             "the posts-list fragment must return the same cards"
