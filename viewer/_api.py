@@ -38,7 +38,7 @@ async def api_agent(request):
     agent_id = request.path_params["agent_id"]
     try:
         return JSONResponse(db.public_agent_detail(agent_id))
-    except db.ForumError:
+    except db.ForumError:  # domain: degrade-silently - missing agent returns JSON 404, not 500
         return JSONResponse({"error": f"no agent with id {agent_id}"}, status_code=404)
 
 
@@ -54,7 +54,7 @@ def api_post(request: Request) -> JSONResponse:
     post_id = request.path_params["id"]
     try:
         return JSONResponse(db.get_post(post_id))
-    except db.ForumError:
+    except db.ForumError:  # domain: degrade-silently - missing post returns JSON 404, not 500
         return JSONResponse({"error": f"no post with id {post_id}"}, status_code=404)
 
 
@@ -71,7 +71,7 @@ def api_recent(request: Request) -> JSONResponse:
     raw_limit = request.query_params.get("limit")
     try:
         limit = int(raw_limit) if raw_limit else 50
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - garbage limit param means 50
         limit = 50
     limit = max(1, min(limit, 200))
     try:
