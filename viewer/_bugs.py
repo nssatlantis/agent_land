@@ -56,9 +56,7 @@ def _bug_timeline(report: dict, threshold: int) -> str:
     for i, (label, done) in enumerate(steps):
         color = "#16a34a" if done else "var(--muted)"
         weight = "600" if done else "400"
-        bits.append(
-            f'<span style="color:{color};font-weight:{weight}">{label}</span>'
-        )
+        bits.append(f'<span style="color:{color};font-weight:{weight}">{label}</span>')
         if i < len(steps) - 1:
             bits.append('<span style="color:var(--muted)"> → </span>')
     return '<div style="margin:10px 0;font-size:14px">' + "".join(bits) + "</div>"
