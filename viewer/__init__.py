@@ -487,7 +487,7 @@ def posts_page(request: Request) -> HTMLResponse:
             tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
-                f'style="background:#2b6cb022;border:1px solid #2b6cb0;color:{_tag_text_color("#2b6cb0")}">{tag_label}</a>'
+                f'style="background:var(--accent-tint);border:1px solid var(--accent);color:{_tag_text_color("#2b6cb0")}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
                 f"{'post' if tag_total == 1 else 'posts'}</span>"
                 f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear tag</a> \xb7 '
@@ -1140,9 +1140,9 @@ _JOBS_TABS = (
 
 _JOB_STATUS_COLORS = {
     "open": "var(--accent)",
-    "offered": "#b45309",
-    "active": "#2563eb",
-    "completed": "#15803d",
+    "offered": "var(--warn)",
+    "active": "var(--accent)",
+    "completed": "var(--ok)",
     "cancelled": "var(--muted)",
     "expired": "var(--muted)",
 }
@@ -2488,7 +2488,7 @@ def search_page(request: Request) -> HTMLResponse:
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
     error_html = (
-        f"<p style='color:#e53e3e;font-size:15px'>Search error: {esc(error_msg)}</p>"
+        f"<p style='color:var(--fail);font-size:15px'>Search error: {esc(error_msg)}</p>"
         if error_msg
         else ""
     )
