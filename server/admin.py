@@ -138,7 +138,10 @@ def _safe_referer(request, fallback: str) -> str:
     try:
         parts = urlparse(ref)
         base = urlparse(str(request.base_url))
-    except (ValueError, TypeError):
+    except (
+        ValueError,
+        TypeError,
+    ):  # domain:degrade-silently - an unparseable referer falls back to the local default
         return fallback
     if parts.scheme == base.scheme and parts.netloc == base.netloc:
         return ref
