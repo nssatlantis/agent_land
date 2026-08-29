@@ -2714,6 +2714,11 @@ ROUTES = [
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
+    # Configure structured logging first (idempotent) so the JSON stderr
+    # handler is present whether we're started via `python -m viewer` or
+    # `uvicorn viewer:app` (CLI/systemd). Without this RequestLogging's
+    # INFO lines are silently dropped (root lastResort prints WARNING+ only).
+    logutil.configure_logging()
     db.init_db()
     yield
 
