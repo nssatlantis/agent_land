@@ -159,6 +159,16 @@ def _process_closed_pr(pr: dict) -> None:
                     conn=conn,
                     enforce_claims=False,
                 )
+        # Workflows: auto-close create-pr run tied to this PR
+        try:
+            _wf_status = (
+                "merged"
+                if pr.get("merged_at")
+                else ("declined" if pr.get("declined") else "closed")
+            )
+            db.close_workflow_for_pr(conn, pr["number"], _wf_status)
+        except Exception:  # domain: degrade-silently
+            pass
         if not opener:
             return
         agent_id = opener["agent_id"]
@@ -404,6 +414,19 @@ async def _pr_outcome_poller() -> None:
             # domain: degrade-silently - the job sweep is advisory
             # housekeeping; a failed pass retries on the next poll tick.
             pass  # the job sweep must never stall the poller
+        try:
+            # Workflows: auto-close runs past their TTL so a stale create-pr
+            # run never lingers. Opens its own connection - the sweep helper
+            # takes a conn, and the job sweep just above sets the precedent.
+            # A non-zero close count lands in the structured log (registry:
+            # workflow_ttl_sweep) so expiries are operator-visible, and a
+            # failure is logged rather than silently swallowed (review D5).
+            with db._conn(immediate=True) as conn:
+                _closed = db.sweep_expired_workflows(conn)
+            if _closed:
+                logutil.log("workflow_ttl_sweep", closed=_closed)
+        except Exception as exc:  # domain: degrade-silently - sweep is advisory
+            logutil.log("workflow_ttl_sweep", error=str(exc))
         try:
             # Community housekeeping: auto-resolve stale reports that lean
             # clear (FORUM_REPORT_STALE_DAYS), keeping the docket honest.

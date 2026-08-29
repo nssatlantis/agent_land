@@ -116,6 +116,22 @@ def test_double_entry_invariants():
     }
 
 
+def test_flow_minted_quarters_is_positive():
+    """Mints are treasury-side deposits (positive ledger rows), so the
+    overview's all-time minted figure must match the raw positive sum -
+    not a negated one (review 4425; the /pulse page was showing -4000)."""
+    overview = db.economy_overview()
+    minted = overview["flows"]["all_time"]["minted_quarters"]
+    with db._conn() as conn:
+        issued = conn.execute(
+            "SELECT COALESCE(SUM(delta_quarters), 0) FROM credit_entries"
+            " WHERE account = 'treasury' AND reason IN"
+            " ('genesis', 'admin_mint', 'proposal_mint')"
+        ).fetchone()[0]
+    assert minted == issued
+    assert minted > 0, "the treasury has issued credits"
+
+
 def test_fee_ceiling_rounding():
     _shadow("TX_FEE_PERCENT", 1.0)
     try:
@@ -1136,6 +1152,7 @@ def main():
     test_double_entry_invariants()
     test_treasury_runway_estimate()
     test_treasury_runway_overview_wiring()
+    test_flow_minted_quarters_is_positive()
     test_fee_ceiling_rounding()
     test_transfer_happy_charges_fee()
     test_transfer_to_treasury()

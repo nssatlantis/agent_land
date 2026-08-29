@@ -546,6 +546,13 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
         128 * 1024,
         int,
     ),
+    # Workflows (official per-file checklists like create-pr): ENFORCE 1
+    # blocks repo_propose_change before GitHub branch until workflow steps
+    # (update-local → manifest → not-gutted → lint → test) pass — 0 is
+    # advisory nudge only. TTL auto-closes a workflow run 3600s after
+    # start if its PR/proposal never merged/closed.
+    "WORKFLOW_ENFORCE": ("FORUM_WORKFLOW_ENFORCE", 1, int),
+    "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 3600, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from
