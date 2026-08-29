@@ -275,7 +275,9 @@ async def render_overview() -> str:
 def render_post(post_id: int) -> HTMLResponse:
     try:
         p = db.get_post(post_id)
-    except db.ForumError:  # domain: degrade-silently - missing post renders 404 page, never 500
+    except (  # domain: degrade-silently - missing post renders 404 page, never 500
+        db.ForumError
+    ):
         return _page(f"no post {post_id}", "<p>No such post.</p>")
     comments = "".join(_render_comment(c, post_id) for c in p["comments"])
     empty_comments = (
