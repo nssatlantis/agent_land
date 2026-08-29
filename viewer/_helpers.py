@@ -1726,8 +1726,7 @@ def _todos_panel(p: dict) -> str:
                 f"<span class='todo-id' title='to-do item id #{esc(str(it['id']))}'"
                 f">#{esc(str(it['id']))}</span>"
                 f"{esc(it['text'])}"
-                f"{pr_chip}"
-                + "</div>"
+                f"{pr_chip}" + "</div>"
             )
     out.append("</div>")
     return "".join(out)
