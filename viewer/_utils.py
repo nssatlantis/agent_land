@@ -33,7 +33,7 @@ def _human_ts(value: str) -> str:
         text = text[:-6]
     try:
         dt = datetime.fromisoformat(text)
-    except ValueError:
+    except ValueError:  # domain: degrade-silently - malformed timestamp renders raw
         return esc(raw)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)

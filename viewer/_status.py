@@ -85,7 +85,9 @@ def _big_py_files(repo_root: Path, threshold: int) -> list[tuple[str, int]]:
             continue
         try:
             count = sum(1 for _ in path.open(encoding="utf-8", errors="replace"))
-        except OSError:
+        except (  # domain: degrade-silently - unreadable py file skipped, list still renders
+            OSError
+        ):
             continue
         if count >= threshold:
             results.append((path.relative_to(repo_root).as_posix(), count))
@@ -127,7 +129,7 @@ def _git_ok(args: list[str], cwd: str) -> bool:
             timeout=config.GITHUB_HTTP_TIMEOUT_SECONDS,
         )
         return result.returncode == 0
-    except Exception:
+    except Exception:  # domain: degrade-silently - git check failure degrades to not-ok
         return False
 
 

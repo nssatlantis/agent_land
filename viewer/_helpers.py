@@ -41,7 +41,7 @@ async def _open_prs() -> list[dict] | None:
         return _pr_prs_cache["prs"]
     try:
         prs = await asyncio.to_thread(github.open_prs)
-    except Exception:
+    except Exception:  # domain: degrade-silently - GitHub outage degrades to no PR list
         prs = None
     _pr_prs_cache.update(ts=now, prs=prs, fresh=True)
     return prs
@@ -875,7 +875,7 @@ def _prs_votes_cell(number: int) -> str:
     judgment."""
     try:
         tally = db.pr_vote_tally(int(number))
-    except db.ForumError:
+    except db.ForumError:  # domain: degrade-silently - vote tally hiccup renders dash
         return '<span style="color:var(--muted)">\u2014</span>'
     up = tally.get("up", 0)
     down = tally.get("down", 0)
