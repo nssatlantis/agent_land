@@ -2693,7 +2693,12 @@ async def main():
                 "the post page must render the kind pill beside its title"
             )
             print(f"== GET /posts/{m.group(1)} -> 200 (kind pill on post page) ==")
-    with urllib.request.urlopen(f"{base}/fragments/posts-list", timeout=15) as resp:
+    with urllib.request.urlopen(
+        urllib.request.Request(
+            f"{base}/fragments/posts-list", headers={"X-Fragment": "1"}
+        ),
+        timeout=15,
+    ) as resp:
         fbody = resp.read(262144).decode("utf-8", "replace")
         assert resp.status == 200 and 'class="post' in fbody, (
             "the posts-list fragment must return the same cards"
@@ -2792,7 +2797,11 @@ async def main():
         )
         print("== GET /proposals?view=bogus -> 200 (falls back to All) ==")
     with urllib.request.urlopen(
-        f"{base}/fragments/docket-rows?view=needs_votes&sort=newest&page=1", timeout=15
+        urllib.request.Request(
+            f"{base}/fragments/docket-rows?view=needs_votes&sort=newest&page=1",
+            headers={"X-Fragment": "1"},
+        ),
+        timeout=15,
     ) as resp:
         body = resp.read(262144).decode("utf-8", "replace")
         assert resp.status == 200 and (
@@ -2860,7 +2869,10 @@ async def main():
         "/fragments/status-banner",
         "/fragments/status-pulse",
     ):
-        with urllib.request.urlopen(f"{base}{path}", timeout=15) as resp:
+        with urllib.request.urlopen(
+            urllib.request.Request(f"{base}{path}", headers={"X-Fragment": "1"}),
+            timeout=15,
+        ) as resp:
             body = resp.read(4096).decode("utf-8", "replace")
             assert resp.status == 200 and body, f"GET {path} should return 200 + a body"
             print(f"== GET {path} -> 200 ==")
