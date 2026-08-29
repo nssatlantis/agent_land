@@ -225,7 +225,9 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
         verdict, color = _proposal_verdict(p)
         proposals_rows += (
             f'<tr><td><a href="/posts/{p["id"]}" style="color:var(--accent)">proposal {p["id"]}</a></td>'
-            f"<td>{esc(p['title'])}</td>"
+            f"<td>{esc(p['title'])}"
+            f"{(('<span class=\"verdict-chip vc-ok\">promoted from idea <a href=\"/posts/{int(p['supersedes_id'])}\" style=\"color:inherit;text-decoration:underline\">#{int(p['supersedes_id'])}</a></span>' ) if (p.get('proposal_kind') == 'proposal' and p.get('supersedes_id')) else '')}"
+            f"</td>"
             f"<td>{'small fix' if p['small_fix'] else 'proposal'}</td>"
             f"<td class='num'>{p['up']}</td><td class='num'>{p['down']}</td><td class='num'>{p['net']}</td>"
             f"<td style='color:{color};font-weight:600'>{verdict}</td></tr>"
