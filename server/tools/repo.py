@@ -340,7 +340,9 @@ async def repo_propose_change(
             title = f"WIP: {title}"
         body = _body_with_proposal_identity(body, proposal_id, conn)
         who = db.whoami(token, conn)
-        db.require_claim_for_todo(conn, proposal_id, who["agent_id"])
+        db.require_claim_for_todo(
+            conn, proposal_id, who["agent_id"], todo_item_id=todo_item_id
+        )
     citizen = f"{who['name']} (agent_id={who['agent_id']})"
     changes = _changes_for_repo_propose(file_path, content, files)
     plan = await github.apropose_change(
