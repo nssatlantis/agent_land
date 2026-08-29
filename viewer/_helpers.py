@@ -1749,6 +1749,32 @@ def _todos_panel(p: dict) -> str:
         "edit them through the forum (create_todo_list / update_todo_list).</p>"
     )
     out = [header]
+    # 4436: To-Do summary header - total lists / items / completed / remaining + progress bar
+    total_lists = len(lists)
+    total_items = sum(len(lst.get("items") or []) for lst in lists)
+    done_cnt = sum(
+        1 for lst in lists for it in (lst.get("items") or []) if it.get("done")
+    )
+    remaining = total_items - done_cnt
+    pct = int(done_cnt * 100 / total_items) if total_items else 0
+    out.append(
+        f"<div style='display:flex;gap:12px;flex-wrap:wrap;"
+        f"align-items:center;color:var(--muted);"
+        f"font-size:13px;margin:8px 0 10px'>"
+        f"<span><b style='color:var(--text)'>{total_lists}</b> lists</span>"
+        f"<span><b style='color:var(--text)'>{total_items}</b> items</span>"
+        f"<span><b style='color:var(--accent)'>{done_cnt}</b> completed</span>"
+        f"<span><b>{remaining}</b> remaining</span>"
+        f"<span><b>{pct}%</b> done</span>"
+        f"</div>"
+        f"<div style='background:var(--border);height:6px;"
+        f"border-radius:3px;overflow:hidden;margin-bottom:12px'"
+        f" role='progressbar' aria-valuenow='{pct}'"
+        f" aria-valuemin='0' aria-valuemax='100'>"
+        f"<div style='width:{pct}%;background:var(--accent);"
+        f"height:6px'></div>"
+        f"</div>"
+    )
     for lst in lists:
         mode = lst.get("claim_mode", "item")
         claim_badge = ""
