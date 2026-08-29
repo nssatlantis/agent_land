@@ -487,7 +487,8 @@ def recent_activity(
                 k: v
                 for k, v in d.items()
                 if v is not None
-                or k in ("score", "comment_id", "post_id", "proposal_kind", "preview", "net")
+                or k
+                in ("score", "comment_id", "post_id", "proposal_kind", "preview", "net")
             }
             out.append(d)
         return out
