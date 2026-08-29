@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import re
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -80,6 +81,7 @@ from viewer._helpers import (
     _post_meta,
     _pr_checks,
     _pr_diff,
+    _pr_reputation_panel,
     _pr_vote_panel,
     _profile_cards,
     _proposal_badge,
@@ -92,6 +94,7 @@ from viewer._helpers import (
     _recent_posts,
     _recent_row,
     _related_panel,
+    _related_prs_panel,
     _render_comment,
     _score_badge,
     _side_rail,
@@ -3000,12 +3003,28 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:0 6px;font-size:12px">{_ptitle}</a>'
             f"</p></div>"
         )
+    # Related PR finder + reputation (237:4280) - display-only, degrade-silently
+    try:
+        related_panel = _related_prs_panel(int(number))
+    except Exception:
+        related_panel = ""
+    try:
+        m = re.search(r"agent_id=(\d+)", diff.get("body") or "")
+        _aid = int(m.group(1)) if m else None
+    except Exception:
+        _aid = None
+    try:
+        reputation_panel = _pr_reputation_panel(_aid)
+    except Exception:
+        reputation_panel = ""
     body = (
         _crumb("/prs", "pull requests")
         + header
         + hold_banner
         + vote_panel
         + proposal_link
+        + related_panel
+        + reputation_panel
         + sections
     )
     return _page(f"PR #{number}", _with_rail(body), section="prs")
