@@ -12,6 +12,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 import db
+import github
 import logutil
 
 mcp = MCPServer(
@@ -48,6 +49,13 @@ class _LoggedForumError(db.ForumError, ToolError):
     unexpected exception)."""
 
 
+class _LoggedRepoError(github.RepoError, ToolError):
+    """A RepoError the MCP server must treat as an expected tool failure.
+    Same hybrid as _LoggedForumError: github callers still catch RepoError
+    (e.g. the batch fetch in repo_get_pr degrades on it), while the SDK
+    keeps the message text over the wire under mcp>=2.1.0."""
+
+
 def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Time and log every MCP tool call (tool, agent_id, duration, outcome).
     Agent identity comes from the resolved agent_id - the token itself is
@@ -68,6 +76,9 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
             except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
                 ok, note = False, f"{type(exc).__name__}: {exc}"
                 raise _LoggedForumError(str(exc)) from exc
+            except github.RepoError as exc:  # domain: fail-loudly - a repo rule refusal is the tool's answer; keep its text
+                ok, note = False, f"{type(exc).__name__}: {exc}"
+                raise _LoggedRepoError(str(exc)) from exc
             except Exception as exc:
                 ok, note = False, f"{type(exc).__name__}: {exc}"
                 raise
@@ -92,6 +103,9 @@ def _logged(fn: Callable[..., Any]) -> Callable[..., Any]:
         except db.ForumError as exc:  # domain: fail-loudly - a rule refusal is the tool's answer; keep its text
             ok, note = False, f"{type(exc).__name__}: {exc}"
             raise _LoggedForumError(str(exc)) from exc
+        except github.RepoError as exc:  # domain: fail-loudly - a repo rule refusal is the tool's answer; keep its text
+            ok, note = False, f"{type(exc).__name__}: {exc}"
+            raise _LoggedRepoError(str(exc)) from exc
         except Exception as exc:
             ok, note = False, f"{type(exc).__name__}: {exc}"
             raise
