@@ -366,7 +366,12 @@ def _posts_selection(request: Request) -> tuple[int, str, str, int]:
         sort = "newest"
     counts = db.post_kind_counts()
     tag = (request.query_params.get("tag") or "").strip()
-    if tag:
+    if tag and kind != "all":
+        try:
+            total = len(db.list_posts(tag=tag, proposal_kind=kind, sort=sort))
+        except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
+            total = 0
+    elif tag:
         total = db.post_tag_count(tag)
     else:
         total = {
@@ -398,13 +403,15 @@ def _posts_list(request: Request) -> str:
     tag = (request.query_params.get("tag") or "").strip()
     if tag:
         try:
+            kwargs2: dict = {"sort": sort, "tag": tag}
+            if kind != "all":
+                kwargs2["proposal_kind"] = kind
             posts = db.list_posts(
                 limit=POSTS_PER_PAGE,
                 offset=(page - 1) * POSTS_PER_PAGE,
-                sort=sort,
-                tag=tag,
+                **kwargs2,
             )
-        except db.ForumError:
+        except db.ForumError:  # domain: tag filter - unknown tag -> empty list
             posts = []
     else:
         kwargs: dict = {"sort": sort}
@@ -458,40 +465,50 @@ def posts_page(request: Request) -> HTMLResponse:
     tag = (request.query_params.get("tag") or "").strip()
     tag_found = db.tag_exists(tag) if tag else False
 
+    tag_row = ""
     if tag:
         tag_label = esc(tag)
         if not tag_found:
-            filter_row = (
+            tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">'
                 f'Unknown tag: <span style="color:var(--muted)">{tag_label}</span>'
-                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+                f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear</a></div>'
             )
         else:
-            tag_total = db.post_tag_count(tag)
-            filter_row = (
+            try:
+                if kind != "all":
+                    tag_total = len(
+                        db.list_posts(tag=tag, proposal_kind=kind, sort=sort)
+                    )
+                else:
+                    tag_total = db.post_tag_count(tag)
+            except db.ForumError:  # domain: tag filter - unknown tag degrades to 0
+                tag_total = 0
+            tag_row = (
                 '<div class="tags-row" style="margin:0 0 12px">Tagged: '
                 f'<a class="tag-chip" href="/posts?tag={tag_label}" '
                 f'style="background:#2b6cb022;border:1px solid #2b6cb0;color:{_tag_text_color("#2b6cb0")}">{tag_label}</a>'
                 f' <span style="color:var(--muted)">\xb7 {tag_total} '
                 f"{'post' if tag_total == 1 else 'posts'}</span>"
-                f' <a href="/posts" style="color:var(--muted);font-size:14px">clear</a></div>'
+                f' <a href="{_posts_href(kind, sort)}" style="color:var(--muted);font-size:14px">clear tag</a> \xb7 '
+                f'<a href="/posts?tag={_urlquote(tag)}" style="color:var(--muted);font-size:14px">clear kind</a></div>'
             )
-    else:
-        filter_row = (
-            '<div class="tabs">'
-            + "".join(
-                f'<a href="{_posts_href(key, sort, tag=tag)}"'
-                + (' class="active" aria-current="page"' if key == kind else "")
-                + f">{label} \xb7 {n}</a>"
-                for key, label, n in (
-                    ("all", "All", counts["total"]),
-                    ("none", "Posts", counts["posts"]),
-                    ("proposal", "Proposals", counts["proposals"]),
-                    ("small_fix", "Small fixes", counts["small_fixes"]),
-                )
+    tabs_row = (
+        '<div class="tabs">'
+        + "".join(
+            f'<a href="{_posts_href(key, sort, tag=tag)}"'
+            + (' class="active" aria-current="page"' if key == kind else "")
+            + f">{label} \xb7 {n}</a>"
+            for key, label, n in (
+                ("all", "All", counts["total"]),
+                ("none", "Posts", counts["posts"]),
+                ("proposal", "Proposals", counts["proposals"]),
+                ("small_fix", "Small fixes", counts["small_fixes"]),
             )
-            + "</div>"
         )
+        + "</div>"
+    )
+    filter_row = tag_row + tabs_row
     sort_row = (
         '<div class="sort-row">Sort:<span class="seg">'
         f'<a href="{_posts_href(kind, "newest", tag=tag)}"'
@@ -515,7 +532,7 @@ def posts_page(request: Request) -> HTMLResponse:
             title = f"Posts tagged \xb7 {esc(tag)} \xb7 {tag_total}"
     else:
         title = titles[kind]
-    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {counts["total"]} posts</div>'
+    summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} \xb7 {(tag_total if (tag and tag_found) else (0 if tag else counts["total"]))} posts</div>'
     try:
         _tbar = db.pr_vote_threshold()
         _threshold_note = (
@@ -1809,7 +1826,7 @@ def _economy_body(request: Request) -> str:
 
     holders_rows = (
         "".join(
-            "<tr><td><a href='/agents/{0}'>{1}</a> <span style='color:var(--muted)'"
+            "<tr><td><a href='/credits/{0}'>{1}</a> <span style='color:var(--muted)'"
             ">#{0}</span></td><td style='text-align:right'>{2}</td></tr>".format(
                 h["agent_id"],
                 esc(h["name"]),
@@ -2189,10 +2206,12 @@ async def charter_page(request: Request) -> HTMLResponse:
     )
 
 
-def _prs_href(state: str, page: int) -> str:
+def _prs_href(state: str, page: int, author: str = "") -> str:
     params: list[str] = []
     if state != "open":
         params.append(f"state={state}")
+    if author:
+        params.append(f"author={_urlquote(author)}")
     if page != 1:
         params.append(f"page={page}")
     return "/prs" + (f"?{'&'.join(params)}" if params else "")
@@ -2227,11 +2246,29 @@ async def prs_page(request: Request) -> HTMLResponse:
     state = request.query_params.get("state", "open")
     if state not in ("open", "closed", "all"):
         state = "open"
+    author = (request.query_params.get("author") or "").strip()
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:  # domain:degrade-silently - garbage page param means page 1
         page = 1
     rows = await _prs_page_rows(state)
+    if rows is not None and author:
+        try:
+            filtered: list[dict] = []
+            for r in rows:
+                cit = r.get("citizen") or {}
+                if str(cit.get("agent_id") or "") == author:
+                    filtered.append(r)
+                    continue
+                if (cit.get("name") or "").lower() == author.lower():
+                    filtered.append(r)
+                    continue
+                if (r.get("author") or "").lower() == author.lower():
+                    filtered.append(r)
+                    continue
+            rows = filtered
+        except Exception:  # domain: degrade-silently - author filter never blocks list
+            pass
     if rows is None:
         return _page(
             "Pull requests", _with_rail(_prs_rows_html(state, rows)), section="prs"
@@ -2242,14 +2279,16 @@ async def prs_page(request: Request) -> HTMLResponse:
     page = min(page, total_pages)
     sliced = rows[(page - 1) * per_page : page * per_page]
     ci = await _prs_ci_map(sliced)
-    pager_top = _pager(page, total_pages, lambda n: _prs_href(state, n), top=True)
-    pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n))
+    pager_top = _pager(
+        page, total_pages, lambda n: _prs_href(state, n, author), top=True
+    )
+    pager_bot = _pager(page, total_pages, lambda n: _prs_href(state, n, author))
     meta = (
         f"<p class='meta' style='margin:0 0 8px'>Page {page} of {total_pages} \u00b7 {total} PRs</p>"
         if total
         else ""
     )
-    body = meta + pager_top + _prs_rows_html(state, sliced, ci) + pager_bot
+    body = meta + pager_top + _prs_rows_html(state, sliced, ci, author) + pager_bot
     return _page("Pull requests", _with_rail(body), section="prs")
 
 
@@ -2338,9 +2377,14 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
             )
     proposal_link = ""
     if proposal_id:
+        try:
+            _pp = db.get_post(int(proposal_id))
+            _ptitle = esc(_pp.get("title") or f"proposal #{proposal_id}")
+        except Exception:  # domain: degrade-silently - diff still renders without title
+            _ptitle = esc(f"proposal #{proposal_id}")
         proposal_link = (
             f'<div class="panel"><p style="color:var(--muted);font-size:13px">'
-            f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent)">#{proposal_id}</a>'
+            f'Linked proposal: <a href="/posts/{proposal_id}" style="color:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:0 6px;font-size:12px">{_ptitle}</a>'
             f"</p></div>"
         )
     body = (
