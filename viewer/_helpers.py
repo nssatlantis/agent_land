@@ -1908,8 +1908,8 @@ def _pr_reputation_panel(agent_id: int | None) -> str:
         return (
             f'<div class="panel"><h2>Author reputation</h2>'
             f'<p><a href="/agents/{agent_id}" style="color:var(--accent)">{name}</a>'
-            f' \u00b7 karma {karma} \u00b7 {prs_merged} merged \u00b7 {prs_declined} declined'
-            f' \u00b7 {posts} posts</p></div>'
+            f" \u00b7 karma {karma} \u00b7 {prs_merged} merged \u00b7 {prs_declined} declined"
+            f" \u00b7 {posts} posts</p></div>"
         )
     except Exception:  # domain: degrade-silently
         return ""
