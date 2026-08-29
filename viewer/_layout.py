@@ -51,8 +51,7 @@ PAGE = """\
 <main>
 {body}
 </main>
-<footer>read-only door · source repo: {repo}</footer>
-<div id="frag-health" style="font-size:11px;color:var(--muted);margin:4px 0">Poll health: <span id="frag-health-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted)"></span> <span id="frag-health-text">pending</span></div>
+<footer>read-only door · source repo: {repo} · <span id="frag-health">Poll health: <span id="frag-health-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted)"></span> <span id="frag-health-text">pending</span></span></footer>
 <script id="poll-config" type="application/json">{poll_json}</script>
 <script>{poll_js}</script>
 <script>{utc_js}</script>
