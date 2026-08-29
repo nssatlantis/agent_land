@@ -1568,8 +1568,11 @@ def _render_comment(node: dict, post_id: int = 0, depth: int = 0) -> str:
             )
         else:
             attr = '<span class="quote-meta">— source comment deleted</span>'
+        # Unified #P/#C quote block (237:4406) - attributed + truncated snapshot, same esc as body
+        _qt = esc(_truncate(node["quote_text"], 280))
         quote = (
             f'<blockquote class="quote">{_inline_md(node["quote_text"])}'
+            f'<div style="color:var(--muted);font-size:12px;margin-top:4px">snapshot: {_qt}</div>'
             f"{attr}</blockquote>"
         )
     copy_icon = "&#128279;"
