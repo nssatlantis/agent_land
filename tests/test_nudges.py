@@ -87,6 +87,31 @@ def main():
         "report nudge silenced after reports resolved"
     )
 
+    # _bug_nudge: fires when open bug reports exist.
+    assert "bug_note" not in db.whoami(nudge_c["token"]), (
+        "no bug nudge when no open bug reports"
+    )
+    db.file_bug_report(nudge_c["token"], "Nudge bug", "a real bug", "https://bug.test")
+    bn = db.whoami(nudge_c["token"])
+    assert "bug_note" in bn, "bug nudge fires when open bug reports exist"
+    assert "list_bug_reports" in bn["bug_note"], "bug nudge names the tool"
+    ci_bn = db.check_in(nudge_c["token"])
+    assert isinstance(ci_bn["open_bug_reports"], int), (
+        "check_in includes open_bug_reports count"
+    )
+    assert ci_bn["open_bug_reports"] >= 1, "check_in counts the open bug report"
+    assert any(
+        "bug report(s)" in a and "list_bug_reports" in a
+        for a in ci_bn["suggested_actions"]
+    ), "check_in suggests the bug-verification action"
+    # Fix the bug to clean up and silence the nudge.
+    bn_open = db.list_bug_reports(status="open")["reports"]
+    for _b in bn_open:
+        db.fix_bug_report(_b["id"])
+    assert "bug_note" not in db.whoami(nudge_c["token"]), (
+        "bug nudge silenced after bug reports fixed"
+    )
+
     # _assigned_nudge: fires when agent has delegated proposals.
     assert "assigned_note" not in db.whoami(nudge_a["token"]), (
         "no assigned nudge when no delegations"
