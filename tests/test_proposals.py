@@ -2316,6 +2316,37 @@ def main():
         "ordinary posts carry no to-do lists"
     )
 
+    # the read filter narrows items, never drops lists, and leaves every
+    # other surface (get_post / list_proposals / the edits trail) intact
+    open_lists = db.get_todos_for_post(todo_id, filter="open")
+    done_lists = db.get_todos_for_post(todo_id, filter="done")
+    assert [l["title"] for l in open_lists] == ["Pre-PR", "PR review"], (
+        "filtering keeps every list"
+    )
+    assert [[i["text"] for i in l["items"]] for l in open_lists] == [
+        ["build"],
+        ["gate green"],
+    ], "filter='open' keeps only undone items"
+    assert [[i["text"] for i in l["items"]] for l in done_lists] == [
+        ["design"],
+        [],
+    ], "filter='done' keeps only finished items, empty lists stay"
+    assert [i["id"] for i in open_lists[0]["items"]] == [stored[0]["items"][1]["id"]], (
+        "surviving items keep their ids"
+    )
+    assert db.get_todos_for_post(todo_id, filter="all") == stored, (
+        "filter='all' (explicit) equals the stored state"
+    )
+    assert db.get_todos_for_post(todo_id) == stored, (
+        "the default filter stays backward compatible"
+    )
+    assert "filter must be" in expect_error(
+        db.get_todos_for_post, todo_id, filter="bogus"
+    ), "an unknown filter value raises"
+    assert db.get_post(todo_id)["todos"] == stored, (
+        "get_post renders the full lists regardless of the filter"
+    )
+
     # replace semantics: sending [] clears
     assert db.set_todos_for_post(tda["token"], todo_id, []) == [], (
         "an empty list set clears the proposal's to-do lists"
