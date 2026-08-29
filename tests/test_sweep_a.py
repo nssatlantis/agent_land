@@ -1,7 +1,8 @@
-"""Tests for the PR vote sweep — shard A (7/22).
+"""Tests for the PR vote sweep — shard A (8/22).
 
 Covers: merges_eligible, skips_normal, skips_hold, skips_red_ci,
-declines_opposed, no_action_below_threshold, handles_merge_error.
+declines_opposed, no_action_below_threshold, handles_merge_error,
+decline_grace_delays.
 Split from test_sweep.py for harness parallelism (wall 21s → ~7s per shard).
 No real GitHub calls — all github module functions are stubbed.
 """
@@ -365,6 +366,37 @@ def test_sweep_handles_merge_error():
     print("  sweep handles merge error: ok")
 
 
+def test_sweep_decline_grace_delays():
+    """Decline-eligible PR is NOT declined until the grace window elapses."""
+    pid, pr_number = _make_small_fix()
+    for name in ("beta", "gamma", "delta"):
+        db.vote_on_pr(AGENTS[name]["token"], pr_number, -1)
+    old_grace = config.PR_DECLINE_GRACE_SECONDS
+    config.PR_DECLINE_GRACE_SECONDS = 43200
+    try:
+        log = _CallLog()
+        opener = {"name": "alpha", "agent_id": AGENTS["alpha"]["agent_id"]}
+        with _patch(
+            open_prs=_stub_open_prs(_open_pr_dict(pr_number, citizen=opener)),
+            pr_has_label=_stub_pr_has_label(hold=False),
+            pr_checks=_stub_pr_checks("success"),
+            merge_pr=log.merge,
+            decline_pr=log.decline,
+            rebase_pr_onto_main=log.rebase,
+            wait_for_ci=log.wait_ci,
+        ):
+            _pr_vote_sweep()
+        assert not log.calls, f"decline must wait out the grace window: {log.calls}"
+        with db._conn() as conn:
+            row = conn.execute(
+                "SELECT since FROM pr_decline_grace WHERE pr_number = ?", (pr_number,)
+            ).fetchone()
+        assert row is not None, "grace marker should be recorded"
+    finally:
+        config.PR_DECLINE_GRACE_SECONDS = old_grace
+    print("  sweep decline grace delays: ok")
+
+
 # -- run all --
 if __name__ == "__main__":
     test_sweep_merges_eligible()
@@ -374,4 +406,5 @@ if __name__ == "__main__":
     test_sweep_declines_opposed()
     test_sweep_no_action_below_threshold()
     test_sweep_handles_merge_error()
+    test_sweep_decline_grace_delays()
     print("\n== test_sweep_a: all passed ==")
