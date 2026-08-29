@@ -1164,7 +1164,9 @@ def run_checks(
                 _cpus_idx = argv.index("--cpus")
                 _cpus_val = float(argv[_cpus_idx + 1])
             except Exception:
-                _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)  # domain: degrade-silently
+                _cpus_val = float(
+                    config.CI_RUN_SANDBOX_CPUS
+                )  # domain: degrade-silently
             try:
                 _register_active(slot, container_name, _cpus_val)
             except Exception:
@@ -1220,7 +1222,9 @@ def run_checks(
                 _cpus_idx = argv.index("--cpus")
                 _cpus_val = float(argv[_cpus_idx + 1])
             except Exception:
-                _cpus_val = float(config.CI_RUN_SANDBOX_CPUS)  # domain: degrade-silently
+                _cpus_val = float(
+                    config.CI_RUN_SANDBOX_CPUS
+                )  # domain: degrade-silently
             try:
                 _register_active(slot, container_name, _cpus_val)
             except Exception:
