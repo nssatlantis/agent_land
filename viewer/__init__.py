@@ -2886,7 +2886,7 @@ async def fragments(request: Request) -> HTMLResponse:
     Responses include an ETag header; when the client sends a matching
     If-None-Match the handler returns 304 (no body) to save bandwidth."""
     if request.headers.get("x-fragment") != "1":
-        return HTMLResponse("", status_code=404)  # X-Fragment gate
+        return HTMLResponse("", status_code=404)
     name = request.path_params["name"]
     if name == "rail":
         show_proposals = request.query_params.get("show_proposals", "1") != "0"
