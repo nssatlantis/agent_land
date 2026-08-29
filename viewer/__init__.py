@@ -62,7 +62,6 @@ from viewer._api import (
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._events import events_page
-
 from viewer._helpers import (
     _author,
     _breadcrumbs,
