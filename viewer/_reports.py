@@ -181,7 +181,13 @@ def reports_page(request):
         ' onkeydown="event.stopPropagation()" oninput="event.stopPropagation()"'
         ' style="flex:1;max-width:280px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg)">'
         '<button type="submit" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);cursor:pointer">Filter</button>'
-        + ('<a href="/reports?status=' + esc(status_filter) + '" style="color:var(--muted);font-size:13px">clear</a>' if reports_q else "")
+        + (
+            '<a href="/reports?status='
+            + esc(status_filter)
+            + '" style="color:var(--muted);font-size:13px">clear</a>'
+            if reports_q
+            else ""
+        )
         + "</form>"
     )
 
