@@ -534,7 +534,13 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
     poller. `proposal_post_id` is the 'Proposal: #N' stamp - the forum
     proposal the PR implements, used by the poller to record the proposal's
     outcome (backfilling pre-existing PRs from the stamp alone)."""
-    pulls = _paginated_closed_pulls("closed", per_page)
+    # The outcome poller's ingest is a *recent* read, not a full historic
+    # scan: it re-processes the newest closed PRs each sweep and relies on
+    # INSERT OR IGNORE idempotency for anything already recorded. Full
+    # pagination here would re-record every historical PR's karma for real
+    # citizens on a fresh database (2.1 pagination belongs on the user-facing
+    # list_prs closed/all listing, not this poller feed), so fetch one page.
+    pulls = _closed_pulls_page("closed", per_page, 1)
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
@@ -560,7 +566,7 @@ async def arecently_closed_prs(
 ) -> list[dict]:
     """Native-await twin of recently_closed_prs - the outcome poller's hot
     fetch, now off the worker threads entirely."""
-    pulls = await _apaginated_closed_pulls("closed", per_page)
+    pulls = await _aclosed_pulls_page("closed", per_page, 1)
     closed = []
     for p in pulls:
         labels = [label["name"] for label in (p.get("labels") or [])]
