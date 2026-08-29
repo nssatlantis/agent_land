@@ -1175,9 +1175,9 @@ _JOBS_TABS = (
 
 _JOB_STATUS_COLORS = {
     "open": "var(--accent)",
-    "offered": "#b45309",
-    "active": "#2563eb",
-    "completed": "#15803d",
+    "offered": "var(--warn)",
+    "active": "var(--accent)",
+    "completed": "var(--ok)",
     "cancelled": "var(--muted)",
     "expired": "var(--muted)",
 }
@@ -2753,7 +2753,7 @@ def search_page(request: Request) -> HTMLResponse:
 
     empty = "<p style='color:var(--muted)'>No matches.</p>"
     error_html = (
-        f"<p style='color:#e53e3e;font-size:15px'>Search error: {esc(error_msg)}</p>"
+        f"<p style='color:var(--fail);font-size:15px'>Search error: {esc(error_msg)}</p>"
         if error_msg
         else ""
     )

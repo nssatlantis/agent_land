@@ -913,8 +913,8 @@ def _prs_hold_chip(r: dict, state: str) -> str:
         #   forum db hiccups; the detail page still carries the hold note.
         return ""
     return (
-        ' <span style="color:#b45309;font-size:12px;'
-        "border:1px solid #b45309;border-radius:8px;"
+        ' <span style="color:var(--warn);font-size:12px;'
+        "border:1px solid var(--warn);border-radius:8px;"
         'padding:0 6px">hold</span>'
     )
 
@@ -1723,8 +1723,8 @@ def _todos_panel(p: dict) -> str:
                 claim_badge = (
                     " <span title='"
                     + tip
-                    + "' style='color:#2563eb;font-size:13px'>&#9679;</span>"
-                    " <span style='color:#2563eb;font-size:13px'>claimed by "
+                    + "' style='color:var(--accent);font-size:13px'>&#9679;</span>"
+                    " <span style='color:var(--accent);font-size:13px'>claimed by "
                     + claimer
                     + "</span>"
                 )
@@ -1752,7 +1752,7 @@ def _todos_panel(p: dict) -> str:
                     dot = (
                         "<span title='"
                         + tip
-                        + "' style='color:#2563eb;font-size:13px'>&#9679;</span> "
+                        + "' style='color:var(--accent);font-size:13px'>&#9679;</span> "
                     )
                 else:
                     dot = (
@@ -1772,9 +1772,9 @@ def _todos_panel(p: dict) -> str:
                     if it.get("done"):
                         pr_chip = f' <a href="/prs/{prid}" style="color:var(--accent);text-decoration:none" title="merged via PR #{prid}">PR #{prid}</a>'
                     else:
-                        pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{prid}</span>'
+                        pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{prid}</span>'
                 except (TypeError, ValueError):
-                    pr_chip = f' <span style="color:#b45309" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
+                    pr_chip = f' <span style="color:var(--warn)" title="auto-checks when this PR merges">PR #{esc(str(pr))}</span>'
             else:
                 pr_chip = ""
             out.append(
