@@ -1634,6 +1634,62 @@ def init_db() -> None:
                     },
                     conn=conn,
                 )
+        # Workflow create-pr backfill (review #7): a database that predates the
+        # workflows feature has open, PR-openable proposals with no create-pr
+        # run yet, and with FORUM_WORKFLOW_ENFORCE=1 their next
+        # repo_propose_change would be hard-blocked until the gate's lazy
+        # restart re-opens a run on first attempt. Opening those runs here -
+        # once, at boot - makes the feature seamless for pre-existing
+        # proposals. Idempotent: start_workflow's "no open run" guard means a
+        # proposal that already has a run (or that _insert_post already
+        # started) is never double-started, so this is a no-op on fresh DBs
+        # and on every later boot. Only genuinely open, still-openable
+        # proposals qualify: merged (terminal) and superseded (locked by a
+        # newer version) ones must not open a PR and are skipped.
+        try:
+            # This conn has no row_factory (plain tuples) - every other query
+            # in init_db keys by index. start_workflow and our reads need
+            # sqlite3.Row keyed access, so switch it on for this last block;
+            # nothing after it uses the conn.
+            conn.row_factory = sqlite3.Row
+            from db._proposal_status import (
+                _proposal_status_for,
+                _proposal_superseded_by,
+            )
+            from db._workflow import start_workflow as _start_workflow
+
+            _candidates = conn.execute(
+                "SELECT id, agent_id FROM posts"
+                " WHERE proposal_kind IN ('proposal', 'small_fix')"
+                " AND id NOT IN ("
+                "   SELECT proposal_id FROM workflow_runs"
+                "   WHERE workflow_path = 'workflows/create-pr.md'"
+                "   AND status = 'open'"
+                " )"
+            ).fetchall()
+            for _row in _candidates:
+                _pid = int(_row["id"])
+                _author = _row["agent_id"]
+                if _author is None:
+                    continue
+                try:
+                    if _proposal_status_for(conn, _pid) == "merged":
+                        continue
+                except Exception:  # domain: degrade-silently - treat as openable
+                    pass
+                try:
+                    if _proposal_superseded_by(conn, _pid) is not None:
+                        continue
+                except Exception:  # domain: degrade-silently - treat as openable
+                    pass
+                try:
+                    _start_workflow(
+                        conn, "workflows/create-pr.md", _pid, int(_author)
+                    )
+                except Exception:  # domain: degrade-silently - one bad proposal must not block boot
+                    pass
+        except Exception:  # domain: degrade-silently - workflows are enrichment; boot must not fail
+            pass
 
 
 def _id_chunks(ids: list, size: int = 500) -> list:
