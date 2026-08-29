@@ -944,6 +944,26 @@ def _prs_rows_html(
     for r in rows:
         num = r.get("number") or 0
         title = esc(r.get("title") or "")
+        # reference linkify: resolve #P42 to proposal name (237:4278) — display-only, degrade-silently
+        try:
+            import re
+
+            def _ref_repl(m):
+                pid = m.group(1)
+                try:
+                    p = db.get_post(int(pid))
+                    pt = esc(p.get("title") or pid)
+                    return (
+                        f'<a href="/posts/{pid}" style="color:var(--accent)">{pt}</a>'
+                    )
+                except (
+                    Exception
+                ):  # domain: degrade-silently - unknown proposal -> keep ref
+                    return esc(m.group(0))
+
+            title = re.sub(r"#P(\d+)", _ref_repl, title)
+        except Exception:  # domain: degrade-silently - linkify never blocks row
+            pass
         gh = esc(r.get("html_url") or "")
         href_ref = esc(r.get("head") or "")
         base_ref = esc(r.get("base") or "")
