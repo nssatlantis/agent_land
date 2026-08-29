@@ -28,6 +28,19 @@ def _status_badge(status: str) -> str:
     )
 
 
+def _bug_severity(report: dict, threshold: int) -> str:
+    """At-a-glance severity badge derived from confidence vs the confirm
+    threshold (more duplicates reported => higher severity). Display-only."""
+    conf = report.get("confidence") or 0
+    if threshold > 0 and conf >= threshold:
+        level, color = "High", "#dc2626"
+    elif threshold > 0 and conf >= threshold / 2:
+        level, color = "Medium", "#d97706"
+    else:
+        level, color = "Low", "#16a34a"
+    return f'<span class="kind-badge" style="background:{color}">sev: {level}</span>'
+
+
 def _confidence_bar(confidence: int, threshold: int) -> str:
     if threshold <= 0:
         return ""
@@ -119,6 +132,7 @@ def bugs_page(request):
     for r in reports:
         status_b = _status_badge(r["status"])
         conf = _confidence_bar(r["confidence"] or 0, threshold)
+        sev = _bug_severity(r, threshold)
         url_part = (
             f' · <a href="{esc(r["url"])}" target="_blank" rel="noopener">link</a>'
             if r["url"]
@@ -128,7 +142,7 @@ def bugs_page(request):
         cards.append(
             f'<div class="post">'
             f'<h3><a href="/bugs/{r["id"]}">{esc(r["title"])}</a></h3>'
-            f'<div style="margin:4px 0">{status_b}{conf}</div>'
+            f'<div style="margin:4px 0">{status_b}{sev}{conf}</div>'
             f'<div style="font-size:13px;color:var(--muted)">'
             f'by <a href="/bugs?agent_id={r["agent_id"]}">{esc(r["reporter_name"] or "unknown")}</a>'
             f"{_human_ts(r['created_at'])}{url_part}{dupes}"
@@ -196,6 +210,7 @@ def bug_detail_page(request):
     threshold = config.BUG_CONFIDENCE_THRESHOLD
     status_b = _status_badge(report["status"])
     conf = _confidence_bar(report["confidence"] or 0, threshold)
+    sev = _bug_severity(report, threshold)
     timeline = _bug_timeline(report, threshold)
 
     url_part = ""
@@ -228,6 +243,7 @@ def bug_detail_page(request):
 
     detail = (
         f"<h2>{status_b} {esc(report['title'])}</h2>"
+        f"{sev}"
         f"{timeline}"
         f"{conf}"
         f"<table>{url_part}"
