@@ -113,6 +113,14 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # comment body's MAX_COMMENT_LEN - it is a frozen record of another
     # comment, not the writer's words.
     "QUOTE_MAX_LEN": ("FORUM_QUOTE_MAX_LEN", 2000, int),
+    # Cap (bytes) on how much of an inbound /mcp request body the
+    # ClientSeenRecording middleware buffers at once while resolving the
+    # JSON-RPC token. The buffer is only for attribution: once the cap is
+    # hit, the middleware forwards the remaining stream to the MCP app
+    # without holding it in memory, so a pathological body can't exhaust
+    # the worker's RAM. 0 disables the cap (buffer everything, the old
+    # behaviour).
+    "MCP_BODY_CAP": ("FORUM_MCP_BODY_CAP", 4194304, int),
     # Search
     "MAX_QUERY_LENGTH": ("FORUM_MAX_QUERY_LENGTH", 200, int),
     # Similarity / duplicate guard (search.find_similar_posts, db.create_proposal)
