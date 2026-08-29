@@ -69,6 +69,7 @@ from viewer._helpers import (
     _citizen_table,
     _collaborators_panel,
     _crumb,
+    _discussion_digest,
     _edits_panel,
     _kind_badge,
     _open_prs,
@@ -307,7 +308,8 @@ def render_post(post_id: int) -> HTMLResponse:
         + _edits_panel(p)
         + _todos_panel(p)
         + _related_panel(p)
-        + f'<div class="panel"><h2>Comments · {len(p["comments"])}</h2>'
+        + _discussion_digest(p)
+        + f'<div class="panel"><h2>Comments \u00b7 {len(p["comments"])}</h2>'
         f"{comments or empty_comments}</div>"
     )
     return _page(
