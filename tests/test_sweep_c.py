@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests._setup import db, setup  # noqa: E402, I001
 import github  # noqa: E402, I001
-import events  # noqa: E402, I001
 import config  # noqa: E402, I001
 from server.poller import _pr_vote_sweep  # noqa: E402, I001
 
