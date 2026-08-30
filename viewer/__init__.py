@@ -2374,6 +2374,39 @@ def _economy_body(request: Request) -> str:
         if pager_bits
         else ""
     )
+    # Genesis & burns panel (4395) — display-only, degrade-silently
+    _genesis_html = ""
+    try:
+        _gen_ledger = db.credit_history(limit=100, offset=0)
+        _gen_entries = [
+            e
+            for e in _gen_ledger["entries"]
+            if "genesis" in e.get("reason", "").lower()
+            or "mint" in e.get("reason", "").lower()
+            or "burn" in e.get("reason", "").lower()
+        ]
+        if _gen_entries:
+            _gen_rows = "".join(
+                f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
+                f"<td>{esc(e['agent_name'])}</td>"
+                f"<td style='text-align:right'>{esc(('+' if e['delta_quarters'] > 0 else '') + e['credits'])}</td>"
+                f"<td>{esc(e['reason'])}</td><td>{_led_target(e)}</td></tr>"
+                for e in _gen_entries[:20]
+            )
+            _genesis_html = (
+                '<div class="panel"><h2>Genesis &amp; burns</h2>'
+                "<p style='color:var(--muted);font-size:13px'>Genesis mint and subsequent mints/burns, newest first. Reason includes proposal or admin action.</p>"
+                "<table><thead><tr><th>when</th><th>wallet</th><th style='text-align:right'>amount</th><th>reason</th><th>target</th></tr></thead><tbody>"
+                + _gen_rows
+                + "</tbody></table></div>"
+            )
+        else:
+            _genesis_html = (
+                '<div class="panel"><h2>Genesis &amp; burns</h2>'
+                "<p style='color:var(--muted)'>No mint or burn entries yet — genesis not yet sealed or no burns have occurred.</p></div>"
+            )
+    except Exception:  # domain: degrade-silently - genesis panel is optional enrichment
+        _genesis_html = ""
 
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
@@ -2405,6 +2438,7 @@ def _economy_body(request: Request) -> str:
         + "</tbody></table></div>"
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
         + inspector_html
+        + _genesis_html
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
