@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+
+_PROPOSAL_SIMILAR_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
+_PROPOSAL_SIMILAR_TTL = 60  # seconds, per-review cache to avoid N×25 calls per docket page (237:4386)
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1928,11 +1931,22 @@ def _related_prs_panel(pr_number: int) -> str:
 def _proposal_similar_prs_advisory(p: dict) -> str:
     """Similar-PRs advisory for a proposal card (237:4386) - display-only."""
     try:
+        # Only for open proposals - merged/closed/locked have no value (per-review perf: limit to N open, not 25/page)
+        if p.get("locked") or p.get("status") in ("merged", "closed", "declined"):
+            return ""
+        # body_preview fallback is intentional: list_proposals returns preview, not full body (minor truncation, display-only)
         title = (p.get("title") or "").strip()
         body = (p.get("body") or p.get("body_preview") or "").strip()
         if not title and not body:
             return ""
-        related = search.find_similar_prs(title=title or None, body=body or None)
+        key = (title, body)
+        now = time.monotonic()
+        cached = _PROPOSAL_SIMILAR_CACHE.get(key)
+        if cached and (now - cached[0]) < _PROPOSAL_SIMILAR_TTL:
+            related = cached[1]
+        else:
+            related = search.find_similar_prs(title=title or None, body=body or None)
+            _PROPOSAL_SIMILAR_CACHE[key] = (now, related)
     except Exception:  # domain: degrade-silently
         return ""
     if not related:
