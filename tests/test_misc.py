@@ -1938,6 +1938,18 @@ def main():
             " 'merged', ?)",
             (mig_p, agents["beta"]["agent_id"], db._now_iso()),
         )
+        # A run that reached 'merged' always had a linked pull request - bind
+        # the merged one so reconcile_open_runs (which runs at the end of
+        # init_db) sees a healthy linked proposal instead of ghost residue
+        # (an open run + a folded run with NO proposal_links row). Without the
+        # link the sweep would close the open run to 'closed' and this block
+        # would assert the wrong result on a database the sweep is correct to
+        # heal on live runs.
+        conn.execute(
+            "INSERT INTO proposal_links (pr_number, post_id, opened_by_agent_id)"
+            " VALUES (55556, ?, ?)",
+            (mig_p, agents["beta"]["agent_id"]),
+        )
     db.init_db()  # must widen the CHECK and swap the indexes, keeping the rows
     with db._conn() as conn:
         rows = conn.execute(
