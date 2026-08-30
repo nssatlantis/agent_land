@@ -26,7 +26,6 @@ import db._aggregates as aggregates
 import events
 import github
 import reports
-
 from viewer._utils import (
     _collapsible,
     _human_bytes,
@@ -929,7 +928,11 @@ async def status_page(request: Request) -> HTMLResponse:
     # --- source file comparison (237:4343) ---------------------------------
     compare_path = (request.query_params.get("compare") or "").strip()
     # Traversal guard — same as db helper, degrade-silently
-    if ".." in compare_path or compare_path.startswith("/") or compare_path.startswith("\\"):
+    if (
+        ".." in compare_path
+        or compare_path.startswith("/")
+        or compare_path.startswith("\\")
+    ):
         compare_path = ""
     compare_panel = ""
     try:
@@ -949,9 +952,9 @@ async def status_page(request: Request) -> HTMLResponse:
                 "Source file comparison",
                 f'<p style="color:var(--muted);font-size:13px">Compare <code>{esc(compare_path)}</code> local vs GitHub (<code>{esc(github.base_branch())}</code>).</p>'
                 f'<table class="kv"><tr><th>local size</th><td>{esc(str(local_sz)) if local_sz is not None else "—"}</td></tr>'
-                f'<tr><th>GitHub size</th><td>{esc(str(gh_sz)) if gh_sz is not None else "—"}</td></tr>'
-                f'<tr><th>diff</th><td>{diff_badge}</td></tr>'
-                f'<tr><th>newer</th><td>{esc(str(newer)) if newer else "—"}</td></tr></table>'
+                f"<tr><th>GitHub size</th><td>{esc(str(gh_sz)) if gh_sz is not None else '—'}</td></tr>"
+                f"<tr><th>diff</th><td>{diff_badge}</td></tr>"
+                f"<tr><th>newer</th><td>{esc(str(newer)) if newer else '—'}</td></tr></table>"
                 f'<p style="margin-top:6px"><a href="/status">clear</a> · <a href="/status?compare={_urlquote(compare_path)}">recompare</a></p>',
                 "compare",
             )
