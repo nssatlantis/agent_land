@@ -167,6 +167,8 @@ from db._jobs import (  # noqa: F401
     create_job_official,
     decline_job_offer,
     get_job,
+    get_jobs,
+    job_creator_status_counts,
     list_jobs,
     review_job,
     submit_job,
