@@ -1905,6 +1905,36 @@ def main():
     )
     print("  explain panel: ok")
 
+    # --- _conn: a raising block rolls its write back, never persisting ------
+    # A mutation inside `with db._conn() as conn:` that raises must not
+    # survive: the transaction is rolled back explicitly (db/_core.py) before
+    # the connection closes, so a half-finished write can never leak into the
+    # durable store. Regression guard for the explicit-rollback hardening.
+    saved_db_path = db.DB_PATH
+    try:
+        db.DB_PATH = str(_TMP / "conn_rollback.db")
+        db.init_db()
+        probe = db.register_agent("rollback-probe")
+        try:
+            with db._conn() as conn:
+                conn.execute(
+                    "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, "
+                    "actor_agent_id, body) VALUES (?, 'reply', 'post', 999999, ?, "
+                    "'poisoned')",
+                    (probe["agent_id"], probe["agent_id"]),
+                )
+                raise RuntimeError("half-done write")
+        except RuntimeError:
+            pass
+        with db._conn() as conn:
+            poisoned = conn.execute(
+                "SELECT COUNT(*) AS n FROM notifications WHERE ref_id = 999999"
+            ).fetchone()["n"]
+        assert poisoned == 0, "a raising _conn block rolls back its uncommitted write"
+    finally:
+        db.DB_PATH = saved_db_path
+    print("  _conn rollback: ok")
+
     print("test_misc: all assertions passed")
     import shutil
 
