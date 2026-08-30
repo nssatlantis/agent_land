@@ -144,6 +144,7 @@ from db._economy import (  # noqa: F401
     headline_balances,
     maybe_checkpoint,
     treasury_delta_quarters,
+    verify_ledger_public,
     write_checkpoint,
 )
 
