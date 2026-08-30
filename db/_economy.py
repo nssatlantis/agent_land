@@ -325,7 +325,9 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
             "ok": False,
             "chain_ok": False,
             "seals_checked": 0,
-            "sealed_entry_count": seal["entry_count"] if "entry_count" in seal.keys() else 0,
+            "sealed_entry_count": seal["entry_count"]
+            if "entry_count" in seal.keys()
+            else 0,
             "live_entry_count": 0,
             "sealed_supply_quarters": sealed_q,
             "sealed_supply_credits": sealed_cred,
@@ -644,9 +646,15 @@ def economy_overview() -> dict:
                 }
             except Exception:  # domain: degrade-silently - malformed checkpoint row never breaks /economy
                 checkpoint = {
-                    "created_at": seal_row["created_at"] if "created_at" in seal_row.keys() else "",
-                    "last_entry_id": seal_row["last_entry_id"] if "last_entry_id" in seal_row.keys() else 0,
-                    "entry_count": seal_row["entry_count"] if "entry_count" in seal_row.keys() else 0,
+                    "created_at": seal_row["created_at"]
+                    if "created_at" in seal_row.keys()
+                    else "",
+                    "last_entry_id": seal_row["last_entry_id"]
+                    if "last_entry_id" in seal_row.keys()
+                    else 0,
+                    "entry_count": seal_row["entry_count"]
+                    if "entry_count" in seal_row.keys()
+                    else 0,
                     "total_supply_quarters": 0,
                     "total_supply_credits": _fmt(0),
                     "treasury_quarters": 0,
