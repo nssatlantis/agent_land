@@ -168,7 +168,7 @@ def economy_admin_adjust(
 # -- checkpoints -----------------------------------------------------------
 
 
-def _chain_hash(prev_hash: str, row: sqlite3.Row) -> str:
+def _chain_hash(prev_hash: str, row: sqlite3.Row | dict) -> str:
     """One link of the running hash chain over a ledger row's IMMUTABLE
     fields.  agent_id is deliberately excluded: delete_agent anonymizes it
     in place, and rewriting history must never break a seal."""
