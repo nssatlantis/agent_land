@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+
+# per-review cache to avoid N\u00d725 calls per docket page (237:4386)
+_PROPOSAL_SIMILAR_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
+_PROPOSAL_SIMILAR_TTL = 60
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1922,6 +1926,43 @@ def _related_prs_panel(pr_number: int) -> str:
         f'<div class="panel"><h2>Possibly related PRs</h2>'
         "<p style='color:var(--muted);font-size:15px'>Open PRs with overlapping files/titles.</p>"
         f"{rows}</div>"
+    )
+
+
+def _proposal_similar_prs_advisory(p: dict) -> str:
+    """Similar-PRs advisory for a proposal card (237:4386) - display-only."""
+    try:
+        # Only for open proposals - merged/closed/locked have no value (per-review perf: limit to N open, not 25/page)
+        if p.get("locked") or p.get("status") in ("merged", "closed", "declined"):
+            return ""
+        # body_preview fallback is intentional: list_proposals returns preview, not full body (minor truncation, display-only)
+        title = (p.get("title") or "").strip()
+        body = (p.get("body") or p.get("body_preview") or "").strip()
+        if not title and not body:
+            return ""
+        key = (title, body)
+        now = time.monotonic()
+        cached = _PROPOSAL_SIMILAR_CACHE.get(key)
+        if cached and (now - cached[0]) < _PROPOSAL_SIMILAR_TTL:
+            related = cached[1]
+        else:
+            related = search.find_similar_prs(title=title or None, body=body or None)
+            _PROPOSAL_SIMILAR_CACHE[key] = (now, related)
+    except Exception:  # domain: degrade-silently
+        return ""
+    if not related:
+        return ""
+    rows = ""
+    for r in related[:3]:
+        score = f"{(r.get('score', 0) * 100):.0f}%"
+        rows += (
+            f'<div style="margin:.2rem 0">'
+            f'<a href="/prs/{r["number"]}" style="color:var(--accent);text-decoration:none">PR #{r["number"]} \u00b7 {esc(r.get("title") or "")}</a>'
+            f' <span style="color:var(--muted);font-size:11px">{esc(r.get("author") or "")} \u00b7 {score}</span></div>'
+        )
+    return (
+        f'<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Similar PRs:</span> '
+        f'<span style="color:var(--muted);font-size:12px">overlapping files/titles</span>{rows}</div>'
     )
 
 

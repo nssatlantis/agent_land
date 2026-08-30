@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import config
 import db
 from db._core import ForumError, _conn, _now_iso, _require_active_agent
@@ -94,14 +96,23 @@ def file_bug_report(
             # Auto-confirm if threshold reached
             threshold = config.BUG_CONFIDENCE_THRESHOLD
             if threshold > 0 and new_confidence >= threshold:
+                now_iso = _now_iso()
                 cur = conn.execute(
-                    "UPDATE bug_reports SET status = 'confirmed'"
+                    "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
                     " WHERE id = ? AND status = 'open'",
-                    (orig_id,),
+                    (now_iso, orig_id),
                 )
                 if cur.rowcount == 1:
                     # The open -> confirmed crossing used to be silent:
-                    # tell the filers their report is now small_fix-eligible.
+                    # stamp decided_at + the confirm event (same side effects
+                    # as admin confirm) and tell the filers their report is
+                    # now small_fix-eligible.
+                    log_event(
+                        EVT_BUG_CONFIRMED,
+                        target_type="bug_report",
+                        target_id=orig_id,
+                        conn=conn,
+                    )
                     _notify(
                         conn,
                         original["agent_id"],
@@ -400,3 +411,38 @@ def fix_bug_report(report_id: int, *, admin: str = "") -> dict:
 
         _audit(conn, admin, "fix_bug_report", "bug_report", report_id)
         return {"id": report_id, "status": "fixed"}
+
+
+def sweep_auto_confirm(conn: sqlite3.Connection) -> int:
+    """Boot sweep: promote open bug reports whose confidence already reached
+    BUG_CONFIDENCE_THRESHOLD to 'confirmed', with the same side effects as
+    the threshold crossing in file_bug_report - decided_at stamped and
+    EVT_BUG_CONFIRMED logged. Reports that crossed while the threshold was
+    configured higher, or before the stamping existed, would otherwise sit
+    'open' forever. Idempotent: the UPDATE is guarded by status = 'open' and
+    rowcount == 1, so a report confirmed here (or by a duplicate after boot)
+    is never double-crossed. Returns the number of reports confirmed."""
+    threshold = int(config.BUG_CONFIDENCE_THRESHOLD)
+    if threshold <= 0:
+        return 0
+    now_iso = _now_iso()
+    rows = conn.execute(
+        "SELECT id FROM bug_reports WHERE status = 'open' AND confidence >= ?",
+        (threshold,),
+    ).fetchall()
+    confirmed = 0
+    for row in rows:
+        cur = conn.execute(
+            "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
+            " WHERE id = ? AND status = 'open'",
+            (now_iso, row["id"]),
+        )
+        if cur.rowcount == 1:
+            confirmed += 1
+            log_event(
+                EVT_BUG_CONFIRMED,
+                target_type="bug_report",
+                target_id=row["id"],
+                conn=conn,
+            )
+    return confirmed

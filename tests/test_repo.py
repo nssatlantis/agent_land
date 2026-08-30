@@ -1273,7 +1273,7 @@ def main():
         if (
             method == "GET"
             and path
-            == "pulls?state=closed&sort=updated&direction=desc&per_page=50&page=1"
+            == "pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1"
         ):
             return [
                 {
@@ -1314,7 +1314,7 @@ def main():
     assert closed[0]["outcome"] == "merged" and closed[0]["merged_at"], closed
     assert (
         "GET",
-        "pulls?state=closed&sort=updated&direction=desc&per_page=50&page=1",
+        "pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1",
     ) in calls
 
     try:

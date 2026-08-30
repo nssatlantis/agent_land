@@ -132,7 +132,7 @@ def _conflict_count(conn, agent_id, number):
 def _stubs(prs, rebase_status="ok"):
     return _Patch(
         open_prs=lambda: list(prs),
-        pr_has_label=lambda number, label: False,
+        pr_has_label=lambda number, label, **kw: False,
         pr_checks=lambda number, **kw: {"state": "success"},
         rebase_pr_onto_main=lambda number, **kw: (
             {"status": rebase_status, "files": ["a.py"]}

@@ -20,6 +20,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -71,6 +72,35 @@ _open_prs_cache = _TTLCache()  # open_prs (thin wrapper around the same class)
 _CACHE_FAILURES = True  # cache RepoError too, for graceful degradation
 
 
+# Conditional-GET (ETag / If-None-Match / 304) store for the JSON transport.
+# GitHub stamps many pull-ish resources with an ETag, and revalidation answers
+# 304 ("still current") *without* consuming rate-limit quota, so repeat reads
+# of the same URL within one poll cycle cost a header round-trip instead of a
+# full response (Item A of the rate-limit reduction).  Keyed by url_path
+# (including the query string), LRU-bounded.  This lives alongside - not
+# instead of - the TTL read caches: those handle the time dimension and return
+# cached values with no request at all; this store only saves a request when a
+# TTL miss still turns out to be revalidatable.
+_etag_store: OrderedDict[str, tuple[str, Any]] = OrderedDict()
+_ETAG_STORE_MAX = 1024
+
+
+def _etag_get(url_path: str) -> tuple[str, Any] | None:
+    """Fetch a stored (etag, value) pair, refreshing LRU recency on a hit."""
+    entry = _etag_store.get(url_path)
+    if entry is not None:
+        _etag_store.move_to_end(url_path)
+    return entry
+
+
+def _etag_set(url_path: str, etag: str, value: Any) -> None:
+    """Store (etag, value), evicting the oldest entry past the bound."""
+    _etag_store[url_path] = (etag, value)
+    _etag_store.move_to_end(url_path)
+    while len(_etag_store) > _ETAG_STORE_MAX:
+        _etag_store.popitem(last=False)
+
+
 def clear_cache() -> None:
     """Drop all in-memory GitHub read caches.  Intended for tests that monkey-
     patch ``_request`` -- without clearing, a cached result from one mock
@@ -78,14 +108,18 @@ def clear_cache() -> None:
     _pr_cache._store.clear()
     _tree_cache._store.clear()
     _open_prs_cache._store.clear()
+    _etag_store.clear()
 
 
 def _invalidate_pr(number: int) -> None:
     """Drop every cached read for one PR number after a write (comment, file
     update, close) so callers don't read a stale cached copy within the TTL
     window.  The open-PR list is cleared separately where a write changes
-    open/closed state."""
+    open/closed state.  The etag store needs no scrub here: a stale
+    If-None-Match never gets a 304 for changed content - GitHub answers 200
+    with a fresh ETag, which simply refreshes the entry."""
     for key in (
+        ("pr_raw", number),
         ("get_pr", number),
         ("pr_diff", number),
         ("pr_files", number),
@@ -209,6 +243,11 @@ async def _arequest(
     """Async heart of every GitHub REST call. Raises RepoError on failure;
     returns parsed JSON (or None for an empty 2xx / ok_404 miss).
 
+    Plain GETs (no body) run conditionally: a stored ETag becomes an
+    If-None-Match header and a 304 answer serves the stored value from the
+    etag store - one header-only round-trip instead of a full response, and
+    304s consume no rate-limit quota (Item A of the rate-limit reduction).
+
     httpx reads every response body completely before returning, so the
     keep-alive stream can never fall out of sync - the unread-404-body bug
     class behind proposal #179 is structurally gone. A transport-level
@@ -223,6 +262,14 @@ async def _arequest(
         data = json.dumps(body).encode("utf-8")
         hdrs["Content-Type"] = "application/json"
 
+    # Conditional revalidation applies only to plain JSON GETs: text downloads
+    # (_arequest_text) and PATCH/POST/DELETE never touch the etag store.
+    etag_entry = None
+    if method == "GET" and body is None:
+        etag_entry = _etag_get(url_path)
+        if etag_entry is not None:
+            hdrs["If-None-Match"] = etag_entry[0]
+
     client = _get_client()
 
     async def _do() -> httpx.Response:
@@ -234,11 +281,26 @@ async def _arequest(
         resp = await _do()
 
     status = resp.status_code
+    if status == 304 and etag_entry is not None:
+        # Revalidated: the stored copy is current. 304 carries no body and
+        # consumes no rate-limit quota - the whole point of the store.
+        _etag_store.move_to_end(url_path)
+        return etag_entry[1]
     if 200 <= status < 300:
         raw = resp.content  # fully read by httpx - the stream is always in sync
         if not raw:
+            _etag_store.pop(url_path, None)
             return None
-        return json.loads(raw)
+        value = json.loads(raw)
+        if method == "GET" and body is None:
+            etag = resp.headers.get("ETag")
+            if etag:
+                _etag_set(url_path, etag, value)
+            else:
+                # No validator on this response - a stored copy can never be
+                # revalidated, so drop it rather than serve it stale forever.
+                _etag_store.pop(url_path, None)
+        return value
     if status == 404 and ok_404:
         return None
     msg = ""

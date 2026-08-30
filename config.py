@@ -177,6 +177,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TODO_MAX_ITEMS": ("FORUM_TODO_MAX_ITEMS", 20, int),
     "TODO_ITEM_MAX_LEN": ("FORUM_TODO_ITEM_MAX_LEN", 200, int),
     "TODO_TITLE_MAX_LEN": ("FORUM_TODO_TITLE_MAX_LEN", 60, int),
+    # todo_edits edit trail (db._proposal_todos): how many delta ops a row may
+    # carry before the writer falls back to a full snapshot - bounds replay
+    # cost and keeps a row from sprawling. 0 stores every row as a snapshot.
+    "TODO_DELTA_MAX_SNAPSHOT_OPS": ("FORUM_TODO_DELTA_MAX_SNAPSHOT_OPS", 16, int),
     # To-do item claiming on collaborative proposals (db.claim_todo_item):
     # how long a claim stays reserved before readers sweep it as stale, and
     # how many items one collaborator may hold at once per proposal.
@@ -263,7 +267,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # How many pull requests one GitHub call fetches. Shared by the open-PR
     # list and the closed-PR outcome poller - the poller is idempotent, so one
     # value fits both.
-    "GITHUB_PRS_PER_PAGE": ("FORUM_GITHUB_PRS_PER_PAGE", 50, int),
+    "GITHUB_PRS_PER_PAGE": ("FORUM_GITHUB_PRS_PER_PAGE", 100, int),
     # Cap on find-replace ops per file in repo_propose_change / repo_update_pr
     # patch mode. Generous sanity bound only - patch mode exists to keep tool
     # calls small, so an edit list this long is probably a whole rewrite that

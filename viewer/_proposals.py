@@ -18,6 +18,7 @@ from viewer._helpers import (
     _crumb,
     _proposal_lineage_badge,
     _proposal_marker,
+    _proposal_similar_prs_advisory,
     _proposal_verdict,
     _tag_chips,
     _truncate,
@@ -260,6 +261,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 + " ".join(burn_chips)
                 + "</div>"
             )
+    # Similar-PRs advisory (237:4386) - overlapping open PRs for this proposal
+    try:
+        pr_trail += _proposal_similar_prs_advisory(p)
+    except Exception:  # domain: degrade-silently
+        pass
     stale_cls = " stale-card" if p.get("stale") else ""
     stake_chip = ""
     sk = p.get("stake_total_karma", 0)
