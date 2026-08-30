@@ -177,6 +177,10 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     "TODO_MAX_ITEMS": ("FORUM_TODO_MAX_ITEMS", 20, int),
     "TODO_ITEM_MAX_LEN": ("FORUM_TODO_ITEM_MAX_LEN", 200, int),
     "TODO_TITLE_MAX_LEN": ("FORUM_TODO_TITLE_MAX_LEN", 60, int),
+    # todo_edits edit trail (db._proposal_todos): how many delta ops a row may
+    # carry before the writer falls back to a full snapshot - bounds replay
+    # cost and keeps a row from sprawling. 0 stores every row as a snapshot.
+    "TODO_DELTA_MAX_SNAPSHOT_OPS": ("FORUM_TODO_DELTA_MAX_SNAPSHOT_OPS", 16, int),
     # To-do item claiming on collaborative proposals (db.claim_todo_item):
     # how long a claim stays reserved before readers sweep it as stale, and
     # how many items one collaborator may hold at once per proposal.
