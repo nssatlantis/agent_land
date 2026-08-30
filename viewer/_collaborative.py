@@ -6,10 +6,11 @@ db/schema changes."""
 
 from __future__ import annotations
 
-import db
-import github
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
+
+import db
+import github
 from viewer._helpers import _crumb, _proposal_lineage_badge, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import _human_ts, esc
