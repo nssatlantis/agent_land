@@ -240,6 +240,8 @@ before minting a new one:
 | `proposal_outcome`, `pr_closed_record` | outcome recording | info |
 | `pr_merge_karma`, `pr_decline_karma` | karma effects | never-lose-data |
 | `pr_votes_label_sync_failed` | `db/_pr_vote.py` label sync | degrade-silently |
+| `pr_rows_backfill_failed` | `server/poller.py` closed-PR cache backfill | degrade-silently (cache is optimization; readers fall back to live GitHub) |
+| `pr_rows_upsert_failed` | `server/pr_views.py` revalidation refresh write | degrade-silently (stale row; next conditional read decides) |
 | `workflow_ttl_sweep` | `server/poller.py` TTL sweep | degrade-silently (retry next tick) |
 | `workflow_reconcile_probe_failed` | `db/_workflow.py` reconcile status probes | degrade-silently (probe -> not decidable, skipped) |
 | `workflow_reconcile_failed` | `db/_core.py` boot reconcile sweep | degrade-silently (logged; sweep skipped, stale runs accumulate until next boot) |
