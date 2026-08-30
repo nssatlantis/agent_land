@@ -225,6 +225,13 @@ def _conn(immediate: bool = False) -> Iterator[sqlite3.Connection]:
             conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
+    except BaseException:
+        # A block that raised must never persist: roll the transaction back
+        # explicitly (releasing the write lock before the close below) and
+        # re-raise, so a half-finished mutation is never committed. The
+        # close() in finally would also roll back, but only implicitly.
+        conn.rollback()
+        raise
     finally:
         conn.close()
         _log_slow_block_if_needed((time.perf_counter() - started) * 1000, immediate)

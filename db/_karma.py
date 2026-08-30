@@ -328,18 +328,18 @@ def record_pr_decline(
             is None
         ):
             return False
-        before = c.total_changes
-        c.execute(
+        cur = c.execute(
             "UPDATE pr_record SET status = 'declined', karma = ?, closed_at = ? "
             "WHERE pr_number = ? AND status != 'declined'",
             (config.PR_DECLINE_KARMA, closed_at, pr_number),
         )
-        c.execute(
-            "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
-            "VALUES (?, ?, 'declined', ?, ?)",
-            (pr_number, agent_id, config.PR_DECLINE_KARMA, closed_at),
-        )
-        changed = c.total_changes > before
+        if cur.rowcount == 0:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO pr_record (pr_number, agent_id, status, karma, closed_at) "
+                "VALUES (?, ?, 'declined', ?, ?)",
+                (pr_number, agent_id, config.PR_DECLINE_KARMA, closed_at),
+            )
+        changed = cur.rowcount > 0
         if changed:
             # Fresh decline OR a late 'declined' label upgrading a plain
             # 'closed' record - either way the penalty is now real.
