@@ -587,7 +587,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # close or TTL.
     "WORKFLOW_ENFORCE": ("FORUM_WORKFLOW_ENFORCE", 1, int),
     "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 3600, int),
-"WORKFLOW_CLOSE_ON_CI_GREEN": (
+    "WORKFLOW_CLOSE_ON_CI_GREEN": (
         "FORUM_WORKFLOW_CLOSE_ON_CI_GREEN",
         1,
         int,
