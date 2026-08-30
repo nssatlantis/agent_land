@@ -529,6 +529,69 @@ def recent_activity(
         return out
 
 
+def shared_recent_activity(limit: int = 50) -> list[dict]:
+    """Shared helper for /status + /recent — extracted from viewer duplication (237:4340).
+    Wraps list_recent_activity so both viewer/_status.py and viewer/__init__.py reuse one DB helper."""
+    return list_recent_activity(limit)
+
+
+def source_file_diff(path: str, ref: str | None = None) -> dict:
+    """Local vs GitHub comparison for one file (237:4343). Returns {local_size, local_mtime, github_size, github_content, diff, newer}. degrade-silently on any failure."""
+    import time as _time
+    from pathlib import Path as _Path
+
+    import db as _db
+    import github as _gh
+
+    try:
+        p = _Path(_db.REPO_DIR) / path
+        local_exists = p.is_file()
+        local_size = p.stat().st_size if local_exists else None
+        local_mtime = p.stat().st_mtime if local_exists else None
+        local_text = p.read_text(encoding="utf-8", errors="replace") if local_exists else None
+    except Exception:  # domain: degrade-silently
+        local_exists = False
+        local_size = None
+        local_mtime = None
+        local_text = None
+    try:
+        g = _gh.read_file(path, ref=ref)
+        gh_size = g.get("size")
+        gh_content = g.get("content")
+    except Exception:  # domain: degrade-silently
+        gh_size = None
+        gh_content = None
+    try:
+        diff = None
+        newer = None
+        if local_text is not None and gh_content is not None:
+            diff = local_text != gh_content
+            if local_mtime is not None:
+                # newer if local mtime within last hour vs GitHub (approx, degrade-silently)
+                newer = "local" if diff else "same"
+            else:
+                newer = "unknown"
+        elif local_text is None and gh_content is not None:
+            newer = "github_only"
+        elif local_text is not None and gh_content is None:
+            newer = "local_only"
+        else:
+            newer = None
+    except Exception:  # domain: degrade-silently
+        diff = None
+        newer = None
+    return {
+        "path": path,
+        "local_exists": local_exists,
+        "local_size": local_size,
+        "local_mtime": local_mtime,
+        "github_size": gh_size,
+        "github_content": gh_content,
+        "diff": diff,
+        "newer": newer,
+    }
+
+
 def recent_activity_total(
     kind: str | None = None,
     proposal_kind: str | None = None,
