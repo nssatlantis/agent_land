@@ -3105,7 +3105,7 @@ def search_page(request: Request) -> HTMLResponse:
     for _pre in ("tag:", "kind:"):
         if q.startswith(_pre):
             _bits = q.split(None, 1)
-            _val = _bits[0][len(_pre):]
+            _val = _bits[0][len(_pre) :]
             q = _bits[1].strip() if len(_bits) > 1 else ""
             if _pre == "tag:":
                 tag_filter = _val
@@ -3188,7 +3188,9 @@ def search_page(request: Request) -> HTMLResponse:
                     offset=(page - 1) * per_page,
                 )
             else:
-                posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
+                posts = search.search_posts(
+                    q, limit=per_page, offset=(page - 1) * per_page
+                )
             comments = (
                 search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
                 if q
