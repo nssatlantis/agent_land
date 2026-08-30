@@ -375,8 +375,11 @@ from db._text import (  # noqa: F401
 
 # ── official workflows (per-file checklists) ───────────────────────────
 from db._workflow import (  # noqa: F401
+    bind_open_run,
     close_workflow_for_pr,
     close_workflow_for_proposal,
+    complete_workflow_for_pr,
+    list_bound_open_runs,
     list_workflow_runs,
     reconcile_open_runs,
     require_workflow_block,
