@@ -485,18 +485,19 @@ def link_pr_to_proposal(
             "VALUES (?, ?, ?)",
             (pr_number, post_id, agent_id),
         )
-        # P0-1: stamp the open create-pr run with the PR number so run history
-        # points at the exact PR that opened - the workflow_runs.pr_number
-        # column was previously never written. Best-effort; a missing run is
-        # fine (the gate auto-restarts one on demand).
+        # Per-PR workflow lifecycle (part 2): bind the open create-pr run to
+        # this PR - stamp the auto-start unbound run, reuse the PR's open run,
+        # or (when this proposal already has PRs in flight) start a fresh bound
+        # run so each PR owns its checklist. Binding is best-effort: a missing
+        # run is fine (the gate auto-restarts one on demand), and an
+        # unavailable workflow_runs table must never break the link recording.
         try:
-            c.execute(
-                "UPDATE workflow_runs SET pr_number = ?"
-                " WHERE proposal_id = ? AND status = 'open'"
-                " AND workflow_path = 'workflows/create-pr.md'",
-                (pr_number, post_id),
-            )
-        except Exception:  # domain:degrade-silently - run stamp is optional enrichment
+            from db._workflow import bind_open_run
+
+            bind_open_run(c, post_id, pr_number, agent_id)
+        except (
+            Exception
+        ):  # domain:degrade-silently - run binding is optional enrichment
             pass
 
 
