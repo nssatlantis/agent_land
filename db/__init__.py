@@ -46,6 +46,7 @@ from db._bug_reports import (  # noqa: F401,E402
 from db._claiming import (  # noqa: F401
     claim_proposal,
     require_claim_for_todo,
+    require_todo_binding_for_pr,
     set_claimable,
     unclaim_proposal,
 )
