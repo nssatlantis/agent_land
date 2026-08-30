@@ -3239,12 +3239,12 @@ def search_page(request: Request) -> HTMLResponse:
     heading = f"Search: {esc(q_raw)}" if q_raw else "Search"
     pager_top = (
         _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True)
-        if q and total_pages > 1
+        if _has_facets and total_pages > 1
         else ""
     )
     pager = (
         _pager(page, total_pages, lambda n: _search_href(n, author_filter))
-        if q and total_pages > 1
+        if _has_facets and total_pages > 1
         else ""
     )
     meta = (
