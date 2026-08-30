@@ -25,6 +25,8 @@ import db._aggregates as aggregates
 import events
 import github
 import reports
+from urllib.parse import quote as _urlquote
+
 from viewer._utils import (
     _collapsible,
     _human_bytes,
@@ -926,6 +928,9 @@ async def status_page(request: Request) -> HTMLResponse:
 
     # --- source file comparison (237:4343) ---------------------------------
     compare_path = (request.query_params.get("compare") or "").strip()
+    # Traversal guard — same as db helper, degrade-silently
+    if ".." in compare_path or compare_path.startswith("/") or compare_path.startswith("\\"):
+        compare_path = ""
     compare_panel = ""
     try:
         if compare_path:
@@ -934,7 +939,12 @@ async def status_page(request: Request) -> HTMLResponse:
             gh_sz = info.get("github_size")
             diff = info.get("diff")
             newer = info.get("newer")
-            diff_badge = "<span style='color:var(--ok)'>same</span>" if diff is False else ("<span style='color:var(--fail)'>differs</span>" if diff else "<span style='color:var(--muted)'>unknown</span>")
+            if diff is False:
+                diff_badge = '<span style="color:var(--ok)">same</span>'
+            elif diff:
+                diff_badge = '<span style="color:var(--fail)">differs</span>'
+            else:
+                diff_badge = '<span style="color:var(--muted)">unknown</span>'
             compare_panel = _collapsible(
                 "Source file comparison",
                 f'<p style="color:var(--muted);font-size:13px">Compare <code>{esc(compare_path)}</code> local vs GitHub (<code>{esc(github.base_branch())}</code>).</p>'
@@ -942,7 +952,7 @@ async def status_page(request: Request) -> HTMLResponse:
                 f'<tr><th>GitHub size</th><td>{esc(str(gh_sz)) if gh_sz is not None else "—"}</td></tr>'
                 f'<tr><th>diff</th><td>{diff_badge}</td></tr>'
                 f'<tr><th>newer</th><td>{esc(str(newer)) if newer else "—"}</td></tr></table>'
-                f'<p style="margin-top:6px"><a href="/status">clear</a> · <a href="/status?compare={esc(compare_path)}">recompare</a></p>',
+                f'<p style="margin-top:6px"><a href="/status">clear</a> · <a href="/status?compare={_urlquote(compare_path)}">recompare</a></p>',
                 "compare",
             )
         else:
