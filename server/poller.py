@@ -1466,61 +1466,56 @@ def _pr_vote_sweep(
                         local_results[(num, "")] = cached
                 else:
                     pending_locals.append((num, head_sha))
-        # Run both pools concurrently — use top-level ThreadPoolExecutor
+        # Poller: prefer GitHub — await its result first so CI slots stay free
+        # for agents (repo_ci_run). Local fallback runs only for PRs where GH
+        # is not success (pending/unknown/failure or API unreachable) and only
+        # after GH has been awaited. Keeps the hybrid OR-gate but avoids the
+        # one-double-per-head overlap when GH is still pending.
         gh_pool_size = min(8, len(candidates))
-        # Live 3×1.5c: keep 1 slot for user, poller at most N-1 locals (2 when N=3)
-        try:
-            _poller_local_cap = max(1, int(config.CI_RUN_CONCURRENCY) - 1)
-        except Exception:
-            _poller_local_cap = 2  # domain: degrade-silently
-        local_pool_size = (
-            min(_poller_local_cap, len(pending_locals)) if pending_locals else 0
-        )
-        # Use two executors at once so GH and local truly overlap
         with ThreadPoolExecutor(max_workers=gh_pool_size) as gh_pool:
             gh_futures = {
                 gh_pool.submit(github.pr_checks, pr["number"]): pr["number"]
                 for pr, _, _ in candidates
             }
-            # Start local pool while GH is still in flight
-            if pending_locals and local_pool_size:
-                with ThreadPoolExecutor(max_workers=local_pool_size) as local_pool:
-                    local_futures = {
-                        local_pool.submit(_ensure_local_branch_ok, num, sha): num
-                        for num, sha in pending_locals
-                    }
-                    for gh_fut in as_completed(gh_futures):
-                        num = gh_futures[gh_fut]
-                        try:
-                            gh_results[num] = gh_fut.result()
-                        except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
-                            gh_errors[num] = exc
-                            logutil.log(
-                                "ci_check_batch_error", pr_number=num, error=str(exc)
-                            )
-                    for local_fut in as_completed(local_futures):
-                        num = local_futures[local_fut]
-                        # Find head_sha for this num to key correctly
-                        head_sha = next(
-                            (sha for n, sha in pending_locals if n == num), ""
-                        )
-                        try:
-                            local_results[(num, head_sha)] = bool(local_fut.result())
-                        except Exception as exc:  # domain: degrade-silently - local run failed, treat as not ok
-                            logutil.log(
-                                "local_branch_ci_failed", pr_number=num, error=str(exc)
-                            )
-                            local_results[(num, head_sha)] = False
-            else:
-                for fut in as_completed(gh_futures):
-                    num = gh_futures[fut]
+            for fut in as_completed(gh_futures):
+                num = gh_futures[fut]
+                try:
+                    gh_results[num] = fut.result()
+                except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
+                    gh_errors[num] = exc
+                    logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
+        # Local fallback: only for candidates where GH is not success.
+        # Dedup via pending_locals (already excludes pending_prs + ledger cache)
+        # plus a second filter after GH: skip locals where GH already success.
+        needs_local: list[tuple[int, str]] = []
+        for num, sha in pending_locals:
+            gh = gh_results.get(num)
+            if gh is not None and gh.get("state") == "success":
+                continue  # GitHub already green — no local needed, slot stays free
+            # If GH failed to return (error) or is pending/unknown/failure, fall through to local
+            needs_local.append((num, sha))
+        if needs_local:
+            # Live 3×1.5c: keep 1 slot for user, poller at most N-1 locals (2 when N=3)
+            try:
+                _poller_local_cap = max(1, int(config.CI_RUN_CONCURRENCY) - 1)
+            except Exception:
+                _poller_local_cap = 2  # domain: degrade-silently
+            local_pool_size = min(_poller_local_cap, len(needs_local))
+            with ThreadPoolExecutor(max_workers=local_pool_size) as local_pool:
+                local_futures = {
+                    local_pool.submit(_ensure_local_branch_ok, num, sha): num
+                    for num, sha in needs_local
+                }
+                for local_fut in as_completed(local_futures):
+                    num = local_futures[local_fut]
+                    head_sha = next((sha for n, sha in needs_local if n == num), "")
                     try:
-                        gh_results[num] = fut.result()
-                    except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
-                        gh_errors[num] = exc
+                        local_results[(num, head_sha)] = bool(local_fut.result())
+                    except Exception as exc:  # domain: degrade-silently - local run failed, treat as not ok
                         logutil.log(
-                            "ci_check_batch_error", pr_number=num, error=str(exc)
+                            "local_branch_ci_failed", pr_number=num, error=str(exc)
                         )
+                        local_results[(num, head_sha)] = False
         # Refresh local cache with GH head_sha where GH provided a fresher sha
         if config.CI_FALLBACK_ENABLED and config.CI_RUN_BRANCH_ENABLED:
             for pr, _, _ in candidates:
@@ -1698,7 +1693,7 @@ def _pr_vote_sweep(
                 # with-statement would block on GH poll until it finishes.
                 pool = ThreadPoolExecutor(max_workers=2)
                 try:
-                    gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)  # type: ignore[arg-type]
+                    gh_fut = pool.submit(github.wait_for_ci, number, sha=new_sha)
                     local_fut = pool.submit(
                         ci_runner.run_branch_ci_for_poller,  # type: ignore[arg-type]
                         number,
