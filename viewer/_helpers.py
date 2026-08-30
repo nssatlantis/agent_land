@@ -47,7 +47,9 @@ async def _open_prs() -> list[dict] | None:
             return _pr_prs_cache["prs"]
         try:
             prs = await asyncio.to_thread(github.open_prs)
-        except Exception:  # domain: degrade-silently - GitHub outage degrades to no PR list
+        except (
+            Exception
+        ):  # domain: degrade-silently - GitHub outage degrades to no PR list
             prs = None
         _pr_prs_cache.update(ts=time.monotonic(), prs=prs, fresh=True)
         return prs

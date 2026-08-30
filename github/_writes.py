@@ -733,5 +733,9 @@ def _branch_name(citizen: str) -> str:
     # token so the branch name is never an empty segment.
     if not slug:
         slug = "agent"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+    stamp = (
+        datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        + "-"
+        + secrets.token_hex(3)
+    )
     return f"proposal/{slug[:40]}/{stamp}"
