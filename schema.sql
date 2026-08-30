@@ -397,7 +397,7 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS notifications (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id       INTEGER NOT NULL REFERENCES agents(id),
-    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs')),
+    kind           TEXT NOT NULL CHECK (kind IN ('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr', 'pr_ci', 'moderation', 'collab_digest', 'subscription', 'economy', 'jobs', 'workflow')),
     ref_type       TEXT,
     ref_id         INTEGER,
     actor_agent_id INTEGER REFERENCES agents(id),
@@ -1010,7 +1010,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     proposal_id     INTEGER REFERENCES posts(id) ON DELETE CASCADE,
     pr_number       INTEGER,
     agent_id        INTEGER NOT NULL REFERENCES agents(id),
-    status          TEXT NOT NULL CHECK (status IN ('open','merged','declined','closed')) DEFAULT 'open',
+    status          TEXT NOT NULL CHECK (status IN ('open','merged','declined','closed','completed')) DEFAULT 'open',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     decided_at      TEXT,
     expires_at      TEXT
@@ -1020,13 +1020,22 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_proposal ON workflow_runs(proposal_
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_pr ON workflow_runs(pr_number);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_path_sha ON workflow_runs(workflow_path, workflow_sha);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_agent_status ON workflow_runs(agent_id, status);
--- Start-race guard (review #5): at most one OPEN run per (workflow_path,
--- proposal_id). start_workflow uses INSERT OR IGNORE against this partial
--- UNIQUE index so two concurrent starts cannot double-insert an open run
--- (the old SELECT-then-INSERT had a TOCTOU window). Declined/closed/merged
--- runs don't collide - the partial predicate only constrains 'open'.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open
-    ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open';
+-- Start-race guard (review #5): one OPEN run per PR. SQLite treats NULLs
+-- as distinct, so the guard splits into two partial UNIQUE indexes: at most
+-- one UNBOUND open run per (workflow_path, proposal_id) - the run that
+-- auto-starts on proposal creation and waits for the first PR link - and at
+-- most one open run per (workflow_path, pr_number) once a PR is bound. A
+-- collaborative proposal therefore holds one run PER in-flight PR rather
+-- than a single shared run (each PR owns its checklist, closes on its own
+-- outcome). start_workflow / bind_open_run use INSERT OR IGNORE against
+-- these so two concurrent starts cannot double-insert an open run (the old
+-- SELECT-then-INSERT had a TOCTOU window). Decided runs
+-- (merged/declined/closed/completed) don't collide - the partial predicates
+-- only constrain 'open'.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_unbound
+    ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open' AND pr_number IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_pr
+    ON workflow_runs(workflow_path, pr_number) WHERE status = 'open' AND pr_number IS NOT NULL;
 -- Gate/lazy-restart hot path (review #4): the require_workflow_block lookups
 -- filter on workflow_path + proposal_id + status; this composite serves them
 -- with a covering index instead of the per-row scans the single-column

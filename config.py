@@ -580,9 +580,18 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # blocks repo_propose_change before GitHub branch until workflow steps
     # (update-local → manifest → not-gutted → lint → test) pass — 0 is
     # advisory nudge only. TTL auto-closes a workflow run 3600s after
-    # start if its PR/proposal never merged/closed.
+    # start if its PR/proposal never merged/closed. Per-PR lifecycle (part
+    # 2): CLOSE_ON_CI_GREEN 1 auto-completes an open run bound to an
+    # in-flight PR the moment that PR's CI turns green (status 'completed',
+    # ahead of the merge outcome); 0 keeps runs open until merge/decline/
+    # close or TTL.
     "WORKFLOW_ENFORCE": ("FORUM_WORKFLOW_ENFORCE", 1, int),
     "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 3600, int),
+    "WORKFLOW_CLOSE_ON_CI_GREEN": (
+        "FORUM_WORKFLOW_CLOSE_ON_CI_GREEN",
+        1,
+        int,
+    ),
     # Similarity auto-link (poller): a background pass that retroactively ties
     # a merged pull request to the forum proposal it implemented when the PR
     # flew in without a 'Proposal: #N' stamp (or before the stamp existed).
