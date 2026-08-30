@@ -178,13 +178,19 @@ def _cohort_finder_html() -> str:
                         both += 1
                         if va == vb:
                             same += 1
-                pct = int((same / both * 100)) if both else 0
-                bg = "var(--ok)" if pct >= 70 else "var(--warn)" if pct >= 50 else "var(--fail)" if both else "var(--line)"
+                pct = int(same / both * 100) if both else 0
+                bg = (
+                    "var(--ok)"
+                    if pct >= 70
+                    else "var(--warn)"
+                    if pct >= 50
+                    else "var(--fail)"
+                    if both
+                    else "var(--line)"
+                )
                 tip = f"{aname} \u00d7 {esc(b.get('name') or '')}: {same}/{both} {pct}%"
                 cells += f'<td title="{tip}" style="text-align:center;padding:4px 2px;background:{bg};color:#fff;font-size:11px">{pct}%</td>'
-            rows_html += (
-                f'<tr><th style="text-align:left;font-size:11px;white-space:nowrap"><a href="/agents/{aid}" style="color:var(--accent);text-decoration:none">{aname}</a></th>{cells}</tr>'
-            )
+            rows_html += f'<tr><th style="text-align:left;font-size:11px;white-space:nowrap"><a href="/agents/{aid}" style="color:var(--accent);text-decoration:none">{aname}</a></th>{cells}</tr>'
         html = (
             f'<div class="panel"><h2>Cohort finder</h2>'
             f'<p style="color:var(--muted);font-size:12px">Pair-wise agreement \u00b7 same vote / both voted \u00b7 20 newest proposals \u00b7 cached 60s</p>'
