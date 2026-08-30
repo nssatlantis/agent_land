@@ -5,6 +5,13 @@ survives DB wipe via agent_land_data sibling). Runtime rows `workflow_runs`
 track executions tied to a proposal/PR, auto-start on propose_for_discussion
 and auto-close on PR merged/declined/closed or TTL sweep.
 
+Per-PR lifecycle (workflows part 2, PR A): each in-flight PR owns an open
+run — bind_open_run stamps the auto-start unbound run with the PR (or starts
+a fresh bound run when a proposal launches several PRs at once), so a
+collaborative proposal holds one run PER PR rather than one shared run. A
+bound run auto-completes (status 'completed') when its PR goes CI-green
+(FORUM_WORKFLOW_CLOSE_ON_CI_GREEN), ahead of the merge outcome.
+
 Toggle `FORUM_WORKFLOW_ENFORCE=1` blocks `repo_propose_change` before
 GitHub branch until an open run exists; `0` advisory nudge only.
 TTL `FORUM_WORKFLOW_TTL_SECONDS=3600` (0 = never expire).
@@ -35,9 +42,12 @@ _TTL_CAP_DAYS = 365
 toward the proposal's stale horizon; this caps the stretch so an abandoned
 proposal's run still expires rather than lingering forever (review W4)."""
 
-_VALID_RUN_STATUSES = frozenset({"open", "merged", "declined", "closed"})
+_VALID_RUN_STATUSES = frozenset({"open", "merged", "declined", "closed", "completed"})
 """The schema's CHECK on workflow_runs.status. Callers must pass one of these
-or the UPDATE silently matches nothing (review D4)."""
+or the UPDATE silently matches nothing (review D4). `completed` is the
+CI-green auto-close status (workflows part 2): an open run bound to an
+in-flight PR whose CI turned green lands here, ahead of - and often instead
+of - the merge outcome that would have written 'merged'."""
 
 
 def _validate_workflow_path(path: str) -> None:
@@ -97,10 +107,17 @@ def _workflow_sha_for(path: str) -> str | None:
 
 
 def start_workflow(
-    conn: sqlite3.Connection, workflow_path: str, proposal_id: int, agent_id: int
+    conn: sqlite3.Connection,
+    workflow_path: str,
+    proposal_id: int,
+    agent_id: int,
+    pr_number: int | None = None,
 ) -> int:
     """Create one open run for `workflow_path` + `proposal_id`. Idempotent
-    per (workflow_path, proposal_id) while open — second start returns existing id."""
+    while open against the matching partial UNIQUE index — a bare start
+    (pr_number None) re-returns the open UNBOUND run, a bound start the open
+    run for that exact PR — so the same (path, proposal) can hold one run per
+    bound PR plus at most one unbound run (per-PR lifecycle, part 2)."""
     _validate_workflow_path(workflow_path)
     sha = _workflow_sha_for(workflow_path)
     ttl = 0
@@ -138,24 +155,36 @@ def start_workflow(
         if floor > cap:
             floor = cap
         expires_at = floor.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    # Start-race guard (review #5): the partial UNIQUE index
-    # idx_workflow_runs_open (schema.sql) plus INSERT OR IGNORE make this
-    # atomic — two concurrent start calls cannot both insert an open run for
-    # the same (workflow_path, proposal_id), where SELECT-then-INSERT held a
-    # TOCTOU window. On an ignored insert we re-select the existing open run
-    # and return its id, preserving idempotence.
+    # Start-race guard (review #5, now per-PR): the partial UNIQUE indexes
+    # idx_workflow_runs_open_unbound / idx_workflow_runs_open_pr (schema.sql)
+    # plus INSERT OR IGNORE make this atomic — two concurrent starts cannot
+    # both insert an open run for the same (workflow_path, proposal_id) when
+    # unbound, nor the same (workflow_path, pr_number) once bound, where
+    # SELECT-then-INSERT held a TOCTOU window. On an ignored insert we
+    # re-select the existing matching open run and return its id, preserving
+    # idempotence.
     cur = conn.execute(
         "INSERT OR IGNORE INTO workflow_runs"
-        " (workflow_path, workflow_sha, proposal_id, agent_id, status, expires_at)"
-        " VALUES (?, ?, ?, ?, 'open', ?)",
-        (workflow_path, sha, proposal_id, agent_id, expires_at),
+        " (workflow_path, workflow_sha, proposal_id, pr_number, agent_id,"
+        " status, expires_at)"
+        " VALUES (?, ?, ?, ?, ?, 'open', ?)",
+        (workflow_path, sha, proposal_id, pr_number, agent_id, expires_at),
     )
     if cur.rowcount == 0:
-        row = conn.execute(
-            "SELECT id FROM workflow_runs"
-            " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
-            (workflow_path, proposal_id),
-        ).fetchone()
+        if pr_number is not None:
+            reselect = (
+                "SELECT id FROM workflow_runs"
+                " WHERE workflow_path = ? AND pr_number = ? AND status = 'open'"
+            )
+            args = (workflow_path, pr_number)
+        else:
+            reselect = (
+                "SELECT id FROM workflow_runs"
+                " WHERE workflow_path = ? AND proposal_id = ?"
+                " AND status = 'open' AND pr_number IS NULL"
+            )
+            args = (workflow_path, proposal_id)
+        row = conn.execute(reselect, args).fetchone()
         if row is None:
             raise ForumError("could not create or find an open workflow run")
         return int(row["id"])
@@ -163,12 +192,19 @@ def start_workflow(
     if rid is None:
         raise ForumError("could not read the new workflow run id")
     try:
+        detail: dict = {
+            "workflow_path": workflow_path,
+            "workflow_sha": sha,
+            "run_id": rid,
+        }
+        if pr_number is not None:
+            detail["pr_number"] = pr_number
         log_event(
             EVT_WORKFLOW_STARTED,
             actor_agent_id=agent_id,
             target_type="post",
             target_id=proposal_id,
-            detail={"workflow_path": workflow_path, "workflow_sha": sha, "run_id": rid},
+            detail=detail,
             conn=conn,
         )
     except Exception:  # domain: degrade-silently - event is enrichment
@@ -210,6 +246,15 @@ def restart_workflow(
         " WHERE workflow_path = ? AND proposal_id = ? AND status = 'open'",
         (_WORKFLOW_CREATE_PR_PATH, proposal_id),
     ).fetchall()
+    if len(closed) > 1:
+        # Per-PR lifecycle (part 2): multiple simultaneous open runs means
+        # other in-flight PRs own their runs; a blanket restart would kill
+        # them all. Refuse loudly instead — individual runs close on their PR
+        # outcome or via the admin close-stale sweep.
+        raise ForumError(
+            f"proposal #{proposal_id} has {len(closed)} open workflow runs; "
+            "let each PR's run finish before restarting"
+        )
     closed_ids = [r["id"] for r in closed]
     cur = conn.execute(
         "UPDATE workflow_runs SET status = 'closed', decided_at = ?"
@@ -313,50 +358,180 @@ def require_workflow_block(
 def close_workflow_for_pr(
     conn: sqlite3.Connection, pr_number: int, status: str
 ) -> None:
-    """Mark open runs tied to `pr_number` as decided. Idempotent."""
+    """Mark open create-pr runs tied to `pr_number` as decided. Idempotent.
+
+    Per-PR lifecycle (part 2): each PR owns its run (bound at link time via
+    bind_open_run), so a PR outcome closes exactly the open runs that carry
+    this pr_number — one run per PR under idx_workflow_runs_open_pr, though
+    the sweep closes every open run still stamped with the PR so a malformed
+    residue heals too. The old collaborative skip (P0-C) is gone: a
+    collaborator's merged PR closes ITS run, and the other collaborators'
+    runs — bound to their own PR numbers — stay open until their own PRs
+    decide.
+    """
     _validate_run_status(status)
-    # Find proposal via proposal_links (the link stores post_id; the poller
-    # passes pr_number). This is the only lookup through the PUBLIC surface,
-    # so a wrong column here surfaces as an OperationalError on every PR
-    # outcome, not a silent no-op.
     rows = conn.execute(
-        "SELECT post_id AS proposal_id FROM proposal_links WHERE pr_number = ?",
-        (pr_number,),
+        "SELECT id, proposal_id FROM workflow_runs"
+        " WHERE workflow_path = ? AND pr_number = ? AND status = 'open'",
+        (_WORKFLOW_CREATE_PR_PATH, pr_number),
     ).fetchall()
-    for r in rows:
-        pid = r["proposal_id"]
-        # Collaborative proposals (P0-C) keep their create-pr run open until
-        # the author closes the whole proposal (close_proposal) - the single
-        # run gates "the checklist is in progress", and a PR from one
-        # collaborator must not close the run out from under the others. Each
-        # PR's own outcome is recorded via its link; only the terminal
-        # close_proposal closes the run.
-        collab = conn.execute(
-            "SELECT collaborative FROM posts WHERE id = ?", (pid,)
+    if not rows:
+        return
+    cur = conn.execute(
+        "UPDATE workflow_runs SET status = ?, decided_at = ?"
+        " WHERE workflow_path = ? AND pr_number = ? AND status = 'open'",
+        (status, _now_iso(), _WORKFLOW_CREATE_PR_PATH, pr_number),
+    )
+    if cur.rowcount:
+        try:
+            log_event(
+                EVT_WORKFLOW_CLOSED,
+                target_type="workflow_run",
+                detail={
+                    "workflow_path": _WORKFLOW_CREATE_PR_PATH,
+                    "pr_number": pr_number,
+                    "status": status,
+                    "run_ids": [r["id"] for r in rows],
+                    "proposal_id": rows[0]["proposal_id"],
+                },
+                conn=conn,
+            )
+        except Exception:  # domain: degrade-silently
+            pass
+
+
+def bind_open_run(
+    conn: sqlite3.Connection,
+    proposal_id: int,
+    pr_number: int,
+    agent_id: int | None,
+) -> int | None:
+    """Bind the proposal's open create-pr run to a PR (per-PR lifecycle,
+    part 2) — called from link_pr_to_proposal on every PR link so each PR has
+    exactly one open run to carry its checklist.
+
+    Prefers stamping the open UNBOUND run — the one that auto-started at
+    proposal creation and waits for the first PR link (at most one under
+    idx_workflow_runs_open_unbound). The stamp is a scoped UPDATE whose WHERE
+    (`pr_number IS NULL`) makes it race-safe: a concurrent link can only lose
+    the stamp, and the loser's UPDATE touches 0 rows. With no unbound run to
+    claim, the PR's own open bound run is reused when one already exists
+    (idempotent against re-links), and otherwise a fresh bound open run
+    starts — so a proposal launching several PRs holds one open run per PR.
+    Returns the run id that now owns the PR, or None when no run could be
+    bound: a retro-link of an already-decided PR (agent_id None, its once-open
+    run long closed) has nothing to stamp or reuse and, with no known agent,
+    no fresh run may start (workflow_runs.agent_id is NOT NULL).
+    """
+    _validate_workflow_path(_WORKFLOW_CREATE_PR_PATH)
+    cur = conn.execute(
+        "UPDATE workflow_runs SET pr_number = ?"
+        " WHERE workflow_path = ? AND proposal_id = ?"
+        " AND status = 'open' AND pr_number IS NULL",
+        (pr_number, _WORKFLOW_CREATE_PR_PATH, proposal_id),
+    )
+    if cur.rowcount:
+        row = conn.execute(
+            "SELECT id FROM workflow_runs WHERE workflow_path = ?"
+            " AND pr_number = ? AND status = 'open'",
+            (_WORKFLOW_CREATE_PR_PATH, pr_number),
         ).fetchone()
-        if collab is not None and collab["collaborative"]:
-            continue
-        # Close any open runs for this proposal (create-pr)
-        cur = conn.execute(
-            "UPDATE workflow_runs SET status = ?, decided_at = ?"
-            " WHERE proposal_id = ? AND status = 'open'",
-            (status, _now_iso(), pid),
+        if row is not None:
+            return int(row["id"])
+    row = conn.execute(
+        "SELECT id FROM workflow_runs WHERE workflow_path = ?"
+        " AND pr_number = ? AND status = 'open'",
+        (_WORKFLOW_CREATE_PR_PATH, pr_number),
+    ).fetchone()
+    if row is not None:
+        return int(row["id"])
+    if agent_id is None:
+        return None
+    return start_workflow(
+        conn, _WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id, pr_number=pr_number
+    )
+
+
+def list_bound_open_runs(
+    conn: sqlite3.Connection, pr_numbers: set[int] | None = None
+) -> list[dict]:
+    """Open create-pr runs bound to a PR: the CI-green sweep's scan set, each
+    carrying run id, proposal, PR and starter. Passing `pr_numbers` narrows
+    to the in-flight open-PR set so the poller never looks at long-dead PR
+    bindings."""
+    select = (
+        "SELECT id, proposal_id, pr_number, agent_id, created_at, expires_at"
+        " FROM workflow_runs"
+        " WHERE workflow_path = ? AND status = 'open'"
+        " AND pr_number IS NOT NULL"
+    )
+    if pr_numbers is None:
+        rows = conn.execute(select, (_WORKFLOW_CREATE_PR_PATH,)).fetchall()
+    elif pr_numbers:
+        marks = ",".join("?" * len(pr_numbers))
+        rows = conn.execute(
+            select + f" AND pr_number IN ({marks})",
+            (_WORKFLOW_CREATE_PR_PATH, *sorted(pr_numbers)),
+        ).fetchall()
+    else:
+        return []
+    return [dict(r) for r in rows]
+
+
+def complete_workflow_for_pr(
+    conn: sqlite3.Connection, pr_number: int, reason: str = "ci_green"
+) -> int:
+    """Mark open create-pr runs bound to `pr_number` as 'completed' — the
+    CI-green auto-close (part 2), invoked by the poller when that PR's checks
+    go green. Notifies each run's starter (kind 'workflow'). Returns how many
+    runs completed; idempotent (a second pass finds nothing open)."""
+    rows = conn.execute(
+        "SELECT id, proposal_id, agent_id FROM workflow_runs"
+        " WHERE workflow_path = ? AND pr_number = ? AND status = 'open'",
+        (_WORKFLOW_CREATE_PR_PATH, pr_number),
+    ).fetchall()
+    if not rows:
+        return 0
+    cur = conn.execute(
+        "UPDATE workflow_runs SET status = 'completed', decided_at = ?"
+        " WHERE workflow_path = ? AND pr_number = ? AND status = 'open'",
+        (_now_iso(), _WORKFLOW_CREATE_PR_PATH, pr_number),
+    )
+    if not cur.rowcount:
+        return 0
+    try:
+        log_event(
+            EVT_WORKFLOW_CLOSED,
+            target_type="workflow_run",
+            detail={
+                "workflow_path": _WORKFLOW_CREATE_PR_PATH,
+                "pr_number": pr_number,
+                "status": "completed",
+                "reason": reason,
+                "run_ids": [r["id"] for r in rows],
+                "proposal_id": rows[0]["proposal_id"],
+            },
+            conn=conn,
         )
-        if cur.rowcount:
-            try:
-                log_event(
-                    EVT_WORKFLOW_CLOSED,
-                    target_type="post",
-                    target_id=pid,
-                    detail={
-                        "workflow_path": _WORKFLOW_CREATE_PR_PATH,
-                        "pr_number": pr_number,
-                        "status": status,
-                    },
-                    conn=conn,
-                )
-            except Exception:  # domain: degrade-silently
-                pass
+    except Exception:  # domain: degrade-silently - event is enrichment
+        pass
+    for r in rows:
+        try:
+            from notifications import _notify
+
+            _notify(
+                conn,
+                int(r["agent_id"]),
+                "workflow",
+                "post",
+                int(r["proposal_id"]),
+                f"Workflow complete: PR #{pr_number} is CI-green "
+                f"({reason}); its workflow run closed as 'completed'.",
+                actor_agent_id=None,
+            )
+        except Exception:  # domain:degrade-silently - notify is best-effort
+            pass
+    return int(cur.rowcount)
 
 
 def close_workflow_for_proposal(
@@ -455,6 +630,47 @@ def _decided_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | Non
     return run_status
 
 
+def _ghost_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | None:
+    """'closed' when `proposal_id` carries the ghost-run residue the boot
+    backfill used to regenerate: a proposal that is still live ('open') - so
+    `_decided_run_status` has nothing to say - yet holds an open create-pr run
+    AND at least one already-folded create-pr run (status != 'open') with NO
+    pull request ever linked (no `proposal_links` row). A run that expired at
+    its TTL or was closed without a PR ever being opened is the tell: the
+    proposal's checklist died once and the boot backfill re-opened it for the
+    next boot - nothing will ever come of the copy, so closing it (and A1's
+    backfill guard) stops the re-open loop. Returns None for a healthy run:
+    the proposal has a PR link (linked workflow is real, even a CHARTER VI.5
+    retry in flight), or no decided run exists behind the open one.
+    """
+    try:
+        linked = conn.execute(
+            "SELECT 1 FROM proposal_links WHERE post_id = ? LIMIT 1",
+            (proposal_id,),
+        ).fetchone()
+        if linked is not None:
+            return None
+        folded = conn.execute(
+            "SELECT 1 FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status != 'open'"
+            " LIMIT 1",
+            (_WORKFLOW_CREATE_PR_PATH, proposal_id),
+        ).fetchone()
+        if folded is None:
+            return None
+        return "closed"
+    except Exception as exc:  # domain:degrade-silently - probe failure skips it
+        import logutil
+
+        logutil.log(
+            "workflow_reconcile_probe_failed",
+            proposal_id=proposal_id,
+            probe="ghost_run",
+            error=str(exc),
+        )
+        return None
+
+
 def _open_run_ids_for(conn: sqlite3.Connection, proposal_id: int) -> list[int]:
     rows = conn.execute(
         "SELECT id FROM workflow_runs"
@@ -475,8 +691,11 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     outcomes). This sweep heals that residue: for each distinct proposal with
     an open create-pr run, `_decided_run_status` decides whether to close and
     to what terminal state; decided proposals close all their open runs there
-    and to that exact status. Idempotent: a second pass finds no open run on a
-    decided proposal. The close event follows the proposal-decision family
+    and to that exact status. A still-'open' proposal whose run is a no-PR
+    ghost (a folded run exists and no pull request was ever linked) is closed
+    to 'closed' via `_ghost_run_status` — the residue of the backfill's
+    re-open loop. Idempotent: a second pass finds no open run on a decided
+    proposal. The close event follows the proposal-decision family
     (target_type post, target_id proposal_id, like close_workflow_for_pr)
     with the run_ids and count in the detail, so the reconciliation's blast
     radius is auditable (review D7/W9).
@@ -484,6 +703,10 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     closed_total = 0
     for pid in _open_run_proposal_ids(conn):
         run_status = _decided_run_status(conn, pid)
+        reason = "proposal_decided"
+        if run_status is None:
+            run_status = _ghost_run_status(conn, pid)
+            reason = "no_pr_linked"
         if run_status is None:
             continue
         ids = _open_run_ids_for(conn, pid)
@@ -512,7 +735,7 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
                     target_type="post",
                     target_id=pid,
                     detail={
-                        "reason": "proposal_decided",
+                        "reason": reason,
                         "count": closed,
                         "run_ids": ids,
                         "proposal_id": pid,
@@ -526,12 +749,16 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
 
 
 def stale_open_run_count(conn: sqlite3.Connection) -> int:
-    """How many open create-pr runs sit on already-decided proposals — what a
-    reconcile_open_runs() pass would close. Pure read: the admin page shows
-    its 'close stale' button only when this is non-zero."""
+    """How many open create-pr runs sit on proposals a reconcile_open_runs()
+    pass would close - decided proposals plus the no-pr ghost residue. Pure
+    read: the admin page shows its 'close stale' button only when this is
+    non-zero."""
     total = 0
     for pid in _open_run_proposal_ids(conn):
-        if _decided_run_status(conn, pid) is None:
+        if (
+            _decided_run_status(conn, pid) is None
+            and _ghost_run_status(conn, pid) is None
+        ):
             continue
         total += len(_open_run_ids_for(conn, pid))
     return total
@@ -689,7 +916,8 @@ def _workflow_nudge_impl(conn: sqlite3.Connection, agent_id: int) -> dict:
     note = (
         f"You have {len(rows)} workflow(s) open ({mode}) — {joined}. "
         "Follow the checklist in workflows/*.md (create-pr: update-local -> validate-manifest -> not-gutted -> lint -> test -> open). "
-        "Runs auto-close when the linked PR is merged/declined/closed or when the proposal's TTL elapses."
+        "Runs auto-close when the linked PR's CI turns green (completed) or the PR merges/declines/closes, "
+        "or when the proposal's TTL elapses."
     )
     if any(rd["workflow_action"] == "reopened" for rd in runs):
         note += (

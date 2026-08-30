@@ -16,6 +16,7 @@ import github
 import logutil
 import notifications
 import reports
+import search
 from db._pr_vote import (
     _VOTES_LABEL_PREFIX,
     _VOTES_LABEL_SUFFIX,
@@ -31,8 +32,10 @@ from events import (
     EVT_PR_HOLD_APPLIED,
     EVT_PR_HOLD_RELEASED,
     EVT_PR_MERGED,
+    EVT_PROPOSAL_AUTO_LINKED,
     log_event,
 )
+from github._reads import _closed_pulls_page
 
 
 def _notify_proposal_watchers(
@@ -462,6 +465,167 @@ async def _pr_outcome_poller() -> None:
         await asyncio.sleep(interval_seconds)
 
 
+# -- Similarity auto-link (retro-link merged PRs to their proposal) --------
+
+
+def _auto_link_candidates(since_iso: str) -> list[dict]:
+    """Closed pulls newest-by-updated at or after `since_iso`, raw GitHub
+    rows (so the body stamp and labels survive for classification). The
+    listing is sorted by updated descending, so the first row older than
+    the floor ends the scan; bounded by _PR_PAGE_CAP so a busy repo never
+    turns the sweep into an unbounded crawl."""
+    out: list[dict] = []
+    page = 1
+    while True:
+        batch = _closed_pulls_page("closed", config.GITHUB_PRS_PER_PAGE, page)
+        for p in batch:
+            if (p.get("updated_at") or "") < since_iso:
+                return out
+            out.append(p)
+        if len(batch) < config.GITHUB_PRS_PER_PAGE or page >= github._PR_PAGE_CAP:
+            return out
+        page += 1
+
+
+def _auto_link_sweep(since_iso: str, max_matches: int) -> int:
+    """Retro-link merged pull requests the outcome poller never tied to a
+    forum proposal, reading the closed-PR listing inside `since_iso`. A PR
+    already linked (proposal_links) or outcome-recorded is skipped - this is
+    purely the catch-up for work the one-page recent feed missed.
+
+    Two routes for an unlinked, unrecorded, MERGED PR inside the window:
+
+      * a 'Proposal: #N' stamp in the body goes through the full
+        `_process_closed_pr` lifecycle (outcome, karma, stake effects) - the
+        same recording an up-to-recent poll would have done;
+      * otherwise `search.similar_proposal_for` picks the best open,
+        community-approved proposal from the PR's title, commit messages and
+        branch, and the link is applied LIFECYCLE-ONLY: link + merged
+        outcome + the create-pr run's close. No karma, no credits - a
+        retro-link must never mint credit or retroactive reputation for
+        already-awarded past merges.
+
+    At most `max_matches` similarity links per sweep (stamped catch-ups
+    don't count against the cap). Every entry is fault-isolated so one
+    poisoned PR (GitHub read, sqlite contention, a refused link) never
+    starves the rest. Designed to run on a worker thread."""
+    with db._conn() as conn:
+        touched = {
+            r["pr_number"] for r in conn.execute("SELECT pr_number FROM proposal_links")
+        } | {
+            r["pr_number"]
+            for r in conn.execute("SELECT pr_number FROM proposal_outcomes")
+        }
+    matches = 0
+    for p in _auto_link_candidates(since_iso):
+        if not p.get("merged_at"):
+            continue  # only merged PRs concern the retro-link
+        number = p["number"]
+        if number in touched:
+            continue
+        try:
+            body = p.get("body") or ""
+            stamped = github._parse_proposal(body)
+            if stamped:
+                _process_closed_pr(
+                    {
+                        "number": number,
+                        "title": p.get("title") or "",
+                        "body": body,
+                        "merged_at": p.get("merged_at"),
+                        "closed_at": p.get("closed_at"),
+                        "declined": False,
+                        "decline_reason": "",
+                        "citizen": github._parse_citizen(body),
+                        "proposal_post_id": stamped,
+                    }
+                )
+                continue
+            if matches >= max_matches:
+                continue
+            commits = github.pr_commits(number)
+            commit_messages = [
+                c.get("message") or "" for c in (commits.get("commits") or [])
+            ]
+            winner = search.similar_proposal_for(
+                p.get("title") or "",
+                commit_messages,
+                (commits.get("head") or "") or ((p.get("head") or {}).get("ref") or ""),
+            )
+            if winner is None:
+                continue
+            post_id = winner["post_id"]
+            with db._conn() as conn:
+                db.link_pr_to_proposal(
+                    number, post_id, None, conn=conn, enforce_claims=False
+                )
+                recorded_now = db.record_proposal_outcome(
+                    number,
+                    post_id,
+                    "merged",
+                    p.get("merged_at") or p.get("closed_at") or "",
+                    conn=conn,
+                )
+                db.close_workflow_for_pr(conn, number, "merged")
+                if recorded_now:
+                    log_event(
+                        EVT_PROPOSAL_AUTO_LINKED,
+                        target_type="pr",
+                        target_id=number,
+                        detail={
+                            "pr_number": number,
+                            "post_id": post_id,
+                            "score": winner["score"],
+                        },
+                        conn=conn,
+                    )
+            if recorded_now:
+                logutil.log(
+                    "auto_link_similar",
+                    pr_number=number,
+                    post_id=post_id,
+                    score=winner["score"],
+                )
+                matches += 1
+        except Exception as exc:
+            # domain: never-lose-data - the link is idempotent and the event
+            # fires only on a newly-recorded outcome, so "log, skip, retry
+            # next interval" loses nothing.
+            logutil.log("auto_link_entry_failed", pr_number=number, error=str(exc))
+    return matches
+
+
+async def _auto_link_similar_poller() -> None:
+    """Periodically scan the closed-PR listing and retro-link merged PRs to
+    the forum proposal they implemented: stamped PRs missed by the one-page
+    outcome feed get their full lifecycle recorded, and unstamped ones are
+    matched by similarity and linked lifecycle-only. Guarded by heuristic
+    thresholds (FORUM_AUTO_LINK_THRESHOLD / FORUM_AUTO_LINK_MARGIN), capped
+    per sweep (FORUM_AUTO_LINK_MAX_MATCHES), and bounded to the scan window
+    (FORUM_AUTO_LINK_WINDOW_DAYS). `FORUM_AUTO_LINK_POLL_SECONDS` of 0
+    disables the pass entirely. Blocking GitHub reads run on a worker
+    thread; a failed sweep is logged and retried next interval."""
+    while True:
+        interval_seconds = config.AUTO_LINK_POLL_SECONDS
+        if interval_seconds <= 0:
+            return
+        try:
+            window_start = datetime.now(timezone.utc) - timedelta(
+                days=config.AUTO_LINK_WINDOW_DAYS
+            )
+            window_iso = window_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            since_iso = max(db.earliest_record_iso() or window_iso, window_iso)
+            matches = await asyncio.to_thread(
+                _auto_link_sweep, since_iso, config.AUTO_LINK_MAX_MATCHES
+            )
+            if matches:
+                logutil.log("auto_link_sweep", matches=matches)
+        except Exception as exc:
+            # domain: degrade-silently - a failed sweep retries next interval.
+            logutil.log("auto_link_poll", error=str(exc))
+        await asyncio.sleep(interval_seconds)
+
+
 # Maximum length of a CI-failure nudge body: title + first failure,
 # capped so the mailbox stays scannable.
 _CI_NUDGE_BODY_MAX = 300
@@ -701,6 +865,67 @@ def sweep_pr_comments(
     return notified
 
 
+def _workflow_ci_green_sweep(
+    open_prs: list[dict], checks_fn=github.pr_checks
+) -> list[int]:
+    """Auto-complete bound open workflow runs whose in-flight PR is CI-green
+    (per-PR lifecycle, part 2 — status 'completed', notified as kind
+    'workflow'). No-op when FORUM_WORKFLOW_CLOSE_ON_CI_GREEN is 0.
+
+    Only open runs that are BOUND to a PR still open on GitHub qualify: each
+    PR owns its run, and a green build closes it ahead of — and often instead
+    of — the merge outcome. The scan set is read once (restricted to the
+    live PR numbers so long-dead bindings are never re-fetched), CI state is
+    read per PR through the same tiered builder the failure sweep and
+    repo_pr_checks use, and the completion write is isolated per PR — one
+    bad check fetch or db write never blocks the rest of the batch, and the
+    sweep is idempotent (completed runs are not 'open', so a retry finds
+    nothing and re-notifies nobody). `checks_fn` is injectable so tests need
+    no GitHub. Returns the pr numbers completed."""
+    try:
+        if int(config.WORKFLOW_CLOSE_ON_CI_GREEN) <= 0:
+            return []
+    except Exception:  # domain: degrade-silently - default to ON
+        pass
+    open_numbers = {pr["number"] for pr in open_prs}
+    if not open_numbers:
+        return []
+    with db._conn() as conn:
+        runs = db.list_bound_open_runs(conn, pr_numbers=open_numbers)
+    bound_prs = sorted({r["pr_number"] for r in runs if r.get("pr_number")})
+    if not bound_prs:
+        return []
+    checks_results: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(bound_prs))) as pool:
+        futures = {pool.submit(checks_fn, num): num for num in bound_prs}
+        for future in as_completed(futures):
+            pr_num = futures[future]
+            try:
+                checks_results[pr_num] = future.result()
+            except Exception as exc:  # domain: degrade-silently - one PR's check fetch failing must not block the batch
+                logutil.log(
+                    "ci_check_batch_error", pr_number=pr_num, error=str(exc)
+                )  # per-PR GitHub failure must not block others
+    green = [
+        num
+        for num in bound_prs
+        if (checks_results.get(num) or {}).get("state") == "success"
+    ]
+    completed: list[int] = []
+    for num in green:
+        try:
+            with db._conn() as conn:
+                db.complete_workflow_for_pr(conn, num)
+            completed.append(num)
+        except Exception as exc:
+            logutil.log(
+                "workflow_ci_green_failed",
+                pr_number=num,
+                error=str(exc),
+            )  # domain: never-lose-data - idempotent, retried next interval
+    return completed
+
+
 def _maybe_checkpoint_economy() -> None:
     """Seal an economy checkpoint when FORUM_ECONOMY_CHECKPOINT_SECONDS
     have elapsed since the last one (0 disables). Delegates the
@@ -745,8 +970,8 @@ async def _ci_failure_poller() -> None:
     next interval.
 
     Merged with the vote poller (proposal #111 audit item 2375):
-    fetches open_prs once per interval and passes it to both the
-    CI-failure sweep and the vote sweep, halving GitHub API traffic.
+    fetches open_prs once per interval and passes it to the CI-failure,
+    workflow CI-green and vote sweeps, halving GitHub API traffic.
     Fast 30s poll for CI (local-first) + debounced direct trigger from
     repo_propose_change/repo_update_pr (15s coalesce) ensures host runs
     once for the final head while GitHub runs every intermediate."""
@@ -760,6 +985,7 @@ async def _ci_failure_poller() -> None:
         try:
             open_prs = await asyncio.to_thread(github.open_prs)
             await asyncio.to_thread(_ci_failure_sweep, open_prs)
+            await asyncio.to_thread(_workflow_ci_green_sweep, open_prs)
             sweep_actions = await asyncio.to_thread(_pr_vote_sweep, open_prs)
             await asyncio.to_thread(sweep_pr_comments, open_prs)
             await asyncio.to_thread(_maybe_truncate_wal)

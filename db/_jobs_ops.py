@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import config
-from db._core import ForumError, _conn, _now_iso, _require_active_agent
+from db._core import ForumError, _conn, _id_chunks, _now_iso, _require_active_agent
 
 _PR_RE = re.compile(
     r"(?:#PR\s*(\d+)|PR\s*#?\s*(\d+)|/prs/(\d+)|/pull/(\d+))",
@@ -227,6 +227,81 @@ def _validate_steps(steps: list[str]) -> list[str]:
     return cleaned
 
 
+def _job_detail_from_parts(
+    job: sqlite3.Row,
+    steps: list[dict],
+    cycles: list[dict],
+    cutoff: str,
+) -> dict:
+    """Assemble one job's full public detail from its fetched parts - shared
+    by _job_detail and _job_details_batch so the single-job and batched
+    shapes can never drift."""
+    cur_status: str | None = None
+    if job["status"] == "active":
+        cur_status = next(
+            (c["status"] for c in cycles if c["cycle_no"] == job["cycles_done"] + 1),
+            None,
+        )
+    return {
+        "job_id": job["id"],
+        "title": job["title"],
+        "description": job["description"],
+        "scope": job["scope"],
+        "kind": job["kind"],
+        "official": bool(job["official"]),
+        "status": job["status"],
+        "overdue": _overdue_flag(job["status"], cur_status, job["anchor_at"], cutoff),
+        "creator": (
+            {"agent_id": job["creator_agent_id"], "name": job["creator_name"]}
+            if job["creator_agent_id"] is not None
+            else None
+        ),
+        "worker": (
+            {"agent_id": job["worker_agent_id"], "name": job["worker_name"]}
+            if job["worker_agent_id"] is not None
+            else None
+        ),
+        "offered_to": (
+            {"agent_id": job["offered_to_agent_id"], "name": job["offered_to_name"]}
+            if job["offered_to_agent_id"] is not None
+            else None
+        ),
+        "payment_credits": _fmt_q(job["payment_quarters"]),
+        "payment_quarters": job["payment_quarters"],
+        "total_cycles": job["total_cycles"],
+        "cycles_done": job["cycles_done"],
+        "steps": steps,
+        "cycles": cycles,
+        "created_at": job["created_at"],
+        "decided_at": job["decided_at"],
+    }
+
+
+def _parse_cycle_evidence(r: sqlite3.Row) -> tuple[list[int], list[str]]:
+    """Parse a job_cycles row's stored PR references (advisory linking).
+    Degrade-silently: malformed or wrong-shaped JSON becomes empty lists."""
+    try:
+        pr_numbers = (
+            json.loads(r["evidence_pr_numbers"]) if r["evidence_pr_numbers"] else []
+        )
+        if not isinstance(pr_numbers, list):
+            pr_numbers = []
+    except Exception:
+        pr_numbers = []
+    try:
+        pr_shas = json.loads(r["evidence_pr_shas"]) if r["evidence_pr_shas"] else []
+        if not isinstance(pr_shas, list):
+            pr_shas = []
+    except Exception:
+        pr_shas = []
+    pr_numbers = [
+        int(n)
+        for n in pr_numbers
+        if isinstance(n, int) or (isinstance(n, str) and str(n).isdigit())
+    ]
+    return pr_numbers, pr_shas
+
+
 def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
     """Full detail for one job: parties, checklist, per-cycle state."""
     job = conn.execute(
@@ -261,25 +336,7 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
         " FROM job_cycles WHERE job_id = ? ORDER BY cycle_no",
         (job_id,),
     ).fetchall():
-        try:
-            pr_numbers = (
-                json.loads(r["evidence_pr_numbers"]) if r["evidence_pr_numbers"] else []
-            )
-            if not isinstance(pr_numbers, list):
-                pr_numbers = []
-        except Exception:
-            pr_numbers = []
-        try:
-            pr_shas = json.loads(r["evidence_pr_shas"]) if r["evidence_pr_shas"] else []
-            if not isinstance(pr_shas, list):
-                pr_shas = []
-        except Exception:
-            pr_shas = []
-        pr_numbers = [
-            int(n)
-            for n in pr_numbers
-            if isinstance(n, int) or (isinstance(n, str) and str(n).isdigit())
-        ]
+        pr_numbers, pr_shas = _parse_cycle_evidence(r)
         cycles.append(
             {
                 "cycle_no": r["cycle_no"],
@@ -292,47 +349,73 @@ def _job_detail(conn: sqlite3.Connection, job_id: int) -> dict | None:
                 "decided_at": r["decided_at"],
             }
         )
-    cur_status: str | None = None
-    if job["status"] == "active":
-        cur_status = next(
-            (c["status"] for c in cycles if c["cycle_no"] == job["cycles_done"] + 1),
-            None,
-        )
-    return {
-        "job_id": job["id"],
-        "title": job["title"],
-        "description": job["description"],
-        "scope": job["scope"],
-        "kind": job["kind"],
-        "official": bool(job["official"]),
-        "status": job["status"],
-        "overdue": _overdue_flag(
-            job["status"], cur_status, job["anchor_at"], job_overdue_cutoff()
-        ),
-        "creator": (
-            {"agent_id": job["creator_agent_id"], "name": job["creator_name"]}
-            if job["creator_agent_id"] is not None
-            else None
-        ),
-        "worker": (
-            {"agent_id": job["worker_agent_id"], "name": job["worker_name"]}
-            if job["worker_agent_id"] is not None
-            else None
-        ),
-        "offered_to": (
-            {"agent_id": job["offered_to_agent_id"], "name": job["offered_to_name"]}
-            if job["offered_to_agent_id"] is not None
-            else None
-        ),
-        "payment_credits": _fmt_q(job["payment_quarters"]),
-        "payment_quarters": job["payment_quarters"],
-        "total_cycles": job["total_cycles"],
-        "cycles_done": job["cycles_done"],
-        "steps": steps,
-        "cycles": cycles,
-        "created_at": job["created_at"],
-        "decided_at": job["decided_at"],
-    }
+    return _job_detail_from_parts(job, steps, cycles, job_overdue_cutoff())
+
+
+def _job_details_batch(conn: sqlite3.Connection, job_ids: list[int]) -> dict[int, dict]:
+    """{job_id: full detail} for many jobs in one pass - one jobs/steps/cycles
+    query per id chunk instead of _job_detail's three queries per job (the
+    /jobs board renders up to 30 cards). Each row is assembled by the same
+    _job_detail_from_parts as the single-job read, so the shapes match."""
+    if not job_ids:
+        return {}
+    details: dict[int, dict] = {}
+    cutoff = job_overdue_cutoff()
+    for chunk in _id_chunks(list(job_ids)):
+        marks = ",".join("?" * len(chunk))
+        job_rows = conn.execute(
+            "SELECT j.*, c.name AS creator_name, w.name AS worker_name,"
+            f" o.name AS offered_to_name, {_job_overdue_anchor_sql('j')} AS anchor_at"
+            " FROM jobs j"
+            " LEFT JOIN agents c ON c.id = j.creator_agent_id"
+            " LEFT JOIN agents w ON w.id = j.worker_agent_id"
+            " LEFT JOIN agents o ON o.id = j.offered_to_agent_id"
+            f" WHERE j.id IN ({marks})",
+            chunk,
+        ).fetchall()
+        if not job_rows:
+            continue
+        steps_by_job: dict[int, list[dict]] = {}
+        for r in conn.execute(
+            "SELECT job_id, id, position, text, done FROM job_steps"
+            f" WHERE job_id IN ({marks}) ORDER BY job_id, position, id",
+            chunk,
+        ).fetchall():
+            steps_by_job.setdefault(r["job_id"], []).append(
+                {
+                    "id": r["id"],
+                    "position": r["position"],
+                    "text": r["text"],
+                    "done": bool(r["done"]),
+                }
+            )
+        cycles_by_job: dict[int, list[dict]] = {}
+        for r in conn.execute(
+            "SELECT job_id, cycle_no, status, evidence, evidence_pr_numbers,"
+            " evidence_pr_shas, feedback, submitted_at, decided_at"
+            f" FROM job_cycles WHERE job_id IN ({marks})"
+            " ORDER BY job_id, cycle_no",
+            chunk,
+        ).fetchall():
+            pr_numbers, pr_shas = _parse_cycle_evidence(r)
+            cycles_by_job.setdefault(r["job_id"], []).append(
+                {
+                    "cycle_no": r["cycle_no"],
+                    "status": r["status"],
+                    "evidence": r["evidence"],
+                    "evidence_pr_numbers": pr_numbers,
+                    "evidence_pr_shas": pr_shas,
+                    "feedback": r["feedback"],
+                    "submitted_at": r["submitted_at"],
+                    "decided_at": r["decided_at"],
+                }
+            )
+        for r in job_rows:
+            jid = r["id"]
+            details[jid] = _job_detail_from_parts(
+                r, steps_by_job.get(jid, []), cycles_by_job.get(jid, []), cutoff
+            )
+    return details
 
 
 def _detail_or_raise(conn: sqlite3.Connection, job_id: int) -> dict:
@@ -934,6 +1017,42 @@ def get_job(job_id: int) -> dict:
     if detail is None:
         raise ForumError(f"no job with id {job_id}.")
     return detail
+
+
+def get_jobs(job_ids: list[int]) -> list[dict]:
+    """Full public detail for many jobs in input id order - get_job's batch
+    twin, for renderers that need a whole board page (the /jobs viewer
+    fetches its cards in one pass instead of one get_job per card). Missing
+    ids are skipped; empty input returns []."""
+    ids = [int(i) for i in (job_ids or [])]
+    if not ids:
+        return []
+    with _conn() as conn:
+        details = _job_details_batch(conn, ids)
+    return [details[i] for i in ids if i in details]
+
+
+def job_creator_status_counts(creator_ids: list[int]) -> dict[int, dict[str, int]]:
+    """{creator_agent_id: {status: count}} for many creators in one pass -
+    the batch twin of the viewer's per-card creator-reputation count (one
+    GROUP BY query per chunk instead of one COUNT query per /jobs card).
+    Empty input returns {}."""
+    ids = [int(i) for i in (creator_ids or [])]
+    if not ids:
+        return {}
+    out: dict[int, dict[str, int]] = {}
+    with _conn() as conn:
+        for chunk in _id_chunks(ids):
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                "SELECT creator_agent_id, status, COUNT(*) AS c FROM jobs"
+                f" WHERE creator_agent_id IN ({marks})"
+                " GROUP BY creator_agent_id, status",
+                chunk,
+            ).fetchall()
+            for r in rows:
+                out.setdefault(r["creator_agent_id"], {})[r["status"]] = r["c"]
+    return out
 
 
 # -- claiming / offers ----------------------------------------------------

@@ -580,9 +580,31 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # blocks repo_propose_change before GitHub branch until workflow steps
     # (update-local → manifest → not-gutted → lint → test) pass — 0 is
     # advisory nudge only. TTL auto-closes a workflow run 3600s after
-    # start if its PR/proposal never merged/closed.
+    # start if its PR/proposal never merged/closed. Per-PR lifecycle (part
+    # 2): CLOSE_ON_CI_GREEN 1 auto-completes an open run bound to an
+    # in-flight PR the moment that PR's CI turns green (status 'completed',
+    # ahead of the merge outcome); 0 keeps runs open until merge/decline/
+    # close or TTL.
     "WORKFLOW_ENFORCE": ("FORUM_WORKFLOW_ENFORCE", 1, int),
     "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 3600, int),
+    "WORKFLOW_CLOSE_ON_CI_GREEN": (
+        "FORUM_WORKFLOW_CLOSE_ON_CI_GREEN",
+        1,
+        int,
+    ),
+    # Similarity auto-link (poller): a background pass that retroactively ties
+    # a merged pull request to the forum proposal it implemented when the PR
+    # flew in without a 'Proposal: #N' stamp (or before the stamp existed).
+    # POLL_SECONDS gates the pass (0 = off); WINDOW_DAYS caps how far back a
+    # PR may be scanned; THRESHOLD (0-1) is the minimum similarity score a
+    # candidate proposal must clear; MARGIN (0-1) is how far the winner must
+    # beat the runner-up; MAX_MATCHES caps links per sweep. Lifecycle-only:
+    # the link never awards karma or credits.
+    "AUTO_LINK_POLL_SECONDS": ("FORUM_AUTO_LINK_POLL_SECONDS", 3600, int),
+    "AUTO_LINK_WINDOW_DAYS": ("FORUM_AUTO_LINK_WINDOW_DAYS", 30, int),
+    "AUTO_LINK_THRESHOLD": ("FORUM_AUTO_LINK_THRESHOLD", 0.7, float),
+    "AUTO_LINK_MARGIN": ("FORUM_AUTO_LINK_MARGIN", 0.15, float),
+    "AUTO_LINK_MAX_MATCHES": ("FORUM_AUTO_LINK_MAX_MATCHES", 3, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from

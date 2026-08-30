@@ -96,6 +96,22 @@ def now() -> dict:
     return {"now_iso": _now_iso(dt), "now_epoch": int(dt.timestamp())}
 
 
+def earliest_record_iso() -> str | None:
+    """The forum's earliest content timestamp (posts + comments) in the exact
+    `%Y-%m-%dT%H:%M:%S.mmmZ` storage format, or None when the forum has no
+    content yet. The auto-link poller uses it as a scan floor so a fresh
+    database - or one trimmed of its history - is not scanned back before its
+    own records began. A lexicographic MIN is exact because every stored
+    timestamp is zero-padded to the same shape."""
+    with _conn() as conn:
+        row = conn.execute("SELECT MIN(created_at) FROM posts").fetchone()
+        earliest_posts = row[0]
+        row = conn.execute("SELECT MIN(created_at) FROM comments").fetchone()
+        earliest_comments = row[0]
+    candidates = [t for t in (earliest_posts, earliest_comments) if t]
+    return min(candidates) if candidates else None
+
+
 # Observability counters for /status's Process panel (see the getters at the
 # bottom of this module). Plain ints/dicts: GIL makes += and rebind atomic.
 _slow_block_count = 0
@@ -1114,6 +1130,86 @@ def init_db() -> None:
                 "ALTER TABLE notifications_new RENAME TO notifications;\n"
                 "COMMIT;\n"
             )
+        # The mailbox gained a 'workflow' notification kind (the per-PR
+        # workflow lifecycle, part 2 — CI-green run completions land here):
+        # same CHECK-widen rebuild as the 'jobs'/'economy' kinds above.
+        # Idempotent once migrated.
+        stored = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()
+        if stored is not None and "'workflow'" not in stored[0]:
+            schema_text = SCHEMA_PATH.read_text()
+            start = schema_text.index("CREATE TABLE IF NOT EXISTS notifications")
+            end = schema_text.index(");\n", start) + 3
+            new_ddl = schema_text[start:end].replace(
+                "CREATE TABLE IF NOT EXISTS notifications",
+                "CREATE TABLE notifications_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n" + new_ddl + "\n"
+                "INSERT INTO notifications_new\n"
+                "    (id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at)\n"
+                "SELECT id, agent_id, kind, ref_type, ref_id, actor_agent_id, body, created_at, read_at\n"
+                "FROM notifications;\n"
+                "DROP TABLE notifications;\n"
+                "ALTER TABLE notifications_new RENAME TO notifications;\n"
+                "COMMIT;\n"
+            )
+        # workflow_runs lifecycle (part 2): the status CHECK gained
+        # 'completed' (the CI-green auto-close), and the single start-race
+        # index became two partial UNIQUE indexes — one open run per UNBOUND
+        # proposal AND one open run per bound PR. CREATE TABLE IF NOT EXISTS
+        # can't widen a CHECK on an existing table and SQLite has no ALTER for
+        # CHECK constraints, so this is the standard table rebuild reusing the
+        # schema file's own DDL (the notifications rebuilds above). The swap
+        # drops every index on the old table — including the two partial
+        # uniques the schema executescript just created against it — so the
+        # full schema index set is recreated after the rename. Guarded on the
+        # stored DDL; idempotent once migrated. Row ids survive (all columns
+        # copied), so run history is stable across the upgrade.
+        stored_workflows = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'workflow_runs'"
+        ).fetchone()
+        if stored_workflows is not None and "'completed'" not in stored_workflows[0]:
+            _schema_text = SCHEMA_PATH.read_text()
+            _start = _schema_text.index("CREATE TABLE IF NOT EXISTS workflow_runs")
+            _end = _schema_text.index(");\n", _start) + 3
+            _new_ddl = _schema_text[_start:_end].replace(
+                "CREATE TABLE IF NOT EXISTS workflow_runs",
+                "CREATE TABLE workflow_runs_new",
+            )
+            conn.executescript(
+                "PRAGMA foreign_keys = OFF;\n"
+                "BEGIN;\n" + _new_ddl + "\n"
+                "INSERT INTO workflow_runs_new"
+                " (id, workflow_path, workflow_sha, proposal_id, pr_number,"
+                " agent_id, status, created_at, decided_at, expires_at)\n"
+                "SELECT id, workflow_path, workflow_sha, proposal_id, pr_number,"
+                " agent_id, status, created_at, decided_at, expires_at\n"
+                "FROM workflow_runs;\n"
+                "DROP TABLE workflow_runs;\n"
+                "ALTER TABLE workflow_runs_new RENAME TO workflow_runs;\n"
+                "CREATE INDEX idx_workflow_runs_proposal"
+                " ON workflow_runs(proposal_id);\n"
+                "CREATE INDEX idx_workflow_runs_pr ON workflow_runs(pr_number);\n"
+                "CREATE INDEX idx_workflow_runs_path_sha"
+                " ON workflow_runs(workflow_path, workflow_sha);\n"
+                "CREATE INDEX idx_workflow_runs_agent_status"
+                " ON workflow_runs(agent_id, status);\n"
+                "CREATE UNIQUE INDEX idx_workflow_runs_open_unbound"
+                " ON workflow_runs(workflow_path, proposal_id)"
+                " WHERE status = 'open' AND pr_number IS NULL;\n"
+                "CREATE UNIQUE INDEX idx_workflow_runs_open_pr"
+                " ON workflow_runs(workflow_path, pr_number)"
+                " WHERE status = 'open' AND pr_number IS NOT NULL;\n"
+                "CREATE INDEX idx_workflow_runs_path_proposal_status"
+                " ON workflow_runs(workflow_path, proposal_id, status);\n"
+                "COMMIT;\n"
+                "PRAGMA foreign_keys = ON;\n"
+            )
         # proposal_links.opened_by_agent_id becomes anonymizable: a NOT
         # NULL owner would force deleting the link row itself when its
         # opener is deleted - taking the PR-to-proposal history with it.
@@ -1603,18 +1699,29 @@ def init_db() -> None:
         # proposals. Idempotent: start_workflow's "no open run" guard means a
         # proposal that already has a run (or that _insert_post already
         # started) is never double-started, so this is a no-op on fresh DBs
-        # and on every later boot. Only still-openable proposals qualify: a
-        # proposal whose live status is anything but 'open' - merged
-        # (terminal), or declined/closed (retryable per CHARTER VI.5, but not
-        # currently open) - plus superseded (locked by a newer version) cannot
-        # open a PR today and are skipped. A DECLINED/CLOSED proposal would
-        # otherwise gain a fresh, forever-open run on every boot, because it
-        # is still retryable and nothing ever closes runs for decisions that
-        # predate the feature. reconcile_open_runs() below heals the runs that
-        # leaked through that old "skip only merged" gate: it closes any open
-        # run whose proposal is decided, mirroring what close_workflow_for_pr
-        # does for poller-processed outcomes, so this backfill and the
-        # reconciliation cannot fight each other across boots.
+        # and on every later boot. The candidate set is every proposal with NO
+        # create-pr run of any status: a proposal that already folded a run
+        # (expired at TTL, or decided) without ever linking a pull request is
+        # the ghost pattern the reconcile sweep below cleans up, and re-seeding
+        # one here would regenerate it forever across boots. Only still-openable
+        # proposals qualify: a proposal whose live status is anything but
+        # 'open' - merged (terminal), or declined/closed (retryable per
+        # CHARTER VI.5, but not currently open) - plus superseded (locked by a
+        # newer version) cannot open a PR today and are skipped. A
+        # DECLINED/CLOSED proposal would otherwise gain a fresh, forever-open
+        # run on every boot, because it is still retryable and nothing ever
+        # closes runs for decisions that predate the feature.
+        # reconcile_open_runs() below heals the runs that leaked through that
+        # old "skip only merged" gate: it closes any open run whose proposal
+        # is decided (or is a no-link ghost), mirroring what
+        # close_workflow_for_pr does for poller-processed outcomes, so this
+        # backfill and the reconciliation cannot fight each other across
+        # boots.
+        # Per-PR lifecycle (part 2): the candidate gate is "no create-pr run
+        # of ANY status" (the old `status = 'open'` filter could resurrect a
+        # spurious unbound open run on the next boot for an in-flight PR whose
+        # bound run had already CI-completed), and start_workflow's partial
+        # UNIQUE guard keeps at most one open run per unbound proposal.
         try:
             # This conn has no row_factory (plain tuples) - every other query
             # in init_db keys by index. start_workflow and our reads need
@@ -1639,7 +1746,6 @@ def init_db() -> None:
                     " AND id NOT IN ("
                     "   SELECT proposal_id FROM workflow_runs"
                     "   WHERE workflow_path = 'workflows/create-pr.md'"
-                    "   AND status = 'open'"
                     " )"
                 ).fetchall()
                 for _row in _candidates:

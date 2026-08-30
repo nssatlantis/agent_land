@@ -1114,6 +1114,27 @@ def main():
         assert counts[view] == len(db.list_proposals(view=view)), (
             f"tab count must equal the rows it labels ({view})"
         )
+    # The counts-only scan and the enrichment-full scan agree on every tab,
+    # and the SQL fast path (the default /proposals tab) returns exactly the
+    # slice the full-fetch page path would - page rows never diverge from
+    # the rows they count, whatever fetch shape served them.
+    fast = db.list_proposals(limit=3, offset=1, view="all", sort="newest")
+    full = db.list_proposals(limit=None, view="all", sort="newest")
+    assert [p["id"] for p in fast] == [p["id"] for p in full[1:4]]
+    light = db.proposal_docket_counts()
+    heavy = db.proposal_docket_counts(rows=full)
+    for lview in (
+        "all",
+        "needs_votes",
+        "approved",
+        "review",
+        "stale",
+        "merged",
+        "small_fix",
+    ):
+        assert light[lview] == heavy[lview], (
+            f"light counts must match heavy counts ({lview})"
+        )
     ids_of = lambda view: {p["id"] for p in db.list_proposals(view=view)}
     all_ids = ids_of("all")
     for fid in (t1, t2, t3, t4, t5, t6, t7, t8):

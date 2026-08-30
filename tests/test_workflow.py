@@ -2,8 +2,12 @@
 
 Covers the #593 review hardening: TTL adaptivity + fallback (D2), the
 365-day TTL cap (W4), run-status validation (D4), nudge resilience (D1),
-collab-run preservation on PR close, sweep run_ids + chunking (D7/D8/W9),
-restart (B2) and the run-ledger filters (W2/W3).
+the per-PR lifecycle (workflows part 2: bind, per-PR close, CI-green
+completion to 'completed'), collab-run preservation on PR close, sweep
+run_ids + chunking (D7/D8/W9), restart (B2) and the run-ledger filters
+(W2/W3), plus the A1 boot-backfill guard (a proposal that ever ran is
+never re-seeded) and the A2 ghost-run reconcile (a folded run with no
+linked PR closes to 'closed' with reason no_pr_linked).
 """
 
 import json
@@ -25,8 +29,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db._workflow import (  # noqa: E402
     _workflow_file,
     _workflow_nudge,
+    bind_open_run,
     close_workflow_for_pr,
     close_workflow_for_proposal,
+    complete_workflow_for_pr,
+    list_bound_open_runs,
     list_workflow_runs,
     reconcile_open_runs,
     require_workflow_block,
@@ -180,38 +187,77 @@ def main():
         assert len(ev["run_ids"]) == 2
     print("  sweep run_ids / proposal_id / chunking ok")
 
-    # --- collab keep-open on PR close, others close (P0-C) ---------------------
+    # --- per-PR lifecycle: every PR owns its run, closes on ITS OWN outcome ---
+    # (part 2). The collaborative skip is gone: a collab proposal holds one
+    # open run per bound PR - bind_open_run stamps the auto-start unbound run
+    # with the first PR and opens a fresh bound run for each later PR - and a
+    # PR outcome closes exactly the run(s) carrying that pr_number.
     pc = db.create_proposal(
         alpha["token"], "T4 collab workflow", "t4 body", collaborative=True
     )["post_id"]
     with db._conn() as conn:
-        rc = int(_open_run(conn, pc)["id"])
-        conn.execute(
-            "INSERT INTO proposal_links (pr_number, post_id) VALUES (?, ?)",
-            (9001, pc),
+        rc_unbound = int(_open_run(conn, pc)["id"])
+        # first PR onto a collab proposal binds (stamps) the unbound run
+        run4a = bind_open_run(conn, pc, 9001, alpha["agent_id"])
+        assert run4a == rc_unbound, "first PR stamps the auto-started unbound run"
+        assert _open_run(conn, pc)["id"] == rc_unbound, "the stamp keeps the run"
+        # a second PR on the same proposal gets its OWN bound run
+        run4b = bind_open_run(conn, pc, 9002, beta["agent_id"])
+        assert run4b != run4a, "collab holds one open run PER PR, not one shared"
+        assert bind_open_run(conn, pc, 9002, beta["agent_id"]) == run4b, (
+            "re-binding a PR reuses its open run"
         )
+        # the CI-green sweep scan set reflects exactly the bound open runs
+        bound = list_bound_open_runs(conn)
+        assert sorted(int(r["pr_number"]) for r in bound) == [9001, 9002], bound
+        assert [int(r["id"]) for r in list_bound_open_runs(conn, {9001})] == [run4a], (
+            "pr-number narrowing keeps only that PR's open run"
+        )
+        # a blanket restart is refused while several PRs own runs
+        try:
+            restart_workflow(conn, pc, alpha["agent_id"])
+            raise AssertionError("restart with multiple open runs must be refused")
+        except db.ForumError:
+            pass
+        # each PR's merge closes exactly ITS run, leaving the sibling open
         close_workflow_for_pr(conn, 9001, "merged")
         row = conn.execute(
-            "SELECT status FROM workflow_runs WHERE id = ?", (rc,)
+            "SELECT status FROM workflow_runs WHERE id = ?", (run4a,)
         ).fetchone()
-        assert row["status"] == "open", "collab run survives a single PR merge"
-        # non-collab control: open a fresh run then close it via its PR link
+        assert row["status"] == "merged", "bound run closes on ITS PR merge"
+        row = conn.execute(
+            "SELECT status FROM workflow_runs WHERE id = ?", (run4b,)
+        ).fetchone()
+        assert row["status"] == "open", "the sibling PR's run survives"
+        # CI-green completion (part 2): records 'completed', notifies the
+        # starter (kind 'workflow') and is idempotent
+        assert complete_workflow_for_pr(conn, 9002, "ci_green") == 1
+        row = conn.execute(
+            "SELECT status, decided_at FROM workflow_runs WHERE id = ?", (run4b,)
+        ).fetchone()
+        assert row["status"] == "completed" and row["decided_at"]
+        notif = conn.execute(
+            "SELECT kind, ref_type, ref_id, body FROM notifications"
+            " WHERE kind = 'workflow' AND agent_id = ? ORDER BY id DESC LIMIT 1",
+            (beta["agent_id"],),
+        ).fetchone()
+        assert notif is not None and "CI-green" in notif["body"], notif
+        assert list_bound_open_runs(conn) == [], "no open bound runs remain"
+        assert complete_workflow_for_pr(conn, 9002) == 0, "completion is idempotent"
+        # non-collab control: a plain proposal's run closes on its PR outcome
         conn.execute(
             "UPDATE workflow_runs SET status = 'open', expires_at = ?"
             " WHERE proposal_id = ?",
             (_iso(_now() + timedelta(hours=1)), p3),
         )
         rp2 = int(_open_run(conn, p3)["id"])
-        conn.execute(
-            "INSERT INTO proposal_links (pr_number, post_id) VALUES (?, ?)",
-            (9002, p3),
-        )
-        close_workflow_for_pr(conn, 9002, "merged")
+        bind_open_run(conn, p3, 9003, beta["agent_id"])
+        close_workflow_for_pr(conn, 9003, "merged")
         row = conn.execute(
             "SELECT status FROM workflow_runs WHERE id = ?", (rp2,)
         ).fetchone()
         assert row["status"] == "merged", "non-collab run closes on PR merge"
-    print("  collab keep-open ok")
+    print("  per-PR bind / close / complete / restart-guard ok")
 
     # --- restart (B2): author, delegate, admin, permission gate ---------------
     p5 = db.create_proposal(gamma["token"], "T5 restart", "t5 body")["post_id"]
@@ -344,6 +390,13 @@ def main():
     # 'merged' - the OLD backfill ("skip merged") re-opened a run for it on
     # every boot, and nothing closed it (close_workflow_for_pr only fires on
     # poller-processed outcomes). reconcile heals exactly that residue.
+    # The blocks above (TTL adaptivity, gate lazy-reopen, nudge) deliberately
+    # fold and re-open runs on still-'open' proposals with no PR ever linked.
+    # Under A2 those are ghost runs (an open copy behind a folded run and no
+    # proposal_links row) - reconcile closes them too, so clear the residue
+    # they left so the exact counts below measure only what this block creates.
+    with db._conn() as conn:
+        reconcile_open_runs(conn)
     p8 = db.create_proposal(gamma["token"], "T8 reconcile live", "t8 body")["post_id"]
     p9 = db.create_proposal(gamma["token"], "T9 reconcile declined", "t9 body")[
         "post_id"
@@ -447,16 +500,17 @@ def main():
     print("  reconcile declined->retried skipped ok")
 
     # pre-index residue: two open runs on one proposal (possible only on a DB
-    # that predates idx_workflow_runs_open). Dropping the partial unique index
-    # frees the 'open' slot, then two open rows can coexist; reconcile closes
-    # BOTH in one pass with a single count:2 event, and the index is re-created
-    # (init_db would anyway, but leaving the DB guarded for later blocks).
+    # that predates idx_workflow_runs_open_unbound). Dropping the partial
+    # unique index frees the unbound 'open' slot, then two open rows can
+    # coexist; reconcile closes BOTH in one pass with a single count:2 event,
+    # and the index is re-created (init_db would anyway, but leaving the DB
+    # guarded for later blocks).
     p15 = db.create_proposal(gamma["token"], "T15 reconcile multi-open", "t15 body")[
         "post_id"
     ]
     with db._conn() as conn:
         r15a = int(_open_run(conn, p15)["id"])
-        conn.execute("DROP INDEX IF EXISTS idx_workflow_runs_open")
+        conn.execute("DROP INDEX IF EXISTS idx_workflow_runs_open_unbound")
         cur = conn.execute(
             "INSERT INTO workflow_runs"
             " (workflow_path, workflow_sha, status, proposal_id, agent_id,"
@@ -489,8 +543,9 @@ def main():
         assert evd["count"] == 2 and sorted(evd["run_ids"]) == sorted([r15a, r15b]), evd
         assert stale_open_run_count(conn) == 0, stale_open_run_count(conn)
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open"
-            " ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open'"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_open_unbound"
+            " ON workflow_runs(workflow_path, proposal_id)"
+            " WHERE status = 'open' AND pr_number IS NULL"
         )
     print("  reconcile multi-open residue -> closed 2 ok")
 
@@ -522,6 +577,74 @@ def main():
             "live proposal keeps (or regains) its run across boots"
         )
     print("  boot sweep backfill + reconcile cross-boot ok")
+
+    # --- ghost-run residue: A1 backfill guard + A2 reconcile ------------------
+    # A still-'open' proposal that folded its create-pr run with no PR ever
+    # linked is what the OLD boot backfill ("skip only merged") leaked: every
+    # boot re-opened the run, and it then idled until the TTL sweep folded it
+    # again - a perpetual ghost. A1 now back-seeds only proposals that NEVER
+    # had a create-pr run (any status), so this state never regenerates; A2's
+    # reconcile closes any copy a pre-fix boot leaked.
+    pg1 = db.create_proposal(gamma["token"], "T16 ghost live no-link", "t16 body")[
+        "post_id"
+    ]
+    pg2 = db.create_proposal(beta["token"], "T17 runless live boot-seeded", "t17 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        rg1 = int(_open_run(conn, pg1)["id"])
+        # fold the run exactly as a TTL expiry would - no PR was ever linked
+        conn.execute(
+            "UPDATE workflow_runs SET status = 'closed', decided_at = ? WHERE id = ?",
+            (db._now_iso(), rg1),
+        )
+        # pg2 has never had a create-pr run (drop the auto-started one) - the
+        # same state as a proposal written before the feature landed
+        conn.execute("DELETE FROM workflow_runs WHERE proposal_id = ?", (pg2,))
+    db.init_db()  # a fresh boot: schema + backfill + reconcile
+    with db._conn() as conn:
+        # A1: the backfill seeds only run-less proposals - pg1's folded run
+        # (any status) stops it from being a candidate again.
+        assert _open_run(conn, pg1) is None, (
+            "a proposal that folded a run without a link is never re-seeded"
+        )
+        assert _open_run(conn, pg2) is not None, (
+            "a run-less live proposal is still boot-seeded"
+        )
+        # A2: simulate the OLD gate's leak (a fresh open copy of a folded run,
+        # the tell left in place - exactly what a pre-fix boot produced) and
+        # prove reconcile closes it as a ghost, not as a decided proposal.
+        conn.execute(
+            "INSERT INTO workflow_runs"
+            " (workflow_path, workflow_sha, status, proposal_id, agent_id,"
+            "  created_at, expires_at)"
+            " VALUES (?, ?, 'open', ?, ?, ?, ?)",
+            (
+                _PATH,
+                "ghost-copy-hash",
+                pg1,
+                gamma["agent_id"],
+                db._now_iso(),
+                db._now_iso(),
+            ),
+        )
+        rg1c = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        assert stale_open_run_count(conn) == 1, stale_open_run_count(conn)
+        assert reconcile_open_runs(conn) == 1
+        row = conn.execute(
+            "SELECT status, decided_at FROM workflow_runs WHERE id = ?", (rg1c,)
+        ).fetchone()
+        assert row["status"] == "closed" and row["decided_at"] is not None, (
+            "the ghost run reconciles to 'closed'"
+        )
+        ev = _last_close_event(conn)
+        assert ev["reason"] == "no_pr_linked", ev
+        assert ev["status"] == "closed" and ev["proposal_id"] == pg1, ev
+        assert ev["run_ids"] == [rg1c], ev
+        assert _open_run(conn, pg2) is not None, (
+            "the freshly-seeded live run survives reconciliation"
+        )
+    print("  ghost-run residue: A1 guard + A2 reconcile ok")
 
     # --- _workflow_file guard (D9) ---------------------------------------------
     p = _workflow_file(_PATH)

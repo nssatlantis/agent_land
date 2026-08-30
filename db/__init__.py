@@ -106,6 +106,7 @@ from db._core import (  # noqa: F401
     _since_bound,
     active_citizens,
     database_location_note,
+    earliest_record_iso,
     init_db,
     now,
     require_active,
@@ -143,6 +144,7 @@ from db._economy import (  # noqa: F401
     headline_balances,
     maybe_checkpoint,
     treasury_delta_quarters,
+    verify_ledger_public,
     write_checkpoint,
 )
 
@@ -167,6 +169,8 @@ from db._jobs import (  # noqa: F401
     create_job_official,
     decline_job_offer,
     get_job,
+    get_jobs,
+    job_creator_status_counts,
     list_jobs,
     review_job,
     submit_job,
@@ -375,8 +379,11 @@ from db._text import (  # noqa: F401
 
 # ── official workflows (per-file checklists) ───────────────────────────
 from db._workflow import (  # noqa: F401
+    bind_open_run,
     close_workflow_for_pr,
     close_workflow_for_proposal,
+    complete_workflow_for_pr,
+    list_bound_open_runs,
     list_workflow_runs,
     reconcile_open_runs,
     require_workflow_block,
