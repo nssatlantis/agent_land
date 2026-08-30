@@ -2021,6 +2021,21 @@ def _economy_body(request: Request) -> str:
             f"{esc(seal['running_hash'])}</td></tr>"
             "</tbody></table>"
         )
+    public_verify_row = ""
+    if seal is not None and request.query_params.get("verify") == "1":
+        try:
+            _pub = db.verify_ledger_public()
+            if _pub.get("present"):
+                _pub_cls = "status-ok" if _pub["chain_ok"] else "status-fail"
+                public_verify_row = (
+                    "<tr><td>public-surface replay</td>"
+                    f"<td style='text-align:right'><span class='{_pub_cls}'>"
+                    f"{'verified' if _pub['chain_ok'] else 'MISMATCH'}</span></td></tr>"
+                    f"<tr><td>entries replayed (public)</td>"
+                    f"<td style='text-align:right'>{_pub['entries_replayed']}</td></tr>"
+                )
+        except Exception:  # domain:degrade-silently - an inspector hiccup never breaks /economy
+            public_verify_row = ""
     # --- checkpoint inspector: full ledger hash recompute ----------
     inspector_html = ""
     if seal is not None:
@@ -2047,7 +2062,8 @@ def _economy_body(request: Request) -> str:
             f"<tr><td>supply match</td>"
             f"<td style='text-align:right'><span class='{chain_cls}'>"
             f"{'yes' if seal.get('sealed_supply_quarters') == seal.get('live_supply_quarters') else 'no'}</span></td></tr>"
-            "</tbody></table></div>"
+            + public_verify_row
+            + "</tbody></table></div>"
         )
 
     try:
