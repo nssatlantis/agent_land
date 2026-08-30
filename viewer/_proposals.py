@@ -154,8 +154,14 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
         try:
             ev_bits = []
             for pr in prs_raw:
-                ev_bits.append(f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} \u00b7 {esc(pr.get("status") or "")}</span>')
-            pr_trail += '<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Evidence:</span> ' + " ".join(ev_bits) + "</div>"
+                ev_bits.append(
+                    f'<span class="pr-chip pr-evidence" title="evidence PR #{pr["pr_number"]}">#{pr["pr_number"]} \u00b7 {esc(pr.get("status") or "")}</span>'
+                )
+            pr_trail += (
+                '<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Evidence:</span> '
+                + " ".join(ev_bits)
+                + "</div>"
+            )
         except Exception:  # domain: degrade-silently
             pass
     if prs_raw:
@@ -185,7 +191,11 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
                 f"{vote_badge}"
             )
-        pr_trail = '<div class="pr-trail"><span class="pr-label">PRs:</span> ' + " ".join(bits) + "</div>"
+        pr_trail = (
+            '<div class="pr-trail"><span class="pr-label">PRs:</span> '
+            + " ".join(bits)
+            + "</div>"
+        )
     # Collaborative progress display
     if p.get("collaborative") and p.get("collaborative_closed") is None:
         merged = p.get("merged_pr_count", 0)
