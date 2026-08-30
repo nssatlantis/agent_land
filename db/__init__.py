@@ -219,6 +219,16 @@ from db._nudges import (  # noqa: F401
     _unread_mail_nudge,
 )
 
+# ── closed-PR cache (pr_rows) ──────────────────────────────────────────
+from db._pr_rows import (  # noqa: F401,E402
+    list_pr_rows,
+    pr_row,
+    pr_rows_set_watermark,
+    pr_rows_upsert,
+    pr_rows_upsert_from_raw,
+    pr_rows_watermark,
+)
+
 # ── PR voting ─────────────────────────────────────────────────────────
 from db._pr_vote import (  # noqa: F401,E402
     my_pr_vote,
