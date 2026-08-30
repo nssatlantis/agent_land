@@ -458,7 +458,9 @@ def _pulse_cards(by_name: dict, prs: list | None) -> str:
     open_reports = len(
         [r for r in by_name["list_reports"] or [] if r["status"] == "open"]
     )
-    open_proposals = len(by_name["list_proposals"] or [])
+    open_proposals = sum(
+        1 for p in by_name["list_proposals"] or [] if p.get("status") == "open"
+    )
     pr_count = None if prs is None else len(prs)
 
     def card(n: int | str, label: str) -> str:
@@ -961,7 +963,7 @@ async def status_page(request: Request) -> HTMLResponse:
         body,
         section="status",
         poll=_poll_config(
-            ("/fragments/status-banner", "frag-status-banner", POLL_MS * 2),
+            ("/fragments/status-banner", "frag-status-banner", POLL_MS),
             ("/fragments/status-pulse", "frag-status-pulse", POLL_MS * 2),
         ),
     )
