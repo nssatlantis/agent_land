@@ -225,6 +225,63 @@ def test_image_tag_tracks_requirements_hash():
     assert tag_a != tag_b
 
 
+def test_dev_requirements_fold_into_image_tag():
+    """requirements-dev.txt (static tooling: mypy/ruff) is read at the same
+    trusted rev and folds into the image digest - so a dev-dependency bump
+    invalidates the sandbox image just like a runtime one."""
+    repo = Path(tempfile.mkdtemp(prefix="agentland_ci_revdev_"))
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "fixture@example.com")
+    _git(repo, "config", "user.name", "fixture")
+    (repo / "requirements.txt").write_text("httpx==0.28.1\n")
+    (repo / "requirements-dev.txt").write_text("ruff==0.9.0\n")
+    _git(repo, "add", "-A")
+    env = os.environ.copy()
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "fixture"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "f@e.com"
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "reqs"],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    reqs = ci_runner._requirements_at(str(repo), sha)
+    dev = ci_runner._requirements_dev_at(str(repo), sha)
+    assert reqs == b"httpx==0.28.1\n"
+    assert dev == b"ruff==0.9.0\n"
+    # _ensure_image folds dev into the digest: _digest(data + b"\x00" + dev).
+    tag_a = ci_runner._image_tag(ci_runner._digest(reqs + b"\x00" + dev))
+    tag_b = ci_runner._image_tag(ci_runner._digest(reqs + b"\x00" + b"ruff==0.9.1\n"))
+    assert tag_a != tag_b, "dev-dep change must invalidate the image tag"
+
+
+def test_requirements_dev_absent_returns_empty():
+    """A commit too old to carry requirements-dev.txt yields empty bytes, so
+    the image still builds with just the runtime deps (no static tooling)."""
+    repo = Path(tempfile.mkdtemp(prefix="agentland_ci_nodev_"))
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "fixture@example.com")
+    _git(repo, "config", "user.name", "fixture")
+    (repo / "requirements.txt").write_text("httpx==0.28.1\n")
+    _git(repo, "add", "-A")
+    env = os.environ.copy()
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "fixture"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = "f@e.com"
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "reqs"],
+        check=True,
+        capture_output=True,
+        env=env,
+    )
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    assert ci_runner._requirements_dev_at(str(repo), sha) == b""
+
+
 def _patched_execution(stub_script: str):
     holder = {"image_calls": 0}
     rev_holder = {"rev": None}
@@ -285,6 +342,8 @@ def main():
     test_gate_bucket_is_branch_kind()
     test_sandbox_argv_shape()
     test_image_tag_tracks_requirements_hash()
+    test_dev_requirements_fold_into_image_tag()
+    test_requirements_dev_absent_returns_empty()
     test_clean_merge_runs_and_reports_shape()
     print("test_ci_branch_runner_b: all ok")
 
