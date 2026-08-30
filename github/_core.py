@@ -312,6 +312,65 @@ async def _arequest(
     raise RepoError(f"GitHub API {status}{detail} on {method} {path}")
 
 
+async def _arequest_with_etag(
+    method: str,
+    path: str,
+    body: dict | None = None,
+    ok_404: bool = False,
+    etag: str | None = None,
+):
+    """Async conditional GET: sends If-None-Match when a stored validator is
+    known, so an unchanged resource answers 304 with no body instead of a
+    full re-download. Returns (data, etag): data is the parsed JSON (None
+    for an empty 2xx, an ok_404 miss, or a 304 - a 304 is NOT an error, the
+    caller keeps its cache) and etag is the response validator to store for
+    the next revalidation (None when the server sent none). Transport errors
+    retry once, identical to _arequest (#365's heal contract)."""
+    _ensure_token()
+    url_path = f"/repos/{GITHUB_REPO}/{path}"
+    data = None
+    hdrs = _headers()
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        hdrs["Content-Type"] = "application/json"
+    if etag:
+        hdrs["If-None-Match"] = etag
+
+    client = _get_client()
+
+    async def _do() -> httpx.Response:
+        return await client.request(method, url_path, content=data, headers=hdrs)
+
+    try:
+        resp = await _do()
+    except (httpx.TransportError, OSError):
+        # domain:degrade-silently - discard the one bad pooled connection
+        # and retry once on a fresh one (#365's heal contract); the caller
+        # still gets its resource or a RepoError.
+        resp = await _do()
+
+    status = resp.status_code
+    if status == 304:
+        return None, None
+    if 200 <= status < 300:
+        raw = resp.content  # fully read by httpx - the stream is always in sync
+        newest_etag = resp.headers.get("etag")
+        if not raw:
+            return None, newest_etag
+        return json.loads(raw), newest_etag
+    if status == 404 and ok_404:
+        return None, None
+    msg = ""
+    try:
+        msg = resp.json().get("message", "")
+    except Exception:
+        # domain:degrade-silently - error-message extraction is enrichment;
+        # the RepoError below still carries the status and path.
+        pass
+    detail = f" ({msg})" if msg else ""
+    raise RepoError(f"GitHub API {status}{detail} on {method} {path}")
+
+
 def _request(method: str, path: str, body: dict | None = None, ok_404: bool = False):
     """Sync face of _arequest for callers without a running loop (viewer
     helpers, tests, deploy scripts, composite flows on worker threads).
