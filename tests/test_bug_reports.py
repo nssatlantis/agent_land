@@ -84,6 +84,16 @@ def test_threshold_confirms(helpers):
     full = bug_mod.get_bug_report(r["id"])
     assert full["confidence"] == 3
     assert full["status"] == "confirmed"
+    # The auto-confirm crossing stamps decided_at and the confirm event,
+    # just like admin confirm_bug_report does (4329).
+    assert full["decided_at"] is not None
+    with db._conn() as conn:
+        ev = conn.execute(
+            "SELECT 1 FROM events WHERE kind = ? AND target_type = 'bug_report'"
+            " AND target_id = ?",
+            (bug_mod.EVT_BUG_CONFIRMED, r["id"]),
+        ).fetchone()
+    assert ev is not None
     print("  threshold confirms: ok")
 
 
