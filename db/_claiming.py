@@ -164,6 +164,56 @@ def require_claim_for_todo(
         )
 
 
+def require_todo_binding_for_pr(
+    conn: sqlite3.Connection,
+    post_id: int,
+    todo_item_id: int | None,
+) -> None:
+    """Pre-open gate: when FORUM_TODO_CLAIM_REQUIRED is on, a PR opened for
+    a collaborative proposal that still has undone to-do work MUST bind to
+    the to-do item it implements (`todo_item_id`), so the board auto-ticks
+    it on merge and reviewers can diff promise against delivery.
+
+    Called by repo_propose_change() *before* require_claim_for_todo() and
+    any GitHub side effect: when the flag demands binding, that is the more
+    fundamental contractual obligation, and its error carries the fix for
+    the claim gate too.  Enforced only at the pre-open surface - NOT in
+    link_pr_to_proposal, whose no-`todo_item_id` loose contract also serves
+    post-open links and backfills that have no item to bind.
+
+    No-op when the flag is off, the proposal is not collaborative, the PR
+    already binds an item, or the board has no undone items (nothing would
+    auto-tick, so there is nothing to demand).  Does not sweep expired
+    claims: the undone count is claim-independent.
+    """
+    if config.TODO_CLAIM_REQUIRED <= 0:
+        return
+    row = conn.execute(
+        "SELECT collaborative FROM posts WHERE id = ?", (post_id,)
+    ).fetchone()
+    if row is None or not row["collaborative"]:
+        return
+    if todo_item_id is not None:
+        return
+    undone = conn.execute(
+        "SELECT COUNT(*) FROM todo_items ti"
+        " JOIN todo_lists tl ON tl.id = ti.list_id"
+        " WHERE tl.post_id = ? AND ti.done = 0",
+        (post_id,),
+    ).fetchone()[0]
+    if undone == 0:
+        return
+    raise ForumError(
+        f"proposal #{post_id} requires binding this PR to the undone to-do"
+        " item it implements with todo_item_id=<item_id>:"
+        f" {undone} undone item(s) remain and FORUM_TODO_CLAIM_REQUIRED is"
+        " on. get_todos("
+        f"{post_id}) to see the board; claim the item first if it is not"
+        " yours (claim_todo_item), then pass its id so the board auto-ticks"
+        " it when the PR merges."
+    )
+
+
 def set_claimable(token: str, proposal_id: int, claimable: bool) -> dict:
     """Toggle whether a proposal accepts claims.  Author-only, and only on
     a real proposal that is not locked (superseded) or merged.  Turning
