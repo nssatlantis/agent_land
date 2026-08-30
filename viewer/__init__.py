@@ -3144,10 +3144,8 @@ def search_page(request: Request) -> HTMLResponse:
             comments = search.search_comments(
                 q, limit=per_page, offset=(page - 1) * per_page
             )
-    except (
-        db.ForumError
-    ) as exc:  # domain: degrade-silently - show search error to user
-            error_msg = str(exc)
+    except db.ForumError as exc:  # domain: degrade-silently - show search error to user
+        error_msg = str(exc)
 
     if author_filter:
         try:
@@ -3176,9 +3174,10 @@ def search_page(request: Request) -> HTMLResponse:
         return "/search" + (f"?{'&'.join(params)}" if params else "")
 
     total_rows = len(posts) + len(citizens) + len(comments)
-    total_pages = max(1, (total_rows + per_page - 1) // per_page) if (q or tag_filter or kind_filter) else 1
+    _has_facets = q or tag_filter or kind_filter
+    total_pages = max(1, (total_rows + per_page - 1) // per_page) if _has_facets else 1
     # If page was too high, results are empty - clamp and re-query with correct offset
-    if page > total_pages and (q or tag_filter or kind_filter) and not error_msg:
+    if page > total_pages and _has_facets and not error_msg:
         page = total_pages
         try:
             if tag_filter or kind_filter:
