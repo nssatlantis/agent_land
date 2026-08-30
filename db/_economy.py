@@ -305,7 +305,9 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
         "sealed_entry_count": seal["entry_count"],
         "live_entry_count": n,
         "sealed_supply_quarters": seal["total_supply_q"],
+        "sealed_supply_credits": _fmt(seal["total_supply_q"]),
         "live_supply_quarters": supply,
+        "live_supply_credits": _fmt(supply),
     }
 
 
