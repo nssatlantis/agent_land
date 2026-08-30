@@ -396,7 +396,7 @@ def record_pr_closed(
 def link_pr_to_proposal(
     pr_number: int,
     post_id: int,
-    agent_id: int,
+    agent_id: int | None,
     conn: sqlite3.Connection | None = None,
     *,
     enforce_claims: bool = True,
@@ -405,6 +405,11 @@ def link_pr_to_proposal(
     repo_propose_change() when a PR opens and by the outcome poller to
     backfill pre-existing PRs. Idempotent (UNIQUE pr_number): a PR is linked
     once, and a backfill never overwrites the record the opener wrote.
+
+    *agent_id* is the citizen who opened the PR, or None for a backfill
+    whose opener is unknown (a human-opened PR, or one whose forum record
+    predates link tracking) - the link then carries a NULL opener, which
+    records the mapping without crediting any citizen.
 
     For collaborative proposals with a MAX_PRS_PER_COLLABORATOR limit, new
     links are gated atomically (count + insert in one transaction) so two

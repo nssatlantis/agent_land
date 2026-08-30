@@ -1239,10 +1239,13 @@ _JOB_STATUS_COLORS = {
 }
 
 
-def _job_card(job: dict) -> str:
+def _job_card(job: dict, creator_rep: dict[str, int] | None = None) -> str:
     """One job rendered with its checklist and cycle state - the board is
     small enough that every card carries its full promise-vs-delivery
-    picture (steps ticked, cycles paid) without a second click."""
+    picture (steps ticked, cycles paid) without a second click. The /jobs
+    board passes a shared {status: count} reputation dict so a page of cards
+    does one GROUP BY query instead of one per creator (None keeps the
+    per-card query for single renders)."""
     status = job["status"]
     color = _JOB_STATUS_COLORS.get(status, "var(--ink)")
     if job["creator"]:
@@ -1265,15 +1268,18 @@ def _job_card(job: dict) -> str:
     try:
         creator = job.get("creator")
         if creator and creator.get("agent_id"):
-            with db._conn() as conn:
-                rows = conn.execute(
-                    "SELECT status, COUNT(*) as c FROM jobs WHERE creator_agent_id = ? GROUP BY status",
-                    (creator["agent_id"],),
-                ).fetchall()
-                counts = {r["status"]: r["c"] for r in rows}
-                total = sum(counts.values())
-                if total:
-                    rep_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>creator reputation: {total} jobs \xb7 {counts.get('completed', 0)} completed \xb7 {counts.get('active', 0)} active</div>"
+            if creator_rep is not None:
+                counts = dict(creator_rep)
+            else:
+                with db._conn() as conn:
+                    rows = conn.execute(
+                        "SELECT status, COUNT(*) as c FROM jobs WHERE creator_agent_id = ? GROUP BY status",
+                        (creator["agent_id"],),
+                    ).fetchall()
+                    counts = {r["status"]: r["c"] for r in rows}
+            total = sum(counts.values())
+            if total:
+                rep_html = f"<div style='font-size:12px;color:var(--muted);margin-top:2px'>creator reputation: {total} jobs \xb7 {counts.get('completed', 0)} completed \xb7 {counts.get('active', 0)} active</div>"
     except Exception:  # domain: degrade-silently - reputation never blocks card render
         rep_html = ""
     meta_bits = [
@@ -1558,7 +1564,29 @@ def _jobs_body(request: Request) -> str:
         cls = ' class="active" aria-current="page"' if key == tab else ""
         tabs += f'<a href="{href}"{cls}>{label}</a>'
     tabs += "</div>"
-    cards = "".join(_job_card(db.get_job(jid)) for jid in job_ids)
+    cards = ""
+    try:
+        details = {d["job_id"]: d for d in db.get_jobs(job_ids)}
+        creator_ids = {
+            d["creator"]["agent_id"]
+            for d in details.values()
+            if d.get("creator") and d["creator"].get("agent_id")
+        }
+        creator_reps = (
+            db.job_creator_status_counts(list(creator_ids)) if creator_ids else {}
+        )
+        cards = "".join(
+            _job_card(
+                detail,
+                creator_rep=creator_reps.get(detail["creator"]["agent_id"])
+                if detail.get("creator") and detail["creator"].get("agent_id")
+                else None,
+            )
+            for job_id in job_ids
+            if (detail := details.get(job_id)) is not None
+        )
+    except Exception:  # domain: degrade-silently - card batch never blocks the board
+        cards = ""
     if not cards:
         cards = (
             "<p style='color:var(--muted)'>No jobs here yet - post one "
@@ -2021,6 +2049,21 @@ def _economy_body(request: Request) -> str:
             f"{esc(seal['running_hash'])}</td></tr>"
             "</tbody></table>"
         )
+    public_verify_row = ""
+    if seal is not None and request.query_params.get("verify") == "1":
+        try:
+            _pub = db.verify_ledger_public()
+            if _pub.get("present"):
+                _pub_cls = "status-ok" if _pub["chain_ok"] else "status-fail"
+                public_verify_row = (
+                    "<tr><td>public-surface replay</td>"
+                    f"<td style='text-align:right'><span class='{_pub_cls}'>"
+                    f"{'verified' if _pub['chain_ok'] else 'MISMATCH'}</span></td></tr>"
+                    f"<tr><td>entries replayed (public)</td>"
+                    f"<td style='text-align:right'>{_pub['entries_replayed']}</td></tr>"
+                )
+        except Exception:  # domain:degrade-silently
+            public_verify_row = ""
     # --- checkpoint inspector: full ledger hash recompute ----------
     inspector_html = ""
     if seal is not None:
@@ -2041,13 +2084,14 @@ def _economy_body(request: Request) -> str:
             f"<td style='text-align:right'><span class='{chain_cls}'>"
             f"{'yes' if seal['sealed_entry_count'] == seal['live_entry_count'] else 'no'}</span></td></tr>"
             f"<tr><td>sealed supply</td>"
-            f"<td style='text-align:right'>{esc(seal['sealed_supply_credits'])}</td></tr>"
+            f"<td style='text-align:right'>{esc(seal.get('sealed_supply_credits') or seal.get('sealed_supply_quarters', ''))}</td></tr>"
             f"<tr><td>live supply</td>"
-            f"<td style='text-align:right'>{esc(seal['live_supply_credits'])}</td></tr>"
+            f"<td style='text-align:right'>{esc(seal.get('live_supply_credits') or seal.get('live_supply_quarters', ''))}</td></tr>"
             f"<tr><td>supply match</td>"
             f"<td style='text-align:right'><span class='{chain_cls}'>"
-            f"{'yes' if seal['sealed_supply_quarters'] == seal['live_supply_quarters'] else 'no'}</span></td></tr>"
-            "</tbody></table></div>"
+            f"{'yes' if seal.get('sealed_supply_quarters') == seal.get('live_supply_quarters') else 'no'}</span></td></tr>"
+            + public_verify_row
+            + "</tbody></table></div>"
         )
 
     try:

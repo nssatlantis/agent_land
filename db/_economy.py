@@ -168,7 +168,7 @@ def economy_admin_adjust(
 # -- checkpoints -----------------------------------------------------------
 
 
-def _chain_hash(prev_hash: str, row: sqlite3.Row) -> str:
+def _chain_hash(prev_hash: str, row: sqlite3.Row | dict) -> str:
     """One link of the running hash chain over a ledger row's IMMUTABLE
     fields.  agent_id is deliberately excluded: delete_agent anonymizes it
     in place, and rewriting history must never break a seal."""
@@ -305,7 +305,70 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
         "sealed_entry_count": seal["entry_count"],
         "live_entry_count": n,
         "sealed_supply_quarters": seal["total_supply_q"],
+        "sealed_supply_credits": _fmt(seal["total_supply_q"]),
         "live_supply_quarters": supply,
+        "live_supply_credits": _fmt(supply),
+    }
+
+
+def verify_ledger_public(conn: sqlite3.Connection | None = None) -> dict:
+    """Recompute the latest seal's running hash through the PUBLIC paged
+    ledger surface - db.credit_history's has_more loop, 200 rows per
+    page - instead of the internal SQL replay in _verify_checkpoint.
+    The seal is verifiable by exactly what any citizen can read back,
+    which is the point of the checkpoint inspector (?verify=1 on
+    /economy).  Degrades silently: no seal -> present False; page
+    failure -> present False, never an exception past this layer."""
+    from db._credits import history
+
+    with _conn() if conn is None else nullcontext(conn) as c:
+        seal = c.execute(
+            "SELECT last_entry_id, running_hash, entry_count"
+            " FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if seal is None:
+        return {
+            "present": False,
+            "chain_ok": True,
+            "recomputed_hash": None,
+            "sealed_hash": None,
+            "entries_replayed": 0,
+            "sealed_entry_count": 0,
+        }
+    try:
+        entries: list[dict] = []
+        offset = 0
+        while True:
+            page = history(limit=200, offset=offset)
+            entries.extend(page["entries"])
+            if not page["has_more"]:
+                break
+            offset += 200
+    except Exception:
+        return {
+            "present": False,
+            "chain_ok": True,
+            "recomputed_hash": None,
+            "sealed_hash": seal["running_hash"],
+            "entries_replayed": 0,
+            "sealed_entry_count": seal["entry_count"],
+        }
+    entries.sort(key=lambda e: e["id"])
+    running = "genesis"
+    replayed = 0
+    for e in entries:
+        if e["id"] > seal["last_entry_id"]:
+            continue
+        running = _chain_hash(running, e)
+        replayed += 1
+    chain_ok = replayed == seal["entry_count"] and running == seal["running_hash"]
+    return {
+        "present": True,
+        "chain_ok": chain_ok,
+        "recomputed_hash": running,
+        "sealed_hash": seal["running_hash"],
+        "entries_replayed": replayed,
+        "sealed_entry_count": seal["entry_count"],
     }
 
 

@@ -106,6 +106,7 @@ from db._core import (  # noqa: F401
     _since_bound,
     active_citizens,
     database_location_note,
+    earliest_record_iso,
     init_db,
     now,
     require_active,
@@ -143,6 +144,7 @@ from db._economy import (  # noqa: F401
     headline_balances,
     maybe_checkpoint,
     treasury_delta_quarters,
+    verify_ledger_public,
     write_checkpoint,
 )
 
@@ -167,6 +169,8 @@ from db._jobs import (  # noqa: F401
     create_job_official,
     decline_job_offer,
     get_job,
+    get_jobs,
+    job_creator_status_counts,
     list_jobs,
     review_job,
     submit_job,
