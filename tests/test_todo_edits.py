@@ -18,6 +18,10 @@ os.environ["AGENTLAND_DATA_DIR"] = str(_TMP)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import moderation  # noqa: E402
+from db._proposal_todos import (  # noqa: E402
+    _resolved_state_for_post,
+    _store_todo_edit,
+)
 from tests._setup import db, init, setup  # noqa: E402
 
 
@@ -212,6 +216,96 @@ def main():
     assert edits[1]["new_lists"][0]["items"][-1]["text"] == "L2"
     assert batch[pid8] == edits, "batch reader reconstructs the same trail"
     print("  mixed legacy/compact chains reconstruct correctly: ok")
+
+    # -- 11. Small mutations store a compact delta row ---------------------
+    pid9 = db.create_proposal(alpha["token"], "Delta", "Body.")["post_id"]
+    db.set_todos_for_post(
+        alpha["token"], pid9, [{"title": "L", "items": [{"text": "A"}, {"text": "B"}]}]
+    )
+    lst = db.get_todos_for_post(pid9)[0]
+    a_item, b_item = lst["items"][0], lst["items"][1]
+    # A tick and a rename are small diffable changes -> delta rows.
+    db.tick_todo_item(alpha["token"], pid9, b_item["id"])
+    db.update_todo_item(alpha["token"], pid9, lst["id"], a_item["id"], "A-renamed")
+    with db._conn() as conn:
+        raw = conn.execute(
+            "SELECT new_lists FROM todo_edits WHERE post_id = ? ORDER BY id", (pid9,)
+        ).fetchall()
+        edits = db._todo_edits_for(conn, pid9)
+    assert len(raw) == 3
+    assert raw[0]["new_lists"].lstrip().startswith("["), "first edit is a snapshot"
+    for r in raw[1:]:
+        assert '"type":"delta"' in r["new_lists"], (
+            "small mutation stored as a delta row"
+        )
+    assert len(edits) == 3
+    # Round-trip: each edit's old_lists equals the previous edit's new_lists.
+    for i in range(1, 3):
+        assert edits[i]["old_lists"] == edits[i - 1]["new_lists"], (
+            "delta chain derives the same before/after trail as snapshots"
+        )
+    assert edits[2]["new_lists"][0]["items"][0]["text"] == "A-renamed"
+    assert edits[2]["new_lists"][0]["items"][1]["done"] is True
+    print("  small mutations store compact delta rows, trail reconstructs: ok")
+
+    # -- 12. Wholesale structural change falls back to a full snapshot -----
+    pid10 = db.create_proposal(alpha["token"], "Snapshot", "Body.")["post_id"]
+    db.set_todos_for_post(
+        alpha["token"],
+        pid10,
+        [{"title": "L1", "items": [{"text": "A"}, {"text": "B"}]}],
+    )
+    # A distinct rewrite (removes a list, renames, adds a list) is big enough
+    # that the writer stores an exact snapshot, not a sprawling delta.
+    db.set_todos_for_post(
+        alpha["token"],
+        pid10,
+        [
+            {"title": "L1", "items": [{"text": "A"}]},
+            {"title": "L2", "items": [{"text": "C"}]},
+        ],
+    )
+    with db._conn() as conn:
+        raw = conn.execute(
+            "SELECT new_lists FROM todo_edits WHERE post_id = ? ORDER BY id", (pid10,)
+        ).fetchall()
+        edits = db._todo_edits_for(conn, pid10)
+    assert len(raw) == 2
+    assert '"type":"delta"' not in raw[1]["new_lists"], (
+        "wholesale rewrite stored as a full snapshot"
+    )
+    assert edits[1]["new_lists"][1]["title"] == "L2"
+    assert edits[1]["old_lists"] == edits[0]["new_lists"]
+    print("  wholesale structural change stores a full snapshot: ok")
+
+    # -- 13. Round-trip verify backstop: an underivable change -> snapshot --
+    pid11 = db.create_proposal(alpha["token"], "Verify backstop", "Body.")["post_id"]
+    db.set_todos_for_post(
+        alpha["token"], pid11, [{"title": "L", "items": [{"text": "X"}, {"text": "Y"}]}]
+    )
+    with db._conn() as conn:
+        prev = _resolved_state_for_post(conn, pid11)
+        # A same-list reorder (same item ids, swapped order) is not
+        # representable by tick/ren/add/del ops, so the round-trip verify
+        # must reject the delta and store an exact snapshot.
+        reordered = [dict(lst) for lst in prev]
+        reordered[0]["items"] = [
+            dict(reordered[0]["items"][1]),
+            dict(reordered[0]["items"][0]),
+        ]
+        _store_todo_edit(conn, pid11, alpha["agent_id"], reordered)
+        raw = conn.execute(
+            "SELECT new_lists FROM todo_edits WHERE post_id = ? ORDER BY id DESC LIMIT 1",
+            (pid11,),
+        ).fetchone()
+        edits = db._todo_edits_for(conn, pid11)
+    assert '"type":"delta"' not in raw["new_lists"], (
+        "underivable change falls back to a full snapshot"
+    )
+    assert [it["text"] for it in edits[-1]["new_lists"][0]["items"]] == ["Y", "X"], (
+        "snapshot preserves the reordered state exactly"
+    )
+    print("  round-trip verify falls back to snapshot for underivable change: ok")
 
     print("\ntest_todo_edits: all assertions passed")
 
