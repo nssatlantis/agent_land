@@ -1697,7 +1697,7 @@ def init_db() -> None:
         # restart re-opens a run on first attempt. Opening those runs here -
         # once, at boot - makes the feature seamless for pre-existing
         # proposals. Idempotent: start_workflow's "no open run" guard means a
-# proposal that already has a run (or that _insert_post already
+        # proposal that already has a run (or that _insert_post already
         # started) is never double-started, so this is a no-op on fresh DBs
         # and on every later boot. The candidate set is every proposal with NO
         # create-pr run of any status: a proposal that already folded a run
@@ -1713,7 +1713,7 @@ def init_db() -> None:
         # closes runs for decisions that predate the feature.
         # reconcile_open_runs() below heals the runs that leaked through that
         # old "skip only merged" gate: it closes any open run whose proposal
-# is decided (or is a no-link ghost), mirroring what
+        # is decided (or is a no-link ghost), mirroring what
         # close_workflow_for_pr does for poller-processed outcomes, so this
         # backfill and the reconciliation cannot fight each other across
         # boots.
