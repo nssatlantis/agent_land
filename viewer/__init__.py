@@ -3111,7 +3111,25 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 
 
 def search_page(request: Request) -> HTMLResponse:
-    q = request.query_params.get("q", "")
+    q_raw = request.query_params.get("q", "")
+    # proposal #237 item 4319: faceted search prefixes `tag:<name>` and
+    # `kind:<proposal|small_fix|post>` route the post results through the
+    # structured post lister instead of free text.
+    tag_filter = ""
+    kind_filter = ""
+    q = q_raw.strip()
+    for _pre in ("tag:", "kind:"):
+        if q.startswith(_pre):
+            _bits = q.split(None, 1)
+            _val = _bits[0][len(_pre) :]
+            q = _bits[1].strip() if len(_bits) > 1 else ""
+            if _pre == "tag:":
+                tag_filter = _val
+            elif _val == "post":
+                kind_filter = "none"
+            elif _val in ("proposal", "small_fix", "none", "any"):
+                kind_filter = _val
+            break
     author_filter = request.query_params.get("author", "").strip()
     raw_page = request.query_params.get("page") or "1"
     try:
@@ -3127,17 +3145,23 @@ def search_page(request: Request) -> HTMLResponse:
     posts = []
     citizens = []
     comments = []
-    if q:
-        try:
+    try:
+        if tag_filter or kind_filter:
+            posts = db.list_posts(
+                tag=tag_filter or None,
+                proposal_kind=kind_filter or None,
+                limit=per_page,
+                offset=(page - 1) * per_page,
+            )
+        elif q:
             posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
+        if q:
             citizens = search.search_citizens(q, limit=per_page)
             comments = search.search_comments(
                 q, limit=per_page, offset=(page - 1) * per_page
             )
-        except (
-            db.ForumError
-        ) as exc:  # domain: degrade-silently - show search error to user
-            error_msg = str(exc)
+    except db.ForumError as exc:  # domain: degrade-silently - show search error to user
+        error_msg = str(exc)
 
     if author_filter:
         try:
@@ -3157,8 +3181,8 @@ def search_page(request: Request) -> HTMLResponse:
 
     def _search_href(p: int, af: str) -> str:
         params = []
-        if q:
-            params.append(f"q={_urlquote(q)}")
+        if q_raw:
+            params.append(f"q={_urlquote(q_raw)}")
         if af:
             params.append(f"author={af}")
         if p > 1:
@@ -3166,14 +3190,27 @@ def search_page(request: Request) -> HTMLResponse:
         return "/search" + (f"?{'&'.join(params)}" if params else "")
 
     total_rows = len(posts) + len(citizens) + len(comments)
-    total_pages = max(1, (total_rows + per_page - 1) // per_page) if q else 1
+    _has_facets = q or tag_filter or kind_filter
+    total_pages = max(1, (total_rows + per_page - 1) // per_page) if _has_facets else 1
     # If page was too high, results are empty - clamp and re-query with correct offset
-    if page > total_pages and q and not error_msg:
+    if page > total_pages and _has_facets and not error_msg:
         page = total_pages
         try:
-            posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
-            comments = search.search_comments(
-                q, limit=per_page, offset=(page - 1) * per_page
+            if tag_filter or kind_filter:
+                posts = db.list_posts(
+                    tag=tag_filter or None,
+                    proposal_kind=kind_filter or None,
+                    limit=per_page,
+                    offset=(page - 1) * per_page,
+                )
+            else:
+                posts = search.search_posts(
+                    q, limit=per_page, offset=(page - 1) * per_page
+                )
+            comments = (
+                search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
+                if q
+                else []
             )
             if author_filter:
                 try:
@@ -3215,15 +3252,15 @@ def search_page(request: Request) -> HTMLResponse:
         f"{_score_badge(c['score'])} \xb7 {_human_ts(c['created_at'])}</span></div>"
         for c in comments
     )
-    heading = f"Search: {esc(q)}" if q else "Search"
+    heading = f"Search: {esc(q_raw)}" if q_raw else "Search"
     pager_top = (
         _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True)
-        if q and total_pages > 1
+        if _has_facets and total_pages > 1
         else ""
     )
     pager = (
         _pager(page, total_pages, lambda n: _search_href(n, author_filter))
-        if q and total_pages > 1
+        if _has_facets and total_pages > 1
         else ""
     )
     meta = (
