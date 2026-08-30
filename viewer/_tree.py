@@ -7,10 +7,11 @@ db/schema changes."""
 
 from __future__ import annotations
 
-import db
-import github
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
+
+import db
+import github
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import _page
 from viewer._utils import esc
@@ -48,7 +49,9 @@ def _pr_chips(p: dict) -> str:
             f"#{pr['pr_number']}</a>"
             f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
         )
-    return f'<span class="pr-label" style="margin-left:6px">PRs:</span> {" ".join(bits)}'
+    return (
+        f'<span class="pr-label" style="margin-left:6px">PRs:</span> {" ".join(bits)}'
+    )
 
 
 def _lineage_node(p: dict) -> str:
