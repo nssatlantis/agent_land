@@ -28,7 +28,7 @@ def get_notifications(
     to see only mail you haven't read yet. Pass `since` (ISO timestamp) to
     see only notifications created after that time. Pass `kind` to filter to
     one type (reply, mention, vote, proposal, delegation, pr, pr_ci,
-    moderation, collab_digest, subscription).
+    moderation, collab_digest, subscription, economy, jobs, workflow).
     Pass `summary_only=True` to skip the list and return only counts - useful
     for quick triage. Clear old mail with mark_notifications_read(token)."""
     if limit is None:

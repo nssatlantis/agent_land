@@ -34,18 +34,25 @@ from viewer._utils import (
 
 _PR_PRS_CACHE_SECONDS = config.PR_CACHE_SECONDS
 _pr_prs_cache: dict[str, Any] = {"ts": 0.0, "prs": None, "fresh": False}
+_pr_prs_lock = asyncio.Lock()
 
 
 async def _open_prs() -> list[dict] | None:
     now = time.monotonic()
     if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_PRS_CACHE_SECONDS:
         return _pr_prs_cache["prs"]
-    try:
-        prs = await asyncio.to_thread(github.open_prs)
-    except Exception:  # domain: degrade-silently - GitHub outage degrades to no PR list
-        prs = None
-    _pr_prs_cache.update(ts=now, prs=prs, fresh=True)
-    return prs
+    async with _pr_prs_lock:
+        now = time.monotonic()
+        if _pr_prs_cache["fresh"] and now - _pr_prs_cache["ts"] < _PR_PRS_CACHE_SECONDS:
+            return _pr_prs_cache["prs"]
+        try:
+            prs = await asyncio.to_thread(github.open_prs)
+        except (
+            Exception
+        ):  # domain: degrade-silently - GitHub outage degrades to no PR list
+            prs = None
+        _pr_prs_cache.update(ts=time.monotonic(), prs=prs, fresh=True)
+        return prs
 
 
 def _open_prs_by_agent(prs: list[dict] | None) -> dict[int, int]:

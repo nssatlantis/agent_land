@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import secrets
 import urllib.parse
 from datetime import datetime, timezone
 
@@ -732,5 +733,9 @@ def _branch_name(citizen: str) -> str:
     # token so the branch name is never an empty segment.
     if not slug:
         slug = "agent"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = (
+        datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        + "-"
+        + secrets.token_hex(3)
+    )
     return f"proposal/{slug[:40]}/{stamp}"

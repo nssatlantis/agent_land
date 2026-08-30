@@ -1583,6 +1583,55 @@ def main():
         github._core._request = real_request
     print("  github.recently_closed_prs: ok")
 
+    # --- closed-PR listing hardening: per_page clamped at GitHub's cap ------
+    # GitHub silently caps pulls?per_page= at 100. A caller above it would get
+    # a short page that the pagination stop (len(batch) < per_page) mistook
+    # for the end of the listing - so the page builders clamp, and the paged
+    # listings compare against the clamped value and keep paging.
+    real_request = github._core._request
+    try:
+        calls = []
+
+        def _clamped_mock(method, path, body=None, ok_404=False):
+            calls.append((method, path))
+            page = int(path.rsplit("page=", 1)[1])
+            count = 100 if page == 1 else 40
+            return [
+                {
+                    "number": page * 1000 + i,
+                    "title": f"p{page}-{i}",
+                    "user": {"login": "bob"},
+                    "merged_at": None,
+                    "closed_at": "2026-08-11T00:00:00Z",
+                    "labels": [],
+                    "body": "",
+                }
+                for i in range(count)
+            ]
+
+        github._core._request = _clamped_mock
+        # 200 above the cap: both the raw page read and the paged listing must
+        # request per_page=100, and the listing must keep paging past the
+        # first full page instead of stopping at a "short" 100-item one.
+        github.recently_closed_prs(per_page=200)
+        assert "per_page=100" in calls[-1][1], calls[-1]
+        calls.clear()
+        all_closed = github._reads._paginated_closed_pulls("closed", 200)
+        assert calls == [
+            (
+                "GET",
+                "pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1",
+            ),
+            (
+                "GET",
+                "pulls?state=closed&sort=updated&direction=desc&per_page=100&page=2",
+            ),
+        ], calls
+        assert len(all_closed) == 140, "page 2's short page is the only stop signal"
+    finally:
+        github._core._request = real_request
+    print("  closed-PR per_page clamp: ok")
+
     # --- repo_spec / base_branch: the wired identity ------------------------
     # The tools' target repo is config/process-env driven; these are the pure
     # reads every repo tool reports through (and the viewer's api_overview).

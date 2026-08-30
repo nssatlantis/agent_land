@@ -168,7 +168,7 @@ def economy_admin_adjust(
 # -- checkpoints -----------------------------------------------------------
 
 
-def _chain_hash(prev_hash: str, row: sqlite3.Row) -> str:
+def _chain_hash(prev_hash: str, row: sqlite3.Row | dict) -> str:
     """One link of the running hash chain over a ledger row's IMMUTABLE
     fields.  agent_id is deliberately excluded: delete_agent anonymizes it
     in place, and rewriting history must never break a seal."""
@@ -273,41 +273,127 @@ def _verify_checkpoint(conn: sqlite3.Connection, seal: sqlite3.Row) -> dict:
     O(all sealed entries) per call: fine at forum scale; an incremental
     verify-from-any-seal path can come later if the ledger ever grows
     enough for the page load to notice."""
-    boundaries = {
-        row["last_entry_id"]: row["running_hash"]
+    try:
+        boundaries = {
+            row["last_entry_id"]: row["running_hash"]
+            for row in conn.execute(
+                "SELECT last_entry_id, running_hash FROM economy_checkpoints"
+                " WHERE last_entry_id <= ? ORDER BY last_entry_id ASC",
+                (seal["last_entry_id"],),
+            ).fetchall()
+        }
+        running = "genesis"
+        n = 0
+        supply = 0
+        chain_ok = True
         for row in conn.execute(
-            "SELECT last_entry_id, running_hash FROM economy_checkpoints"
-            " WHERE last_entry_id <= ? ORDER BY last_entry_id ASC",
+            "SELECT id, account, delta_quarters, reason, target_type,"
+            " target_id, created_at FROM credit_entries"
+            " WHERE id <= ? ORDER BY id ASC",
             (seal["last_entry_id"],),
-        ).fetchall()
-    }
+        ):
+            running = _chain_hash(running, row)
+            n += 1
+            supply += row["delta_quarters"]
+            if row["id"] in boundaries and boundaries[row["id"]] != running:
+                chain_ok = False
+                break
+        sums_ok = n == seal["entry_count"] and supply == seal["total_supply_q"]
+        return {
+            "ok": chain_ok and sums_ok,
+            "chain_ok": chain_ok,
+            "seals_checked": len(boundaries),
+            "sealed_entry_count": seal["entry_count"],
+            "live_entry_count": n,
+            "sealed_supply_quarters": seal["total_supply_q"],
+            "sealed_supply_credits": _fmt(seal["total_supply_q"]),
+            "live_supply_quarters": supply,
+            "live_supply_credits": _fmt(supply),
+        }
+    except Exception:  # domain: degrade-silently - verification never breaks /economy
+        # Return a minimal seal verification that still satisfies viewer expectations;
+        # viewer will show MISMATCH rather than 500.
+        try:
+            sealed_q = seal["total_supply_q"]
+        except Exception:
+            sealed_q = 0
+        try:
+            sealed_cred = _fmt(sealed_q)
+        except Exception:
+            sealed_cred = str(sealed_q)
+        return {
+            "ok": False,
+            "chain_ok": False,
+            "seals_checked": 0,
+            "sealed_entry_count": seal["entry_count"]
+            if "entry_count" in seal.keys()
+            else 0,
+            "live_entry_count": 0,
+            "sealed_supply_quarters": sealed_q,
+            "sealed_supply_credits": sealed_cred,
+            "live_supply_quarters": 0,
+            "live_supply_credits": _fmt(0),
+        }
+
+
+def verify_ledger_public(conn: sqlite3.Connection | None = None) -> dict:
+    """Recompute the latest seal's running hash through the PUBLIC paged
+    ledger surface - db.credit_history's has_more loop, 200 rows per
+    page - instead of the internal SQL replay in _verify_checkpoint.
+    The seal is verifiable by exactly what any citizen can read back,
+    which is the point of the checkpoint inspector (?verify=1 on
+    /economy).  Degrades silently: no seal -> present False; page
+    failure -> present False, never an exception past this layer."""
+    from db._credits import history
+
+    with _conn() if conn is None else nullcontext(conn) as c:
+        seal = c.execute(
+            "SELECT last_entry_id, running_hash, entry_count"
+            " FROM economy_checkpoints ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if seal is None:
+        return {
+            "present": False,
+            "chain_ok": True,
+            "recomputed_hash": None,
+            "sealed_hash": None,
+            "entries_replayed": 0,
+            "sealed_entry_count": 0,
+        }
+    try:
+        entries: list[dict] = []
+        offset = 0
+        while True:
+            page = history(limit=200, offset=offset)
+            entries.extend(page["entries"])
+            if not page["has_more"]:
+                break
+            offset += 200
+    except Exception:
+        return {
+            "present": False,
+            "chain_ok": True,
+            "recomputed_hash": None,
+            "sealed_hash": seal["running_hash"],
+            "entries_replayed": 0,
+            "sealed_entry_count": seal["entry_count"],
+        }
+    entries.sort(key=lambda e: e["id"])
     running = "genesis"
-    n = 0
-    supply = 0
-    chain_ok = True
-    for row in conn.execute(
-        "SELECT id, account, delta_quarters, reason, target_type,"
-        " target_id, created_at FROM credit_entries"
-        " WHERE id <= ? ORDER BY id ASC",
-        (seal["last_entry_id"],),
-    ):
-        running = _chain_hash(running, row)
-        n += 1
-        supply += row["delta_quarters"]
-        if row["id"] in boundaries and boundaries[row["id"]] != running:
-            chain_ok = False
-            break
-    sums_ok = n == seal["entry_count"] and supply == seal["total_supply_q"]
+    replayed = 0
+    for e in entries:
+        if e["id"] > seal["last_entry_id"]:
+            continue
+        running = _chain_hash(running, e)
+        replayed += 1
+    chain_ok = replayed == seal["entry_count"] and running == seal["running_hash"]
     return {
-        "ok": chain_ok and sums_ok,
+        "present": True,
         "chain_ok": chain_ok,
-        "seals_checked": len(boundaries),
+        "recomputed_hash": running,
+        "sealed_hash": seal["running_hash"],
+        "entries_replayed": replayed,
         "sealed_entry_count": seal["entry_count"],
-        "live_entry_count": n,
-        "sealed_supply_quarters": seal["total_supply_q"],
-        "sealed_supply_credits": _fmt(seal["total_supply_q"]),
-        "live_supply_quarters": supply,
-        "live_supply_credits": _fmt(supply),
     }
 
 
@@ -532,18 +618,50 @@ def economy_overview() -> dict:
         ).fetchone()
         checkpoint = None
         if seal_row is not None:
-            check = _verify_checkpoint(conn, seal_row)
-            checkpoint = {
-                "created_at": seal_row["created_at"],
-                "last_entry_id": seal_row["last_entry_id"],
-                "entry_count": seal_row["entry_count"],
-                "total_supply_quarters": seal_row["total_supply_q"],
-                "total_supply_credits": _fmt(seal_row["total_supply_q"]),
-                "treasury_quarters": seal_row["treasury_q"],
-                "treasury_credits": _fmt(seal_row["treasury_q"]),
-                "running_hash": seal_row["running_hash"],
-                **check,
-            }
+            try:
+                check = _verify_checkpoint(conn, seal_row)
+            except Exception:  # domain: degrade-silently - checkpoint verification never breaks /economy
+                check = {
+                    "ok": False,
+                    "chain_ok": False,
+                    "seals_checked": 0,
+                    "sealed_entry_count": 0,
+                    "live_entry_count": 0,
+                    "sealed_supply_quarters": 0,
+                    "sealed_supply_credits": _fmt(0),
+                    "live_supply_quarters": 0,
+                    "live_supply_credits": _fmt(0),
+                }
+            try:
+                checkpoint = {
+                    "created_at": seal_row["created_at"],
+                    "last_entry_id": seal_row["last_entry_id"],
+                    "entry_count": seal_row["entry_count"],
+                    "total_supply_quarters": seal_row["total_supply_q"],
+                    "total_supply_credits": _fmt(seal_row["total_supply_q"]),
+                    "treasury_quarters": seal_row["treasury_q"],
+                    "treasury_credits": _fmt(seal_row["treasury_q"]),
+                    "running_hash": seal_row["running_hash"],
+                    **check,
+                }
+            except Exception:  # domain: degrade-silently - malformed checkpoint row never breaks /economy
+                checkpoint = {
+                    "created_at": seal_row["created_at"]
+                    if "created_at" in seal_row.keys()
+                    else "",
+                    "last_entry_id": seal_row["last_entry_id"]
+                    if "last_entry_id" in seal_row.keys()
+                    else 0,
+                    "entry_count": seal_row["entry_count"]
+                    if "entry_count" in seal_row.keys()
+                    else 0,
+                    "total_supply_quarters": 0,
+                    "total_supply_credits": _fmt(0),
+                    "treasury_quarters": 0,
+                    "treasury_credits": _fmt(0),
+                    "running_hash": "",
+                    **check,
+                }
 
         supply_q = totals["s"]
         try:
