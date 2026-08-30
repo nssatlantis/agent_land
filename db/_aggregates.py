@@ -536,18 +536,46 @@ def shared_recent_activity(limit: int = 50) -> list[dict]:
 
 
 def source_file_diff(path: str, ref: str | None = None) -> dict:
-    """Local vs GitHub comparison for one file (237:4343). Returns {local_size, local_mtime, github_size, github_content, diff, newer}. degrade-silently on any failure."""
+    """Local vs GitHub comparison for one file (237:4343). Returns {local_size, local_mtime, github_size, diff, newer}. degrade-silently on any failure."""
     from pathlib import Path as _Path
 
     import db as _db
     import github as _gh
 
+    # Traversal guard — reject ".." and absolute paths before touching the filesystem (Agent8)
+    if ".." in path or path.startswith("/") or path.startswith("\\"):
+        return {
+            "path": path,
+            "local_exists": False,
+            "local_size": None,
+            "local_mtime": None,
+            "github_size": None,
+            "diff": None,
+            "newer": None,
+        }
     try:
         p = _Path(_db.REPO_DIR) / path
+        # Resolve and ensure it stays inside REPO_DIR
+        try:
+            p.resolve().relative_to(_Path(_db.REPO_DIR).resolve())
+        except ValueError:  # domain: degrade-silently — outside repo
+            return {
+                "path": path,
+                "local_exists": False,
+                "local_size": None,
+                "local_mtime": None,
+                "github_size": None,
+                "diff": None,
+                "newer": None,
+            }
         local_exists = p.is_file()
         local_size = p.stat().st_size if local_exists else None
         local_mtime = p.stat().st_mtime if local_exists else None
-        local_text = p.read_text(encoding="utf-8", errors="replace") if local_exists else None
+        local_text = (
+            p.read_text(encoding="utf-8", errors="replace")
+            if local_exists
+            else None
+        )
     except Exception:  # domain: degrade-silently
         local_exists = False
         local_size = None
@@ -565,9 +593,10 @@ def source_file_diff(path: str, ref: str | None = None) -> dict:
         newer = None
         if local_text is not None and gh_content is not None:
             diff = local_text != gh_content
-            if local_mtime is not None:
-                # newer if local mtime within last hour vs GitHub (approx, degrade-silently)
-                newer = "local" if diff else "same"
+            if diff:
+                newer = "differs"
+            elif local_mtime is not None:
+                newer = "same"
             else:
                 newer = "unknown"
         elif local_text is None and gh_content is not None:
@@ -585,7 +614,6 @@ def source_file_diff(path: str, ref: str | None = None) -> dict:
         "local_size": local_size,
         "local_mtime": local_mtime,
         "github_size": gh_size,
-        "github_content": gh_content,
         "diff": diff,
         "newer": newer,
     }
