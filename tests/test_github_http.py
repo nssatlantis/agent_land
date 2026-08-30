@@ -616,9 +616,9 @@ def test_pagination_cap_bounds_runaway_servers():
 
 def test_open_prs_paginates_past_the_default_page():
     """open_prs() used to be a single page read - silent truncation past
-    GITHUB_PRS_PER_PAGE (default 50) once a repo outgrew one page. The
-    page loop now mirrors _paginated_closed_pulls: a per_page=50 page 1 +
-    per_page=50 page 2 must merge into one list, and the native async
+    GITHUB_PRS_PER_PAGE (default 100) once a repo outgrew one page. The
+    page loop now mirrors _paginated_closed_pulls: a full 100-item page 1 +
+    a short 10-item page 2 must merge into one list, and the native async
     twin aopen_prs() must reach the same result through the shared
     cache."""
     hits: list[str] = []
@@ -634,10 +634,11 @@ def test_open_prs_paginates_past_the_default_page():
             "html_url": f"https://github.com/nssatlantis/agent_land/pull/{n}",
             "mergeable_state": "clean",
             "body": f"Citizen: test (agent_id={n})",
+            "labels": [{"name": f"label-{n}"}],
         }
 
-    page1 = [_pr_row(n) for n in range(50, 0, -1)]
-    page2 = [_pr_row(n) for n in range(60, 50, -1)]
+    page1 = [_pr_row(n) for n in range(100, 0, -1)]
+    page2 = [_pr_row(n) for n in range(110, 100, -1)]
 
     def handler(request):
         url = str(request.url)
@@ -659,11 +660,12 @@ def test_open_prs_paginates_past_the_default_page():
     try:
         got = gh.open_prs()
         nums = [r["number"] for r in got]
-        assert nums == list(range(50, 0, -1)) + list(range(60, 50, -1)), (
+        assert nums == list(range(100, 0, -1)) + list(range(110, 100, -1)), (
             f"got={nums} hits={hits}"
         )
         assert got[0]["citizen"] is not None
         assert got[-1]["citizen"] is not None
+        assert got[0]["labels"] == ["label-100"], got[0]
         assert len([u for u in hits if "/pulls?" in u and "state=open" in u]) == 2
         before = len(hits)
         native = asyncio.run(gh_reads.aopen_prs())
@@ -672,7 +674,103 @@ def test_open_prs_paginates_past_the_default_page():
     finally:
         gh_core._client = old
         gh.clear_cache()
-    print("  open_prs paginates past the first 50-item page: ok")
+    print("  open_prs paginates past the first 100-item page: ok")
+
+
+def test_etag_revalidation_serves_304_without_a_body():
+    """Item A: a fresh GET stores the ETag; the next GET revalidates with
+    If-None-Match and GitHub's 304 (no body, no rate-limit quota) is served
+    from the etag store - the caller gets the stored value and no further
+    JSON was transferred."""
+    hits: list[str] = []
+
+    def handler(request):
+        if request.headers.get("If-None-Match") == '"v1"':
+            hits.append("304")
+            return httpx.Response(304)
+        hits.append("200")
+        return httpx.Response(
+            200,
+            json={"number": 42, "title": "demo"},
+            headers={"ETag": '"v1"'},
+        )
+
+    old = _install_mock(handler)
+    try:
+        first = gh_core._request("GET", "pulls/4242")
+        assert first["title"] == "demo"
+        assert hits == ["200"]
+        second = gh_core._request("GET", "pulls/4242")
+        assert second == {"number": 42, "title": "demo"}
+        assert hits == ["200", "304"]
+        # A cached 304 must not poison the TTL read caches of other PRs.
+        assert gh_core._request("GET", "pulls/4243")["title"] == "demo"
+        assert hits == ["200", "304", "200"]
+    finally:
+        gh_core._client = old
+        gh_core._etag_store.clear()
+    print("  etag revalidation serves a 304 from the store: ok")
+
+
+def test_etag_stale_copy_refetches_with_a_fresh_validator():
+    """Item A: when the resource changed, GitHub answers 200 with a new ETag
+    (never 304) and the store is refreshed so the next read revalidates
+    against the new version."""
+    hits: list[str] = []
+
+    def handler(request):
+        inm = request.headers.get("If-None-Match")
+        if inm == '"v2"':
+            hits.append("304-v2")
+            return httpx.Response(304)
+        if inm == '"v1"':
+            hits.append("200-v2")
+            return httpx.Response(
+                200,
+                json={"number": 42, "title": "changed"},
+                headers={"ETag": '"v2"'},
+            )
+        hits.append("200-v1")
+        return httpx.Response(
+            200,
+            json={"number": 42, "title": "original"},
+            headers={"ETag": '"v1"'},
+        )
+
+    old = _install_mock(handler)
+    try:
+        titles = [
+            gh_core._request("GET", "pulls/4244")["title"],
+            gh_core._request("GET", "pulls/4244")["title"],
+            gh_core._request("GET", "pulls/4244")["title"],
+        ]
+        assert titles == ["original", "changed", "changed"], titles
+        assert hits == ["200-v1", "200-v2", "304-v2"], hits
+    finally:
+        gh_core._client = old
+        gh_core._etag_store.clear()
+    print("  stale etag triggers a fresh 200 and stores the new validator: ok")
+
+
+def test_pr_has_label_reuses_passed_row_without_a_fetch():
+    """Item B: pr_has_label(_pr=row) never fetches the PR - the poller's
+    hold gate pays zero API calls for the labels the row already carries, and
+    both GitHub label shapes (dict vs flattened string list) are accepted."""
+    hits: list[str] = []
+
+    def handler(request):
+        hits.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    old = _install_mock(handler)
+    try:
+        assert gh.pr_has_label(99, "hold", _pr={"labels": [{"name": "Hold"}]}) is True
+        assert gh.pr_has_label(99, "wip", _pr={"labels": ["wip"]}) is True
+        assert gh.pr_has_label(99, "hold", _pr={"labels": ["wip"]}) is False
+        assert not hits, hits
+    finally:
+        gh_core._client = old
+    print("  pr_has_label reuses a supplied row without any fetch: ok")
 
 
 def test_request_text_follows_redirect_to_blob():

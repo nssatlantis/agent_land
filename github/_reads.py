@@ -334,7 +334,10 @@ def strip_proposal_header(text: str) -> str:
 # (matching every other cache in this package).
 def _open_pulls_page(per_page: int, page: int) -> list:
     """One page of the open pulls listing, newest by created (GitHub's
-    default sort for state=open). Mirrors _closed_pulls_page."""
+    default sort for state=open). Mirrors _closed_pulls_page - including the
+    per_page clamp, so a FORUM_GITHUB_PRS_PER_PAGE above GitHub's silent cap
+    can't produce a short first page that pagination mistakes for the end."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     return _core._request(
         "GET",
         f"pulls?state=open&per_page={per_page}&page={page}",
@@ -343,6 +346,7 @@ def _open_pulls_page(per_page: int, page: int) -> list:
 
 async def _aopen_pulls_page(per_page: int, page: int) -> list:
     """Native-await twin of _open_pulls_page."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     return await _core._on_bg(
         _core._arequest(
             "GET",
@@ -390,6 +394,11 @@ def _parse_open_pr_row(p: dict) -> dict:
         "body": p.get("body") or "",
         "head_sha": (p.get("head") or {}).get("sha") or "",
         "citizen": _parse_citizen(p.get("body") or ""),
+        # Label *names* (flattened from GitHub's [{name, color, url}, ...]).
+        # Carried through open_prs so label checks - most notably the
+        # poller's proposal-hold gate - can reuse the very row they already
+        # fetched instead of issuing another API call per PR.
+        "labels": [l.get("name", "") for l in (p.get("labels") or [])],
     }
 
 
@@ -541,6 +550,36 @@ def list_prs(state: str = "open", since: str | None = None) -> list[dict]:
     if state == "open":
         rows = open_prs()
         return [r for r in rows if r["created_at"] >= since] if since else rows
+    # DB fast-path: the closed/all listing is served from pr_rows when the
+    # cache is populated (returns None when unpopulated - a fresh database
+    # must never read 'no PRs'). 'all' composes live open PRs with the DB's
+    # closed rows; failure anywhere falls back to the live GitHub listing.
+    db_rows: list[dict] | None = None
+    try:
+        import db
+
+        db_rows = db.list_pr_rows(state, since=since)
+    except Exception:  # domain: degrade-silently - cache is optional enrichment
+        db_rows = None
+    if db_rows is not None and state == "closed":
+        return db_rows
+    if db_rows is not None and state == "all":
+        try:
+            open_rows = open_prs()
+        except Exception:  # domain: degrade-silently - open half stays live-or-empty
+            open_rows = []
+        combined = [_list_row_for_open(r) for r in open_rows] + db_rows
+        if since:
+            combined = [
+                r
+                for r in combined
+                if (r["updated_at"] or r["created_at"] or "") >= since
+            ]
+        combined.sort(
+            key=lambda r: (r["updated_at"] or r["created_at"] or "", r["number"]),
+            reverse=True,
+        )
+        return combined
     pulls = _paginated_closed_pulls(state, config.GITHUB_PRS_PER_PAGE)
     rows = []
     for p in pulls:
@@ -586,6 +625,35 @@ async def alist_prs(state: str = "open", since: str | None = None) -> list[dict]
     if state == "open":
         rows = await aopen_prs()
         return [r for r in rows if r["created_at"] >= since] if since else rows
+    # DB fast-path: mirror of list_prs's - pr_rows serves the closed/all
+    # listing when populated; 'all' composes live open PRs with DB closed
+    # rows; any failure falls back to the live GitHub listing.
+    db_rows: list[dict] | None = None
+    try:
+        import db
+
+        db_rows = db.list_pr_rows(state, since=since)
+    except Exception:  # domain: degrade-silently - cache is optional enrichment
+        db_rows = None
+    if db_rows is not None and state == "closed":
+        return db_rows
+    if db_rows is not None and state == "all":
+        try:
+            open_rows = await aopen_prs()
+        except Exception:  # domain: degrade-silently - open half stays live-or-empty
+            open_rows = []
+        combined = [_list_row_for_open(r) for r in open_rows] + db_rows
+        if since:
+            combined = [
+                r
+                for r in combined
+                if (r["updated_at"] or r["created_at"] or "") >= since
+            ]
+        combined.sort(
+            key=lambda r: (r["updated_at"] or r["created_at"] or "", r["number"]),
+            reverse=True,
+        )
+        return combined
     pulls = await _apaginated_closed_pulls(state, config.GITHUB_PRS_PER_PAGE)
     rows = []
     for p in pulls:
@@ -609,6 +677,58 @@ async def alist_prs(state: str = "open", since: str | None = None) -> list[dict]
     return rows
 
 
+def _closed_row_from_raw(p: dict) -> dict:
+    """One closed/all-PR row in the feed's life-cycle shape - factored so
+    recently_closed_prs, arecently_closed_prs and the pr_rows backfill
+    stay in lockstep. Carries the label names, the outcome vocabulary
+    (merged / declined / closed), the decline-reason suffix and the
+    forum-side stamps (Citizen trailer + 'Proposal: #N') the outcome
+    poller records from."""
+    labels = [label["name"] for label in (p.get("labels") or [])]
+    return {
+        "number": p["number"],
+        "title": p["title"],
+        "body": p.get("body") or "",
+        "head": (p.get("head") or {}).get("ref", ""),
+        "head_sha": (p.get("head") or {}).get("sha", ""),
+        "base": (p.get("base") or {}).get("ref", ""),
+        "author": (p.get("user") or {}).get("login"),
+        "created_at": p.get("created_at"),
+        "updated_at": p.get("updated_at"),
+        "state": p.get("state"),
+        "merged_at": p.get("merged_at"),
+        "closed_at": p.get("closed_at"),
+        "html_url": p.get("html_url", ""),
+        "labels": labels,
+        "declined": _pr_outcome(p) == "declined",
+        "decline_reason": _parse_decline_reason(p),
+        "citizen": _parse_citizen(p.get("body") or ""),
+        "proposal_post_id": _parse_proposal(p.get("body") or ""),
+    }
+
+
+def _list_row_for_open(r: dict) -> dict:
+    """Normalize one open_prs() row (the open view's shape) into the
+    closed/all listing's life-cycle shape, so 'all' compression keeps one
+    row vocabulary. `updated_at` is not in the open view - None forces the
+    compose sort to fall back on created_at (DB rows carry updated_at and
+    win the natural ordering)."""
+    return {
+        "number": r["number"],
+        "title": r["title"],
+        "head": r["head"],
+        "base": r["base"],
+        "author": r["author"],
+        "created_at": r["created_at"],
+        "updated_at": None,
+        "state": "open",
+        "merged_at": None,
+        "closed_at": None,
+        "outcome": "open",
+        "html_url": r["html_url"],
+    }
+
+
 def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict]:
     """Recently closed pull requests, newest first, with the forum's citizen
     trailer and proposal stamp parsed and the labels attached. The outcome
@@ -626,24 +746,7 @@ def recently_closed_prs(per_page: int = config.GITHUB_PRS_PER_PAGE) -> list[dict
     # citizens on a fresh database (2.1 pagination belongs on the user-facing
     # list_prs closed/all listing, not this poller feed), so fetch one page.
     pulls = _closed_pulls_page("closed", per_page, 1)
-    closed = []
-    for p in pulls:
-        labels = [label["name"] for label in (p.get("labels") or [])]
-        closed.append(
-            {
-                "number": p["number"],
-                "title": p["title"],
-                "author": (p.get("user") or {}).get("login"),
-                "merged_at": p.get("merged_at"),
-                "closed_at": p.get("closed_at"),
-                "labels": labels,
-                "declined": _pr_outcome(p) == "declined",
-                "decline_reason": _parse_decline_reason(p),
-                "citizen": _parse_citizen(p.get("body") or ""),
-                "proposal_post_id": _parse_proposal(p.get("body") or ""),
-            }
-        )
-    return closed
+    return [_closed_row_from_raw(p) for p in pulls]
 
 
 async def arecently_closed_prs(
@@ -652,24 +755,7 @@ async def arecently_closed_prs(
     """Native-await twin of recently_closed_prs - the outcome poller's hot
     fetch, now off the worker threads entirely."""
     pulls = await _aclosed_pulls_page("closed", per_page, 1)
-    closed = []
-    for p in pulls:
-        labels = [label["name"] for label in (p.get("labels") or [])]
-        closed.append(
-            {
-                "number": p["number"],
-                "title": p["title"],
-                "author": (p.get("user") or {}).get("login"),
-                "merged_at": p.get("merged_at"),
-                "closed_at": p.get("closed_at"),
-                "labels": labels,
-                "declined": _pr_outcome(p) == "declined",
-                "decline_reason": _parse_decline_reason(p),
-                "citizen": _parse_citizen(p.get("body") or ""),
-                "proposal_post_id": _parse_proposal(p.get("body") or ""),
-            }
-        )
-    return closed
+    return [_closed_row_from_raw(p) for p in pulls]
 
 
 def _parse_citizen(text: str) -> dict | None:
@@ -734,6 +820,64 @@ def _parse_decline_reason(pr: dict) -> str:
     return "unspecified"
 
 
+async def aconditional_raw_pr(
+    number: int, etag: str | None = None
+) -> tuple[dict | None, str | None]:
+    """Conditional fetch of one PR's raw header: carries If-None-Match when
+    a cached ETag is known so an unchanged PR answers 304 without a body.
+    Returns (payload, etag): payload is the parsed JSON on a 200 (None on a
+    304 / empty 2xx), etag is the validator to store from a 200 (None when
+    the server sent none). The repo_get_pr revalidation seam uses this so
+    the closed-PR header read is served from the DB once cached - a 304
+    costs one small request instead of the full composite - while a 2xx
+    refreshes both the payload and its validator."""
+    return await _core._on_bg(
+        _core._arequest_with_etag("GET", f"pulls/{number}", etag=etag)
+    )
+
+
+def _synthetic_pr_raw(row: dict) -> dict:
+    """Rebuild the minimal raw GitHub PR header the composite readers need
+    from a cached pr_rows row - the 304 branch of revalidation, where the
+    cached copy is provably current so the whole composite (checks, files,
+    comments) reads as far as its other caches allow. The `head`/`base`
+    refs are exact (stored live) and `head.sha` rides in the cache row too
+    (immutable for a closed PR, so the stored value is still exact), so the
+    checks chain resolves against the real commit."""
+    return {
+        "number": row["number"],
+        "title": row["title"],
+        "body": row["body"],
+        "head": {"ref": row["head"], "sha": row["head_sha"]},
+        "base": {"ref": row["base"]},
+        "user": {"login": row["author"]},
+        "state": row["state"] or "closed",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "merged_at": row["merged_at"],
+        "closed_at": row["closed_at"],
+        "html_url": row["html_url"],
+        "labels": [{"name": label} for label in row["labels"]],
+    }
+
+
+def _pr_raw(number: int) -> dict:
+    """The raw GitHub /pulls/{number} payload, TTL-cached under its own key so
+    the several reads that need it (get_pr, pr_diff, pr_has_label) share one
+    API call per PR_CACHE_SECONDS window instead of each fetching it afresh
+    (Item B of the rate-limit reduction).  Lives here in the read package
+    because it is purely a read; the poller's proposal-hold gate calls it
+    through ``pr_has_label`` only when a caller did not already hold the row.
+    """
+    cache_key = ("pr_raw", number)
+    cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    pr = _core._request("GET", f"pulls/{number}")
+    _core._pr_cache.set(cache_key, pr)
+    return pr
+
+
 def get_pr(number: int, *, _pr: dict | None = None) -> dict:
     """One pull request plus its check status, comments and changed files, for
     agents reviewing their own or others' proposals. `outcome` classifies the
@@ -754,7 +898,7 @@ def get_pr(number: int, *, _pr: dict | None = None) -> dict:
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
-    pr = _pr or _core._request("GET", f"pulls/{number}")
+    pr = _pr if _pr is not None else _pr_raw(number)
     checks = _checks._checks_for_head(pr["head"]["sha"])
     result = {
         "number": pr["number"],
@@ -790,7 +934,7 @@ def pr_diff(number: int) -> dict:
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
-    pr = _core._request("GET", f"pulls/{number}")
+    pr = _pr_raw(number)
     # GitHub pages the files endpoint at 100 per request; page through so a
     # large PR's diff is never silently truncated at the first page.
     files: list[dict] = []

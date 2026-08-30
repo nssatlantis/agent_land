@@ -35,7 +35,11 @@ from events import (
     EVT_PROPOSAL_AUTO_LINKED,
     log_event,
 )
-from github._reads import _closed_pulls_page
+from github._reads import (
+    _apaginated_closed_pulls,
+    _closed_pulls_page,
+    _closed_row_from_raw,
+)
 
 
 def _notify_proposal_watchers(
@@ -358,6 +362,52 @@ def _sweep_orphan_vote_labels() -> list[str]:
 _VOTE_LABEL_GC_MULTIPLIER = 8
 _last_vote_label_gc = 0.0
 
+# The DB-persisted closed-PR cache (pr_rows) is the fast path for the closed
+# listing and the revalidation seam's store, but a fresh database has nothing
+# in it until the first PR below actually closes. Backfill it from the
+# closed-pulls listing at most once per this period (watermark-tracked) so
+# the cache stands on its own feet; 6 hours is far shorter than the repo's
+# close cadence, so the listing stays fresh without a full-page walk every
+# interval.
+_PR_ROWS_BACKFILL_MAX_AGE_SECONDS = 6 * 3600
+
+
+async def _maybe_backfill_pr_rows() -> None:
+    """Refill the DB-persisted closed-PR cache (pr_rows) from the closed-pulls
+    listing, at most once per _PR_ROWS_BACKFILL_MAX_AGE_SECONDS: the stored
+    watermark tracks the last completed refill, and an absent or stale
+    watermark refills now. Best-effort - the cache is an optimization and
+    every reader falls back to live GitHub when it is unpopulated - so a
+    failed refill is logged (pr_rows_backfill_failed) and retried next
+    interval."""
+    try:
+        wm = db.pr_rows_watermark()
+        if wm is not None:
+            try:
+                last = datetime.fromisoformat(wm.replace("Z", "+00:00"))
+            except ValueError:
+                # domain:degrade-silently - an unparseable watermark is
+                # treated as stale so the cache refills; no data is lost.
+                last = None  # unparseable watermark: treat as stale, refill
+            if last is not None and (
+                datetime.now(timezone.utc) - last
+                < timedelta(seconds=_PR_ROWS_BACKFILL_MAX_AGE_SECONDS)
+            ):
+                return
+        pulls = await _apaginated_closed_pulls("closed", config.GITHUB_PRS_PER_PAGE)
+        rows = [_closed_row_from_raw(p) for p in pulls]
+        if not rows:
+            return
+        with db._conn() as conn:
+            for row in rows:
+                db.pr_rows_upsert(conn, row)
+            db.pr_rows_set_watermark(conn)
+        logutil.log("pr_rows_backfill", rows=len(rows))
+    except Exception as exc:
+        # domain: degrade-silently - cache refill is optional enrichment;
+        # readers fall back to live GitHub while the cache is unpopulated.
+        logutil.log("pr_rows_backfill_failed", error=str(exc))
+
 
 def _maybe_gc_vote_labels() -> None:
     """Run _sweep_orphan_vote_labels at most once every
@@ -452,6 +502,18 @@ async def _pr_outcome_poller() -> None:
             # kill the poller for the rest of the process lifetime - log and
             # try again next interval.
             logutil.log("pr_outcome_poll", error=str(exc))
+        try:
+            # Backfill the DB-persisted closed-PR cache (pr_rows) so the
+            # fast closed listing and the revalidation seam have a row set on
+            # a fresh database. Watermark-gated inside
+            # _maybe_backfill_pr_rows (at most once per
+            # _PR_ROWS_BACKFILL_MAX_AGE_SECONDS, failures retried next tick).
+            await _maybe_backfill_pr_rows()
+        except Exception as exc:
+            # domain:degrade-silently - the cache is an optimization; a
+            # failed refill is logged and retried next interval, and readers
+            # fall back to live GitHub in the meantime.
+            logutil.log("pr_rows_backfill_failed", error=str(exc))
         try:
             # Occasional housekeeping: gc orphaned 'votes: [...]' label
             # definitions that no open PR references (the per-vote removal
@@ -1550,7 +1612,7 @@ def _pr_vote_sweep(
         except Exception:
             continue  # unknown proposal state; never auto-merge on doubt
         try:
-            if github.pr_has_label(number, _HOLD_LABEL):
+            if github.pr_has_label(number, _HOLD_LABEL, _pr=pr):
                 continue
         except Exception:
             continue  # if we can't check labels, skip

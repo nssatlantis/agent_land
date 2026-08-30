@@ -1792,11 +1792,50 @@ def init_db() -> None:
                     import logutil
 
                     logutil.log("workflow_reconcile_failed", error=str(exc))
+                # Bug-report auto-confirm sweep: open reports whose confidence
+                # already reached BUG_CONFIDENCE_THRESHOLD (crossed under a
+                # higher config, or before the decided_at + EVT_BUG_CONFIRMED
+                # stamping existed) are promoted to confirmed on boot, with the
+                # same side effects as a live threshold crossing.  Idempotent,
+                # so harmless on every later boot.  A failure here - even of
+                # the lazy import itself - is logged, never silently dropped:
+                # an invisible break would leave over-threshold reports open
+                # and stale.
+                try:
+                    from db._bug_reports import (
+                        sweep_auto_confirm as _sweep_auto_confirm,
+                    )
+
+                    _sweep_auto_confirm(conn)
+                except Exception as exc:  # domain: degrade-silently - bug sweep is enrichment; boot must not fail
+                    import logutil
+
+                    logutil.log("bug_sweep_confirm_failed", error=str(exc))
             finally:
                 conn.row_factory = _previous_factory
         except (
             Exception
         ):  # domain: degrade-silently - workflows are enrichment; boot must not fail
+            pass
+
+        # PR-cache index: lives here rather than schema.sql because
+        # schema.sql's CREATE INDEX statements run before migrations and
+        # would crash an upgraded (pre-feature) database - the
+        # AGENTS.md schema-migration rule. The cache is optional
+        # enrichment, so a broken index never blocks boot.
+        try:
+            _pr_rows_objects = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+                ).fetchall()
+            }
+            if "pr_rows" in _pr_rows_objects:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_pr_rows_state_updated"
+                    " ON pr_rows(state, updated_at)"
+                )
+        except Exception:  # domain: degrade-silently - cache index is best-effort
             pass
 
 
