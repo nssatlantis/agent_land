@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import time
 
-from starlette.responses import HTMLResponse
-
 import db
 import db._aggregates as aggregates
+from starlette.responses import HTMLResponse
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import _human_ts, esc
