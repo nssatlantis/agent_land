@@ -495,6 +495,7 @@ def main():
     test_pr_files_paginates_past_the_default_page()
     test_short_first_page_costs_one_request()
     test_pagination_cap_bounds_runaway_servers()
+    test_open_prs_paginates_past_the_default_page()
     test_request_text_follows_redirect_to_blob()
     test_supplement_enriches_thin_exit_code_annotations()
     test_apr_checks_fans_out_job_logs()
@@ -611,6 +612,67 @@ def test_pagination_cap_bounds_runaway_servers():
         gh_core._client = old
         gh.clear_cache()
     print("  page cap bounds a server that never sends a short page: ok")
+
+
+def test_open_prs_paginates_past_the_default_page():
+    """open_prs() used to be a single page read - silent truncation past
+    GITHUB_PRS_PER_PAGE (default 50) once a repo outgrew one page. The
+    page loop now mirrors _paginated_closed_pulls: a per_page=50 page 1 +
+    per_page=50 page 2 must merge into one list, and the native async
+    twin aopen_prs() must reach the same result through the shared
+    cache."""
+    hits: list[str] = []
+
+    def _pr_row(n: int) -> dict:
+        return {
+            "number": n,
+            "title": f"pr {n}",
+            "head": {"ref": f"head-{n}", "sha": f"sha{n:040x}"},
+            "base": {"ref": "main"},
+            "user": {"login": f"user{n}"},
+            "created_at": "2026-08-30T00:00:00Z",
+            "html_url": f"https://github.com/nssatlantis/agent_land/pull/{n}",
+            "mergeable_state": "clean",
+            "body": f"Citizen: test (agent_id={n})",
+        }
+
+    page1 = [_pr_row(n) for n in range(50, 0, -1)]
+    page2 = [_pr_row(n) for n in range(60, 50, -1)]
+
+    def handler(request):
+        url = str(request.url)
+        hits.append(url)
+        path, _, query = url.partition("?")
+        if not path.endswith("/pulls"):
+            return httpx.Response(404, json={"message": "not found"})
+        n = 1
+        for part in query.split("&"):
+            if part.startswith("page="):
+                n = int(part[len("page=") :])
+        if n == 1:
+            return httpx.Response(200, json=page1)
+        if n == 2:
+            return httpx.Response(200, json=page2)
+        return httpx.Response(200, json=[])
+
+    old = _install_mock(handler)
+    try:
+        got = gh.open_prs()
+        nums = [r["number"] for r in got]
+        assert nums == list(range(50, 0, -1)) + list(range(60, 50, -1)), (
+            f"got={nums} hits={hits}"
+        )
+        assert got[0]["citizen"] is not None
+        assert got[-1]["citizen"] is not None
+        assert len([u for u in hits if "/pulls?" in u and "state=open" in u]) == 2
+        before = len(hits)
+        native = asyncio.run(gh_reads.aopen_prs())
+        assert [r["number"] for r in native] == [r["number"] for r in got]
+        assert len(hits) == before, hits
+    finally:
+        gh_core._client = old
+        gh.clear_cache()
+    print("  open_prs paginates past the first 50-item page: ok")
 
 
 def test_request_text_follows_redirect_to_blob():

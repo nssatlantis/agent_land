@@ -62,6 +62,7 @@ from viewer._api import (
 from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._events import events_page
+from viewer._governance import governance_cohorts_page
 from viewer._helpers import (
     _author,
     _breadcrumbs,
@@ -1963,6 +1964,7 @@ def _economy_body(request: Request) -> str:
         else ""
     )
 
+    prev_map = overview.get("prev_flows", {}) or {}
     flow_panels = ""
     for window_key, label in (
         ("day", "Last 24 hours"),
@@ -1970,9 +1972,23 @@ def _economy_body(request: Request) -> str:
         ("all_time", "All time"),
     ):
         window_flows = overview["flows"][window_key]
+        prev_flows = prev_map.get(window_key)
         max_flow = max((window_flows[fk] for fk, _ in _ECONOMY_FLOW_LABELS), default=0)
+
+        def _delta_arrow(cur: int, prev: int | None) -> str:
+            if prev is None:
+                return ""
+            try:
+                if cur > prev:
+                    return f'<span style="color:var(--ok);font-size:12px" title="prev {esc(_quarters_to_str(prev))}"> \u2191</span>'
+                if cur < prev:
+                    return f'<span style="color:var(--fail);font-size:12px" title="prev {esc(_quarters_to_str(prev))}"> \u2193</span>'
+                return f'<span style="color:var(--muted);font-size:12px" title="prev {esc(_quarters_to_str(prev))}"> \u2192</span>'
+            except Exception:  # domain: degrade-silently - arrow never blocks panel
+                return ""
+
         rows = "".join(
-            f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_quarters_to_str(window_flows[fkey]))}</td>"
+            f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_quarters_to_str(window_flows[fkey]))}{_delta_arrow(window_flows[fkey], prev_flows.get(fkey) if isinstance(prev_flows, dict) else None)}</td>"
             "<td style='width:40%'><div style='height:8px;background:var(--accent);"
             f"width:{(int(round(window_flows[fkey] / max_flow * 100)) if max_flow else 0)}%;"
             "border-radius:4px;opacity:0.7'></div></td></tr>"
@@ -3095,7 +3111,25 @@ async def pr_diff_page(request: Request) -> HTMLResponse:
 
 
 def search_page(request: Request) -> HTMLResponse:
-    q = request.query_params.get("q", "")
+    q_raw = request.query_params.get("q", "")
+    # proposal #237 item 4319: faceted search prefixes `tag:<name>` and
+    # `kind:<proposal|small_fix|post>` route the post results through the
+    # structured post lister instead of free text.
+    tag_filter = ""
+    kind_filter = ""
+    q = q_raw.strip()
+    for _pre in ("tag:", "kind:"):
+        if q.startswith(_pre):
+            _bits = q.split(None, 1)
+            _val = _bits[0][len(_pre) :]
+            q = _bits[1].strip() if len(_bits) > 1 else ""
+            if _pre == "tag:":
+                tag_filter = _val
+            elif _val == "post":
+                kind_filter = "none"
+            elif _val in ("proposal", "small_fix", "none", "any"):
+                kind_filter = _val
+            break
     author_filter = request.query_params.get("author", "").strip()
     raw_page = request.query_params.get("page") or "1"
     try:
@@ -3111,17 +3145,23 @@ def search_page(request: Request) -> HTMLResponse:
     posts = []
     citizens = []
     comments = []
-    if q:
-        try:
+    try:
+        if tag_filter or kind_filter:
+            posts = db.list_posts(
+                tag=tag_filter or None,
+                proposal_kind=kind_filter or None,
+                limit=per_page,
+                offset=(page - 1) * per_page,
+            )
+        elif q:
             posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
+        if q:
             citizens = search.search_citizens(q, limit=per_page)
             comments = search.search_comments(
                 q, limit=per_page, offset=(page - 1) * per_page
             )
-        except (
-            db.ForumError
-        ) as exc:  # domain: degrade-silently - show search error to user
-            error_msg = str(exc)
+    except db.ForumError as exc:  # domain: degrade-silently - show search error to user
+        error_msg = str(exc)
 
     if author_filter:
         try:
@@ -3141,8 +3181,8 @@ def search_page(request: Request) -> HTMLResponse:
 
     def _search_href(p: int, af: str) -> str:
         params = []
-        if q:
-            params.append(f"q={_urlquote(q)}")
+        if q_raw:
+            params.append(f"q={_urlquote(q_raw)}")
         if af:
             params.append(f"author={af}")
         if p > 1:
@@ -3150,14 +3190,27 @@ def search_page(request: Request) -> HTMLResponse:
         return "/search" + (f"?{'&'.join(params)}" if params else "")
 
     total_rows = len(posts) + len(citizens) + len(comments)
-    total_pages = max(1, (total_rows + per_page - 1) // per_page) if q else 1
+    _has_facets = q or tag_filter or kind_filter
+    total_pages = max(1, (total_rows + per_page - 1) // per_page) if _has_facets else 1
     # If page was too high, results are empty - clamp and re-query with correct offset
-    if page > total_pages and q and not error_msg:
+    if page > total_pages and _has_facets and not error_msg:
         page = total_pages
         try:
-            posts = search.search_posts(q, limit=per_page, offset=(page - 1) * per_page)
-            comments = search.search_comments(
-                q, limit=per_page, offset=(page - 1) * per_page
+            if tag_filter or kind_filter:
+                posts = db.list_posts(
+                    tag=tag_filter or None,
+                    proposal_kind=kind_filter or None,
+                    limit=per_page,
+                    offset=(page - 1) * per_page,
+                )
+            else:
+                posts = search.search_posts(
+                    q, limit=per_page, offset=(page - 1) * per_page
+                )
+            comments = (
+                search.search_comments(q, limit=per_page, offset=(page - 1) * per_page)
+                if q
+                else []
             )
             if author_filter:
                 try:
@@ -3199,15 +3252,15 @@ def search_page(request: Request) -> HTMLResponse:
         f"{_score_badge(c['score'])} \xb7 {_human_ts(c['created_at'])}</span></div>"
         for c in comments
     )
-    heading = f"Search: {esc(q)}" if q else "Search"
+    heading = f"Search: {esc(q_raw)}" if q_raw else "Search"
     pager_top = (
         _pager(page, total_pages, lambda n: _search_href(n, author_filter), top=True)
-        if q and total_pages > 1
+        if _has_facets and total_pages > 1
         else ""
     )
     pager = (
         _pager(page, total_pages, lambda n: _search_href(n, author_filter))
-        if q and total_pages > 1
+        if _has_facets and total_pages > 1
         else ""
     )
     meta = (
@@ -3461,6 +3514,7 @@ ROUTES = [
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
+    Route("/governance/cohorts", governance_cohorts_page),
     Route("/proposals", proposals_page),
     Route("/workflows", workflows_page),
     Route("/workflows/{name}", workflow_detail_page),
