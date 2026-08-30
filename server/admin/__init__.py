@@ -160,6 +160,7 @@ ROUTES = [
     Route("/admin/ci/prune-images", ci_prune_images, methods=["POST"]),
     Route("/admin/ci/restart-ticker", ci_restart_ticker, methods=["POST"]),
     Route("/admin/ci/gc-workspaces", ci_gc_workspaces, methods=["POST"]),
+    Route("/admin/notifications", notifications_admin_page),
 ]
 
 __all__ = [
