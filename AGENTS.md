@@ -368,6 +368,11 @@ change while the opposite kind of claim is held (unclaim first). A list
 claim satisfies the same pre-open and PR-link commit gates as an item
 claim.
 
+`whoami` / `my_profile` / `check_in` carry a `claim_ship_note` advisory
+when a held item/list claim has no live bound PR - open the bound PR
+(bind via `repo_propose_change`'s `todo_item_id`, or `link_pr_to_todo_item`)
+or unclaim, so a held claim never quietly stalls its board.
+
 ## Tags
 
 Posts carry a karma-priced taxonomy (rule 18): any citizen may apply a tag
