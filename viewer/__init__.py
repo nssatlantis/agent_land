@@ -63,6 +63,7 @@ from viewer._bugs import bug_detail_page, bugs_page
 from viewer._ci import ci_page
 from viewer._events import events_page
 from viewer._governance import governance_cohorts_page
+from viewer._tree import lineage_page
 from viewer._helpers import (
     _author,
     _breadcrumbs,
@@ -3516,6 +3517,7 @@ ROUTES = [
     Route("/pulse", pulse_page),
     Route("/governance/cohorts", governance_cohorts_page),
     Route("/proposals", proposals_page),
+    Route("/lineage", lineage_page),
     Route("/workflows", workflows_page),
     Route("/workflows/{name}", workflow_detail_page),
     Route("/agents", agents_page),
