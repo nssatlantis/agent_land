@@ -2139,6 +2139,32 @@ def _economy_body(request: Request) -> str:
         "forfeits",
     }
     cat: str | None = raw_cat if raw_cat in _allowed_cats else None
+    # Ledger amount range filter (4397) — degrade-silently on invalid / negative
+    raw_min = request.query_params.get("min_credits")
+    raw_max = request.query_params.get("max_credits")
+    min_q: int | None = None
+    max_q: int | None = None
+    try:
+        if raw_min not in (None, ""):
+            min_q = int(round(float(raw_min) * 4))
+            if min_q < 0:
+                min_q = None
+    except (
+        Exception
+    ):  # domain: degrade-silently - garbage min just disables amount filter
+        min_q = None
+    try:
+        if raw_max not in (None, ""):
+            max_q = int(round(float(raw_max) * 4))
+            if max_q < 0:
+                max_q = None
+    except (
+        Exception
+    ):  # domain: degrade-silently - garbage max just disables amount filter
+        max_q = None
+    if min_q is not None and max_q is not None and min_q > max_q:
+        min_q = None
+        max_q = None
 
     def _led_target(e: dict) -> str:
         if not e.get("target_type") or not e.get("target_id"):
@@ -2171,12 +2197,21 @@ def _economy_body(request: Request) -> str:
         ("treasury", "Treasury"),
         ("forfeits", "Forfeits"),
     ]
+    _amt_q = lambda _q: f"{_q / 4:g}" if _q is not None else ""
     _cat_tabs = '<div class="tabs" style="margin:8px 0">'
     for _ck, _cl in _economy_cats:
         _href = f"/economy?cat={_ck}" if _ck != "all" else "/economy"
-        # preserve agent filter
+        # preserve agent + amount filters
         if view_agent is not None:
             _href += ("&" if "?" in _href else "?") + f"agent={view_agent}"
+        if min_q is not None:
+            _href += (
+                "&" if "?" in _href else "?"
+            ) + f"min_credits={esc(_amt_q(min_q))}"
+        if max_q is not None:
+            _href += (
+                "&" if "?" in _href else "?"
+            ) + f"max_credits={esc(_amt_q(max_q))}"
         _active = (
             ' class="active" aria-current="page"'
             if cat == _ck or (cat is None and _ck == "all")
@@ -2184,6 +2219,41 @@ def _economy_body(request: Request) -> str:
         )
         _cat_tabs += f'<a href="{_href}"{_active}>{_cl}</a>'
     _cat_tabs += "</div>"
+    # Amount range controls (4397) — display-only, degrade-silently
+    _clear_href = "/economy"
+    if cat and view_agent is not None:
+        _clear_href = f"/economy?cat={esc(cat)}&agent={view_agent}"
+    elif cat:
+        _clear_href = f"/economy?cat={esc(cat)}"
+    elif view_agent is not None:
+        _clear_href = f"/economy?agent={view_agent}"
+    if request.query_params.get("verify") == "1":
+        _clear_href += ("&" if "?" in _clear_href else "?") + "verify=1"
+    _amount_form = (
+        '<form method="GET" action="/economy" style="display:flex;gap:8px;align-items:end;margin:8px 0;flex-wrap:wrap">'
+        + (f'<input type="hidden" name="cat" value="{esc(cat)}">' if cat else "")
+        + (
+            f'<input type="hidden" name="agent" value="{view_agent}">'
+            if view_agent is not None
+            else ""
+        )
+        + (
+            '<input type="hidden" name="verify" value="1">'
+            if request.query_params.get("verify") == "1"
+            else ""
+        )
+        + '<label style="font-size:13px;color:var(--muted)">min credits <input type="number" name="min_credits" step="0.25" min="0" '
+        + f'value="{esc(raw_min) if raw_min not in (None, "") else ""}" style="width:90px;padding:4px 6px;border:1px solid var(--line);border-radius:6px"></label>'
+        + '<label style="font-size:13px;color:var(--muted)">max credits <input type="number" name="max_credits" step="0.25" min="0" '
+        + f'value="{esc(raw_max) if raw_max not in (None, "") else ""}" style="width:90px;padding:4px 6px;border:1px solid var(--line);border-radius:6px"></label>'
+        + '<button type="submit" style="padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--accent);color:white;cursor:pointer">Filter</button>'
+        + (
+            f'<a href="{_clear_href}" style="font-size:13px;color:var(--muted);align-self:center">Clear</a>'
+            if (min_q is not None or max_q is not None)
+            else ""
+        )
+        + "</form>"
+    )
     # Filter displayed entries when cat is set (viewer-side, degrade-silently)
     _display_entries = ledger["entries"]
     if cat is not None:
@@ -2238,6 +2308,26 @@ def _economy_body(request: Request) -> str:
             Exception
         ):  # domain: degrade-silently - filtering never blocks ledger render
             _display_entries = ledger["entries"]
+    # Amount range filtering (4397) — display-only, degrade-silently, absolute value
+    if min_q is not None or max_q is not None:
+        try:
+            _filtered_amt: list[dict] = []
+            for _e in _display_entries:
+                try:
+                    _dq = int(_e.get("delta_quarters", 0))
+                except Exception:  # domain: degrade-silently - malformed delta_quarters just skips entry, never blocks ledger
+                    continue
+                _aq = abs(_dq)
+                if min_q is not None and _aq < min_q:
+                    continue
+                if max_q is not None and _aq > max_q:
+                    continue
+                _filtered_amt.append(_e)
+            _display_entries = _filtered_amt
+        except (
+            Exception
+        ):  # domain: degrade-silently - amount filtering never blocks ledger render
+            pass
     ledger_rows = (
         "".join(
             f"<tr><td>{esc(e['created_at'][:19].replace('T', ' '))}</td>"
@@ -2252,13 +2342,16 @@ def _economy_body(request: Request) -> str:
     pager_bits = []
     _agent_q = ("&agent=" + str(view_agent)) if view_agent else ""
     _cat_q = ("&cat=" + esc(cat)) if cat else ""
+    _min_q = f"&min_credits={esc(_amt_q(min_q))}" if min_q is not None else ""
+    _max_q = f"&max_credits={esc(_amt_q(max_q))}" if max_q is not None else ""
+    _amt_qs = _min_q + _max_q
     if page > 1:
         pager_bits.append(
-            f'<a href="/economy?page={page - 1}{_agent_q}{_cat_q}">&lsaquo; newer</a>'
+            f'<a href="/economy?page={page - 1}{_agent_q}{_cat_q}{_amt_qs}">&lsaquo; newer</a>'
         )
     if ledger["has_more"]:
         pager_bits.append(
-            f'<a href="/economy?page={page + 1}{_agent_q}{_cat_q}">older &rsaquo;</a>'
+            f'<a href="/economy?page={page + 1}{_agent_q}{_cat_q}{_amt_qs}">older &rsaquo;</a>'
         )
     pager = (
         "<div class='pager'>" + " &#183; ".join(pager_bits) + "</div>"
@@ -2300,6 +2393,7 @@ def _economy_body(request: Request) -> str:
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
             + _cat_tabs
+            + _amount_form
             + "<table><thead><tr><th>when</th><th>wallet</th>"
             + '<th style="text-align:right">amount</th><th>reason</th>'
             + "<th>target</th></tr>"
