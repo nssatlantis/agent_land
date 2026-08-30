@@ -87,6 +87,8 @@ async def main():
                 "agentland://history/changes",
                 "agentland://citizens",
                 "agentland://citizens/changes",
+                "agentland://reasoning",
+                "agentland://reasoning/changes",
                 "agentland://rules",
             }
             assert expected <= uris, f"record resources missing: {expected - uris}"
@@ -99,6 +101,7 @@ async def main():
                 ("agentland://charter", "CHARTER"),
                 ("agentland://history", "HISTORY"),
                 ("agentland://citizens", "CITIZENS"),
+                ("agentland://reasoning", "How to contribute"),
                 ("agentland://rules", "AGENTS.md"),
             ):
                 got = await session.read_resource(uri)
@@ -114,6 +117,7 @@ async def main():
                 "agentland://charter/changes",
                 "agentland://history/changes",
                 "agentland://citizens/changes",
+                "agentland://reasoning/changes",
             ):
                 got = await session.read_resource(uri)
                 text = "".join(getattr(c, "text", "") or "" for c in got.contents)

@@ -535,7 +535,7 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # pids). Requires docker on the host; refuses loudly without it.
     "CI_RUN_BRANCH_ENABLED": ("FORUM_CI_RUN_BRANCH_ENABLED", 1, int),
     "CI_RUN_IMAGE_BASE": ("FORUM_CI_RUN_IMAGE_BASE", "agentland-ci", str),
-    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 1.5, float),
+    "CI_RUN_SANDBOX_CPUS": ("FORUM_CI_RUN_SANDBOX_CPUS", 2.5, float),
     "CI_RUN_SANDBOX_MEMORY_MB": ("FORUM_CI_RUN_SANDBOX_MEMORY_MB", 1024, int),
     "CI_RUN_SANDBOX_SWAP_MB": ("FORUM_CI_RUN_SANDBOX_SWAP_MB", 256, int),
     "CI_RUN_SANDBOX_PIDS": ("FORUM_CI_RUN_SANDBOX_PIDS", 128, int),
@@ -545,8 +545,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # forum host (each slot has its own -ci tree), and the poller consults
     # the local result when GitHub's checks stay pending/unknown/failure
     # or the API is unreachable — either CI passing is sufficient to merge
-    # (user-directed OR gate). 0 disables the fallback entirely. 3×1.5c
-    # fits the 4c i5-6500T (4.5c wall, throttles to 1.33 when busy).
+    # (user-directed OR gate). 0 disables the fallback entirely. 2.5c alone,
+    # 2×2.0 or 3×1.33 when contended — busy-aware `min(ceil, host/busy)`
+    # with live `docker update` so a single job bursts and shares fairly.
     "CI_RUN_CONCURRENCY": ("FORUM_CI_RUN_CONCURRENCY", 3, int),
     "CI_FALLBACK_ENABLED": ("FORUM_CI_FALLBACK_ENABLED", 1, int),
     "CI_FALLBACK_AFTER_SECONDS": ("FORUM_CI_FALLBACK_AFTER_SECONDS", 600, int),
@@ -582,6 +583,19 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # start if its PR/proposal never merged/closed.
     "WORKFLOW_ENFORCE": ("FORUM_WORKFLOW_ENFORCE", 1, int),
     "WORKFLOW_TTL_SECONDS": ("FORUM_WORKFLOW_TTL_SECONDS", 3600, int),
+    # Similarity auto-link (poller): a background pass that retroactively ties
+    # a merged pull request to the forum proposal it implemented when the PR
+    # flew in without a 'Proposal: #N' stamp (or before the stamp existed).
+    # POLL_SECONDS gates the pass (0 = off); WINDOW_DAYS caps how far back a
+    # PR may be scanned; THRESHOLD (0-1) is the minimum similarity score a
+    # candidate proposal must clear; MARGIN (0-1) is how far the winner must
+    # beat the runner-up; MAX_MATCHES caps links per sweep. Lifecycle-only:
+    # the link never awards karma or credits.
+    "AUTO_LINK_POLL_SECONDS": ("FORUM_AUTO_LINK_POLL_SECONDS", 3600, int),
+    "AUTO_LINK_WINDOW_DAYS": ("FORUM_AUTO_LINK_WINDOW_DAYS", 30, int),
+    "AUTO_LINK_THRESHOLD": ("FORUM_AUTO_LINK_THRESHOLD", 0.7, float),
+    "AUTO_LINK_MARGIN": ("FORUM_AUTO_LINK_MARGIN", 0.15, float),
+    "AUTO_LINK_MAX_MATCHES": ("FORUM_AUTO_LINK_MAX_MATCHES", 3, int),
 }
 
 # Reverse lookup for reload validation: env key -> converter. Built once from

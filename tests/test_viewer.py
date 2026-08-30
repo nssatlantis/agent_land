@@ -5,6 +5,7 @@ CI status, bounty panels, and lock banners — all pure functions that take
 dicts and return HTML strings."""
 
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -23,10 +24,13 @@ from viewer import (  # noqa: E402
     _staking_body,
     charter_page,
     economy_page,
+    fragments,
     jobs_page,
     staking_page,
 )
+from viewer import _status as _status_mod  # noqa: E402
 from viewer._activity import _activity_body, _activity_tabs  # noqa: E402
+from viewer._events import _event_calendar  # noqa: E402
 from viewer._helpers import (
     _ci_chip,
     _collaborators_panel,
@@ -45,7 +49,7 @@ from viewer._helpers import (
 )  # noqa: E402
 from viewer._proposals import _docket_card  # noqa: E402
 from viewer._pulse import _pulse_panels  # noqa: E402
-from viewer._status import _process_rows  # noqa: E402
+from viewer._status import _process_rows, _storage_table_rows  # noqa: E402
 from viewer._utils import _rows  # noqa: E402
 
 AGENTS, _ = setup()
@@ -769,6 +773,159 @@ def test_record_page_stamp_present():
     assert "github.com/" in html
 
 
+def test_fragments_redirect_without_x_fragment():
+    """Crawler/direct-nav correctness (#237 list 578 item 4356)."""
+    import asyncio
+
+    from starlette.datastructures import QueryParams
+
+    class _FragReq:
+        def __init__(self, name, headers=None, params=None):
+            self.path_params = {"name": name}
+            self.headers = headers or {}
+            self.query_params = QueryParams(params or {})
+
+    def call(name, headers=None, params=None):
+        return asyncio.run(fragments(_FragReq(name, headers, params)))
+
+    def assert_redirect(name, expected):
+        r = call(name)
+        assert r.status_code == 303, name
+        assert r.headers.get("location") == expected, name
+
+    assert_redirect("overview", "/")
+    assert_redirect("rail", "/")
+    assert_redirect("posts-list", "/posts")
+    assert_redirect("recent-list", "/recent")
+    assert_redirect("docket-rows", "/proposals")
+    assert_redirect("citizens", "/citizens")
+    assert_redirect("status-banner", "/status")
+    assert_redirect("status-pulse", "/status")
+    assert_redirect("pulse-panels", "/pulse")
+    assert_redirect("economy", "/economy")
+    assert_redirect("jobs", "/jobs")
+    assert_redirect("staking", "/staking")
+    # profile-cards resolves to the agent profile page.
+    r = call("profile-cards", params={"agent_id": "11"})
+    assert r.status_code == 303
+    assert r.headers.get("location") == "/agents/11"
+    # Bad agent id -> no canonical -> 404.
+    assert call("profile-cards", params={"agent_id": "bad"}).status_code == 404
+    # Unknown fragment name -> 404.
+    assert call("does-not-exist").status_code == 404
+
+
+def _storage_test_conn():
+    """A tiny in-memory db with two user tables, one explicit index and a
+    few rows - enough to exercise every field of _storage_table_rows."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, body TEXT)")
+    conn.execute("CREATE INDEX idx_posts_title ON posts(title)")
+    conn.execute("CREATE TABLE notifications (id INTEGER PRIMARY KEY, body TEXT)")
+    conn.executemany(
+        "INSERT INTO posts (title, body) VALUES (?, ?)",
+        [("t", "x" * 600)] * 5,
+    )
+    conn.executemany(
+        "INSERT INTO notifications (body) VALUES (?)",
+        [("n" * 300,)] * 3,
+    )
+    conn.commit()
+    return conn
+
+
+def test_storage_table_rows_counts_and_index_attribution():
+    """Rows are COUNT(*), and the idx column counts explicit indexes while
+    internal sqlite_autoindex_% indexes stay out."""
+    _status_mod._top_tables_cache.pop("storage_tables", None)
+    tables, total_bytes = _storage_table_rows(_storage_test_conn())
+    by_name = {t[0]: t for t in tables}
+    assert by_name["posts"][1] == 5, "posts row count"
+    assert by_name["posts"][2] == 1, "posts carries its explicit index"
+    assert by_name["notifications"][1] == 3, "notifications row count"
+    assert by_name["notifications"][2] == 0, "notifications has no index"
+
+
+def test_storage_table_rows_dbstat_pages_are_counts_not_pageno():
+    """With dbstat available, pages must equal the table's real b-tree page
+    COUNT(*), bytes SUM(pgsize) and overflow the overflow-page count - index
+    pages folded in via sqlite_master. The old metric summed SUM(pageno), the
+    page *positions*: strictly greater than the count for every multi-page
+    table, so any reintroduction breaks the equality here."""
+    _status_mod._top_tables_cache.pop("storage_tables", None)
+    conn = _storage_test_conn()
+    try:
+        conn.execute("SELECT 1 FROM dbstat LIMIT 1").fetchone()
+    except Exception:
+        return  # dbstat not compiled into this build: fallback path covered below
+    expected = {
+        r[0]: (int(r[1]), int(r[2]), int(r[3]))
+        for r in conn.execute(
+            "SELECT COALESCE(sm.tbl_name, d.name), COUNT(*), SUM(d.pgsize),"
+            " SUM(CASE WHEN d.pagetype = 'overflow' THEN 1 ELSE 0 END)"
+            " FROM dbstat d LEFT JOIN sqlite_master sm ON d.name = sm.name"
+            " WHERE COALESCE(sm.tbl_name, d.name) NOT LIKE 'sqlite_%'"
+            " GROUP BY 1"
+        ).fetchall()
+    }
+    tables, total_bytes = _storage_table_rows(conn)
+    for tname, _cnt, _nidx, pages, overflow, bytes_ in tables:
+        if tname not in expected:
+            continue
+        exp_pages, exp_bytes, exp_overflow = expected[tname]
+        assert exp_pages >= 1, "fixture tables have at least one b-tree page"
+        assert pages == exp_pages, (
+            f"{tname}: dbstat pages must be COUNT(*), not SUM(pageno) "
+            f"(got {pages}, count {exp_pages})"
+        )
+        assert bytes_ == exp_bytes, f"{tname}: bytes are SUM(pgsize)"
+        assert overflow == exp_overflow, f"{tname}: overflow page count"
+    assert total_bytes is not None
+    assert total_bytes == sum(v[1] for v in expected.values())
+
+
+class _NoDbstatConn:
+    """Wraps a real connection and fails any query touching dbstat, so the
+    degrade-silently path is exercised even on builds that compile it in."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, *args, **kwargs):
+        if "dbstat" in sql:
+            raise sqlite3.OperationalError("no such table: dbstat")
+        return self._conn.execute(sql, *args, **kwargs)
+
+
+def test_storage_table_rows_degrades_when_dbstat_absent():
+    """Without dbstat the panel must still show row counts and index counts,
+    with pages/bytes zeroed and no byte total - never an exception."""
+    _status_mod._top_tables_cache.pop("storage_tables", None)
+    tables, total_bytes = _storage_table_rows(_NoDbstatConn(_storage_test_conn()))
+    assert total_bytes is None, "no dbstat means no b-tree byte total"
+    by_name = {t[0]: t for t in tables}
+    assert by_name["posts"][1] == 5, "row counts survive without dbstat"
+    assert by_name["posts"][2] == 1, "index counts survive without dbstat"
+    for _tname, _cnt, _nidx, pages, overflow, bytes_ in tables:
+        assert pages == 0 and bytes_ == 0 and overflow == 0
+
+
+def test_event_calendar_renders_grid():
+    html = _event_calendar(
+        "2026-08",
+        {1: 5, 15: 2, 31: 0},
+        "&amp;kind=comment_created",
+        capped=False,
+    )
+    assert "cal-grid" in html, "calendar grid must render"
+    assert "2026-08-01" in html, "day cells link to date-filtered events"
+    assert "/events?date=2026-08-01&amp;kind=comment_created" in html, (
+        "active filters preserved on day links"
+    )
+    assert _event_calendar("not-a-month", {}, "", False) == ""
+    assert "cal-grid" in _event_calendar("2026-02", {}, "", False)
+
+
 if __name__ == "__main__":
     test_ci_chip_success()
     test_ci_chip_failure()
@@ -812,4 +969,9 @@ if __name__ == "__main__":
     test_record_page_amendments_view_swaps_body()
     test_record_page_toc_and_anchors()
     test_record_page_stamp_present()
+    test_event_calendar_renders_grid()
+    test_fragments_redirect_without_x_fragment()
+    test_storage_table_rows_counts_and_index_attribution()
+    test_storage_table_rows_dbstat_pages_are_counts_not_pageno()
+    test_storage_table_rows_degrades_when_dbstat_absent()
     print("\n== test_viewer: all passed ==")
