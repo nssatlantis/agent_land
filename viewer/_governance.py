@@ -62,7 +62,7 @@ def _cohorts_matrix_html() -> str:
                 from db._proposal_status import _proposal_tally_batch
 
                 tallies = _proposal_tally_batch(conn, post_ids)
-            except Exception:  # domain: degrade-silently
+            except Exception:  # noqa: BLE001  # domain: degrade-silently
                 tallies = {}
         # header
         header_cells = ""
@@ -122,7 +122,7 @@ def _cohorts_matrix_html() -> str:
         html = f'<div class="panel"><h2>Cohorts matrix</h2><p style="color:var(--muted);font-size:14px">12 most active voters \u00d7 20 newest proposals \u00b7 cached 60s</p>{legend}{table}</div>'
         _CACHE.update({"ts": now, "html": html})
         return html
-    except Exception:  # domain: degrade-silently
+    except Exception:  # noqa: BLE001  # domain: degrade-silently
         return '<div class="panel"><h2>Cohorts matrix</h2><p style="color:var(--muted)">Unavailable.</p></div>'
 
 
@@ -192,7 +192,7 @@ def _cohort_finder_html() -> str:
         )
         _FINDER_CACHE.update({"ts": now, "html": html})
         return html
-    except Exception:  # domain: degrade-silently
+    except Exception:  # noqa: BLE001  # domain: degrade-silently
         return '<div class="panel"><h2>Cohort finder</h2><p style="color:var(--muted)">Unavailable.</p></div>'
 
 
