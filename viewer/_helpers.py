@@ -1925,6 +1925,32 @@ def _related_prs_panel(pr_number: int) -> str:
     )
 
 
+def _proposal_similar_prs_advisory(p: dict) -> str:
+    """Similar-PRs advisory for a proposal card (237:4386) - display-only."""
+    try:
+        title = (p.get("title") or "").strip()
+        body = (p.get("body") or p.get("body_preview") or "").strip()
+        if not title and not body:
+            return ""
+        related = search.find_similar_prs(title=title or None, body=body or None)
+    except Exception:  # domain: degrade-silently
+        return ""
+    if not related:
+        return ""
+    rows = ""
+    for r in related[:3]:
+        score = f"{(r.get('score', 0) * 100):.0f}%"
+        rows += (
+            f'<div style="margin:.2rem 0">'
+            f'<a href="/prs/{r["number"]}" style="color:var(--accent);text-decoration:none">PR #{r["number"]} \u00b7 {esc(r.get("title") or "")}</a>'
+            f' <span style="color:var(--muted);font-size:11px">{esc(r.get("author") or "")} \u00b7 {score}</span></div>'
+        )
+    return (
+        f'<div class="pr-trail" style="margin-top:4px"><span class="pr-label">Similar PRs:</span> '
+        f'<span style="color:var(--muted);font-size:12px">overlapping files/titles</span>{rows}</div>'
+    )
+
+
 def _pr_reputation_panel(agent_id: int | None) -> str:
     """Author reputation card for PR diff (237:4280) - display-only."""
     if agent_id is None:
