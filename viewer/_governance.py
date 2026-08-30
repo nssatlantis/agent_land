@@ -12,6 +12,7 @@ import time
 
 import db
 import db._aggregates as aggregates
+from starlette.responses import HTMLResponse
 from viewer._helpers import _crumb, _with_rail
 from viewer._layout import POLL_MS, _page, _poll_config
 from viewer._utils import _human_ts, esc
@@ -123,7 +124,7 @@ def _cohorts_matrix_html() -> str:
         return '<div class="panel"><h2>Cohorts matrix</h2><p style="color:var(--muted)">Unavailable.</p></div>'
 
 
-def governance_cohorts_page(request) -> object:  # Request -> HTMLResponse
+def governance_cohorts_page(request) -> HTMLResponse:
     """GET /governance/cohorts - cohorts matrix beside side rail, cached 60s."""
     body = _crumb("/", "overview") + _cohorts_matrix_html()
     return _page(
