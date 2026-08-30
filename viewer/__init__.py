@@ -110,6 +110,7 @@ from viewer._helpers import (
 )
 from viewer._layout import HOST, POLL_MS, PORT, _page, _poll_config
 from viewer._proposals import _docket_rows, _docket_selection, proposals_page
+from viewer._governance import governance_cohorts_page
 from viewer._pulse import _pulse_panels, pulse_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._static import static_style_css
@@ -3461,6 +3462,7 @@ ROUTES = [
     Route("/credits/{agent_id:int}", credits_page),
     Route("/recent", recent_page),
     Route("/pulse", pulse_page),
+    Route("/governance/cohorts", governance_cohorts_page),
     Route("/proposals", proposals_page),
     Route("/workflows", workflows_page),
     Route("/workflows/{name}", workflow_detail_page),
