@@ -1421,9 +1421,7 @@ def _pr_vote_sweep(
                     gh_results[num] = fut.result()
                 except Exception as exc:  # domain: degrade-silently - per-PR GH failure isolated, local may still pass
                     gh_errors[num] = exc
-                    logutil.log(
-                        "ci_check_batch_error", pr_number=num, error=str(exc)
-                    )
+                    logutil.log("ci_check_batch_error", pr_number=num, error=str(exc))
         # Local fallback: only for candidates where GH is not success.
         # Dedup via pending_locals (already excludes pending_prs + ledger cache)
         # plus a second filter after GH: skip locals where GH already success.
