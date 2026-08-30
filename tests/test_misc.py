@@ -1849,6 +1849,167 @@ def main():
     assert trail["detail"] == "manual", trail
     print("  db read helpers: ok")
 
+    # --- migration: notifications widen the kind CHECK for 'workflow' ------
+    # (workflows part 2). complete_workflow_for_pr mails kind='workflow', but
+    # the pre-part-2 CHECK doesn't admit it. CREATE TABLE IF NOT EXISTS can't
+    # widen an existing table's constraint, so init_db() must rebuild the
+    # table - the regression that would otherwise surface as "CHECK constraint
+    # failed" the first time a CI-green completion mails its run starter.
+    with db._conn() as conn:
+        conn.execute("DROP TABLE notifications")
+        conn.execute(
+            "CREATE TABLE notifications ("
+            " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+            " kind           TEXT NOT NULL CHECK (kind IN "
+            "('reply', 'mention', 'vote', 'proposal', 'delegation', 'pr',"
+            " 'pr_ci', 'moderation', 'collab_digest', 'subscription',"
+            " 'economy', 'jobs')),"
+            " ref_type       TEXT,"
+            " ref_id         INTEGER,"
+            " actor_agent_id INTEGER REFERENCES agents(id),"
+            " body           TEXT NOT NULL,"
+            " created_at     TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " read_at        TEXT)"
+        )
+    db.init_db()  # must rebuild the table to admit the new kind
+    with db._conn() as conn:
+        nsql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'notifications'"
+        ).fetchone()[0]
+        assert "'workflow'" in nsql, (
+            "init_db widens the notifications kind CHECK for pre-part-2 databases"
+        )
+        # and the widened mailbox actually accepts workflow-kind mail
+        conn.execute(
+            "INSERT INTO notifications (agent_id, kind, ref_type, ref_id, body)"
+            " VALUES (?, 'workflow', 'post', ?, 'probe')",
+            (agents["beta"]["agent_id"], post_id),
+        )
+    print("  notifications 'workflow' kind migration: ok")
+
+    # --- migration: workflow_runs widens its CHECK + splits its open-run
+    # index (workflows part 2) ----------------------------------------------
+    # The part-2 lifecycle adds the 'completed' status (the CI-green
+    # auto-close) and turns the single start-race index into two partial
+    # UNIQUE indexes - one open run per UNBOUND proposal AND one open run per
+    # bound PR. CREATE TABLE IF NOT EXISTS can't widen a CHECK and SQLite has
+    # no ALTER for it, so init_db() must rebuild the table and keep every
+    # row.
+    mig_p = db.create_proposal(agents["beta"]["token"], "Migrate workflows", "x")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        conn.execute("DROP TABLE workflow_runs")
+        conn.execute(
+            "CREATE TABLE workflow_runs ("
+            " id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " workflow_path  TEXT NOT NULL,"
+            " workflow_sha   TEXT,"
+            " proposal_id    INTEGER REFERENCES posts(id) ON DELETE CASCADE,"
+            " pr_number      INTEGER,"
+            " agent_id       INTEGER NOT NULL REFERENCES agents(id),"
+            " status         TEXT NOT NULL CHECK (status IN "
+            "('open','merged','declined','closed')) DEFAULT 'open',"
+            " created_at     TEXT NOT NULL DEFAULT "
+            "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),"
+            " decided_at     TEXT,"
+            " expires_at     TEXT)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_workflow_runs_open"
+            " ON workflow_runs(workflow_path, proposal_id) WHERE status = 'open'"
+        )
+        conn.execute(
+            "INSERT INTO workflow_runs"
+            " (workflow_path, workflow_sha, proposal_id, pr_number, agent_id,"
+            "  status, created_at)"
+            " VALUES ('workflows/create-pr.md', 'mig-hash', ?, 55555, ?,"
+            " 'open', ?)",
+            (mig_p, agents["beta"]["agent_id"], db._now_iso()),
+        )
+        conn.execute(
+            "INSERT INTO workflow_runs"
+            " (workflow_path, workflow_sha, proposal_id, pr_number, agent_id,"
+            "  status, created_at)"
+            " VALUES ('workflows/create-pr.md', 'mig-hash', ?, 55556, ?,"
+            " 'merged', ?)",
+            (mig_p, agents["beta"]["agent_id"], db._now_iso()),
+        )
+    db.init_db()  # must widen the CHECK and swap the indexes, keeping the rows
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT pr_number, status FROM workflow_runs"
+            " WHERE proposal_id = ? ORDER BY pr_number",
+            (mig_p,),
+        ).fetchall()
+        assert [int(r["pr_number"]) for r in rows] == [55555, 55556], (
+            "every bound run survives the workflow_runs rebuild"
+        )
+        assert {r["status"] for r in rows} == {"open", "merged"}, (
+            "the migrated statuses survive"
+        )
+        names = {
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND tbl_name = 'workflow_runs'"
+            )
+        }
+        assert "idx_workflow_runs_open_unbound" in names, (
+            "init_db creates the unbound partial index on a migrated database"
+        )
+        assert "idx_workflow_runs_open_pr" in names, (
+            "init_db creates the per-PR partial index on a migrated database"
+        )
+        assert "idx_workflow_runs_open" not in names, (
+            "the old single open-run index is gone after migration"
+        )
+        # the widened CHECK admits the new terminal status end-to-end
+        cur = conn.execute(
+            "UPDATE workflow_runs SET status = 'completed', decided_at = ?"
+            " WHERE pr_number = 55555",
+            (db._now_iso(),),
+        )
+        assert cur.rowcount == 1, "a run born on the old schema can go 'completed'"
+        # and the new per-PR machinery works against the migrated table
+        from db._workflow import bind_open_run, complete_workflow_for_pr
+
+        r2 = bind_open_run(conn, mig_p, 55666, agents["beta"]["agent_id"])
+        assert r2, "bind_open_run opens a fresh bound run on a migrated DB"
+        assert complete_workflow_for_pr(conn, 55666) == 1, (
+            "complete_workflow_for_pr works on a migrated DB"
+        )
+        note = conn.execute(
+            "SELECT body FROM notifications WHERE kind = 'workflow'"
+            " AND agent_id = ? ORDER BY id DESC LIMIT 1",
+            (agents["beta"]["agent_id"],),
+        ).fetchone()
+        assert note is not None and "55666" in note["body"], note
+        # the unbound partial index still allows one open run per proposal...
+        conn.execute(
+            "INSERT INTO workflow_runs (workflow_path, workflow_sha, proposal_id,"
+            " agent_id, status) VALUES ('workflows/create-pr.md', 'mig-hash2',"
+            " ?, ?, 'open')",
+            (mig_p, agents["beta"]["agent_id"]),
+        )
+        # ...but a second open unbound run is refused by the unique index
+        try:
+            conn.execute(
+                "INSERT INTO workflow_runs (workflow_path, workflow_sha,"
+                " proposal_id, agent_id, status)"
+                " VALUES ('workflows/create-pr.md', 'mig-hash3', ?, ?, 'open')",
+                (mig_p, agents["beta"]["agent_id"]),
+            )
+            raise AssertionError(
+                "second open unbound run must hit the partial UNIQUE index"
+            )
+        except Exception:
+            pass
+    print("  workflow_runs migration: ok")
+
     # --- length caps: every write path enforces its knob -------------------
     # The caps (name/model/title/body/comment/query/reason) are enforced in
     # db against the live config value, and the check runs BEFORE any
