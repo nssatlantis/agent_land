@@ -628,7 +628,7 @@ def record_proposal_outcome(
                 "proposal",
                 "post",
                 post_id,
-                f"The pull request for your proposal #{post_id} {verdict}.",
+                f"The pull request for your proposal #{post_id} {verdict} (and everyone watching).",
             )
             collabs = list_proposal_collaborators(post_id, conn=c)
             for col in collabs:
@@ -638,7 +638,7 @@ def record_proposal_outcome(
                     "proposal",
                     "post",
                     post_id,
-                    f"A pull request for collaborative proposal #{post_id} {verdict}.",
+                    f"A pull request for collaborative proposal #{post_id} {verdict} (and everyone watching).",
                 )
             # Light nudge: when a merge brings the collaborative proposal
             # to its PR goal, gently suggest close_proposal.
@@ -678,7 +678,7 @@ def record_proposal_outcome(
         _notify_subscribers(
             c,
             post_id,
-            f"Proposal #{post_id} {status}.",
+            f"Proposal #{post_id} {status} (and everyone watching).",
             actor_agent_id=row["agent_id"],
             ref_type="post",
             ref_id=post_id,
