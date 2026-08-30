@@ -9,7 +9,6 @@ live in github._writes, local-git flows in github._gitops.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import re
 from datetime import datetime
@@ -333,8 +332,72 @@ def strip_proposal_header(text: str) -> str:
 # The viewer keeps its own outer cache on top.  TTL is read live from
 # config.PR_CACHE_SECONDS so a .env change applies without a restart
 # (matching every other cache in this package).
+def _open_pulls_page(per_page: int, page: int) -> list:
+    """One page of the open pulls listing, newest by created (GitHub's
+    default sort for state=open). Mirrors _closed_pulls_page."""
+    return _core._request(
+        "GET",
+        f"pulls?state=open&per_page={per_page}&page={page}",
+    )
+
+
+async def _aopen_pulls_page(per_page: int, page: int) -> list:
+    """Native-await twin of _open_pulls_page."""
+    return await _core._on_bg(
+        _core._arequest(
+            "GET",
+            f"pulls?state=open&per_page={per_page}&page={page}",
+        )
+    )
+
+
+def _paginated_open_pulls(per_page: int) -> list:
+    """Every page of the open pulls listing, newest by created, stopping
+    at the first short page. Mirrors _paginated_closed_pulls."""
+    out: list = []
+    page = 1
+    while True:
+        batch = _open_pulls_page(per_page, page)
+        out.extend(batch)
+        if len(batch) < per_page or page >= _PR_PAGE_CAP:
+            return out
+        page += 1
+
+
+async def _apaginated_open_pulls(per_page: int) -> list:
+    """Native-await twin of _paginated_open_pulls."""
+    out: list = []
+    page = 1
+    while True:
+        batch = await _aopen_pulls_page(per_page, page)
+        out.extend(batch)
+        if len(batch) < per_page or page >= _PR_PAGE_CAP:
+            return out
+        page += 1
+
+
+def _parse_open_pr_row(p: dict) -> dict:
+    """One open-PR row shape - factored so open_prs and aopen_prs stay in lockstep."""
+    return {
+        "number": p["number"],
+        "title": p["title"],
+        "head": p["head"]["ref"],
+        "base": p["base"]["ref"],
+        "author": (p.get("user") or {}).get("login"),
+        "created_at": p["created_at"],
+        "html_url": p["html_url"],
+        "mergeable_state": p.get("mergeable_state"),
+        "body": p.get("body") or "",
+        "head_sha": (p.get("head") or {}).get("sha") or "",
+        "citizen": _parse_citizen(p.get("body") or ""),
+    }
+
+
 def open_prs() -> list[dict]:
     """Open pull requests, newest first, cached briefly (PR_CACHE_SECONDS).
+    Paginates past the first GITHUB_PRS_PER_PAGE so a busier repo stops
+    silently dropping every open PR past page 1 (mirrors the closed-PR
+    pagination added in 2.1).
 
     Rows carry the head sha and the parsed 'Citizen: ...' trailer alongside
     the usual fields - the CI-failure poller needs both and gets them with
@@ -345,25 +408,25 @@ def open_prs() -> list[dict]:
     if cached is not None:
         return cached
     try:
-        pulls = _core._request(
-            "GET", f"pulls?state=open&per_page={config.GITHUB_PRS_PER_PAGE}"
-        )
-        result = [
-            {
-                "number": p["number"],
-                "title": p["title"],
-                "head": p["head"]["ref"],
-                "base": p["base"]["ref"],
-                "author": (p.get("user") or {}).get("login"),
-                "created_at": p["created_at"],
-                "html_url": p["html_url"],
-                "mergeable_state": p.get("mergeable_state"),
-                "body": p.get("body") or "",
-                "head_sha": (p.get("head") or {}).get("sha") or "",
-                "citizen": _parse_citizen(p.get("body") or ""),
-            }
-            for p in pulls
-        ]
+        pulls = _paginated_open_pulls(config.GITHUB_PRS_PER_PAGE)
+        result = [_parse_open_pr_row(p) for p in pulls]
+    except RepoError as exc:
+        if _core._CACHE_FAILURES:
+            _core._open_prs_cache.set("open_prs", exc)
+        raise
+    _core._open_prs_cache.set("open_prs", result)
+    return result
+
+
+async def aopen_prs() -> list[dict]:
+    """Native-await twin of open_prs - same cache key, same row shape.
+    Cold fetch runs through the page loop natively."""
+    cached = _core._open_prs_cache.get("open_prs", config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    try:
+        pulls = await _apaginated_open_pulls(config.GITHUB_PRS_PER_PAGE)
+        result = [_parse_open_pr_row(p) for p in pulls]
     except RepoError as exc:
         if _core._CACHE_FAILURES:
             _core._open_prs_cache.set("open_prs", exc)
@@ -521,7 +584,7 @@ async def alist_prs(state: str = "open", since: str | None = None) -> list[dict]
                 f"(e.g. '2026-08-18T00:00:00.000Z'), got {since!r}."
             )
     if state == "open":
-        rows = await asyncio.to_thread(open_prs)
+        rows = await aopen_prs()
         return [r for r in rows if r["created_at"] >= since] if since else rows
     pulls = await _apaginated_closed_pulls(state, config.GITHUB_PRS_PER_PAGE)
     rows = []
