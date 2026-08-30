@@ -16,9 +16,9 @@ import github
 from db._credits import format_credits as _fmt_q
 from viewer._helpers import (
     _crumb,
-    _proposal_similar_prs_advisory,
     _proposal_lineage_badge,
     _proposal_marker,
+    _proposal_similar_prs_advisory,
     _proposal_verdict,
     _tag_chips,
     _truncate,
