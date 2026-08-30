@@ -1973,6 +1973,7 @@ def _economy_body(request: Request) -> str:
         window_flows = overview["flows"][window_key]
         prev_flows = prev_map.get(window_key)
         max_flow = max((window_flows[fk] for fk, _ in _ECONOMY_FLOW_LABELS), default=0)
+
         def _delta_arrow(cur: int, prev: int | None) -> str:
             if prev is None:
                 return ""
@@ -1984,6 +1985,7 @@ def _economy_body(request: Request) -> str:
                 return f'<span style="color:var(--muted);font-size:12px" title="prev {esc(_quarters_to_str(prev))}"> \u2192</span>'
             except Exception:  # domain: degrade-silently - arrow never blocks panel
                 return ""
+
         rows = "".join(
             f"<tr><td>{esc(flabel)}</td><td style='text-align:right'>{esc(_quarters_to_str(window_flows[fkey]))}{_delta_arrow(window_flows[fkey], prev_flows.get(fkey) if isinstance(prev_flows, dict) else None)}</td>"
             "<td style='width:40%'><div style='height:8px;background:var(--accent);"
