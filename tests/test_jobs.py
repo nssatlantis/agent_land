@@ -150,6 +150,33 @@ def test_create_escrows_full_exposure():
     assert detail["scope"] == "HISTORY.md"
 
 
+def test_batch_jobs_reads():
+    """get_jobs / job_creator_status_counts batch-read without drifting from
+    the single-job shape: the /jobs board fetches a page of cards in one
+    pass, so the batch must be indistinguishable from a get_job per card."""
+    creator_a = _make_creator("jobc-batch-a")
+    creator_b = _make_creator("jobc-batch-b")
+    j1 = _simple_job(creator_a, title="A-one", pay=1.0)
+    j2 = _simple_job(creator_a, title="A-two", pay=2.0)
+    j3 = _simple_job(creator_b, title="B-one", pay=1.0)
+    ids = [j1["job_id"], j2["job_id"], j3["job_id"]]
+    assert db.get_jobs(ids) == [db.get_job(i) for i in ids], (
+        "batch shape must match one get_job per id"
+    )
+    assert db.get_jobs([]) == []
+    assert db.get_jobs([999999]) == []
+    assert [d["job_id"] for d in db.get_jobs([j3["job_id"], 999999, j1["job_id"]])] == [
+        j3["job_id"],
+        j1["job_id"],
+    ], "input id order is preserved and missing ids are skipped"
+    counts = db.job_creator_status_counts(
+        [creator_a["agent_id"], creator_b["agent_id"]]
+    )
+    assert counts[creator_a["agent_id"]] == {"open": 2}
+    assert counts[creator_b["agent_id"]] == {"open": 1}
+    assert db.job_creator_status_counts([]) == {}
+
+
 def test_create_requires_min_karma():
     broke = db.register_agent("jobc-nokarma")
     try:

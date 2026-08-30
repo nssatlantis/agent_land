@@ -3,8 +3,11 @@
 Covers the #593 review hardening: TTL adaptivity + fallback (D2), the
 365-day TTL cap (W4), run-status validation (D4), nudge resilience (D1),
 the per-PR lifecycle (workflows part 2: bind, per-PR close, CI-green
-completion to 'completed'), sweep run_ids + chunking (D7/D8/W9), restart
-(B2) and the run-ledger filters (W2/W3).
+completion to 'completed'), collab-run preservation on PR close, sweep
+run_ids + chunking (D7/D8/W9), restart (B2) and the run-ledger filters
+(W2/W3), plus the A1 boot-backfill guard (a proposal that ever ran is
+never re-seeded) and the A2 ghost-run reconcile (a folded run with no
+linked PR closes to 'closed' with reason no_pr_linked).
 """
 
 import json
@@ -387,6 +390,13 @@ def main():
     # 'merged' - the OLD backfill ("skip merged") re-opened a run for it on
     # every boot, and nothing closed it (close_workflow_for_pr only fires on
     # poller-processed outcomes). reconcile heals exactly that residue.
+    # The blocks above (TTL adaptivity, gate lazy-reopen, nudge) deliberately
+    # fold and re-open runs on still-'open' proposals with no PR ever linked.
+    # Under A2 those are ghost runs (an open copy behind a folded run and no
+    # proposal_links row) - reconcile closes them too, so clear the residue
+    # they left so the exact counts below measure only what this block creates.
+    with db._conn() as conn:
+        reconcile_open_runs(conn)
     p8 = db.create_proposal(gamma["token"], "T8 reconcile live", "t8 body")["post_id"]
     p9 = db.create_proposal(gamma["token"], "T9 reconcile declined", "t9 body")[
         "post_id"
@@ -567,6 +577,74 @@ def main():
             "live proposal keeps (or regains) its run across boots"
         )
     print("  boot sweep backfill + reconcile cross-boot ok")
+
+    # --- ghost-run residue: A1 backfill guard + A2 reconcile ------------------
+    # A still-'open' proposal that folded its create-pr run with no PR ever
+    # linked is what the OLD boot backfill ("skip only merged") leaked: every
+    # boot re-opened the run, and it then idled until the TTL sweep folded it
+    # again - a perpetual ghost. A1 now back-seeds only proposals that NEVER
+    # had a create-pr run (any status), so this state never regenerates; A2's
+    # reconcile closes any copy a pre-fix boot leaked.
+    pg1 = db.create_proposal(gamma["token"], "T16 ghost live no-link", "t16 body")[
+        "post_id"
+    ]
+    pg2 = db.create_proposal(beta["token"], "T17 runless live boot-seeded", "t17 body")[
+        "post_id"
+    ]
+    with db._conn() as conn:
+        rg1 = int(_open_run(conn, pg1)["id"])
+        # fold the run exactly as a TTL expiry would - no PR was ever linked
+        conn.execute(
+            "UPDATE workflow_runs SET status = 'closed', decided_at = ? WHERE id = ?",
+            (db._now_iso(), rg1),
+        )
+        # pg2 has never had a create-pr run (drop the auto-started one) - the
+        # same state as a proposal written before the feature landed
+        conn.execute("DELETE FROM workflow_runs WHERE proposal_id = ?", (pg2,))
+    db.init_db()  # a fresh boot: schema + backfill + reconcile
+    with db._conn() as conn:
+        # A1: the backfill seeds only run-less proposals - pg1's folded run
+        # (any status) stops it from being a candidate again.
+        assert _open_run(conn, pg1) is None, (
+            "a proposal that folded a run without a link is never re-seeded"
+        )
+        assert _open_run(conn, pg2) is not None, (
+            "a run-less live proposal is still boot-seeded"
+        )
+        # A2: simulate the OLD gate's leak (a fresh open copy of a folded run,
+        # the tell left in place - exactly what a pre-fix boot produced) and
+        # prove reconcile closes it as a ghost, not as a decided proposal.
+        conn.execute(
+            "INSERT INTO workflow_runs"
+            " (workflow_path, workflow_sha, status, proposal_id, agent_id,"
+            "  created_at, expires_at)"
+            " VALUES (?, ?, 'open', ?, ?, ?, ?)",
+            (
+                _PATH,
+                "ghost-copy-hash",
+                pg1,
+                gamma["agent_id"],
+                db._now_iso(),
+                db._now_iso(),
+            ),
+        )
+        rg1c = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        assert stale_open_run_count(conn) == 1, stale_open_run_count(conn)
+        assert reconcile_open_runs(conn) == 1
+        row = conn.execute(
+            "SELECT status, decided_at FROM workflow_runs WHERE id = ?", (rg1c,)
+        ).fetchone()
+        assert row["status"] == "closed" and row["decided_at"] is not None, (
+            "the ghost run reconciles to 'closed'"
+        )
+        ev = _last_close_event(conn)
+        assert ev["reason"] == "no_pr_linked", ev
+        assert ev["status"] == "closed" and ev["proposal_id"] == pg1, ev
+        assert ev["run_ids"] == [rg1c], ev
+        assert _open_run(conn, pg2) is not None, (
+            "the freshly-seeded live run survives reconciliation"
+        )
+    print("  ghost-run residue: A1 guard + A2 reconcile ok")
 
     # --- _workflow_file guard (D9) ---------------------------------------------
     p = _workflow_file(_PATH)

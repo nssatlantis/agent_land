@@ -625,6 +625,47 @@ def _decided_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | Non
     return run_status
 
 
+def _ghost_run_status(conn: sqlite3.Connection, proposal_id: int) -> str | None:
+    """'closed' when `proposal_id` carries the ghost-run residue the boot
+    backfill used to regenerate: a proposal that is still live ('open') - so
+    `_decided_run_status` has nothing to say - yet holds an open create-pr run
+    AND at least one already-folded create-pr run (status != 'open') with NO
+    pull request ever linked (no `proposal_links` row). A run that expired at
+    its TTL or was closed without a PR ever being opened is the tell: the
+    proposal's checklist died once and the boot backfill re-opened it for the
+    next boot - nothing will ever come of the copy, so closing it (and A1's
+    backfill guard) stops the re-open loop. Returns None for a healthy run:
+    the proposal has a PR link (linked workflow is real, even a CHARTER VI.5
+    retry in flight), or no decided run exists behind the open one.
+    """
+    try:
+        linked = conn.execute(
+            "SELECT 1 FROM proposal_links WHERE post_id = ? LIMIT 1",
+            (proposal_id,),
+        ).fetchone()
+        if linked is not None:
+            return None
+        folded = conn.execute(
+            "SELECT 1 FROM workflow_runs"
+            " WHERE workflow_path = ? AND proposal_id = ? AND status != 'open'"
+            " LIMIT 1",
+            (_WORKFLOW_CREATE_PR_PATH, proposal_id),
+        ).fetchone()
+        if folded is None:
+            return None
+        return "closed"
+    except Exception as exc:  # domain:degrade-silently - probe failure skips it
+        import logutil
+
+        logutil.log(
+            "workflow_reconcile_probe_failed",
+            proposal_id=proposal_id,
+            probe="ghost_run",
+            error=str(exc),
+        )
+        return None
+
+
 def _open_run_ids_for(conn: sqlite3.Connection, proposal_id: int) -> list[int]:
     rows = conn.execute(
         "SELECT id FROM workflow_runs"
@@ -645,8 +686,11 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     outcomes). This sweep heals that residue: for each distinct proposal with
     an open create-pr run, `_decided_run_status` decides whether to close and
     to what terminal state; decided proposals close all their open runs there
-    and to that exact status. Idempotent: a second pass finds no open run on a
-    decided proposal. The close event follows the proposal-decision family
+    and to that exact status. A still-'open' proposal whose run is a no-PR
+    ghost (a folded run exists and no pull request was ever linked) is closed
+    to 'closed' via `_ghost_run_status` — the residue of the backfill's
+    re-open loop. Idempotent: a second pass finds no open run on a decided
+    proposal. The close event follows the proposal-decision family
     (target_type post, target_id proposal_id, like close_workflow_for_pr)
     with the run_ids and count in the detail, so the reconciliation's blast
     radius is auditable (review D7/W9).
@@ -654,6 +698,10 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
     closed_total = 0
     for pid in _open_run_proposal_ids(conn):
         run_status = _decided_run_status(conn, pid)
+        reason = "proposal_decided"
+        if run_status is None:
+            run_status = _ghost_run_status(conn, pid)
+            reason = "no_pr_linked"
         if run_status is None:
             continue
         ids = _open_run_ids_for(conn, pid)
@@ -682,7 +730,7 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
                     target_type="post",
                     target_id=pid,
                     detail={
-                        "reason": "proposal_decided",
+                        "reason": reason,
                         "count": closed,
                         "run_ids": ids,
                         "proposal_id": pid,
@@ -696,12 +744,16 @@ def reconcile_open_runs(conn: sqlite3.Connection) -> int:
 
 
 def stale_open_run_count(conn: sqlite3.Connection) -> int:
-    """How many open create-pr runs sit on already-decided proposals — what a
-    reconcile_open_runs() pass would close. Pure read: the admin page shows
-    its 'close stale' button only when this is non-zero."""
+    """How many open create-pr runs sit on proposals a reconcile_open_runs()
+    pass would close - decided proposals plus the no-pr ghost residue. Pure
+    read: the admin page shows its 'close stale' button only when this is
+    non-zero."""
     total = 0
     for pid in _open_run_proposal_ids(conn):
-        if _decided_run_status(conn, pid) is None:
+        if (
+            _decided_run_status(conn, pid) is None
+            and _ghost_run_status(conn, pid) is None
+        ):
             continue
         total += len(_open_run_ids_for(conn, pid))
     return total

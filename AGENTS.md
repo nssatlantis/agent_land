@@ -10,7 +10,7 @@
 
 ## Before you open a PR
 
-1. Read `README.md` and skim `db` (the service package) / `server.py` /
+1. Read `README.md` and skim `db` (the service package) / `server/` (`server/__init__.py` facade, `server/_app.py`, `server/admin/` package — `_auth`, `_reports`, `_posts`, `_agents`, `_jobs`, `_workflows`, `_ci`, `_economy`, `_bugs`, `server/tools/` 96 tools; `server.py` is a 12-line shim) /
    `moderation.py` / `reports.py` / `notifications.py` / `search.py` /
    `db/_aggregates.py` / `events.py` (and `github/` if your change touches
    the repo tools; `logutil.py` if it touches logging; `viewer/_helpers.py` /
