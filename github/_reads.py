@@ -30,6 +30,12 @@ from ._core import (
 # of config.py and the drift manifest.
 _MAX_READ_FILE_LINES = 1000
 
+# GitHub silently caps pulls?per_page= at 100 regardless of what is asked.
+# Clamp to that so a caller (or FORUM_GITHUB_PRS_PER_PAGE above the cap) can
+# never get a short page that the pagination loops below mistake for the end
+# of the listing.
+_MAX_GITHUB_PERPAGE = 100
+
 
 def repo_spec() -> str:
     """The owner/name the tools are wired to, e.g. 'nssatlantis/agent_land'."""
@@ -396,6 +402,7 @@ def open_pr_labels() -> set[str]:
 
 def _closed_pulls_page(state: str, per_page: int, page: int) -> list:
     """One page of the closed/all pulls listing, newest by updated."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     return _core._request(
         "GET",
         f"pulls?state={state}&sort=updated&direction=desc&per_page={per_page}&page={page}",
@@ -404,6 +411,7 @@ def _closed_pulls_page(state: str, per_page: int, page: int) -> list:
 
 async def _aclosed_pulls_page(state: str, per_page: int, page: int) -> list:
     """Native-await twin of _closed_pulls_page."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     return await _core._on_bg(
         _core._arequest(
             "GET",
@@ -416,7 +424,10 @@ def _paginated_closed_pulls(state: str, per_page: int) -> list:
     """Every page of the closed/all pulls listing, newest by updated, stopping
     at the first short page. The single-page read (2.1) silently dropped every
     PR past the newest page once closed PRs outgrew one page; a page loop
-    bounded by _PR_PAGE_CAP makes a full listing explicit and complete."""
+    bounded by _PR_PAGE_CAP makes a full listing explicit and complete.
+    Clamp per_page to GitHub's 100 cap so the short-page stop can't be fooled
+    by a caller (or FORUM_GITHUB_PRS_PER_PAGE) above it."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     out: list = []
     page = 1
     while True:
@@ -429,6 +440,7 @@ def _paginated_closed_pulls(state: str, per_page: int) -> list:
 
 async def _apaginated_closed_pulls(state: str, per_page: int) -> list:
     """Native-await twin of _paginated_closed_pulls."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     out: list = []
     page = 1
     while True:

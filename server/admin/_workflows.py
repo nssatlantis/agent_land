@@ -19,20 +19,63 @@ from server.admin._auth import (
 from viewer._utils import _ts_or_dash, esc
 
 
+def _older_than_hours(iso_ts: str, hours: int) -> bool:
+    """True when an ISO UTC timestamp is more than `hours` hours old - the
+    'idle' badge's clock for an unbound open workflow run (part 2)."""
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt < datetime.now(timezone.utc) - timedelta(hours=hours)
+    except Exception:  # domain: degrade-silently - idle clock; bad ts means 'not idle'
+        return False
+
+
+def _workflow_ci_badge(pr_number: int) -> str:
+    """A live CI badge for a PR-bound open workflow run (part 2): green /
+    red / gray per the PR's checks, empty when GitHub is unreachable - the
+    admin page never fails over a read."""
+    try:
+        from github import pr_checks
+
+        state = (pr_checks(pr_number) or {}).get("state")
+    except Exception:  # domain: degrade-silently - badge enrichment; GH down = blank
+        return ""
+    colors = {
+        "success": "#16a34a",
+        "failure": "#dc2626",
+        "pending": "#64748b",
+    }
+    labels = {
+        "success": "ci ok",
+        "failure": "ci red",
+        "pending": "ci pending",
+    }
+    if state not in colors:
+        return ""
+    label = labels.get(state, "ci n/a")
+    bg = colors.get(state, "#64748b")
+    return f'<span class="kind-badge" style="background:{bg}">{label}</span>'
+
+
 def _render_workflows(request) -> str:
     """The /admin/workflows monitor: every official workflow run, newest
 
-    first, filterable by status, with an 'expired' badge on open runs past
+    first, filterable by status (including the part-2 'completed' status),
 
-    their TTL (review W8) and a restart button for each open run (review
+    with an 'expired' badge on open runs past their TTL, a live CI
 
-    B2). Restarting goes through POST /admin/workflows/{run_id}/restart,
+    badge on PR-bound open runs, and a restart button (review W8/B2).
+
+    Restarting goes through POST /admin/workflows/{run_id}/restart,
 
     which resolves the run's proposal and starts a fresh create-pr run."""
 
     status = (request.query_params.get("status") or "").strip() or None
 
-    if status not in (None, "open", "merged", "declined", "closed"):
+    if status not in (None, "open", "merged", "declined", "closed", "completed"):
         status = None
 
     with db._conn() as conn:
@@ -77,6 +120,23 @@ def _render_workflows(request) -> str:
             else esc(r["status"])
         )
 
+        # CI-state + idle badges (part 2): a PR-bound open run shows that
+        # PR's live CI state; an open run nobody bound to a PR ages into
+        # an 'idle' badge after 24h.
+        ci_badge = ""
+        idle_badge = ""
+        if r["status"] == "open":
+            if r.get("pr_number"):
+                ci_badge = _workflow_ci_badge(int(r["pr_number"]))
+            elif r.get("created_at") and _older_than_hours(r["created_at"], 24):
+                idle_badge = (
+                    '<span class="kind-badge" style="background:#d97706">idle</span>'
+                )
+        if ci_badge:
+            status_cell += f" {ci_badge}"
+        if idle_badge:
+            status_cell += f" {idle_badge}"
+
         restart_cell = ""
 
         if r["status"] == "open" and pid:
@@ -100,7 +160,7 @@ def _render_workflows(request) -> str:
     counts = {}
 
     with db._conn() as conn:
-        for s in ("open", "merged", "declined", "closed"):
+        for s in ("open", "merged", "declined", "closed", "completed"):
             counts[s] = len(db.list_workflow_runs(conn, status=s))
 
     links = " ".join(
@@ -113,7 +173,7 @@ def _render_workflows(request) -> str:
             f'<a href="/admin/workflows?status={s}"'
             + ("" if status == s else " style='color:var(--muted)'")
             + f">{s} ({counts[s]})</a>"
-            for s in ("open", "merged", "declined", "closed")
+            for s in ("open", "merged", "declined", "closed", "completed")
         )
     )
 
