@@ -537,7 +537,6 @@ def shared_recent_activity(limit: int = 50) -> list[dict]:
 
 def source_file_diff(path: str, ref: str | None = None) -> dict:
     """Local vs GitHub comparison for one file (237:4343). Returns {local_size, local_mtime, github_size, github_content, diff, newer}. degrade-silently on any failure."""
-    import time as _time
     from pathlib import Path as _Path
 
     import db as _db
