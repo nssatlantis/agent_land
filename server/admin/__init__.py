@@ -207,6 +207,7 @@ __all__ = [
     "ci_prune_images",
     "ci_restart_ticker",
     "ci_gc_workspaces",
+    "notifications_admin_page",
     "economy_adjust",
     "bugs_index",
     "bug_detail",
