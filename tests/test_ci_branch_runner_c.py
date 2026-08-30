@@ -78,6 +78,9 @@ class _GitFixture:
         (tests / "run_all.py").write_text(
             "import sys\nprint('all 1 test files passed')\nsys.exit(0)\n"
         )
+        (tests / "run_ci.py").write_text(
+            "import sys\nprint('all 1 test files passed')\nsys.exit(0)\n"
+        )
         (self.work / self.conflict_file).write_text("base line\n")
         self.main_sha = self._commit("base")
 
@@ -246,7 +249,7 @@ def test_hostile_payload_contained():
 
     def seeded_prepare(pr_number):
         tree, sha, info = saved_prepare(pr_number)
-        script = Path(tree) / "tests" / "run_all.py"
+        script = Path(tree) / "tests" / "run_ci.py"
         script.write_text(payload)
         return tree, sha, info
 

@@ -2410,6 +2410,100 @@ def _economy_body(request: Request) -> str:
     except Exception:  # domain: degrade-silently - genesis panel is optional enrichment
         _genesis_html = ""
 
+    # Stake commitment tracker/health (4394) — display-only, degrade-silently
+    _stake_health_html = ""
+    try:
+        _active_stakes = db.list_all_stakes(status="active")
+        if _active_stakes:
+            _total_remaining = sum(
+                max(0, s["max_prs"] - s["paid_count"] - s["locked_count"])
+                for s in _active_stakes
+            )
+            _est_credits_q = sum(
+                (s["max_prs"] - s["paid_count"] - s["locked_count"]) * s["per_pr"]
+                for s in _active_stakes
+                if s.get("currency") == "credits"
+                and (s["max_prs"] - s["paid_count"] - s["locked_count"]) > 0
+            )
+            _est_karma = sum(
+                (s["max_prs"] - s["paid_count"] - s["locked_count"]) * s["per_pr"]
+                for s in _active_stakes
+                if s.get("currency") != "credits"
+                and (s["max_prs"] - s["paid_count"] - s["locked_count"]) > 0
+            )
+            _last_map: dict[int, str] = {}
+            try:
+                with db._conn() as _c2:
+                    _ids2 = [s["id"] for s in _active_stakes]
+                    for _i in range(0, len(_ids2), 100):
+                        _chunk = _ids2[_i : _i + 100]
+                        _marks = ",".join("?" * len(_chunk))
+                        _rows2 = _c2.execute(
+                            f"SELECT stake_id, MAX(created_at) as last_at FROM stake_locks WHERE stake_id IN ({_marks}) GROUP BY stake_id",
+                            tuple(_chunk),
+                        ).fetchall()
+                        for _r2 in _rows2:
+                            _last_map[int(_r2["stake_id"])] = str(_r2["last_at"])
+            except (
+                Exception
+            ):  # domain: degrade-silently - last PR lookup is optional enrichment
+                _last_map = {}
+            _stake_rows = ""
+            for _s in sorted(_active_stakes, key=lambda x: x["id"], reverse=True)[:20]:
+                _rem = max(0, _s["max_prs"] - _s["paid_count"] - _s["locked_count"])
+                _last_at = _last_map.get(int(_s["id"]))
+                if _last_at:
+                    try:
+                        _last_txt = esc(_human_ts(_last_at))
+                    except (
+                        Exception
+                    ):  # domain: degrade-silently - human_ts never blocks row
+                        _last_txt = esc(_last_at)
+                else:
+                    _last_txt = '<span style="color:var(--muted)">no PR yet</span>'
+                _est = _rem * int(_s["per_pr"])
+                _est_txt = (
+                    esc(_stake_amount(_est, _s.get("currency", "karma")))
+                    + f" {esc(_s.get('currency', 'karma'))}"
+                )
+                _title2 = esc(
+                    _s.get("proposal_title") or f"proposal #{_s['proposal_id']}"
+                )
+                _staker2 = esc(_s.get("staker_name") or "system")
+                _per2 = esc(
+                    _stake_amount(int(_s["per_pr"]), _s.get("currency", "karma"))
+                )
+                _stake_rows += (
+                    f"<tr><td><a href='/posts/{int(_s['proposal_id'])}'>{_title2}</a> <span style='color:var(--muted)'>#{int(_s['id'])}</span></td>"
+                    f"<td>{_staker2}</td>"
+                    f"<td style='text-align:right'>{int(_s['paid_count'])}/{int(_s['locked_count'])}/{int(_rem)}</td>"
+                    f"<td style='text-align:right'>{_per2} \u00d7 {int(_s['max_prs'])}</td>"
+                    f"<td>{_last_txt}</td>"
+                    f"<td style='text-align:right'>{_est_txt}</td></tr>"
+                )
+            _est_summary_parts: list[str] = []
+            if _est_credits_q:
+                _est_summary_parts.append(
+                    f"{esc(_stake_amount(int(_est_credits_q), 'credits'))} credits"
+                )
+            if _est_karma:
+                _est_summary_parts.append(f"{int(_est_karma)} karma")
+            _est_summary = (
+                " + ".join(_est_summary_parts) if _est_summary_parts else "none"
+            )
+            _stake_health_html = (
+                '<div class="panel"><h2>Stake commitments — health</h2>'
+                f"<p style='color:var(--muted);font-size:13px'>Active stakes: {len(_active_stakes)} \u00b7 remaining PR slots: {int(_total_remaining)} \u00b7 est. payout: {_est_summary}</p>"
+                "<table><thead><tr><th>stake \u2192 proposal</th><th>staker</th><th style='text-align:right'>paid/locked/remain</th><th style='text-align:right'>per PR \u00d7 max</th><th>last PR</th><th style='text-align:right'>est. payout</th></tr></thead><tbody>"
+                + _stake_rows
+                + "</tbody></table>"
+                "<p style='color:var(--muted);font-size:13px'>Remaining = max_prs \u2212 paid \u2212 locked; last PR from stake_locks MAX(created_at); est. payout = remaining \u00d7 per_pr in stake currency. Degrades to no panel when DB unavailable.</p></div>"
+            )
+        else:
+            _stake_health_html = '<div class="panel"><h2>Stake commitments — health</h2><p style="color:var(--muted)">No active stakes — no commitments in flight.</p></div>'
+    except Exception:  # domain: degrade-silently - stake health panel is optional enrichment, never blocks /economy
+        _stake_health_html = ""
+
     body = (
         _crumb("/", "overview") + '<div class="panel"><h2>Economy</h2>'
         "<p style='color:var(--muted);font-size:15px'>Credits are the "
@@ -2441,6 +2535,7 @@ def _economy_body(request: Request) -> str:
         + ('<div class="panel"><h2>Checkpoint seal</h2>' + seal_html + "</div>")
         + inspector_html
         + _genesis_html
+        + _stake_health_html
         + _economy_wallet_banner(view_agent, ledger)
         + (
             '<div class="panel"><h2>Recent ledger entries</h2>'
