@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 import config
 
-from . import _core
+from . import _core, _reads
 from ._core import GITHUB_BASE_BRANCH, GITHUB_REPO, RepoError, _validate_path
 
 # Cap on find-replace ops per file (patch mode). Generous sanity bound only -
@@ -543,11 +543,23 @@ def update_pr_title(number: int, title: str) -> None:
     _core._request("PATCH", f"pulls/{number}", {"title": title})
 
 
-def pr_has_label(number: int, label: str) -> bool:
-    """Check whether a PR carries a specific label."""
-    pr = _core._request("GET", f"pulls/{number}")
-    labels = [l.get("name", "").lower() for l in (pr.get("labels") or [])]
-    return label.lower() in labels
+def pr_has_label(number: int, label: str, *, _pr: dict | None = None) -> bool:
+    """Check whether a PR carries a specific label, matched case-insensitively.
+
+    Pass the raw GitHub /pulls/{n} payload (or an open-pr row carrying its
+    ``labels``) as ``_pr`` to skip the fetch entirely - the poller's
+    proposal-hold gate does this with the row open_prs already fetched, so a
+    per-PR label check costs no extra API call (Item B of the rate-limit
+    reduction).  Both raw GitHub label shapes are accepted: the dict form
+    (``[{"name": ...}, ...]``) and the flattened open-pr row form (a plain
+    list of name strings).
+    """
+    pr = _pr if _pr is not None else _reads._pr_raw(number)
+    for l in pr.get("labels") or []:
+        name = l.get("name", "") if isinstance(l, dict) else l
+        if name and str(name).lower() == label.lower():
+            return True
+    return False
 
 
 # ---------------------------------------------------------------- helpers --
