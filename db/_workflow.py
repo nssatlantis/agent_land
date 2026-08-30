@@ -404,8 +404,8 @@ def bind_open_run(
     conn: sqlite3.Connection,
     proposal_id: int,
     pr_number: int,
-    agent_id: int,
-) -> int:
+    agent_id: int | None,
+) -> int | None:
     """Bind the proposal's open create-pr run to a PR (per-PR lifecycle,
     part 2) — called from link_pr_to_proposal on every PR link so each PR has
     exactly one open run to carry its checklist.
@@ -418,7 +418,10 @@ def bind_open_run(
     claim, the PR's own open bound run is reused when one already exists
     (idempotent against re-links), and otherwise a fresh bound open run
     starts — so a proposal launching several PRs holds one open run per PR.
-    Returns the run id that now owns the PR.
+    Returns the run id that now owns the PR, or None when no run could be
+    bound: a retro-link of an already-decided PR (agent_id None, its once-open
+    run long closed) has nothing to stamp or reuse and, with no known agent,
+    no fresh run may start (workflow_runs.agent_id is NOT NULL).
     """
     _validate_workflow_path(_WORKFLOW_CREATE_PR_PATH)
     cur = conn.execute(
@@ -442,6 +445,8 @@ def bind_open_run(
     ).fetchone()
     if row is not None:
         return int(row["id"])
+    if agent_id is None:
+        return None
     return start_workflow(
         conn, _WORKFLOW_CREATE_PR_PATH, proposal_id, agent_id, pr_number=pr_number
     )
