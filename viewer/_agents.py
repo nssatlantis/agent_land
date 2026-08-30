@@ -376,7 +376,13 @@ async def agent_profile_page(request: Request) -> HTMLResponse:
                     "WHERE v.agent_id = ? AND v.target_type = 'proposal' GROUP BY p.proposal_kind ORDER BY c DESC LIMIT 3",
                     (a["id"],),
                 ).fetchall()
-                cats = ", ".join(f"{esc(str(r['kind'] or 'unknown'))} · {int(r['c'])}" for r in cat_rows) or "—"
+                cats = (
+                    ", ".join(
+                        f"{esc(str(r['kind'] or 'unknown'))} · {int(r['c'])}"
+                        for r in cat_rows
+                    )
+                    or "—"
+                )
                 voting_inner = (
                     f"<div style='display:flex;gap:12px;flex-wrap:wrap;align-items:center;color:var(--muted);font-size:14px;margin:6px 0'>"
                     f"<span><b style='color:var(--text)'>{total}</b> votes</span>"
