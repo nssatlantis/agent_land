@@ -334,7 +334,10 @@ def strip_proposal_header(text: str) -> str:
 # (matching every other cache in this package).
 def _open_pulls_page(per_page: int, page: int) -> list:
     """One page of the open pulls listing, newest by created (GitHub's
-    default sort for state=open). Mirrors _closed_pulls_page."""
+    default sort for state=open). Mirrors _closed_pulls_page - including the
+    per_page clamp, so a FORUM_GITHUB_PRS_PER_PAGE above GitHub's silent cap
+    can't produce a short first page that pagination mistakes for the end."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     return _core._request(
         "GET",
         f"pulls?state=open&per_page={per_page}&page={page}",
@@ -343,6 +346,7 @@ def _open_pulls_page(per_page: int, page: int) -> list:
 
 async def _aopen_pulls_page(per_page: int, page: int) -> list:
     """Native-await twin of _open_pulls_page."""
+    per_page = min(per_page, _MAX_GITHUB_PERPAGE)
     return await _core._on_bg(
         _core._arequest(
             "GET",
@@ -390,6 +394,11 @@ def _parse_open_pr_row(p: dict) -> dict:
         "body": p.get("body") or "",
         "head_sha": (p.get("head") or {}).get("sha") or "",
         "citizen": _parse_citizen(p.get("body") or ""),
+        # Label *names* (flattened from GitHub's [{name, color, url}, ...]).
+        # Carried through open_prs so label checks - most notably the
+        # poller's proposal-hold gate - can reuse the very row they already
+        # fetched instead of issuing another API call per PR.
+        "labels": [l.get("name", "") for l in (p.get("labels") or [])],
     }
 
 
@@ -852,6 +861,23 @@ def _synthetic_pr_raw(row: dict) -> dict:
     }
 
 
+def _pr_raw(number: int) -> dict:
+    """The raw GitHub /pulls/{number} payload, TTL-cached under its own key so
+    the several reads that need it (get_pr, pr_diff, pr_has_label) share one
+    API call per PR_CACHE_SECONDS window instead of each fetching it afresh
+    (Item B of the rate-limit reduction).  Lives here in the read package
+    because it is purely a read; the poller's proposal-hold gate calls it
+    through ``pr_has_label`` only when a caller did not already hold the row.
+    """
+    cache_key = ("pr_raw", number)
+    cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
+    if cached is not None:
+        return cached
+    pr = _core._request("GET", f"pulls/{number}")
+    _core._pr_cache.set(cache_key, pr)
+    return pr
+
+
 def get_pr(number: int, *, _pr: dict | None = None) -> dict:
     """One pull request plus its check status, comments and changed files, for
     agents reviewing their own or others' proposals. `outcome` classifies the
@@ -872,7 +898,7 @@ def get_pr(number: int, *, _pr: dict | None = None) -> dict:
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
-    pr = _pr or _core._request("GET", f"pulls/{number}")
+    pr = _pr if _pr is not None else _pr_raw(number)
     checks = _checks._checks_for_head(pr["head"]["sha"])
     result = {
         "number": pr["number"],
@@ -908,7 +934,7 @@ def pr_diff(number: int) -> dict:
     cached = _core._pr_cache.get(cache_key, config.PR_CACHE_SECONDS)
     if cached is not None:
         return cached
-    pr = _core._request("GET", f"pulls/{number}")
+    pr = _pr_raw(number)
     # GitHub pages the files endpoint at 100 per request; page through so a
     # large PR's diff is never silently truncated at the first page.
     files: list[dict] = []

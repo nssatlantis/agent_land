@@ -1792,6 +1792,25 @@ def init_db() -> None:
                     import logutil
 
                     logutil.log("workflow_reconcile_failed", error=str(exc))
+                # Bug-report auto-confirm sweep: open reports whose confidence
+                # already reached BUG_CONFIDENCE_THRESHOLD (crossed under a
+                # higher config, or before the decided_at + EVT_BUG_CONFIRMED
+                # stamping existed) are promoted to confirmed on boot, with the
+                # same side effects as a live threshold crossing.  Idempotent,
+                # so harmless on every later boot.  A failure here - even of
+                # the lazy import itself - is logged, never silently dropped:
+                # an invisible break would leave over-threshold reports open
+                # and stale.
+                try:
+                    from db._bug_reports import (
+                        sweep_auto_confirm as _sweep_auto_confirm,
+                    )
+
+                    _sweep_auto_confirm(conn)
+                except Exception as exc:  # domain: degrade-silently - bug sweep is enrichment; boot must not fail
+                    import logutil
+
+                    logutil.log("bug_sweep_confirm_failed", error=str(exc))
             finally:
                 conn.row_factory = _previous_factory
         except (

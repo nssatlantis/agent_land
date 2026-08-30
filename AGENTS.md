@@ -246,6 +246,7 @@ before minting a new one:
 | `workflow_reconcile_probe_failed` | `db/_workflow.py` reconcile status probes | degrade-silently (probe -> not decidable, skipped) |
 | `workflow_reconcile_failed` | `db/_core.py` boot reconcile sweep | degrade-silently (logged; sweep skipped, stale runs accumulate until next boot) |
 | `workflow_ci_green_failed` | `server/poller.py` CI-green run-complete write | never-lose-data (idempotent, retried next interval) |
+| `bug_sweep_confirm_failed` | `db/_core.py` boot bug-report auto-confirm sweep | degrade-silently (logged; sweep skipped, over-threshold reports stay open until next boot) |
 
 Sealed failure classes also earn a HISTORY.md line (the record spine,
 audit item 2947), so the next age reads which class was sealed and how.
