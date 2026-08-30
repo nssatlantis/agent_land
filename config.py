@@ -516,8 +516,9 @@ _TUNING: dict[str, tuple[str, object, Callable[[str], object]]] = {
     # TRUNCATE checkpoint to hand the space back to the OS. 0 disables.
     "WAL_CHECKPOINT_BYTES": ("FORUM_WAL_CHECKPOINT_BYTES", 8 * 1024 * 1024, int),
     # Server-side CI runner (repo_ci_run): agents choose a harness —
-    # tests (run_all), db_benchmark/db_bench (test_benchmark query medians +
-    # EXPLAIN) — against origin/main natively or a PR merge via the 2-slot
+    # tests (tests/run_ci.py, the combined test+static harness),
+    # db_benchmark/db_bench (test_benchmark query medians + EXPLAIN) —
+    # against origin/main natively or a PR merge via the 2-slot
     # Docker workspace pool. Kill switch, hard timeout, per-agent cooldown
     # and daily cap per harness kind (db_benchmark is split so it doesn't
     # compete with tests); every run is logged to the events ledger.
