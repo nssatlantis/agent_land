@@ -359,9 +359,31 @@ def proposals_page(request: Request) -> HTMLResponse:
     filterable by tab and sortable by newest or top, paged. Read-only, like
     every route here."""
     view, sort, page = _docket_selection(request)
-    # Single fetch for both counts and page rows — avoids double _proposal_rows (≈28ms at 500 rows)
-    all_rows = db.list_proposals(limit=None, view="all", sort="newest")
-    counts = db.proposal_docket_counts(rows=all_rows)
+    if view == "all" and sort == "newest":
+        # SQL fast path: light counts scan + the page's rows straight from
+        # ORDER BY ... LIMIT/OFFSET, skipping the full-docket fetch+filter.
+        counts = db.proposal_docket_counts()
+        page_rows = db.list_proposals(
+            limit=config.PROPOSALS_PER_PAGE,
+            offset=(page - 1) * config.PROPOSALS_PER_PAGE,
+            view="all",
+            sort="newest",
+        )
+    else:
+        # Single fetch for both counts and page rows — avoids double _proposal_rows (≈28ms at 500 rows)
+        all_rows = db.list_proposals(limit=None, view="all", sort="newest")
+        counts = db.proposal_docket_counts(rows=all_rows)
+        # Filter + sort + slice mirrors list_proposals logic, reusing the
+        # single fetch instead of a second DB hit.
+        page_rows = [p for p in all_rows if db._proposal_matches_view(p, view)]
+        if sort == "top":
+            page_rows.sort(
+                key=lambda p: (p["net"], p["created_at"], p["id"]), reverse=True
+            )
+        else:
+            page_rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
+        offset = (page - 1) * config.PROPOSALS_PER_PAGE
+        page_rows = page_rows[offset : offset + config.PROPOSALS_PER_PAGE]
     total_pages = max(
         1, (counts[view] + config.PROPOSALS_PER_PAGE - 1) // config.PROPOSALS_PER_PAGE
     )
@@ -422,17 +444,6 @@ def proposals_page(request: Request) -> HTMLResponse:
         )
     total = counts[view]
     summary = f'<div class="meta" style="margin:0 0 8px">Page {page} of {total_pages} · {total} proposals</div>'
-    # Derive page rows from the already-fetched all_rows without a second DB hit
-    # (filter + sort + slice mirrors list_proposals logic, but reuses the single fetch)
-    page_rows = [p for p in all_rows if db._proposal_matches_view(p, view)]
-    if sort == "top":
-        page_rows.sort(key=lambda p: (p["net"], p["created_at"], p["id"]), reverse=True)
-    else:
-        page_rows.sort(key=lambda p: (p["created_at"], -p["id"]), reverse=True)
-    # Apply collaborative filter like list_proposals (viewer never passes it, but keep parity)
-    # and pagination
-    offset = (page - 1) * config.PROPOSALS_PER_PAGE
-    page_rows = page_rows[offset : offset + config.PROPOSALS_PER_PAGE]
     # Render page rows directly (avoid _docket_rows's second DB fetch)
     if page_rows:
         all_pr_numbers = [

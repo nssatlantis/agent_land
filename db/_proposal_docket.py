@@ -100,7 +100,11 @@ def _proposal_list_sql(where_sql: str = "") -> str:
 
 
 def _proposal_rows(
-    conn: sqlite3.Connection, where_sql: str, params: tuple
+    conn: sqlite3.Connection,
+    where_sql: str,
+    params: tuple,
+    *,
+    for_counts: bool = False,
 ) -> list[dict]:
     """The proposal docket's rows for one WHERE shape - the shared core of
     list_proposals() and the profile page's proposals / assigned lists, so a
@@ -114,7 +118,12 @@ def _proposal_rows(
     fields, the machine proposal_status, and the assembled
     small_fix/tally/status/open_days/stale/prs/review_requested/todos extras.
     Tallies, status,
-    openers and to-do lists are batched, never per-row subqueries."""
+    openers and to-do lists are batched, never per-row subqueries.
+    `for_counts=True` skips the display-only enrichments (per-PR vote
+    tallies, to-do lists, tags, content score, comment counts, latest
+    activity, supersede parents): the rows keep every field
+    _proposal_matches_view() reads, so a tab-count pass is one full scan
+    instead of one plus seven display batches."""
     rows = conn.execute(
         _proposal_list_sql(where_sql),
         params,
@@ -123,21 +132,38 @@ def _proposal_rows(
     tallies = _proposal_tally_batch(conn, ids)
     threshold = _proposal_vote_threshold(conn)
     prs_by_post = _proposal_pr_history_map(conn, ids)
-    all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
-    pr_vote_tallies = _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
-    todos_by_post = _todos_for_posts(conn, ids)
     stake_totals = _stake_totals_batch(conn, ids)
-    # Activity enrichment: content score, comment count and the newest
-    # comment timestamp (None when there are no comments - the viewer falls
-    # back to created_at). Same one-query-per-batch pattern as the tallies.
-    scores = _post_score_batch(conn, ids)
-    comment_counts = _comment_count_batch(conn, ids)
-    last_activity = _last_activity_batch(conn, ids)
-    # One lookup for the lineage parents of every superseding row, so the
-    # caller can follow the chain back to the earlier version without a
-    # per-row round trip (NULL/0 supersedes_id rows join nothing).
-    parents = _supersedes_parents_map(conn, rows)
-    tags_by_post = _tags_by_post_map(conn, ids)
+    # Display-only enrichments (per-PR vote tallies, to-do lists, tags,
+    # content score, comment counts, latest activity, supersede parents)
+    # are skipped for counts-only passes: _proposal_matches_view() never
+    # reads them, and the tally/status/stake fields it does read are all
+    # fetched above.
+    if not for_counts:
+        all_pr_nums = [pr["pr_number"] for prs in prs_by_post.values() for pr in prs]
+        pr_vote_tallies = (
+            _batch_pr_vote_tallies(conn, all_pr_nums) if all_pr_nums else {}
+        )
+        todos_by_post = _todos_for_posts(conn, ids)
+        # Activity enrichment: content score, comment count and the newest
+        # comment timestamp (None when there are no comments - the viewer
+        # falls back to created_at). Same one-query-per-batch pattern.
+        scores = _post_score_batch(conn, ids)
+        comment_counts = _comment_count_batch(conn, ids)
+        last_activity = _last_activity_batch(conn, ids)
+        # One lookup for the lineage parents of every superseding row, so
+        # the caller can follow the chain back to the earlier version
+        # without a per-row round trip (NULL/0 supersedes_id rows join
+        # nothing).
+        parents = _supersedes_parents_map(conn, rows)
+        tags_by_post = _tags_by_post_map(conn, ids)
+    else:
+        pr_vote_tallies = {}
+        todos_by_post = {}
+        scores = {}
+        comment_counts = {}
+        last_activity = {}
+        parents = {}
+        tags_by_post = {}
     out = []
     for r in rows:
         d = dict(r)
@@ -174,10 +200,11 @@ def _proposal_rows(
         d["supersedes"] = parents.get(d["id"])
         d["stale"] = False if d["locked"] else _proposal_stale(d, d["created_at"])
         d["prs"] = prs_by_post.get(d["id"], [])
-        for pr in d["prs"]:
-            pr["votes"] = pr_vote_tallies.get(
-                pr["pr_number"], {"up": 0, "down": 0, "net": 0}
-            )
+        if not for_counts:
+            for pr in d["prs"]:
+                pr["votes"] = pr_vote_tallies.get(
+                    pr["pr_number"], {"up": 0, "down": 0, "net": 0}
+                )
         d["review_requested"] = _live_pr_in(d["prs"], collaborative=d["collaborative"])
         d["decision"] = (
             "superseded"
@@ -210,15 +237,17 @@ def _proposal_rows(
             if d["decision"] in ("review_requested",)
             else "discussion"
         )
-        d["todos"] = todos_by_post.get(d["id"], [])
-        d["tags"] = tags_by_post.get(d["id"], [])
+        if not for_counts:
+            d["todos"] = todos_by_post.get(d["id"], [])
+            d["tags"] = tags_by_post.get(d["id"], [])
         bt = stake_totals.get(d["id"])
         d["stake_total_karma"] = bt["karma"] if bt else 0
         d["stake_total_credits_quarters"] = bt["credits"] if bt else 0
         d["stake_count"] = bt["count"] if bt else 0
-        d["score"] = scores.get(d["id"], 0)
-        d["comment_count"] = comment_counts.get(d["id"], 0)
-        d["last_activity_at"] = last_activity.get(d["id"])
+        if not for_counts:
+            d["score"] = scores.get(d["id"], 0)
+            d["comment_count"] = comment_counts.get(d["id"], 0)
+            d["last_activity_at"] = last_activity.get(d["id"])
         out.append(d)
     return out
 
@@ -288,10 +317,13 @@ def proposal_docket_counts(rows: list[dict] | None = None) -> dict:
     'needs_votes', 'approved', 'review', 'stale', 'merged', 'small_fix', 'collaborative', 'unclaimed', 'staking'}, computed
     with the same _proposal_matches_view predicate list_proposals() filters
     with, so the tab counts and the rows they label can never disagree. Pass
-    pre-fetched `rows` (from list_proposals) to avoid a second _proposal_rows."""
+    pre-fetched `rows` (from list_proposals) to avoid a second _proposal_rows.
+    Without rows, the scan is the counts-only variant (for_counts=True): it
+    skips the display-only enrichments but keeps the tally/status/stake
+    fields the predicate reads - the same counts, one full scan."""
     if rows is None:
         with _conn() as conn:
-            rows = _proposal_rows(conn, "", ())
+            rows = _proposal_rows(conn, "", (), for_counts=True)
     counts = {v: 0 for v in _PROPOSAL_VIEWS}
     for p in rows:
         for v in _PROPOSAL_VIEWS:
