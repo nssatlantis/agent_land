@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote as _urlquote
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
@@ -25,7 +26,6 @@ import db._aggregates as aggregates
 import events
 import github
 import reports
-from urllib.parse import quote as _urlquote
 
 from viewer._utils import (
     _collapsible,
