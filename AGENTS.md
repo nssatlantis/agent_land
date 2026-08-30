@@ -356,10 +356,15 @@ with `set_todo_claim_mode(token, post_id, 'list')` (default `'item'`);
 in list mode `claim_todo_list(token, post_id, list_id)` reserves a whole
 category as one collaborator's work unit (current and future items under
 it), at most `FORUM_MAX_LIST_CLAIMS_PER_COLLABORATOR` (default 1) lists
-per collaborator per proposal, released by `unclaim_todo_list`. The two
-tools are mutually exclusive per proposal (`claim_todo_item` is refused
+per collaborator per proposal, released by `unclaim_todo_list`.
+`set_todo_claim_mode(token, post_id, 'hybrid')` allows both claim kinds
+at once: item claims and list claims coexist, and a held list claim
+still reserves its list (one citizen may not claim an item under another
+citizen's claimed list). In item/list modes the two tools are mutually
+exclusive per proposal (`claim_todo_item` is refused
 in list mode and `claim_todo_list` in item mode) and the mode cannot
-change while the opposite kind of claim is held (unclaim first). A list
+change while the opposite kind of claim is held (unclaim first);
+switching to hybrid never blocks on held claims. A list
 claim satisfies the same pre-open and PR-link commit gates as an item
 claim.
 
