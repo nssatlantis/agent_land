@@ -2001,54 +2001,71 @@ def _economy_body(request: Request) -> str:
             f"{cfg['checkpoint_seconds']}s.</p>"
         )
     else:
-        ok = seal["ok"]
-        badge = (
-            "<span class='status-ok'>verified</span>"
-            if ok
-            else "<span class='status-fail'>DRIFT DETECTED</span>"
-        )
-        seal_html = (
-            f"<p>Sealed {esc(seal['created_at'])} - {badge}</p>"
-            f"<table><tbody>"
-            f"<tr><td>entries covered</td><td style='text-align:right'>"
-            f"{seal['entry_count']} (up to id {seal['last_entry_id']})</td></tr>"
-            f"<tr><td>new since seal</td><td style='text-align:right'>"
-            f"{max(0, overview['entry_count'] - seal['entry_count'])} "
-            f"(live {overview['entry_count']})</td></tr>"
-            f"<tr><td>sealed supply</td><td style='text-align:right'>"
-            f"{esc(seal['total_supply_credits'])} credits</td></tr>"
-            f"<tr><td>running hash</td><td style='text-align:right;font-family:monospace;word-break:break-all;max-width:320px;overflow-wrap:anywhere'>"
-            f"{esc(seal['running_hash'])}</td></tr>"
-            "</tbody></table>"
-        )
+        # degrade-silently: a malformed seal never crashes /economy
+        try:
+            ok = seal.get("ok", False)
+            badge = (
+                "<span class='status-ok'>verified</span>"
+                if ok
+                else "<span class='status-fail'>DRIFT DETECTED</span>"
+            )
+            seal_html = (
+                f"<p>Sealed {esc(seal.get('created_at', ''))} - {badge}</p>"
+                f"<table><tbody>"
+                f"<tr><td>entries covered</td><td style='text-align:right'>"
+                f"{seal.get('entry_count', 0)} (up to id {seal.get('last_entry_id', 0)})</td></tr>"
+                f"<tr><td>new since seal</td><td style='text-align:right'>"
+                f"{max(0, overview.get('entry_count', 0) - seal.get('entry_count', 0))} "
+                f"(live {overview.get('entry_count', 0)})</td></tr>"
+                f"<tr><td>sealed supply</td><td style='text-align:right'>"
+                f"{esc(seal.get('total_supply_credits', ''))} credits</td></tr>"
+                f"<tr><td>running hash</td><td style='text-align:right;font-family:monospace;word-break:break-all;max-width:320px;overflow-wrap:anywhere'>"
+                f"{esc(seal.get('running_hash', ''))}</td></tr>"
+                "</tbody></table>"
+            )
+        except Exception:  # domain: degrade-silently - seal panel is observability, never breaks /economy
+            seal_html = "<p style='color:var(--muted)'>Checkpoint unavailable.</p>"
     # --- checkpoint inspector: full ledger hash recompute ----------
     inspector_html = ""
     if seal is not None:
-        chain_cls = "status-ok" if seal.get("chain_ok") else "status-fail"
-        inspector_html = (
-            '<div class="panel"><h2>Checkpoint inspector</h2>'
-            "<table><tbody>"
-            f"<tr><td>chain recompute</td>"
-            f"<td style='text-align:right'><span class='{chain_cls}'>"
-            f"{'verified' if seal['chain_ok'] else 'MISMATCH'}</span></td></tr>"
-            f"<tr><td>seals checked</td>"
-            f"<td style='text-align:right'>{seal.get('seals_checked', 0)}</td></tr>"
-            f"<tr><td>sealed entries</td>"
-            f"<td style='text-align:right'>{seal['sealed_entry_count']}</td></tr>"
-            f"<tr><td>live entries</td>"
-            f"<td style='text-align:right'>{seal['live_entry_count']}</td></tr>"
-            f"<tr><td>entries match</td>"
-            f"<td style='text-align:right'><span class='{chain_cls}'>"
-            f"{'yes' if seal['sealed_entry_count'] == seal['live_entry_count'] else 'no'}</span></td></tr>"
-            f"<tr><td>sealed supply</td>"
-            f"<td style='text-align:right'>{esc(seal.get('sealed_supply_credits') or seal.get('sealed_supply_quarters', ''))}</td></tr>"
-            f"<tr><td>live supply</td>"
-            f"<td style='text-align:right'>{esc(seal.get('live_supply_credits') or seal.get('live_supply_quarters', ''))}</td></tr>"
-            f"<tr><td>supply match</td>"
-            f"<td style='text-align:right'><span class='{chain_cls}'>"
-            f"{'yes' if seal.get('sealed_supply_quarters') == seal.get('live_supply_quarters') else 'no'}</span></td></tr>"
-            "</tbody></table></div>"
-        )
+        try:
+            chain_ok = seal.get("chain_ok", False)
+            chain_cls = "status-ok" if chain_ok else "status-fail"
+            sealed_n = seal.get("sealed_entry_count", 0)
+            live_n = seal.get("live_entry_count", sealed_n)
+            # sealed/live supply credits may be missing on old seals — fall back to quarters string
+            sealed_cred = seal.get("sealed_supply_credits")
+            if sealed_cred is None:
+                sealed_cred = seal.get("sealed_supply_quarters", "")
+            live_cred = seal.get("live_supply_credits")
+            if live_cred is None:
+                live_cred = seal.get("live_supply_quarters", "")
+            inspector_html = (
+                '<div class="panel"><h2>Checkpoint inspector</h2>'
+                "<table><tbody>"
+                f"<tr><td>chain recompute</td>"
+                f"<td style='text-align:right'><span class='{chain_cls}'>"
+                f"{'verified' if chain_ok else 'MISMATCH'}</span></td></tr>"
+                f"<tr><td>seals checked</td>"
+                f"<td style='text-align:right'>{seal.get('seals_checked', 0)}</td></tr>"
+                f"<tr><td>sealed entries</td>"
+                f"<td style='text-align:right'>{sealed_n}</td></tr>"
+                f"<tr><td>live entries</td>"
+                f"<td style='text-align:right'>{live_n}</td></tr>"
+                f"<tr><td>entries match</td>"
+                f"<td style='text-align:right'><span class='{chain_cls}'>"
+                f"{'yes' if sealed_n == live_n else 'no'}</span></td></tr>"
+                f"<tr><td>sealed supply</td>"
+                f"<td style='text-align:right'>{esc(sealed_cred)}</td></tr>"
+                f"<tr><td>live supply</td>"
+                f"<td style='text-align:right'>{esc(live_cred)}</td></tr>"
+                f"<tr><td>supply match</td>"
+                f"<td style='text-align:right'><span class='{chain_cls}'>"
+                f"{'yes' if seal.get('sealed_supply_quarters') == seal.get('live_supply_quarters') else 'no'}</span></td></tr>"
+                "</tbody></table></div>"
+            )
+        except Exception:  # domain: degrade-silently - inspector is observability, never breaks /economy
+            inspector_html = ""
 
     try:
         page = max(1, int(request.query_params.get("page", "1")))
