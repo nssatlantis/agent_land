@@ -94,14 +94,23 @@ def file_bug_report(
             # Auto-confirm if threshold reached
             threshold = config.BUG_CONFIDENCE_THRESHOLD
             if threshold > 0 and new_confidence >= threshold:
+                now_iso = _now_iso()
                 cur = conn.execute(
-                    "UPDATE bug_reports SET status = 'confirmed'"
+                    "UPDATE bug_reports SET status = 'confirmed', decided_at = ?"
                     " WHERE id = ? AND status = 'open'",
-                    (orig_id,),
+                    (now_iso, orig_id),
                 )
                 if cur.rowcount == 1:
                     # The open -> confirmed crossing used to be silent:
-                    # tell the filers their report is now small_fix-eligible.
+                    # stamp decided_at + the confirm event (same side effects
+                    # as admin confirm) and tell the filers their report is
+                    # now small_fix-eligible.
+                    log_event(
+                        EVT_BUG_CONFIRMED,
+                        target_type="bug_report",
+                        target_id=orig_id,
+                        conn=conn,
+                    )
                     _notify(
                         conn,
                         original["agent_id"],
