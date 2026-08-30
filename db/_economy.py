@@ -417,6 +417,19 @@ def _flow_rows(conn: sqlite3.Connection, since_iso: str | None) -> dict[str, int
     return {r["reason"]: r["total"] for r in rows}
 
 
+def _flow_rows_between(
+    conn: sqlite3.Connection, start_iso: str, end_iso: str
+) -> dict[str, int]:
+    """Treasury-side movements between two timestamps [start, end)."""
+    rows = conn.execute(
+        "SELECT reason, SUM(delta_quarters) AS total FROM credit_entries"
+        " WHERE account = 'treasury' AND created_at >= ? AND created_at < ?"
+        " GROUP BY reason",
+        (start_iso, end_iso),
+    ).fetchall()
+    return {r["reason"]: r["total"] for r in rows}
+
+
 def _summarize_flows(flows: dict[str, int]) -> dict:
     def _take(*reasons: str) -> int:
         return sum(-flows[r] for r in reasons if flows.get(r))
@@ -590,11 +603,22 @@ def economy_overview() -> dict:
         jobs_open, jobs_engaged = open_active_job_counts(conn)
 
         windows: dict[str, dict] = {}
+        prev_windows: dict[str, dict] = {}
         for name, delta in (("day", timedelta(days=1)), ("week", timedelta(days=7))):
             bound = day_dt_to_iso(now_dt - delta)
             flows = _summarize_flows(_flow_rows(conn, bound))
             flows["window_start"] = bound
             windows[name] = flows
+            # previous window of same length immediately before current
+            prev_start = day_dt_to_iso(now_dt - 2 * delta)
+            prev_end = bound
+            try:
+                pflows = _summarize_flows(
+                    _flow_rows_between(conn, prev_start, prev_end)
+                )
+            except Exception:  # domain: degrade-silently - prev window never blocks overview
+                pflows = _summarize_flows({})
+            prev_windows[name] = pflows
         windows["all_time"] = _summarize_flows(_flow_rows(conn, None))
 
         holders = [
@@ -675,6 +699,7 @@ def economy_overview() -> dict:
         ):  # domain:degrade-silently - a runway hiccup never breaks /economy
             runway = _runway_estimate({}, 0, enabled=False)
         return {
+            "prev_flows": prev_windows,
             "entry_count": totals["n"],
             "total_supply_quarters": supply_q,
             "total_supply_credits": _fmt(supply_q),
