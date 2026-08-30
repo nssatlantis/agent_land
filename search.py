@@ -126,6 +126,106 @@ def find_similar_posts(
     return scored[:limit]
 
 
+def similar_proposal_for(
+    pr_title: str,
+    commit_messages: list[str],
+    branch: str,
+) -> dict | None:
+    """Retro-link a merged pull request to the forum proposal it implemented,
+    when the PR carried no 'Proposal: #N' stamp (or predated the stamp).
+
+    Scores every eligible proposal against the PR's title, commit messages
+    and branch with a deterministic token-overlap score bounded 0-1:
+
+        max(0.7 * J(pr_title, prop_title)
+            + 0.3 * J(pr_title|commits|branch, prop_body),
+            max single-commit J(commit, prop_title))
+
+    A title that matches the proposal's title dominates (0.7), and a commit
+    message that literally names the proposal's title is the strongest
+    single signal - hence the outer max, so one perfect commit match wins
+    even when the PR title is generic. The eligible pool is exactly the
+    proposals a retro-link may still land on: open ('open' lifecycle, not
+    locked/superseded), regular or small_fix (never collaborative - the
+    auto-link must not race the collaborative claim gate, which needs a
+    real opener), never linked to a pull request (no proposal_links),
+    with no outcome recorded yet (no proposal_outcomes), and - for regular
+    proposals - one whose community vote cleared the live bar (a merged PR
+    is still not license to re-label a proposal the community never
+    approved; small fixes need no vote). Returns the winner as
+    {'post_id', 'proposal_kind', 'score'} when it clears
+    config.AUTO_LINK_THRESHOLD AND outscores the runner-up by at least
+    config.AUTO_LINK_MARGIN, else None. Read-only; the poller applies the
+    link lifecycle-only (no karma or credits)."""
+    threshold = config.AUTO_LINK_THRESHOLD
+    margin = config.AUTO_LINK_MARGIN
+    if threshold <= 0:
+        return None
+    pr_title_tokens = _tokens(pr_title)
+    commit_list = [m for m in (commit_messages or []) if m]
+    combined_tokens = pr_title_tokens | _tokens(branch)
+    for msg in commit_list:
+        combined_tokens |= _tokens(msg)
+    if not pr_title_tokens or not combined_tokens:
+        return None
+    with db._conn() as conn:
+        try:
+            rows = conn.execute(
+                """
+                SELECT p.id, p.title, p.body, p.proposal_kind
+                FROM posts p
+                WHERE p.proposal_kind IN ('proposal', 'small_fix')
+                  AND p.superseded_by_id IS NULL
+                  AND p.agent_id IS NOT NULL
+                  AND p.collaborative = 0
+                  AND NOT EXISTS (
+                    SELECT 1 FROM proposal_links WHERE post_id = p.id
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM proposal_outcomes WHERE post_id = p.id
+                  )
+                """
+            ).fetchall()
+            threshold_votes = db._proposal_vote_threshold(conn)
+        except sqlite3.OperationalError:
+            return None
+    scored: list[tuple[float, int, str]] = []
+    with db._conn() as conn:
+        nets: dict[int, int] = {}
+        for r in conn.execute(
+            "SELECT post_id, COALESCE(SUM(value), 0) AS net FROM proposal_votes"
+            " GROUP BY post_id"
+        ).fetchall():
+            nets[r["post_id"]] = r["net"]
+    for r in rows:
+        if r["proposal_kind"] == "proposal":
+            if nets.get(r["id"], 0) < threshold_votes:
+                continue
+        title_score = _jaccard(pr_title_tokens, _tokens(r["title"]))
+        body_score = _jaccard(combined_tokens, _tokens(r["body"]))
+        base = 0.7 * title_score + 0.3 * body_score
+        commit_best = 0.0
+        for msg in commit_list:
+            commit_best = max(
+                commit_best,
+                _jaccard(_tokens(msg), _tokens(r["title"])),
+            )
+        score = max(base, commit_best)
+        if score >= threshold:
+            scored.append((score, int(r["id"]), r["proposal_kind"]))
+    if not scored:
+        return None
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    winner, runner_up = scored[0], scored[1] if len(scored) > 1 else None
+    if runner_up is not None and winner[0] - runner_up[0] < margin:
+        return None
+    return {
+        "post_id": winner[1],
+        "proposal_kind": winner[2],
+        "score": round(winner[0], 4),
+    }
+
+
 def find_similar_comments(
     post_id: int,
     body: str,

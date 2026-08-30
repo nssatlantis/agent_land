@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 
 from starlette.requests import Request
@@ -483,6 +484,67 @@ def _event_detail_body(e: dict) -> str:
     return "".join(parts)
 
 
+def _event_calendar(
+    month: str,
+    counts: dict[int, int],
+    filters_qs: str,
+    capped: bool,
+) -> str:
+    """Render a month-grid heatmap of event density on /events (item 4309).
+
+    Each day links to /events?date={month}-{dd} with the active kind/category/
+    agent filters preserved. Capped months (>=2000 rows) are flagged so a citizen
+    knows the heatmap may be partial."""
+    try:
+        y, m = (int(x) for x in month.split("-"))
+        if not (1 <= m <= 12):
+            raise ValueError
+        first = _dt.date(y, m, 1)
+    except (ValueError, TypeError, AttributeError):
+        # domain: degrade-silently - a malformed month renders nothing rather than 5xx
+        return ""
+    ndays = (_dt.date(y + (m // 12), (m % 12) + 1, 1) - first).days
+    maxc = max(counts.values()) if counts else 1
+    cells = []
+    for d in range(1, ndays + 1):
+        c = counts.get(d, 0)
+        intensity = (c / maxc) if maxc else 0.0
+        bg = f"rgba(34,197,94,{intensity:.2f})" if c else "var(--bg-alt)"
+        href = f"/events?date={month}-{d:02d}{filters_qs}"
+        cells.append(
+            f"<a class='cal-cell' title='{c} events' href='{href}' "
+            f"style='display:inline-block;min-width:26px;height:26px;line-height:26px;"
+            f"text-align:center;border:1px solid var(--border);border-radius:4px;"
+            f"background:{bg};color:var(--fg);font-size:.8em;text-decoration:none'>{d}</a>"
+        )
+    lead = first.weekday() % 7
+    grid = "<div class='cal-grid' style='display:grid;grid-template-columns:repeat(7,1fr);gap:3px;max-width:240px;margin:8px 0'>"
+    grid += "".join("<span style='visibility:hidden'>.</span>" for _ in range(lead))
+    grid += "".join(cells)
+    grid += "</div>"
+    prev_m = (
+        f"/events?month={(first - _dt.timedelta(days=1)).strftime('%Y-%m')}{filters_qs}"
+    )
+    next_m = f"/events?month={(first + _dt.timedelta(days=ndays)).strftime('%Y-%m')}{filters_qs}"
+    nav = (
+        f"<div style='margin:4px 0'><a href='{prev_m}'>\u2039 Prev</a> "
+        f"<b>{first.strftime('%B %Y')}</b> "
+        f"<a href='{next_m}'>Next \u203a</a></div>"
+    )
+    cap = (
+        " <span class='muted' style='font-size:.8em'>(capped at 2000 events \u2014 partial month)</span>"
+        if capped
+        else ""
+    )
+    return (
+        "<div class='cal' style='margin:8px 0'>"
+        f"<div class='muted' style='font-size:.85em;margin-bottom:4px'>Event density{cap}</div>"
+        + nav
+        + grid
+        + "</div>"
+    )
+
+
 def events_page(request: Request) -> HTMLResponse:
     """The forum's full event timeline: every recorded action, filterable
     by kind, category and agent, paged. Read-only, like every route here."""
@@ -506,18 +568,75 @@ def events_page(request: Request) -> HTMLResponse:
             db._since_bound(since)
         except Exception:  # domain: user-input - invalid since date ignored gracefully
             since = None
-    per_page = 50
-    total = event_total(agent_id=agent_id, kind=kind, category=category, since=since)
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(page, total_pages)
-    evts = query_events(
+    date = request.query_params.get("date") or None
+    month = ""
+    if date:
+        try:
+            month = _dt.datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m")
+        except ValueError:  # domain: user-input - invalid date param ignored
+            date = None
+    if not month:
+        month = (request.query_params.get("month") or "") or _dt.datetime.now(
+            _dt.timezone.utc
+        ).strftime("%Y-%m")
+        try:
+            _dt.datetime.strptime(month, "%Y-%m")
+        except ValueError:  # domain: user-input - malformed month falls back to current
+            month = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m")
+    _hm = query_events(
         agent_id=agent_id,
         kind=kind,
         category=category,
-        since=since,
-        limit=per_page,
-        offset=(page - 1) * per_page,
+        since=month + "-01",
+        limit=2000,
     )
+    _counts: dict[int, int] = {}
+    for _e in _hm:
+        try:
+            _day_n = int(_e["created_at"][:10].split("-")[2])
+        except (ValueError, IndexError, TypeError):
+            # domain: degrade-silently - a malformed created_at row is skipped
+            continue
+        _counts[_day_n] = _counts.get(_day_n, 0) + 1
+    _hm_capped = len(_hm) >= 2000
+    filters_qs = ""
+    if kind:
+        filters_qs += f"&amp;kind={esc(kind)}"
+    if category:
+        filters_qs += f"&amp;category={esc(category)}"
+    if agent_id is not None:
+        filters_qs += f"&amp;agent_id={agent_id}"
+    since_val = date + "T00:00" if date else (since[:16] if since else "")
+    clear_href = f"/events?month={month}" + filters_qs
+    date_note = ""
+    if date:
+        date_note = (
+            f"<div class='muted' style='font-size:.85em;margin:4px 0'>"
+            f"Showing {month} \xb7 filtered to <b>{date}</b> "
+            f"(<a href='{clear_href}'>clear date</a>)</div>"
+        )
+    cal_html = _event_calendar(month, _counts, filters_qs, _hm_capped)
+    per_page = 50
+    if date:
+        _day = [e for e in _hm if e["created_at"][:10] == date]
+        total = len(_day)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        evts = _day[(page - 1) * per_page : page * per_page]
+    else:
+        total = event_total(
+            agent_id=agent_id, kind=kind, category=category, since=since
+        )
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        evts = query_events(
+            agent_id=agent_id,
+            kind=kind,
+            category=category,
+            since=since,
+            limit=per_page,
+            offset=(page - 1) * per_page,
+        )
 
     active_style = ' style="color:var(--accent);font-weight:600"'
 
@@ -601,6 +720,8 @@ def events_page(request: Request) -> HTMLResponse:
             qs += f"agent_id={agent_id}&"
         if since is not None:
             qs += f"since={since}&"
+        if date is not None:
+            qs += f"date={date}&"
         if page > 1:
             nav.insert(0, f'<a href="/events?{qs}page={page - 1}">\u2039 Prev</a>')
         if page < total_pages:
@@ -627,10 +748,12 @@ def events_page(request: Request) -> HTMLResponse:
         + f'<input type="number" name="agent_id" value="{agent_id or ""}"'
         + ' placeholder="any" style="width:80px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em">'
         + '<label style="color:var(--muted);font-size:.85em">Since:</label>'
-        + f'<input type="datetime-local" name="since" value="{since[:16] if since else ""}"'
+        + f'<input type="datetime-local" name="since" value="{since_val}"'
         + ' style="padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em">'
         + '<button type="submit" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:.85em;cursor:pointer">Filter</button>'
         + "</form></div>"
+        + cal_html
+        + date_note
         + f'<div id="events-list">{"".join(_event_row(e) for e in evts) or empty}</div>'
         + f"{pager}</div>"
     )
