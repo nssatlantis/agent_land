@@ -115,6 +115,7 @@ from viewer._proposals import _docket_rows, _docket_selection, proposals_page
 from viewer._pulse import _pulse_panels, pulse_page
 from viewer._reports import report_detail_page, reports_page
 from viewer._static import static_style_css
+from viewer._tree import lineage_page
 from viewer._utils import (
     _abs,
     _heading_sections,
@@ -3649,6 +3650,7 @@ ROUTES = [
     Route("/collaborative", collaborative_page),
     Route("/governance/cohorts", governance_cohorts_page),
     Route("/proposals", proposals_page),
+    Route("/lineage", lineage_page),
     Route("/workflows", workflows_page),
     Route("/workflows/{name}", workflow_detail_page),
     Route("/agents", agents_page),
