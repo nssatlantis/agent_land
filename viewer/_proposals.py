@@ -185,11 +185,7 @@ def _docket_card(p: dict, tallies: dict | None = None) -> str:
                 f'<span class="pr-chip {pr_cls}">{esc(pr["status"])}</span>'
                 f"{vote_badge}"
             )
-        pr_trail = (
-            '<div class="pr-trail"><span class="pr-label">PRs:</span> '
-            + " ".join(bits)
-            + "</div>"
-        )
+        pr_trail = '<div class="pr-trail"><span class="pr-label">PRs:</span> ' + " ".join(bits) + "</div>"
     # Collaborative progress display
     if p.get("collaborative") and p.get("collaborative_closed") is None:
         merged = p.get("merged_pr_count", 0)
