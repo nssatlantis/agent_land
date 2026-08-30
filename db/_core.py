@@ -1799,6 +1799,26 @@ def init_db() -> None:
         ):  # domain: degrade-silently - workflows are enrichment; boot must not fail
             pass
 
+        # PR-cache index: lives here rather than schema.sql because
+        # schema.sql's CREATE INDEX statements run before migrations and
+        # would crash an upgraded (pre-feature) database - the
+        # AGENTS.md schema-migration rule. The cache is optional
+        # enrichment, so a broken index never blocks boot.
+        try:
+            _pr_rows_objects = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')"
+                ).fetchall()
+            }
+            if "pr_rows" in _pr_rows_objects:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_pr_rows_state_updated"
+                    " ON pr_rows(state, updated_at)"
+                )
+        except Exception:  # domain: degrade-silently - cache index is best-effort
+            pass
+
 
 def _id_chunks(ids: list, size: int = 500) -> list:
     """Chunks of `ids` for the IN-clause builders, so a page can never exceed
